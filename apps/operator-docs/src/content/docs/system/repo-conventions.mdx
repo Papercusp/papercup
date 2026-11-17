@@ -9,6 +9,9 @@ description: "The full detail behind CLAUDE.md's pointers — deployment model, 
 type: Insight
 discovered: 2026-08-24
 status: active
+documents:
+  - "CLAUDE.md"
+  - "packages/operator-core/lib/codex-lock-runtime.ts"
 plans:
   - "token-usage-reduction-audit-2026-06-09"
   - "git-sync-dx-hardening-2026-06-17"
@@ -21,6 +24,9 @@ plans:
   - "retire-snapshots-instance-spec-2026-06-09"
 sidebar:
   order: 3
+promotedFrom:
+  - kind: work-item
+    ref: EI-29033928617443344
 ---
 
 # Repo conventions — the long form
@@ -267,13 +273,13 @@ it re-accruing:
 The branch model since the staging→main cutover
 (`staging-branch-pipeline-2026-06-06`):
 
-- **`staging`** — the integration branch / agent firehose. The repo at
-  `/home/dev/papercupai-workspace/papercup` is the canonical shared
-  checkout and **must always have `staging` checked out**. Other agents
+- **`staging`** — the integration branch / agent firehose. Use the canonical shared checkout identified by the launch’s generated
+  **Where to work — the workspace map**. It **must always have `staging` checked out**. Other agents
   (paperclip, the operator UI, dev servers, the harness fleet) all assume this.
   Branch-switching there breaks them all.
 - **`main`** — the GREEN branch. It only ever **fast-forwards** to a `staging`
-  commit that passed the green-checkpoint suite (run in an isolated checkout).
+  commit with no BLOCKING failure in the green-checkpoint verdict, evaluated
+  in an isolated checkout. Active downgrade records may cover failing cases.
   **Nothing and no one pushes `main` directly** — not you, not git-sync; only the
   green-checkpoint automation advances it. A fresh clone of `origin/main` is
   always a tested state, and the live `:3070` operator auto-serves it.
@@ -282,14 +288,17 @@ We deliberately run one shared tree rather than many diverging worktrees: it's
 simpler, and it spares everyone the merge-reconciliation tax later. The tradeoff
 is a messy history — your work gets swept into other agents' commits and theirs
 into yours — and that's expected and fine. Coordinate through **`locks:*`** (a
-`PreToolUse` hook claims files per-edit automatically; call `locks:acquire` by
-hand only for a multi-file change held across several edits) and **`coord:*`**
+client’s effective lock mode governs file claims: read
+`coord:orient.codexLocks` for Codex. In `automatic` mode the edit hook claims
+files; in `manual` mode call `locks:acquire` before each edit and release the
+returned lock after the atomic edit. Never combine the modes) and **`coord:*`**
 (`coord:declare-intent` announces what you're working on; handoffs + messages).
 
 **Symptoms that you've forgotten the branch rule:**
 
-- `git status` shows `On branch <not-staging>` in the shared checkout — switch
-  back to `staging` immediately and recover any in-flight work via `git stash`.
+- A read-only branch check shows the shared checkout is not on `staging` —
+  stop editing and preserve the current state. Use the canonical recovery or
+  merge-resolver workflow; never switch branches or stash the shared tree.
 - Paperclip starts editing files that look stale or wrong — it almost certainly
   thinks it's on a different branch than you.
 - Dev/prod servers start serving 404s or HMR-error pages for routes that exist
@@ -302,15 +311,17 @@ branch). You never `git add` / `git commit` / `git push`; just leave your work i
 the tree and it lands on origin within a few minutes. Don't stash, branch, or
 scope pathspecs to isolate "your" diff — there are no per-agent commits; the
 routine packages whatever's in the tree. An auto-merge conflict it can't take is
-resolved by a `merge-resolver` agent, not you. The per-edit file-lock hook still
+resolved by a `merge-resolver` agent, not you. The effective file-lock mode
 serializes concurrent edits to the same file.
 
-From `staging`, work reaches `main` automatically: **green-checkpoint** (hourly)
-runs the suite on staging HEAD in an isolated checkout and fast-forwards `main`
-when green; **release-trigger** (every 15 min) then auto-deploys green `main` to
+From `staging`, work reaches `main` through **green-checkpoint**: it evaluates
+a staging candidate in an isolated checkout and fast-forwards `main` when no
+BLOCKING failure remains. When a frozen repair queue exists, subsequent runs
+resume that frozen lineage rather than selecting a newer staging tip. The
+**release-trigger** routine then auto-deploys the accepted `main` to
 the live `:3070` operator (drain → swap → migrate → restart → health-check,
 auto-rollback). Your change being "in the tree" means it reaches `origin/main` +
-the live host as soon as the suite is green — and NOT before. The `/admin/git`
+the live host after the verdict accepts its candidate and release completes. The `/admin/git`
 tab shows the whole pipeline. To pause sync for ONE tree, take its scoped
 resource lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode:
 'exclusive', ttl_sec: 1200 }` (scoped to that tree, TTL-bounded, audited; release
@@ -326,8 +337,8 @@ commits whose pinned submodule SHAs passed the suite, so green `main` always
 resolves to a tested combination.)
 
 **A long-running interpreted script executing directly out of this tree is at risk
-from concurrent edits, not just concurrent readers of its *output*.** The file-lock
-hook only serializes edits to the same file against each other — it does not stop a
+from concurrent edits, not just concurrent readers of its *output*.** File-lock
+enforcement only serializes edits to the same file against each other — it does not stop a
 `bash`/`node`/`python` process from being mid-*execution* of a file another agent
 edits in place. bash in particular re-reads a plain script by byte offset as
 execution proceeds rather than slurping it up front, so an in-place edit (not an
