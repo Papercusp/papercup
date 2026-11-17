@@ -511,6 +511,9 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // harness, so keep the exact resolved scope rather than widening to an ambiguous unscoped read.
   const acceptanceBarLifecycle = await readAndEvaluateAcceptanceBarLifecycle(opts.planSlug, 'pre-start', {
     harnessSlug: read.row.harnessSlug,
+    // Promotion checks the contract before implementation. Grading lineage and
+    // proof are evaluated by their later lifecycle phases.
+    proofMode: 'metadata',
   });
   if (!acceptanceBarLifecycle.satisfied) {
     return {

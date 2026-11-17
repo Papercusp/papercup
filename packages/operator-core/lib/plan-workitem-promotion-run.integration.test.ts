@@ -929,7 +929,9 @@ created: 2026-08-21
 
     const first = await run.promotePlanItems({ ...base, planRun, itemKind: 'feature' });
     expect(acceptanceLifecycle.readAndEvaluateAcceptanceBarLifecycle)
-      .toHaveBeenLastCalledWith(PLAN, 'pre-start', { harnessSlug: 'resolved-plan-home' });
+      .toHaveBeenLastCalledWith(PLAN, 'pre-start', {
+        harnessSlug: 'resolved-plan-home', proofMode: 'metadata',
+      });
     expect(first.promoted).toBe(2);
     expect(first.workItems).toHaveLength(2);
     expect(first.workItems.map((item) => ({

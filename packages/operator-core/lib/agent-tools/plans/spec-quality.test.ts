@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
-import { evaluatePlanSpecQuality, specQualityCanonicalBarScopes, specQualityPlanItemIds } from './spec-quality';
+import { evaluatePlanSpecQuality, IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION, specQualityCanonicalBarScopes, specQualityPlanItemIds } from './spec-quality';
 import { deriveIndexFromContent } from './derive-index';
 import { parsePlan } from './parser';
 import evaluateSpecQualityTool from './evaluate-spec-quality';
@@ -1230,7 +1230,7 @@ describe('evaluatePlanSpecQuality', () => {
       });
 
       expect(result.ratings['implementation-independence'].rating).toBe('pass');
-      expect(result.ratings['implementation-independence'].evidence).toContain('Detector semantics revision: 3.');
+      expect(result.ratings['implementation-independence'].evidence).toContain('Detector semantics revision: ' + IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION + '.');
     },
   );
 
@@ -1294,7 +1294,7 @@ describe('evaluatePlanSpecQuality', () => {
     }
   });
 
-  it('pins detector revision 3 to representative coupled and independent verdicts', () => {
+  it('pins detector revision 4 to representative coupled and independent verdicts', () => {
     const goldenCases = [
       { behavior: 'The retrieval report includes nDCG@5 for the frozen queries and ground truth.', expected: 'pass' },
       { behavior: 'The user sees saved settings after reopening the page.', expected: 'pass' },
@@ -1302,6 +1302,8 @@ describe('evaluatePlanSpecQuality', () => {
       { behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.', expected: 'fail' },
       { behavior: 'Recipe discovery returns an input contract with required issueId for replay.', expected: 'pass' },
       { behavior: 'Recipe discovery returns an input contract with required issueId; issueId evaluates the replay.', expected: 'fail' },
+      { behavior: 'The source dbPath remains present after the migration.', expected: 'pass' },
+      { behavior: 'The source dbPath remains present while dbPath resolves the directory.', expected: 'fail' },
     ] as const;
 
     for (const { behavior, expected } of goldenCases) {
@@ -1311,7 +1313,7 @@ describe('evaluatePlanSpecQuality', () => {
       });
       const rating = result.ratings['implementation-independence'];
       expect(rating.rating).toBe(expected);
-      expect(rating.evidence).toContain('Detector semantics revision: 3.');
+      expect(rating.evidence).toContain('Detector semantics revision: 4.');
     }
   });
 

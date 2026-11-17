@@ -20,7 +20,7 @@ import { planClassAllowsAllExemptItems } from '../../plan-class-refs';
 export const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
 
 /** Increment when implementation-independence detector semantics change; prose can change independently. */
-export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 3;
+export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 4;
 
 export const SPEC_QUALITY_CRITERIA = [
   'stable-revision-identity',
@@ -475,6 +475,14 @@ function withoutPublicContractIdentifiers(behavior: string): string {
   let text = behavior.replace(
     /\b[a-z][a-z0-9-]*(?::(?:[a-z][a-z0-9-]*|<[A-Za-z_][A-Za-z0-9_]*>)){1,}/g,
     (template) => template.replace(/<[A-Za-z_][A-Za-z0-9_]*>/g, (param) => ' '.repeat(param.length)),
+  );
+  // MongoDB's storage.dbPath is a public data-directory option. Migration
+  // contracts observe its source/target directory or complete byte coverage,
+  // rather than a private symbol. Mask only these qualified occurrences: a
+  // later unqualified dbPath still fails, as do explicit constructs above.
+  text = text.replace(
+    /(\b(?:source|target|configured)\s+|\bfull-|\bstorage\.)(dbPath)\b/g,
+    (_match, prefix: string, field: string) => prefix + ' '.repeat(field.length),
   );
   text = text.replace(
     /(\b(?:response|results?|payload)\s+(?:includes?|contains?|returns?)\s+)([A-Za-z_$][A-Za-z0-9_$]*)/gi,
