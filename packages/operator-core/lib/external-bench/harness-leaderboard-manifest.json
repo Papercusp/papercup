@@ -1,0 +1,1345 @@
+{
+  "harborVersion": "0.24.0",
+  "sourceRegistrySha256": "281a4fceead2303927f9dbf0a4efd25eee6f349f68752b59f18b015c61e71f82",
+  "sourceRevision": "f07159ad073de40bb8d13da9d09ed831e265266f",
+  "suites": {
+    "deep-swe": {
+      "excluded": {
+        "helm-unified-manifest-stream": "Its reference solution fails 4 of its 5 target tests on HF Sandbox, so no harness can pass it.",
+        "vulture-persistent-analysis-cache": "Its grader fails correct solutions that add their options at the top of the DEFAULTS dict (13 of 15 early trials that passed all target tests failed this way)."
+      },
+      "license": "Apache-2.0",
+      "network": "enforced",
+      "repository": "https://github.com/datacurve-ai/deep-swe.git",
+      "revision": "0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea",
+      "sourceTree": "0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea",
+      "subsets": {
+        "full": [
+          "abs-module-cache-flags",
+          "abs-stepped-slices",
+          "actionlint-action-pinning-lint",
+          "adaptix-name-mapping-aliases",
+          "aiomonitor-task-snapshots-diff",
+          "anko-default-function-arguments",
+          "anko-typed-variable-bindings",
+          "arcane-drift-detection-baselines",
+          "arktype-json-schema-refs-dependencies",
+          "awilix-async-container-initialization",
+          "bandit-incremental-cache-control",
+          "bandit-interprocedural-taint-checks",
+          "bandit-structured-nosec-directives",
+          "boa-hierarchical-evaluation-cancellation",
+          "cattrs-partial-structuring-recovery",
+          "clack-async-autocomplete-options",
+          "claude-code-by-agents-recursive-delegation",
+          "cliffy-config-file-parsing",
+          "csstree-shorthand-expansion-compression",
+          "dasel-html-document-format",
+          "dateutil-rfc5545-timezone-interop",
+          "drizzle-orm-window-function-builders",
+          "dynamodb-toolbox-conditional-attribute-requirements",
+          "dynamodb-toolbox-lazy-recursive-schemas",
+          "effect-sse-httpapi-streaming",
+          "eicrud-keyset-pagination-cursor",
+          "etree-xml-diff-patch",
+          "expr-try-catch-errors",
+          "fastapi-deprecation-response-headers",
+          "fastapi-implicit-head-options",
+          "fd-deterministic-multi-key-sorting",
+          "geo-shapeindex-serialization",
+          "go-critic-doc-link-checker",
+          "go-genai-streamed-function-args",
+          "go-git-worktree-merge-conflicts",
+          "goreleaser-retry-publish-auditing",
+          "gql-incremental-graphql-delivery",
+          "happy-dom-abort-pending-body-reads",
+          "happy-dom-deterministic-intersectionobserver",
+          "helm-array-merge-strategies",
+          "httpx-deterministic-cookie-store",
+          "httpx-multipart-response-parsing",
+          "httpx-streaming-json-iteration",
+          "igel-persist-feature-schema",
+          "ink-grid-box-layout",
+          "ipython-session-bundle-replay",
+          "katex-multicolumn-array-spans",
+          "kcp-go-multiplexed-kcp-streams",
+          "kea-atomic-signal-selectors",
+          "kgateway-consistent-hash-policy",
+          "kombu-single-active-consumer-priority",
+          "kombu-virtual-queue-dead-lettering",
+          "koota-composite-trait-aspects",
+          "koota-deferred-mutation-buffer",
+          "koota-entity-snapshot-rollback",
+          "koota-pair-relation-tracking",
+          "koota-query-predicates",
+          "kysely-window-grouping-helpers",
+          "langchain-request-coalescing",
+          "mashumaro-flattened-dataclass-fields",
+          "meriyah-explicit-resource-declarations",
+          "mnamer-daemon-watch-lifecycle",
+          "mobly-grouped-test-barriers",
+          "narwhals-rolling-window-suite",
+          "numba-stencil-boundary-modes",
+          "obsidian-linter-auto-table-of-contents",
+          "obsidian-linter-link-format-conversion",
+          "obsidian-linter-scoped-ignore-markers",
+          "ofetch-per-origin-circuit-breaker",
+          "onedump-dump-encryption-pipeline",
+          "opa-rego-rule-profiling",
+          "opa-template-string-reconstruction",
+          "optique-conditional-option-dependencies",
+          "oxvg-structural-selector-preservation",
+          "participle-grammar-conflict-analysis",
+          "pebble-durability-wait-apis",
+          "pest-character-class-coalescing",
+          "prometheus-transactional-reload-status",
+          "prometheus-typed-label-sorting",
+          "psd-tools-blend-range-api",
+          "pwntools-tube-multiplexing",
+          "python-statemachine-state-data-scoping",
+          "query-persist-restored-query-state",
+          "quill-shared-toolbar-focus",
+          "returns-validated-error-accumulation",
+          "scc-bounded-memory-spilling",
+          "scriggo-method-declarations",
+          "skrub-duration-encoding",
+          "sql-formatter-bigquery-pipe-formatting",
+          "sqlfmt-create-table-ddl-formatting",
+          "sqlite-utils-safe-import-checkpoints",
+          "superjson-error-stack-serialization",
+          "task-task-graph-export",
+          "tengo-callable-instance-isolation",
+          "tengo-destructuring-bindings",
+          "termenv-preserve-ansi-resets",
+          "testem-bail-on-test-failure",
+          "testem-per-launcher-reports",
+          "textual-kitty-key-phases",
+          "textual-richlog-follow-state",
+          "tomlkit-toml-table-converters",
+          "true-myth-iterable-collection-combinators",
+          "ts-pattern-match-each",
+          "updo-policy-alerting",
+          "valibot-recursive-schema-composition",
+          "vitest-duration-sharding",
+          "wasmi-trap-coredumps",
+          "wazero-multi-module-snapshots",
+          "yaegi-go-embed-directives",
+          "yjs-map-conflict-detection",
+          "ytt-jsonpath-query-api"
+        ],
+        "pilot": [
+          "abs-module-cache-flags",
+          "adaptix-name-mapping-aliases",
+          "anko-default-function-arguments",
+          "anko-typed-variable-bindings",
+          "bandit-incremental-cache-control",
+          "boa-hierarchical-evaluation-cancellation",
+          "cattrs-partial-structuring-recovery",
+          "claude-code-by-agents-recursive-delegation",
+          "drizzle-orm-window-function-builders",
+          "dynamodb-toolbox-lazy-recursive-schemas",
+          "eicrud-keyset-pagination-cursor",
+          "expr-try-catch-errors",
+          "fastapi-implicit-head-options",
+          "fd-deterministic-multi-key-sorting",
+          "geo-shapeindex-serialization",
+          "go-git-worktree-merge-conflicts",
+          "happy-dom-deterministic-intersectionobserver",
+          "httpx-deterministic-cookie-store",
+          "httpx-streaming-json-iteration",
+          "katex-multicolumn-array-spans",
+          "kcp-go-multiplexed-kcp-streams",
+          "kea-atomic-signal-selectors",
+          "kombu-single-active-consumer-priority",
+          "kombu-virtual-queue-dead-lettering",
+          "koota-deferred-mutation-buffer",
+          "koota-entity-snapshot-rollback",
+          "koota-pair-relation-tracking",
+          "langchain-request-coalescing",
+          "mobly-grouped-test-barriers",
+          "numba-stencil-boundary-modes",
+          "obsidian-linter-link-format-conversion",
+          "obsidian-linter-scoped-ignore-markers",
+          "opa-rego-rule-profiling",
+          "opa-template-string-reconstruction",
+          "pebble-durability-wait-apis",
+          "pwntools-tube-multiplexing",
+          "quill-shared-toolbar-focus",
+          "scc-bounded-memory-spilling",
+          "scriggo-method-declarations",
+          "skrub-duration-encoding",
+          "sql-formatter-bigquery-pipe-formatting",
+          "sqlfmt-create-table-ddl-formatting",
+          "tengo-destructuring-bindings",
+          "testem-bail-on-test-failure",
+          "tomlkit-toml-table-converters",
+          "true-myth-iterable-collection-combinators",
+          "valibot-recursive-schema-composition",
+          "vitest-duration-sharding",
+          "yaegi-go-embed-directives",
+          "ytt-jsonpath-query-api"
+        ],
+        "smoke": [
+          "eicrud-keyset-pagination-cursor",
+          "httpx-streaming-json-iteration",
+          "tengo-destructuring-bindings"
+        ]
+      },
+      "tasks": [
+        {
+          "id": "abs-module-cache-flags",
+          "instructionGitBlob": "b55a6cf895e3e83296cdebcab1a5ba61bc6fb24f",
+          "taskTomlGitBlob": "5021e65499a9c3162c2aa57ffdf981556bdfe6db"
+        },
+        {
+          "id": "abs-stepped-slices",
+          "instructionGitBlob": "cf7942f5d06dcb524859f7e8f6b2c95d9d0b454c",
+          "taskTomlGitBlob": "90cdf94167c2bb0eb831dfbd9c16107b27a763ef"
+        },
+        {
+          "id": "actionlint-action-pinning-lint",
+          "instructionGitBlob": "25d3f599a018a4231eb5485900cb14c5cd2b1491",
+          "taskTomlGitBlob": "c07016c9c4aa3c116afcad2949680dd9308bc79b"
+        },
+        {
+          "id": "adaptix-name-mapping-aliases",
+          "instructionGitBlob": "306d029f690191a27613f78700bbdf8915463dce",
+          "taskTomlGitBlob": "74237d4d00170a25999a9b0853c9bbbbff9b2749"
+        },
+        {
+          "id": "aiomonitor-task-snapshots-diff",
+          "instructionGitBlob": "094994dd87207eeb6bafcef84245e7c8e7424630",
+          "taskTomlGitBlob": "cb3f4ab648f97a956c4fd21aac62ae4696b49d96"
+        },
+        {
+          "id": "anko-default-function-arguments",
+          "instructionGitBlob": "7a8969d0666c42b8db4ade36f021a08fb6a855c5",
+          "taskTomlGitBlob": "fcc62bb3a3b2884ee8212c5cae5f41295e498c48"
+        },
+        {
+          "id": "anko-typed-variable-bindings",
+          "instructionGitBlob": "f6da0dd773985b9b9f1aa5d8a785274f3e154f8c",
+          "taskTomlGitBlob": "4ac4871c01fa7d40d30f4dc40c3d096d37fd6f6a"
+        },
+        {
+          "id": "arcane-drift-detection-baselines",
+          "instructionGitBlob": "2be559265ec9ea6d3f90058951eaf923e1c987e2",
+          "taskTomlGitBlob": "8c40eb888784e5f078a9a60b57983ad383922e02"
+        },
+        {
+          "id": "arktype-json-schema-refs-dependencies",
+          "instructionGitBlob": "6a03ab89a2829966091ed8a76f23084a4ee41308",
+          "taskTomlGitBlob": "f88715a0832f2fd1b81ef349a9f1ae400ce4dbae"
+        },
+        {
+          "id": "awilix-async-container-initialization",
+          "instructionGitBlob": "2cbc8973c9f68812534534b8e0bb3d56e8bf288f",
+          "taskTomlGitBlob": "6424a8818656c80ba396c7169414e54fb184a562"
+        },
+        {
+          "id": "bandit-incremental-cache-control",
+          "instructionGitBlob": "867f1bfb349bccfa7299e3f6af3904cb30192e3b",
+          "taskTomlGitBlob": "30ec36af89a1cd53dfe220f2caf813580d70350f"
+        },
+        {
+          "id": "bandit-interprocedural-taint-checks",
+          "instructionGitBlob": "750d5403c30c9de3a461f6ffbb7531d0ab0e2b09",
+          "taskTomlGitBlob": "511723c9abf3be4bba35080c722846ce075decb5"
+        },
+        {
+          "id": "bandit-structured-nosec-directives",
+          "instructionGitBlob": "f703a2fd4d7fadaf5a38e312eecb2668e4d8e3a8",
+          "taskTomlGitBlob": "be16e5fb203b63645a0112ae9d7b54e8911ecfb2"
+        },
+        {
+          "id": "boa-hierarchical-evaluation-cancellation",
+          "instructionGitBlob": "fe8f87af350245d29d6ea8820341ccb7d386aee3",
+          "taskTomlGitBlob": "fd18cda03778b1f6b7134e6d9f458537541c7653"
+        },
+        {
+          "id": "cattrs-partial-structuring-recovery",
+          "instructionGitBlob": "194d64cfff3f21ce8758ff6378c5b33dd7ab5fde",
+          "taskTomlGitBlob": "0ba76b281707e20af48918db9312cfb85de24fba"
+        },
+        {
+          "id": "clack-async-autocomplete-options",
+          "instructionGitBlob": "9eed13d76cd8406b3f07612726d23ce961107027",
+          "taskTomlGitBlob": "156e7ef37eed5b9d74dac0e654b76e742614d610"
+        },
+        {
+          "id": "claude-code-by-agents-recursive-delegation",
+          "instructionGitBlob": "e4a4dd05479e4efc88cce294d3b3503ba7e817e4",
+          "taskTomlGitBlob": "152a0692d97fb115618c88a66f32a585880a2cd4"
+        },
+        {
+          "id": "cliffy-config-file-parsing",
+          "instructionGitBlob": "3c5a79917e9373079d890b216e716ecb51fd14a8",
+          "taskTomlGitBlob": "7c004efe22627587599afeaa39fa75320aae19bf"
+        },
+        {
+          "id": "csstree-shorthand-expansion-compression",
+          "instructionGitBlob": "f0ffe8ef79ac6510b0f34bfd74b4006526850543",
+          "taskTomlGitBlob": "756e9fbdc5d83580ebb3e3f39560d05fc7ab261a"
+        },
+        {
+          "id": "dasel-html-document-format",
+          "instructionGitBlob": "c4d8c49d7d5300eee4b6a167ac301416b456d420",
+          "taskTomlGitBlob": "424609a22ba4e15fd6ba65ee4850027ab1deb4e2"
+        },
+        {
+          "id": "dateutil-rfc5545-timezone-interop",
+          "instructionGitBlob": "c362c98ae51077f6acdc518b8c9f570349b1e9cd",
+          "taskTomlGitBlob": "8bd40d21b874369adef4187833d7475b048fa4bd"
+        },
+        {
+          "id": "drizzle-orm-window-function-builders",
+          "instructionGitBlob": "99260ef229fbd4ea1e5ad82aaa62c57de1d91c25",
+          "taskTomlGitBlob": "6ac84fdc64a1e4c02820e525a3d7d84c9316ae5b"
+        },
+        {
+          "id": "dynamodb-toolbox-conditional-attribute-requirements",
+          "instructionGitBlob": "0bbdbbe1a83e8d5c1ab8b9ea0b2483cdb52b2fc4",
+          "taskTomlGitBlob": "f78ee4586886c4ed0b03575eb78e90f798c6b23e"
+        },
+        {
+          "id": "dynamodb-toolbox-lazy-recursive-schemas",
+          "instructionGitBlob": "18378087d38f5c03751090ee88496688f365329c",
+          "taskTomlGitBlob": "745f0c350d55caaef43b20cf654620834a249caa"
+        },
+        {
+          "id": "effect-sse-httpapi-streaming",
+          "instructionGitBlob": "ac4e17d8ebe3f562fd2cdb735af4892d2c15cb8a",
+          "taskTomlGitBlob": "10f627706690cebd6f115d4bf500a9c888c72d8a"
+        },
+        {
+          "id": "eicrud-keyset-pagination-cursor",
+          "instructionGitBlob": "a371410c924fcad7f6d40cacf71725d66b253aa7",
+          "taskTomlGitBlob": "30d304f4324ff79ca1038af34897e7f70d6e42b4"
+        },
+        {
+          "id": "etree-xml-diff-patch",
+          "instructionGitBlob": "ad91c19ec4d8a487655e4d74cdc3f53c8bd823f6",
+          "taskTomlGitBlob": "5b7e10e7b8d931c9038934b4091055c5624fc247"
+        },
+        {
+          "id": "expr-try-catch-errors",
+          "instructionGitBlob": "6dce06ce0861678c6ffa98276634146d8d9bb9f2",
+          "taskTomlGitBlob": "e75ae4394e9c443a537687fa45e3e37fbd0e376c"
+        },
+        {
+          "id": "fastapi-deprecation-response-headers",
+          "instructionGitBlob": "25619c471b060aa67607e63144e32e5f25e98259",
+          "taskTomlGitBlob": "7809ae313f23167633fe0548eff177eae03406ff"
+        },
+        {
+          "id": "fastapi-implicit-head-options",
+          "instructionGitBlob": "0052181c6bebdf0a61ee39b8f377abe5018dbe67",
+          "taskTomlGitBlob": "bfa9d931c4fa5580461dea53dbb5388f648dd0db"
+        },
+        {
+          "id": "fd-deterministic-multi-key-sorting",
+          "instructionGitBlob": "693a4b00652c2d748626f1dc40047db7500038eb",
+          "taskTomlGitBlob": "fda4f3d446a0815b2985512eed62bf678a485dec"
+        },
+        {
+          "id": "geo-shapeindex-serialization",
+          "instructionGitBlob": "5423832df667ace7866b9d740a1aec84e6d17efb",
+          "taskTomlGitBlob": "6d7b5bd930e18e5c836e0f1d2986f4ca26014445"
+        },
+        {
+          "id": "go-critic-doc-link-checker",
+          "instructionGitBlob": "0c9d22063784c1a273c58904900937b0840fb5d4",
+          "taskTomlGitBlob": "37c65e33522fb41aeaf04b0bdfafc6dc99c918ed"
+        },
+        {
+          "id": "go-genai-streamed-function-args",
+          "instructionGitBlob": "f605da303033317957d9b1a11194251727639381",
+          "taskTomlGitBlob": "3d5918684b75c9d8c3f7d44647be03f76d8fca5e"
+        },
+        {
+          "id": "go-git-worktree-merge-conflicts",
+          "instructionGitBlob": "68a5ddae783060cae28983ee0fd96dfdecc5d285",
+          "taskTomlGitBlob": "596ef5b5b70c5312c0d3d28b0674fe2f91ce1d18"
+        },
+        {
+          "id": "goreleaser-retry-publish-auditing",
+          "instructionGitBlob": "ada52d97a2f4a715c3783ae17aeaba05b8382caf",
+          "taskTomlGitBlob": "f3b99c64b1b160d771ed27666b758c0bda08308f"
+        },
+        {
+          "id": "gql-incremental-graphql-delivery",
+          "instructionGitBlob": "7321202040b3b1bfa91517cd34e607c8c2dbb6aa",
+          "taskTomlGitBlob": "e1503af39cf7c95437233703e80dc780759836bf"
+        },
+        {
+          "id": "happy-dom-abort-pending-body-reads",
+          "instructionGitBlob": "f4793a7d9d83b43f706a74ebe5afa1588db5d7ce",
+          "taskTomlGitBlob": "429c2f2bbedad6a6ccaa7b9e6863255017184ded"
+        },
+        {
+          "id": "happy-dom-deterministic-intersectionobserver",
+          "instructionGitBlob": "c04b525a01dde7e5065ae155386ed21af269e007",
+          "taskTomlGitBlob": "c3c0d67e09a622c2c945e9d7e8572e1432b90d56"
+        },
+        {
+          "id": "helm-array-merge-strategies",
+          "instructionGitBlob": "6d4887b61b250a138d26b627c3ec97c1b6b1dab4",
+          "taskTomlGitBlob": "673ded7a24e21ec16d64de5106b545da97d6c8e5"
+        },
+        {
+          "id": "httpx-deterministic-cookie-store",
+          "instructionGitBlob": "cc8a13a0e0271c8bf8f97a486c7149b0cc5dacaa",
+          "taskTomlGitBlob": "a04301805d0e5bba1b44cfcb6b5239dbe87fb58f"
+        },
+        {
+          "id": "httpx-multipart-response-parsing",
+          "instructionGitBlob": "83428bca5c04272f136262b0480d399247fd3027",
+          "taskTomlGitBlob": "f0ce2a4f9281dc4d572d01692af62996bed94bf4"
+        },
+        {
+          "id": "httpx-streaming-json-iteration",
+          "instructionGitBlob": "7885e97eec4cc616afa2cd25e08cd775a90f2bc1",
+          "taskTomlGitBlob": "3ea1a21bf24d1143b39fc6e5d012825b2a6ea9c0"
+        },
+        {
+          "id": "igel-persist-feature-schema",
+          "instructionGitBlob": "1ffefbf8117b3bafa6cdc6ad730e5f0f0779723b",
+          "taskTomlGitBlob": "d961a77b0f2036798056d891b00c26c5ed0b2cb7"
+        },
+        {
+          "id": "ink-grid-box-layout",
+          "instructionGitBlob": "512d4f265bb3d24c516c84c263bdc5218eb0bf79",
+          "taskTomlGitBlob": "de129182f23a2cc69ffbf5de7971bdf07a9303cd"
+        },
+        {
+          "id": "ipython-session-bundle-replay",
+          "instructionGitBlob": "1ff7f96e6402bbf95c17f9915af8c2b8964c32da",
+          "taskTomlGitBlob": "6c5c997e4f97425b75bdea8222a1cebdf61468f3"
+        },
+        {
+          "id": "katex-multicolumn-array-spans",
+          "instructionGitBlob": "99d2ea1f9acce47a5f1beb456a7ae9e8adbd26e5",
+          "taskTomlGitBlob": "d61c05f23a4db57b02aad337a44a522523ed534b"
+        },
+        {
+          "id": "kcp-go-multiplexed-kcp-streams",
+          "instructionGitBlob": "d177a0722f59d3d36760eb3d2bd77b01bd4ebf54",
+          "taskTomlGitBlob": "b4fd5e6e36db79b3407e54820cf82a7694439ba6"
+        },
+        {
+          "id": "kea-atomic-signal-selectors",
+          "instructionGitBlob": "645f76cec221d10416c0232feb21443655ffcb3c",
+          "taskTomlGitBlob": "c27707555bda70c7d4497e93ee49d5892564bb62"
+        },
+        {
+          "id": "kgateway-consistent-hash-policy",
+          "instructionGitBlob": "f693657a9ea6301385d5d31d96409cf739104f8f",
+          "taskTomlGitBlob": "4a2deed86d3f05fd19a4b4b1417e827d274fb750"
+        },
+        {
+          "id": "kombu-single-active-consumer-priority",
+          "instructionGitBlob": "65f6d226d261fc9e2e120c08ea099768d9bbf89b",
+          "taskTomlGitBlob": "e0cafa0c076613e6bff6d99e57bcddec077898c4"
+        },
+        {
+          "id": "kombu-virtual-queue-dead-lettering",
+          "instructionGitBlob": "fa8a12e53d4ab9e9901030adfc40ae7230edd6db",
+          "taskTomlGitBlob": "ba3a3306c33d9447871ae7c36ad2a609c47e9a98"
+        },
+        {
+          "id": "koota-composite-trait-aspects",
+          "instructionGitBlob": "63f12f3600b0b6cf0fb88a2557287edbfd9426cf",
+          "taskTomlGitBlob": "f414c6adae95a93e0514d5ba0faffcc69bbcdfd4"
+        },
+        {
+          "id": "koota-deferred-mutation-buffer",
+          "instructionGitBlob": "cd1998ccd3292d7f4a4ffe6cd201e693cdcb44e8",
+          "taskTomlGitBlob": "f539db898fb805d503386bb33fcb3bc84bce3208"
+        },
+        {
+          "id": "koota-entity-snapshot-rollback",
+          "instructionGitBlob": "f51bdc9960a7b93a522b46b752566f8cf724e0d4",
+          "taskTomlGitBlob": "e290a79944e6a2dece881820818a01cf4b34be60"
+        },
+        {
+          "id": "koota-pair-relation-tracking",
+          "instructionGitBlob": "b6efeb7ef11b104468f69b857715057ab3a8334c",
+          "taskTomlGitBlob": "cd37128bf36effad911872480ef6b09421962977"
+        },
+        {
+          "id": "koota-query-predicates",
+          "instructionGitBlob": "3a0fcb6ae39031971294d2ec2f2e941a0e654886",
+          "taskTomlGitBlob": "69e3255bb6a80f44cf82c56fecd7dd1506043ab4"
+        },
+        {
+          "id": "kysely-window-grouping-helpers",
+          "instructionGitBlob": "30bb140496930f2b380690bc4720dbb82cdd584d",
+          "taskTomlGitBlob": "b9277ed172237e5f4d325051682fea302c520c2f"
+        },
+        {
+          "id": "langchain-request-coalescing",
+          "instructionGitBlob": "a4c4d79eccc77642d141f3acc62fcb6626900225",
+          "taskTomlGitBlob": "a30b2db2216f955e9bca873ce628e3fcbb303292"
+        },
+        {
+          "id": "mashumaro-flattened-dataclass-fields",
+          "instructionGitBlob": "d143e5fafc2a61244f630e83adf0b85267f1cbb3",
+          "taskTomlGitBlob": "f62fef47bcc0225537e32a56e68b272fd60a1960"
+        },
+        {
+          "id": "meriyah-explicit-resource-declarations",
+          "instructionGitBlob": "e90255da518a046742fadb2988c956a179a068d4",
+          "taskTomlGitBlob": "2da96fc8bc10d95fafe0d433ffefb7ee45b98e39"
+        },
+        {
+          "id": "mnamer-daemon-watch-lifecycle",
+          "instructionGitBlob": "3dbedd219e6b99215dde887873f1986dc78e2f11",
+          "taskTomlGitBlob": "e71163f238591d3e9315ac87426a6f475464bef1"
+        },
+        {
+          "id": "mobly-grouped-test-barriers",
+          "instructionGitBlob": "64b3c918b68c4b983db7773a965a6ed175a7fb9e",
+          "taskTomlGitBlob": "66935fe2105c04a120bd61d4ff35f56f42e37fb4"
+        },
+        {
+          "id": "narwhals-rolling-window-suite",
+          "instructionGitBlob": "0ec732f9337fd5772e33cf7998605ab39af08c8f",
+          "taskTomlGitBlob": "3de48855b006cad2cd600ab958c2d51d6431553b"
+        },
+        {
+          "id": "numba-stencil-boundary-modes",
+          "instructionGitBlob": "55e3fd131d6bbd239108e3e4f3010105fc0db234",
+          "taskTomlGitBlob": "3720fab06ce0fcc3c72c1287eefd653ed25cd610"
+        },
+        {
+          "id": "obsidian-linter-auto-table-of-contents",
+          "instructionGitBlob": "6a1dd1f4fed0b08cb0e10743bb8ead611cc489d0",
+          "taskTomlGitBlob": "353a30a08e4e6fc2d9c240a722e3efb2789df540"
+        },
+        {
+          "id": "obsidian-linter-link-format-conversion",
+          "instructionGitBlob": "93ec2ed111888f8fd73800f99ef0afa24613df9e",
+          "taskTomlGitBlob": "b30a6e944f18a56f5ca3c522dcd6bd6f4161e217"
+        },
+        {
+          "id": "obsidian-linter-scoped-ignore-markers",
+          "instructionGitBlob": "32df6b5cb30105b140944f118d89b1cbf4cf4534",
+          "taskTomlGitBlob": "b6d0815ab7cc793ac4788ed6b1bd5a4ecec09434"
+        },
+        {
+          "id": "ofetch-per-origin-circuit-breaker",
+          "instructionGitBlob": "b21546ab7ec9ed0ff5b5931f10f8bde5182a7525",
+          "taskTomlGitBlob": "899391ec22e48daa5cd4712f0fa170b3a0a7294c"
+        },
+        {
+          "id": "onedump-dump-encryption-pipeline",
+          "instructionGitBlob": "a953e0a66598de20c8ad6572e5a7d49407f4d848",
+          "taskTomlGitBlob": "bfffc31f2074ebdd62b21a2f7e908b8417ca56d6"
+        },
+        {
+          "id": "opa-rego-rule-profiling",
+          "instructionGitBlob": "97f590fddf887e7477c684c608aec55e98d921c1",
+          "taskTomlGitBlob": "8a4b04bde994a3aee45b46f196ee4977bd2bb711"
+        },
+        {
+          "id": "opa-template-string-reconstruction",
+          "instructionGitBlob": "c6889db18e75f7c5885f82023c8ed3ac25ad0391",
+          "taskTomlGitBlob": "98048de008e50b24b11308dd92b4ef87ae712167"
+        },
+        {
+          "id": "optique-conditional-option-dependencies",
+          "instructionGitBlob": "82db57e21f118474fcc41a09beafd7e249da44e9",
+          "taskTomlGitBlob": "e74bf9aba80035d07bbe20ad10abfda687b595b5"
+        },
+        {
+          "id": "oxvg-structural-selector-preservation",
+          "instructionGitBlob": "736e731a608204f6f1d3d7c55ee200041aa63f0f",
+          "taskTomlGitBlob": "f736711271776139f215b20600fa4127c881ac3e"
+        },
+        {
+          "id": "participle-grammar-conflict-analysis",
+          "instructionGitBlob": "970d41df513f7114b4827de0e129812bdd4d00bd",
+          "taskTomlGitBlob": "54267aceffe35c33af03b15e6d7009f670e71abf"
+        },
+        {
+          "id": "pebble-durability-wait-apis",
+          "instructionGitBlob": "14695d798d74c92ec288b27c5c5fc6852e32ce74",
+          "taskTomlGitBlob": "f82c802def955dcbdeb5ff9919fd5fd36a0f9a53"
+        },
+        {
+          "id": "pest-character-class-coalescing",
+          "instructionGitBlob": "6b026a4534cff1d44f9ddd6d725166754cd1b0ab",
+          "taskTomlGitBlob": "88295698826e8a4ab5bc38af0d1e5acefb3a1f47"
+        },
+        {
+          "id": "prometheus-transactional-reload-status",
+          "instructionGitBlob": "2756199a73c9c28310a2212419d26d81a9f55eba",
+          "taskTomlGitBlob": "354223c782f864c5936ea39dca55c707750755f7"
+        },
+        {
+          "id": "prometheus-typed-label-sorting",
+          "instructionGitBlob": "28e2281a9fbf7d5192b8cf5e304979ba580770db",
+          "taskTomlGitBlob": "940a76b511488484a839ae8bb44739ace2a575c4"
+        },
+        {
+          "id": "psd-tools-blend-range-api",
+          "instructionGitBlob": "d3838ad6a9113ecf99ea3c4bc792e7d24f0d93bf",
+          "taskTomlGitBlob": "44744d2f4963deaa3b9a5aad6e838bccceb7bae9"
+        },
+        {
+          "id": "pwntools-tube-multiplexing",
+          "instructionGitBlob": "c5c0ac807639c17bd92a41560990276536367377",
+          "taskTomlGitBlob": "e3f6c08bbf14de91228bde47c06cf92a4f73917d"
+        },
+        {
+          "id": "python-statemachine-state-data-scoping",
+          "instructionGitBlob": "26a60e510b5b99093b3e42169fcdf160d4c704f1",
+          "taskTomlGitBlob": "18609842f80e213af03f90d9c34dadfab1361f78"
+        },
+        {
+          "id": "query-persist-restored-query-state",
+          "instructionGitBlob": "9cec8f19edf89baed64947b15ef880c5bc386d81",
+          "taskTomlGitBlob": "1764225c9887e5b3c834d9c4425a37f9f812540a"
+        },
+        {
+          "id": "quill-shared-toolbar-focus",
+          "instructionGitBlob": "0166b749d64ae8829a0356b40795b346913b8b13",
+          "taskTomlGitBlob": "d7458de143689db19062332ba20826b36545563c"
+        },
+        {
+          "id": "returns-validated-error-accumulation",
+          "instructionGitBlob": "1e992fded81578f68a37077d4f5b988e7c04f237",
+          "taskTomlGitBlob": "e97248c23c98f2dfa690eef7be29fc0fd62d8d95"
+        },
+        {
+          "id": "scc-bounded-memory-spilling",
+          "instructionGitBlob": "0ccb7deb625f17f2fc767b3ce5710b36c77fdd71",
+          "taskTomlGitBlob": "45def82ecb598a71bd57a70c4122ad9f9ab19661"
+        },
+        {
+          "id": "scriggo-method-declarations",
+          "instructionGitBlob": "7f7e25bb433c515f57db145f73159de00db3644f",
+          "taskTomlGitBlob": "3a892e103605dfea67aa0e5b55ac6b25d823b0e5"
+        },
+        {
+          "id": "skrub-duration-encoding",
+          "instructionGitBlob": "13692c1b4cfa3dbbc4bb493a0547f0954b25cf22",
+          "taskTomlGitBlob": "43b1fc10664e637aae20d6eb95f3acbd912be446"
+        },
+        {
+          "id": "sql-formatter-bigquery-pipe-formatting",
+          "instructionGitBlob": "71b8b04b2f3891b58b5d89dcea286050c3f2ce74",
+          "taskTomlGitBlob": "20752f3dd199cedc94e87080857821adfa627e5a"
+        },
+        {
+          "id": "sqlfmt-create-table-ddl-formatting",
+          "instructionGitBlob": "6d984b4b4f4c2ae18a5c0a83c1cc846f63a8cf16",
+          "taskTomlGitBlob": "34cdf84ec4f815611a49ddf98e852545c63fe376"
+        },
+        {
+          "id": "sqlite-utils-safe-import-checkpoints",
+          "instructionGitBlob": "5d60fa8801d43d397fdba4ede7c5be394dd1acad",
+          "taskTomlGitBlob": "07ef2e672090005d96b2763186354e1c726cb26c"
+        },
+        {
+          "id": "superjson-error-stack-serialization",
+          "instructionGitBlob": "f1fefa73675d2eae9af489fa403e75a3094ec03a",
+          "taskTomlGitBlob": "83fbe41df6ff88985012505a360911bcafafb222"
+        },
+        {
+          "id": "task-task-graph-export",
+          "instructionGitBlob": "15e694ed556b8d5d41e94914bdd6e20ed0ebc979",
+          "taskTomlGitBlob": "81f0ab2e923a0045a207244236d4b4bbc7109884"
+        },
+        {
+          "id": "tengo-callable-instance-isolation",
+          "instructionGitBlob": "cc66415e8c095a432d039330247570bb01976f9f",
+          "taskTomlGitBlob": "222889c634e9507f512950d843d6ca121ffde790"
+        },
+        {
+          "id": "tengo-destructuring-bindings",
+          "instructionGitBlob": "7759fbc1c394c56afe6fd552504938f9ab91564e",
+          "taskTomlGitBlob": "2a5abd51f0e9c00bfc69406ac7d0f759a591e89c"
+        },
+        {
+          "id": "termenv-preserve-ansi-resets",
+          "instructionGitBlob": "62069422697ef143f7eef495d8f6364d44655d6f",
+          "taskTomlGitBlob": "e06c44c6e74f6ca580ef807d10cb5e081d2f06ee"
+        },
+        {
+          "id": "testem-bail-on-test-failure",
+          "instructionGitBlob": "27c2059566c94004e848bfcf9dd3632a0a7e9783",
+          "taskTomlGitBlob": "5e477ca7fdd21eb23545bf4c9bb1a62dec418d3b"
+        },
+        {
+          "id": "testem-per-launcher-reports",
+          "instructionGitBlob": "9e6a2e99d150963f499c51e4770cd1802aa4ab1b",
+          "taskTomlGitBlob": "3880bcd0bb6517f900b1afb2c68e4de1755b6984"
+        },
+        {
+          "id": "textual-kitty-key-phases",
+          "instructionGitBlob": "edd43a6187f279c20f4e50ccef2e2e0e95662207",
+          "taskTomlGitBlob": "619086e1203db8391810b9b3756eaf3cfacb9275"
+        },
+        {
+          "id": "textual-richlog-follow-state",
+          "instructionGitBlob": "062f8866707b74cb4f79196439b19b08f650211a",
+          "taskTomlGitBlob": "59c90434545d7b11cf4c6609e440b6e49a0f378d"
+        },
+        {
+          "id": "tomlkit-toml-table-converters",
+          "instructionGitBlob": "db0505449098d882ca8139ee211de69e1b1fc8e4",
+          "taskTomlGitBlob": "3f8ad645048b410b5a5887e16423f100870debea"
+        },
+        {
+          "id": "true-myth-iterable-collection-combinators",
+          "instructionGitBlob": "d3a360be16eb133f1e630d9ccedf49b7e575ba9a",
+          "taskTomlGitBlob": "5895f062a40a021a277ad3fbfde5829ba3064dbf"
+        },
+        {
+          "id": "ts-pattern-match-each",
+          "instructionGitBlob": "c32b3f3207f76ea1852691fdd37a1e31ea0f8416",
+          "taskTomlGitBlob": "011ec3d60f55813f27eda9e8fc6af2fca48a9c03"
+        },
+        {
+          "id": "updo-policy-alerting",
+          "instructionGitBlob": "4b71dab0d2c44ce985f5587f285bb87fe5bd55b8",
+          "taskTomlGitBlob": "a319aca585876d26d6cd71830aad2ad74d164473"
+        },
+        {
+          "id": "valibot-recursive-schema-composition",
+          "instructionGitBlob": "16b5f00c03d80def811f985c42d2423f0946793a",
+          "taskTomlGitBlob": "5ff9c2a26bff11b412cfb300ff11a0ca624be49a"
+        },
+        {
+          "id": "vitest-duration-sharding",
+          "instructionGitBlob": "516687429cbd55fd715a8a376b0733f6e309acca",
+          "taskTomlGitBlob": "e39a7b3d4d2167bbf505be76cc6d0e766cf8ac0a"
+        },
+        {
+          "id": "wasmi-trap-coredumps",
+          "instructionGitBlob": "1d3d0369a2bf4fc17989a10fc45968f96b33fdc8",
+          "taskTomlGitBlob": "699d9aa6fd88f296cb0b7298719deb200bfd34aa"
+        },
+        {
+          "id": "wazero-multi-module-snapshots",
+          "instructionGitBlob": "960de9b215754a7855821331a47af3946701ce6a",
+          "taskTomlGitBlob": "b6c10a9f51aafcdc56c866fa8a7e0c4bca3c4b9b"
+        },
+        {
+          "id": "yaegi-go-embed-directives",
+          "instructionGitBlob": "dfe146497ad80a6428d4589423f4180310f8302d",
+          "taskTomlGitBlob": "3555bdd5292edbc9808f231105b283af58675b39"
+        },
+        {
+          "id": "yjs-map-conflict-detection",
+          "instructionGitBlob": "226352c28f40fab686454efd192b139d341b23a3",
+          "taskTomlGitBlob": "598f85e2a35e492bbc11989ae1d73bbd9f12a27b"
+        },
+        {
+          "id": "ytt-jsonpath-query-api",
+          "instructionGitBlob": "e4f8fc70f6cd141d35aaff81f5771d8f8c97454f",
+          "taskTomlGitBlob": "21abb8299f5f51ad8d280ec2610365686c064066"
+        }
+      ],
+      "upstreamTaskCount": 113
+    },
+    "terminal-bench-2.1": {
+      "excluded": {
+        "qemu-alpine-ssh": "Needs a patched QEMU image to run on HF Sandbox (the upstream image fails without KVM).",
+        "qemu-startup": "Needs a patched QEMU image to run on HF Sandbox (the upstream image fails without KVM)."
+      },
+      "license": "Apache-2.0",
+      "network": "task-declared",
+      "repository": "https://github.com/harbor-framework/terminal-bench-2-1.git",
+      "revision": "d49e28f1e4ddd13d289e85a5f312a66750951932",
+      "sourceTree": "d49e28f1e4ddd13d289e85a5f312a66750951932",
+      "subsets": {
+        "full": [
+          "adaptive-rejection-sampler",
+          "bn-fit-modify",
+          "break-filter-js-from-html",
+          "build-cython-ext",
+          "build-pmars",
+          "build-pov-ray",
+          "caffe-cifar-10",
+          "cancel-async-tasks",
+          "chess-best-move",
+          "circuit-fibsqrt",
+          "cobol-modernization",
+          "code-from-image",
+          "compile-compcert",
+          "configure-git-webserver",
+          "constraints-scheduling",
+          "count-dataset-tokens",
+          "crack-7z-hash",
+          "custom-memory-heap-crash",
+          "db-wal-recovery",
+          "distribution-search",
+          "dna-assembly",
+          "dna-insert",
+          "extract-elf",
+          "extract-moves-from-video",
+          "feal-differential-cryptanalysis",
+          "feal-linear-cryptanalysis",
+          "filter-js-from-html",
+          "financial-document-processor",
+          "fix-code-vulnerability",
+          "fix-git",
+          "fix-ocaml-gc",
+          "gcode-to-text",
+          "git-leak-recovery",
+          "git-multibranch",
+          "gpt2-codegolf",
+          "headless-terminal",
+          "hf-model-inference",
+          "install-windows-3.11",
+          "kv-store-grpc",
+          "large-scale-text-editing",
+          "largest-eigenval",
+          "llm-inference-batching-scheduler",
+          "log-summary-date-ranges",
+          "mailman",
+          "make-doom-for-mips",
+          "make-mips-interpreter",
+          "mcmc-sampling-stan",
+          "merge-diff-arc-agi-task",
+          "model-extraction-relu-logits",
+          "modernize-scientific-stack",
+          "mteb-leaderboard",
+          "mteb-retrieve",
+          "multi-source-data-merger",
+          "nginx-request-logging",
+          "openssl-selfsigned-cert",
+          "overfull-hbox",
+          "password-recovery",
+          "path-tracing",
+          "path-tracing-reverse",
+          "polyglot-c-py",
+          "polyglot-rust-c",
+          "portfolio-optimization",
+          "protein-assembly",
+          "prove-plus-comm",
+          "pypi-server",
+          "pytorch-model-cli",
+          "pytorch-model-recovery",
+          "query-optimize",
+          "raman-fitting",
+          "regex-chess",
+          "regex-log",
+          "reshard-c4-data",
+          "rstan-to-pystan",
+          "sam-cell-seg",
+          "sanitize-git-repo",
+          "schemelike-metacircular-eval",
+          "sparql-university",
+          "sqlite-db-truncate",
+          "sqlite-with-gcov",
+          "torch-pipeline-parallelism",
+          "torch-tensor-parallelism",
+          "train-fasttext",
+          "tune-mjcf",
+          "video-processing",
+          "vulnerable-secret",
+          "winning-avg-corewars",
+          "write-compressor"
+        ],
+        "pilot": [
+          "adaptive-rejection-sampler",
+          "break-filter-js-from-html",
+          "build-pmars",
+          "caffe-cifar-10",
+          "cancel-async-tasks",
+          "chess-best-move",
+          "circuit-fibsqrt",
+          "code-from-image",
+          "compile-compcert",
+          "configure-git-webserver",
+          "constraints-scheduling",
+          "custom-memory-heap-crash",
+          "dna-insert",
+          "fix-code-vulnerability",
+          "fix-ocaml-gc",
+          "git-leak-recovery",
+          "git-multibranch",
+          "gpt2-codegolf",
+          "hf-model-inference",
+          "largest-eigenval",
+          "log-summary-date-ranges",
+          "make-doom-for-mips",
+          "make-mips-interpreter",
+          "model-extraction-relu-logits",
+          "modernize-scientific-stack",
+          "mteb-retrieve",
+          "openssl-selfsigned-cert",
+          "overfull-hbox",
+          "path-tracing",
+          "polyglot-c-py",
+          "polyglot-rust-c",
+          "portfolio-optimization",
+          "protein-assembly",
+          "prove-plus-comm",
+          "pypi-server",
+          "pytorch-model-recovery",
+          "raman-fitting",
+          "regex-chess",
+          "rstan-to-pystan",
+          "sam-cell-seg",
+          "sanitize-git-repo",
+          "schemelike-metacircular-eval",
+          "sparql-university",
+          "sqlite-db-truncate",
+          "sqlite-with-gcov",
+          "torch-pipeline-parallelism",
+          "train-fasttext",
+          "tune-mjcf",
+          "vulnerable-secret",
+          "winning-avg-corewars"
+        ],
+        "smoke": [
+          "configure-git-webserver",
+          "portfolio-optimization",
+          "rstan-to-pystan"
+        ]
+      },
+      "tasks": [
+        {
+          "id": "adaptive-rejection-sampler",
+          "instructionGitBlob": "aaf6d7b03b0da3794c386cb0c55c4cb53c243d0c",
+          "taskTomlGitBlob": "cf4699bf288095a71e5bd6bc99ef88c198b5bdfe"
+        },
+        {
+          "id": "bn-fit-modify",
+          "instructionGitBlob": "99216f3c6fb90eb8bd25c41b7d0fcfb14a0b3e2f",
+          "taskTomlGitBlob": "ada43e57aceb5c69b01a088c6bfcd09de89419a8"
+        },
+        {
+          "id": "break-filter-js-from-html",
+          "instructionGitBlob": "116ec0d2215098ad7573769ef71ff1bb31fbd538",
+          "taskTomlGitBlob": "397d4ca88c4d54329cdd3268d0b56dd742ce38a3"
+        },
+        {
+          "id": "build-cython-ext",
+          "instructionGitBlob": "4c0c30850bf28cad78080215df09fb20285bc7f9",
+          "taskTomlGitBlob": "c1e6239a295f44e34d4f32912a960c7bff89d559"
+        },
+        {
+          "id": "build-pmars",
+          "instructionGitBlob": "11024115fd5c5499f51bc0a52af29cb61ced5923",
+          "taskTomlGitBlob": "c8f00c82d45aa3168833b9f8f989bee7656f9060"
+        },
+        {
+          "id": "build-pov-ray",
+          "instructionGitBlob": "03ad7ea9b2c03de0e5dabdcbdab3f260b4a2ab54",
+          "taskTomlGitBlob": "75dd2255c83260342b1de17a675711151e3db0f6"
+        },
+        {
+          "id": "caffe-cifar-10",
+          "instructionGitBlob": "0672bfd54420c265336b28fc946b91e8a42281b0",
+          "taskTomlGitBlob": "68c09baba6a9200d185d32f2ad35079f690bc3ed"
+        },
+        {
+          "id": "cancel-async-tasks",
+          "instructionGitBlob": "e05e6bf31bba310ef8d2094a4bb6528f6389984e",
+          "taskTomlGitBlob": "f4bf156fa7e89ff391f233233f12180a816524f4"
+        },
+        {
+          "id": "chess-best-move",
+          "instructionGitBlob": "a4af733ba3fba7e241977652939632001a1d162d",
+          "taskTomlGitBlob": "c8a3d165efd8bac363de2c5e8a42cad058932412"
+        },
+        {
+          "id": "circuit-fibsqrt",
+          "instructionGitBlob": "fc039d42a07f38dd0fd728dce378ef3d35d18de0",
+          "taskTomlGitBlob": "95a1c5f3b85731a32e1548cd84c8073bcfdccd4e"
+        },
+        {
+          "id": "cobol-modernization",
+          "instructionGitBlob": "ad36eb8b7e8d1af75427caa000f449654b9993ec",
+          "taskTomlGitBlob": "77299dbeaa9f499312cc30a59fcde49988efd6d7"
+        },
+        {
+          "id": "code-from-image",
+          "instructionGitBlob": "7f7dfdf891a734b75845cf4d8f03033db02e96a1",
+          "taskTomlGitBlob": "42b19b898f127bf0e4b934290a7ab0548aa2c75e"
+        },
+        {
+          "id": "compile-compcert",
+          "instructionGitBlob": "9088cd5a45df841184cecbc73ef03de90b131718",
+          "taskTomlGitBlob": "5d4c51ca3b20075a90bb1a4c42df86f856de7cdc"
+        },
+        {
+          "id": "configure-git-webserver",
+          "instructionGitBlob": "2c2f4e6f81b08f7041250143d59ca8c6dafab828",
+          "taskTomlGitBlob": "f2e7ecdee53ae81d5afa928333908e3e7945f386"
+        },
+        {
+          "id": "constraints-scheduling",
+          "instructionGitBlob": "07da2bf62903ae043e54fcd9e6df88ef60ad2d31",
+          "taskTomlGitBlob": "011d08785dce80160af6520f94e6558e7473946e"
+        },
+        {
+          "id": "count-dataset-tokens",
+          "instructionGitBlob": "316823d6cd3d613a03c40806b3f5e36dd32450de",
+          "taskTomlGitBlob": "48da8b703fc9a4e9e14f9e0cf2f91ed51534b15a"
+        },
+        {
+          "id": "crack-7z-hash",
+          "instructionGitBlob": "47c78b127439c18e1d438b0d294b4ec1eab920be",
+          "taskTomlGitBlob": "ba4b40530b8950ce512809e6dbbee8ae9dd550a6"
+        },
+        {
+          "id": "custom-memory-heap-crash",
+          "instructionGitBlob": "c895319d1b5aa380326198dcfa7c0c6b86305247",
+          "taskTomlGitBlob": "340c070a35b11e710ef4c38d1849ecb045d89902"
+        },
+        {
+          "id": "db-wal-recovery",
+          "instructionGitBlob": "474ffff6e05d5f34059615094d4a6034a9d3f140",
+          "taskTomlGitBlob": "bdbadbffa6793c6f78ca0d5867e81432411c3a23"
+        },
+        {
+          "id": "distribution-search",
+          "instructionGitBlob": "77d4a9621cc621d1a243a260dcf850497d4445ea",
+          "taskTomlGitBlob": "5d17703b9cbccb88195168ddc742bdfe1627a681"
+        },
+        {
+          "id": "dna-assembly",
+          "instructionGitBlob": "3830241b8ad43ff3a793b16785aeb32ab479cf75",
+          "taskTomlGitBlob": "b09ebdc64a4a6b6b35a69a2bc64c786dff597428"
+        },
+        {
+          "id": "dna-insert",
+          "instructionGitBlob": "991e2f397ad54c4690174e1cb33f90b0ffdecda3",
+          "taskTomlGitBlob": "0a6f82b6f8d29c6c28d0acdfa35e4d8454fb56ec"
+        },
+        {
+          "id": "extract-elf",
+          "instructionGitBlob": "ce3bd38fc03d39872614bbd3c12f103496021ed4",
+          "taskTomlGitBlob": "e96fdeff8886bb786f40601407737535039ee94a"
+        },
+        {
+          "id": "extract-moves-from-video",
+          "instructionGitBlob": "996867481059bd995262c56409adceefe941f32a",
+          "taskTomlGitBlob": "edaa23feef8eaca985490d6c07609d2992ee0f8b"
+        },
+        {
+          "id": "feal-differential-cryptanalysis",
+          "instructionGitBlob": "bce3a6c6302e45d1428ed2688207a2d7be5b1441",
+          "taskTomlGitBlob": "3e5799e1a1d95624fb79a6348d53f14de13cb119"
+        },
+        {
+          "id": "feal-linear-cryptanalysis",
+          "instructionGitBlob": "2ee006aa4078584f4ab1b83968b4fce54e717dbe",
+          "taskTomlGitBlob": "5341ca4ab0ca6b99ea21d434b1408bfcd8fe0205"
+        },
+        {
+          "id": "filter-js-from-html",
+          "instructionGitBlob": "97048ca6ace98d5d9e727ecc994bcd3fff52fbb7",
+          "taskTomlGitBlob": "70a106fb3c9828cc54fdbffc5011e2aa6f9ac381"
+        },
+        {
+          "id": "financial-document-processor",
+          "instructionGitBlob": "e9c52be8f763cc714e8a652e5907cbbaf87d1b38",
+          "taskTomlGitBlob": "5e7eb5e7aecd9e9443c0bd1c92ab2290eff61de3"
+        },
+        {
+          "id": "fix-code-vulnerability",
+          "instructionGitBlob": "8431db1454edac7da78426829979688448fa29ea",
+          "taskTomlGitBlob": "eb534985ae04d5b390c53533efc48d77026293a9"
+        },
+        {
+          "id": "fix-git",
+          "instructionGitBlob": "e925a7ae1ea325561eb98ceb6d81878c5d23d6df",
+          "taskTomlGitBlob": "235313b3fe78a18c2516bdc25fbf7ab80edb8529"
+        },
+        {
+          "id": "fix-ocaml-gc",
+          "instructionGitBlob": "20125b616bed6f9b0bd002ca992dce9192ceb719",
+          "taskTomlGitBlob": "fade87de4e05998b68675af69884337be7a5c545"
+        },
+        {
+          "id": "gcode-to-text",
+          "instructionGitBlob": "77b9f93179cbdd2f2d9f9769cd30c86bfe48718e",
+          "taskTomlGitBlob": "e48763aa5fcb3bb2448bf8272cb1de51cd5b797e"
+        },
+        {
+          "id": "git-leak-recovery",
+          "instructionGitBlob": "c1fe9cb6c43c4046281a83e89e1dfc94e10d2c86",
+          "taskTomlGitBlob": "139ada99713d838f4d507a5f7e6be4a47cc93183"
+        },
+        {
+          "id": "git-multibranch",
+          "instructionGitBlob": "18c62cb0cad72e83df2ada7b71b8e7ba98272553",
+          "taskTomlGitBlob": "4f238f8174c87c08d174fa920049d4a444d2853f"
+        },
+        {
+          "id": "gpt2-codegolf",
+          "instructionGitBlob": "76ec6779820f5b88c19a568927f2a3ec6b24c705",
+          "taskTomlGitBlob": "5ac591a38f9732f3b03e32776c5b589a70d06a25"
+        },
+        {
+          "id": "headless-terminal",
+          "instructionGitBlob": "e78b870751a77d8edd985337e91e82e886be507e",
+          "taskTomlGitBlob": "ae409c73e012070b64d6759ecb9bb34b33b53168"
+        },
+        {
+          "id": "hf-model-inference",
+          "instructionGitBlob": "e1c76badf02bca7f181a80292a02a70edf156d35",
+          "taskTomlGitBlob": "effa5c42f9d55cad4fd95d48040b8bab922d0d60"
+        },
+        {
+          "id": "install-windows-3.11",
+          "instructionGitBlob": "7a9b352bbba1a69fe6c84f05f67b9363a93132b3",
+          "taskTomlGitBlob": "30a8d61114012ea721fd90e967ae71e8ff75e2d8"
+        },
+        {
+          "id": "kv-store-grpc",
+          "instructionGitBlob": "c419dce25e49a689c585626938a479404962f405",
+          "taskTomlGitBlob": "6335ce9e47a64cc785d522692e9000df83c7650a"
+        },
+        {
+          "id": "large-scale-text-editing",
+          "instructionGitBlob": "7efb83a766a5391f558fe10ff3885974f4c408d5",
+          "taskTomlGitBlob": "ffdb5d6ec9d9ab1adba7f05bc27d5097a673f494"
+        },
+        {
+          "id": "largest-eigenval",
+          "instructionGitBlob": "66b77deb4d711296bc9c6b15cba7d8bee0f81c48",
+          "taskTomlGitBlob": "568099182f9870d08139d6a93465dc0eabfce497"
+        },
+        {
+          "id": "llm-inference-batching-scheduler",
+          "instructionGitBlob": "dfc55a1e125230a4a4583ed4057985427f85637b",
+          "taskTomlGitBlob": "71281e82a9ea8670b906fcd384a2d03303597469"
+        },
+        {
+          "id": "log-summary-date-ranges",
+          "instructionGitBlob": "43fca5003995e5844f3ea6c388bf568d72f7b08e",
+          "taskTomlGitBlob": "74122d682a1581e7efd06d0ea2c038beba2c771c"
+        },
+        {
+          "id": "mailman",
+          "instructionGitBlob": "852f797b09e82bd8a4e2663b99c88a5a8cd80ea0",
+          "taskTomlGitBlob": "b7f8aa470ba7f8ee06ef10ccad258c8773f9257c"
+        },
+        {
+          "id": "make-doom-for-mips",
+          "instructionGitBlob": "73494cdd5243aabd7b76cffd6a9c4c7ad886f143",
+          "taskTomlGitBlob": "c1912bc3597d0be7f6005bc50a1a91f3e2b69868"
+        },
+        {
+          "id": "make-mips-interpreter",
+          "instructionGitBlob": "8022025ad347a8b8682fcf54393eb3eebf0862ed",
+          "taskTomlGitBlob": "1cf1b34fe69bc43d631a8b7f0658c04836d9a189"
+        },
+        {
+          "id": "mcmc-sampling-stan",
+          "instructionGitBlob": "e81734eb4af4872fde0c50cbfd92b07835da771b",
+          "taskTomlGitBlob": "300745b34bca3fb144e3f8949055b58995c7eded"
+        },
+        {
+          "id": "merge-diff-arc-agi-task",
+          "instructionGitBlob": "e2360b1447c0d6bb04d6c574c839842afaf53462",
+          "taskTomlGitBlob": "48cf236914b389283b8d2f6741541625ceade4b1"
+        },
+        {
+          "id": "model-extraction-relu-logits",
+          "instructionGitBlob": "2aaab2c6ff1d0f1f42d69586f265ca6b017f43f6",
+          "taskTomlGitBlob": "bcbd2f4297a3cba78e46b5da3eabba45bc985b0a"
+        },
+        {
+          "id": "modernize-scientific-stack",
+          "instructionGitBlob": "bbcfe5085ae98c8634e396069de09c507b047df1",
+          "taskTomlGitBlob": "c3e68ab65fccbc99c092c28d6f4fa8a7596c6137"
+        },
+        {
+          "id": "mteb-leaderboard",
+          "instructionGitBlob": "4385969230c6a5dc150c9a9f924ce7c934212b94",
+          "taskTomlGitBlob": "24c2b2c82573b2d84a0934ca073a72be935a0a19"
+        },
+        {
+          "id": "mteb-retrieve",
+          "instructionGitBlob": "f71a36eb176f4c0454cec6ede7fa6b62bdd8a1d9",
+          "taskTomlGitBlob": "b82f22c00610c94eefe467973f6c0ad326cb11ee"
+        },
+        {
+          "id": "multi-source-data-merger",
+          "instructionGitBlob": "cbbe31c93fb2ba3cd45fe3f1b12f7853217faee0",
+          "taskTomlGitBlob": "734afa323ded79684ccf5bcee48025e916fcc1b9"
+        },
+        {
+          "id": "nginx-request-logging",
+          "instructionGitBlob": "083b261c1bde2d770088f4656d478abb4767543d",
+          "taskTomlGitBlob": "33909b5793c35b625a04f7137445391601180123"
+        },
+        {
+          "id": "openssl-selfsigned-cert",
+          "instructionGitBlob": "8ed50b24d2b05ab1516f539891def9abed8c54a3",
+          "taskTomlGitBlob": "9860901f6ec77f8fef9bc0c6056d007339dfab57"
+        },
+        {
+          "id": "overfull-hbox",
+          "instructionGitBlob": "6fe1be57fa7a721f0d2898439b9d9c62925cbf6a",
+          "taskTomlGitBlob": "dffef64d395395ba8df329bdb6a170550e476afe"
+        },
+        {
+          "id": "password-recovery",
+          "instructionGitBlob": "80573f8662de4a399da53900141568e1e26f4286",
+          "taskTomlGitBlob": "9216e2e906b5e80840bcc35bbc77ebe8adbe4dc8"
+        },
+        {
+          "id": "path-tracing",
+          "instructionGitBlob": "8ca3875d98d00e664a8292dd118167b4ded50303",
+          "taskTomlGitBlob": "cd4f5e5b3a5ab02a817910ab3ffd15b60826f33b"
+        },
+        {
+          "id": "path-tracing-reverse",
+          "instructionGitBlob": "fd5e869c4cc354939adc7f8eb32e7c3f8fe4c3dc",
+          "taskTomlGitBlob": "352c4fd0631e8bc821954f3cce0b9849fa67cb95"
+        },
+        {
+          "id": "polyglot-c-py",
+          "instructionGitBlob": "31039ba18f88567191d599ecf0a76d50f5beee47",
+          "taskTomlGitBlob": "52ff891a3fd5f7e4a987e8ec514d02c636bd7c11"
+        },
+        {
+          "id": "polyglot-rust-c",
+          "instructionGitBlob": "749c0400a3e2aae89c1a27b0135f95a9a9670e38",
+          "taskTomlGitBlob": "05e6b8c6604104ad8e4c1eae44997c264ae04788"
+        },
+        {
+          "id": "portfolio-optimization",
+          "instructionGitBlob": "a98ccd9973dd138dfb51539cc4cae5f4f93eacbd",
+          "taskTomlGitBlob": "7a46c444dbd0ecf7271116aced3f027a031d1b17"
+        },
+        {
+          "id": "protein-assembly",
+          "instructionGitBlob": "b4582cd2b87b3c0730027d46e6940c6253cd4be4",
+          "taskTomlGitBlob": "685b11a61baebe662bf9196b538d21815ae90ed9"
+        },
+        {
+          "id": "prove-plus-comm",
+          "instructionGitBlob": "dd6a00fe0ce91fb85ae215c801dd544643ac5307",
+          "taskTomlGitBlob": "bfac8b7c0b3f0e350add7a2d7e403736cd44d373"
+        },
+        {
+          "id": "pypi-server",
+          "instructionGitBlob": "0abbb2bee530ed57b11a244690e8b5686bf96731",
+          "taskTomlGitBlob": "60756e6b5a88035007e405889d1e7e9bac6e225a"
+        },
+        {
+          "id": "pytorch-model-cli",
+          "instructionGitBlob": "096f976401dcab486927ec2174fbd3326c4643a8",
+          "taskTomlGitBlob": "bb207e7368ce3bcb08437fac9e00be9bc8ea7d5c"
+        },
+        {
+          "id": "pytorch-model-recovery",
+          "instructionGitBlob": "46c980b4943e1e724a60854cafc597aceefe722e",
+          "taskTomlGitBlob": "35ac7e16a255e73ff33c09ebb7e3cc8245594f4e"
+        },
+        {
+          "id": "query-optimize",
+          "instructionGitBlob": "acf713130c70e3ee7f204430c93ee8e9c9abc20b",
+          "taskTomlGitBlob": "88fe3b4ada048489160d6a164aba3b88de5cf111"
+        },
+        {
+          "id": "raman-fitting",
+          "instructionGitBlob": "bca87601657ae8a9ff70b9d6804ca60368e042f0",
+          "taskTomlGitBlob": "7d1eae870d830c928602be56b5ab258ae06a8660"
+        },
+        {
+          "id": "regex-chess",
+          "instructionGitBlob": "dee52bc4580e675b806dc6fc44870c5ea0c612c0",
+          "taskTomlGitBlob": "27e424362c20859c7d058688e662f95cfe3e76b1"
+        },
+        {
+          "id": "regex-log",
+          "instructionGitBlob": "ab7f39b6e55776d9597657a435f902705c69450e",
+          "taskTomlGitBlob": "1687e8f7a3fff35acc7b7ffea6aecd6bdfb7051e"
+        },
+        {
+          "id": "reshard-c4-data",
+          "instructionGitBlob": "b4962c09c21bd41df67967587ca6bb7b43320979",
+          "taskTomlGitBlob": "7b0f6bb9bcdf2e3173ce2a60884f9d11e7712294"
+        },
+        {
+          "id": "rstan-to-pystan",
+          "instructionGitBlob": "efe07fe95e67ccb18cfcaf3fe14a5fe33a080dad",
+          "taskTomlGitBlob": "e36c80ade5216bb06e575899839e9c52e0dfd21f"
+        },
+        {
+          "id": "sam-cell-seg",
+          "instructionGitBlob": "3cc1cb4543914ea8387a1f2bb3c759b6c939ebe2",
+          "taskTomlGitBlob": "f040b68da669e48348fb58d3e6e0159315b5d348"
+        },
+        {
+          "id": "sanitize-git-repo",
+          "instructionGitBlob": "e971895361ef1334258ab5903968bef298594bb9",
+          "taskTomlGitBlob": "76627698683fb6fe52c75e867cc87893161186d8"
+        },
+        {
+          "id": "schemelike-metacircular-eval",
+          "instructionGitBlob": "e5dc3e77867594e33edd3d86834b5da092e49aec",
+          "taskTomlGitBlob": "2e22ee096fc6e4d7fa53935ccc546d290643df4f"
+        },
+        {
+          "id": "sparql-university",
+          "instructionGitBlob": "d2dcd48f1bf4c8c1937a37447271a1abada5fb01",
+          "taskTomlGitBlob": "cdfc362336cb06755c2fd899937511a09c8d5a29"
+        },
+        {
+          "id": "sqlite-db-truncate",
+          "instructionGitBlob": "400761a50555169343a9e1971325805cb8fde877",
+          "taskTomlGitBlob": "2f3eefeec1295cdfd59b31114f0e525d54a40511"
+        },
+        {
+          "id": "sqlite-with-gcov",
+          "instructionGitBlob": "401604f7e1c5547b2d5b17074ef97dfce995aa95",
+          "taskTomlGitBlob": "35469a2a89a75c5e68528860a5133e07c5b50300"
+        },
+        {
+          "id": "torch-pipeline-parallelism",
+          "instructionGitBlob": "638866b356dd77bdc59ce040a58b272fdcae391c",
+          "taskTomlGitBlob": "7638a38482b85f131b5b1fb138c434f0912811a2"
+        },
+        {
+          "id": "torch-tensor-parallelism",
+          "instructionGitBlob": "b3528bb8b5a8cbb5ed41f4c754953d964555ad99",
+          "taskTomlGitBlob": "0b0bb16c26a129b3f89bb676c92cc622c25358f6"
+        },
+        {
+          "id": "train-fasttext",
+          "instructionGitBlob": "016439faee86dc8d0ced704dcc8790ad978ee7fe",
+          "taskTomlGitBlob": "751e5046fca5b0b0b897bc864fce76187bed0ad5"
+        },
+        {
+          "id": "tune-mjcf",
+          "instructionGitBlob": "fc704730dcc3c5ee5adffa89c6176c904aa83fd5",
+          "taskTomlGitBlob": "e01a01a6e3fcc167569ac50b111a749681529b33"
+        },
+        {
+          "id": "video-processing",
+          "instructionGitBlob": "7d01e6407458984803f1d75bf1517e6a418da729",
+          "taskTomlGitBlob": "fad7d1d35b3c51c1ecb985ace96bd50c9c0d98e3"
+        },
+        {
+          "id": "vulnerable-secret",
+          "instructionGitBlob": "cf97240a6b530aae2a139c02a34f33dacfce73e7",
+          "taskTomlGitBlob": "e563739f16ba1aedd5c737a21a7a4b721d2290a0"
+        },
+        {
+          "id": "winning-avg-corewars",
+          "instructionGitBlob": "4ad23b0d4679ac53446d1dcb64c55e82f18e5d3c",
+          "taskTomlGitBlob": "048279f294e947e0970d35a08233a9e94c8b79a7"
+        },
+        {
+          "id": "write-compressor",
+          "instructionGitBlob": "dbd7c57c59fd91f5fa37711bd335b9c7cc8b8d4d",
+          "taskTomlGitBlob": "ef8bc825dced411ecc37c987bfa3774d08bcc060"
+        }
+      ],
+      "upstreamTaskCount": 89
+    }
+  }
+}
