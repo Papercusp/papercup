@@ -74,14 +74,21 @@ describe('persisted installed Portal connection', () => {
     const boot = async () => {
       hostErrors = '';
       host = fork(fileURLToPath(new URL('./fixtures/installed-portal-host.ts', import.meta.url)), [], {
-        execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+        execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn,
           DATABASE_URL: db.adminDsn, PAPERCUSP_DB_ENCRYPTION_KEY: opts.encryptionKey, STATE_DIRECTORY: root,
           PAPERCUSP_INSTALLED_INTEGRATION_ROOT: root },
       });
       host.stderr!.on('data', data => { hostErrors = (hostErrors + String(data)).slice(-4000); });
+      host.stdout!.on('data', data => { hostErrors = (hostErrors + String(data)).slice(-4000); });
       host.on('message', value => messages.push(value as Record<string, any>));
-      await vi.waitFor(() => expect(messages.some(value => value.type === 'ready' && value.pid === host!.pid), hostErrors).toBe(true), { timeout: 20_000 });
+      await vi.waitFor(() => {
+        const startup = JSON.stringify({ pid: host!.pid, exitCode: host!.exitCode,
+          signalCode: host!.signalCode, connected: host!.connected, messages, output: hostErrors });
+        expect(host!.exitCode, startup).toBeNull();
+        expect(host!.signalCode, startup).toBeNull();
+        expect(messages.some(value => value.type === 'ready' && value.pid === host!.pid), startup).toBe(true);
+      }, { timeout: 20_000 });
     };
     const stop = async () => {
       if (!host || host.exitCode !== null || host.signalCode !== null) return;
