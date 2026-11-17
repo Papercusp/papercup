@@ -5,12 +5,14 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import Ajv2020 from 'ajv/dist/2020';
 import { z } from 'zod';
-import { _resetProjectionRegistryForTests, defineTool, listMcpProjections, lookupByMcpName, type BatchResult } from '@papercusp/tooldef';
+import { _resetProjectionRegistryForTests, defineTool, listMcpProjections, lookupByMcpName,
+  type BatchResult, type DispatchProjectedDeps, type ToolBatchDeclaration, type UnifiedToolContext } from '@papercusp/tooldef';
 import { dispatchProjectedToolToMcp } from './index';
 
 afterEach(() => _resetProjectionRegistryForTests());
 
-async function wire(run: (request: (method: string, params?: Record<string, unknown>) => Promise<unknown>) => Promise<void>) {
+async function wire(run: (request: (method: string, params?: Record<string, unknown>) => Promise<unknown>) => Promise<void>,
+  options: { deps?: DispatchProjectedDeps; ctx?: Partial<UnifiedToolContext> } = {}) {
   let id = 0;
   await run(async (method, params) => {
     // Stateless SDK transports own exactly one HTTP request, as in production.
@@ -22,8 +24,8 @@ async function wire(run: (request: (method: string, params?: Record<string, unkn
       if (!tool) throw new Error('unknown_fixture_tool');
       return await dispatchProjectedToolToMcp(tool, request.params.name, request.params.arguments, {
         signal: extra.signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn(), role: 'worker',
-        workspaceId: 'wire-fixture', runId: 'wire-fixture', requestedStructured: true,
-      }, {}, request.params._meta) as CallToolResult;
+        workspaceId: 'wire-fixture', runId: 'wire-fixture', requestedStructured: true, ...options.ctx,
+      }, options.deps ?? {}, request.params._meta) as CallToolResult;
     });
     await server.connect(transport);
     try {
@@ -131,6 +133,130 @@ describe('canonical batching over MCP SDK tools/list and tools/call', () => {
       expect(flat.results).toHaveLength(1);
       expect(flat.results).toEqual(marked.results);
       expect(handler.mock.calls.map(([input]) => input)).toEqual([value, value]);
+    });
+  });
+
+  it('preserves native principal groups, host metadata and transaction bindings through normal result finalization', async () => {
+    const calls: string[][] = [];
+    const transaction = { id: 'host-bound-transaction' };
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    const batch: ToolBatchDeclaration<{ key: string }> = {
+      result: (response, value) => ({ data: Object.assign({},
+        'data' in response ? response.data : response.structuredContent, { adapted: value.key }) }),
+      execute: async items => {
+        expect(Object.isFrozen(items)).toBe(true);
+        expect(new Set(items.map(item => item.ctx.principal?.slug)).size).toBe(1);
+        calls.push(items.map(item => item.itemId));
+        for (const item of items) {
+          expect(item.ctx.tx).toBe(transaction);
+          expect(item.ctx.runId).toBe('host-' + item.args.key);
+          expect(item.callId).toBeTruthy();
+          expect(item.signal).toBe(item.ctx.signal);
+        }
+        return [...items].reverse().map(item => ({ itemId: item.itemId,
+          response: { data: { key: item.args.key, typed: { count: 7 } } } }));
+      },
+    };
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read',
+      needsWorkspaceTx: true, args, batch, handler });
+    await wire(async request => {
+      const data = batchData(await request('tools/call', { name,
+        arguments: { _batch: 1, items: [item('a', 'left'), item('b', 'right'), item('a', 'again')] } }));
+      expect(data.results.filter(row => !row.ok), JSON.stringify(data.results)).toEqual([]);
+      expect(data.results.map(row => [row.itemId, row.output?.structuredContent])).toEqual([
+        ['left', { key: 'a', typed: { count: 7 }, adapted: 'a' }],
+        ['right', { key: 'b', typed: { count: 7 }, adapted: 'b' }],
+        ['again', { key: 'a', typed: { count: 7 }, adapted: 'a' }],
+      ]);
+      expect(calls).toEqual([['left', 'again'], ['right']]);
+      expect(handler).not.toHaveBeenCalled();
+    }, { ctx: { tx: transaction }, deps: { aroundInvoke: async ({ input, ctx, invoke }) => {
+      const key = (input as { key: string }).key;
+      ctx.principal = { kind: 'system', slug: key, workspaceId: 'wire-fixture', capabilities: new Set(['test:read']) };
+      ctx.runId = 'host-' + key;
+      return invoke();
+    } } });
+  });
+
+  it('waits for host admission and excludes refused items before one native backend call', async () => {
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const entered: string[] = [];
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    const execute = vi.fn<NonNullable<ToolBatchDeclaration<{ key: string }>['execute']>>(async items =>
+      items.map(item => ({ itemId: item.itemId, response: { data: item.args } })));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read', args, batch: { execute }, handler });
+    await wire(async request => {
+      const pending = request('tools/call', { name, arguments: { _batch: 1,
+        items: [item('first', 'first'), item('slow', 'slow'), item('denied', 'denied')] } });
+      await vi.waitFor(() => expect(entered).toHaveLength(3));
+      expect(execute).not.toHaveBeenCalled();
+      release();
+      const result = await pending;
+      expect(result).toMatchObject({ isError: true });
+      expect(batchData(result).results.map(row => [row.itemId, row.ok])).toEqual([
+        ['first', true], ['slow', true], ['denied', false],
+      ]);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0][0].map(item => item.itemId)).toEqual(['first', 'slow']);
+      expect(handler).not.toHaveBeenCalled();
+    }, { deps: { aroundInvoke: async ({ input, invoke }) => {
+      const key = (input as { key: string }).key;
+      entered.push(key);
+      if (key === 'denied') return { isError: true, content: [] };
+      if (key === 'slow') await barrier;
+      return invoke();
+    } } });
+  });
+
+  it('fails missing or duplicated native outcomes without replaying successful effects', async () => {
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read', args,
+      batch: { execute: async () => [
+        { itemId: 'ok', response: { data: { key: 'ok' } } },
+        { itemId: 'duplicate', response: { data: {} } },
+        { itemId: 'duplicate', response: { data: {} } },
+        { itemId: 'foreign', response: { data: {} } },
+      ] }, handler });
+    await wire(async request => {
+      const result = await request('tools/call', { name, arguments: { _batch: 1,
+        items: [item('ok', 'ok'), item('missing', 'missing'), item('duplicate', 'duplicate')] } });
+      expect(result).toMatchObject({ isError: true });
+      const data = batchData(result);
+      expect(data.counts).toEqual({ ok: 1, failed: 2 });
+      expect(data.results.map(row => [row.itemId, row.ok])).toEqual([
+        ['ok', true], ['missing', false], ['duplicate', false],
+      ]);
+      expect(data.results[0].output?.structuredContent).toEqual({ key: 'ok' });
+      expect(handler).not.toHaveBeenCalled();
+    });
+  });
+
+  it('enforces the default 100-item ceiling and reserves supplied IDs before generating any ID', async () => {
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', args, handler });
+    await wire(async request => {
+      const items = Array.from({ length: 100 }, (_, index) => item('same', index === 99 ? 'item-1' : undefined));
+      const data = batchData(await request('tools/call', { name, arguments: { _batch: 1, items } }));
+      expect(data.counts).toEqual({ ok: 100, failed: 0 });
+      expect(new Set(data.results.map(row => row.itemId)).size).toBe(100);
+      expect(data.results[99].itemId).toBe('item-1');
+      expect(handler).toHaveBeenCalledTimes(100);
+      const oversized = await request('tools/call', { name, arguments: { _batch: 1, items: [...items, item('extra')] } });
+      expect(oversized).toMatchObject({ isError: true });
+      expect(handler).toHaveBeenCalledTimes(100);
+    });
+  });
+
+  it('preserves declared legacy callers and refuses their multi-item request before effects', async () => {
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', args, handler });
+    await wire(async request => {
+      const call = (input: object) => request('tools/call', { name, arguments: input,
+        _meta: { 'papercusp/batchResponseVersion': 'operation-v0' } });
+      expect(await call({ key: 'one' })).toMatchObject({ structuredContent: { key: 'one' } });
+      expect(await call({ _batch: 1, items: [item('a'), item('b')] })).toMatchObject({ isError: true });
+      expect(handler).toHaveBeenCalledOnce();
     });
   });
 });
