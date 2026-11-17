@@ -9,6 +9,63 @@ const crashFixtureSourceHash = '23fa4c6dcd82d6f6ac946c58ff88eea5af278454afc69a8c
 const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939eb686e75745dfaffaeea7ac6f697902cc8985e9894270ac7de0eeb'
   + '+types.js@1883bd4536eab1c94b9e708d325b13708b0f18ec80020e3a825f34a72f603b81#Bind';
 
+/** Fixture-only AFTER-row receipts for the installed DBOS writer. The caller
+ * supplies the complete ordered column census from its exclusive private DB.
+ * Installation is setup, outside the measured child. These registrations never
+ * reinterpret old tapes or infer bytes from final rows or bound parameters. */
+export function reviewedDurableServerValues(input: {
+  systemDatabase: string; serverMessageSourceRef: string; marker: string; catalogSourceRef: string;
+  columns: Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
+}) {
+  const writer = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
+  const driver = 'source:pg/lib/client.js@4d8f863700d5a94c443edf9186f546c555486a66d0575806a2fe792c43911a46#NoticeResponse+ReadyForQuery';
+  if (input.systemDatabase !== writer || input.serverMessageSourceRef !== driver) return null;
+  if (!/^[a-f0-9]{64}$/.test(input.marker) || !input.catalogSourceRef.trim())
+    throw new Error('GEC invalid DBOS server-value fixture identity');
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const statements: Array<{ table: keyof typeof input.columns; command: 'INSERT' | 'UPDATE'; hash: string; anchor: string }> = [
+    { table: 'workflow_status', command: 'INSERT', hash: 'a9e10fc207f9f998ce3e49a1e320c8866b3205f480132ba76c8b6a82ab4da0f5', anchor: 'insertWorkflowStatus' },
+    { table: 'workflow_status', command: 'UPDATE', hash: '8c66bbd7690cd0558564c7d7048db0203f799b093acd68cdb2894e628ab72135', anchor: 'reenqueueWorkflowsForRecovery' },
+    { table: 'workflow_status', command: 'UPDATE', hash: 'c6fa0add461e01e4dcd38bfa70a23460e718726924ec6de54b837750727cb368', anchor: 'transitionDelayedWorkflows' },
+    { table: 'workflow_status', command: 'UPDATE', hash: '9bebb0656cf5753c1b7844d41fc9f16006eed055664860f3571b29a94ec7c163', anchor: 'findAndMarkStartableWorkflows:claim' },
+    { table: 'workflow_status', command: 'UPDATE', hash: '25d1b83fcceb22b1b26a8a5205a0cd65c5490d8ef1ffa7ccc3913c70656d29c8', anchor: 'recordWorkflowOutput' },
+    { table: 'workflow_status', command: 'UPDATE', hash: '4f01eb87844c709f81c32a23f49c07f9bfe0bdadb9799f15064d758807bc4435', anchor: 'executor-assignment' },
+    { table: 'application_versions', command: 'INSERT', hash: 'ea031961f36e32d61e46ec51718fa74b240f03f06dda78921d7966de06278d13', anchor: 'createApplicationVersion:insert' },
+    { table: 'application_versions', command: 'UPDATE', hash: '4f424e83ebb04df589947f784d7d5d9f2d92b469cef1987c7e9928d5c2b65e2a', anchor: 'createApplicationVersion:claim' },
+  ];
+  const serverSqlWrites: NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serverSqlWrites']>[number][] = [];
+  const ddl: string[] = [];
+  for (const table of ['workflow_status', 'operation_outputs', 'application_versions'] as const) {
+    const columns = input.columns[table];
+    if (!Array.isArray(columns) || !columns.length || new Set(columns).size !== columns.length
+      || columns.some(column => !/^[a-z_][a-z0-9_]*$/.test(column)))
+      throw new Error('GEC invalid complete DBOS column census');
+    const values = columns.map(column => `json_build_object('column', '${column}',
+          'hex', encode(convert_to(NEW."${column}"::text, 'UTF8'), 'hex'),
+          'changed', TG_OP = 'INSERT' OR OLD."${column}" IS DISTINCT FROM NEW."${column}")`).join(',\n        ');
+    const functionName = `gec_server_values_${table}`;
+    const trigger = `CREATE OR REPLACE FUNCTION dbos.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE NOTICE USING MESSAGE = 'GEC-SERVER-VALUES-v1', DETAIL = json_build_object(
+          'marker', '${input.marker}', 'backend', pg_backend_pid(),
+          'transactionId', pg_current_xact_id()::text,
+          'queryHash', encode(sha256(convert_to(current_query(), 'UTF8')), 'hex'),
+          'schema', TG_TABLE_SCHEMA, 'table', TG_TABLE_NAME, 'operation', TG_OP, 'rowId', NEW.ctid::text,
+          'values', json_build_array(${values}))::text;
+        RETURN NEW;
+      END $$`;
+    ddl.push(trigger, `DROP TRIGGER IF EXISTS ${functionName} ON dbos.${table}`,
+      `CREATE TRIGGER ${functionName} AFTER INSERT OR UPDATE ON dbos.${table} FOR EACH ROW EXECUTE FUNCTION dbos.${functionName}()`);
+    for (const statement of statements.filter(row => row.table === table)) serverSqlWrites.push({
+      pool: 'child-dbos-all-clients', queryHash: statement.hash, command: statement.command,
+      sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${writer}#${statement.anchor}`,
+      triggerSourceRef: `fixture:after-row@${digest(trigger)};${input.catalogSourceRef}`,
+      serverMessageSourceRef: driver, marker: input.marker, schema: 'dbos', table, columns: [...columns], exclusive: true,
+    });
+  }
+  return { ddl, serverSqlWrites };
+}
+
 /** The fixture stores its already-serialized effect payload in args TEXT.
  * Read the driver's original Bind output; never invoke JSON.stringify again.
  * Like the operation-output registration, this measures the serialized payload,

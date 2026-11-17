@@ -6,10 +6,44 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureDurableProcessBoundary, composeDurableCaptureCensus, createDurableCaptureRecorder, materializeDurableCapture, reconstructDurableCapture,
-  retainDurableCapture, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql } from '../../test/_durable-orchestration-capture';
+  retainDurableCapture, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql,
+  reviewedDurableServerValues } from '../../test/_durable-orchestration-capture';
 import type { GroundedCensus, GroundedInvocation, GroundedMeasurementScope, GroundedSqlObservation } from '../grounded-evidence-measurement';
 
 const directories: string[] = [];
+
+describe('source-reviewed DBOS server-value fixture', () => {
+  const input = {
+    systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
+    serverMessageSourceRef: 'source:pg/lib/client.js@4d8f863700d5a94c443edf9186f546c555486a66d0575806a2fe792c43911a46#NoticeResponse+ReadyForQuery',
+    marker: 'a'.repeat(64), catalogSourceRef: 'test:independent-complete-column-census',
+    columns: { workflow_status: ['workflow_uuid', 'updated_at'], operation_outputs: ['workflow_uuid', 'function_id'],
+      application_versions: ['version_name', 'version_timestamp'] },
+  };
+  it('leaves changed installed writers and drivers unregistered', () => {
+    expect(reviewedDurableServerValues({ ...input, systemDatabase: 'changed' })).toBeNull();
+    expect(reviewedDurableServerValues({ ...input, serverMessageSourceRef: 'changed' })).toBeNull();
+    expect(() => reviewedDurableServerValues({ ...input, marker: 'unqualified' })).toThrow();
+    expect(() => reviewedDurableServerValues({ ...input, catalogSourceRef: '' })).toThrow();
+    for (const columns of [[], ['version_name', 'version_name'], ['unsafe;sql']])
+      expect(() => reviewedDurableServerValues({ ...input, columns: { ...input.columns, application_versions: columns } })).toThrow();
+  });
+  it('pins the actual SDK workflow insert and original protocol implementation', () => {
+    const source = readFileSync(new URL('../../../../node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js', import.meta.url), 'utf8');
+    expect(createHash('sha256').update(source).digest('hex')).toBe(input.systemDatabase);
+    expect('source:pg/lib/client.js@' + createHash('sha256').update(readFileSync(new URL(
+      '../../../../node_modules/pg/lib/client.js', import.meta.url))).digest('hex') + '#NoticeResponse+ReadyForQuery').toBe(input.serverMessageSourceRef);
+    const method = source.slice(source.indexOf('    async insertWorkflowStatus('));
+    const sql = method.slice(method.indexOf('client.query(`') + 'client.query(`'.length, method.indexOf('`, ['))
+      .replaceAll('${this.schemaName}', 'dbos').replaceAll('${workflow_1.StatusString.ENQUEUED}', 'ENQUEUED')
+      .replaceAll('${workflow_1.StatusString.DELAYED}', 'DELAYED');
+    const fixture = reviewedDurableServerValues(input)!;
+    expect(fixture.serverSqlWrites).toContainEqual(expect.objectContaining({ command: 'INSERT', table: 'workflow_status',
+      queryHash: createHash('sha256').update(sql).digest('hex') }));
+    fixture.serverSqlWrites[0]!.columns = ['changed'];
+    expect(reviewedDurableServerValues(input)!.serverSqlWrites[0]!.columns).toEqual(input.columns.workflow_status);
+  });
+});
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'durable-capture-'));
   directories.push(directory);
@@ -396,6 +430,94 @@ it.each(['missing', 'invalid', 'foreign', 'observer-error'])('node-postgres serv
     expect(census.diagnostics.serverMessagesPending).toEqual(fault === 'missing' ? [census.ids[0]] : []);
     expect(census.diagnostics.captureFailed).toBe(fault !== 'missing');
     expect(census.rows[0]?.persistedBytes).toBeNull();
+  } finally { tap.restore(); }
+});
+
+it.each(['autocommit', 'commit', 'zero-rows', 'unchanged', 'missing', 'foreign-marker', 'foreign-backend',
+  'foreign-statement', 'wrong-columns', 'invalid-hex', 'duplicate', 'missing-ready', 'rollback',
+  'failed-commit', 'missing-begin', 'savepoint', 'wrong-control', 'transaction-id', 'incomplete'])
+('node-postgres server value qualification requires original serialization and commit: %s', async mode => {
+  const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const statement = mode === 'unchanged' ? 'UPDATE fixture SET value=DEFAULT' : 'INSERT INTO fixture DEFAULT VALUES';
+  const command = mode === 'unchanged' ? 'UPDATE' : 'INSERT';
+  const marker = digest('exclusive-fixture');
+  class Query {
+    values: unknown[] = [];
+    _results: { command: string; rowCount: number };
+    constructor(readonly text: string) { this._results = { command: text === statement ? command : text, rowCount: 1 }; }
+    submit(connection: { bind(config: { valueMapper(value: unknown): unknown }): void }) {
+      connection.bind({ valueMapper: value => value });
+    }
+    handleReadyForQuery() {}
+    handleError() {}
+  }
+  class Client {
+    processID = 321; _activeQuery: Query | null = null;
+    query(text: string) {
+      const query = new Query(text); this._activeQuery = query; query.submit({ bind: () => {} }); return query;
+    }
+    _getActiveQuery() { return this._activeQuery; }
+    _handleNotice(message: unknown) { return message; }
+    _handleReadyForQuery(_message?: { status: string }) {
+      const query = this._activeQuery; this._activeQuery = null; query?.handleReadyForQuery();
+    }
+  }
+  const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+    ownerId: 'server-value-unit', caseId: 'N7', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+    sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+  const controls = ['BEGIN', 'COMMIT', 'ROLLBACK'] as const;
+  const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:server-value-unit',
+    attemptId: mode, nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype, queryPrototype: Query.prototype,
+      serializerSourceRef: 'original-mapper', serverMessageSourceRef: 'original-client' }],
+    serverSqlWrites: [{ pool: 'dbos', queryHash: digest(statement), command, marker, schema: 'public', table: 'fixture',
+      columns: ['value'], exclusive: true, sourceRef: 'reviewed-writer', triggerSourceRef: 'reviewed-after-trigger',
+      serverMessageSourceRef: 'original-client' }],
+    nonPersistingSql: controls.filter(c => !(mode === 'wrong-control' && c === 'COMMIT')).map(c => ({
+      queryHash: digest(c), sourceRef: 'reviewed-control', kind: 'control', command: c, status: 'ok' })) });
+  try {
+    const client = new Client();
+    const execute = (text: string, status: string, actualCommand?: string) => {
+      const query = tap.run(() => client.query(text));
+      if (actualCommand) query._results.command = actualCommand;
+      client._handleReadyForQuery.call(client, { status });
+    };
+    const explicit = ['commit', 'rollback', 'failed-commit', 'missing-begin', 'savepoint', 'wrong-control', 'transaction-id'].includes(mode);
+    if (explicit && mode !== 'missing-begin') execute('BEGIN', 'T');
+    const write = () => {
+      const query = tap.run(() => client.query(statement));
+      if (mode === 'zero-rows') query._results.rowCount = 0;
+      const receipt = { marker: mode === 'foreign-marker' ? digest('foreign') : marker,
+        backend: mode === 'foreign-backend' ? 654 : 321,
+        queryHash: mode === 'foreign-statement' ? digest('foreign') : digest(statement),
+        schema: 'public', table: 'fixture', operation: command, transactionId: '100', rowId: '(0,1)',
+        values: [{ column: mode === 'wrong-columns' ? 'other' : 'value', changed: mode !== 'unchanged',
+          hex: mode === 'invalid-hex' ? 'f' : Buffer.from('λ.😺').toString('hex') }] };
+      const notice = { message: 'GEC-SERVER-VALUES-v1', severity: 'NOTICE', code: '00000', detail: JSON.stringify(receipt) };
+      if (mode !== 'missing' && mode !== 'zero-rows') client._handleNotice(notice);
+      if (mode === 'duplicate') client._handleNotice(notice);
+      if (mode === 'transaction-id') {
+        receipt.transactionId = '101'; client._handleNotice({ ...notice, detail: JSON.stringify(receipt) });
+        query._results.rowCount = 2;
+      }
+      if (mode !== 'missing-ready') client._handleReadyForQuery.call(client, { status: explicit ? 'T' : 'I' });
+    };
+    write();
+    if (mode === 'savepoint') execute('SAVEPOINT unreviewed', 'T', 'SAVEPOINT');
+    if (explicit) execute(mode === 'rollback' ? 'ROLLBACK' : 'COMMIT', 'I', mode === 'failed-commit' ? 'ROLLBACK' : undefined);
+    if (mode === 'incomplete') tap.run(() => client.query('pending'));
+    const census = tap.seal(), row = census.rows.find(r => r.sql?.queryHash === digest(statement))!;
+    if (mode === 'missing-ready') {
+      expect(census.complete).toBe(false); expect(census.rows).toEqual([]);
+      expect(census.diagnostics.serverMessagesPending).toEqual(census.ids);
+      expect(census.diagnostics.pendingIds).toEqual(census.ids);
+      return;
+    }
+    const qualifies = ['autocommit', 'commit', 'zero-rows', 'unchanged'].includes(mode);
+    expect(census.complete).toBe(!['missing-ready', 'incomplete'].includes(mode));
+    expect(row.persistedBytes).toBe(qualifies ? ['zero-rows', 'unchanged'].includes(mode) ? 0 : Buffer.byteLength('λ.😺') : null);
+    expect(row.sql?.serverWrite?.outcome).toBe(qualifies ? 'committed' : mode === 'rollback' ? 'rolled-back' : 'unknown');
+    if (qualifies) expect(row.sql?.serverWrite?.commitQueryId).toBe(mode === 'commit' ? census.rows.at(-1)!.id : row.id);
   } finally { tap.restore(); }
 });
 

@@ -106,10 +106,14 @@ export interface GroundedStorageOperation {
   sql?: { pool: string; queryId: number; queryHash: string; command: string | null; status: 'ok' | 'error';
     /** Actual node-postgres backend at submit, never the host process or pool. */
     backendProcessId?: number | null;
+    affectedRows?: number | null;
     /** Original protocol diagnostics only; neither a notice nor an idle
      * transaction status certifies the values persisted by this statement. */
     serverMessages?: { sourceRef: string; notices: GroundedServerNotice[];
       transactionStatus: 'I' | 'T' | 'E' | null };
+    serverWrite?: { sourceRef: string; triggerSourceRef: string; transactionId: string | null;
+      outcome: 'unknown' | 'committed' | 'rolled-back'; commitQueryId: string | null;
+      values: { column: string; sha256: string | null; bytes: number; changed: boolean }[][] };
     rowOutcome?: { allOrNoneRows: GroundedPersistedRows; affectedRows: number | null };
     nonPersisting?: { sourceRef: string; kind: 'read' | 'control' };
     serializedWrite?: { sourceRef: string; templateHash: string;
@@ -140,6 +144,111 @@ export interface GroundedNonPersistingSql {
 export interface GroundedServerNotice {
   message: string | null; severity: string | null; code: string | null;
   detail: string | null; where: string | null;
+}
+/** Exclusive fixture AFTER-row trigger, reviewed with the actual writer. The
+ * trigger serializes NEW columns to UTF8 hex on the server, including defaults
+ * and clocks, and compares OLD/NEW for UPDATE. This measures serialized value
+ * bytes, never tuple/index/WAL overhead. A notice alone is not commit proof.
+ * The per-fixture marker must be unique and retained with the trigger source. */
+export interface GroundedServerSqlWrite {
+  pool: string; queryHash: string; command: 'INSERT' | 'UPDATE'; sourceRef: string;
+  triggerSourceRef: string; serverMessageSourceRef: string; marker: string;
+  schema: string; table: string; columns: readonly string[]; exclusive: true;
+}
+
+/** Join only original protocol receipts. No final-row reads, Bind estimates,
+ * wall-clock matching, SQL prefix inference, or caller-authored commit claims.
+ * Unknown transaction statements (including savepoints) invalidate that entire
+ * transaction; a new reviewed BEGIN is required before it can qualify again. */
+function qualifyGroundedServerWrites(rows: GroundedStorageOperation[], complete: boolean,
+  registrations: readonly GroundedServerSqlWrite[]) {
+  if (!registrations.length) return;
+  const transactions = new Map<string, { valid: boolean; transactionId: string | null;
+    writes: { row: GroundedStorageOperation; bytes: number | null }[] }>();
+  const finish = (transaction: NonNullable<ReturnType<typeof transactions.get>>, committed: boolean, id: string) => {
+    for (const { row, bytes } of transaction.writes) {
+      if (committed && transaction.valid && bytes !== null) {
+        row.persistedBytes = bytes; row.sql!.serverWrite!.outcome = 'committed';
+        row.sql!.serverWrite!.commitQueryId = id;
+      } else if (!committed) row.sql!.serverWrite!.outcome = 'rolled-back';
+    }
+  };
+  for (const row of rows) {
+    const sql = row.sql;
+    if (!sql) continue;
+    const key = `${sql.pool}:${sql.backendProcessId}`;
+    const registration = registrations.find(r => r.pool === sql.pool && r.queryHash === sql.queryHash);
+    const status = sql.serverMessages?.transactionStatus;
+    const transaction = transactions.get(key);
+    if (registration) {
+      row.kind = 'write'; row.persistedBytes = null;
+      const proof: NonNullable<typeof sql.serverWrite> = { sourceRef: registration.sourceRef,
+        triggerSourceRef: registration.triggerSourceRef, transactionId: null,
+        outcome: 'unknown', commitQueryId: null, values: [] };
+      sql.serverWrite = proof;
+      let valid = complete && integer(sql.backendProcessId) && sql.backendProcessId! > 0
+        && sql.status === 'ok' && sql.command === registration.command
+        && sql.serverMessages?.sourceRef === registration.serverMessageSourceRef;
+      const affected = sql.affectedRows;
+      const rowIds = new Set<string>();
+      // Terminal rowCount is recorded independently of any parameter writer.
+      valid &&= integer(affected);
+      for (const notice of sql.serverMessages?.notices ?? []) {
+        if (notice.message !== 'GEC-SERVER-VALUES-v1') continue;
+        try {
+          const receipt = JSON.parse(notice.detail ?? '') as Record<string, unknown>;
+          if (notice.severity !== 'NOTICE' || notice.code !== '00000'
+            || receipt.marker !== registration.marker || receipt.backend !== sql.backendProcessId
+            || receipt.queryHash !== sql.queryHash || receipt.schema !== registration.schema
+            || receipt.table !== registration.table || receipt.operation !== registration.command
+            || typeof receipt.rowId !== 'string' || !/^\([0-9]+,[1-9][0-9]*\)$/.test(receipt.rowId)
+            || rowIds.has(receipt.rowId)
+            || typeof receipt.transactionId !== 'string' || !/^[1-9][0-9]*$/.test(receipt.transactionId)
+            || (proof.transactionId !== null && proof.transactionId !== receipt.transactionId)
+            || !Array.isArray(receipt.values) || receipt.values.length !== registration.columns.length)
+            throw new Error('foreign server values');
+          rowIds.add(receipt.rowId);
+          proof.transactionId = receipt.transactionId;
+          const values = receipt.values.map((value, index) => {
+            if (!value || typeof value !== 'object' || value.column !== registration.columns[index]
+              || typeof value.changed !== 'boolean' || (registration.command === 'INSERT' && !value.changed)
+              || (value.hex !== null && (typeof value.hex !== 'string' || !/^(?:[a-f0-9]{2})*$/.test(value.hex))))
+              throw new Error('invalid server serialization');
+            const original = value.hex === null ? null : Buffer.from(value.hex, 'hex');
+            return { column: value.column as string, changed: value.changed as boolean,
+              sha256: original === null ? null : createHash('sha256').update(original).digest('hex'),
+              bytes: original?.byteLength ?? 0 };
+          });
+          proof.values.push(values);
+        } catch { valid = false; }
+      }
+      valid &&= proof.values.length === affected;
+      const sum = proof.values.flat().reduce((total, value) => total + (value.changed ? value.bytes : 0), 0);
+      const bytes = valid && integer(sum) ? sum : null;
+      if (status === 'I' && !transaction && bytes !== null) {
+        row.persistedBytes = bytes; proof.outcome = 'committed'; proof.commitQueryId = row.id;
+      } else if (status === 'T' && transaction) {
+        if (proof.transactionId && transaction.transactionId && transaction.transactionId !== proof.transactionId)
+          transaction.valid = false;
+        transaction.transactionId ??= proof.transactionId;
+        transaction.writes.push({ row, bytes });
+      } else if (transaction) {
+        transaction.valid = false; transaction.writes.push({ row, bytes: null });
+      }
+      continue;
+    }
+    const control = complete && sql.status === 'ok' && sql.nonPersisting?.kind === 'control';
+    if (control && sql.command === 'BEGIN' && status === 'T') {
+      // Nested BEGIN is not a new transaction; never erase the earlier writes.
+      if (transaction) transaction.valid = false;
+      else transactions.set(key, { valid: true, transactionId: null, writes: [] });
+    } else if (control && (sql.command === 'COMMIT' || sql.command === 'ROLLBACK') && status === 'I') {
+      if (transaction) finish(transaction, sql.command === 'COMMIT', row.id);
+      transactions.delete(key);
+    } else if (transaction && !(sql.status === 'ok' && status === 'T' && sql.nonPersisting?.kind === 'read')) {
+      transaction.valid = false;
+    }
+  }
 }
 export interface GroundedSqlObservation {
   id: string; pool: string; phase: 'admission' | 'submit' | 'terminal' | 'notice' | 'ready';
@@ -796,6 +905,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
   /** Exact reviewed reads and session/transaction controls. A failed SELECT
    * needs its own registration; failure alone never proves zero write bytes. */
   nonPersistingSql?: readonly GroundedNonPersistingSql[];
+  serverSqlWrites?: readonly GroundedServerSqlWrite[];
   /** Exact source-pinned tagged-template registration. Only these original
    * string arguments are already-serialized persisted values. Never serialize
    * an object here or infer a value from a similar-looking SQL statement.
@@ -958,6 +1068,21 @@ export function observeGroundedStoreOperations<T extends object>(input: {
   const bytesForOutcome = (bytes: number | null, allOrNoneRows: GroundedPersistedRows | undefined, affectedRows: number | null) =>
     bytes === null || allOrNoneRows === undefined ? bytes
       : affectedRows === 0 ? 0 : affectedRows === allOrNoneRows ? bytes : null;
+  const serverWrites = structuredClone(input.serverSqlWrites ?? []);
+  const serverWriteKeys = new Set<string>();
+  for (const registration of serverWrites) {
+    const driver = nodeDrivers.find(d => d.pool === registration.pool);
+    const key = `${registration.pool}:${registration.queryHash}`;
+    if (!driver?.serverMessageSourceRef || driver.serverMessageSourceRef !== registration.serverMessageSourceRef
+      || !/^[a-f0-9]{64}$/.test(registration.queryHash) || !/^[a-f0-9]{64}$/.test(registration.marker)
+      || !registration.sourceRef.trim() || !registration.triggerSourceRef.trim() || registration.exclusive !== true
+      || !['INSERT', 'UPDATE'].includes(registration.command) || !registration.schema.trim() || !registration.table.trim()
+      || !registration.columns.length || registration.columns.some(c => !c.trim())
+      || new Set(registration.columns).size !== registration.columns.length || serverWriteKeys.has(key)
+      || parameterWrites.has(key) || [...nonPersisting.values()].some(r => r.queryHash === registration.queryHash))
+      throw new Error('GEC invalid server SQL write registration');
+    serverWriteKeys.add(key);
+  }
   const methodsSeen = new Set<keyof T>();
   for (const operation of input.operations) {
     if (typeof input.deps[operation.method] !== 'function') throw new Error(`GEC missing store method: ${String(operation.method)}`);
@@ -1032,7 +1157,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       const insertClaim = insertState?.claims.get(entry.id);
       rows.push({ id: entry.id, kind, persistedBytes, sql: { pool: driver.pool,
         queryId: Number(entry.id.split(':node:').at(-1)), queryHash: queryHash ?? '', command, status,
-        backendProcessId: entry.backendProcessId,
+        backendProcessId: entry.backendProcessId, affectedRows,
         ...(entry.serverMessages ? { serverMessages: entry.serverMessages } : {}),
         ...(registration?.allOrNoneRows !== undefined
           ? { rowOutcome: { allOrNoneRows: registration.allOrNoneRows, affectedRows } } : {}),
@@ -1047,7 +1172,12 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       outstanding.delete(entry.id); pending--; notify();
     };
     const query = function(this: Query, ...args: unknown[]) {
-      if (!active.getStore()) return Reflect.apply(originalQuery, this, args);
+      if (!active.getStore()) {
+        // A transaction cannot be proved if this physical Client executes an
+        // unobserved statement between its recorded BEGIN and COMMIT.
+        if (serverWrites.length && seenClients.has(this)) captureFailed = true;
+        return Reflect.apply(originalQuery, this, args);
+      }
       late ||= sealed;
       const id = `${input.attemptId}:store:${ids.length + 1}:node:${ids.length + 1}`;
       const admission: typeof admissions[number] = {
@@ -1158,6 +1288,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
           const original = { message: field('message'), severity: field('severity'), code: field('code'),
             detail: field('detail'), where: field('where') };
           const associated = entry?.client === this && submitted.get(this) === entry ? entry : undefined;
+          if (associated && backendProcessId(this) !== associated.backendProcessId) captureFailed = true;
           if (associated) associated.serverMessages?.notices.push(original);
           notifySql({ id: associated ? associated.id : `${input.attemptId}:unattributed-notice:${++unattributedNotices}`,
             pool: driver.pool, phase: 'notice', query: typeof associated?.query?.text === 'string' ? associated.query.text : null,
@@ -1181,7 +1312,8 @@ export function observeGroundedStoreOperations<T extends object>(input: {
           const status = message?.status;
           const transactionStatus = status === 'I' || status === 'T' || status === 'E' ? status : null;
           const query = Reflect.apply(originalActiveQuery, this, []);
-          if ((query && query !== entry.query) || transactionStatus === null) captureFailed = true;
+          if ((query && query !== entry.query) || transactionStatus === null
+            || backendProcessId(this) !== entry.backendProcessId) captureFailed = true;
           if (entry.serverMessages) entry.serverMessages.transactionStatus = transactionStatus;
           notifySql({ id: entry.id, pool: driver.pool, phase: 'ready',
             query: typeof entry.query?.text === 'string' ? entry.query.text : null,
@@ -1393,15 +1525,17 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       return true;
     }).map(([id]) => id));
     const pendingIds = [...outstanding].filter(id => !excluded.has(id));
+    const complete = sealed && pendingIds.length === 0 && pending === outstanding.size && !late && !captureFailed
+      && awaitingServerReady.size === 0 && (restored || restorers.every(hook => hook.intact()));
+    const capturedRows = structuredClone(rows);
+    qualifyGroundedServerWrites(capturedRows, complete, serverWrites);
     return { scope: { ...input.scope }, sourceRef: input.sourceRef,
-      complete: sealed && pendingIds.length === 0 && pending === outstanding.size && !late && !captureFailed
-        && awaitingServerReady.size === 0
-        && (restored || restorers.every(hook => hook.intact())),
+      complete,
       diagnostics: { pending: pendingIds.length, pendingIds, late, captureFailed,
         serverMessagesPending: [...awaitingServerReady],
         hooksIntact: restored || restorers.every(hook => hook.intact()), admissions: structuredClone(admissions),
         excludedUnexecutedIds: [...excluded] },
-      ids: ids.filter(id => !excluded.has(id)), rows: structuredClone(rows) };
+      ids: ids.filter(id => !excluded.has(id)), rows: capturedRows };
   };
   return { deps, run: <R>(fn: () => R): R => {
       if (restored) throw new Error('GEC store recorder already restored');

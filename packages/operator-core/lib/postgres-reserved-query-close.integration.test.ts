@@ -34,6 +34,111 @@ describe('postgres.js reserved query queue after backend close', () => {
     await db?.cleanup();
   });
 
+  it('qualifies installed DBOS server defaults and clocks through its actual writers', async () => {
+    const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
+    const { reviewedDurableServerValues, reviewedDurableDbosSql } = await import('../test/_durable-orchestration-capture');
+    const isolated = await createFreshPgDb('dbos-server-values');
+    const require = createRequire(import.meta.url);
+    const sdkDirectory = dirname(require.resolve('@dbos-inc/dbos-sdk'));
+    type Database = { init(): Promise<void>; destroy(): Promise<void>;
+      createApplicationVersion(name: string, owner: string): Promise<void>;
+      updateWorkflowStatus(client: pg.PoolClient, id: string, status: string, options: {
+        update: { output: string; resetDeduplicationID: boolean; setCompletedAt: boolean };
+        where: { status: string }; throwOnFailure: boolean;
+      }): Promise<number> };
+    const { SystemDatabase } = require(join(sdkDirectory, 'system_database.js')) as {
+      SystemDatabase: new (...args: unknown[]) => Database };
+    const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const systemDatabase = digest(await readFile(join(sdkDirectory, 'system_database.js')));
+    const serverMessageSourceRef = 'source:pg/lib/client.js@'
+      + digest(await readFile(new URL('../../../node_modules/pg/lib/client.js', import.meta.url))) + '#NoticeResponse+ReadyForQuery';
+    const marker = digest(`actual-dbos-server-values:${process.pid}:${performance.now()}`);
+    const scope = { workspaceId: 'gec-dbos-server-values', potId: 'gec', harness: 'gec', runId: marker,
+      ownerId: 'gec-dbos-server-values', caseId: 'N7', arm: 'pre' as const, iteration: 1,
+      manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: 'native-private-pg', sourceFingerprint: systemDatabase,
+      testFingerprint: digest(await readFile(new URL(import.meta.url))), runtimeFingerprint: process.version,
+      configFingerprint: 'actual-sdk-after-row-defaults' };
+    let pool = new pg.Pool({ connectionString: isolated.url, max: 2 });
+    const setup = postgres(isolated.url, { max: 1, onnotice: () => {} });
+    const quiet = () => {};
+    let database = new SystemDatabase(isolated.url, { debug: quiet, info: quiet, warn: quiet, error: quiet }, {},
+      2, pool, 'dbos', false);
+    let tap: ReturnType<typeof observeGroundedStoreOperations> | undefined;
+    try {
+      await database.init();
+      await setup`INSERT INTO dbos.workflow_status (workflow_uuid, status, name, updated_at)
+        VALUES ('original-clock', 'PENDING', 'fixture', 0)`;
+      const catalog = [...await setup`SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = 'dbos' AND table_name IN ('workflow_status', 'operation_outputs', 'application_versions')
+        ORDER BY table_name, ordinal_position`];
+      const columns = Object.fromEntries(['workflow_status', 'operation_outputs', 'application_versions']
+        .map(table => [table, catalog.filter(row => row.table_name === table).map(row => String(row.column_name))])) as
+        Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
+      const fixture = reviewedDurableServerValues({ systemDatabase, serverMessageSourceRef, marker, columns,
+        catalogSourceRef: 'private-pg:information_schema.columns@' + digest(JSON.stringify(catalog)) });
+      expect(fixture).not.toBeNull();
+      for (const statement of fixture!.ddl) await setup.unsafe(statement);
+      // A Client binds its protocol listeners at connect time. Bootstrap uses
+      // a separate pool so every measured connection binds the installed hooks.
+      await database.destroy();
+      await pool.end();
+      pool = new pg.Pool({ connectionString: isolated.url, max: 2 });
+      database = new SystemDatabase(isolated.url, { debug: quiet, info: quiet, warn: quiet, error: quiet }, {},
+        2, pool, 'dbos', false);
+      tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: `test:${scope.testFingerprint}`,
+        attemptId: marker, nodePostgres: [{ pool: 'child-dbos-all-clients', clientPrototype: pg.Client.prototype,
+          queryPrototype: pg.Query.prototype, serializerSourceRef: 'installed-original-pg-mapper', serverMessageSourceRef }],
+        nonPersistingSql: reviewedDurableDbosSql({ systemDatabase }), serverSqlWrites: fixture!.serverSqlWrites });
+      await tap.run(() => database.createApplicationVersion('original-default', 'server-value-owner'));
+      await tap.run(() => database.createApplicationVersion('original-default', 'server-value-owner'));
+      await tap.run(async () => {
+        const client = await pool.connect();
+        try { expect(await database.updateWorkflowStatus(client, 'original-clock', 'SUCCESS', {
+          update: { output: 'original λ.😺', resetDeduplicationID: true, setCompletedAt: true },
+          where: { status: 'PENDING' }, throwOnFailure: false,
+        })).toBe(1); } finally { client.release(); }
+      });
+      const census = tap.seal();
+      // Retain failed as well as passing observations before any assertion can
+      // interrupt the test; a completeness failure must remain diagnosable.
+      if (process.env.PAPERCUSP_TEST_ARTIFACT_DIR) await writeFile(join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,
+        'gec-actual-dbos-server-values.json'), JSON.stringify({ scope, catalog, fixture, census }));
+      expect(census.complete, JSON.stringify(census.diagnostics)).toBe(true);
+      const writes = census.rows.filter(row => row.sql?.serverWrite);
+      expect(writes).toHaveLength(5);
+      expect(writes.every(row => Number.isSafeInteger(row.persistedBytes)
+        && row.sql?.serverWrite?.outcome === 'committed')).toBe(true);
+      expect(writes.filter(row => row.sql?.affectedRows === 0).every(row => row.persistedBytes === 0)).toBe(true);
+      const inserted = writes.find(row => row.sql?.command === 'INSERT' && row.sql.affectedRows === 1)!;
+      expect(inserted.sql?.serverWrite?.values[0]).toEqual(expect.arrayContaining([
+        expect.objectContaining({ column: 'version_timestamp', changed: true, bytes: expect.any(Number) }),
+        expect.objectContaining({ column: 'created_at', changed: true, bytes: expect.any(Number) }),
+      ]));
+      const updated = writes.find(row => row.sql?.command === 'UPDATE' && row.sql.affectedRows === 1)!;
+      const [stored] = await setup`SELECT output, updated_at::text, completed_at::text FROM dbos.workflow_status
+        WHERE workflow_uuid = 'original-clock'`;
+      expect(updated.sql?.serverWrite?.values[0]).toEqual(expect.arrayContaining([
+        { column: 'updated_at', changed: true, bytes: Buffer.byteLength(stored!.updated_at), sha256: digest(stored!.updated_at) },
+        { column: 'completed_at', changed: true, bytes: Buffer.byteLength(stored!.completed_at), sha256: digest(stored!.completed_at) },
+      ]));
+      expect(stored!.output).toBe('original λ.😺');
+      for (const row of writes) {
+        const original = row.sql!.serverMessages!.notices.filter(n => n.message === 'GEC-SERVER-VALUES-v1')
+          .flatMap(n => JSON.parse(n.detail!).values);
+        expect(row.persistedBytes).toBe(original.reduce((sum: number, value: { changed: boolean; hex: string | null }) =>
+          sum + (value.changed && value.hex !== null ? Buffer.from(value.hex, 'hex').byteLength : 0), 0));
+      }
+    } finally {
+      tap?.restore();
+      try { await database.destroy(); }
+      finally {
+        // The SDK deliberately does not close a caller-owned Pool.
+        try { await pool.end(); }
+        finally { await setup.end({ timeout: 5 }); await isolated.cleanup(); }
+      }
+    }
+  }, 60_000);
+
   it('records original JSON and dynamic-builder serializer outputs without serializing again', async () => {
     const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
     const source = await readFile(new URL('../../../node_modules/postgres/src/connection.js', import.meta.url));
@@ -282,6 +387,97 @@ describe('postgres.js reserved query queue after backend close', () => {
     } finally {
       tap.restore(); await Promise.all(clients.map(client => client.end()));
     }
+  });
+
+  it('node-postgres server value qualification joins original defaults, queued statements and real commit outcomes', async () => {
+    const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
+    const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const clientSource = await readFile(new URL('../../../node_modules/pg/lib/client.js', import.meta.url));
+    const testHash = digest(await readFile(new URL(import.meta.url)));
+    const marker = digest(`exclusive-server-value-fixture:${process.pid}:${performance.now()}`);
+    const serverMessageSourceRef = `source:pg/lib/client.js@${digest(clientSource)}#NoticeResponse+ReadyForQuery`;
+    const scope = { workspaceId: 'gec-server-value', potId: 'gec', harness: 'gec', runId: marker,
+      ownerId: 'gec-server-value', caseId: 'N7', arm: 'pre' as const, iteration: 1,
+      manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: 'native-private-pg', sourceFingerprint: digest(clientSource),
+      testFingerprint: testHash, runtimeFingerprint: process.version, configFingerprint: 'exclusive-after-row-utf8-values' };
+    await sql`CREATE TABLE server_qualified_values (key text PRIMARY KEY, value text,
+      stamp text DEFAULT clock_timestamp()::text, enabled boolean DEFAULT true)`;
+    const trigger = `CREATE FUNCTION retain_qualified_value() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE NOTICE USING MESSAGE = 'GEC-SERVER-VALUES-v1', DETAIL = json_build_object(
+          'marker', '${marker}', 'backend', pg_backend_pid(),
+          'transactionId', pg_current_xact_id()::text,
+          'queryHash', encode(sha256(convert_to(current_query(), 'UTF8')), 'hex'),
+          'schema', TG_TABLE_SCHEMA, 'table', TG_TABLE_NAME, 'operation', TG_OP, 'rowId', NEW.ctid::text,
+          'values', json_build_array(
+            json_build_object('column', 'key', 'hex', encode(convert_to(NEW.key::text, 'UTF8'), 'hex'),
+              'changed', TG_OP = 'INSERT' OR OLD.key IS DISTINCT FROM NEW.key),
+            json_build_object('column', 'value', 'hex', encode(convert_to(NEW.value::text, 'UTF8'), 'hex'),
+              'changed', TG_OP = 'INSERT' OR OLD.value IS DISTINCT FROM NEW.value),
+            json_build_object('column', 'stamp', 'hex', encode(convert_to(NEW.stamp::text, 'UTF8'), 'hex'),
+              'changed', TG_OP = 'INSERT' OR OLD.stamp IS DISTINCT FROM NEW.stamp),
+            json_build_object('column', 'enabled', 'hex', encode(convert_to(NEW.enabled::text, 'UTF8'), 'hex'),
+              'changed', TG_OP = 'INSERT' OR OLD.enabled IS DISTINCT FROM NEW.enabled)))::text;
+        RETURN NEW;
+      END $$`;
+    await sql.unsafe(trigger);
+    await sql.unsafe('CREATE TRIGGER retain_qualified_value AFTER INSERT OR UPDATE ON server_qualified_values '
+      + 'FOR EACH ROW EXECUTE FUNCTION retain_qualified_value()');
+    const insert = 'INSERT INTO server_qualified_values (key,value) VALUES ($1,$2) ON CONFLICT DO NOTHING';
+    const update = 'UPDATE server_qualified_values SET value=$2 WHERE key=$1';
+    const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: `test:${testHash}`,
+      attemptId: marker, nodePostgres: [{ pool: 'actual-pg', clientPrototype: pg.Client.prototype,
+        queryPrototype: pg.Query.prototype, serializerSourceRef: 'source:installed-pg-original-mapper', serverMessageSourceRef }],
+      nonPersistingSql: (['BEGIN', 'COMMIT', 'ROLLBACK'] as const).map(command => ({ queryHash: digest(command),
+        command, status: 'ok', kind: 'control', sourceRef: 'test:exact-transaction-controls' })),
+      serverSqlWrites: ([['INSERT', insert], ['UPDATE', update]] as const).map(([command, statement]) => ({
+        pool: 'actual-pg', queryHash: digest(statement), command, sourceRef: `test:${testHash}#server-value-writers`,
+        triggerSourceRef: `test:after-row-trigger@${digest(trigger)}`, serverMessageSourceRef, marker,
+        schema: 'public', table: 'server_qualified_values', columns: ['key', 'value', 'stamp', 'enabled'], exclusive: true })) });
+    const clients = [new pg.Client({ connectionString: db.url }), new pg.Client({ connectionString: db.url })];
+    try {
+      await Promise.all(clients.map(client => client.connect()));
+      const run = (index: number, statement: string, args?: unknown[]) => tap.run(() => clients[index]!.query(statement, args));
+      await Promise.all([run(0, insert, ['first', 'λ.😺']), run(0, insert, ['queued', null]), run(1, insert, ['other', ''])]);
+      await run(0, 'BEGIN'); await run(0, insert, ['committed', 'committed-value']);
+      // A second backend can commit independently while the first holds T.
+      await run(1, insert, ['parallel', 'other-transaction']); await run(0, 'COMMIT');
+      await run(0, 'BEGIN'); await run(0, insert, ['rolled-back', 'never-persisted']); await run(0, 'ROLLBACK');
+      await run(1, insert, ['first', 'ignored-conflict']);
+      await run(1, update, ['first', 'λ.😺']);
+      await run(1, update, ['first', 'changed']);
+      const census = tap.seal(), writes = census.rows.filter(row => row.sql?.serverWrite);
+      expect(census.complete).toBe(true); expect(writes).toHaveLength(9);
+      const original = (row: typeof writes[number]) => row.sql!.serverMessages!.notices
+        .filter(n => n.message === 'GEC-SERVER-VALUES-v1').map(n => JSON.parse(n.detail!));
+      const rollback = writes.find(row => original(row)[0]?.values[0]?.hex === Buffer.from('rolled-back').toString('hex'))!;
+      expect(rollback.persistedBytes).toBeNull(); expect(rollback.sql?.serverWrite?.outcome).toBe('rolled-back');
+      for (const row of writes.filter(row => row !== rollback)) {
+        const expected = original(row).flatMap(receipt => receipt.values).reduce((sum: number, value: { hex: string | null; changed: boolean }) =>
+          sum + (value.changed && value.hex !== null ? Buffer.from(value.hex, 'hex').byteLength : 0), 0);
+        expect(row.persistedBytes).toBe(expected); expect(row.sql?.serverWrite?.outcome).toBe('committed');
+        expect(row.sql?.serverWrite?.commitQueryId).toBeTruthy();
+      }
+      const explicit = writes.find(row => original(row)[0]?.values[0]?.hex === Buffer.from('committed').toString('hex'))!;
+      expect(explicit.sql?.serverWrite?.commitQueryId).toBe(census.rows.find(row => row.sql?.command === 'COMMIT')!.id);
+      const saved = await sql`SELECT key, value, stamp, enabled FROM server_qualified_values ORDER BY key`;
+      expect(saved.map(row => row.key)).toEqual(['committed', 'first', 'other', 'parallel', 'queued']);
+      for (const row of writes.filter(row => row !== rollback)) {
+        for (const receipt of original(row)) {
+          const fields = Object.fromEntries(receipt.values.map((v: { column: string; hex: string | null }) =>
+            [v.column, v.hex === null ? null : Buffer.from(v.hex, 'hex').toString('utf8')]));
+          const stored = saved.find(r => r.key === fields.key)!;
+          expect(fields.stamp).toBe(stored.stamp);
+          expect(fields.enabled).toBe(String(stored.enabled));
+        }
+      }
+      expect(writes[0]!.sql?.serverWrite?.values[0]?.find(v => v.column === 'stamp')?.bytes).toBeGreaterThan(0);
+      // Unchanged UPDATE and conflict insert both measure zero despite positive
+      // UPDATE rowCount. The changed UPDATE measures only the changed text value.
+      expect(writes.slice(-3).map(row => row.persistedBytes)).toEqual([0, 0, Buffer.byteLength('changed')]);
+      if (process.env.PAPERCUSP_TEST_ARTIFACT_DIR) await writeFile(join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,
+        'gec-qualified-server-values.json'), JSON.stringify({ scope, trigger, census, saved }));
+    } finally { tap.restore(); await Promise.all(clients.map(client => client.end())); }
   });
 
   it('records node-postgres Pool and bootstrap Clients with original serialization and terminal-loss controls', async () => {
