@@ -92,6 +92,45 @@ describe('causal-mechanism claims — ordinary carry prose is not a mechanism cl
   });
 });
 
+describe('causal-mechanism claims — sentence and clause scope (EI-29006503444728666)', () => {
+  const status = 'Existing warm-loop bug remains open because causal repair/recurrence guard not established.';
+  const noActions = 'No P003 poll/takeover, source edit, kill, live resume, duplicate admission request or no-pickup rearm.';
+  const causalClaim = 'The guard drops the row because the cap is 200.';
+
+  it.each([
+    `${status} ${noActions}`,
+    `${noActions} ${status}`,
+    status,
+    noActions,
+    `${status.replace(/\.$/, ';')} ${noActions}`,
+    'The guard remains open because repair evidence is missing. No kill, drop or skip was performed.',
+  ])('does not assemble a mechanism from separate status and action clauses: %s', (line) => {
+    expect(kinds(line)).not.toContain('unverified-mechanism-claim');
+    expect(kinds(line)).not.toContain('hedged-mechanism-claim');
+  });
+
+  it.each([
+    'The guard blocks completion because repair evidence is missing.',
+    `${status} ${causalClaim}`,
+    `${noActions} ${causalClaim}`,
+    `Verified the documentation. ${causalClaim}`,
+    `The cause is unconfirmed. ${causalClaim}`,
+    `The gate probably rejects the row because its cap is 10. ${causalClaim}`,
+    `${causalClaim} Verified the documentation.`,
+    'The guard drops `foo; bar` because the cap is 200.',
+    'The guard drops `foo. bar` because the cap is 200.',
+    'src/check.ts drops the row because the cap is 200.',
+  ])('retains a real unsupported mechanism regardless of neighboring status: %s', (line) => {
+    expect(kinds(line)).toContain('unverified-mechanism-claim');
+  });
+
+  it('retains the hedge on the causal clause itself', () => {
+    const line = `${status} The gate probably drops the row because its cap is 200.`;
+    expect(kinds(line)).toContain('hedged-mechanism-claim');
+    expect(kinds(line)).not.toContain('unverified-mechanism-claim');
+  });
+});
+
 describe('causal-mechanism claims — hedged is downgraded, not accused', () => {
   const HEDGED = 'The gate probably drops the row because the cap is 200.';
 

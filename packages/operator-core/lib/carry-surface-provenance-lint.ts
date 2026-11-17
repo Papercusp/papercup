@@ -746,17 +746,36 @@ const MECHANISM_EVIDENCE_RE =
 const MECHANISM_QUESTION_RE =
   /\b(?:whether|why\s+does|why\s+(?:\w+\s+){1,4}(?:wait(?:s|ing)?|block(?:ed|ing|s)?|need(?:s)?|require(?:s)?|depend(?:s)?|gate(?:d|s)?)|does\s+the|verify|confirm\s+that|check\s+whether|find\s+out)\b/i;
 
-/** Classify a line's causal-mechanism claim, or null when it makes none. */
+/** Classify each prose clause independently, retaining the loudest claim on the line. */
 function classifyMechanismClaim(
   line: string,
 ): 'unverified-mechanism-claim' | 'hedged-mechanism-claim' | null {
-  if (!MECHANISM_VERB_RE.test(line)) return null;
-  if (!MECHANISM_BINDER_RE.test(line)) return null;
-  if (!MECHANISM_ARTIFACT_RE.test(line)) return null;
-  if (MECHANISM_QUESTION_RE.test(line)) return null;
-  if (MECHANISM_EVIDENCE_RE.test(line)) return null;
-  if (SOURCE_TAG_RE.test(line)) return null;
-  return MECHANISM_HEDGE_RE.test(line) ? 'hedged-mechanism-claim' : 'unverified-mechanism-claim';
+  // EI-29006503444728666: independent line-wide tests borrowed `because` and
+  // `guard` from a lifecycle status, then `kill` from the next sentence's list
+  // of actions NOT taken. Evidence/hedges on neighboring claims also incorrectly
+  // cleared/downgraded real mechanisms. Keep all detection and clearance local.
+  // Inline code is one token: punctuation in a quoted command is not prose,
+  // and a dot inside file.ts is not followed by whitespace, so paths stay intact.
+  const clauses: string[] = [];
+  let start = 0;
+  for (const token of line.matchAll(/`[^`]*`|[.!?;]\s+/g)) {
+    if (token[0].startsWith('`')) continue;
+    clauses.push(line.slice(start, token.index));
+    start = token.index + token[0].length;
+  }
+  clauses.push(line.slice(start));
+  let hedged = false;
+  for (const clause of clauses) {
+    if (!MECHANISM_VERB_RE.test(clause)) continue;
+    if (!MECHANISM_BINDER_RE.test(clause)) continue;
+    if (!MECHANISM_ARTIFACT_RE.test(clause)) continue;
+    if (MECHANISM_QUESTION_RE.test(clause)) continue;
+    if (MECHANISM_EVIDENCE_RE.test(clause)) continue;
+    if (SOURCE_TAG_RE.test(clause)) continue;
+    if (!MECHANISM_HEDGE_RE.test(clause)) return 'unverified-mechanism-claim';
+    hedged = true;
+  }
+  return hedged ? 'hedged-mechanism-claim' : null;
 }
 
 /**

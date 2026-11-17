@@ -1972,6 +1972,9 @@ export async function reconcileLoopRoutines(
           ownerId: row.target_owner_id,
           nowMs,
           dryRun: true,
+          // Reuse the terminal guard's exact-fire native-successor reset without
+          // repairing wakes, changing the schedule, or claiming loop-origin proof.
+          resetVerifiedSuccessorStreak: true,
         });
         if (
           activeExecution.state?.status === 'running' &&
