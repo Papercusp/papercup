@@ -6,6 +6,7 @@ import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isCliEntry } from '../lib/util/cli-entry';
+import type { NativeProofInput } from '../lib/testing-run-store';
 // @ts-ignore -- reuse the maintained strict resolver, never a custom installer.
 import { metadataRepairInputLayout, resolveMetadataRepairLock } from '../../../scripts/npm-install-safe.mjs';
 
@@ -71,6 +72,21 @@ export function baselineLockDelta(beforeBytes: Buffer, afterBytes: Buffer) {
   const { packages: _beforePackages, ...metadataBefore } = before;
   const { packages: _afterPackages, ...metadataAfter } = after;
   return { metadataBefore, metadataAfter, packages };
+}
+
+/** Match the full selected population (including absence) and deterministic
+ * repair plan before ci/build. Observed outputs cannot mint another edition. */
+export function assertBaselinePlannedRepair(input: Pick<NativeProofInput, 'selectedInputs' | 'plannedRepair'>,
+  snapshot: Map<string, Buffer | null>, repaired: Buffer, delta: Buffer) {
+  const selected = Object.fromEntries([...snapshot].map(([path, bytes]) =>
+    [path, bytes === null ? null : digest(bytes)]));
+  assert.deepEqual(selected, input.selectedInputs, 'baseline_prelaunch_selected_inputs_changed');
+  const graph = JSON.parse(repaired.toString()).packages;
+  assert.ok(graph && typeof graph === 'object' && !Array.isArray(graph), 'baseline_prelaunch_graph_missing');
+  const candidateGraph = Buffer.from(JSON.stringify(graph));
+  assert.deepEqual({ lockSha256: digest(repaired), packageDeltaSha256: digest(delta),
+    candidateGraphSha256: digest(candidateGraph) }, input.plannedRepair, 'baseline_prelaunch_repair_changed');
+  return candidateGraph;
 }
 
 /** Retain rejected bytes as evidence only; never apply them to the source. */

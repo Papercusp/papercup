@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import { findBoxIdentityPaths, findIdentityLiterals, resolveIdentityLiterals } from '../../../scripts/lib/identity-leak-patterns.mjs';
-import { assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
+import { assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
   baselineProductBoundary, baselineRepairFailureArtifacts,
   retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
 
@@ -33,6 +33,22 @@ function readFrozenBaseline(raw: Uint8Array) {
 }
 
 describe('managed artifact pre-feature baseline custody', () => {
+  it('refuses the actual fresh native fixture before runtime creation when its serialized handoff is missing', () => {
+    const root = resolve(import.meta.dirname, '../../..');
+    const result = spawnSync(process.execPath, ['--import', 'tsx',
+      join(root, 'packages/operator-core/test/task-artifacts-baseline-http-fixture.ts')], {
+      cwd: root, encoding: 'utf8', timeout: 30_000, env: { ...process.env,
+        NODE_OPTIONS: '', PAPERCUSP_TEST_RUNS_DB_URL: '',
+        TASK_ARTIFACT_BASELINE_EVIDENCE_DIR: '/must-not-create-native-runtime',
+      },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Original durable native child handoff required before private runtime creation');
+    expect(result.stderr).not.toContain('Vitest failed to access its internal state');
+    expect(result.stdout).not.toContain('TASK_ARTIFACT_CLIENT_BASELINE_RECEIPT');
+  }, 45_000);
+
   it('preserves original adapter bytes under the independently captured edition digest', () => {
     const baseline = readFrozenBaseline(bytes);
     expect(baseline.sourceSha).toBe(SOURCE_SHA);
@@ -76,6 +92,37 @@ describe('managed artifact pre-feature baseline custody', () => {
 });
 
 describe('separately qualified baseline dependency repair custody', () => {
+  it('binds the complete prelaunch input population and actual repair bytes before install', () => {
+    const snapshot = new Map<string, Buffer | null>([['package.json', Buffer.from('{"name":"original"}')],
+      ['package-lock.json', Buffer.from('original lock')], ['.npmrc', null]]);
+    const graph = { '': { name: 'original' }, 'node_modules/runtime': { version: '1.0.0' } };
+    const repaired = Buffer.from(JSON.stringify({ lockfileVersion: 3, packages: graph }));
+    const delta = Buffer.from(JSON.stringify({ packages: [{ path: 'node_modules/runtime', before: null,
+      after: graph['node_modules/runtime'] }] }));
+    const input = { selectedInputs: Object.fromEntries([...snapshot].map(([path, bytes]) =>
+      [path, bytes === null ? null : sha256(bytes)])), plannedRepair: {
+      lockSha256: sha256(repaired), packageDeltaSha256: sha256(delta),
+      candidateGraphSha256: sha256(JSON.stringify(graph)),
+    } };
+    expect(assertBaselinePlannedRepair(input, new Map([...snapshot].reverse()), repaired, delta))
+      .toEqual(Buffer.from(JSON.stringify(graph)));
+    const missing = new Map(snapshot); missing.delete('.npmrc');
+    const introduced = new Map(snapshot); introduced.set('npm-shrinkwrap.json', null);
+    const changed = new Map(snapshot); changed.set('.npmrc', Buffer.from('legacy-peer-deps=true'));
+    for (const invalid of [missing, introduced, changed])
+      expect(() => assertBaselinePlannedRepair(input, invalid, repaired, delta))
+        .toThrow('baseline_prelaunch_selected_inputs_changed');
+    for (const field of ['lockSha256', 'packageDeltaSha256', 'candidateGraphSha256'] as const) {
+      const replaced = structuredClone(input); replaced.plannedRepair[field] = '0'.repeat(64);
+      expect(() => assertBaselinePlannedRepair(replaced, snapshot, repaired, delta), field)
+        .toThrow('baseline_prelaunch_repair_changed');
+    }
+    expect(() => assertBaselinePlannedRepair(input, snapshot, Buffer.from(repaired + '\n'), delta))
+      .toThrow('baseline_prelaunch_repair_changed');
+    expect(() => assertBaselinePlannedRepair(input, snapshot, repaired, Buffer.from(delta + '\n')))
+      .toThrow('baseline_prelaunch_repair_changed');
+  });
+
   it.each([true, false])('keeps failure diagnostics in the real retained packet after cleanup (candidate bytes: %s)', async hasBytes => {
     const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-packet-'));
     vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(root, 'canonical'));
