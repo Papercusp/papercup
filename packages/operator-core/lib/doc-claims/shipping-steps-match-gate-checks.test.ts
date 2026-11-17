@@ -1,4 +1,4 @@
-/** Portfolio P-005: judge every numbered shipping step against executable gate code.
+/** Portfolio P-005 / R-3: judge every numbered shipping step against executable gate code.
  * Reuses the canonical corpus and the existing ship gate; this is no second gate registry.
  */
 import { describe, expect, it } from 'vitest';
