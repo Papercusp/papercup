@@ -62,6 +62,45 @@ describe('phase binding writer census', () => {
     expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected, reason: '' }])).toThrow('review-proof-missing');
   });
 
+  it('retains ORM and SQL builder mutations without relying on another writer name', () => {
+    const statements = [
+      'db.insert(table).values(values).returning()',
+      'db.update(table).set({ owner, status }).where(predicate)',
+      'db.delete(table).where(predicate)',
+      'db.insertInto(table).values(values).onConflict(conflict)',
+      'db.updateTable(table).set(values).execute()',
+      'db.deleteFrom(table).where(predicate).execute()',
+      'db.mergeInto(table).using(source).whenMatchedThenUpdate(values)',
+      'db.upsert(table, values)',
+      'db["insert"](table).values(values)',
+    ];
+    for (const statement of statements) {
+      const inventory = inventoryPhaseWriters([source(`async function freshOrmWriter(db, table, values) { await ${statement}; }`)]);
+      const mutations = inventory.sites.filter(site => site.unresolved.includes('mutation-builder-target-requires-review'));
+      expect(mutations).toHaveLength(1);
+      expect(mutations[0]!.statement).toBe(statement);
+      expect(mutations[0]!.dynamicEdges).toContain('table');
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(mutations[0]!.id);
+      expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
+    }
+  });
+
+  it('preserves complete builder columns and opaque targets instead of inferring a safe relation', () => {
+    const statement = 'db.update(resolveTable(subject)).set({ owner, [column]: value, ...rest }).where(predicate)';
+    const inventory = inventoryPhaseWriters([source(`async function freshOrmWriter() { await ${statement}; }`)]);
+    const mutation = inventory.sites.find(site => site.unresolved.includes('mutation-builder-target-requires-review'))!;
+    expect(mutation.statement).toBe(statement);
+    expect(mutation.dynamicEdges).toContain('resolveTable(subject)');
+    expect(mutation.columns).toEqual(['owner']);
+    expect(mutation.unresolved).toContain('mutation-builder-columns-require-review');
+    expect(mutation.relations).toEqual([]);
+    const inspected = inventory.sites.map(site => review(site));
+    const missingTarget = inspected.map(row => row.siteId === mutation.id ? { ...row,
+      resolvedEdges: row.resolvedEdges.filter(edge => edge.edge !== 'resolveTable(subject)') } : row);
+    expect(reconcilePhaseWriterCensus(inventory, missingTarget).problems.find(row => row.id === mutation.id)!.reasons)
+      .toContain('unresolved-edge:resolveTable(subject)');
+  });
+
   it('discovers dormant literals renamed imports and dynamic relation targets', () => {
     const inventory = inventoryPhaseWriters([
       source(write),

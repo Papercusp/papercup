@@ -23,6 +23,13 @@ const mutationText = /\b(?:insert\s+into|update|delete\s+from|merge\s+into|creat
 const sqlMethod = /(?:^|\.)(?:unsafe|query|execute|exec)$/;
 const sqlInvocationText = /\b(?:query|execute|executemany|executescript|unsafe)\s*\(/i;
 const sqlReadText = /^\s*(?:select|with|call|do|execute)\b/i;
+// A builder call need not contain SQL or a known writer's name. These are
+// syntax frontiers only: even a same-spelled non-database method stays in the
+// population until its source-bound review establishes what it can mutate.
+const mutationBuilderMethods = new Set([
+  'insert', 'insertInto', 'update', 'updateTable', 'delete', 'deleteFrom',
+  'merge', 'mergeInto', 'upsert', 'replaceInto',
+]);
 
 export interface PhaseWriterSource { path: string; content: string }
 export interface PhaseWriterSite {
@@ -81,6 +88,58 @@ export interface PhaseWriterCoverage {
 function canonicalPath(path: string): boolean {
   return !!path && !path.includes('\0') && !path.includes('\\') && !path.startsWith('/')
     && path.split('/').every(part => !!part && part !== '.' && part !== '..');
+}
+
+/** Retain the whole fluent statement and every argument, rather than dropping
+ * values/where/conflict tails at the initial mutation call. Table expressions,
+ * spreads, computed columns and delegated values require explicit review.
+ */
+function mutationBuilder(node: ts.CallExpression, ast: ts.SourceFile) {
+  const member = (expression: ts.Expression): string | undefined =>
+    ts.isPropertyAccessExpression(expression) ? expression.name.text
+      : ts.isElementAccessExpression(expression) && ts.isStringLiteralLike(expression.argumentExpression)
+        ? expression.argumentExpression.text : undefined;
+  const method = member(node.expression);
+  if (!method || !mutationBuilderMethods.has(method)) return null;
+  const edges = new Set<string>(), columns = new Set<string>();
+  let chain = node, hasColumns = false, opaqueColumns = false;
+  const readColumns = (value: ts.Expression): void => {
+    if (ts.isArrayLiteralExpression(value)) {
+      if (!value.elements.length) opaqueColumns = true;
+      for (const element of value.elements) readColumns(element);
+    } else if (ts.isObjectLiteralExpression(value)) {
+      hasColumns = true;
+      for (const property of value.properties) {
+        if (ts.isSpreadAssignment(property) || ts.isComputedPropertyName(property.name)) opaqueColumns = true;
+        else if (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)
+          || ts.isNumericLiteral(property.name)) columns.add(property.name.text);
+        else opaqueColumns = true;
+      }
+    } else opaqueColumns = true;
+  };
+  const inspect = (call: ts.CallExpression) => {
+    for (const argument of call.arguments) edges.add(argument.getText(ast));
+    if (['set', 'values'].includes(member(call.expression) ?? '')) {
+      if (!call.arguments.length) opaqueColumns = true;
+      call.arguments.forEach(readColumns);
+    }
+  };
+  inspect(chain);
+  for (;;) {
+    const access = chain.parent;
+    if (!(ts.isPropertyAccessExpression(access) || ts.isElementAccessExpression(access))
+      || access.expression !== chain || !ts.isCallExpression(access.parent)
+      || access.parent.expression !== access) break;
+    chain = access.parent;
+    inspect(chain);
+  }
+  if (!node.arguments.length) edges.add('<missing-mutation-target>');
+  const unresolved = ['mutation-builder-target-requires-review'];
+  if (opaqueColumns || !hasColumns && !['delete', 'deleteFrom'].includes(method)) {
+    unresolved.push('mutation-builder-columns-require-review');
+  }
+  return { statement: chain.getText(ast), columns: [...columns].sort(compare),
+    dynamicEdges: [...edges], unresolved, callees: [node.expression.getText(ast)] };
 }
 
 /** The grammar walks nested WITH mutations and function bodies too. */
@@ -264,6 +323,11 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
             else add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
               'unresolved', { dynamicEdges: [args[0]?.getText(unit.ast) ?? '<missing-query>'],
                 unresolved: ['dynamic-sql-target-unresolved'] });
+          }
+          if (ts.isCallExpression(node)) {
+            const mutation = mutationBuilder(node, unit.ast);
+            if (mutation) add(source, operation(node), mutation.statement, unit.span(node).line,
+              'unresolved', mutation);
           }
           if (/\.(?:withAppendsHeld|appendBatch)$/.test(callee)
             || /\.append$/.test(callee) && /feature.claim|plan.item|work.item/i.test(source.content)) {
