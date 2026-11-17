@@ -50,6 +50,49 @@ async function state(id: string) {
 }
 
 describe('durable recovery against isolated Postgres', () => {
+  it('keeps an accepted successor reachable while its own bounded native-start observation begins', async () => {
+    const f = await routine('recovery-fresh-submission');
+    const prior = { status: 'blocked', reason: 'native-start-unverified', probes: 16, attempts: 1,
+      nextProbeAt: nowMs + 280_000, observedAt: nowMs - 20_000,
+      generation: '1:1:2', lastAttemptAt: nowMs - 80_000 };
+    await sql`UPDATE harness_shared.routines SET metadata = ${sql.json({ executionRecovery: prior })}
+      WHERE id = ${f.input.routineId}`;
+    Object.assign(f.host.execution!, { phase: 'unknown', turnStartedAt: null,
+      lastProgressAt: null, receivedAtMs: nowMs - 6_000 });
+    const autoPause = vi.fn(async () => {});
+    const resetFireErrors = vi.fn(async () => 1);
+    const guardInput = { sql, routineId: f.input.routineId, targetOwnerId: f.input.ownerId,
+      parkedForMs: 24 * 3600_000, intervalMs: 60_000,
+      stuckFireCount: comatoseStuckFiresForTermination(60_000), circuitOpen: true };
+    const guardDeps = {
+      probeReachability: async () => ({ reachable: true, channel: 'psu-socket', durableWhileAlive: true,
+        summary: 'live fixture host', awaitRepairable: false, wouldBeChannel: null }),
+      recoverCurrentExecution: (input: Parameters<typeof recoverExpectedLoopExecution>[0]) =>
+        recoverExpectedLoopExecution(input, { ...f.deps, resetFireErrors }),
+      autoPause,
+    };
+    const before = await state(f.input.routineId);
+    expect(await checkUnreachableTerminalGuard(guardInput, guardDeps))
+      .toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
+    expect(await state(f.input.routineId)).toEqual(before);
+    expect(resetFireErrors).not.toHaveBeenCalled();
+
+    const observing = await recoverExpectedLoopExecution(f.input, { ...f.deps, resetFireErrors });
+    expect(observing).toMatchObject({ handled: true, rearmed: false,
+      state: { status: 'unknown', probes: 1, attempts: 1, nextProbeAt: nowMs + 30_000 } });
+    expect(await state(f.input.routineId)).toMatchObject({ active: true, parked: true,
+      metadata: { executionRecovery: observing.state } });
+    expect(resetFireErrors).not.toHaveBeenCalled();
+
+    Object.assign(f.host.execution!, { phase: 'running', turnStartedAt: nowMs - 1_000,
+      lastProgressAt: nowMs - 1_000 });
+    expect(await checkUnreachableTerminalGuard(guardInput, guardDeps))
+      .toMatchObject({ breach: false, reason: 'current-execution-active:native-operation' });
+    expect(resetFireErrors).toHaveBeenCalledTimes(1);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(f.deps.arm).not.toHaveBeenCalled();
+  });
+
   it.each(['scheduled', 'stopped', 'reassigned'] as const)(
     'does not pause a live successor after the routine became %s during a guard sweep',
     async changed => {

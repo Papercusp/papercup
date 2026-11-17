@@ -133,6 +133,70 @@ describe('expected loop execution recovery', () => {
     expect(decideLoopExecutionRecovery(i).action).toBe('recover');
   });
 
+  it('gives a newly accepted post-fire submission its own observation budget, preserving retries', () => {
+    const i = fixture();
+    i.host.execution!.phase = 'unknown';
+    i.host.execution!.turnStartedAt = null;
+    i.host.execution!.lastProgressAt = null;
+    i.host.execution!.receivedAtMs = nowMs - 6_000;
+    i.prior = { status: 'blocked', reason: 'native-start-unverified', probes: 16, attempts: 1,
+      nextProbeAt: nowMs + 280_000, observedAt: nowMs - 20_000,
+      generation: '1:1:2', lastAttemptAt: nowMs - 80_000 };
+
+    // EI-29048119208536830: the host accepted the prompt six seconds before
+    // auto-pause, and Codex produced its start twenty seconds after acceptance.
+    const first = decideLoopExecutionRecovery(i);
+    expect(first).toMatchObject({ action: 'observe', state: { status: 'unknown',
+      reason: 'native-start-unverified', probes: 1, attempts: 1,
+      lastAttemptAt: nowMs - 80_000, nextProbeAt: nowMs + 30_000 } });
+    expect(first.state.verifiedSuccessorFireAt).toBeUndefined();
+
+    // A restart preserves the new budget; repeated reads cannot renew it.
+    i.prior = JSON.parse(JSON.stringify(first.state));
+    i.nowMs++;
+    i.host.execution!.observedAt = i.nowMs;
+    i.inference.observedAt = i.nowMs;
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'observe',
+      state: { probes: 1, nextProbeAt: nowMs + 30_000 } });
+    for (let probe = 2; probe <= 3; probe++) {
+      i.nowMs = i.prior!.nextProbeAt;
+      i.host.execution!.observedAt = i.nowMs;
+      i.inference.observedAt = i.nowMs;
+      const next = decideLoopExecutionRecovery(i);
+      expect(next).toMatchObject({ action: probe === 3 ? 'block' : 'observe',
+        state: { probes: probe, attempts: 1 } });
+      i.prior = JSON.parse(JSON.stringify(next.state));
+    }
+  });
+
+  it.each(['before-prior', 'equal-prior', 'at-fire', 'future', 'wrong-child'])(
+    'does not renew exhausted probes without a fresh accepted submission: %s', condition => {
+      const i = fixture();
+      i.host.execution!.phase = 'unknown';
+      i.prior = { status: 'blocked', reason: 'native-start-unverified', probes: 16, attempts: 1,
+        nextProbeAt: nowMs + 300_000, observedAt: nowMs - 10_000,
+        generation: '1:1:2', lastAttemptAt: nowMs - 80_000 };
+      i.host.execution!.receivedAtMs = condition === 'before-prior' ? nowMs - 10_001
+        : condition === 'equal-prior' ? nowMs - 10_000
+          : condition === 'at-fire' ? i.firedAt
+            : condition === 'future' ? nowMs + 1 : nowMs - 6_000;
+      if (condition === 'wrong-child') i.host.execution!.childPid = 99;
+      expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block',
+        state: { probes: 16, attempts: 1, nextProbeAt: nowMs + 300_000 } });
+    },
+  );
+
+  it('does not replenish an exhausted retry budget when another submission fails', () => {
+    const i = fixture();
+    i.host.execution!.receivedAtMs = nowMs - 6_000;
+    i.host.execution!.lastProgressAt = nowMs - 35_000;
+    i.prior = { status: 'blocked', reason: 'native-start-retry-exhausted', probes: 16, attempts: 5,
+      nextProbeAt: nowMs + 300_000, observedAt: nowMs - 40_000,
+      generation: '1:1:2', lastAttemptAt: nowMs - 80_000 };
+    expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block',
+      state: { reason: 'native-start-retry-exhausted', attempts: 5 } });
+  });
+
   it('does not retry forever after repeated starts fail', () => {
     const i = fixture();
     for (let n = 0; n < 5; n++) {
