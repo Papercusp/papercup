@@ -12,6 +12,7 @@
  * the reserved `source-checks.slice` (P-009 / D-017) with a hard timeout.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { writeSyncCheckState } from './sync-check-dispatch-coverage';
 import {
   buildSyncBatchDeltaDeps,
   runBoundedArgv,
@@ -72,14 +73,9 @@ export function buildSyncLintGuardDeps(cfg: Omit<SyncBatchDeltaDepsConfig, 'file
     },
 
     async writeGuardState(next: SyncLintGuardState): Promise<void> {
-      // Scoped merge: the whole `sync_lint_guards` object is this leg's state; sibling
-      // metadata keys (health, last_skip_reason, ...) are left alone.
-      const { sql } = getOrgPg();
-      await sql`
-        UPDATE harness_shared.routines
-           SET metadata = COALESCE(metadata, '{}'::jsonb)
-                          || jsonb_build_object('sync_lint_guards', ${JSON.stringify(next)}::text::jsonb)
-         WHERE install_slug = ${cfg.installSlug} AND name = ${SYNC_LINT_GUARDS_ROUTINE_NAME}`;
+      await writeSyncCheckState(getOrgPg().sql, {
+        workspaceId: cfg.workspaceId, installSlug: cfg.installSlug, name: SYNC_LINT_GUARDS_ROUTINE_NAME,
+      }, 'sync_lint_guards', next);
     },
 
     async runGuard(script: SyncLintGuardScript): Promise<GuardRun> {

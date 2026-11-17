@@ -32,6 +32,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
+import { writeSyncCheckState } from './sync-check-dispatch-coverage';
 import { createOneWorkItem } from '../agent-tools/work_items/_create-core';
 import { getMessageById, sendMessage } from '../agent-tools/coordination/messages';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
@@ -269,16 +270,9 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
     },
 
     async writeCursor(next: SyncDeltaCursor): Promise<void> {
-      // Scoped merge that leaves sibling metadata keys alone — the
-      // `dead-target-sweep.ts` stampHealth precedent, one level up (the whole
-      // `sync_delta` object IS this check's state, so replacing it is correct).
-      const { sql } = getOrgPg();
-      const json = JSON.stringify(next);
-      await sql`
-        UPDATE harness_shared.routines
-           SET metadata = COALESCE(metadata, '{}'::jsonb)
-                          || jsonb_build_object('sync_delta', ${json}::text::jsonb)
-         WHERE install_slug = ${cfg.installSlug} AND name = ${SYNC_DELTA_ROUTINE_NAME}`;
+      await writeSyncCheckState(getOrgPg().sql, {
+        workspaceId: cfg.workspaceId, installSlug: cfg.installSlug, name: SYNC_DELTA_ROUTINE_NAME,
+      }, 'sync_delta', next);
     },
 
     hostLoad(): LoadReading | null {

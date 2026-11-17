@@ -173,6 +173,7 @@ vi.mock('./pool-pressure', async (importOriginal) => {
 
 vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
+vi.mock('../release/sync-check-dispatch-coverage', () => ({ recordSyncCheckDispatchCoverage: vi.fn(async () => {}) }));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { claimDueRoutine } from '../harness/routines/claim';
@@ -209,6 +210,7 @@ import {
   queueForRoutine,
 } from './routines-queue-classification';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { recordSyncCheckDispatchCoverage } from '../release/sync-check-dispatch-coverage';
 import { CaplessAdaptiveController } from '../resource-governor/controller';
 
 beforeEach(() => {
@@ -227,6 +229,47 @@ beforeEach(() => {
   state.clientEnqueue.mockImplementation(async (options: { workflowID?: string }) =>
     ({ workflowID: options.workflowID ?? 'client-routine-workflow' }));
 });
+
+it('records source-check opportunities before a pool shed can withhold the next action fire', async () => {
+  state.poolShedFixture = true;
+  const due = [{ id: 'delta', name: 'sync-batch-delta-check', targetRole: 'system:sync-batch-delta-check',
+    workspaceId: 'ws-1', installSlug: 'papercusp', nextFireAt: new Date(), lastFiredAt: null }] as RoutineRow[];
+  vi.mocked(listDueCronRoutines).mockResolvedValueOnce(due);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await state.scheduledTick!();
+    expect(recordSyncCheckDispatchCoverage).toHaveBeenCalledWith(expect.anything(), due, expect.any(Number));
+    expect(claimDueRoutine).not.toHaveBeenCalled();
+    expect(state.startWorkflow).not.toHaveBeenCalled();
+  } finally { warn.mockRestore(); }
+});
+
+it.each(['queue-credit', 'duplicate-enqueue'] as const)(
+  'retains source-check accounting when %s prevents a new action run', async outcome => {
+    state.poolShedFixture = true;
+    state.dispatchCredits = outcome === 'queue-credit' ? 0 : 1;
+    vi.mocked(poolPressure).mockResolvedValueOnce('ok');
+    const due = [{ id: 'delta', name: 'sync-batch-delta-check', targetRole: 'system:sync-batch-delta-check',
+      workspaceId: 'ws-1', installSlug: 'papercusp', nextFireAt: new Date(), lastFiredAt: null,
+      triggerConfig: { cron: '0 2/5 * * * *' }, concurrency: 'skip' }] as RoutineRow[];
+    vi.mocked(listDueCronRoutines).mockResolvedValueOnce(due);
+    if (outcome === 'duplicate-enqueue') {
+      vi.mocked(claimDueRoutine).mockResolvedValueOnce(true);
+      state.startWorkflow.mockImplementationOnce(() => async () => { throw new Error('Duplicate workflow'); });
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await state.scheduledTick!();
+      expect(recordSyncCheckDispatchCoverage).toHaveBeenCalledWith(expect.anything(), due, expect.any(Number));
+      expect(claimDueRoutine).toHaveBeenCalledTimes(outcome === 'queue-credit' ? 0 : 1);
+      expect(state.startWorkflow).toHaveBeenCalledTimes(outcome === 'queue-credit' ? 0 : 1);
+      if (outcome === 'duplicate-enqueue') {
+        expect(vi.mocked(recordSyncCheckDispatchCoverage).mock.invocationCallOrder[0])
+          .toBeLessThan(state.startWorkflow.mock.invocationCallOrder[0]!);
+      }
+    } finally { warn.mockRestore(); }
+  },
+);
 
 afterEach(() => {
   vi.useRealTimers();

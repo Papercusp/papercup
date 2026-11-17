@@ -85,6 +85,7 @@ import {
 } from './pool-pressure';
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
+import { recordSyncCheckDispatchCoverage } from '../release/sync-check-dispatch-coverage';
 import {
   anotherRoutinesTickInFlight,
   createInProcessPassRegistry,
@@ -1366,6 +1367,11 @@ async function routinesTickImpl(): Promise<void> {
   }
 
   const due = await DBOS.runStep(() => listDueCronRoutines(sql), { name: 'list-due-routines' });
+  // Accounting must not depend on a successful future action: these rows can
+  // remain due through pool/credit holds, or their fire can collapse via dedup.
+  await DBOS.runStep(() => recordSyncCheckDispatchCoverage(sql, due, Date.now()), {
+    name: 'source-check-dispatch-coverage',
+  });
   // routineFire workflow fan-out — one prior-cohort health epoch reads indexed
   // DBOS in-flight rows before claim/start, then the loop spends only its credit.
   const dispatchEpoch = await DBOS.runStep(

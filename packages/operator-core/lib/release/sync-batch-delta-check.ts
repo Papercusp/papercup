@@ -884,7 +884,7 @@ export function isScopeLaunchFailure(r: {
 /** One scheduled coverage opportunity. `measured` and `partial` come from the lint-guard
  *  routine (`sync-batch-lint-guards.ts`), which records its slots with this same machinery:
  *  `partial` = some guards gave no verdict, so their window is still unjudged. */
-export type CoverageTickStatus = SyncBatchDeltaStatus | 'missed-opportunity' | 'measured' | 'partial';
+export type CoverageTickStatus = SyncBatchDeltaStatus | 'missed-opportunity' | 'pending' | 'measured' | 'partial';
 
 export interface CoverageTick {
   atMs: number;
@@ -947,7 +947,7 @@ export const COVERAGE_JUDGE_DEADLINE_MS = 2 * SYNC_DELTA_RUN_BUDGET_MS + COVERAG
  *  unmeasured guard's older record, so the next tick re-measures it. `leg-timeout` and
  *  `radius-too-wide` advance the cursor PAST commits nobody judged, so they are never
  *  credited. */
-const LATE_CREDITABLE_STATUSES: ReadonlySet<CoverageTickStatus> = new Set(['skipped', 'missed-opportunity', 'partial']);
+const LATE_CREDITABLE_STATUSES: ReadonlySet<CoverageTickStatus> = new Set(['skipped', 'missed-opportunity', 'pending', 'partial']);
 
 /**
  * Credit earlier slots whose commits an evaluated run judged within the deadline.
