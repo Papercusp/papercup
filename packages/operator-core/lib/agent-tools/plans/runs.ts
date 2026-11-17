@@ -116,7 +116,7 @@ export async function setPlanRunStatus(
     await tx`
       UPDATE harness_shared.plan_runs
       SET status = ${status}, updated_at = ${Date.now()}
-      WHERE id = ${runId}
+      WHERE workspace_id = ${activeWorkspaceId()} AND id = ${runId}
     `;
   });
 }
@@ -145,7 +145,7 @@ export async function setPlanRunOutputs(
       UPDATE harness_shared.plan_runs
          SET outputs = ${JSON.stringify(outputs)}::text::jsonb,
              updated_at = ${Date.now()}
-       WHERE id = ${runId}
+       WHERE workspace_id = ${activeWorkspaceId()} AND id = ${runId}
        RETURNING id
     `;
     return rows.length > 0;
@@ -163,7 +163,7 @@ export async function readPlanRunCheckpoint(runId: number, scope: PlanRunCheckpo
   return withWorkspace(activeWorkspaceId(), async tx => {
     const rows = await tx<{ outputs: Record<string, unknown> | null }[]>`
       SELECT outputs FROM harness_shared.plan_runs
-      WHERE id=${runId} AND plan_slug=${scope.planSlug} AND harness_slug=${scope.harnessSlug}
+      WHERE workspace_id=${activeWorkspaceId()} AND id=${runId} AND plan_slug=${scope.planSlug} AND harness_slug=${scope.harnessSlug}
         AND session_id=${scope.sessionId}`;
     if (!rows.length) throw new Error('plan_run_checkpoint_not_found');
     return rows[0].outputs;
@@ -177,7 +177,7 @@ export async function compareAndSetPlanRunCheckpoint(runId: number, scope: PlanR
     const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
       SET outputs=${JSON.stringify(next)}::text::jsonb, updated_at=${Date.now()}, status=${complete ? 'done' : 'idle'}
-      WHERE id=${runId} AND plan_slug=${scope.planSlug} AND harness_slug=${scope.harnessSlug}
+      WHERE workspace_id=${activeWorkspaceId()} AND id=${runId} AND plan_slug=${scope.planSlug} AND harness_slug=${scope.harnessSlug}
         AND session_id=${scope.sessionId}
         AND ${prior === null ? tx`outputs IS NULL` : tx`outputs=${JSON.stringify(prior)}::text::jsonb`}
       RETURNING id`;
@@ -221,14 +221,14 @@ export async function sweepPlanRuns(
     const failedRows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
       SET status = 'failed', updated_at = ${now}
-      WHERE status = 'running'
+      WHERE workspace_id = ${activeWorkspaceId()} AND status = 'running'
         AND updated_at < ${now - PLAN_RUN_ORPHAN_FAIL_MS}
       RETURNING id
     `;
     const archivedRows = await tx<{ id: number }[]>`
       UPDATE harness_shared.plan_runs
       SET status = 'archived', updated_at = ${now}
-      WHERE status = 'idle'
+      WHERE workspace_id = ${activeWorkspaceId()} AND status = 'idle'
         AND updated_at < ${now - PLAN_RUN_IDLE_ARCHIVE_MS}
       RETURNING id
     `;
@@ -318,7 +318,7 @@ export async function getPlanRun(runId: number): Promise<PlanRunRow | null> {
              launched_by, launched_at, status, title, updated_at,
              run_type, trigger, outcome, finished_at, run_seq, instance_plan_slug
       FROM harness_shared.plan_runs
-      WHERE id = ${runId}
+      WHERE workspace_id = ${activeWorkspaceId()} AND id = ${runId}
     `;
     const r = rows[0];
     if (!r) return null;
@@ -358,7 +358,7 @@ export async function markPlanRunResumed(
       SET status = 'running',
           plan_content_hash = ${planContentHash},
           updated_at = ${Date.now()}
-      WHERE id = ${runId}
+      WHERE workspace_id = ${activeWorkspaceId()} AND id = ${runId}
         AND status <> 'running'
       RETURNING id
     `;
@@ -458,15 +458,15 @@ export async function listPlanRuns(
              r.launched_by, r.launched_at, r.status, r.title, r.updated_at,
              r.run_type, r.trigger, r.outcome, r.finished_at, r.run_seq, r.instance_plan_slug,
              r.result_summary,
-             NULLIF((SELECT COUNT(*) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id), 0) AS turn_count,
-             (SELECT COALESCE(SUM(t.cost_usd), 0) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS cost_usd,
+             NULLIF((SELECT COUNT(*) FROM harness_shared.plan_run_turns t WHERE t.workspace_id = r.workspace_id AND t.plan_run_id = r.id), 0) AS turn_count,
+             (SELECT COALESCE(SUM(t.cost_usd), 0) FROM harness_shared.plan_run_turns t WHERE t.workspace_id = r.workspace_id AND t.plan_run_id = r.id) AS cost_usd,
              (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
-                WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text) AS wi_total,
+                WHERE w.workspace_id = r.workspace_id AND w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text) AS wi_total,
              (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
-                WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
+                WHERE w.workspace_id = r.workspace_id AND w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
                   AND w.status IN ('passed', 'done', 'resolved', 'closed')) AS wi_passed,
              (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
-                WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
+                WHERE w.workspace_id = r.workspace_id AND w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text
                   AND w.status IN ('failed', 'dropped', 'deprecated')) AS wi_failed
       FROM harness_shared.plan_runs r
       WHERE r.workspace_id = ${activeWorkspaceId()} AND r.harness_slug = ${harnessSlug} AND r.plan_slug = ${planSlug}
@@ -528,19 +528,17 @@ export async function appendPlanRunTurn(
       SELECT
         ${activeWorkspaceId()},
         ${args.planRunId},
-        -- data-scoping-audit P-005: mirror the parent run's harness_slug so the
-        -- turn is directly scope-bearing (RLS/federation symmetry), not only via
-        -- a parent join. NULL if the parent run vanished (defensive; FK keeps it
-        -- present in practice).
-        (SELECT harness_slug FROM harness_shared.plan_runs WHERE id = ${args.planRunId}),
-        COALESCE(MAX(seq), 0) + 1,
+        r.harness_slug,
+        (SELECT COALESCE(MAX(t.seq), 0) + 1 FROM harness_shared.plan_run_turns t
+          WHERE t.workspace_id = r.workspace_id AND t.plan_run_id = r.id),
         ${args.role}, ${args.content},
         ${args.tokensIn ?? null}, ${args.tokensOut ?? null},
         ${args.costUsd ?? null}, ${now}
-      FROM harness_shared.plan_run_turns
-      WHERE plan_run_id = ${args.planRunId}
+      FROM harness_shared.plan_runs r
+      WHERE r.workspace_id = ${activeWorkspaceId()} AND r.id = ${args.planRunId}
       RETURNING seq
     `;
+    if (!rows.length) throw new Error('plan_run_not_found');
     return Number(rows[0].seq);
   });
 }
@@ -620,7 +618,7 @@ export async function readPlanRunTranscript(
   return withWorkspace(activeWorkspaceId(), async (tx) => {
     const runRows = await tx<{ id: number | string }[]>`
       SELECT id FROM harness_shared.plan_runs
-      WHERE session_id = ${sessionId}
+      WHERE workspace_id = ${activeWorkspaceId()} AND session_id = ${sessionId}
       LIMIT 1
     `;
     const run = runRows[0];
@@ -643,7 +641,7 @@ export async function readPlanRunTranscript(
     >`
       SELECT seq, role, content, created_at
       FROM harness_shared.plan_run_turns
-      WHERE plan_run_id = ${run.id} AND seq > ${cursor}
+      WHERE workspace_id = ${activeWorkspaceId()} AND plan_run_id = ${run.id} AND seq > ${cursor}
         ${queryFilter} ${beforeFilter}
       ORDER BY seq ASC
       LIMIT ${limit + 1}
