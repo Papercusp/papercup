@@ -25,7 +25,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { harnessRoot } from '@papercusp/harness/paths';
 import {
@@ -81,7 +81,10 @@ describe('P-014 clause 2 — the research (non-engineering) identity is Cupboard
   it('PAIRING: the engineering identity is publishable too — portability, not a one-sided flip', () => {
     const engineer = readManifest('papercusp-engineer');
     expect(engineer.id).toBe('papercusp-engineer');
-    expect(readBlueprintVisibility(engineer)).toBe('public');
+    const metadata = parseYaml(readFileSync(join(dirname(blueprintPath('papercusp-engineer')), 'cupboard.yaml'), 'utf8'));
+    expect(engineer).not.toHaveProperty('visibility');
+    expect(readBlueprintVisibility(engineer), 'missing identity curation stays fail-closed').toBe('internal');
+    expect(assertBlueprintVisibilityPublishable('papercusp-engineer', engineer, metadata)).toBe('public');
   });
 
   it('the marker is on the concrete file, not inherited — research declares it in its own bytes', () => {
