@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "StoreWolf retained migration proof integrity and historical semantic cross-check",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "-"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-17T13:52:23.366223+00:00",
+  "finishedAt": "2026-11-17T13:52:23.387967+00:00",
+  "summary": "Read-only integrity check of retained local evidence. Runtime observations remain historical; this is not a fresh live/deployed witness, acceptance grade, lifecycle waiver or shipment receipt. Original records and full namespace truth are preserved.",
+  "assertions": [
+    {
+      "id": "exported-files-complete-and-hash-pinned",
+      "passed": true,
+      "evidence": "Read complete bytes of all 11 evidence-index files and compared every byte length/SHA-256; omittedFiles=[]; empty checksum log included."
+    },
+    {
+      "id": "original-runtime-proofs-remain-byte-exact",
+      "passed": true,
+      "evidence": "Read all 7 original proof files named by final.proofs; every recorded byte length and SHA-256 matches. Raw PG artifact coordinates remain in evidence-index.json."
+    },
+    {
+      "id": "namespace-population-has-no-omission",
+      "passed": true,
+      "evidence": "Full source/target census namespace sets equal final namespacePopulation and checked sets: source=103, target=103, population=103, checked=103; no sliced input or bounded pass."
+    },
+    {
+      "id": "metadata-and-count-dispositions-match-complete-census",
+      "passed": true,
+      "evidence": "Compared every namespace's type/options/full sorted indexes and stored estimated counts. Exact internal count deltas: ['config.system.sessions', 'local.startup_log']; retained TTL/startup explanations present. Estimated counts do not prove document equality."
+    },
+    {
+      "id": "historical-cold-copy-has-zero-checksum-differences",
+      "passed": true,
+      "evidence": "Historical cold refresh completed; retained full rsync checksum exit=0 and zero-byte difference log. This check does not rerun the copy or claim post-start byte equality."
+    },
+    {
+      "id": "historical-tunnel-cutover-is-ordered",
+      "passed": true,
+      "evidence": "Retained source-stop <= provider-drain <= cloud-start timestamps and drained/configuration-unchanged observations; tunnel UUID=6345fa92-b37d-4e60-b871-3fe8d256b16a. No current connector census claimed."
+    },
+    {
+      "id": "historical-final-reboot-retains-successful-boot-and-safe-modes",
+      "passed": true,
+      "evidence": "Retained successful boot d6fa9e46-5450-47fb-99fe-220495f72eab and both application health responses live=false/databaseConnected=true. No reset, restart or fresh runtime probe performed."
+    },
+    {
+      "id": "historical-authenticated-read-semantic-controls-pass",
+      "passed": true,
+      "evidence": "Both historical phases cover all three hosts. Authenticated readonly sentinel returns Poll Not Found/running=false; unauthenticated requests carry an auth error even though transport status is 200. No new request or token capture."
+    },
+    {
+      "id": "historical-rollback-readback-pins-persistent-data-disk",
+      "passed": true,
+      "evidence": "Readback at 2026-11-17T10:51:45.998089+00:00 pins snapshot 3026971650485081332 to data disk 5055055104574981624 and intact source markers. Historical readback is not freshness at grading."
+    }
+  ],
+  "workItem": "WI-10000337",
+  "plan": "storewolf-central-server-cloud-deployment-2026-09-03",
+  "proofScope": "retained-file-integrity-and-historical-cross-check",
+  "currentRuntimeAcceptance": false,
+  "cloudOperationsPerformed": [],
+  "sourceIndex": {
+    "path": "docs/evidence/storewolf-migration-20261116/evidence-index.json",
+    "sha256": "6dcbf457e4617e1fc3ec90b8cbae612c127cbd2503a10767a1affb24314feca8"
+  },
+  "verifiedExports": [
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-auth-api-final-20261116.json",
+      "bytes": 3648,
+      "sha256": "af04af41beb74379c8f0a97acbb1d25a1c74f953b1414e76e09b1b0a8005ce50"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json",
+      "bytes": 126803,
+      "sha256": "2d03601c9b639357e7871f621e484d3a579318ed5fced9d983a87d0165a972ec"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-cutover-20261116.json",
+      "bytes": 10656,
+      "sha256": "718fa4da22ca0d403e4fa5ebae02b04158817f154f1ce910cdf31393b306d33b"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.checksum.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json",
+      "bytes": 747,
+      "sha256": "915a34b9cf66cff2720fbd8229e1ce7b7f17321c8c7189370c6cd6aa6149d393"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.transfer.log",
+      "bytes": 89709,
+      "sha256": "837e62abdee180fc9bd3d287060cb5ec84530c740326aa636c6bb4e37ad45041"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json",
+      "bytes": 45885,
+      "sha256": "f4317c594309b65e36f572cc736af79d15ecbd6ed32e783283668ec285b873ed"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-mongo8038-repair-20261116.json",
+      "bytes": 7751,
+      "sha256": "95f4f076297be439a83bce03e134156a3b69a0cc0ce7d8084e437cdd9e1f2cfa"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json",
+      "bytes": 14294,
+      "sha256": "b78aa036a3cdae8fc95dd46df2d5139fb4ba535d6d1af35270a3bd3080e3f59b"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-source-census-20261116.json",
+      "bytes": 98500,
+      "sha256": "3325cb9fbe78923534a1fa0a4768330899745df4425d739d5665c7bd8e5f5dca"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-startup-repair-20261116.json",
+      "bytes": 2470,
+      "sha256": "b4ef838216b4f5d17cece48bcf9f1e4d70f2933d6cede2c6d720c20d8f449191"
+    }
+  ],
+  "originalProofPaths": [
+    ".papercusp/scratch/storewolf-source-census-20261116.json",
+    ".papercusp/scratch/storewolf-cloud-census-20261116.json",
+    ".papercusp/scratch/storewolf-cutover-20261116.json",
+    ".papercusp/scratch/storewolf-mongo8038-repair-20261116.json",
+    ".papercusp/scratch/storewolf-startup-repair-20261116.json",
+    ".papercusp/scratch/storewolf-restart-final-20261116.json",
+    ".papercusp/scratch/storewolf-auth-api-final-20261116.json"
+  ],
+  "omissions": {
+    "files": [],
+    "namespaces": []
+  },
+  "futureAcceptance": "Bind only to a clause this local check actually proves. Runtime-plane clauses still require exact containing build, native runtime measurement, current adequacy and independent acceptance.",
+  "stdinProvenance": "Complete exact Python stdin is preserved in verification.stdin and the native session invocation. The recorded timestamps identify this local read-only check.",
+  "verification": {
+    "stdin": "import json,hashlib,pathlib,datetime,sys\nstart=datetime.datetime.now(datetime.timezone.utc).isoformat()\nroot=pathlib.Path.cwd(); base=root/'docs/evidence/storewolf-migration-20261116'\nread=lambda n:json.loads((base/n).read_text())\nindex=read('evidence-index.json'); final=read('storewolf-final-verification-20261116.json'); r2=read('storewolf-r2-readback-20261117.json'); auth=read('storewolf-auth-api-final-20261116.json'); reboot=read('storewolf-restart-final-20261116.json')\nchecks=[]\ndef check(id,passed,evidence): checks.append({'id':id,'passed':bool(passed),'evidence':evidence})\nhashes=[]\nfor entry in index['files']:\n b=(root/entry['path']).read_bytes(); hashes.append({'path':entry['path'],'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()})\ncheck('exported-files-complete-and-hash-pinned',len(hashes)==len(index['files']) and all(a['bytes']==b['bytes'] and a['sha256']==b['sha256'] for a,b in zip(hashes,index['files'])),f\"Read complete bytes of all {len(hashes)} evidence-index files and compared every byte length/SHA-256; omittedFiles=[]; empty checksum log included.\")\nraw=[]\nfor p in final['proofs']:\n b=(root/p['path']).read_bytes();raw.append(len(b)==p['bytes'] and hashlib.sha256(b).hexdigest()==p['sha256'])\ncheck('original-runtime-proofs-remain-byte-exact',all(raw) and len(raw)==len(final['proofs']),f\"Read all {len(raw)} original proof files named by final.proofs; every recorded byte length and SHA-256 matches. Raw PG artifact coordinates remain in evidence-index.json.\")\nsource=read('storewolf-source-census-20261116.json'); cloud=read('storewolf-cloud-census-20261116.json')['cloud']['census']\ndef census(dbs):\n out={}\n for db in dbs:\n  for c in db['collections']:\n   ns=db['name']+'.'+c['name']\n   if ns in out: raise Exception('duplicate namespace '+ns)\n   out[ns]=c\n return out\ns=census(source); t=census(cloud); population=final['data']['namespacePopulation']; manifest={r['namespace']:r for r in population}; checked=final['data']['checked']\ncheck('namespace-population-has-no-omission',set(s)==set(t)==set(manifest)==set(checked) and len(population)==len(manifest) and len(checked)==len(set(checked)) and final['data']['omitted']==0 and final['data']['notChecked']==[] and final['data']['notApplicable']==[],f\"Full source/target census namespace sets equal final namespacePopulation and checked sets: source={len(s)}, target={len(t)}, population={len(population)}, checked={len(checked)}; no sliced input or bounded pass.\")\ndef metadata(c):return {'type':c.get('type'),'options':c.get('options',{}),'indexes':sorted(c.get('indexes',[]),key=lambda i:i['name'])}\nmeta=all(metadata(s[n])==metadata(t[n]) and manifest[n]['metadataMatch'] is True and manifest[n]['sourceMetadataCount']==s[n]['count'] and manifest[n]['cloudMetadataCount']==t[n]['count'] for n in s)\ndeltas={n for n in s if s[n]['count']!=t[n]['count']}; allowed={'config.system.sessions','local.startup_log'}\ncheck('metadata-and-count-dispositions-match-complete-census',meta and deltas==allowed and all(manifest[n]['countDisposition']==('resolved-internal-lifecycle' if n in allowed else 'match') for n in s) and set(final['data']['internalDeltaResolution'])==allowed,f\"Compared every namespace's type/options/full sorted indexes and stored estimated counts. Exact internal count deltas: {sorted(deltas)}; retained TTL/startup explanations present. Estimated counts do not prove document equality.\")\ncold=final['data']['coldRefresh'];check('historical-cold-copy-has-zero-checksum-differences',cold['stage']=='complete' and cold['transferExit']==0 and cold['checksumExit']==0 and cold['differenceLogBytes']==0 and (base/'storewolf-data-refresh-20261116.checksum.log').stat().st_size==0,'Historical cold refresh completed; retained full rsync checksum exit=0 and zero-byte difference log. This check does not rerun the copy or claim post-start byte equality.')\ncut=final['cutover'];check('historical-tunnel-cutover-is-ordered',cut['sourceStoppedAt']<=cut['providerDrainedAt']<=cut['cloudStartRequestedAt'] and cut['providerConnectionsEmptyBeforeDestination'] and cut['configurationUnchanged'],'Retained source-stop <= provider-drain <= cloud-start timestamps and drained/configuration-unchanged observations; tunnel UUID='+cut['tunnel']+'. No current connector census claimed.')\ncheck('historical-final-reboot-retains-successful-boot-and-safe-modes',reboot['newBootId']==final['restart']['bootId'] and final['restart']['googleStartup']['Result']=='success' and final['restart']['bootStopEvents']==[] and all(v['ok'] and v['databaseConnected'] and v['live'] is False for v in final['restart']['health'].values()),'Retained successful boot '+final['restart']['bootId']+' and both application health responses live=false/databaseConnected=true. No reset, restart or fresh runtime probe performed.')\nexpected={'prod.storewolf.com','dev.storewolf.com','avi.storewolf.com'}\nauthok=all(set(auth[phase]['results'])==expected and all(r['authenticated']['status']==200 and r['authenticated']['result']['msg']=='Poll Not Found' and r['authenticated']['result']['running'] is False and r['unauthenticated']['result']['err']=='You have not authed roles' for r in auth[phase]['results'].values()) for phase in ('before','after'))\ncheck('historical-authenticated-read-semantic-controls-pass',authok,'Both historical phases cover all three hosts. Authenticated readonly sentinel returns Poll Not Found/running=false; unauthenticated requests carry an auth error even though transport status is 200. No new request or token capture.')\ncheck('historical-rollback-readback-pins-persistent-data-disk',r2['snapshot']['status']=='READY' and r2['snapshot']['sourceDisk']==r2['instance']['dataDisk']['source'] and r2['instance']['dataDisk']['type']=='PERSISTENT' and r2['instance']['dataDisk']['boot'] is False and r2['observations']['snapshotSourceMatchesAttachedPersistentDataDisk'] and r2['source']['isDirectory'] and all(x['exists'] for x in r2['source']['markers'].values()),'Readback at '+r2['observedAt']+' pins snapshot '+r2['snapshot']['id']+' to data disk '+r2['snapshot']['sourceDiskId']+' and intact source markers. Historical readback is not freshness at grading.')\nfinish=datetime.datetime.now(datetime.timezone.utc).isoformat(); failed=[c['id'] for c in checks if not c['passed']]\nout={'schemaVersion':1,'kind':'operational-test-evidence','name':'StoreWolf retained migration proof integrity and historical semantic cross-check','framework':'operational','command':['python3','-'],'exitCode':1 if failed else 0,'startedAt':start,'finishedAt':finish,'summary':'Read-only integrity check of retained local evidence. Runtime observations remain historical; this is not a fresh live/deployed witness, acceptance grade, lifecycle waiver or shipment receipt. Original records and full namespace truth are preserved.','assertions':checks,'workItem':'WI-10000337','plan':'storewolf-central-server-cloud-deployment-2026-09-03','proofScope':'retained-file-integrity-and-historical-cross-check','currentRuntimeAcceptance':False,'cloudOperationsPerformed':[],'sourceIndex':{'path':'docs/evidence/storewolf-migration-20261116/evidence-index.json','sha256':hashlib.sha256((base/'evidence-index.json').read_bytes()).hexdigest()},'verifiedExports':hashes,'originalProofPaths':[p['path'] for p in final['proofs']],'omissions':{'files':[],'namespaces':[]},'futureAcceptance':'Bind only to a clause this local check actually proves. Runtime-plane clauses still require exact containing build, native runtime measurement, current adequacy and independent acceptance.','stdinProvenance':'Exact read-only Python stdin and its stdout are retained in the native session tool invocation; no script file was created.'}\nprint(json.dumps(out,indent=2));sys.exit(1 if failed else 0)",
+    "rerun": "jq -r '.verification.stdin' docs/evidence/storewolf-migration-20261116/storewolf-retained-proof-integrity-20261117.json | python3 -"
+  }
+}
