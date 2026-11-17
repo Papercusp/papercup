@@ -393,6 +393,53 @@ describe('real write-boundary bypass regression', () => {
     expect(result.diagnostics, JSON.stringify(result.diagnostics)).toEqual([]);
     expect(result.goal?.ref).toBe('WI-fragment-regression');
   });
+  it('selects a fresh explicit override without awaiting competing-goal explanation reads', async () => {
+    await db.sql`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,current_plan_slug,harness_slug)
+      VALUES (${OWNER},${WS},'draft-feature','project')`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,taken_by,status,taken_at)
+      VALUES (${WS},'project','EI-selected-repair',${OWNER},'open',now()),
+             (${WS},'project','EI-competing-repair',${OWNER},'open',now())`;
+    await db.sql`INSERT INTO harness_shared.agent_facts
+      (workspace_id,scope,scope_ref,key,body,expires_at)
+      VALUES (${WS},'owner',${OWNER},'goal.override','EI-selected-repair','infinity')`;
+    const stages: string[] = [];
+    expect(await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
+      toolName: 'apply_patch', args: {}, observeTiming: timing => stages.push(timing.stage) })).toBeNull();
+    expect(stages).toContain('bindings');
+    expect(stages).toContain('goal_leg_override');
+    expect(stages).not.toContain('goal_leg_work_items');
+    expect(stages).not.toContain('goal_leg_plan_items');
+    expect(stages).not.toContain('goal_leg_fleet');
+    expect(stages).not.toContain('goal_leg_links');
+    // The public lens still reads and discloses competing held work.
+    const { runWithWorkspace } = await import('../../workspace-als');
+    const { resolveOwnerGoalWithAssessment } = await import('../coordination/agent-goal-sources');
+    const publicGoal = await runWithWorkspace(WS, () => resolveOwnerGoalWithAssessment(OWNER, 'self'));
+    expect(publicGoal.diagnostics).toEqual([]);
+    expect(publicGoal.goal?.competing).toContain('EI-competing-repair');
+    expect(publicGoal.assessment).toBe('divergent');
+  });
+  it.each(['expired', 'retracted', 'superseded', 'foreign-workspace', 'unheld'])
+    ('retains the fresh census refusal for a %s override', async state => {
+      await db.sql`INSERT INTO harness_shared.session_briefs
+        (owner_id,workspace_id,current_plan_slug,harness_slug,control_state)
+        VALUES (${OWNER},${WS},'draft-feature','project',
+          ${db.sql.json({ scope: { plan: 'other-feature', harness: 'project' } })})`;
+      await db.sql`INSERT INTO harness_shared.work_items
+        (workspace_id,harness_slug,feature_id,taken_by,status,source_plan_slug)
+        VALUES (${WS},'project','EI-selected-repair',${OWNER},'open','draft-feature')`;
+      await db.sql`INSERT INTO harness_shared.agent_facts
+        (workspace_id,scope,scope_ref,key,body,expires_at,retracted_at,superseded_at)
+        VALUES (${state === 'foreign-workspace' ? 'other-workspace' : WS},'owner',${OWNER},'goal.override',
+          ${state === 'unheld' ? 'EI-unheld' : 'EI-selected-repair'},
+          CASE WHEN ${state === 'expired'} THEN now()-interval '1 day' ELSE now()+interval '1 day' END,
+          CASE WHEN ${state === 'retracted'} THEN now() ELSE NULL END,
+          CASE WHEN ${state === 'superseded'} THEN now() ELSE NULL END)`;
+      expect(await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
+        toolName: 'apply_patch', args: {}, observeTiming: () => {} }))
+        .toMatchObject({ planSlug: 'draft-feature', blockers: ['plan_status:draft'] });
+    });
   it('recovers unrelated held work by following the refusal through the production fact writer and goal reader', async () => {
     const { assertFact } = await import('../../agent-facts/store');
     const readyPlan = '---\ntitle: Ready\nstatus: ready\n---\n# Ready\n';

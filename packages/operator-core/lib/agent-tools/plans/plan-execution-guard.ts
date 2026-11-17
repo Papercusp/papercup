@@ -551,10 +551,10 @@ export function selectExecutionPlanBindings(
 async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
   observe?: PlanExecutionTimingObserver, signal?: AbortSignal): Promise<ExecutionPlanGoalResolution> {
   return runWithWorkspace(workspaceId, async () => {
-    const { resolveOwnerGoalWithAssessment } = await measurePlanStage('goal_module', observe,
+    const { resolveOwnerGoalForAuthority } = await measurePlanStage('goal_module', observe,
       () => import('../coordination/agent-goal-sources'));
     return measurePlanStage('goal_read', observe,
-      () => resolveOwnerGoalWithAssessment(ownerId, 'self', observe, signal));
+      () => resolveOwnerGoalForAuthority(ownerId, 'self', observe, signal));
   });
 }
 

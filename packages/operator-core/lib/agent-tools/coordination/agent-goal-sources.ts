@@ -227,6 +227,7 @@ async function readGoalLegs(
   lens: GoalLens,
   observeTiming?: GoalReadTimingObserver,
   signal?: AbortSignal,
+  authorityOnly = false,
 ): Promise<{
   candidates: GoalCandidates;
   planItems: readonly HeldPlanItemRow[];
@@ -274,6 +275,18 @@ async function readGoalLegs(
     }
   };
 
+  const readOverride = () => settle('override', () => withMeasuredGoalConnection(sql, 'override', observeTiming,
+    connection => readGoalOverride(owner, observeTiming ? connection : undefined), true, signal),
+  null as GoalCandidates['override']);
+  // The execution guard already owns a fresh binding census. An explicit
+  // override selects within that census; the competing-goal explanation cannot
+  // change its selection and must not consume the native authority deadline.
+  // Public goal readers retain every leg and its assessment below.
+  const selectedOverride = authorityOnly ? await readOverride() : undefined;
+  if (selectedOverride && !selectedOverride.diagnostic &&
+      resolveAgentGoal({ override: selectedOverride.value })?.source === 'author-override') {
+    return { candidates: { override: selectedOverride.value }, planItems: [], diagnostics: [] };
+  }
   const [workItemsRead, planItemsRead, fleetRead, overrideRead] = await Promise.all([
     settle('work-items', () => withMeasuredGoalConnection(sql, 'work-items', observeTiming,
       connection => readHeldWorkItems(connection, ws, owner), true, signal), [] as HeldWorkItem[]),
@@ -281,8 +294,7 @@ async function readGoalLegs(
       connection => readHeldPlanItems(connection, ws, owner, lens), true, signal), [] as HeldPlanItemRow[]),
     settle('fleet', () => withMeasuredGoalConnection(sql, 'fleet', observeTiming,
       connection => readFleetMission(connection, ws, owner), true, signal), null as HeldFleet | null),
-    settle('override', () => withMeasuredGoalConnection(sql, 'override', observeTiming,
-      connection => readGoalOverride(owner, observeTiming ? connection : undefined), true, signal), null as GoalCandidates['override']),
+    selectedOverride ?? readOverride(),
   ]);
   const workItems = workItemsRead.value;
   const planItems = planItemsRead.value;
@@ -498,6 +510,24 @@ async function readImplementsLinks(
  */
 export async function resolveOwnerGoal(ownerId: string, lens: GoalLens): Promise<ResolvedGoal | null> {
   return (await resolveOwnerGoalWithAssessment(ownerId, lens)).goal;
+}
+
+/** Selection only, for a guard that independently verifies its fresh binding
+ * census. This is not the full goal/competing-claims assessment shown to people.
+ * Missing, invalid or unreadable overrides retain the ordinary resolver path. */
+export async function resolveOwnerGoalForAuthority(
+  ownerId: string,
+  lens: GoalLens,
+  observeTiming?: GoalReadTimingObserver,
+  signal?: AbortSignal,
+): Promise<{ goal: ResolvedGoal | null; diagnostics: GoalResolverDiagnostic[] }> {
+  try {
+    const read = await readGoalLegs(ownerId, lens, observeTiming, signal, true);
+    return { goal: resolveAgentGoal(read.candidates), diagnostics: read.diagnostics };
+  } catch (err) {
+    return { goal: null, diagnostics: [{ leg: 'resolution', status: 'unavailable',
+      detail: err instanceof Error ? err.message : String(err) }] };
+  }
 }
 
 /** One resolver pass, carrying both the raw goal and assessment integrity. */
