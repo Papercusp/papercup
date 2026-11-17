@@ -3595,6 +3595,39 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     }
   });
 
+  it('retains a copied donor lease on admission timeout, then releases it under the writer', async () => {
+    const { withFsMutex } = await import('../../../scripts/lib/fs-mutex.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'lac-donor-release-'));
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
+      vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '');
+      const leases = join(root, 'leases');
+      const pin = createRetentionPin({ path: root, owner: 'donor-owner', reason: 'copy in progress',
+        expiresAt: new Date(Date.now() + 60_000).toISOString() }, { dir: leases });
+      const lease = join(leases, `lease-agent-pin-${pin.id}.tsv`);
+      const original = readFileSync(lease, 'utf8');
+      await withFsMutex('papercusp-disk-retention', async () => {
+        expect(await mod.releaseCommittedDependencyDonor(pin, { dir: leases, timeoutMs: 50 })).toEqual({
+          released: false, deferred: true, pinId: pin.id, expiresAt: pin.expiresAt,
+        });
+        expect(readFileSync(lease, 'utf8')).toBe(original);
+      });
+      expect(warnings).toHaveBeenCalledWith(expect.stringContaining('optional cleanup deferred'),
+        expect.objectContaining({ code: 'ETIMEDOUT', timeoutMs: 50 }));
+      // Errors after admission must retain their original meaning.
+      await expect(mod.releaseCommittedDependencyDonor({ ...pin, owner: 'foreign-owner' }, { dir: leases }))
+        .rejects.toThrow('only the pin owner may release it');
+      expect(readFileSync(lease, 'utf8')).toBe(original);
+      expect(await mod.releaseCommittedDependencyDonor(pin, { dir: leases })).toEqual({ released: true, deferred: false });
+      expect(existsSync(lease)).toBe(false);
+    } finally {
+      warnings.mockRestore();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('retains dependent source past the age and idle cap, then releases it when the artifact disappears', async () => {
     const root = mkdtempSync(join(tmpdir(), 'lac-dependent-'));
     try {
