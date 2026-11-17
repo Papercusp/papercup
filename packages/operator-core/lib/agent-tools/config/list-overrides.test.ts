@@ -8,7 +8,7 @@
  *   • the tool reports a concern's overrides (effective/layer/default).
  *   • the `concern` filter scopes to one concern.
  *   • the latest audit row is attached as lastChange (who/when).
- *   • a concern whose diff() throws is reported empty — it never blanks the whole readback.
+ *   • failed reads remain unknown, preserve successful concerns and support a scoped retry.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/config/list-overrides.test.ts
  */
@@ -71,9 +71,11 @@ describe('config:list-overrides', () => {
     const c = b.concerns.find((x: { concern: string }) => x.concern === 'fake-concern');
     expect(c).toMatchObject({
       concern: 'fake-concern',
+      status: 'measured',
       overrideCount: 1,
       overrides: [{ key: 'x', effective: 5, default: 1, layer: 'pg-settings' }],
     });
+    expect(b).toMatchObject({ complete: true, totalOverrides: 1, measuredOverrides: 1, unmeasuredConcerns: [] });
   });
 
   it('scopes to one concern via the filter', async () => {
@@ -89,14 +91,55 @@ describe('config:list-overrides', () => {
     expect(b.concerns[0].lastChange).toEqual({ actor: 'role:operator', ts: 1718900000000 });
   });
 
-  it('a concern whose diff throws is reported empty, never blanking the readback', async () => {
+  it('distinguishes a successful empty read from an unavailable concern', async () => {
+    registerOverrideConcern(fakeConcern({ diff: async () => [] }));
+    const b = body(await tool.handler({ concern: 'fake-concern' } as never, {} as never));
+    expect(b).toMatchObject({ complete: true, totalOverrides: 0, measuredOverrides: 0, unmeasuredConcerns: [] });
+    expect(b.concerns[0]).toMatchObject({ status: 'measured', overrideCount: 0, overrides: [], recheck: null });
+  });
+
+  it('keeps failed reads unknown and recovers through the returned scoped recheck', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {}); // the fail-soft warn is expected here
     registerOverrideConcern(
       fakeConcern({ name: 'boom', auditAction: undefined, diff: async () => { throw new Error('kaboom'); } }),
     );
-    const b = body(await tool.handler({ concern: 'boom' } as never, {} as never));
-    expect(b.concerns[0]).toMatchObject({ concern: 'boom', overrideCount: 0, overrides: [] });
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    try {
+      const b = body(await tool.handler({ concern: 'boom' } as never, {} as never));
+      expect(b).toMatchObject({ complete: false, totalOverrides: null, measuredOverrides: 0, unmeasuredConcerns: ['boom'] });
+      expect(b.concerns[0]).toMatchObject({ concern: 'boom', status: 'unavailable', overrideCount: null,
+        overrides: null, recheck: { tool: 'config:list-overrides', args: { concern: 'boom' } } });
+      expect(warnSpy).toHaveBeenCalled();
+      registerOverrideConcern(fakeConcern({ name: 'boom', auditAction: undefined }));
+      const recovered = body(await tool.handler(b.concerns[0].recheck.args, {} as never));
+      expect(recovered).toMatchObject({ complete: true, totalOverrides: 1, unmeasuredConcerns: [] });
+      expect(recovered.concerns[0]).toMatchObject({ status: 'measured', overrideCount: 1,
+        overrides: [{ key: 'x', effective: 5, default: 1, layer: 'pg-settings' }] });
+    } finally { warnSpy.mockRestore(); }
+  });
+
+  it('retains healthy concerns when another concern fails', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerOverrideConcern(fakeConcern({ name: 'boom', diff: async () => { throw new Error('unavailable'); } }));
+    try {
+      const b = body(await tool.handler({} as never, {} as never));
+      expect(b).toMatchObject({ complete: false, totalOverrides: null, unmeasuredConcerns: ['boom'] });
+      expect(b.concerns.find((c: { concern: string }) => c.concern === 'fake-concern')).toMatchObject({
+        status: 'measured', overrideCount: 1, overrides: [{ key: 'x', effective: 5, default: 1, layer: 'pg-settings' }],
+      });
+      expect(b.concerns.find((c: { concern: string }) => c.concern === 'boom')).toMatchObject({
+        status: 'unavailable', overrideCount: null, overrides: null,
+      });
+    } finally { warnSpy.mockRestore(); }
+  });
+
+  it('distinguishes a failed audit lookup from a measured absence of audit history', async () => {
+    sqlMock.mockRejectedValueOnce(new Error('audit unavailable'));
+    const failed = body(await tool.handler({ concern: 'fake-concern' } as never, {} as never));
+    expect(failed).toMatchObject({ complete: true, totalOverrides: 1, auditComplete: false });
+    expect(failed.concerns[0]).toMatchObject({ lastChange: null, auditStatus: 'unavailable' });
+    expect(failed.concerns[0].recheck).toEqual({ tool: 'config:list-overrides', args: { concern: 'fake-concern' } });
+    const recovered = body(await tool.handler(failed.concerns[0].recheck.args, {} as never));
+    expect(recovered).toMatchObject({ complete: true, auditComplete: true });
+    expect(recovered.concerns[0]).toMatchObject({ lastChange: null, auditStatus: 'measured' });
   });
 });

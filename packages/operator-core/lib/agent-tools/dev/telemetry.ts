@@ -12,6 +12,7 @@ import { trackPhase } from '@papercusp/tooldef';
 import { flagPollSuspects, handlerPhaseRollup, telemetryRollup } from '../../dev-data';
 import { readRuntimeSecurityCensus, runtimeObservabilityHealth } from '../../observability/runtime';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { getServingHostIdentity } from '../../serving-host-identity';
 
 export default defineTool({
   name: 'dev:telemetry',
@@ -32,8 +33,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
-    view: z.enum(['rollup', 'security-census']).optional()
-      .describe('security-census reads the actual serving host and boot artifact: incomplete discovery, never a security verdict. Default rollup.'),
+    view: z.enum(['rollup', 'security-census', 'host-permission-inputs']).optional()
+      .describe('security-census reads serving-host discovery; host-permission-inputs captures only the authenticated superuser caller\'s original host read inputs. Neither is a permission or source-containment verdict. Default rollup.'),
     capture: z.boolean().optional()
       .describe('security-census only: persist the full host snapshot and signed authenticated producer receipt in immutable artifacts. No qualification or closure approval.'),
     harness: z.string().min(1).max(120).optional().describe('Concrete harness for authenticated security-census capture; defaults to the transport scope.'),
@@ -52,6 +53,43 @@ export default defineTool({
       .describe('Tool name: also return its per-phase timing (handlerPhases) and phase coverage of wall time.'),
   }),
   async handler(args, ctx) {
+    if (args.view === 'host-permission-inputs') {
+      if (Object.entries(args).some(([key, value]) => key !== 'view' && value !== undefined)) {
+        throw Error('host_permission_inputs_requires_self_only');
+      }
+      if (ctx.isSuperuser !== true || !ctx.uiClientId?.trim() || !ctx.workspaceId?.trim()) {
+        throw Error('host_permission_inputs_requires_authenticated_superuser');
+      }
+      const workspaceId = ctx.workspaceId;
+      const { resolveAgentIdentity } = await import('../coordination/identity');
+      const identity = resolveAgentIdentity(ctx);
+      if (identity.ownerId !== ctx.uiClientId || identity.workspaceId !== ctx.workspaceId) {
+        throw Error('host_permission_inputs_requires_matching_identity');
+      }
+      // Resolve only on this view: normal telemetry must not load the comparison
+      // graph. Read the same host ports/cache as dispatch; never force a refresh.
+      const [confinement, modes, overrides, flags, flagKeys, capture] = await Promise.all([
+        import('../../capability-envelope/session-confinement-port'), import('../../modes/store'),
+        import('../../capability-envelope-overrides'), import('@papercusp/flags/server'),
+        import('@papercusp/flags'), import('../../agent-identities/idop-p001-baseline'),
+      ]);
+      const startedAt = new Date().toISOString();
+      const result = await trackPhase(ctx.phases, 'dev:telemetry:host-permission-inputs', () =>
+        capture.captureIdopP001HostPermissionPorts({
+          workspaceId, contexts: [ctx],
+          flags: [{ key: flagKeys.FLAGS.CAPABILITY_ENVELOPE, distinctId: 'system' }],
+        }, { ...confinement.getSessionConfinementReadPorts(),
+          audit: { resolveIdentity: resolveAgentIdentity, readModes: modes.getModes },
+          roleOverrides: overrides.envelopeRoleOverrides, protectedAdditions: overrides.envelopeProtectedAdditions,
+          readFlagAttestation: flags.getFlagAttestation }));
+      return { content: [{ type: 'text', text: JSON.stringify({
+        ok: true, scope: 'original-host-self-permission-inputs', snapshot: result.snapshot, sha256: result.sha256,
+        provenance: { schemaVersion: 1, ownerId: identity.ownerId, workspaceId: identity.workspaceId,
+          runtime: getServingHostIdentity(), artifact: runtimeObservabilityHealth().artifact ??
+            { status: 'unknown', reason: 'boot-artifact-not-measured' },
+          startedAt, completedAt: new Date().toISOString() },
+      }) }] };
+    }
     if (args.capture === true) {
       if (args.view !== 'security-census' || args.limit !== undefined || args.offset !== undefined || args.discoverySha256 !== undefined) {
         throw Error('security_census_capture_requires_full_snapshot');

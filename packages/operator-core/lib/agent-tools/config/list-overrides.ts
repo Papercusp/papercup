@@ -44,13 +44,16 @@ export default defineTool({
     const out: Array<{
       concern: string;
       description?: string;
-      overrideCount: number;
-      overrides: OverrideEntry[];
+      status: 'measured' | 'unavailable';
+      overrideCount: number | null;
+      overrides: OverrideEntry[] | null;
+      recheck: { tool: 'config:list-overrides'; args: { concern: string } } | null;
       lastChange: { actor: string; ts: number } | null;
+      auditStatus: 'measured' | 'unavailable' | 'not-configured';
     }> = [];
 
     for (const c of concerns) {
-      let overrides: OverrideEntry[] = [];
+      let overrides: OverrideEntry[] | null = null;
       try {
         overrides = await c.diff();
       } catch (e) {
@@ -59,6 +62,7 @@ export default defineTool({
       }
 
       let lastChange: { actor: string; ts: number } | null = null;
+      let auditStatus: 'measured' | 'unavailable' | 'not-configured' = 'not-configured';
       if (c.auditAction) {
         try {
           const rows = await sql<{ actor: string; ts: number | string }[]>`
@@ -68,21 +72,30 @@ export default defineTool({
              ORDER BY ts DESC
              LIMIT 1`;
           if (rows[0]) lastChange = { actor: rows[0].actor, ts: Number(rows[0].ts) };
+          auditStatus = 'measured';
         } catch {
-          /* best-effort — no audit row is fine */
+          auditStatus = 'unavailable';
         }
       }
 
       out.push({
         concern: c.name,
         description: c.description,
-        overrideCount: overrides.length,
+        status: overrides === null ? 'unavailable' : 'measured',
+        overrideCount: overrides?.length ?? null,
         overrides,
+        recheck: overrides === null || auditStatus === 'unavailable'
+          ? { tool: 'config:list-overrides', args: { concern: c.name } } : null,
         lastChange,
+        auditStatus,
       });
     }
 
-    const totalOverrides = out.reduce((n, c) => n + c.overrideCount, 0);
-    return { content: [{ type: 'text', text: JSON.stringify({ concernCount: out.length, totalOverrides, concerns: out }) }] };
+    const unmeasuredConcerns = out.filter(c => c.status === 'unavailable').map(c => c.concern);
+    const measuredOverrides = out.reduce((n, c) => n + (c.overrideCount ?? 0), 0);
+    const complete = unmeasuredConcerns.length === 0;
+    return { content: [{ type: 'text', text: JSON.stringify({ concernCount: out.length, complete,
+      totalOverrides: complete ? measuredOverrides : null, measuredOverrides, unmeasuredConcerns,
+      auditComplete: out.every(c => c.auditStatus !== 'unavailable'), concerns: out }) }] };
   },
 });

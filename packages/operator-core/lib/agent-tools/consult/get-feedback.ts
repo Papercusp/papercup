@@ -80,9 +80,9 @@ export default defineTool({
       .describe('Work-item/task this consult is attributed to (default: your most recently progressed wip work-item).'),
     exclude: z
       .array(z.string().min(1))
-      .max(16)
+      .max(128)
       .optional()
-      .describe("Owners to exclude from candidacy — e.g. the exhausted menu's decliners when re-routing after a terminal 'declined'/'expired' (the cascade itself advances server-side; no per-decline re-call)."),
+      .describe("Owners to exclude from candidacy, including source and answerer identities accumulated across exhausted cascades (up to 128). Re-route only after terminal 'declined'/'expired'; the cascade itself advances server-side, with no per-decline re-call."),
     parent_consult_id: z
       .string()
       .min(1)

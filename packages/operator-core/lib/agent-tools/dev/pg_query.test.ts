@@ -13,6 +13,7 @@ const {
   advisoryMock,
   jsonTextSearchAdvisoryMock,
   describeColumnsMock,
+  jsonbPathMock,
   describeRelationMock,
   listRelationsMock,
 } = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const {
   advisoryMock: vi.fn(),
   jsonTextSearchAdvisoryMock: vi.fn(),
   describeColumnsMock: vi.fn(),
+  jsonbPathMock: vi.fn(),
   describeRelationMock: vi.fn(),
   listRelationsMock: vi.fn(),
 }));
@@ -30,6 +32,7 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
   buildTenantScopeAdvisory: advisoryMock,
   buildJsonTextSearchAdvisory: jsonTextSearchAdvisoryMock,
   describeReferencedTableColumns: describeColumnsMock,
+  buildJsonbPathRedirect: jsonbPathMock,
   describeRelation: describeRelationMock,
   listRelations: listRelationsMock,
 }));
@@ -64,6 +67,7 @@ beforeEach(() => {
   advisoryMock.mockReset().mockResolvedValue(null);
   jsonTextSearchAdvisoryMock.mockReset().mockReturnValue(null);
   describeColumnsMock.mockReset().mockResolvedValue([]);
+  jsonbPathMock.mockReset().mockResolvedValue(null);
   describeRelationMock.mockReset().mockResolvedValue(null);
   listRelationsMock.mockReset().mockResolvedValue([]);
 });
@@ -495,19 +499,70 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(pgReadQueryMock).not.toHaveBeenCalled();
   });
 
-  it('returns call_timeout when optional error enrichment hangs after a PG error', async () => {
-    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('column does not exist'), { code: '42703' }));
-    describeColumnsMock.mockImplementation(() => new Promise(() => {}));
+  it('preserves the PG error when optional column enrichment exhausts the deadline', async () => {
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('column does not exist'), {
+      code: '42703', hint: 'Use existing_column', detail: 'original detail', position: '8',
+    }));
+    let finish!: (value: unknown[]) => void;
+    describeColumnsMock.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const args = { sql: 'SELECT missing FROM t', timeoutMs: 1000 };
 
     const res = await runUntilCallDeadline(
-      () => pgQueryTool.handler({ sql: 'SELECT missing FROM t', timeoutMs: 1000 } as never, {} as never),
+      () => pgQueryTool.handler(args as never, {} as never),
       1000,
     );
 
     expect((res as { isError?: boolean }).isError).toBe(true);
-    expect(payloadOf(res as never)).toMatchObject({ reason: 'call_timeout' });
+    const payload = payloadOf(res as never);
+    expect(payload).toMatchObject({ error: 'column does not exist', code: '42703',
+      hint: 'Use existing_column', detail: 'original detail', position: '8',
+      diagnostics: { status: 'incomplete', reason: 'call_timeout', omitted: ['knownColumns', 'jsonbPath'],
+        recovery: { tool: 'dev:pg_query', args } } });
+    expect(payload).not.toHaveProperty('reason');
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
     expect(describeColumnsMock).toHaveBeenCalledOnce();
+    expect(jsonbPathMock).not.toHaveBeenCalled();
+    finish([{ table: 't', columns: ['late: text'] }]);
+    await Promise.resolve();
+    expect(payloadOf(res as never)).toEqual(payload);
+
+    // The returned recovery is executable without inventing arguments or widening a budget.
+    describeColumnsMock.mockResolvedValue([{ table: 't', columns: ['existing_column: text'] }]);
+    const recovery = (payload.diagnostics as { recovery: { args: typeof args } }).recovery;
+    const retried = payloadOf(await pgQueryTool.handler(recovery.args as never, {} as never) as never);
+    expect(retried).toMatchObject({ code: '42703', knownColumns: { t: ['existing_column: text'] } });
+    expect(retried).not.toHaveProperty('diagnostics');
+  });
+
+  it('preserves completed columns when optional JSON-path enrichment exhausts the deadline', async () => {
+    pgReadQueryMock.mockRejectedValue(Object.assign(new Error('column missing does not exist'), { code: '42703' }));
+    describeColumnsMock.mockResolvedValue([{ table: 't', columns: ['payload: jsonb'] }]);
+    jsonbPathMock.mockImplementation(() => new Promise(() => {}));
+    const res = await runUntilCallDeadline(
+      () => pgQueryTool.handler({ sql: 'SELECT missing FROM t', timeoutMs: 1000 } as never, {} as never), 1000);
+    expect(payloadOf(res as never)).toMatchObject({ code: '42703', error: 'column missing does not exist',
+      knownColumns: { t: ['payload: jsonb'] },
+      diagnostics: { status: 'incomplete', omitted: ['jsonbPath'], reason: 'call_timeout' } });
+    expect(jsonbPathMock).toHaveBeenCalledOnce();
+  });
+
+  it('preserves relation-not-found when optional near-match enrichment exhausts the deadline', async () => {
+    listRelationsMock.mockImplementation(() => new Promise(() => {}));
+    const args = { describe: 'harness_shared.missing', timeoutMs: 1000 };
+    const res = await runUntilCallDeadline(() => pgQueryTool.handler(args as never, {} as never), 1000);
+    const payload = payloadOf(res as never);
+    expect(payload).toMatchObject({ reason: 'relation_not_found',
+      diagnostics: { status: 'incomplete', reason: 'call_timeout', omitted: ['nearMatches'],
+        recovery: { tool: 'dev:pg_query', args } } });
+    expect(payload.error).toContain('No relation matching');
+  });
+
+  it('keeps a primary relation lookup timeout distinct from optional diagnostics', async () => {
+    describeRelationMock.mockImplementation(() => new Promise(() => {}));
+    const res = await runUntilCallDeadline(
+      () => pgQueryTool.handler({ describe: 't', timeoutMs: 1000 } as never, {} as never), 1000);
+    expect(payloadOf(res as never)).toMatchObject({ reason: 'call_timeout' });
+    expect(listRelationsMock).not.toHaveBeenCalled();
   });
 
   it('omits the advisory field when the guard finds nothing (or throws)', async () => {

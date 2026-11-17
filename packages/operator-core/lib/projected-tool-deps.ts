@@ -2583,6 +2583,9 @@ const priorityKernelEnforcement: KernelEnforcementPort = request => withPriority
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  // Existing host transports negotiate the operation contract until their
+  // clients migrate. Canonical callers explicitly override this with batch-v1.
+  batchResponseVersion: 'operation-v0',
   invocationObserver: originalInvocationObserver,
   resolvePremises: resolveDispatchPremises,
   executionAdapter(request) {

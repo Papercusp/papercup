@@ -345,9 +345,20 @@ export {
   type PapercuspBinaryEnvelope,
 } from '@papercusp/tooldef';
 
+import {
+  dispatchProjectedTool as dispatchFrameworkTool,
+  dispatchProjectedToolStream as streamFrameworkTool,
+} from '@papercusp/tooldef';
+
+// This existing host adapter retains its negotiated operation contract while
+// consumers migrate. The generic framework defaults to batch-v1. A migrated
+// host caller explicitly overrides the version in deps for either input form.
+export const dispatchProjectedTool: typeof dispatchFrameworkTool = (tool, name, input, ctx, deps, stack) =>
+  dispatchFrameworkTool(tool, name, input, ctx, { batchResponseVersion: 'operation-v0', ...deps }, stack);
+export const dispatchProjectedToolStream: typeof streamFrameworkTool = (tool, name, input, ctx, deps) =>
+  streamFrameworkTool(tool, name, input, ctx, { batchResponseVersion: 'operation-v0', ...deps });
+
 export {
-  dispatchProjectedTool,
-  dispatchProjectedToolStream,
   defaultComputeQuotaWindow,
   UnauthorizedToolError,
   HarnessRequiredError,

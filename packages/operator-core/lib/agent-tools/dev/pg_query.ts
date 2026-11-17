@@ -745,7 +745,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the whole dev:pg_query handler, including tenant preflight, SQL execution, result advisories, and optional error enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). The SQL query receives only the remaining budget after preflight; a later phase that hangs returns call_timeout at the same shared deadline. Size timeoutMs for the work across phases, not only the SQL statement.',
+          'Bounds the whole dev:pg_query handler, including tenant preflight, SQL execution, result advisories, and optional error enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). The SQL query receives only the remaining budget after preflight. Unfinished primary work returns call_timeout; optional error enrichment preserves the original database error and reports incomplete diagnostics with an executable recovery request at that same deadline.',
         ),
       positiveControlSql: z
         .string()
@@ -794,7 +794,7 @@ export default defineTool({
         .max(30000)
         .optional()
         .describe(
-          'Bounds the whole dev:pg_query handler, including relation lookup and optional near-match enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). A hung metadata lookup returns call_timeout at the shared handler deadline.',
+          'Bounds the whole dev:pg_query handler, including relation lookup and optional near-match enrichment (default 5000, max 30000), plus a fixed ~3s overhead allowance (so the default wall-clock deadline is ~8000ms). An unfinished relation lookup returns call_timeout; an unfinished optional suggestion lookup preserves relation_not_found and reports incomplete diagnostics with an executable recovery request.',
         ),
       positiveControlSql: z
         .never()
@@ -881,6 +881,12 @@ export default defineTool({
       'ms setup allowance). Tenant checks, SQL execution, and result advisories share this deadline.';
     const withinDeadline = <T>(work: (assertActive: () => void) => Promise<T>): Promise<T> =>
       withCallDeadline(work, Math.max(0, deadlineAt - performance.now()), timeoutMessage);
+    // The primary result is already known. Optional metadata may use the
+    // remaining budget, but cannot replace that result or silently disappear.
+    const incompleteDiagnostics = (omitted: string[]) => ({
+      status: 'incomplete', reason: 'call_timeout', omitted,
+      recovery: { tool: 'dev:pg_query', args: { ...args } },
+    });
 
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
     // SQL form, so it cannot ride through pgReadQuery's statement path at all.
@@ -909,16 +915,24 @@ export default defineTool({
         });
         if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
         if (!description) {
-          const near = await withinDeadline((assertActive) => {
-            assertActive();
-            return listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
-          });
-          if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
+          let near: Awaited<ReturnType<typeof listRelations>> = [];
+          let diagnostics: ReturnType<typeof incompleteDiagnostics> | undefined;
+          try {
+            near = await withinDeadline((assertActive) => {
+              assertActive();
+              return listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
+            });
+            if (performance.now() >= deadlineAt) throw new PgReadQueryTimeoutError(timeoutMessage);
+          } catch (diagnosticError) {
+            if (!(diagnosticError instanceof PgReadQueryTimeoutError)) throw diagnosticError;
+            diagnostics = incompleteDiagnostics(['nearMatches']);
+          }
           return jsonError(
             'relation_not_found',
             `No relation matching "${args.describe}".` +
               (near.length ? ` Did you mean: ${near.map((r) => r.relation).join(', ')}?` : '') +
               (canonicalRelationRedirect(args.describe) ?? ''),
+            diagnostics ? { diagnostics } : {},
           );
         }
         return dataResult({ mode: PG_QUERY_MODE.describe, ...description });
@@ -1372,6 +1386,7 @@ export default defineTool({
       // guessing loop (a fresh post-compaction context has no query memory).
       if (info.code === '42703') {
         let described: Awaited<ReturnType<typeof describeReferencedTableColumns>> = [];
+        let diagnosticsExpired = false;
         try {
           described = await withinDeadline((assertActive) => {
             assertActive();
@@ -1379,9 +1394,9 @@ export default defineTool({
           });
         } catch (diagnosticError) {
           if (diagnosticError instanceof PgReadQueryTimeoutError) {
-            return jsonError('call_timeout', diagnosticError.message);
-          }
-          throw diagnosticError;
+            diagnosticsExpired = true;
+            payload.diagnostics = incompleteDiagnostics(['knownColumns', 'jsonbPath']);
+          } else throw diagnosticError;
         }
         if (described.length) {
           payload.knownColumns = Object.fromEntries(described.map((d) => [d.table, d.columns]));
@@ -1402,7 +1417,7 @@ export default defineTool({
         // `work_items.payload._ei.severity` shape. Only probed when no derived
         // redirect already claimed the name, so the two advisories never argue
         // about the same column in one payload.
-        if (!redirect) {
+        if (!redirect && !diagnosticsExpired) {
           let nested: Awaited<ReturnType<typeof buildJsonbPathRedirect>> = null;
           try {
             nested = await withinDeadline((assertActive) => {
@@ -1411,9 +1426,8 @@ export default defineTool({
             });
           } catch (diagnosticError) {
             if (diagnosticError instanceof PgReadQueryTimeoutError) {
-              return jsonError('call_timeout', diagnosticError.message);
-            }
-            throw diagnosticError;
+              payload.diagnostics = incompleteDiagnostics(['jsonbPath']);
+            } else throw diagnosticError;
           }
           if (nested) payload.jsonbPath = nested;
         }

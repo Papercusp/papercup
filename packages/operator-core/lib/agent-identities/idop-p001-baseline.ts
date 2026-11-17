@@ -293,6 +293,13 @@ type IdopStructuralKernelState = KernelContextState & {
   authorityReadFailures?: Array<Record<string, unknown>>;
 };
 
+// UnifiedToolContext execution/telemetry services, not authority inputs. Keep
+// the two capture codecs aligned; unknown executable fields still fail closed.
+const idopContextServices = new Set([
+  'log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx',
+  'metadata', 'spawn', 'secret', 'askUser', 'publishState',
+]);
+
 function idopHostContextKey(ctx: UnifiedToolContext, workspaceId: string) {
   const transaction = Object.getOwnPropertyDescriptor(ctx, 'tx');
   if (ctx.workspaceId !== workspaceId || transaction && 'value' in transaction && transaction.value !== undefined) {
@@ -300,11 +307,10 @@ function idopHostContextKey(ctx: UnifiedToolContext, workspaceId: string) {
   }
   // Execution services are not authority. Do not consult the dispatcher's
   // deliberately throwing transaction accessor while preserving the caller.
-  const services = new Set(['log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx']);
   const data: Record<string, unknown> = {};
   if (Object.getOwnPropertySymbols(ctx).length) throw new Error('IDOP host snapshot context has uncaptured symbols');
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
-    if (services.has(key)) continue;
+    if (idopContextServices.has(key)) continue;
     if (!('value' in descriptor)) throw new Error('IDOP host snapshot context has an unreadable accessor');
     if (descriptor.value !== undefined) data[key] = descriptor.value;
   }
@@ -530,11 +536,10 @@ function idopAuthorityValue(data: ComparisonJson): unknown {
 function idopKernelContextData(ctx: UnifiedToolContext, workspaceId: string) {
   if (ctx.workspaceId !== workspaceId) throw new Error('IDOP kernel snapshot has a foreign workspace');
   if (Object.getOwnPropertySymbols(ctx).length) throw new Error('IDOP kernel snapshot context has uncaptured symbols');
-  const excluded = new Set(['log', 'signal', 'progress', 'emit', 'phases', 'activateTools', 'dispatchTool', 'tx']);
   const data: Record<string, unknown> = {};
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
     if (key === 'tx' && 'value' in descriptor && descriptor.value !== undefined) throw new Error('IDOP kernel snapshot carries a transaction');
-    if (excluded.has(key)) continue;
+    if (idopContextServices.has(key)) continue;
     if (!('value' in descriptor)) throw new Error('IDOP kernel snapshot has a context accessor');
     data[key] = descriptor.value;
   }

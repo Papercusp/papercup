@@ -277,6 +277,24 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
 });
 
 describe('consult:get_feedback requester guidance', () => {
+  it('preserves every exhausted source and answerer exclusion in a replacement request', async () => {
+    const exclude = Array.from({ length: 19 }, (_, index) => `exhausted-review-party-${index}`);
+    const request = tool.args.parse({ question: 'Review the corrected immutable contract', exclude });
+
+    await call('proceed', request);
+
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({ excludeOwners: exclude });
+  });
+
+  it('bounds cumulative reviewer exclusions without truncating a valid request', () => {
+    const exclude = Array.from({ length: 128 }, (_, index) => `exhausted-review-party-${index}`);
+    const request = { question: 'Review the corrected immutable contract', exclude };
+
+    expect(tool.args.parse(request).exclude).toEqual(exclude);
+    expect(tool.args.safeParse({ ...request, exclude: [...exclude, 'one-too-many'] }).success).toBe(false);
+    expect(tool.args.safeParse({ ...request, exclude: [''] }).success).toBe(false);
+  });
+
   it('accepts bounded retry identities in the registered public schema and rejects empty or oversized keys', () => {
     const args = tool.args.parse({ question: 'Retry the persisted request', request_key: '  stable-key  ' });
     expect(args.request_key).toBe('stable-key');

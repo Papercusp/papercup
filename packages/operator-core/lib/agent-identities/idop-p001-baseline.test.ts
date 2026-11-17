@@ -177,6 +177,27 @@ describe('IDOP D-043 immutable host authority read inputs', () => {
       capabilities: new Set(['forged:*']) } })).toThrow(/not captured/);
   });
 
+  it('accepts dispatcher services without invoking them and retains non-service authority', async () => {
+    const callback = vi.fn(() => { throw new Error('execution service called'); });
+    const original = { ...ctx(), metadata: callback, spawn: callback, secret: callback,
+      askUser: callback, publishState: callback, authenticatedPrincipal: { slug: 'original' } };
+    const captured = await captureIdopP001HostPermissionPorts({ ...options(), contexts: [original] }, readers());
+    expect(await captured.ports.resolveConfinement({ ...original, metadata: vi.fn() }))
+      .toMatchObject({ imposedBy: 'original-launcher' });
+    expect(captured.snapshot.contexts[0].key).not.toContain('metadata');
+    expect(captured.snapshot.contexts[0].key).toContain('authenticatedPrincipal');
+    expect(() => captured.ports.resolveConfinement(Object.assign({}, original,
+      { authenticatedPrincipal: { slug: 'forged' } }))).toThrow(/not captured/);
+    expect(() => captured.ports.resolveConfinement({ ...original, isSuperuser: false })).toThrow(/not captured/);
+    expect(callback).not.toHaveBeenCalled();
+    await expect(captureIdopP001HostPermissionPorts({ ...options(),
+      contexts: [Object.assign({}, original, { unknownService: callback })] }, readers())).rejects.toThrow(/data-only/);
+    const accessor = Object.defineProperty(ctx(), 'unknownAuthority', { get: callback });
+    await expect(captureIdopP001HostPermissionPorts({ ...options(), contexts: [accessor] }, readers()))
+      .rejects.toThrow(/accessor/);
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   it.each(['unconfigured', 'store-error', 'stale-cache-fallback'])('rejects %s flag authority', async kind => {
     const source = readers();
     const attestation = await source.readFlagAttestation();
@@ -492,6 +513,25 @@ describe('IDOP D-043 immutable original kernel authority snapshot', () => {
     const failure = fixture();
     vi.mocked(failure.readers.inner.readPolicy).mockRejectedValue(new Error('original policy unreadable'));
     await expect(captureIdopP001KernelPermissionPorts(failure.options, failure.readers)).rejects.toThrow('original policy unreadable');
+  });
+
+  it('uses the same dispatcher-service classification for kernel capture and replay', async () => {
+    const f = fixture();
+    const callback = vi.fn(() => { throw new Error('execution service called'); });
+    Object.assign(f.request.ctx, { metadata: callback, spawn: callback, secret: callback,
+      askUser: callback, publishState: callback, authenticatedPrincipal: { slug: 'original' } });
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    const replay = () => captured.createPorts().inner.readState(f.request);
+    expect(await replay()).toEqual({ revoked: true });
+    f.request.ctx.metadata = vi.fn();
+    expect(await replay()).toEqual({ revoked: true });
+    Object.assign(f.request.ctx, { authenticatedPrincipal: { slug: 'forged' } });
+    await expect(replay()).rejects.toThrow(/not captured/);
+    Object.assign(f.request.ctx, { authenticatedPrincipal: { slug: 'original' }, isSuperuser: false });
+    await expect(replay()).rejects.toThrow(/not captured/);
+    Object.assign(f.request.ctx, { isSuperuser: true, unknownService: callback });
+    await expect(captureIdopP001KernelPermissionPorts(f.options, f.readers)).rejects.toThrow(/data-only/);
+    expect(callback).not.toHaveBeenCalled();
   });
 });
 
