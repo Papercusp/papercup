@@ -136,7 +136,7 @@ export const argsSchema = z
     force: stringTolerantBool
       .optional()
       .describe(
-        'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true only when this is genuinely a NEW effort, not a continuation. Accepts the wire strings "true"/"false" too (EI-302: stale manifest-pinned tools/list schemas).',
+        'Creation is rejected with `similar_exists` + the overlapping plans when existing slugs/titles share this topic (EI-134 — duplicate plans split project history). Review the candidates; pass force: true with a nonblank rationale only for a NEW effort. The reason is stored in the first plan revision. Accepts the wire strings "true"/"false" too (EI-302).',
       ),
   })
   // EI-8285: without .strict(), an unrecognized top-level key is
@@ -278,7 +278,7 @@ function authoredRequirementKeys(planContent: string): Set<string> {
 }
 
 /** Which pre-persistence check a problem came from. */
-export type NewPlanCheck = 'item-grammar' | 'acceptance-bar' | 'property-schema' | 'similar-plans';
+export type NewPlanCheck = 'item-grammar' | 'acceptance-bar' | 'property-schema' | 'similar-plans' | 'override-reason';
 
 /** One problem found before a plan is written. `plans:new` reports ALL of them in one refusal. */
 export interface NewPlanProblem {
@@ -357,6 +357,7 @@ const PRIMARY_MESSAGE: Record<NewPlanCheck, (input: NewPlanRefusalInput) => stri
     'plans:new refused to create the plan because its Requirements would not satisfy the post-epoch acceptance BAR contract. ' +
     `${input.acceptanceBarProblems[0]?.detail ?? 'See acceptanceBar.problems'}.`,
   'property-schema': () => 'plans:new refused to create the plan because its property declarations are invalid.',
+  'override-reason': () => 'An explicit similarity override requires a nonblank rationale, stored with the first plan revision.',
   // A lone similar-plans refusal keeps its established shape, which carries a hint and no message.
   'similar-plans': () => null,
 };
@@ -397,7 +398,7 @@ export function buildNewPlanRefusal(input: NewPlanRefusalInput): Record<string, 
       }
     : null;
   return {
-    error: primary === 'similar-plans' ? 'similar_exists' : primary === 'property-schema' ? 'bad_property_schema' : 'invalid_plan_content',
+    error: primary === 'similar-plans' ? 'similar_exists' : primary === 'override-reason' ? 'override_reason_required' : primary === 'property-schema' ? 'bad_property_schema' : 'invalid_plan_content',
     ...(primary === 'item-grammar' ? { reason: 'unparsed_item_lines' } : {}),
     ...(primary === 'acceptance-bar' ? { reason: 'acceptance_bar_authoring' } : {}),
     slug: input.slug,
@@ -598,7 +599,7 @@ export default defineTool({
     notWhen:
       'Existing plan: plans:set-content / set-now / add-decision / add-item.',
     chaining:
-      'Brief → scoped discovery → incorporate findings and reuse + libraries → R-N JSON + map + items → plans:audit phase:discovery → implementation review → activation/spec quality → plans:start. Code-intelligence suggestions are leads, not completed investigation; pass chosen code links as anchors.',
+      'Brief → scoped discovery → incorporate findings and reuse + libraries → R-N JSON + bar-to-work map + items → plans:audit phase:discovery → implementation review → activation/spec quality → plans:start. Code-intelligence suggestions are leads, not completed investigation; pass chosen code links as anchors.',
     seeAlso: [
       'plans:add-item (populate the plan with work items)',
       'plans:set-frontmatter (fill/adjust the templated frontmatter)',
@@ -708,6 +709,13 @@ export default defineTool({
       } else {
         propertySchemaDoc = args.propertySchema;
       }
+    }
+
+    // Reuse the first revision's rationale instead of introducing a separate
+    // override store. An explicit empty rationale wins over its legacy alias.
+    if (args.force === true && !(args.rationale ?? args.goal ?? '').trim()) {
+      problems.push({ check: 'override-reason', code: 'override_reason_required',
+        detail: 'Pass a nonblank rationale explaining why this is a separate effort; it is stored in the first plan revision.' });
     }
 
     // Search-first dedup (audit P-049 / EI-134): surface overlapping plans

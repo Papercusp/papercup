@@ -73,6 +73,7 @@ const call = (content: string, status?: string) =>
       slug: 'parse-admission',
       title: 'Parse admission',
       force: true,
+      rationale: 'Isolated parse-admission fixture; this test measures authoring checks independently of topic overlap.',
       ...(status ? { status } : {}),
       content,
     } as never,
