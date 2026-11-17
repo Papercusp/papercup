@@ -2,10 +2,75 @@
  * as the worker's own failure (WI-6554700010042656: a 180s execute deadline killed
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from './isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from './isolated-integration-proof';
 import { privateOperatorApiBuildBudget } from './private-http-workspace-preflight';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
+
+describe('isolated negative preflight evidence', () => {
+  const expected = 'MCP tool call requires approval, but approval policy is never';
+  const withEvidence = async (run: (path: string) => Promise<void>) => {
+    const dir = await mkdtemp(join(tmpdir(), 'isolated-negative-preflight-'));
+    try { await run(join(dir, 'failure.json')); }
+    finally { await rm(dir, { recursive: true, force: true }); }
+  };
+
+  it.each([9999, 10000, 10001, 30000])('retains %i stderr characters and the original subprocess error instead of a matcher diff', length => withEvidence(async path => {
+    const stderr = 'x'.repeat(length) + ' decisive-tail';
+    let original: unknown;
+    await expect(assertIsolatedPreflightRejection(async () => {
+      try {
+        execFileSync(process.execPath, ['-e', `process.stderr.write(${JSON.stringify(stderr)}); process.exit(7)`],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (error) { original = error; throw error; }
+    }, expected, path)).rejects.toBe(original);
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    expect(saved.outcome).toBe('rejected');
+    expect(saved.failure).toContain(stderr);
+    expect(saved.failure).toContain('status: 7');
+    expect(saved.failure).not.toContain('more characters');
+  }));
+
+  it('preserves catalog timeout fields and the complete path', () => withEvidence(async path => {
+    const executable = '/installed/' + 'long-directory/'.repeat(40) + 'codex';
+    const failure = Object.assign(new Error(`spawnSync ${executable} ETIMEDOUT`), {
+      code: 'ETIMEDOUT', errno: -110, signal: 'SIGTERM', status: null,
+      path: executable, spawnargs: ['debug', 'models'], stdout: '', stderr: '',
+    });
+    await expect(assertIsolatedPreflightRejection(async () => { throw failure; }, expected, path))
+      .rejects.toBe(failure);
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    for (const value of [executable, 'ETIMEDOUT', 'SIGTERM', 'errno: -110', 'debug', 'models']) {
+      expect(saved.failure).toContain(value);
+    }
+  }));
+
+  it('accepts the expected refusal with its retained evidence', () => withEvidence(async path => {
+    await assertIsolatedPreflightRejection(async () => { throw new Error(expected); }, expected, path);
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    expect(saved).toMatchObject({ outcome: 'rejected', expectedMessage: expected });
+    expect(saved.failure).toContain(expected);
+  }));
+
+  it('fails a missing refusal and records that the control succeeded unexpectedly', () => withEvidence(async path => {
+    await expect(assertIsolatedPreflightRejection(async () => {}, expected, path))
+      .rejects.toThrow('Preflight unexpectedly succeeded');
+    expect(JSON.parse(await readFile(path, 'utf8'))).toMatchObject({ outcome: 'resolved', failure: null });
+  }));
+
+  it('keeps the original failure if retaining the evidence also fails', async () => {
+    const failure = new Error('catalog executable failed');
+    const dir = await mkdtemp(join(tmpdir(), 'isolated-negative-preflight-'));
+    try {
+      await expect(assertIsolatedPreflightRejection(async () => { throw failure; }, expected, dir))
+        .rejects.toMatchObject({ errors: [failure, expect.objectContaining({ code: 'EISDIR' })] });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
 
 describe('isolated integration worker environment', () => {
   const owned = { PAPERCUSP_WORKSPACE: 'test-runtime-private',

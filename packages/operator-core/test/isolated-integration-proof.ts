@@ -7,7 +7,7 @@ import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlink
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { stripVTControlCharacters } from 'node:util';
+import { inspect, stripVTControlCharacters } from 'node:util';
 import { parse as parseToml } from '@iarna/toml';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
@@ -21,6 +21,31 @@ import { assertPrivateIntegrationEvidence, defaultTestFileRunTimeoutMs, testFile
 import { createProgressAwareWatchdog } from '../../../scripts/lib/batch-watchdog.mjs';
 // @ts-ignore -- reuse the router's immutable diagnostic artifact archive.
 import { createNativeArtifactPersister } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
+
+/** Retain the original negative control before an assertion can shorten its error.
+ * An unrelated subprocess failure must escape as that same failure, rather than
+ * becoming an approval-matcher diff with the errno and stderr missing. */
+export async function assertIsolatedPreflightRejection(
+  run: () => Promise<unknown>, expectedMessage: string, evidencePath: string,
+): Promise<void> {
+  let rejected = false;
+  let failure: unknown;
+  try { await run(); }
+  catch (error) { rejected = true; failure = error; }
+  try {
+    await writeFile(evidencePath, JSON.stringify({
+      outcome: rejected ? 'rejected' : 'resolved', expectedMessage,
+      failure: rejected ? inspect(failure, {
+        depth: null, maxArrayLength: null, maxStringLength: null, customInspect: false,
+      }) : null,
+    }) + '\n', { mode: 0o600 });
+  } catch (error) {
+    throw new AggregateError(rejected ? [failure, error] : [error],
+      'Unable to retain isolated preflight evidence');
+  }
+  assert.ok(rejected, `Preflight unexpectedly succeeded; expected ${expectedMessage}`);
+  if (!(failure instanceof Error) || !failure.message.includes(expectedMessage)) throw failure;
+}
 
 /** Vitest deliberately scrubs the process workspace pin. The launcher-owned
  * workspace survives worker setup; its lifetime is independently observed by

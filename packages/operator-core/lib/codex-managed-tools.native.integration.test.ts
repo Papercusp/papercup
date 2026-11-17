@@ -13,7 +13,7 @@ import { CODEX_MANAGED_DISPATCHER_APPROVAL_TOML, codexGatewayConfigToml,
 import type { CapabilityPolicyRequest, CapabilityPolicySurface } from '@papercusp/orchestrator/managed-capability-policy';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { nativeToolInventory } from '../../../libs/papercusp/packages/orchestrator/src/managed-capability-client-inventory';
-import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
+import { assertIsolatedPreflightRejection, captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   codexManagedToolsNativeIntegrationSourcePaths, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../test/private-http-workspace-preflight';
 
@@ -58,12 +58,24 @@ async function captureSurface(features: Record<string, boolean>, captureNested =
   additionalMcpTools = 0) {
   const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
   if (!codex) throw new Error('Installed Codex is required for native-tool removal evidence');
-  const catalogJson = execFileSync(codex, ['debug', 'models'], { encoding: 'utf8', timeout: 5000 });
-  const catalog = JSON.parse(catalogJson);
-  const selectedModel = catalog.models.find((entry: { slug: string }) => entry.slug === model);
-  expect(selectedModel, `Installed catalog must contain ${model}`).toBeDefined();
-  const measuredModel = selectedModel.slug;
   const home = mkdtempSync(join(tmpdir(), 'codex-managed-surface-'));
+  let catalogJson: string;
+  let selectedModel: { slug: string; tool_mode?: string; apply_patch_tool_type?: string };
+  try {
+    // Read the installed catalog under this canary's own home. The parent
+    // session can have a different catalog and a live daemon; neither is an
+    // input to this offline, explicitly --no-daemon client census.
+    catalogJson = execFileSync(codex, ['--no-daemon', 'debug', 'models'], {
+      env: { ...process.env, CODEX_HOME: home }, encoding: 'utf8', timeout: 5000,
+    });
+    const catalog = JSON.parse(catalogJson);
+    selectedModel = catalog.models.find((entry: { slug: string }) => entry.slug === model);
+    expect(selectedModel, `Installed catalog must contain ${model}`).toBeDefined();
+  } catch (error) {
+    rmSync(home, { recursive: true, force: true });
+    throw error;
+  }
+  const measuredModel = selectedModel.slug;
   const catalogPath = join(home, 'installed-models.json');
   writeFileSync(catalogPath, catalogJson);
   const surfaces: CapabilityPolicySurface[] = lifecycle ? ['launch', 'resume', 'wake'] : ['launch'];
@@ -420,6 +432,7 @@ describe('Codex managed replacement installed-client census', () => {
       retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/census/worker.log',
         'phases/execute/census/managed-tool-replies.ndjson',
         'phases/execute/profile-progress.ndjson',
+        'phases/prepare/dispatcher-approval-negative.json',
         'phases/prepare/dispatcher-approval-preflight.json',
         'phases/execute/native-tool-surface.json', 'phases/execute/operator-mcp-receipt.json'],
       prepare: async evidenceDir => {
@@ -427,8 +440,10 @@ describe('Codex managed replacement installed-client census', () => {
         // The prior read-only canary could not detect the production dispatcher's
         // destructive/open-world approval class. Both controls use installed Codex.
         const features = { code_mode: true, code_mode_host: true, shell_tool: false };
-        await expect(captureSurface(features, true, 'gpt-6.1-sol', undefined, false, false))
-          .rejects.toThrow('MCP tool call requires approval, but approval policy is never');
+        await assertIsolatedPreflightRejection(
+          () => captureSurface(features, true, 'gpt-6.1-sol', undefined, false, false),
+          'MCP tool call requires approval, but approval policy is never',
+          join(evidenceDir, 'dispatcher-approval-negative.json'));
         // Exercise a production-sized catalog through installed Codex before
         // paying for the private API build/PG runtime. The former ALL_TOOLS dump
         // exceeded native exec's output budget and hid successful bash replies.
