@@ -39,7 +39,7 @@ import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restr
 
 export type PrivateCompletionFixtureControls = { maintenance: boolean; transport: 'palette' | 'mcp-proxy' };
 
-const privateHttpScenarios = ['saved-plan-lines', 'rubric-coverage', 'current-su-native-recovery-allocation',
+const privateHttpScenarios = ['saved-plan-lines', 'rubric-coverage', 'current-su-native-recovery-allocation', 'testing-background',
   'private-mcp-preflight-only', 'current-su-native', 'current-su-native-carry',
   'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'] as const;
 type PrivateHttpScenario = typeof privateHttpScenarios[number];

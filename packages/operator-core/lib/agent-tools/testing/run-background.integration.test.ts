@@ -3,12 +3,14 @@ import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
+import { parsePrivateHttpScenario, preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('accepts one dirty background test over current-build HTTP and retains its terminal source custody', async context => {
+  const scenarioArgs = ['--private-http-scenario=testing-background'];
+  expect(parsePrivateHttpScenario(scenarioArgs)).toBe('testing-background');
   let prepared: { sha256: string; receiptSha256: string };
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/agent-tools/testing/run-background.integration.test.ts',
@@ -34,12 +36,13 @@ it('accepts one dirty background test over current-build HTTP and retains its te
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
-        STAGING_FIRST_HTTP_SCENARIO: 'testing-background', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
+        STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
         TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
         process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        ...scenarioArgs,
         '--prepared-api-sha=' + prepared.sha256, '--prepared-receipt-sha=' + prepared.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);

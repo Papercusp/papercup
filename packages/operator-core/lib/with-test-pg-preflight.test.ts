@@ -140,7 +140,7 @@ describe('private HTTP scenario controls', () => {
     ['--saved-plan-lines', 'saved-plan-lines'], ['--rubric-coverage', 'rubric-coverage'],
     ['--current-su-recovery-allocation', 'current-su-native-recovery-allocation'],
     ...['private-mcp-preflight-only', 'current-su-native', 'current-su-native-carry',
-      'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off']
+      'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off', 'testing-background']
       .map(scenario => ['--private-http-scenario=' + scenario, scenario]),
   ])('retains %s across the real environment scrub', (selector, scenario) => {
     const result = isolatedRuntimeInheritedEnvironment({ STAGING_FIRST_HTTP_SCENARIO: 'ambient-other-scenario',
