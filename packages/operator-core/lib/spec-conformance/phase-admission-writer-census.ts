@@ -1,0 +1,297 @@
+/** Source evidence for phase admission. Inventory is independent of executing a writer.
+ * Reuse the maintained TypeScript site collector and PostgreSQL grammar; a parse
+ * failure or unresolved edge is retained, never interpreted as an exemption.
+ */
+import { createHash } from 'node:crypto';
+import ts from 'typescript';
+import { parse } from 'pgsql-ast-parser';
+import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
+
+export const PHASE_WRITER_ROOTS = ['packages/', 'apps/', 'libs/', 'scripts/'] as const;
+export const PHASE_WRITER_RELATIONS = new Set([
+  'plan_item_claims', 'work_items', 'engineer_issues', 'harness_features',
+  'harness_features_consolidated', 'harness_plans', 'feature_claims',
+]);
+const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+const relationText = /\b(?:plan_item_claims|work_items|engineer_issues|harness_features(?:_consolidated)?|harness_plans|feature_claims)\b/i;
+const mutationText = /\b(?:insert\s+into|update|delete\s+from|merge\s+into|create\s+(?:or\s+replace\s+)?(?:function|trigger))\b/i;
+const sqlMethod = /(?:^|\.)(?:unsafe|query|execute|exec)$/;
+
+export interface PhaseWriterSource { path: string; content: string }
+export interface PhaseWriterSite {
+  /** Complete path, enclosing operation and statement digest; no display truncation. */
+  id: string;
+  path: string;
+  operation: string;
+  kind: 'sql' | 'sql-function' | 'authority-append' | 'helper-edge' | 'unresolved';
+  sourceSha256: string;
+  statementSha256: string;
+  statement: string;
+  line: number;
+  relations: string[];
+  columns: string[];
+  dynamicEdges: string[];
+  unresolved: string[];
+  callees: string[];
+}
+export interface PhaseWriterInventory {
+  schemaVersion: 1;
+  sites: PhaseWriterSite[];
+  sources: Array<{ path: string; sha256: string }>;
+  /** Enumeration/read/parse gaps remain identities in the coverage population. */
+  gaps: Array<{ id: string; reason: string }>;
+}
+export type PhaseWriterDisposition =
+  'advancing' | 'safe-retreat' | 'metadata-only' | 'isolated-fixture' | 'historical/unreachable';
+export interface PhaseWriterReview {
+  siteId: string;
+  sourceSha256: string;
+  statementSha256: string;
+  disposition: PhaseWriterDisposition;
+  reason: string;
+  evidenceRefs: string[];
+  /** Every interpolation/call frontier needs its own inspected source proof. */
+  resolvedEdges: Array<{ edge: string; reason: string; evidenceRefs: string[] }>;
+  revalidationSeam?: string;
+  raceTest?: string;
+}
+export interface PhaseWriterCoverage {
+  population: string[];
+  checked: string[];
+  notChecked: string[];
+  notApplicable: string[];
+  residue: string[];
+}
+
+function canonicalPath(path: string): boolean {
+  return !!path && !path.includes('\\') && !path.startsWith('/')
+    && path.split('/').every(part => !!part && part !== '.' && part !== '..');
+}
+
+/** The grammar walks nested WITH mutations and function bodies too. */
+function sqlFacts(sql: string) {
+  const relations = new Set<string>(), columns = new Set<string>();
+  const unresolved: string[] = [], functions: string[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (!value || typeof value !== 'object') return;
+    const node = value as Record<string, unknown>;
+    if (['update', 'insert', 'delete', 'merge'].includes(String(node.type))) {
+      const table = (node.table ?? node.into ?? node.from) as { name?: string; schema?: string } | undefined;
+      if (!table?.name) unresolved.push('mutation-relation-unresolved');
+      else if (PHASE_WRITER_RELATIONS.has(table.name.toLowerCase())) {
+        relations.add([table.schema, table.name].filter(Boolean).join('.'));
+        const fields = node.type === 'insert' ? node.columns : node.sets;
+        if (Array.isArray(fields)) for (const field of fields) {
+          const name = field?.column?.name ?? field?.name;
+          if (typeof name === 'string') columns.add(name);
+          else unresolved.push('mutation-column-unresolved');
+        }
+        else if (node.type !== 'delete') unresolved.push('mutation-columns-unresolved');
+        const sets = (node.onConflict as { do?: { sets?: Array<{ column?: { name?: string } }> } } | undefined)?.do?.sets;
+        for (const set of sets ?? []) {
+          if (set.column?.name) columns.add(set.column.name);
+          else unresolved.push('upsert-column-unresolved');
+        }
+      }
+    }
+    if (node.type === 'create function' && typeof node.code === 'string') {
+      // PL/pgSQL is not the SQL grammar. Keep its whole body for review and
+      // reachable-trigger analysis instead of treating an opaque body as clean.
+      if (relationText.test(node.code) && mutationText.test(node.code)) {
+        functions.push(node.code);
+        unresolved.push('sql-function-body-requires-reachability-review');
+      }
+    }
+    Object.values(node).forEach(visit);
+  };
+  try { visit(parse(sql)); }
+  catch { unresolved.push('sql-parse-unresolved'); }
+  return { relations: [...relations].sort(compare), columns: [...columns].sort(compare),
+    unresolved: [...new Set(unresolved)], functions };
+}
+
+/** No file/statement/identity limit: callers supply complete sources or explicit
+ * gaps. Review bindings pin both the complete file and complete statement.
+ */
+export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
+  gaps: PhaseWriterInventory['gaps'] = []): PhaseWriterInventory {
+  const sites: PhaseWriterSite[] = [], sources: PhaseWriterInventory['sources'] = [];
+  const seenPaths = new Set<string>();
+  const calls: Array<{ path: string; operation: string; callee: string; statement: string;
+    line: number; sourceSha256: string }> = [];
+  const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
+    kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
+      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees'>> = {}) => {
+    const statementSha256 = digest(statement), sourceSha256 = digest(source.content);
+    // Identical statements in the same operation are separate source occurrences.
+    const base = JSON.stringify([source.path, operation, kind, statementSha256]);
+    const occurrence = sites.filter(site => site.id.startsWith(base + '#')).length + 1;
+    sites.push({ id: base + '#' + occurrence, path: source.path, operation, kind,
+      statement, line, statementSha256, sourceSha256, relations: [], columns: [],
+      dynamicEdges: [], unresolved: [], callees: [], ...facts });
+  };
+  const retainedGaps = [...gaps];
+  for (const source of [...input].sort((a, b) => compare(a.path, b.path))) {
+    if (!canonicalPath(source.path) || seenPaths.has(source.path)) {
+      throw new Error(`phase_writer_source_identity_invalid:${source.path}`);
+    }
+    seenPaths.add(source.path);
+    sources.push({ path: source.path, sha256: digest(source.content) });
+    if (/\.[cm]?[jt]sx?$/.test(source.path)) {
+      let unit: ReturnType<typeof censusSites>;
+      try { unit = censusSites(source.path, source.content); }
+      catch {
+        retainedGaps.push({ id: `source:${source.path}`, reason: 'typescript-parse-unresolved' });
+        continue;
+      }
+      const operation = (node: ts.Node): string => {
+        const names: string[] = [];
+        for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+          if (!ts.isFunctionLike(parent)) continue;
+          const name = parent.name ?? ((ts.isVariableDeclaration(parent.parent)
+            || ts.isPropertyAssignment(parent.parent)) ? parent.parent.name : undefined);
+          names.unshift(name?.getText(unit.ast) ?? '<callback>');
+        }
+        return names.join('::') || '<module>';
+      };
+      const inspectSql = (node: ts.Node, sql: string, edges: string[]) => {
+        const facts = sqlFacts(sql);
+        if (!facts.relations.length && !facts.functions.length
+          && !(relationText.test(sql) && mutationText.test(sql))) return;
+        add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
+          facts.functions.length ? 'sql-function' : 'sql', {
+            relations: facts.relations, columns: facts.columns,
+            dynamicEdges: edges, unresolved: facts.unresolved,
+          });
+      };
+      const literal = (node: ts.Node): { sql: string; edges: string[] } | null => {
+        if (ts.isStringLiteralLike(node)) return { sql: node.text, edges: [] };
+        if (!ts.isTemplateExpression(node)) return null;
+        let sql = node.head.text;
+        const edges: string[] = [];
+        node.templateSpans.forEach((span, i) => {
+          edges.push(span.expression.getText(unit.ast));
+          sql += `$${i + 1}` + span.literal.text;
+        });
+        return { sql, edges };
+      };
+      const visit = (node: ts.Node): void => {
+        if (ts.isTaggedTemplateExpression(node)) {
+          const text = literal(node.template);
+          if (text) inspectSql(node, text.sql, text.edges);
+        } else if (ts.isCallExpression(node)) {
+          const callee = node.expression.getText(unit.ast);
+          calls.push({ path: source.path, operation: operation(node), callee,
+            statement: node.getText(unit.ast), line: unit.span(node).line, sourceSha256: digest(source.content) });
+          if (sqlMethod.test(callee)) {
+            const text = node.arguments[0] && literal(node.arguments[0]);
+            if (text) inspectSql(node, text.sql, text.edges);
+            else add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
+              'unresolved', { dynamicEdges: [node.arguments[0]?.getText(unit.ast) ?? '<missing-query>'],
+                unresolved: ['dynamic-sql-target-unresolved'] });
+          }
+          if (/\.withAppendsHeld$/.test(callee)
+            || /\.append$/.test(callee) && /feature.claim|plan.item|work.item/i.test(source.content)) {
+            add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
+              'authority-append', { dynamicEdges: node.arguments.map(arg => arg.getText(unit.ast)) });
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(unit.ast);
+    } else if (/\.sql$/.test(source.path)) {
+      const facts = sqlFacts(source.content);
+      if (facts.relations.length || relationText.test(source.content) && mutationText.test(source.content)) {
+        add(source, '<sql-module>', source.content, 1, facts.functions.length ? 'sql-function' : 'sql', facts);
+      }
+    } else if (relationText.test(source.content) && mutationText.test(source.content)) {
+      add(source, '<unparsed-source>', source.content, 1, 'unresolved', {
+        unresolved: ['source-language-requires-review'],
+      });
+    }
+  }
+  // Fixed point over the full source population, not a prefix or a hop cap.
+  // Name matching supplies candidates only; ambiguous/dynamic dispatch remains
+  // an edge requiring review, not an assertion of a resolved callee.
+  const writers = new Set(sites.map(site => site.operation.split('::')[0]!));
+  const added = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const call of calls) {
+      const name = call.callee.split('.').at(-1)!;
+      const key = JSON.stringify([call.path, call.operation, call.statement, call.line]);
+      if (!writers.has(name) || added.has(key)) continue;
+      added.add(key);
+      const source = input.find(source => source.path === call.path)!;
+      add(source, call.operation, call.statement, call.line, 'helper-edge', {
+        callees: [call.callee], dynamicEdges: [call.callee],
+      });
+      const wrapper = call.operation.split('::')[0]!;
+      if (!writers.has(wrapper)) { writers.add(wrapper); changed = true; }
+    }
+  }
+  return { schemaVersion: 1, sources, sites: sites.sort((a, b) => compare(a.id, b.id)),
+    gaps: retainedGaps.sort((a, b) => compare(a.id, b.id)) };
+}
+
+const dispositions = new Set<PhaseWriterDisposition>([
+  'advancing', 'safe-retreat', 'metadata-only', 'isolated-fixture', 'historical/unreachable',
+]);
+
+/** Reviews are exact source proofs. Neither an exemption nor an advancing seam
+ * is accepted after its source/statement changes, even if it never executes.
+ */
+export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
+  reviews: readonly PhaseWriterReview[]) {
+  const coverage: PhaseWriterCoverage = { population: [], checked: [], notChecked: [], notApplicable: [], residue: [] };
+  const problems: Array<{ id: string; reasons: string[] }> = [];
+  const byId = new Map<string, PhaseWriterReview[]>();
+  for (const review of reviews) byId.set(review.siteId, [...(byId.get(review.siteId) ?? []), review]);
+  for (const site of inventory.sites) {
+    coverage.population.push(site.id);
+    const candidates = byId.get(site.id) ?? [];
+    const review = candidates.length === 1 ? candidates[0] : undefined;
+    const reasons: string[] = [];
+    if (!review) reasons.push(candidates.length ? 'duplicate-review' : 'unclassified-writer');
+    else {
+      if (review.sourceSha256 !== site.sourceSha256 || review.statementSha256 !== site.statementSha256) reasons.push('stale-review');
+      if (!dispositions.has(review.disposition) || !review.reason.trim()
+        || !review.evidenceRefs.length || review.evidenceRefs.some(ref => !ref.trim())) reasons.push('review-proof-missing');
+      if (review.disposition === 'advancing' && (!review.revalidationSeam?.trim() || !review.raceTest?.trim())) reasons.push('advancing-seam-or-race-test-missing');
+      const edges = [...site.dynamicEdges, ...site.unresolved, ...site.callees];
+      for (const edge of new Set(edges)) {
+        const resolved = review.resolvedEdges.filter(row => row.edge === edge);
+        if (resolved.length !== 1 || !resolved[0]!.reason.trim() || !resolved[0]!.evidenceRefs.length
+          || resolved[0]!.evidenceRefs.some(ref => !ref.trim())) reasons.push(`unresolved-edge:${edge}`);
+      }
+      for (const resolved of review.resolvedEdges) if (!edges.includes(resolved.edge)) reasons.push(`stale-edge-review:${resolved.edge}`);
+    }
+    if (reasons.length) {
+      coverage.notChecked.push(site.id); coverage.residue.push(site.id); problems.push({ id: site.id, reasons });
+    } else if (review!.disposition === 'isolated-fixture' || review!.disposition === 'historical/unreachable') {
+      coverage.notApplicable.push(site.id);
+    } else coverage.checked.push(site.id);
+    byId.delete(site.id);
+  }
+  for (const gap of inventory.gaps) {
+    const id = `gap:${gap.id}`;
+    coverage.population.push(id); coverage.notChecked.push(id); coverage.residue.push(id);
+    problems.push({ id, reasons: [gap.reason] });
+  }
+  // An exemption for a deleted writer is stale too. Preserve the full identity.
+  for (const [siteId] of byId) {
+    const id = `orphan-review:${siteId}`;
+    coverage.population.push(id); coverage.notChecked.push(id); coverage.residue.push(id);
+    problems.push({ id, reasons: ['reviewed-writer-missing'] });
+  }
+  return { schemaVersion: 1 as const, ready: problems.length === 0, coverage, problems };
+}
+
+export function assertPhaseWriterCensus(inventory: PhaseWriterInventory, reviews: readonly PhaseWriterReview[]) {
+  const report = reconcilePhaseWriterCensus(inventory, reviews);
+  if (!report.ready) throw new Error(`phase_writer_census_incomplete:${JSON.stringify(report)}`);
+  return report;
+}
