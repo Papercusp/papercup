@@ -11,12 +11,12 @@ import { runHarness } from '@papercusp/verification-harness';
 import { findBoxIdentityPaths, findIdentityLiterals, resolveIdentityLiterals } from '../../../scripts/lib/identity-leak-patterns.mjs';
 import { assertBaselineInstalledTree, captureBaselineInstalledTree, assertBaselineRuntimeCustody,
   assertBaselineToolchain, captureBaselineToolchain,
-  assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
-  baselineProductBoundary, baselineRepairFailureArtifacts,
+  assertBaselineRepairInputs, assertFrozenBaselineSources,
+  baselineProductBoundary, retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
+import { assertBaselinePlannedRepair, baselineLockDelta, baselineRepairFailureArtifacts,
   baselinePacketChunkBytes, readBaselinePacket, retainBaselinePacket,
   baselineClientEntryPaths, captureBaselineProducers, retainBaselineProducerPacket, retainBaselineClientOriginals,
-  qualifyBaselinePacket, readBaselineQualification, sealBaselineQualification, originalBaselinePtoolSha256,
-  retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
+  qualifyBaselinePacket, readBaselineQualification, sealBaselineQualification, originalBaselinePtoolSha256 } from './task-artifacts-baseline-custody';
 import { nativeProofFingerprint, type NativeProofInput, type NativeProofRun } from './testing-run-store';
 
 // Original source bytes captured before product edits, independent of candidate

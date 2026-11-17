@@ -47,6 +47,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         'packages/operator-core/lib/scratch-git-clone.ts', 'scripts/source-preview.mjs',
         'scripts/npm-install-safe.mjs', 'scripts/lint-as-committed.mjs',
         'packages/operator-core/test/task-artifacts-baseline-repair.ts',
+        'packages/operator-core/lib/task-artifacts-baseline-custody.ts',
         'apps/operator/bin/release/dependency-lock-tree-audit.mjs',
         'apps/operator/bin/release/dependency-generation.sh',
         'papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/bundle-host.sh',
