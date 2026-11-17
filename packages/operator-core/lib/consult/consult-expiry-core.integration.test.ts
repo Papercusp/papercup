@@ -24,6 +24,7 @@ import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/p
 import { FIRST_TURN_REJUDGE_WINDOW_MS, sweepExpiredConsults, type ExpirySweepDeps } from './consult-expiry-core';
 import { launchLogFailureReason, makeDeferredConsultReachDispatcher, rejudgeFirstTurn } from './consult-dispatch';
 import { continueCascadeDispatchCore } from './cascade-core';
+import { consultCloseCore, consultReplyCore, type ConsultVerbDeps } from './consult-verbs-core';
 import { consultExpiryDispatch, consultExpiryFileReviewWorkItem, consultExpiryFindSilentResponders, consultExpiryNotifyRequester, consultExpiryRejudgeAnsweringTask } from './consult-expiry-adapters';
 import { PgCoordLog, ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import type { CoordEnvelope } from '@papercusp/coordination/core';
@@ -1821,7 +1822,7 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     expect(alert.body).toContain(`vettingWorkItem: 'WI-review-${id}'`);
   });
 
-  it('leases recent answering-session tool use, but only after routing and before the configured expiry', async () => {
+  it('leases recent answering-session tool use after routing, including past the configured expiry', async () => {
     const activeId = await seedReview({
       routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-active']) },
       createdMin: -70, expiresMin: 50,
@@ -1862,23 +1863,115 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
       .map((entry) => entry.conversationId)
       .filter((id) => targetIds.has(id));
 
-    expect(new Set(convertedIds)).toEqual(new Set([staleId, beforeRouteId, expiredId]));
+    expect(new Set(convertedIds)).toEqual(new Set([staleId, beforeRouteId]));
     expect(filed
       .map((entry) => entry.conversationId)
       .filter((id) => targetIds.has(id))
-      .sort()).toEqual([staleId, beforeRouteId, expiredId].sort());
+      .sort()).toEqual([staleId, beforeRouteId].sort());
     expect(await rowOf(activeId)).toMatchObject({
       state: 'awaiting_responder', closed_at: null, cascade_cursor: 0,
     });
     expect(await rowOf(dispatchBackedId)).toMatchObject({
       state: 'awaiting_responder', closed_at: null, cascade_cursor: 0,
     });
+    expect(await rowOf(expiredId)).toMatchObject({ state: 'awaiting_responder', closed_at: null });
   });
 
-  it('rechecks answering-session activity with the current clock after work-item filing', async () => {
+  it.each([-1, 0, 1])('preserves a due BAR reviewer at lease boundary offset %ims and recovers after inactivity', async offset => {
+    const answerer = `bar-boundary-${offset}`;
+    const id = await seedReview({
+      routing: { policy: 'bar-critique', ...menuSnapshot(['resp-1', 'resp-2'], [answerer]) },
+      createdMin: -70, expiresMin: -1,
+    });
+    await seedToolUse(answerer, new Date(NOW.getTime() - 5 * MIN + offset).toISOString());
+    const { deps, reachCalls, filed } = withFiler();
+    const stop = vi.fn(async () => 'stopped');
+    deps.stopAnsweringSession = stop;
+    const result = await sweepExpiredConsults(deps);
+    if (offset >= 0) {
+      expect(result).toMatchObject({ advanced: 0, expired: 0, answerFailures: [] });
+      expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null, cascade_cursor: 0 });
+      expect(reachCalls.filter(call => call.conversationId === id)).toEqual([]);
+      expect(stop).not.toHaveBeenCalled();
+      // No expiry extension or synthetic answer: the next sweep can recover
+      // once the actual tool-use lease ends, using the same original request.
+      deps.now = () => new Date(NOW.getTime() + 2);
+      expect((await sweepExpiredConsults(deps)).advanced).toBe(1);
+    } else {
+      expect(result.advanced).toBe(1);
+    }
+    expect(filed.filter(request => request.conversationId === id)).toEqual([]);
+    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', cascade_cursor: 1 });
+  });
+
+  it.each([false, true])('atomically preserves BAR activity arriving during the expiry alert (next selectee %s)', async hasNext => {
+    const answerer = `bar-alert-race-${hasNext}`;
+    const id = await seedReview({
+      routing: { policy: 'bar-critique', ...menuSnapshot(hasNext ? ['resp-1', 'resp-2'] : ['resp-1'], [answerer]) },
+      createdMin: -70, expiresMin: -1,
+    });
+    const { deps, reachCalls } = withFiler();
+    const stop = vi.fn(async () => 'must not stop the progressing reviewer');
+    deps.stopAnsweringSession = stop;
+    deps.notifyRequester = async alert => {
+      if (alert.conversationId === id) await seedToolUse(answerer, NOW.toISOString());
+    };
+    const result = await sweepExpiredConsults(deps);
+    expect(result).toMatchObject({ advanced: 0, expired: 0, answerFailures: [] });
+    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null, cascade_cursor: 0 });
+    expect((await conversationStateOf(id)).state).toBe('open');
+    expect(reachCalls.filter(call => call.conversationId === id)).toEqual([]);
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it('retains the original BAR publication channel after a refused answer and accepts its complete retry after the deadline', async () => {
+    const answerer = 'bar-publication-retry';
+    const id = await seedReview({
+      routing: { policy: 'bar-critique', ...menuSnapshot(['resp-1'], [answerer]) },
+      createdMin: -70, expiresMin: -1,
+    });
+    const request = {
+      workspaceId: WS, conversationId: id, authorId: answerer,
+      kind: 'answer' as const, body: 'Complete retained source review',
+      evidence: [{ session_id: 'original-review-source', turn_idx: 17 }],
+      review: { subjectRef: 'plan:original@immutable-revision', coverage: 'complete' as const, findings: [] },
+    };
+    const postId = ++seq;
+    const verbDeps: ConsultVerbDeps = {
+      getSql: () => rootSql, now: () => NOW, emitReplyEvent: async () => {},
+      post: async () => ({ error: 'publication_refused' }),
+    };
+    expect(await consultReplyCore(request, verbDeps)).toMatchObject({ error: 'post_failed' });
+    await seedToolUse(answerer, NOW.toISOString());
+    const { deps, reachCalls } = withFiler();
+    const stop = vi.fn(async () => 'must retain this answerer');
+    deps.stopAnsweringSession = stop;
+    await sweepExpiredConsults(deps);
+    expect(await rowOf(id)).toMatchObject({ state: 'awaiting_responder', closed_at: null, cascade_cursor: 0 });
+    const posted = await consultReplyCore(request, { ...verbDeps, post: async () => ({
+      post: { id: postId, thread_id: `thr-${id}`, author_id: answerer,
+        body: request.body, created_ts: NOW.toISOString() },
+      delivered: 1, author_origin: 'agent',
+    }) });
+    expect(posted).toMatchObject({ ok: true, post_id: postId, role: 'responder',
+      review: { answers: [expect.objectContaining({ coverage: 'complete', subjectRef: request.review.subjectRef })] } });
+    const [meta] = await rootSql`SELECT author_id, evidence FROM harness_shared.consult_post_meta
+      WHERE workspace_id = ${WS} AND conversation_id = ${id} AND post_id = ${postId}`;
+    expect(meta).toMatchObject({ author_id: answerer, evidence: request.evidence });
+    expect(reachCalls.filter(call => call.conversationId === id)).toEqual([]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: 'rubric-author',
+      outcome: 'answered', answer: 'Complete critique received on the original subject' }, {
+      ...verbDeps, post: async input => ({ post: { id: ++seq, thread_id: `thr-${id}`,
+        author_id: 'rubric-author', body: input.body, created_ts: NOW.toISOString() },
+      delivered: 1, author_origin: 'agent' }),
+    })).toMatchObject({ ok: true, state: 'closed_answered' });
+  });
+
+  it.each([50, -1])('rechecks answering-session activity after work-item filing with expiry %imin', async expiresMin => {
     const id = await seedReview({
       routing: { policy: 'rubric-vetting', ...menuSnapshot(['resp-1'], ['answerer-after-file']) },
-      createdMin: -70, expiresMin: 50,
+      createdMin: -70, expiresMin,
     });
     let currentTime = NOW;
     const { deps, filed, alerts } = withFiler();

@@ -569,7 +569,22 @@ export interface AdvanceCascadeParams {
    * an expiry event or advance after another writer has refreshed its TTL. */
   expectedState?: string;
   expectedExpiresAt?: string | Date | null;
+  /** Expiry may end an unanswered review only while its current answerer is quiet. */
+  expectedNoToolUse?: { ownerId: string; since: string };
   nowIso: string;
+}
+
+/** Recheck progress in the lifecycle write, including tool calls that arrived
+ * after the sweep read. Future-dated receipts conservatively veto that write. */
+export function answererQuietGuard(sql: Sql, progress?: AdvanceCascadeParams['expectedNoToolUse']) {
+  if (!progress) return sql`true`;
+  return sql`(${progress?.ownerId ?? null}::text IS NULL OR NOT EXISTS (
+    SELECT 1 FROM harness_shared.session_turn_parts progress
+     WHERE progress.workspace_id = 'default'
+       AND progress.owner = ${progress?.ownerId ?? null}
+       AND progress.part_kind = 'tool_use'
+       AND progress.ts >= ${progress?.since ?? null}::timestamptz
+  ))`;
 }
 
 export interface AdvanceCascadeResult {
@@ -751,6 +766,7 @@ export async function advanceCascade(
          AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
          AND (${params.expectedState ?? null}::text IS NULL OR state = ${params.expectedState ?? null})
          AND (${params.expectedExpiresAt ?? null}::timestamptz IS NULL OR expires_at = ${params.expectedExpiresAt ?? null}::timestamptz)
+         AND ${answererQuietGuard(sql, params.expectedNoToolUse)}
       RETURNING conversation_id`;
     return { advanced: false, exhausted: wrote.length > 0, raced: wrote.length === 0, next: null, woke: 0 };
   }
@@ -771,6 +787,7 @@ export async function advanceCascade(
       digest,
       expectedState: params.stateOnAdvance,
       expectedExpiresAt: expiresAt,
+      expectedNoToolUse: undefined,
       event: makeDigestEntry(ownerId, 'dispatch_failed', params.nowIso,
         'Dispatch returned without launching an answering session; advancing to the next selected expert.'),
     }, sql, dispatch);
@@ -938,6 +955,7 @@ export async function advanceCascade(
              AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
              AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
              AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
+             AND ${answererQuietGuard(sql, params.expectedNoToolUse)}
           RETURNING conversation_id
         `) as unknown as Array<{ conversation_id: string }>;
         if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
@@ -1039,6 +1057,7 @@ export async function advanceCascade(
                AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
                AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
                AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
+               AND ${answererQuietGuard(sql, params.expectedNoToolUse)}
             RETURNING conversation_id
           `) as unknown as Array<{ conversation_id: string }>);
       if (wroteTerminal.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
@@ -1059,6 +1078,7 @@ export async function advanceCascade(
          AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
          AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
          AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
+         AND ${answererQuietGuard(sql, params.expectedNoToolUse)}
       RETURNING conversation_id
     `) as unknown as Array<{ conversation_id: string }>;
     if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };
@@ -1090,6 +1110,7 @@ export async function advanceCascade(
        AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
        AND (${params.expectedState === undefined}::boolean OR state = ${params.expectedState ?? null}::text)
        AND (${params.expectedExpiresAt === undefined}::boolean OR expires_at IS NOT DISTINCT FROM ${params.expectedExpiresAt ?? null}::timestamptz)
+       AND ${answererQuietGuard(sql, params.expectedNoToolUse)}
     RETURNING conversation_id
   `) as unknown as Array<{ conversation_id: string }>;
   if (wrote.length === 0) return { advanced: false, exhausted: false, raced: true, next: null, woke: 0 };

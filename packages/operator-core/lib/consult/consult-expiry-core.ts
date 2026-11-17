@@ -40,7 +40,7 @@
  */
 import type { Sql } from 'postgres';
 import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
-import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeDispatch } from './cascade-core';
+import { advanceCascade, answererQuietGuard, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeDispatch } from './cascade-core';
 import {
   appendAnswerFailureRecord,
   type AnswerFailureReason,
@@ -49,7 +49,7 @@ import {
   type PersistedDispatchRecord,
 } from './consult-dispatch';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
-import { RUBRIC_VETTING_POLICY } from './selection-policies';
+import { BAR_CRITIQUE_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 
 /** Rows processed per tick — bounds one sweep's write + wake fan-out. A backlog
  * deeper than this simply drains over successive ticks. */
@@ -95,9 +95,9 @@ export const FIRST_TURN_REJUDGE_WINDOW_MS = HARD_BLOCKED_EXPIRY_MS;
 
 /**
  * A recent tool call by the currently stamped answering session is a
- * non-advancing engagement receipt. It leases the half-window conversion for
- * five minutes after that call; the consult's configured expiry remains the
- * hard upper bound.
+ * non-advancing engagement receipt. It leases conversion and expiry for five
+ * minutes after that call. The configured deadline is not evidence of silence:
+ * a reviewer still reading or publishing keeps the same finite inactivity lease.
  */
 const REVIEW_PROGRESS_LEASE_MS = 5 * 60_000;
 
@@ -293,6 +293,26 @@ async function hasRecentReviewAnswererToolUse(
     ) AS active
   `;
   return row?.active === true;
+}
+
+/** BAR proof is consumed from its original consult, so preserve that answer
+ * channel rather than converting it to an unsupported work-item proof source. */
+function reviewProgressAnsweringOwner(row: DueConsultRow): string | null {
+  if (row.state !== 'awaiting_responder' || row.has_responder_reply !== false) return null;
+  let routing = row.routing;
+  if (typeof routing === 'string') {
+    try { routing = JSON.parse(routing); } catch { return null; }
+  }
+  if (!reviewConsultKind(routing) &&
+      (routing as { policy?: unknown } | null)?.policy !== BAR_CRITIQUE_POLICY) return null;
+  return currentReviewAnsweringOwner(row);
+}
+
+function reviewProgressGuard(ownerId: string | null, routedAt: string, nowIso: string) {
+  return ownerId ? {
+    ownerId,
+    since: new Date(Math.max(Date.parse(routedAt), Date.parse(nowIso) - REVIEW_PROGRESS_LEASE_MS)).toISOString(),
+  } : undefined;
 }
 
 export interface ExpirySweepDeps {
@@ -584,6 +604,15 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const answerFailures: ExpirySweepResult['answerFailures'] = [];
   for (const row of due) {
     const isDue = row.is_due === true;
+    const progressOwnerId = reviewProgressAnsweringOwner(row);
+    if (progressOwnerId) {
+      try {
+        if (await hasRecentReviewAnswererToolUse(sql, progressOwnerId, row.snapshot_updated_at, nowIso)) continue;
+      } catch {
+        conversionFailures.push(row.conversation_id);
+        continue;
+      }
+    }
 
     // P-014 / RSR-P-014-A: a silent REVIEW consult at half its TTL is converted to
     // pullable work. An unstamped dispatch with no thread after the bounded
@@ -601,16 +630,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       (row.is_half_silent === true || unstampedDispatchFailed || noQualifiedReviewer)
     ) {
       const answeringOwnerId = currentReviewAnsweringOwner(row);
-      if (!isDue && !unstampedDispatchFailed && answeringOwnerId) {
-        try {
-          if (await hasRecentReviewAnswererToolUse(sql, answeringOwnerId, row.snapshot_updated_at, nowIso)) continue;
-        } catch {
-          conversionFailures.push(row.conversation_id);
-          continue;
-        }
-      }
       const outcome = await convertReviewConsult(
-        deps, sql, row, reviewKind, nowIso, unstampedDispatchFailed, isDue, answeringOwnerId,
+        deps, sql, row, reviewKind, nowIso, unstampedDispatchFailed, answeringOwnerId,
       );
       if (outcome.status === 'converted') {
         converted.push({ conversationId: row.conversation_id, workItemId: outcome.workItemId, kind: reviewKind });
@@ -682,6 +703,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           digest: row.cascade_digest,
           expectedState: row.state,
           expectedExpiresAt: row.expires_at,
+          expectedNoToolUse: reviewProgressGuard(progressOwnerId, row.snapshot_updated_at,
+            (deps.now ? deps.now() : new Date()).toISOString()),
           event: makeDigestEntry(
             row.responder_id ?? '(unrouted)',
             // D-002: nothing is woken any more, so a no-pickup is a FAILED
@@ -787,6 +810,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
            AND cascade_cursor = ${terminalSlot.cascadeCursor}
            AND expires_at IS NOT DISTINCT FROM ${terminalSlot.expiresAt}::timestamptz
            AND (${exhaustedAfterDispatch}::boolean OR expires_at < ${nowIso}::timestamptz)
+           AND ${answererQuietGuard(tx as unknown as Sql, exhaustedAfterDispatch ? undefined :
+             reviewProgressGuard(progressOwnerId, row.snapshot_updated_at,
+               (deps.now ? deps.now() : new Date()).toISOString()))}
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       if (terminal.length === 0) return terminal;
@@ -960,7 +986,6 @@ async function convertReviewConsult(
   kind: ReviewConsultKind,
   nowIso: string,
   unstampedDispatchFailed = false,
-  isDue = false,
   answeringOwnerId: string | null = null,
 ): Promise<ReviewConversionOutcome> {
   let workItemId: string;
@@ -986,7 +1011,6 @@ async function convertReviewConsult(
     if (!(await isCurrentExpirySnapshot(sql, row))) return { status: 'raced' };
     const activityNowIso = (deps.now ? deps.now() : new Date()).toISOString();
     if (
-      !isDue &&
       answeringOwnerId &&
       await hasRecentReviewAnswererToolUse(sql, answeringOwnerId, row.snapshot_updated_at, activityNowIso)
     ) return { status: 'raced' };
@@ -1031,22 +1055,8 @@ async function convertReviewConsult(
            )
            AND cascade_cursor = ${row.cascade_cursor}
            AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
-           AND (
-             ${isDue}::boolean
-             OR ${answeringOwnerId}::text IS NULL
-             OR NOT EXISTS (
-               SELECT 1
-                 FROM harness_shared.session_turn_parts progress
-                WHERE progress.workspace_id = 'default'
-                  AND progress.owner = ${answeringOwnerId}
-                  AND progress.part_kind = 'tool_use'
-                  AND progress.ts >= GREATEST(
-                    ${row.snapshot_updated_at}::timestamptz,
-                    ${commitNowIso}::timestamptz - (${REVIEW_PROGRESS_LEASE_MS}::bigint * interval '1 millisecond')
-                  )
-                  AND progress.ts <= ${commitNowIso}::timestamptz
-             )
-           )
+           AND ${answererQuietGuard(tx as unknown as Sql,
+             reviewProgressGuard(answeringOwnerId, row.snapshot_updated_at, commitNowIso))}
            AND (
              (state = 'no_qualified_responder' AND responder_id IS NULL AND expires_at IS NULL)
              OR ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
