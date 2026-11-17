@@ -70,7 +70,7 @@ export interface WorkItemLifecycleFlags {
 }
 
 export interface WorkItemLifecycleCoverage {
-  /** Rows read from audit_log for this subject. */
+  /** Audit rows selected for display, excluding the omission lookahead row. */
   auditRows: number;
   /** Entries found in payload.reopenHistory (bounded to the newest 5 by the writer). */
   reopenEntries: number;
@@ -79,7 +79,11 @@ export interface WorkItemLifecycleCoverage {
    * timeline plus an empty caveat list is what let the original misreading happen.
    */
   notRecorded: string[];
-  /** True when a source could not be read (as opposed to being genuinely empty). */
+  /** True when additional audit or merged events were omitted by the display limit. */
+  truncated: boolean;
+  /** Malformed source entries omitted from the timeline; never verified absence. */
+  invalidEntries: number;
+  /** True when a source could not be read or contains malformed evidence. */
   degraded: boolean;
 }
 
@@ -97,6 +101,7 @@ export interface WorkItemLifecycleHistory {
 function notRecordedFor(family: string | null | undefined): string[] {
   const caveats = [
     "non-terminal transitions (→ wip, → open) are not recorded in any store — an empty timeline never means 'this item never moved'",
+    'reopenHistory retains only the newest five entries; this read does not qualify historical capture, DDL or retention continuity',
   ];
   if (family === 'issue') {
     caveats.push(
@@ -145,11 +150,16 @@ export async function getWorkItemLifecycleHistory(params: {
   family?: string | null;
   limit?: number;
 }): Promise<WorkItemLifecycleHistory> {
-  const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
+  const requestedLimit = params.limit;
+  const limit = typeof requestedLimit === 'number' && Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(Math.floor(requestedLimit), 1), 200)
+    : 50;
   const payload = asRecord(params.payload);
   const events: WorkItemLifecycleEvent[] = [];
   let degraded = false;
   let auditRows = 0;
+  let auditTruncated = false;
+  let invalidEntries = 0;
 
   // ---- source 1: audit_log -------------------------------------------------
   try {
@@ -158,14 +168,19 @@ export async function getWorkItemLifecycleHistory(params: {
       `SELECT ts, actor, action, details
          FROM harness_shared.audit_log
         WHERE workspace_id = $1 AND subject = $2 AND action LIKE 'work_items:%'
-        ORDER BY ts DESC
+        ORDER BY ts DESC, id DESC
         LIMIT $3`,
-      [params.workspaceId, params.id, limit],
+      [params.workspaceId, params.id, limit + 1],
     )) as Array<{ ts: number | string; actor: string | null; action: string; details: unknown }>;
-    auditRows = rows.length;
-    for (const row of rows) {
-      const atMs = Number(row.ts);
-      if (!Number.isFinite(atMs)) continue;
+    auditRows = Math.min(rows.length, limit);
+    auditTruncated = rows.length > limit;
+    for (const row of rows.slice(0, limit)) {
+      const atMs = typeof row.ts === 'number' || (typeof row.ts === 'string' && row.ts.trim() !== '')
+        ? Number(row.ts) : NaN;
+      if (!Number.isFinite(atMs) || !Number.isFinite(new Date(atMs).getTime())) {
+        invalidEntries += 1;
+        continue;
+      }
       const details = asRecord(row.details);
       // `actor` is NOT NULL in schema with a 'user' default, and the claim-hold writer
       // substitutes the literal 'system' when it has no actor. Neither is a real identity,
@@ -190,12 +205,13 @@ export async function getWorkItemLifecycleHistory(params: {
   // ---- source 2: payload.reopenHistory ------------------------------------
   const reopenRaw = payload?.reopenHistory;
   const reopenList = Array.isArray(reopenRaw) ? reopenRaw : [];
+  if (reopenRaw != null && !Array.isArray(reopenRaw)) invalidEntries += 1;
   for (const entry of reopenList) {
     const rec = asRecord(entry);
-    if (!rec) continue;
+    if (!rec) { invalidEntries += 1; continue; }
     const at = typeof rec.at === 'string' ? rec.at : null;
     const atMs = at ? Date.parse(at) : NaN;
-    if (!Number.isFinite(atMs)) continue;
+    if (!Number.isFinite(atMs)) { invalidEntries += 1; continue; }
     // Pass the entry through WHOLE rather than picking known keys. `reopenHistory` is an
     // actively-growing record — EI-19393880133572803 is archiving `_completionEvidence` into
     // these same entries as this is written — and a hardcoded key list would silently drop
@@ -216,6 +232,9 @@ export async function getWorkItemLifecycleHistory(params: {
 
   // Newest first, matching every other agent-facing history read.
   events.sort((a, b) => b.atMs - a.atMs);
+  const truncated = auditTruncated || events.length > limit;
+  const notRecorded = notRecordedFor(params.family);
+  if (truncated) notRecorded.push(`additional lifecycle events are omitted by the display limit of ${limit}`);
 
   const heldOpenBy = typeof payload?.held_open_by === 'string' ? payload.held_open_by : null;
   const heldOpenReason =
@@ -238,8 +257,10 @@ export async function getWorkItemLifecycleHistory(params: {
     coverage: {
       auditRows,
       reopenEntries: reopenList.length,
-      notRecorded: notRecordedFor(params.family),
-      degraded,
+      notRecorded,
+      truncated,
+      invalidEntries,
+      degraded: degraded || invalidEntries > 0,
     },
   };
 }
