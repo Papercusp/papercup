@@ -943,8 +943,15 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
           if (rows === null) return unknown('test ledger is unavailable');
           if (rows.length !== 1 || rows[0].id !== Number(match[2])) return absent('exact scoped test run not found');
           // A passing row proves a run occurred. It does not establish current
-          // source/runtime containment or that the blocked condition recovered.
-          return { status: 'available' };
+          // source/runtime containment or that the blocked condition recovered,
+          // so it never carries a condition. EI-28983003176099299: a PASSING row
+          // whose run group the task ledger binds to exactly one work item names
+          // that item; only a self-resolution superseding a lapsed active-peer
+          // recheck of that same item accepts it as verification.
+          if (rows[0].status !== 'pass') return { status: 'available' };
+          const { readTestRunWorkItemBindings } = await import('./testing-run-store');
+          const bound = await readTestRunWorkItemBindings({ workspaceId: context.workspaceId, runGroupId: match[1] });
+          return bound?.length === 1 ? { status: 'available', boundPassingRunFor: bound[0] } : { status: 'available' };
         }
       }
     } catch (error) {

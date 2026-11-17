@@ -4,14 +4,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
-import { BLOCKER_EVIDENCE_REF_GRAMMAR, prepareBlockerDecision } from './blocker-resolution-decision';
+import { BLOCKER_EVIDENCE_REF_GRAMMAR, prepareBlockerDecision, type BlockerDecisionInput } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
 import { runWithWorkspace } from './workspace-als';
 import type { UnresolvedDepBlocker } from './work-items';
 import type { PlanRow } from './agent-tools/plans/source';
 
 const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(), event: vi.fn(),
-  doc: vi.fn(), session: vi.fn(), test: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
+  doc: vi.fn(), session: vi.fn(), test: vi.fn(), testBindings: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
   workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn(),
   hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn(), rubric: vi.fn(), vetting: vi.fn(),
   ownerTurn: vi.fn(), lift: vi.fn() }));
@@ -33,7 +33,8 @@ vi.mock('./cell-read', () => ({ readCell: mocks.cell, formatCellHoist: mocks.hoi
 vi.mock('./external-condition-reachability', () => ({ readEventConditionReachability: mocks.event }));
 vi.mock('./harness/docs/doc-record', () => ({ getAuthoredDocContent: mocks.doc }));
 vi.mock('./session-brief', () => ({ getSessionBrief: mocks.session }));
-vi.mock('./testing-run-store', () => ({ readHarnessTestRunEvidence: mocks.test }));
+vi.mock('./testing-run-store', () => ({ readHarnessTestRunEvidence: mocks.test,
+  readTestRunWorkItemBindings: mocks.testBindings }));
 vi.mock('./scorecards', () => ({ readScorecardRecipeHeader: mocks.scorecard, listScorecards: vi.fn() }));
 vi.mock('./rubrics', () => ({ readRubricWithoutSeeding: mocks.rubric }));
 vi.mock('./acceptance-rubric-vetting', () => ({ getAcceptanceRubricVettingStatus: mocks.vetting }));
@@ -110,12 +111,88 @@ describe('canonical blocker evidence readers', () => {
     expect(await read({ kind: 'test', ref: 'testing:runs:group-a' })).toMatchObject({
       status: 'absent', detail: `expected ${BLOCKER_EVIDENCE_REF_GRAMMAR.test.ref} in a canonical harness` });
   });
+  it('names the one ledger-bound work item of a passing run, and nothing else (EI-28983003176099299)', async () => {
+    const read = createBlockerEvidenceReader(ctx);
+    const proof = { kind: 'test' as const, ref: 'testing:runs:group-a:42' };
+    mocks.test.mockResolvedValue([{ id: 42, status: 'pass' }]);
+    mocks.testBindings.mockResolvedValue(['WI-1']);
+    expect(await read(proof)).toEqual({ status: 'available', boundPassingRunFor: 'WI-1' });
+    expect(mocks.testBindings).toHaveBeenLastCalledWith({ workspaceId: 'workspace-a', runGroupId: 'group-a' });
+    // Unbound, multiply-bound and unreadable ledgers bind nothing, and no binding carries a condition.
+    for (const bindings of [[], ['WI-1', 'WI-2'], null]) {
+      mocks.testBindings.mockResolvedValue(bindings);
+      expect(await read(proof)).toEqual({ status: 'available' });
+    }
+    // A run that did not pass is bare existence; the ledger is not even consulted.
+    mocks.testBindings.mockClear().mockResolvedValue(['WI-1']);
+    for (const status of ['fail', 'error', 'skip', 'running']) {
+      mocks.test.mockResolvedValue([{ id: 42, status }]);
+      expect(await read(proof)).toEqual({ status: 'available' });
+    }
+    expect(mocks.testBindings).not.toHaveBeenCalled();
+  });
   it('resolves source paths in the canonical tree without treating files as verification', async () => {
     const read = createBlockerEvidenceReader(ctx);
     expect(await read({ kind: 'source', ref: 'source:package.json:1' })).toEqual({ status: 'available' });
     expect((await read({ kind: 'source', ref: '/etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: '../../../../etc/passwd' })).status).toBe('absent');
     expect((await read({ kind: 'source', ref: 'package.json:99999999' })).status).toBe('absent');
+  });
+});
+
+describe('lapsed active-peer recheck superseded by a ledger-bound passing run (EI-28983003176099299)', () => {
+  // End to end through preflightBlockerDecision and the REAL evidence reader: only
+  // the canonical rows are mocked, so the validator sees exactly what production
+  // readers return. The phase-1 unit test passed on a reader output that production
+  // never produced; this block cannot drift that way.
+  const recheck = { kind: 'work-item' as const, ref: 'EI-2' };
+  const proof = { kind: 'test' as const, ref: 'testing:runs:group-1:7' };
+  const boundary = { ...ctx, sessionId: ctx.ownerId };
+  const deferral: BlockerDecisionInput = {
+    schemaVersion: 1, idempotencyKey: 'defer-1', disposition: 'defer', symptom: 'Waiting on the peer repair EI-2',
+    investigation: [{ action: 'Read EI-2', outcome: 'su-b holds the repair', evidenceRefs: [recheck] }], attempts: [],
+    evidenceRefs: [recheck],
+    deferral: { reason: 'active-peer', responsibleParty: 'su-b', nextAction: 'su-b lands EI-2',
+      reasonEvidenceRefs: [recheck], recheckRef: recheck },
+  };
+  const subject = () => {
+    const prior = prepareBlockerDecision({}, deferral,
+      { ownerId: ctx.ownerId, sessionId: ctx.ownerId, workItemId: 'WI-1', custodianId: ctx.ownerId },
+      { now: () => new Date('2026-11-16T20:00:00Z'), newId: () => 'decision-1' });
+    if (!prior.ok) throw new Error('fixture deferral refused');
+    return { id: 'WI-1', harness: ctx.harnessSlug, state: 'wip', assignee: ctx.ownerId, payload: { ...prior.patch } };
+  };
+  const resolution = (): BlockerDecisionInput => ({
+    schemaVersion: 1, idempotencyKey: 'resolve-1', priorRevision: 1, disposition: 'self_resolve',
+    symptom: 'EI-2 custody lapsed; this item verified on its own',
+    investigation: [{ action: 'Re-ran this item tests', outcome: 'pass', evidenceRefs: [proof] }], attempts: [],
+    evidenceRefs: [recheck, proof], verification: { outcome: 'Item tests pass', evidenceRefs: [proof] },
+  });
+  const peer = (assignee: string | null) => ({ id: 'EI-2', harness: ctx.harnessSlug, state: 'open', assignee });
+  const preflight = () => preflightBlockerDecision(subject(), resolution(), boundary,
+    { effect: { setBlocker: { clear: true } } });
+  beforeEach(() => {
+    vi.clearAllMocks(); mocks.workspace.mockReturnValue(ctx.workspaceId); mocks.deps.mockResolvedValue([]);
+    mocks.item.mockImplementation(async (id: string) => id === 'EI-2' ? peer(null) : subject());
+    mocks.presence.mockResolvedValue({ stale: false, workspaceId: ctx.workspaceId });
+    mocks.test.mockResolvedValue([{ id: 7, status: 'pass' }]);
+    mocks.testBindings.mockResolvedValue(['WI-1']);
+  });
+  it('accepts a passing run bound to this item once the peer custody lapsed', async () => {
+    expect(await preflight()).toMatchObject({ ok: true });
+    expect(mocks.testBindings).toHaveBeenCalledWith({ workspaceId: ctx.workspaceId, runGroupId: 'group-1' });
+  });
+  it.each([
+    ['the run is bound to another item', () => mocks.testBindings.mockResolvedValue(['WI-9'])],
+    ['the run is unbound', () => mocks.testBindings.mockResolvedValue([])],
+    ['the run is bound to two items', () => mocks.testBindings.mockResolvedValue(['WI-1', 'WI-9'])],
+    ['the task ledger is unreadable', () => mocks.testBindings.mockResolvedValue(null)],
+    ['the run failed', () => mocks.test.mockResolvedValue([{ id: 7, status: 'fail' }])],
+    ['a live peer still holds EI-2', () => mocks.item.mockImplementation(async (id: string) =>
+      id === 'EI-2' ? peer('su-b') : subject())],
+  ])('refuses when %s', async (_label, arrange) => {
+    arrange();
+    expect(await preflight()).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
   });
 });
 

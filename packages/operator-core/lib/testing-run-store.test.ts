@@ -1412,6 +1412,34 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
   });
 });
 
+describe('readTestRunWorkItemBindings (EI-28983003176099299)', () => {
+  type BindingSql = Parameters<Store['readTestRunWorkItemBindings']>[0]['sql'];
+  it('reads the distinct work items bound to both router task rows of one run group', async () => {
+    let query = '';
+    let values: unknown[] = [];
+    const sql = ((strings: TemplateStringsArray, ...bound: unknown[]) => {
+      query = strings.join('?');
+      values = bound;
+      return Promise.resolve([{ work_item_id: 'WI-1' }, { work_item_id: ' ' }, { work_item_id: null }]);
+    }) as BindingSql;
+    expect(await store.readTestRunWorkItemBindings({ workspaceId: 'ws', runGroupId: 'group-1', sql })).toEqual(['WI-1']);
+    expect(values).toEqual(['ws', 'testing:run:group-1', 'group-1']);
+    expect(query).toContain("class = 'test-run'");
+    expect(query).toContain('work_item_id IS NOT NULL');
+    expect(query).toContain("launched_by = 'testing-run-store' AND detail->>'runId' = ?");
+    // The whole distinct set comes back: a cap could turn two bindings into one.
+    expect(query).not.toMatch(/\bLIMIT\b/i);
+  });
+  it('distinguishes an unreadable ledger (null) from an unbound run (empty)', async () => {
+    expect(await store.readTestRunWorkItemBindings({ workspaceId: 'ws', runGroupId: 'g',
+      sql: vi.fn().mockResolvedValue([]) })).toEqual([]);
+    expect(await store.readTestRunWorkItemBindings({ workspaceId: 'ws', runGroupId: 'g',
+      sql: vi.fn().mockRejectedValue(new Error('ledger down')) })).toBeNull();
+    expect(await store.readTestRunWorkItemBindings({ workspaceId: 'ws', runGroupId: 'g',
+      sql: vi.fn().mockResolvedValue({ rows: [] }) })).toBeNull();
+  });
+});
+
 describe('durable detached snapshot lifecycle', () => {
   type Sql = Parameters<Store['persistRunSnapshot']>[1];
 

@@ -14,7 +14,10 @@ export const blockerEvidenceRefSchema = z.object({
  * reader quotes these formats in its own format refusals, and the self-resolution
  * refusal names them, so a caller learns the accepted shapes from the refusal.
  * `measures`: the reader can report a condition (satisfied/pending). The other kinds
- * only prove a record exists, which never shows that the blocked condition recovered. */
+ * only prove a record exists, which never shows that the blocked condition recovered.
+ * One narrow use of a `test` row: a PASSING run the task ledger binds to exactly one
+ * work item carries `boundPassingRunFor` (still no condition), which lets that item's
+ * self-resolution supersede a lapsed active-peer recheck and nothing else. */
 export const BLOCKER_EVIDENCE_REF_GRAMMAR = {
   'work-item': { ref: '[harness#]ID', measures: true },
   event: { ref: 'EVENT_KEY verbatim, e.g. work-item:done:ID or plan-lane:SLUG#P-NNN', measures: true },
@@ -325,6 +328,10 @@ export type BlockerEvidenceMeasurement =
     condition?: 'satisfied' | 'pending';
     reachable?: boolean;
     subjectWorkItemId?: string;
+    /** EI-28983003176099299: the one work item the task ledger binds this PASSING
+     * test run to. Shows verification ran on that item's behalf; it measures no
+     * condition, so it can only supersede a lapsed active-peer recheck. */
+    boundPassingRunFor?: string;
     /** Host-resolved tenant/harness identity; aliases share a condition only
      * when their canonical readers return this exact identity. */
     conditionIdentity?: string;
@@ -478,22 +485,36 @@ export async function validateBlockerDecisionEvidence(
     const satisfiedRelated = relatedRefs.filter(ref => value(ref).condition === 'satisfied');
     const relatedKeys = new Set(satisfiedRelated.map(evidenceKey));
     const relatedIdentities = new Set(satisfiedRelated.map(ref => value(ref).conditionIdentity).filter(Boolean));
-    if (!input.verification.evidenceRefs.some((ref) => value(ref).condition === 'satisfied' &&
+    const measuredVerification = input.verification.evidenceRefs.some((ref) => value(ref).condition === 'satisfied' &&
       (relevant(ref) || relatedKeys.has(evidenceKey(ref)) ||
-        (Boolean(value(ref).conditionIdentity) && relatedIdentities.has(value(ref).conditionIdentity))))) {
-      missing.push(`measured verification bound to this work item or its canonical blocker condition: cite in verification.evidenceRefs a ref whose canonical reader measures it satisfied — ${blockerEvidenceRefFormats(true)} — and that is an obligation of this decision, shares an obligation's conditionIdentity, or measures subjectWorkItemId ${context.workItemId}. ${blockerEvidenceRefFormats(false)} only prove a record exists and never satisfy this`);
-    }
+        (Boolean(value(ref).conditionIdentity) && relatedIdentities.has(value(ref).conditionIdentity))));
+    // Verification run FOR this item: a satisfied condition measured on it, or a
+    // passing test run the task ledger binds to it (EI-28983003176099299).
     const boundVerification = input.verification.evidenceRefs.some((ref) =>
-      value(ref).condition === 'satisfied' && value(ref).subjectWorkItemId === context.workItemId);
+      (value(ref).condition === 'satisfied' && value(ref).subjectWorkItemId === context.workItemId) ||
+      value(ref).boundPassingRunFor === context.workItemId);
+    const unresolved: string[] = [];
+    let superseded = 0;
     for (const ref of context.obligationRefs) {
       if (value(ref).condition === 'satisfied') continue;
       if (await lapsedPeerCustody(ref)) {
-        if (boundVerification && input.evidenceRefs.some((cited) => evidenceKey(cited) === evidenceKey(ref))) continue;
-        missing.push(`lapsed active-peer recheck ${ref.kind}:${ref.ref}: supersede it by citing it in evidenceRefs with satisfied verification bound to ${context.workItemId}`);
+        if (boundVerification && input.evidenceRefs.some((cited) => evidenceKey(cited) === evidenceKey(ref))) {
+          superseded += 1;
+          continue;
+        }
+        unresolved.push(`lapsed active-peer recheck ${ref.kind}:${ref.ref}: supersede it by citing it in evidenceRefs, with verification.evidenceRefs bound to ${context.workItemId}: a ref measured satisfied with subjectWorkItemId ${context.workItemId}, or a passing test {ref: ${BLOCKER_EVIDENCE_REF_GRAMMAR.test.ref}} whose run was launched with work_item_id ${context.workItemId}`);
         continue;
       }
-      missing.push(`unresolved canonical condition ${ref.kind}:${ref.ref}`);
+      unresolved.push(`unresolved canonical condition ${ref.kind}:${ref.ref}`);
     }
+    // A bound passing run stands in for measured verification ONLY while it
+    // supersedes a lapsed active-peer recheck and nothing else stays unresolved:
+    // that recheck was the decision's last gate, and the run is the item's own
+    // verification. It never satisfies an ordinary self-resolution.
+    if (!measuredVerification && !(superseded > 0 && unresolved.length === 0)) {
+      missing.push(`measured verification bound to this work item or its canonical blocker condition: cite in verification.evidenceRefs a ref whose canonical reader measures it satisfied — ${blockerEvidenceRefFormats(true)} — and that is an obligation of this decision, shares an obligation's conditionIdentity, or measures subjectWorkItemId ${context.workItemId}. ${blockerEvidenceRefFormats(false)} only prove a record exists and never satisfy this on their own (a passing test run bound to ${context.workItemId} counts only to supersede a lapsed active-peer recheck)`);
+    }
+    missing.push(...unresolved);
   } else if (input.disposition === 'absorb') {
     if (!context.allowAbsorption) missing.push('absorption requires the canonical plan drop and graph transaction');
   } else {

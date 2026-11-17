@@ -252,28 +252,50 @@ describe('canonical blocker decision evidence', () => {
     const input = resolve() as Extract<BlockerDecisionInput, { disposition: 'self_resolve' }>;
     input.verification.evidenceRefs = [proof];
     input.evidenceRefs = [ref, recheck];
-    const scoped = (custody: Record<string, unknown>, opts: { bound?: string; deferral?: typeof priorDeferral } = {}) => ({
+    // `proof` reads exactly as the REAL test reader returns a passing run the task
+    // ledger binds to one item: no condition, only boundPassingRunFor. A failing,
+    // unbound or multiply-bound run reads as bare existence (bound: null).
+    // blocker-resolution-evidence.test.ts pins that reader output end to end.
+    const scoped = (custody: Record<string, unknown>, opts: { bound?: string | null; deferral?: typeof priorDeferral } = {}) => ({
       ...context(async (r): Promise<BlockerEvidenceMeasurement> => r.ref === recheck.ref
         ? { ...pending, ...custody } as BlockerEvidenceMeasurement
-        : r.ref === proof.ref ? { status: 'available', condition: 'satisfied', subjectWorkItemId: opts.bound ?? 'WI-1' }
+        : r.ref === proof.ref ? (opts.bound === null ? { status: 'available' }
+          : { status: 'available', boundPassingRunFor: opts.bound ?? 'WI-1' })
           : { status: 'available', condition: 'satisfied' }),
       obligationRefs: [recheck], priorDeferral: opts.deferral ?? priorDeferral,
     });
     const lapsed = { liveOwnerId: undefined };
     // The named custodian, or a new live custodian, still holds the dependency: it binds.
     expect(await validateBlockerDecisionEvidence(input, scoped({}))).toMatchObject({
-      ok: false, missing: [expect.stringContaining('unresolved canonical condition work-item:EI-2')] });
+      ok: false, missing: [expect.stringContaining('measured verification bound'),
+        expect.stringContaining('unresolved canonical condition work-item:EI-2')] });
     expect((await validateBlockerDecisionEvidence(input, scoped({ liveOwnerId: 'su-c', responsibleParty: 'su-c' }))).ok).toBe(false);
     // Custody lapsed (custodian presence went stale, or the item was released): superseded.
     expect(await validateBlockerDecisionEvidence(input, scoped(lapsed))).toEqual({ ok: true });
     expect(await validateBlockerDecisionEvidence(input, scoped({ ...lapsed, responsibleParty: undefined }))).toEqual({ ok: true });
+    // A condition measured satisfied on this item binds as well.
+    const measured = scoped(lapsed);
+    expect(await validateBlockerDecisionEvidence(input, { ...measured, readEvidence: async (r) => r.ref === proof.ref
+      ? { status: 'available', condition: 'satisfied', subjectWorkItemId: 'WI-1' } : measured.readEvidence(r) })).toEqual({ ok: true });
     // ...but never silently, never on unbound proof, and never for a non-custody deferral.
     expect(await validateBlockerDecisionEvidence({ ...input, evidenceRefs: [ref] }, scoped(lapsed))).toMatchObject({
-      ok: false, missing: [expect.stringContaining('lapsed active-peer recheck work-item:EI-2')] });
+      ok: false, missing: [expect.stringContaining('measured verification bound'),
+        expect.stringContaining('lapsed active-peer recheck work-item:EI-2')] });
     expect((await validateBlockerDecisionEvidence(input, scoped(lapsed, { bound: 'WI-9' }))).ok).toBe(false);
+    expect((await validateBlockerDecisionEvidence(input, scoped(lapsed, { bound: null }))).ok).toBe(false);
     expect((await validateBlockerDecisionEvidence(input, scoped(lapsed, {
       deferral: { ...priorDeferral, reason: 'external-dependency' } }))).ok).toBe(false);
     expect((await validateBlockerDecisionEvidence(input, { ...scoped(lapsed), priorDeferral: undefined })).ok).toBe(false);
+    // Superseding the lapsed recheck never waives a different unresolved obligation.
+    const other = { kind: 'work-item' as const, ref: 'EI-3' };
+    const withOther = scoped(lapsed);
+    expect(await validateBlockerDecisionEvidence(input, { ...withOther, obligationRefs: [recheck, other],
+      readEvidence: async (r) => r.ref === other.ref ? pending : withOther.readEvidence(r) })).toMatchObject({
+      ok: false, missing: [expect.stringContaining('measured verification bound'),
+        expect.stringContaining('unresolved canonical condition work-item:EI-3')] });
+    // With no lapsed recheck to supersede, a bound passing run never satisfies on its own.
+    expect(await validateBlockerDecisionEvidence(input, { ...scoped(lapsed), obligationRefs: [ref] })).toMatchObject({
+      ok: false, missing: [expect.stringContaining('measured verification bound')] });
     // An unmeasurable custody fact keeps the obligation (fails closed).
     const unreadable = { ...scoped(lapsed), priorDeferral: { ...priorDeferral,
       reasonEvidenceRefs: [{ kind: 'work-item' as const, ref: 'EI-404' }] } };

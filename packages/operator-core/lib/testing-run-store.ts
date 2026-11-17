@@ -4052,6 +4052,37 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
   } catch { return null; }
 }
 
+/** EI-28983003176099299: the work items one testing:run run group was launched for,
+ * read from the managed router's own task rows: the foreground router
+ * (`launched_by = 'testing:run:<group>'`) and its detached router (`launched_by =
+ * 'testing-run-store'`, `detail.runId = <group>`). `work_item_id` is the attribution
+ * the launch recorded for the caller's task, never test output or prose. A run group
+ * owns a handful of task rows, so the distinct set is returned whole (no cap). null
+ * distinguishes an unreadable ledger from an unbound run (an empty list). */
+export async function readTestRunWorkItemBindings(params: {
+  workspaceId: string;
+  runGroupId: string;
+  sql?: SqlLike;
+}): Promise<string[] | null> {
+  try {
+    const sql = params.sql ?? getOrgPg().sql as unknown as SqlLike;
+    const rows = await sql`
+      SELECT DISTINCT work_item_id
+        FROM harness_shared.task_ledger
+       WHERE workspace_id = ${params.workspaceId}
+         AND class = 'test-run'
+         AND work_item_id IS NOT NULL
+         AND (launched_by = ${`testing:run:${params.runGroupId}`}
+              OR (launched_by = 'testing-run-store' AND detail->>'runId' = ${params.runGroupId}))
+       ORDER BY work_item_id`;
+    if (!Array.isArray(rows)) return null;
+    return rows.flatMap((row) => {
+      const id = (row as { work_item_id?: unknown }).work_item_id;
+      return typeof id === 'string' && id.trim() ? [id] : [];
+    });
+  } catch { return null; }
+}
+
 /** The exact request shape consumed by the capture freshness bridge. */
 export interface TrustedHarnessTestRunProvenanceQuery {
   testRunIds: readonly number[];
