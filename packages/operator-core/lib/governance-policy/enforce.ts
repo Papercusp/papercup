@@ -204,8 +204,19 @@ async function chainFor(workspaceId: string, loader: ChainLoader, nowMs: number)
 }
 
 export interface EnforceInheritedPolicyDeps {
-  loadChain?: ChainLoader;
+  /** Original cached readers may return the seat's explicit unavailable
+   * outcome as well as a stored chain; the judge handles both fail closed. */
+  loadChain?: (workspaceId: string) => ReturnType<typeof chainFor>;
   now?: () => Date;
+}
+
+/** Capture the installed loader through the same cache and last-known fallback
+ * used by dispatch. An uninstalled seat stays explicitly absent. */
+export function getInheritedPolicyReadPorts(): Required<EnforceInheritedPolicyDeps> | null {
+  const loader = state.loader;
+  if (!loader) return null;
+  const now = new Date();
+  return { now: () => new Date(now), loadChain: workspaceId => chainFor(workspaceId, loader, now.getTime()) };
 }
 
 /** Judges one subject against a workspace's loaded chain: `null` allows, a result refuses. */
@@ -224,13 +235,14 @@ export async function workspacePolicyJudge(
   workspaceId: string,
   deps: EnforceInheritedPolicyDeps = {},
 ): Promise<WorkspacePolicyJudge | null> {
-  const loader = deps.loadChain ?? state.loader;
+  const installedLoader = state.loader;
+  const loader = deps.loadChain ?? installedLoader;
   if (!loader || !workspaceId) return null;
   try {
     const now = deps.now?.() ?? new Date();
     const load = deps.loadChain
       ? await deps.loadChain(workspaceId).catch((err: unknown) => ({ status: 'unavailable' as const, reason: err instanceof Error ? err.message : String(err) }))
-      : await chainFor(workspaceId, loader, now.getTime());
+      : await chainFor(workspaceId, installedLoader!, now.getTime());
     if (load.status === 'none') return null;
     if (load.status === 'unavailable') {
       const refusal = deny('unavailable', `the governing policy for workspace ${workspaceId} cannot be read (${load.reason}); no effect authorized`);

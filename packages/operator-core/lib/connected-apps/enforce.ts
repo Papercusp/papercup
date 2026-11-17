@@ -62,6 +62,13 @@ const DEFAULT_DEPS: EnforceAppKeyScopeDeps = {
   loadAlertedApp: loadAlertedAppRow,
 };
 
+/** Original dispatch readers, without alert or mutation ports. */
+export function getAppKeyScopeReadPorts(): Required<Pick<EnforceAppKeyScopeDeps,
+  'loadRow' | 'loadAccessTokenRow' | 'lookupTool' | 'loadSpendStatus' | 'now'>> {
+  return { loadRow: DEFAULT_DEPS.loadRow, loadAccessTokenRow: loadAccessTokenScopeRow,
+    lookupTool: DEFAULT_DEPS.lookupTool, loadSpendStatus: loadAppSpendStatus, now: () => new Date() };
+}
+
 /**
  * The spending-cap half of the seat (P-011, R-27): an LLM-running call from a key whose recorded
  * spend has reached its cap is refused. Null = allowed. Fails closed on a missing or failed read.

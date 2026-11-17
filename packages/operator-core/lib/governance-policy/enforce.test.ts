@@ -24,6 +24,7 @@ import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } fr
 import { operatorKernelEnforcement, wrapOperatorKernelSpawn } from '../projected-tool-deps';
 import {
   enforceInheritedPolicy,
+  getInheritedPolicyReadPorts,
   governedRequestOf,
   invalidateGovernancePolicyCache,
   isGovernanceAdminTool,
@@ -105,6 +106,27 @@ describe('governedRequestOf — subject mapping', () => {
 });
 
 describe('enforceInheritedPolicy — the seat is inert until a host installs it', () => {
+  it('captures the installed cache and last-known fallback without refreshing or installing a loader', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    expect(getInheritedPolicyReadPorts()).toBeNull();
+    const loader = install(CHAIN);
+    const request = { phase: 'enforce' as const, boundary: 'dispatch' as const,
+      toolName: 'capability:bash', capabilities: [], args: {}, ctx: ctx() };
+    await enforceInheritedPolicy(request);
+    const ports = getInheritedPolicyReadPorts()!;
+    await expect(ports.loadChain(WS)).resolves.toEqual(CHAIN);
+    expect(loader).toHaveBeenCalledTimes(1);
+    const clock = ports.now();
+    clock.setTime(0);
+    expect(ports.now().getTime()).toBeGreaterThan(0);
+    loader.mockRejectedValue(new Error('original loader unavailable'));
+    vi.setSystemTime(Date.now() + 60_000);
+    await expect(getInheritedPolicyReadPorts()!.loadChain(WS)).resolves.toEqual(CHAIN);
+    expect(loader).toHaveBeenCalledTimes(2);
+    setGovernancePolicyChainLoader(null);
+    expect(getInheritedPolicyReadPorts()).toBeNull();
+    vi.useRealTimers();
+  });
   it('returns null with no loader installed (unit tests never touch Postgres)', async () => {
     expect(isGovernancePolicyEnforcementInstalled()).toBe(false);
     await expect(

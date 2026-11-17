@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { gzipSync } from 'node:zlib';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from '../capability-envelope/lazy-launch-record';
 import type { ProjectedTool, UnifiedToolContext, KernelEnforcementRequest } from '@papercusp/tooldef';
 import type { LoadedPlugin, PluginDiscoveryInventory } from '@papercusp/plugin-loader';
 import type { ToolDefinition } from '@papercusp/plugin-sdk';
@@ -311,6 +312,125 @@ describe('IDOP D-043 immutable original kernel authority snapshot', () => {
     expect(f.readers.inner.plan.checkPlan).toHaveBeenCalledOnce();
   });
 
+  it('captures the real lazy launch-record port and replays its exact receipt and row version', async () => {
+    const f = fixture();
+    const applied = { specificationRevision: 'original-spec', stateRevision: 'original-state' };
+    const record = { workspaceId: 'kernel-workspace', harnessSlug: 'papercusp', identityHistory: [] };
+    const load = vi.fn(async () => ({ record, rowVersion: 'body-version' }));
+    vi.mocked(f.readers.inner.readState).mockResolvedValue({
+      activation: { applied }, identityLaunchRecordVersion: { sessionId: '42', rowVersion: 'header-version' },
+      identityLaunchRecord: lazyIdentityLaunchRecord({ isObject: true, workspaceId: 'kernel-workspace',
+        harnessSlug: 'papercusp', hasAcceptedOperation: false, acceptedOperation: null, load }),
+    });
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    expect(load).toHaveBeenCalledExactlyOnceWith([applied]);
+    const replay = replayIdopP001KernelPermissionSnapshot(JSON.parse(JSON.stringify(captured.snapshot)), captured.sha256);
+    record.harnessSlug = 'changed-after-capture';
+    load.mockRejectedValue(new Error('original port must not be called again'));
+    for (let arm = 0; arm < 2; arm++) {
+      const { inner } = replay.createPorts();
+      const state = await inner.readState(f.request);
+      expect(state?.identityLaunchRecordVersion).toEqual({ sessionId: '42', rowVersion: 'header-version' });
+      const lazy = state?.identityLaunchRecord;
+      expect(isLazyIdentityLaunchRecord(lazy)).toBe(true);
+      if (!isLazyIdentityLaunchRecord(lazy)) throw new Error('missing replay handle');
+      const loaded = await lazy.load([applied]);
+      expect(loaded).toEqual({ record: { workspaceId: 'kernel-workspace', harnessSlug: 'papercusp', identityHistory: [] },
+        rowVersion: 'body-version' });
+      if (loaded) loaded.rowVersion = 'mutated-return';
+      expect((await lazy.load([applied]))?.rowVersion).toBe('body-version');
+      await expect(lazy.load([])).rejects.toThrow(/not captured/);
+      await expect(lazy.load([{ ...applied, stateRevision: 'forged' }])).rejects.toThrow(/not captured/);
+    }
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, { record: null, rowVersion: null }])('preserves unreadable lazy body outcome %j', async loaded => {
+    const f = fixture();
+    const load = vi.fn(async () => loaded);
+    vi.mocked(f.readers.inner.readState).mockResolvedValue({
+      identityLaunchRecord: lazyIdentityLaunchRecord({ isObject: true, workspaceId: 'kernel-workspace',
+        harnessSlug: 'papercusp', hasAcceptedOperation: false, acceptedOperation: null, load }),
+    });
+    const { inner, requests } = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).createPorts();
+    const state = await inner.readState(requests[0]);
+    if (!isLazyIdentityLaunchRecord(state?.identityLaunchRecord)) throw new Error('missing replay handle');
+    expect(await state.identityLaunchRecord.load([])).toEqual(loaded);
+    expect(load).toHaveBeenCalledExactlyOnceWith([]);
+  });
+
+  it('does not load a non-object lazy header or manufacture a body lookup', async () => {
+    const f = fixture();
+    const load = vi.fn(async () => { throw new Error('non-object body must not be read'); });
+    vi.mocked(f.readers.inner.readState).mockResolvedValue({
+      identityLaunchRecord: lazyIdentityLaunchRecord({ isObject: false, workspaceId: null,
+        harnessSlug: null, hasAcceptedOperation: false, acceptedOperation: null, load }),
+    });
+    const { inner, requests } = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).createPorts();
+    const state = await inner.readState(requests[0]);
+    if (!isLazyIdentityLaunchRecord(state?.identityLaunchRecord)) throw new Error('missing replay handle');
+    expect(state.identityLaunchRecord.isObject).toBe(false);
+    await expect(state.identityLaunchRecord.load([])).rejects.toThrow(/not captured/);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('returns isolated original requests with principal capabilities and refuses changed arguments', async () => {
+    const f = fixture();
+    const captured = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+    const first = captured.createPorts(), second = captured.createPorts();
+    expect(first.requests).toHaveLength(1);
+    const capabilities = first.requests[0].ctx.principal?.capabilities;
+    expect(capabilities).toBeInstanceOf(Set);
+    if (!(capabilities instanceof Set)) throw new Error('missing replay capabilities');
+    capabilities.add('forged:*');
+    first.requests[0].args = { target: 'forged' };
+    await expect(first.inner.readState(first.requests[0])).rejects.toThrow(/not captured/);
+    expect(second.requests[0].ctx.principal?.capabilities).toEqual(new Set(['mail:send']));
+    expect(second.requests[0].args).toEqual({ target: 'original' });
+    expect(await second.inner.readState(second.requests[0])).toEqual({ revoked: true });
+    expect(first.requests[0].ctx).not.toHaveProperty('signal');
+    expect(first.requests[0].ctx).not.toHaveProperty('log');
+  });
+
+  it.each(['duplicate-state', 'extra-state', 'receipts', 'header', 'row-version', 'extra-loaded-field'])
+  ('rejects malformed lazy %s even with a matching digest', async kind => {
+    const f = fixture();
+    vi.mocked(f.readers.inner.readState).mockResolvedValue({
+      identityLaunchRecord: lazyIdentityLaunchRecord({ isObject: true, workspaceId: 'kernel-workspace',
+        harnessSlug: 'papercusp', hasAcceptedOperation: false, acceptedOperation: null,
+        load: async () => ({ record: {}, rowVersion: 'original-body' }) }),
+    });
+    const snapshot = (await captureIdopP001KernelPermissionPorts(f.options, f.readers)).snapshot;
+    const lazy = snapshot.entries.find(entry => JSON.parse(entry.key)[0] === 'state.lazy')!;
+    if (kind === 'duplicate-state') snapshot.entries.push({ ...lazy, key: lazy.key.replace('state.lazy', 'state') });
+    if (kind === 'extra-state') {
+      const [port, args] = JSON.parse(lazy.key);
+      args[1][1] = 1;
+      const key = JSON.stringify([port, args]);
+      expect(key).not.toBe(lazy.key);
+      snapshot.entries.push({ ...lazy, key });
+    }
+    if (kind === 'receipts') {
+      const fields = (lazy.value as [string, Array<[string, unknown]>])[1];
+      fields.find(([key]) => key === 'receipts')![1] = ['array', ['forged']];
+    }
+    if (kind === 'header') {
+      // Modify the tagged header field without using the production decoder.
+      const fields = (lazy.value as [string, Array<[string, unknown]>])[1];
+      fields.find(([key]) => key === 'header')![1] = null;
+    }
+    if (kind === 'row-version' || kind === 'extra-loaded-field') {
+      const fields = (lazy.value as [string, Array<[string, unknown]>])[1];
+      const loaded = fields.find(([key]) => key === 'loaded')![1] as [string, Array<[string, unknown]>];
+      if (kind === 'row-version') loaded[1].find(([key]) => key === 'rowVersion')![1] = 7;
+      else loaded[1].push(['forged', true]);
+    }
+    const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` :
+      value !== null && typeof value === 'object' ? `{${Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .map(([key, entry]) => `${JSON.stringify(key)}:${canonical(entry)}`).join(',')}}` : JSON.stringify(value);
+    expect(() => replayIdopP001KernelPermissionSnapshot(snapshot, sha256(canonical(snapshot)))).toThrow(/IDOP/);
+  });
+
   it('isolates evidence, source objects, returned data and each bounded state cursor', async () => {
     const f = fixture();
     f.options.requests[0].stateReadCount = 2;
@@ -480,6 +600,44 @@ describe('IDOP D-043 immutable original kernel authority snapshot', () => {
       expect(f.readers.organization!.loadChain).toHaveBeenCalledOnce();
     }
   }, 60_000);
+
+  it.each([{ fails: false, sequence: false }, { fails: true, sequence: false }, { fails: false, sequence: true }])(
+    'discovers original identity dependencies from captured launch bytes %j', async ({ fails, sequence }) => {
+    const f = fixture();
+    const classRef = 'comparison.mail@1.0.0';
+    const artifact = compileAgentSpecification({ source: { id: 'capture-grant', workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } }, grants: { requires: [classRef] } },
+      prompt: { role: 'worker', text: 'Captured authority.' }, inputClosure: [{ kind: 'capability-provider',
+        ref: classRef, providerPackage: 'mail-provider', providerVersion: '1.0.0', registryRevision: 'original-registry',
+        conformanceRunId: 'original-run', verbBindings: { send: 'mail:send' } }] });
+    const applied = { specificationRevision: artifact.specificationRevision, stateRevision: 'original-state' };
+    const load = vi.fn(async () => ({ record: { workspaceId: 'kernel-workspace', harnessSlug: 'papercusp',
+      specificationArtifact: artifact, specificationRevision: artifact.specificationRevision, stateRevision: 'original-state' },
+      rowVersion: 'loaded-xmin' }));
+    vi.mocked(f.readers.inner.readState).mockResolvedValue({ activation: { applied },
+      identityLaunchRecordVersion: { sessionId: 'captured-session', rowVersion: 'header-xmin' },
+      identityLaunchRecord: lazyIdentityLaunchRecord({ isObject: true, workspaceId: 'kernel-workspace',
+        harnessSlug: 'papercusp', hasAcceptedOperation: false, acceptedOperation: undefined, load }) });
+    if (sequence) {
+      vi.mocked(f.readers.inner.readState).mockResolvedValueOnce(null);
+      f.options.requests[0].stateReadCount = 2;
+    }
+    f.options.policyInputs = [];
+    f.options.operationClaims = [];
+    f.options.captureIdentityDependencies = true;
+    if (fails) {
+      vi.mocked(f.readers.inner.readPolicy).mockRejectedValue(new Error('original policy unreadable'));
+      await expect(captureIdopP001KernelPermissionPorts(f.options, f.readers)).rejects.toThrow('original policy unreadable');
+    } else {
+      const saved = await captureIdopP001KernelPermissionPorts(f.options, f.readers);
+      const expected = { workspaceId: 'kernel-workspace', harnessSlug: 'papercusp', role: 'worker', classRefs: [classRef] };
+      expect(f.readers.inner.readPolicy).toHaveBeenCalledExactlyOnceWith(expected);
+      await expect(saved.createPorts().inner.readPolicy(expected)).resolves.toMatchObject({ policyRevision: 'original-policy' });
+      expect(f.readers.inner.readOperationEffectClaim).not.toHaveBeenCalled();
+    }
+    expect(f.readers.inner.readState).toHaveBeenCalledTimes(sequence ? 2 : 1);
+    expect(load).toHaveBeenCalledExactlyOnceWith([applied]);
+  });
 
   it('copies canonical tool names and refuses executable registry metadata', async () => {
     const f = fixture();

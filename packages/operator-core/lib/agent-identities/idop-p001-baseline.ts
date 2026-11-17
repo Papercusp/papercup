@@ -44,6 +44,8 @@ import type { EnforceAppKeyScopeDeps } from '../connected-apps/enforce';
 import type { EnforceInheritedPolicyDeps } from '../governance-policy/enforce';
 import type { KernelEnforcementPort } from '@papercusp/tooldef';
 import type { checkIdentityGrantKernel } from '../capability-envelope/identity-grants-port';
+import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord,
+  type LazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from '../capability-envelope/lazy-launch-record';
 import type { PlanExecutionGuardDeps } from '../agent-tools/plans/plan-execution-guard';
 import type { resolveMcpName } from '@papercusp/agent-mcp';
 
@@ -562,6 +564,13 @@ function idopKernelRequestData(request: KernelEnforcementRequest, workspaceId: s
 }
 
 const idopKernelLookupKey = (port: string, args: unknown) => comparisonJson([port, idopAuthorityData(args)]);
+type IdopCapturedLazyState = {
+  state: Omit<NonNullable<IdopControlState>, 'identityLaunchRecord'>;
+  header: Pick<LazyIdentityLaunchRecord,
+    'isObject' | 'workspaceId' | 'harnessSlug' | 'hasAcceptedOperation' | 'acceptedOperation'>;
+  receipts: readonly unknown[];
+  loaded: LoadedIdentityLaunchRecord | null | undefined;
+};
 type IdopP001KernelSnapshot = {
   schemaVersion: 1;
   scope: 'captured-original-kernel-permission-read-inputs';
@@ -578,7 +587,9 @@ type IdopP001KernelSnapshot = {
  * This is a read-input snapshot, not a containing-runtime or population proof.
  * Convergence accepts only already-recorded outcomes with evidence refs: this
  * helper has no writer port. State re-reads capture the requested original
- * sequence, and each replay arm gets its own bounded cursor. */
+ * sequence, and each replay arm gets its own bounded cursor. The serving
+ * kernel's lazy launch record is captured as its header and original narrowed
+ * body read, never as an executable value or a substitute authority reader. */
 export async function captureIdopP001KernelPermissionPorts(options: {
   workspaceId: string;
   requests: readonly { request: KernelEnforcementRequest; stateReadCount?: number }[];
@@ -586,6 +597,9 @@ export async function captureIdopP001KernelPermissionPorts(options: {
   operationClaims: readonly Parameters<IdopInnerKernelPorts['readOperationEffectClaim']>[0][];
   toolNames: readonly string[];
   apps: readonly { appId: string; tokenIds: readonly string[] }[];
+  /** Discover the original identity gate's policy/claim reads against captured
+   * state. No structural kernel or convergence writer is invoked. */
+  captureIdentityDependencies?: boolean;
   convergence: readonly { args: [string, string, number, Parameters<IdopInnerKernelPorts['converge']>[3]];
     result: boolean; evidenceRefs: readonly string[] }[];
 }, readers: {
@@ -630,7 +644,28 @@ export async function captureIdopP001KernelPermissionPorts(options: {
       ReturnType<IdopInnerKernelPorts['resolveIdentity']>;
     if (!identity.ownerId?.trim() || identity.workspaceId !== workspaceId) throw new Error('IDOP kernel snapshot identity is missing or foreign');
     for (let index = 0; index < count; index++) {
-      await capture('state', [requestData(input.request), index], () => readers.inner.readState(input.request));
+      const args = [requestData(input.request), index];
+      const state = await readers.inner.readState(input.request);
+      const descriptor = state && Object.getOwnPropertyDescriptor(state, 'identityLaunchRecord');
+      if (descriptor && 'value' in descriptor && isLazyIdentityLaunchRecord(descriptor.value)) {
+        const lazy = descriptor.value;
+        // Preserve descriptors so an unrelated accessor/symbol still refuses
+        // at the ordinary data-only boundary instead of being evaluated/lost.
+        if (Object.getOwnPropertySymbols(state).length) throw new Error('IDOP authority has an unsupported symbol');
+        const descriptors = Object.getOwnPropertyDescriptors(state);
+        delete descriptors.identityLaunchRecord;
+        const data = Object.create(Object.getPrototypeOf(state), descriptors) as IdopCapturedLazyState['state'];
+        idopAuthorityData(data);
+        const applied = data.activation?.applied ?? data.appliedRevision;
+        const receipts = applied ? [applied] : [];
+        await capture('state.lazy', args, async (): Promise<IdopCapturedLazyState> => ({
+          state: data,
+          header: { isObject: lazy.isObject, workspaceId: lazy.workspaceId, harnessSlug: lazy.harnessSlug,
+            hasAcceptedOperation: lazy.hasAcceptedOperation, acceptedOperation: lazy.acceptedOperation },
+          receipts,
+          loaded: lazy.isObject ? await lazy.load(receipts) : undefined,
+        }));
+      } else await capture('state', args, () => state);
     }
     const subject = [identity.ownerId, workspaceId];
     const bindings = await capture('plan.bindings', subject, () => readers.inner.plan.readBindings(identity.ownerId, workspaceId)) as
@@ -697,6 +732,33 @@ export async function captureIdopP001KernelPermissionPorts(options: {
     runtime: originalRuntime, organizationInstalled: readers.organization !== null,
     stateCounts: [...stateCounts], convergence: idopAuthorityData(options.convergence),
     entries: [...saved].map(([key, value]) => ({ key, value })) };
+  if (options.captureIdentityDependencies === true) {
+    const { checkIdentityGrantKernel } = await import('../capability-envelope/identity-grants-port');
+    const initialBytes = comparisonJson(snapshot as unknown as ComparisonJson);
+    const replay = replayIdopP001KernelPermissionSnapshot(snapshot, sha256(initialBytes)).createPorts();
+    // Use already captured launch bytes/row versions for discovery. Read only
+    // dependencies actually requested by the original gate; never fabricate a
+    // grant or copy its decision into the comparison result.
+    for (const request of replay.requests) {
+      const count = stateCounts.get(keyFor('state', requestData(request)))!;
+      for (let index = 0; index < count; index++) {
+        const state = await replay.inner.readState(request);
+        if (!state || !Object.hasOwn(state, 'identityLaunchRecord')) continue;
+        let failure: { error: unknown } | undefined;
+        const read = async <T,>(port: string, input: unknown, original: () => Promise<T>): Promise<T> => {
+          try { return await capture(port, input, original) as T; }
+          catch (error) { failure = { error }; throw error; }
+        };
+        await checkIdentityGrantKernel(request, state, state.identityLaunchRecord,
+          input => read('policy', input, () => readers.inner.readPolicy(input)),
+          claim => read('operation', claim, () => readers.inner.readOperationEffectClaim(claim)));
+        // The live gate converts reader errors into refusals. A capture must not
+        // silently certify an incomplete input archive after that conversion.
+        if (failure) throw failure.error;
+      }
+    }
+    snapshot.entries = [...saved].map(([key, value]) => ({ key, value }));
+  }
   const bytes = comparisonJson(snapshot as unknown as ComparisonJson);
   return replayIdopP001KernelPermissionSnapshot(snapshot, sha256(bytes));
 }
@@ -730,7 +792,7 @@ export function replayIdopP001KernelPermissionSnapshot(raw: unknown, expectedSha
   if (!runtime || !Number.isSafeInteger(runtime.pid) || runtime.pid <= 0 ||
       !(runtime.processId === null || typeof runtime.processId === 'string')) fail();
   const keyFor = idopKernelLookupKey;
-  const allowed = new Set(['identity', 'state', 'policy', 'operation', 'tool.canonical', 'tool.app',
+  const allowed = new Set(['identity', 'state', 'state.lazy', 'policy', 'operation', 'tool.canonical', 'tool.app',
     'plan.bindings', 'plan.goal', 'plan.check', 'app.now', 'app.row', 'app.spend', 'app.token',
     'organization.now', 'organization.chain', 'convergence']);
   const saved = new Map<string, ComparisonJson>();
@@ -772,8 +834,27 @@ export function replayIdopP001KernelPermissionSnapshot(raw: unknown, expectedSha
     for (const binding of bindings) get('plan.check', [binding, workspaceId]);
     stateCounts.set(row[0], row[1]);
     for (let index = 0; index < row[1]; index++) {
-      get('state', [request, index]);
-      stateKeys.add(keyFor('state', [request, index]));
+      const args = [request, index];
+      const lazyKey = keyFor('state.lazy', args);
+      if (saved.has(lazyKey)) {
+        if (saved.has(keyFor('state', args))) fail();
+        const value = get<IdopCapturedLazyState>('state.lazy', args);
+        if (!value || Object.keys(value).sort().join(',') !== 'header,loaded,receipts,state' ||
+            !value.state || typeof value.state !== 'object' || Array.isArray(value.state) ||
+            Object.hasOwn(value.state, 'identityLaunchRecord') || !value.header ||
+            Object.keys(value.header).sort().join(',') !== 'acceptedOperation,harnessSlug,hasAcceptedOperation,isObject,workspaceId' ||
+            typeof value.header.isObject !== 'boolean' || typeof value.header.hasAcceptedOperation !== 'boolean') fail();
+        const applied = value.state.activation?.applied ?? value.state.appliedRevision;
+        if (keyFor('receipts', value.receipts) !== keyFor('receipts', applied ? [applied] : []) ||
+            (value.header.isObject ? value.loaded !== null && (!value.loaded ||
+              Object.keys(value.loaded).sort().join(',') !== 'record,rowVersion' ||
+              !(value.loaded.rowVersion === null || typeof value.loaded.rowVersion === 'string'))
+              : value.loaded !== undefined)) fail();
+        stateKeys.add(lazyKey);
+      } else {
+        get('state', args);
+        stateKeys.add(keyFor('state', args));
+      }
     }
   }
   if (!(get('app.now', []) instanceof Date)) fail();
@@ -795,13 +876,16 @@ export function replayIdopP001KernelPermissionSnapshot(raw: unknown, expectedSha
     convergenceKeys.add(key);
   }
   for (const [key, { port }] of decodedKeys) {
-    if (port === 'state' && !stateKeys.has(key) || port === 'convergence' && !convergenceKeys.has(key) ||
+    if ((port === 'state' || port === 'state.lazy') && !stateKeys.has(key) || port === 'convergence' && !convergenceKeys.has(key) ||
         port.startsWith('organization.') && !snapshot.organizationInstalled) fail();
   }
   const contextData = (ctx: UnifiedToolContext) => idopKernelContextData(ctx, workspaceId);
   const requestData = (request: KernelEnforcementRequest) => idopKernelRequestData(request, workspaceId);
   return { snapshot: JSON.parse(bytes) as IdopP001KernelSnapshot, sha256: expectedSha256, createPorts: () => {
     const cursors = new Map<string, number>();
+    // Decode afresh for each arm, retaining Set/Map/undefined and the original
+    // privilege/run/argument tuple without asking callers to copy the codec.
+    const requests = [...stateCounts.keys()].map(key => decode(JSON.parse(key)[1]) as KernelEnforcementRequest);
     const inner: IdopInnerKernelPorts = {
       runtime: idopAuthorityValue(snapshot.runtime) as IdopInnerKernelPorts['runtime'],
       resolveIdentity: ctx => get('identity', contextData(ctx)),
@@ -811,6 +895,17 @@ export function replayIdopP001KernelPermissionSnapshot(raw: unknown, expectedSha
         const index = cursors.get(key) ?? 0;
         if (index >= (stateCounts.get(key) ?? 0)) throw new Error('IDOP kernel state sequence was not captured or is exhausted');
         cursors.set(key, index + 1);
+        if (saved.has(keyFor('state.lazy', [data, index]))) {
+          const value = get<IdopCapturedLazyState>('state.lazy', [data, index]);
+          return { ...value.state, identityLaunchRecord: lazyIdentityLaunchRecord({ ...value.header,
+            load: async receipts => {
+              if (!value.header.isObject || keyFor('receipts', receipts) !== keyFor('receipts', value.receipts)) {
+                throw new Error('IDOP kernel launch receipt selection was not captured');
+              }
+              return get<IdopCapturedLazyState>('state.lazy', [data, index]).loaded!;
+            },
+          }) };
+        }
         return get('state', [data, index]);
       },
       readPolicy: async input => get('policy', input), readOperationEffectClaim: async claim => get('operation', claim),
@@ -835,7 +930,7 @@ export function replayIdopP001KernelPermissionSnapshot(raw: unknown, expectedSha
       loadSpendStatus: async (id, now) => get('app.spend', [id, now]) };
     const organization: IdopOrganizationPermissionPorts | null = snapshot.organizationInstalled ?
       { now: () => get('organization.now', []), loadChain: async scope => get('organization.chain', scope) } : null;
-    return { inner, app, organization };
+    return { requests, inner, app, organization };
   } };
 }
 

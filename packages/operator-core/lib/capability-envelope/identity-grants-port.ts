@@ -88,7 +88,7 @@ interface OperationEffectClaim {
 
 type OperationEffectClaimReader = (claim: OperationEffectClaim) => Promise<boolean>;
 
-async function readCurrentOperationEffectClaim(claim: OperationEffectClaim): Promise<boolean> {
+export async function readCurrentOperationEffectClaim(claim: OperationEffectClaim): Promise<boolean> {
   if (!claim.ownerId || !claim.advSessionId) return false;
   const { readActiveOperationWorkerClaimBinding, operationWorkerEffectWhereSql } =
     await import('../blueprint/operation-worker-binding');
