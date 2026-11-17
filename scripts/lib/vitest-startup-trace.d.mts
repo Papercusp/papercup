@@ -104,6 +104,14 @@ export function diagnoseVitestStartup(argv: string[], emit: (row: Record<string,
     workers: any[];
     status: string;
 }>;
+/** Observe only byte counts on an identified esbuild service. Wrapping emit
+ * avoids putting stdout into flowing mode before esbuild attaches its reader.
+ * No payload, extra reader, timer, or process is retained.
+ * @param {any} child
+ * @param {(row: Record<string, unknown>) => void} emit
+ * @returns {() => void}
+ */
+export function observeEsbuildStartup(child: any, emit: (row: Record<string, unknown>) => void): () => void;
 export { nativeSourceRetentionLimits };
 export type CooperativeEnrollment = {
     epoch: string;

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createTextCollector } from '../child-output';
-import { controlForkStartupOnly, createCooperativeWorkerCensus, loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
+import { controlForkStartupOnly, createCooperativeWorkerCensus, loaderIdentity, nativeProcessTraceEnv, observeEsbuildStartup, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 import { readPartialNativeChannelCustody, readPartialNativeCompletion,
   registerPartialNativeProducerChannels } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { writeRelatedFilterList } from '../../../../scripts/lib/related-tests.mjs';
@@ -634,6 +634,61 @@ describe('cooperative worker census qualification controls', () => {
       }
       finally { rmSync(f.dir, { recursive: true, force: true }); }
     }, 20_000);
+});
+
+describe('esbuild startup pipe observation', () => {
+  it('preserves backpressure, arguments, receivers and payload identity without starting a reader', () => {
+    const child = Object.assign(new EventEmitter(), { pid: 42, stdin: { write: () => false }, stdout: new EventEmitter() }) as any;
+    const calls: unknown[][] = [];
+    const write = function(this: unknown, ...args: unknown[]) { calls.push([this, ...args]); return false; };
+    child.stdin.write = write;
+    const originalEmit = child.stdout.emit;
+    const rows: any[] = [];
+    const cleanup = observeEsbuildStartup(child, row => rows.push(row));
+    expect(child.stdout.listenerCount('data')).toBe(0);
+    const input = Buffer.from('private request'), output = Buffer.from('private response'), callback = () => {};
+    expect(child.stdin.write(input, callback)).toBe(false);
+    expect(calls).toEqual([[child.stdin, input, callback]]);
+    let received: unknown;
+    child.stdout.on('data', (value: unknown) => { received = value; });
+    expect(child.stdout.emit('data', output)).toBe(true);
+    expect(received).toBe(output);
+    expect(rows).toEqual([
+      { event: 'esbuild-spawned', childPid: 42, writtenBytes: 0, receivedBytes: 0 },
+      { event: 'esbuild-input', childPid: 42, writtenBytes: input.length, receivedBytes: 0 },
+      { event: 'esbuild-output', childPid: 42, writtenBytes: input.length, receivedBytes: output.length },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('private');
+    cleanup();
+    expect(child.stdin.write).toBe(write);
+    expect(child.stdout.emit).toBe(originalEmit);
+  });
+
+  it('preserves an opaque native throw and ignores diagnostic failures', () => {
+    const failure = Object.create(null);
+    const write = () => { throw failure; };
+    const child = Object.assign(new EventEmitter(), { stdin: { write }, stdout: new EventEmitter() }) as any;
+    observeEsbuildStartup(child, () => { throw new Error('diagnostic unavailable'); });
+    let caught;
+    try { child.stdin.write(); } catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    child.emit('close', 1, null);
+    expect(child.stdin.write).toBe(write);
+  });
+
+  it('bounds startup output while preserving every native write and restores streams on close', () => {
+    let writes = 0;
+    const write = () => { writes++; return true; };
+    const child = Object.assign(new EventEmitter(), { stdin: { write }, stdout: new EventEmitter() }) as any;
+    const originalEmit = child.stdout.emit, rows: unknown[] = [];
+    observeEsbuildStartup(child, row => rows.push(row));
+    for (let index = 0; index < 40; index++) child.stdin.write(Buffer.alloc(2));
+    child.emit('close', 0, null);
+    expect(writes).toBe(40);
+    expect(rows).toHaveLength(8);
+    expect(child.stdin.write).toBe(write);
+    expect(child.stdout.emit).toBe(originalEmit);
+  });
 });
 
 describe('focused runner startup tracing', () => {

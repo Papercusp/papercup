@@ -1374,6 +1374,48 @@ export async function diagnoseVitestStartup(argv, emit, { control = controlForkS
 
 // No clients, intervals, or extra processes: existing runner shutdown owns the
 // process group. This preload only observes IPC; it never changes the payload.
+/** Observe only byte counts on an identified esbuild service. Wrapping emit
+ * avoids putting stdout into flowing mode before esbuild attaches its reader.
+ * No payload, extra reader, timer, or process is retained.
+ * @param {any} child
+ * @param {(row: Record<string, unknown>) => void} emit
+ * @returns {() => void}
+ */
+export function observeEsbuildStartup(child, emit) {
+  const input = child.stdin, output = child.stdout;
+  const originalWrite = input?.write, originalEmit = output?.emit;
+  let writtenBytes = 0, receivedBytes = 0, remaining = 8;
+  const record = event => {
+    if (remaining-- <= 0) return;
+    try { emit({ event, childPid: child.pid ?? null, writtenBytes, receivedBytes }); }
+    catch { /* A diagnostic cannot change native stream behavior. */ }
+  };
+  const count = value => typeof value === 'string' ? Buffer.byteLength(value)
+    : ArrayBuffer.isView(value) ? value.byteLength : 0;
+  function write(chunk, ...args) {
+    const result = originalWrite.call(this, chunk, ...args);
+    try { writtenBytes += count(chunk); record('esbuild-input'); } catch { /* Passive only. */ }
+    return result;
+  }
+  function streamEmit(event, ...args) {
+    if (event === 'data') {
+      try { receivedBytes += count(args[0]); record('esbuild-output'); } catch { /* Passive only. */ }
+    }
+    return originalEmit.call(this, event, ...args);
+  }
+  const cleanup = () => {
+    if (input?.write === write) input.write = originalWrite;
+    if (output?.emit === streamEmit) output.emit = originalEmit;
+    child.removeListener('close', onClose);
+  };
+  const onClose = () => { record('esbuild-close'); cleanup(); };
+  if (typeof originalWrite === 'function') input.write = write;
+  if (typeof originalEmit === 'function') output.emit = streamEmit;
+  child.once('close', onClose);
+  record('esbuild-spawned');
+  return cleanup;
+}
+
 function isVitestEntry(value) {
   const entry = String(value ?? '').replaceAll('\\', '/');
   return /(?:^|\/)(?:vitest\/(?:vitest\.mjs|dist\/(?:workers\/[^/]+|worker)\.[cm]?js)|\.bin\/vitest)$/.test(entry);
@@ -1402,6 +1444,16 @@ if (traceMode === '1' || (traceMode === 'vitest-descendant'
     if (isVitestEntry(modulePath)) {
       emit({ event: 'worker-forked', childPid: child.pid });
       observeForkStartup(child, emit);
+    }
+    return child;
+  };
+  const originalSpawn = childProcess.spawn;
+  childProcess.spawn = function(command, ...args) {
+    const child = originalSpawn.call(this, command, ...args);
+    // Match the service contract, including ESBUILD_BINARY_PATH overrides.
+    // Ordinary child processes retain their original streams and diagnostics.
+    if (Array.isArray(args[0]) && args[0].some(arg => /^--service=\d/.test(String(arg)))) {
+      try { observeEsbuildStartup(child, emit); } catch { /* Return the exact native child. */ }
     }
     return child;
   };
