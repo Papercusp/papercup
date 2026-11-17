@@ -61,6 +61,29 @@ describe('mandatory original invocation ledger binding', () => {
     expect(inserts()).toHaveLength(fault === 'database' ? 0 : 1);
   });
 
+  it.each([undefined, 'su-unverified-http-client'])(
+    'rejects an unsigned HTTP caller with client %s before submitting ledger SQL', async uiClientId => {
+      const req = request();
+      const anonymous = { ...req, ctx: { ...req.ctx, transport: 'http',
+        isSuperuser: false, principal: undefined, uiClientId } };
+      await expect(observer().begin(anonymous as never)).rejects.toThrow('resolveAgentIdentity');
+      expect(db.calls).toEqual([]);
+
+      const ref = await observer().begin({ ...req, ctx: { ...req.ctx, transport: 'http' } } as never);
+      expect(ref).toBe('tool-invocation:91001');
+      expect(inserts()).toHaveLength(1);
+      expect(JSON.parse(String(inserts()[0].params[19]))).toMatchObject({
+        originalInvocation: { ownerId: 'su-original', workspaceId: 'ws-test' },
+      });
+    });
+
+  it('rejects a verified caller with no workspace before submitting ledger SQL', async () => {
+    const req = request();
+    await expect(observer().begin({ ...req, ctx: { ...req.ctx, workspaceId: undefined } } as never))
+      .rejects.toThrow('Original invocation identity is unavailable');
+    expect(db.calls).toEqual([]);
+  });
+
   it('records an expired request independently of the completed handler outcome', async () => {
     const req = request(); const abort = new AbortController(); req.ctx.signal = abort.signal;
     const ref = await observer().begin(req as never); abort.abort();

@@ -20,6 +20,7 @@
  * `decidedByAncestor`, so the pane can say so before the admin saves.
  */
 import { z } from 'zod';
+import { CategoryRuleSchema } from './category-rules';
 import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import {
   CUSTOMER_DATA_CLASSES,
@@ -90,10 +91,7 @@ export const DEFAULT_VERSION_LIMIT = 20;
 
 // ── wire schemas (shared by the MCP tool and the HTTP routes) ──────────────────────────────
 
-const ruleSchema = z.object({
-  allow: z.array(z.string()).optional(),
-  deny: z.array(z.string()).optional(),
-});
+const ruleSchema = CategoryRuleSchema;
 const exceptionSchema = z.object({
   category: z.string(),
   pattern: z.string(),

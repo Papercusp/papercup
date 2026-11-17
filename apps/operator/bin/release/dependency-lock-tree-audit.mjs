@@ -273,6 +273,7 @@ export function enclosingWorkspaceOwner(lockDir, auditedLocks) {
  * Audit every lockfile named by the manifest, shallowest first so an enclosing lockfile is
  * known before its workspace members. `lockfiles[]` in the result records each decision:
  * status audited | not-installed | workspace-member (with `owner`).
+ * @param {{ treeRoot: string, lockRoot: string, lockfiles: string[], installedTrees?: string[], fs?: ReturnType<typeof defaultFs> }} options
  */
 export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees = [], fs = defaultFs() }) {
   const summary = {

@@ -23,24 +23,16 @@
  * (work-scope-policy.ts) so both policies read patterns and expiry identically.
  */
 import { matchHarnessPattern, workScopeExceptionExpirySchema } from '../work-scope-policy';
+import { GOVERNED_CATEGORIES, type CategoryRule, type GovernedCategory } from './category-rules';
+export { GOVERNED_CATEGORIES, type CategoryRule, type GovernedCategory } from './category-rules';
 
 /**
  * `providers` and `regions` (P-016a) judge WHO processes organization content and WHERE. They are
  * derived from the provider API host by ./processing-route.ts; residency must be an allow list,
  * because a global endpoint's region is unresolved and matches no deny pattern.
  */
-export const GOVERNED_CATEGORIES = ['models', 'providers', 'regions', 'tools', 'plugins', 'egress', 'dataUse', 'actions', 'resources'] as const;
-export type GovernedCategory = (typeof GOVERNED_CATEGORIES)[number];
-
 export const POLICY_LEVELS = ['organization', 'department', 'workspace'] as const;
 export type PolicyLevel = (typeof POLICY_LEVELS)[number];
-
-export interface CategoryRule {
-  /** When present, ONLY matching values pass this layer. */
-  allow?: string[];
-  /** Matching values never pass this layer. Deny beats allow within a layer. */
-  deny?: string[];
-}
 
 export interface PolicyException {
   category: GovernedCategory;

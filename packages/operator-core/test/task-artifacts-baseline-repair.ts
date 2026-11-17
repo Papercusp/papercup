@@ -1,14 +1,16 @@
 /** Test-only custody for the separately qualified D-004 dependency edition. */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { createReadStream, existsSync, lstatSync, readFileSync, writeFileSync, type BigIntStats } from 'node:fs';
+import { lstat, readdir, readlink, realpath } from 'node:fs/promises';
+import { join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isCliEntry } from '../lib/util/cli-entry';
 import type { NativeProofInput } from '../lib/testing-run-store';
 // @ts-ignore -- reuse the maintained strict resolver, never a custom installer.
 import { metadataRepairInputLayout, resolveMetadataRepairLock } from '../../../scripts/npm-install-safe.mjs';
+import { auditTree } from '../../../apps/operator/bin/release/dependency-lock-tree-audit.mjs';
 
 export const repairedBaselineEdition = 'source-frozen-dependency-repaired-v1';
 export const baselineRepairFailureArtifacts = [
@@ -17,6 +19,87 @@ export const baselineRepairFailureArtifacts = [
 ] as const;
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 export type FrozenSource = { path: string; sha256: string; content: string };
+
+type InstalledEntry = { path: string; mode: number } & (
+  { kind: 'directory' } | { kind: 'file'; bytes: number; sha256: string }
+  | { kind: 'link'; target: string; resolved: string });
+
+/** Reuse the publisher's tree census and strict lock/runtime audit. Unlike its
+ * metadata fingerprint, this receipt hashes ALL reachable file bytes, including
+ * hidden files, native addons and workspace/link targets. There is no prefix or
+ * page limit: a failed census/read rejects the entire observation. */
+export async function captureBaselineInstalledTree(root: string,
+  helperRoot = resolve(import.meta.dirname, '../../..')) {
+  root = await realpath(root);
+  const census = () => new Promise<string>((done, reject) => {
+    const child = spawn('bash', ['-euo', 'pipefail', '-c',
+      'source "$1"; dependency_generation_enumerate_node_modules "$2"', 'baseline-installed-tree',
+      join(helperRoot, 'apps/operator/bin/release/dependency-generation.sh'), root],
+    { stdio: ['ignore', 'pipe', 'pipe'], signal: AbortSignal.timeout(180_000),
+      env: { ...process.env, DEPENDENCY_GENERATION_SCOPE_MODE: 'full' } });
+    const output: Buffer[] = [], errors: Buffer[] = [];
+    child.stdout.on('data', chunk => output.push(Buffer.from(chunk)));
+    child.stderr.on('data', chunk => errors.push(Buffer.from(chunk)));
+    child.once('error', reject);
+    child.once('close', (code, signal) => code === 0 ? done(Buffer.concat(output).toString())
+      : reject(new Error('baseline_installed_census_failed:' + code + ':' + signal + ':' + Buffer.concat(errors))));
+  });
+  const inside = (path: string) => {
+    const rel = relative(root, path);
+    assert.ok(rel && rel !== '..' && !rel.startsWith('../') && !rel.startsWith('/')
+      && !/[\x00-\x1f\\]/.test(rel), 'baseline_installed_path:' + path);
+    return rel;
+  };
+  const treePaths = async () => (await census()).split('\n').filter(Boolean).map(path => inside(path)).sort();
+  const trees = await treePaths();
+  assert.ok(trees.includes('node_modules') && new Set(trees).size === trees.length,
+    'baseline_installed_census_incomplete');
+  const { inputPaths } = metadataRepairInputLayout(root);
+  const lockfiles = inputPaths.filter((path: string) => /(^|\/)(package-lock|npm-shrinkwrap)\.json$/.test(path)
+    && existsSync(join(root, path)));
+  const audit = auditTree({ treeRoot: root, lockRoot: root, lockfiles, installedTrees: trees });
+  assert.deepEqual(audit.defects, [], 'baseline_installed_lock_audit:' + JSON.stringify(audit));
+  const entries = new Map<string, InstalledEntry>();
+  const same = (a: BigIntStats, b: BigIntStats) =>
+    (['dev', 'ino', 'mode', 'size', 'mtimeNs', 'ctimeNs'] as const).every(key => a[key] === b[key]);
+  const visit = async (path: string): Promise<void> => {
+    if (entries.has(path)) return;
+    const file = join(root, path), before = await lstat(file, { bigint: true });
+    const mode = Number(before.mode & 0o7777n);
+    if (before.isSymbolicLink()) {
+      const target = await readlink(file), resolved = inside(await realpath(file));
+      entries.set(path, { path, mode, kind: 'link', target, resolved });
+      await visit(resolved);
+      assert.equal(await readlink(file), target, 'baseline_installed_link_changed:' + path);
+    } else if (before.isDirectory()) {
+      entries.set(path, { path, mode, kind: 'directory' });
+      const names = (await readdir(file)).sort();
+      for (const name of names) await visit(path + '/' + name);
+      assert.deepEqual((await readdir(file)).sort(), names, 'baseline_installed_population_changed:' + path);
+    } else {
+      assert.ok(before.isFile(), 'baseline_installed_type:' + path);
+      assert.ok(before.size <= BigInt(Number.MAX_SAFE_INTEGER), 'baseline_installed_file_size:' + path);
+      const hash = createHash('sha256');
+      for await (const bytes of createReadStream(file)) hash.update(bytes);
+      entries.set(path, { path, mode, kind: 'file', bytes: Number(before.size), sha256: hash.digest('hex') });
+    }
+    assert.ok(same(before, await lstat(file, { bigint: true })), 'baseline_installed_changed_during_read:' + path);
+  };
+  for (const tree of trees) {
+    assert.ok(!(await lstat(join(root, tree))).isSymbolicLink(), 'baseline_installed_linked_root:' + tree);
+    await visit(tree);
+  }
+  assert.deepEqual(await treePaths(), trees, 'baseline_installed_tree_population_changed');
+  const manifest = { schemaVersion: 1, trees, audit,
+    entries: [...entries.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) };
+  return { ...manifest, sha256: digest(JSON.stringify(manifest)) };
+}
+
+export async function assertBaselineInstalledTree(root: string,
+  expected: Awaited<ReturnType<typeof captureBaselineInstalledTree>>, helperRoot?: string) {
+  const actual = await captureBaselineInstalledTree(root, helperRoot);
+  assert.deepEqual(actual, expected, 'baseline_installed_tree_changed');
+}
 
 export function assertFrozenBaselineSources(root: string, files: FrozenSource[]) {
   return files.map(file => {

@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import { findBoxIdentityPaths, findIdentityLiterals, resolveIdentityLiterals } from '../../../scripts/lib/identity-leak-patterns.mjs';
-import { assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
+import { assertBaselineInstalledTree, captureBaselineInstalledTree,
+  assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineLockDelta,
   baselineProductBoundary, baselineRepairFailureArtifacts,
   retainBaselineRepairFailure } from '../test/task-artifacts-baseline-repair';
 
@@ -92,6 +93,84 @@ describe('managed artifact pre-feature baseline custody', () => {
 });
 
 describe('separately qualified baseline dependency repair custody', () => {
+  async function installedFixture(run: (root: string) => Promise<void>) {
+    const root = mkdtempSync(join(tmpdir(), 'artifact-baseline-installed-'));
+    try {
+      mkdirSync(join(root, 'node_modules', 'runtime'), { recursive: true });
+      writeFileSync(join(root, 'package.json'), '{"name":"original","version":"1.0.0"}');
+      writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+        '': { name: 'original', version: '1.0.0' },
+        'node_modules/runtime': { version: '1.0.0' },
+      } }));
+      writeFileSync(join(root, 'node_modules/runtime/package.json'), '{"name":"runtime","version":"1.0.0"}');
+      writeFileSync(join(root, 'node_modules/runtime/native.node'), 'original native bytes');
+      await run(root);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+
+  it('rejects byte, mode, hidden-file, population and link-target substitutions in the actual installed tree', async () => {
+    await installedFixture(async root => {
+      mkdirSync(join(root, 'node_modules/.bin'));
+      symlinkSync('../runtime/native.node', join(root, 'node_modules/.bin/runtime'));
+      const original = await captureBaselineInstalledTree(root);
+      expect(original.entries).toContainEqual(expect.objectContaining({ path: 'node_modules/runtime/native.node',
+        kind: 'file', sha256: sha256('original native bytes') }));
+      expect(original.entries).toContainEqual(expect.objectContaining({ path: 'node_modules/.bin/runtime',
+        kind: 'link', target: '../runtime/native.node', resolved: 'node_modules/runtime/native.node' }));
+      writeFileSync(join(root, 'node_modules/runtime/native.node'), 'tampered native bytes');
+      await expect(assertBaselineInstalledTree(root, original)).rejects.toThrow('baseline_installed_tree_changed');
+      writeFileSync(join(root, 'node_modules/runtime/native.node'), 'original native bytes');
+      await expect(assertBaselineInstalledTree(root, original)).resolves.toBeUndefined();
+      chmodSync(join(root, 'node_modules/runtime/native.node'), 0o755);
+      await expect(assertBaselineInstalledTree(root, original)).rejects.toThrow('baseline_installed_tree_changed');
+      chmodSync(join(root, 'node_modules/runtime/native.node'), 0o644);
+      writeFileSync(join(root, 'node_modules/.injected'), 'hidden');
+      await expect(assertBaselineInstalledTree(root, original)).rejects.toThrow('baseline_installed_tree_changed');
+      rmSync(join(root, 'node_modules/.injected'));
+      rmSync(join(root, 'node_modules/.bin/runtime'));
+      symlinkSync('../runtime/package.json', join(root, 'node_modules/.bin/runtime'));
+      await expect(assertBaselineInstalledTree(root, original)).rejects.toThrow('baseline_installed_tree_changed');
+      rmSync(join(root, 'node_modules/.bin/runtime'));
+      symlinkSync('/etc/passwd', join(root, 'node_modules/.bin/runtime'));
+      await expect(captureBaselineInstalledTree(root)).rejects.toThrow('baseline_installed_path');
+    });
+  }, 60_000);
+
+  it('hashes workspace link targets and retains the strict lock and native runtime audit', async () => {
+    await installedFixture(async root => {
+      mkdirSync(join(root, 'packages/local'), { recursive: true });
+      writeFileSync(join(root, 'packages/local/package.json'), '{"name":"local","version":"1.0.0"}');
+      writeFileSync(join(root, 'packages/local/index.js'), 'original linked bytes');
+      symlinkSync('../packages/local', join(root, 'node_modules/local'));
+      const lockPath = join(root, 'package-lock.json'), lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+      lock.packages['node_modules/local'] = { link: true, resolved: 'packages/local' };
+      lock.packages['packages/local'] = { version: '1.0.0' };
+      writeFileSync(lockPath, JSON.stringify(lock));
+      const original = await captureBaselineInstalledTree(root);
+      expect(original.entries).toContainEqual(expect.objectContaining({ path: 'packages/local/index.js',
+        sha256: sha256('original linked bytes') }));
+      writeFileSync(join(root, 'packages/local/index.js'), 'tampered linked bytes');
+      await expect(assertBaselineInstalledTree(root, original)).rejects.toThrow('baseline_installed_tree_changed');
+      rmSync(join(root, 'node_modules/runtime/package.json'));
+      await expect(captureBaselineInstalledTree(root)).rejects.toThrow('baseline_installed_lock_audit');
+    });
+  }, 60_000);
+
+  it.each([255, 256, 257, 1025])('keeps every installed file across a %i-entry census and repeated reads', async count => {
+    await installedFixture(async root => {
+      // Reverse creation order must not change the complete, sorted receipt.
+      for (let n = count - 1; n >= 0; n--)
+        writeFileSync(join(root, 'node_modules/runtime/file-' + n.toString().padStart(5, '0')), String(n));
+      const original = await captureBaselineInstalledTree(root);
+      expect(original.entries.filter(entry => entry.path.includes('/file-'))).toHaveLength(count);
+      await expect(captureBaselineInstalledTree(root)).resolves.toEqual(original);
+      const decisive = 'node_modules/runtime/file-' + (count - 1).toString().padStart(5, '0');
+      expect(original.entries).toContainEqual(expect.objectContaining({ path: decisive, sha256: sha256(String(count - 1)) }));
+      writeFileSync(join(root, decisive), 'changed after the boundary');
+      await expect(assertBaselineInstalledTree(root, original)).rejects.toThrow('baseline_installed_tree_changed');
+    });
+  }, 60_000);
+
   it('binds the complete prelaunch input population and actual repair bytes before install', () => {
     const snapshot = new Map<string, Buffer | null>([['package.json', Buffer.from('{"name":"original"}')],
       ['package-lock.json', Buffer.from('original lock')], ['.npmrc', null]]);

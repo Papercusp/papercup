@@ -57,18 +57,16 @@ export function enclosingWorkspaceOwner(lockDir: any, auditedLocks: any): any;
  * Audit every lockfile named by the manifest, shallowest first so an enclosing lockfile is
  * known before its workspace members. `lockfiles[]` in the result records each decision:
  * status audited | not-installed | workspace-member (with `owner`).
+ * @param {{ treeRoot: string, lockRoot: string, lockfiles: string[], installedTrees?: string[], fs?: ReturnType<typeof defaultFs> }} options
  */
 export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees, fs }: {
-    treeRoot: any;
-    lockRoot: any;
-    lockfiles: any;
-    installedTrees?: never[] | undefined;
-    fs?: {
-        exists(path: any): boolean;
-        readJson(path: any): any;
-    } | undefined;
+    treeRoot: string;
+    lockRoot: string;
+    lockfiles: string[];
+    installedTrees?: string[];
+    fs?: ReturnType<typeof defaultFs>;
 }): {
-    lockfiles: any;
+    lockfiles: number;
     audited: number;
     skipped: number;
     entries: number;
@@ -77,3 +75,8 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees, fs }:
     decisions: never[];
 };
 export const MAX_DEFECTS: 50;
+declare function defaultFs(): {
+    exists(path: any): boolean;
+    readJson(path: any): any;
+};
+export {};

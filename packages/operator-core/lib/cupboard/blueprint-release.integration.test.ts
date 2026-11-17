@@ -218,6 +218,30 @@ describe('R-2 signed blueprint release lifecycle (integration)', () => {
     expect(f.signCalls()).toBeGreaterThan(0);
   });
 
+  it('R-1: signed publication preserves portable ceiling and floors and refuses malformed policy before signing', async () => {
+    const f = await fixture();
+    const dir = await writeBlueprint('1.0.0', 'portable policy\n');
+    const file = join(dir, 'blueprint.yaml');
+    const valid = parseYaml(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+    for (const field of ['ceiling', 'floors']) {
+      for (const policy of [{ typoCategory: { deny: ['*'] } }, { tools: { alow: ['*'] } }]) {
+        await fs.writeFile(file, toYaml({ ...valid, [field]: policy }));
+        await expect(f.publish(dir)).rejects.toThrow(/typoCategory|alow/);
+        expect(f.signCalls()).toBe(0);
+        expect(existsSync(f.installedDir)).toBe(false);
+      }
+    }
+    const source = { ...valid,
+      ceiling: { tools: { allow: ['claims:*'], deny: ['claims:delete'] } },
+      floors: { dataUse: { allow: ['local-only'] } },
+    };
+    await fs.writeFile(file, toYaml(source));
+    const published = await f.publish(dir);
+    const configuration = published.source.archive.pins.find(pin => pin.packageKind === 'blueprint')?.value;
+    expect(configuration).toMatchObject({ ceiling: source.ceiling, floors: source.floors });
+    expect(f.signCalls()).toBeGreaterThan(0);
+  });
+
   it('publishes and installs signed closure bytes, preserving a compiled pin through no-op, update, rollback and uninstall', async () => {
     const { installedDir, publish, install } = await fixture();
     const sourceDir = await writeBlueprint('1.0.0', 'sell potatoes\n');

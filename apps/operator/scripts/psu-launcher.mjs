@@ -12314,7 +12314,7 @@ export async function reportSessionRespawned(
     managedSuccessionPermit = null,
     env = process.env,
     fetchImpl = fetch,
-    operatorUrl = launcherOperatorTarget().url,
+    operatorUrl = launcherOperatorTarget(env).url,
     token = null,
     timeoutMs = 2_000,
     appendEventImpl = appendHostEvent,
@@ -12409,20 +12409,38 @@ async function observeRespawnReport({ operatorUrl, receipt, headers, fetchImpl, 
   const deadline = Date.now() + 60_000;
   do {
     let response, observed;
+    let retryRead = false;
     try {
       response = await fetchImpl(url.href, { method: 'GET', headers,
         signal: AbortSignal.timeout(Math.max(1, Math.min(timeoutMs, deadline - Date.now()))) });
-      if (response?.ok !== true) return null;
-      observed = await response.json();
-    } catch { return null; }
-    if (observed?.ok !== true || Object.entries(receipt).some(([key, value]) => observed[key] !== value)) return null;
-    if (observed.pending === false && Number.isInteger(observed.response?.status) &&
-        observed.response.status >= 200 && observed.response.status <= 599 && observed.response.body &&
-        typeof observed.response.body === 'object') {
-      if (observed.response.status < 300 && observed.response.body.ok !== true) return null;
-      return new Response(JSON.stringify(observed.response.body), { status: observed.response.status });
+      if (response?.status === 404) {
+        // A timed-out POST may still be acquiring its receipt row. Only this
+        // endpoint's explicit not-yet-stored result is retryable; an older
+        // server's generic 404 remains a terminal, unconfirmed observation.
+        const unavailable = await response.json();
+        if (unavailable?.error !== 'respawn-receipt-unavailable') return null;
+        retryRead = true;
+      } else {
+        if (response?.ok !== true) return null;
+        observed = await response.json();
+      }
+    } catch (error) {
+      // Keep reading this exact attempt within the existing observation
+      // window. A single slow GET does not mean its POST was refused.
+      if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError') return null;
+      retryRead = true;
     }
-    if (observed.pending !== true) return null;
+    if (Date.now() >= deadline) return null;
+    if (!retryRead) {
+      if (observed?.ok !== true || Object.entries(receipt).some(([key, value]) => observed[key] !== value)) return null;
+      if (observed.pending === false && Number.isInteger(observed.response?.status) &&
+          observed.response.status >= 200 && observed.response.status <= 599 && observed.response.body &&
+          typeof observed.response.body === 'object') {
+        if (observed.response.status < 300 && observed.response.body.ok !== true) return null;
+        return new Response(JSON.stringify(observed.response.body), { status: observed.response.status });
+      }
+      if (observed.pending !== true) return null;
+    }
     await new Promise(resolve => setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))));
   } while (Date.now() < deadline);
   return null;

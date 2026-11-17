@@ -16303,6 +16303,18 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
     });
   });
 
+  it.each([
+    { operatorUrl: undefined, expectedOrigin: "http://127.0.0.1:43170" },
+    { operatorUrl: "http://127.0.0.1:43171", expectedOrigin: "http://127.0.0.1:43171" },
+  ])("routes a respawn using its host environment unless explicitly overridden: $expectedOrigin", async ({ operatorUrl, expectedOrigin }) => {
+    const fetchImpl = vi.fn(async (_url: string) => Response.json({ ok: true }));
+    await expect(reportSessionRespawned(42, freshId, {
+      env: { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:43170", PAPERCUSP_MCP_PROXY: "0" },
+      fetchImpl, operatorUrl, token: "fixture-token",
+    })).resolves.toBe(true);
+    expect(fetchImpl.mock.calls[0][0]).toBe(`${expectedOrigin}/api/agent-mcp/console/bootstrap-su/session-respawned`);
+  });
+
   it("POSTs { advSessionId, sessionId } to bootstrap-su/session-respawned with the bearer", async () => {
     const calls: Array<{
       url: string;
@@ -16420,6 +16432,20 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         requestHash: query.get('requestHash'), pending: false, response: { status: 200, body: { ok: true } }, ...overrides };
     }
 
+    it('observes a lost response on the same host-environment target as its POST', async () => {
+      const origin = 'http://127.0.0.1:43170';
+      const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
+        expect(new URL(url).origin).toBe(origin);
+        if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+        return Response.json(completedReceipt(url));
+      });
+      await expect(reportSessionRespawned(42, freshId, {
+        env: { PAPERCUSP_OPERATOR_URL: origin, PAPERCUSP_MCP_PROXY: '0' },
+        coordOwnerId: 'su-receipt-owner', fetchImpl, token: 'fixture-token', appendEventImpl: vi.fn(),
+      })).resolves.toBe(true);
+      expect(fetchImpl.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'GET']);
+    });
+
     it.each(['timeout', 'pending'])('observes the exact %s attempt without repeating its POST', async (outcome) => {
       const appendEventImpl = vi.fn();
       const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
@@ -16475,6 +16501,49 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         await vi.advanceTimersByTimeAsync(1_000);
         expect(await report).toBe(true);
         expect(fetchImpl.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'GET', 'GET']);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(['not-yet-stored', 'read-timeout', 'read-abort'])('keeps observing the same attempt after %s', async (firstRead) => {
+      vi.useFakeTimers();
+      try {
+        let reads = 0;
+        let settled = false;
+        const fetchImpl = vi.fn(async (url: string, options: RequestInit) => {
+          if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+          if (++reads === 1) {
+            if (firstRead === 'read-timeout') throw new DOMException('slow receipt read', 'TimeoutError');
+            if (firstRead === 'read-abort') throw new DOMException('slow receipt read', 'AbortError');
+            return Response.json({ ok: false, error: 'respawn-receipt-unavailable' }, { status: 404 });
+          }
+          return Response.json(completedReceipt(url));
+        });
+        const report = reportSessionRespawned(42, freshId, { coordOwnerId: 'su-receipt-owner', fetchImpl,
+          token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl: vi.fn() });
+        void report.then(() => { settled = true; });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(reads).toBe(1);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(await report).toBe(true);
+        expect(fetchImpl.mock.calls.map(([, options]) => options.method)).toEqual(['POST', 'GET', 'GET']);
+        expect(fetchImpl.mock.calls[1][0]).toBe(fetchImpl.mock.calls[2][0]);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it('bounds a receipt that stays unavailable without repeating its POST', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi.fn(async (_url: string, options: RequestInit) => {
+          if (options.method === 'POST') throw new DOMException('lost response', 'TimeoutError');
+          return Response.json({ ok: false, error: 'respawn-receipt-unavailable' }, { status: 404 });
+        });
+        const report = reportSessionRespawned(42, freshId, { coordOwnerId: 'su-receipt-owner', fetchImpl,
+          token: 'fixture-token', operatorUrl: 'http://op:1', appendEventImpl: vi.fn() });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(await report).toBe(false);
+        expect(fetchImpl.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(1);
+        expect(fetchImpl.mock.calls.filter(([, options]) => options.method === 'GET').length).toBeGreaterThan(1);
       } finally { vi.useRealTimers(); }
     });
 
@@ -16586,6 +16655,7 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
         token: "fixture",
         timeoutMs: 10,
         fetchImpl: async (_url, options) => {
+          if (options?.method === 'GET') return new Response('{}', { status: 404 });
           const signal = options?.signal;
           if (!signal) throw new Error("test request signal missing");
           return new Promise<Response>((_resolve, reject) => {

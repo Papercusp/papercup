@@ -14,7 +14,8 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
 import { runVerifierDependencyCommand } from '../../../scripts/source-preview.mjs';
 // @ts-ignore -- same immutable dependency preflight used by committed verifiers.
 import { assertCommittedWorkspaceLockMatches } from '../../../scripts/lint-as-committed.mjs';
-import { assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineProductBoundary,
+import { assertBaselineInstalledTree, captureBaselineInstalledTree,
+  assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineProductBoundary,
   baselineRepairFailureArtifacts, repairedBaselineEdition } from '../test/task-artifacts-baseline-repair';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -41,6 +42,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         'packages/operator-core/lib/scratch-git-clone.ts', 'scripts/source-preview.mjs',
         'scripts/npm-install-safe.mjs', 'scripts/lint-as-committed.mjs',
         'packages/operator-core/test/task-artifacts-baseline-repair.ts',
+        'apps/operator/bin/release/dependency-lock-tree-audit.mjs',
         'apps/operator/bin/release/dependency-generation.sh',
         'papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/bundle-host.sh',
         'apps/operator/bin/hono-host.ts', 'apps/operator/scripts/ptool.mjs',
@@ -56,6 +58,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         'phases/prepare/dependency-repair-delta.json', 'phases/prepare/dependency-edition.json',
         'phases/prepare/dependency-edition-after-build.json',
         'phases/prepare/dependency-candidate-graph.json', 'phases/prepare/dependency-installed.json',
+        'phases/prepare/dependency-installed-tree.json',
         'phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build-result.json',
         'phases/execute/client-traces.json', 'phases/execute/wire-requests.ndjson',
         'phases/execute/wire-errors.ndjson', 'phases/execute/baseline-runtime.json'],
@@ -141,11 +144,14 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         const afterInstallSources = assertFrozenBaselineSources(sourceRoot, fixture.files);
         const afterInstallProductBoundary = baselineProductBoundary(sourceRoot, ['package-lock.json']);
         expect(digest(readFileSync(join(sourceRoot, 'package-lock.json')))).toBe(edition.repairedLockSha256);
+        const installedTree = await captureBaselineInstalledTree(sourceRoot, root);
+        await writeFile(join(evidenceDir, 'dependency-installed-tree.json'), JSON.stringify(installedTree), { flag: 'wx' });
         const installedReceipt = join(evidenceDir, 'dependency-installed.json');
         await writeFile(installedReceipt, JSON.stringify({ sourceSha, repairedLockSha256: edition.repairedLockSha256,
           installLogSha256: digest(readFileSync(join(evidenceDir, 'dependency-install.log'))),
-          afterInstallSources, afterInstallProductBoundary,
-          qualification: 'Guarded ci completed; complete installed-tree custody remains separately required' }), { flag: 'wx' });
+          afterInstallSources, afterInstallProductBoundary, installedTreeSha256: installedTree.sha256,
+          installedTreeManifestSha256: digest(readFileSync(join(evidenceDir, 'dependency-installed-tree.json'))),
+          qualification: 'Guarded ci and complete content/lock/runtime tree census completed; full native qualification remains required' }), { flag: 'wx' });
         await native!.observe('installed', installedReceipt);
         console.info('TASK_ARTIFACT_CLIENT_BASELINE_STAGE=dependency-repaired-build');
         prepared = await preparePrivateOperatorApiBundle(sourceRoot, evidenceDir, { builder: {
@@ -154,11 +160,12 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         assertBaselineRepairInputs(sourceRoot, snapshot, repairedOutput);
         const afterBuildSources = assertFrozenBaselineSources(sourceRoot, fixture.files);
         const afterBuildProductBoundary = baselineProductBoundary(sourceRoot, ['package-lock.json']);
+        await assertBaselineInstalledTree(sourceRoot, installedTree, root);
         expect(digest(readFileSync(join(sourceRoot, 'package-lock.json')))).toBe(edition.repairedLockSha256);
         await writeFile(join(evidenceDir, 'dependency-edition-after-build.json'), JSON.stringify({
           ...edition, afterInstallSources, afterBuildSources, afterInstallProductBoundary,
           afterBuildProductBoundary, rebuiltBundleSha256: prepared.sha256,
-          receiptSha256: prepared.receiptSha256,
+          receiptSha256: prepared.receiptSha256, installedTreeSha256: installedTree.sha256,
         }), { flag: 'wx' });
         await native!.observe('built', join(evidenceDir, 'dependency-edition-after-build.json'));
       },
