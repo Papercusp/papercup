@@ -20,6 +20,15 @@ async function openSetup() {
   await waitFor(() => expect((screen.getByLabelText('Public connection code') as HTMLTextAreaElement).value).not.toBe(''));
 }
 describe('installed computer launcher', () => {
+  it('keeps setup outside the sticky header and restores access after closing', async () => {
+    render(<header className="topbar"><InstalledComputerLauncher /></header>);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect your computer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect your computer' });
+    expect(dialog.closest('.topbar')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close connection setup' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('button', { name: 'Connect your computer' })).toBeTruthy();
+  });
   it('opens only an explicit loopback window and carries public request data in the fragment', async () => {
     const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
     await openSetup();

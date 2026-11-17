@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/app/harness/Button';
+import { Modal } from '@/app/harness/Modal';
 import { encodeInstalledComputerRequest, installedComputerUrl, type InstalledComputerRequest } from './installed-computer-protocol';
 import { installedBrowserKey, installedComputerPrincipal, readInstalledComputerApproval, saveInstalledComputerApproval,
   type InstalledComputerPrincipal } from './installed-computer-connection';
@@ -57,8 +58,12 @@ export function InstalledComputerLauncher() {
   }, [request, principal, visible]);
 
   return <span>
-    <Button variant="ghost" onClick={() => setVisible(value => !value)}>{visible ? 'Close connection setup' : 'Connect your computer'}</Button>
-    {visible ? <section aria-label="Connect your computer">
+    <Button variant="ghost" onClick={() => setVisible(true)}>Connect your computer</Button>
+    <Modal open={visible} onOpenChange={setVisible} title="Connect your computer"
+      contentStyle={{ width: 'min(40rem, 100%)', padding: '1.25rem' }}>
+    <section aria-label="Connect your computer">
+      <h2>Connect your computer</h2>
+      <Button variant="ghost" onClick={() => setVisible(false)}>Close connection setup</Button>
       <p>Use the Papercusp app already installed on your computer.</p>
       {principal ? <p>Portal account {principal.userId} · Organization {principal.organizationId} · Workspace {principal.workspaceId}</p> : null}
       <label>Papercusp app address <input value={address} onChange={event => setAddress(event.target.value)} /></label>
@@ -85,6 +90,7 @@ export function InstalledComputerLauncher() {
       }}>Verify approval</Button>
       {status ? <p role="status">{status}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
-    </section> : null}
+    </section>
+    </Modal>
   </span>;
 }

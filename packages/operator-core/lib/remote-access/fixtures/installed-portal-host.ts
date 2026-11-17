@@ -43,3 +43,4 @@ process.on('message', (message: { type: string; requestId: string; url?: string;
   }).catch(error => { process.send?.({ requestId: message.requestId, type: 'error', code: error.code, message: error.message }); });
 });
 process.on('disconnect', () => { stopPortalRelayConnector('fixture_disconnected'); process.exit(0); });
+process.send?.({ type: 'ready', pid: process.pid });

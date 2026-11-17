@@ -65,13 +65,13 @@ describe('persisted installed Portal connection', () => {
       host!.send({ type, requestId, ...extra });
       await vi.waitFor(() => {
         expect(host!.exitCode, hostErrors).toBeNull();
-        expect(messages.some(value => value.requestId === requestId), hostErrors).toBe(true);
+        expect(messages.some(value => value.requestId === requestId), `${type}:${requestId} pid=${host!.pid} ${hostErrors}`).toBe(true);
       }, { timeout: 20_000 });
       const result = messages.find(value => value.requestId === requestId)!;
       if (result.type === 'error') throw Object.assign(new Error(result.message), { code: result.code });
       return result;
     };
-    const boot = () => {
+    const boot = async () => {
       hostErrors = '';
       host = fork(fileURLToPath(new URL('./fixtures/installed-portal-host.ts', import.meta.url)), [], {
         execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
@@ -81,6 +81,7 @@ describe('persisted installed Portal connection', () => {
       });
       host.stderr!.on('data', data => { hostErrors = (hostErrors + String(data)).slice(-4000); });
       host.on('message', value => messages.push(value as Record<string, any>));
+      await vi.waitFor(() => expect(messages.some(value => value.type === 'ready' && value.pid === host!.pid), hostErrors).toBe(true), { timeout: 20_000 });
     };
     const stop = async () => {
       if (!host || host.exitCode !== null || host.signalCode !== null) return;
@@ -101,12 +102,14 @@ describe('persisted installed Portal connection', () => {
       connections.push({ socket, noise });
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([noise.opened,
+        await Promise.race([(async () => {
+          await noise.opened;
+          await vi.waitFor(() => expect(frames).toContainEqual({ type: 'desktop.discovery.ready' }));
+        })(),
           new Promise<never>((_, reject) => {
             socket.once('close', (code, reason) => reject(new Error(`desktop_channel_denied:${code}:${reason}`)));
             deadline = setTimeout(() => reject(new Error('desktop_handshake_deadline')), 4000);
           })]);
-        await vi.waitFor(() => expect(frames).toContainEqual({ type: 'desktop.discovery.ready' }));
         return { socket, noise, frames };
       } catch (error) { noise.close(); socket.terminate(); throw error; }
       finally { clearTimeout(deadline); }
@@ -124,11 +127,11 @@ describe('persisted installed Portal connection', () => {
         scope: 'agent', scopeRef: 'integration-agent', name: 'private-persisted-desktop',
         display: ':192', displayGeometry: { width: 800, height: 600 } }, db.adminSql);
       await markDesktopReady(desktop.id, {}, db.adminSql);
-      boot();
+      await boot();
       const appOnly = await request('start', { url: `${url}?peer=host` });
       expect(appOnly.pid).toBe(host!.pid); expect(appOnly.pid).not.toBe(process.pid);
       expect(appOnly.grant).toBeNull();
-      await expect(connect(appOnly.machinePublicKey)).rejects.toThrow();
+      await expect(connect(appOnly.machinePublicKey)).rejects.toThrow('sealed_channel_unavailable');
       const approval = { noticeVersion: PORTAL_RELAY_DESKTOP_NOTICE_VERSION, installId, portalOrigin, userId,
         organizationId, customerWorkspaceId: identity.customerWorkspaceId, localWorkspaceId,
         browserPublicKey: browser.publicKey.toString('base64'), view: true, control: false };
@@ -144,11 +147,11 @@ describe('persisted installed Portal connection', () => {
       await connection.noise.send({ type: 'desktop.roster', requestId: 'before-restart' });
       await vi.waitFor(() => expect(connection.frames).toContainEqual(expect.objectContaining({ type: 'desktop.roster.result',
         requestId: 'before-restart', desktops: [expect.objectContaining({ desktopSessionId: desktop.id, name: 'private-persisted-desktop' })] })));
-      await expect(connect(linked.machinePublicKey, 'other-user')).rejects.toThrow();
-      await expect(connect(linked.machinePublicKey, userId, 83)).rejects.toThrow();
+      await expect(connect(linked.machinePublicKey, 'other-user')).rejects.toThrow('desktop_access_revoked');
+      await expect(connect(linked.machinePublicKey, userId, 83)).rejects.toThrow('sealed_channel');
       const closed = once(connection.socket, 'close');
       await stop(); await closed;
-      boot();
+      await boot();
       const resumed = await request('start', { url: `${url}?peer=host` });
       expect(resumed).toMatchObject({ installId, machinePublicKey: linked.machinePublicKey, grant: consent.grant });
       const recovered = await connect(resumed.machinePublicKey);
@@ -158,11 +161,11 @@ describe('persisted installed Portal connection', () => {
       await request('revoke'); await revoked;
       expect(await readPortalRelay(opts)).toMatchObject({ installId, state: 'linked', desktopGrant: null });
       await request('start', { url: `${url}?peer=host` });
-      await expect(connect(resumed.machinePublicKey)).rejects.toThrow();
-      await stop(); boot();
+      await expect(connect(resumed.machinePublicKey)).rejects.toThrow('sealed_channel_unavailable');
+      await stop(); await boot();
       const afterRevocation = await request('start', { url: `${url}?peer=host` });
       expect(afterRevocation).toMatchObject({ installId, grant: null });
-      await expect(connect(afterRevocation.machinePublicKey)).rejects.toThrow();
+      await expect(connect(afterRevocation.machinePublicKey)).rejects.toThrow('sealed_channel_unavailable');
       expect(wire.join('\n')).not.toContain('private-persisted-desktop');
       expect(wire.some(packet => packet.includes('sealed.packet'))).toBe(true);
     } finally {
