@@ -10,7 +10,7 @@ import { isCliEntry } from '../lib/util/cli-entry';
 import { nativeProofFingerprint, type NativeProofInput, type NativeProofRun } from '../lib/testing-run-store';
 // @ts-ignore -- reuse the maintained strict resolver, never a custom installer.
 import { metadataRepairInputLayout, resolveMetadataRepairLock } from '../../../scripts/npm-install-safe.mjs';
-import { auditTree } from '../../../apps/operator/bin/release/dependency-lock-tree-audit.mjs';
+import { auditTree, lockfilesFromManifest } from '../../../apps/operator/bin/release/dependency-lock-tree-audit.mjs';
 // @ts-ignore -- the maintained native exact-byte archive, shared with historical proof custody.
 import { createNativeArtifactPersister, readNativeArtifactBytes } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
@@ -502,10 +502,11 @@ type InstalledEntry = { path: string; mode: number } & (
 export async function captureBaselineInstalledTree(root: string,
   helperRoot = resolve(import.meta.dirname, '../../..')) {
   root = await realpath(root);
-  const census = () => new Promise<string>((done, reject) => {
+  const census = (operation: 'dependency_generation_enumerate_node_modules' | 'dependency_generation_input_manifest'
+    = 'dependency_generation_enumerate_node_modules') => new Promise<string>((done, reject) => {
     const child = spawn('bash', ['-euo', 'pipefail', '-c',
-      'source "$1"; dependency_generation_enumerate_node_modules "$2"', 'baseline-installed-tree',
-      join(helperRoot, 'apps/operator/bin/release/dependency-generation.sh'), root],
+      'source "$1"; "$3" "$2"', 'baseline-installed-tree',
+      join(helperRoot, 'apps/operator/bin/release/dependency-generation.sh'), root, operation],
     { stdio: ['ignore', 'pipe', 'pipe'], signal: AbortSignal.timeout(180_000),
       env: { ...process.env, DEPENDENCY_GENERATION_SCOPE_MODE: 'full' } });
     const output: Buffer[] = [], errors: Buffer[] = [];
@@ -525,9 +526,10 @@ export async function captureBaselineInstalledTree(root: string,
   const trees = await treePaths();
   assert.ok(trees.includes('node_modules') && new Set(trees).size === trees.length,
     'baseline_installed_census_incomplete');
-  const { inputPaths } = metadataRepairInputLayout(root);
-  const lockfiles = inputPaths.filter((path: string) => /(^|\/)(package-lock|npm-shrinkwrap)\.json$/.test(path)
-    && existsSync(join(root, path)));
+  // The full tree census includes standalone installs outside the selected
+  // root workspace. Use the publisher's matching full input census as well.
+  const inputManifest = await census('dependency_generation_input_manifest');
+  const lockfiles = lockfilesFromManifest(inputManifest);
   const audit = auditTree({ treeRoot: root, lockRoot: root, lockfiles, installedTrees: trees });
   assert.deepEqual(audit.defects, [], 'baseline_installed_lock_audit:' + JSON.stringify(audit));
   const entries = new Map<string, InstalledEntry>();
@@ -561,6 +563,8 @@ export async function captureBaselineInstalledTree(root: string,
     await visit(tree);
   }
   assert.deepEqual(await treePaths(), trees, 'baseline_installed_tree_population_changed');
+  assert.equal(await census('dependency_generation_input_manifest'), inputManifest,
+    'baseline_installed_lock_inputs_changed');
   const manifest = { schemaVersion: 1, trees, audit,
     entries: [...entries.values()].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0) };
   return { ...manifest, sha256: digest(JSON.stringify(manifest)) };
