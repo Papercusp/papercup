@@ -86,7 +86,8 @@ describe('previewPlanStartConsult', () => {
     expect(result.stages.map(s => s.id)).toEqual([...ACTIVATION_STAGE_IDS]);
     expect(result.stages.every(s => s.status === 'unknown' && s.detail === 'reader offline')).toBe(true);
     expect(result.stages.find(s => s.id === 'quality-audit')?.dependencies).toEqual(['spec-quality']);
-    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null,
+    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null, finalBasis: null,
+      basisComparison: { status: 'initial-unavailable', changedFields: [] },
       counts: { total: 14, returned: 14, omitted: 0 }, consult: { outcome: 'unavailable' } });
   });
   it('wires production routing, liveness, and excerpt callbacks without opening a consult', async () => {
@@ -388,15 +389,59 @@ describe('collectActivationReadiness', () => {
       expect.objectContaining({ id: 'contract-critique', status: 'waiting', dependencies: ['spec-quality', 'quality-audit'] }),
     ]));
   });
-  it.each(['planRevision', 'planHash', 'requesterId', 'policyHash', 'specSetHash', 'evidenceHash'] as const)(
+  it.each(['workspaceId', 'harnessSlug', 'planSlug', 'planRevision', 'planHash', 'requesterId', 'policyHash', 'specSetHash', 'evidenceHash'] as const)(
     'invalidates successful observations when %s moves', async key => {
       const r = readers();
-      vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis }).mockResolvedValueOnce({ ...basis,
-        [key]: key === 'planRevision' ? 2 : 'changed' });
+      const finalBasis = { ...basis, [key]: key === 'planRevision' ? 2 : 'changed' };
+      vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis }).mockResolvedValueOnce(finalBasis);
       const result = await collectActivationReadiness(r);
-      expect(result).toMatchObject({ ready: false, freshness: 'changed' });
+      expect(result).toMatchObject({ ready: false, freshness: 'changed', basis, finalBasis,
+        basisComparison: { status: 'compared', changedFields: [key] } });
       expect(result.stages.every(s => s.status === 'unknown' && s.codes[0] === 'activation_basis_changed')).toBe(true);
     });
+  it('retains every changed field and exact values when the last basis field also changes', async () => {
+    const r = readers();
+    const finalBasis = { ...basis, planRevision: 2, policyHash: 'new-policy', evidenceHash: 'e'.repeat(300) };
+    vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis }).mockResolvedValueOnce(finalBasis);
+    const result = await collectActivationReadiness(r);
+    expect(result.basis).toEqual(basis);
+    expect(result.finalBasis).toEqual(finalBasis);
+    expect(result.basisComparison).toEqual({ status: 'compared',
+      changedFields: ['planRevision', 'policyHash', 'evidenceHash'] });
+    expect(result.ready).toBe(false);
+  });
+  it('reports a complete unchanged comparison despite object property order', async () => {
+    const r = readers();
+    const reversed = { evidenceHash: basis.evidenceHash, specSetHash: basis.specSetHash,
+      policyHash: basis.policyHash, requesterId: basis.requesterId, planHash: basis.planHash,
+      planRevision: basis.planRevision, planSlug: basis.planSlug, harnessSlug: basis.harnessSlug,
+      workspaceId: basis.workspaceId };
+    vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis }).mockResolvedValueOnce(reversed);
+    expect(await collectActivationReadiness(r)).toMatchObject({ ready: true, freshness: 'current',
+      basis, finalBasis: basis, basisComparison: { status: 'compared', changedFields: [] } });
+  });
+  it('reports all nine changed fields without cutting off the final component', async () => {
+    const r = readers();
+    const finalBasis: ActivationReadinessBasis = { workspaceId: 'new-workspace', harnessSlug: 'new-harness',
+      planSlug: 'new-plan', planRevision: 2, planHash: 'new-plan-hash', requesterId: 'new-reader',
+      policyHash: 'new-policy', specSetHash: 'new-specs', evidenceHash: 'new-evidence' };
+    vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis }).mockResolvedValueOnce(finalBasis);
+    const result = await collectActivationReadiness(r);
+    expect(result.basisComparison).toEqual({ status: 'compared', changedFields: Object.keys(basis) });
+    expect(result.finalBasis).toEqual(finalBasis);
+    expect(result.freshness).toBe('changed');
+    expect(result.ready).toBe(false);
+  });
+  it.each(['rejected', 'invalid'] as const)('distinguishes a %s final basis from a comparison with no changes', async outcome => {
+    const r = readers();
+    vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis });
+    if (outcome === 'rejected') vi.mocked(r.readBasis).mockRejectedValueOnce(new Error('final read unavailable'));
+    else vi.mocked(r.readBasis).mockResolvedValueOnce({ ...basis, evidenceHash: '' });
+    const result = await collectActivationReadiness(r);
+    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis, finalBasis: null,
+      basisComparison: { status: 'final-unavailable', changedFields: [] } });
+    expect(result.stages.every(s => s.status === 'unknown' && s.codes[0] === 'activation_basis_unavailable')).toBe(true);
+  });
   it('does not treat an unavailable reader, malformed observation or absent fingerprint as passed', async () => {
     const r = readers();
     delete r.stages.inputs;
@@ -405,7 +450,8 @@ describe('collectActivationReadiness', () => {
     expect(result.stages.filter(s => s.status === 'unknown').map(s => s.id)).toEqual(['inputs', 'anchors']);
     vi.mocked(r.readBasis).mockRejectedValue(new Error('identity store unavailable'));
     result = await collectActivationReadiness(r);
-    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null });
+    expect(result).toMatchObject({ ready: false, freshness: 'unknown', basis: null, finalBasis: null,
+      basisComparison: { status: 'initial-unavailable', changedFields: [] } });
     expect(result.stages.every(s => s.status === 'unknown')).toBe(true);
   });
   it('bounds detail without silently removing stages', async () => {
