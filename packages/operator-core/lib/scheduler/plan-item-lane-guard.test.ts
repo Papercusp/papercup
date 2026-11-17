@@ -101,6 +101,16 @@ describe('planItemLaneBlockReason', () => {
     await expect(planItemLaneBlockReason(item, strict)).resolves.toMatchObject({ itemId: 'P-002', reason: expect.stringContaining('owner-gated') });
   });
 
+  it('uses the verified caller workspace for a strict lane read', async () => {
+    getPlanRowMock.mockResolvedValue({ status: 'active', items: [planItem()], decisions: [] });
+    await expect(planItemLaneBlockReason({ payload: {}, harness: 'papercusp',
+      sourcePlanSlug: 'scoped-plan', sourcePlanItemIds: ['P-001'] },
+    { requireCompleteEvidence: true, workspaceId: 'verified-workspace' })).resolves.toBeNull();
+    expect(getPlanRowMock).toHaveBeenCalledWith('scoped-plan', {
+      harnessSlug: 'papercusp', workspaceId: 'verified-workspace',
+    });
+  });
+
   it('returns null when the work-item carries no plan_item payload', async () => {
     const got = await planItemLaneBlockReason({ payload: {}, harness: 'papercusp', id: UNUSED_ID, family: UNUSED_FAMILY });
     expect(got).toBeNull();

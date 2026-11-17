@@ -10,7 +10,8 @@ const binding = { planSlug: 'bound-plan', harnessSlug: 'project' };
 describe('implementation authority before direct writes (EI-27540173897381380)', () => {
   it.each(['apply_patch', 'Edit', 'Write', 'MultiEdit', 'capability:edit', 'capability:write', 'locks:acquire',
     'locks:acquire_granular', 'code:run', 'capability:bash', 'exec_command', 'shell', 'Bash',
-    'mcp__papercusp_su__capability_edit', 'capability:launch-agent', 'fleet:launch-on-plan', 'plans:run-now'])('denies %s for a bound draft despite ad-hoc work/force/AUTO', async tool => {
+    'mcp__papercusp_su__capability_edit', 'lsp:apply', 'mcp__papercusp_su__lsp_apply',
+    'capability:launch-agent', 'fleet:launch-on-plan', 'plans:run-now'])('denies %s for a bound draft despite ad-hoc work/force/AUTO', async tool => {
     const result = await checkPlanExecutionGuard(call(tool, { force: true, purpose: 'repair', plan: 'another', mode: 'auto' }), {
       readBindings: async () => [binding], checkPlan: async () => ['plan_status:draft'],
     });
@@ -212,6 +213,72 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     // The timeout keeps both harness bindings in the census (WI-6554700010049036).
     expect(checkPlan).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({ planSlug: binding.planSlug, blockers: ['plan_status:draft'] });
+  });
+  describe('exact held-item goals with a blocked same-plan sibling (EI-29038937921197099)', () => {
+    const census = (): ExecutionPlanBinding[] => [
+      { ...binding, source: 'session-brief', sourceRef: binding.planSlug },
+      { ...binding, source: 'work-item', sourceRef: 'WI-008', canonicalInvalid: true },
+      { ...binding, source: 'work-item', sourceRef: 'WI-007', canonical: {
+        itemId: 'WI-007', lineId: 'P-007', ownerId: 'su-builder', nodeVersion: '1', lineVersion: '1',
+        planVersion: 1, planHash: 'h',
+      } },
+    ];
+    const goalFor = (ref: string) => resolveAgentGoal({ workItems: [{ id: ref }] })!;
+
+    it('selects the exact item afresh while retaining its parent checks and the sibling refusal', async () => {
+      const readBindings = vi.fn(async () => census());
+      const resolveGoal = vi.fn()
+        .mockResolvedValueOnce({ goal: goalFor('WI-007'), diagnostics: [] })
+        .mockResolvedValueOnce({ goal: goalFor('WI-008'), diagnostics: [] });
+      const checkPlan = vi.fn(async (_binding: ExecutionPlanBinding) => [] as string[]);
+      const deps = { readBindings, resolveGoal, checkPlan };
+      expect(await checkPlanExecutionGuard(call(), deps)).toBeNull();
+      expect(checkPlan.mock.calls.map(([b]) => b.canonical?.itemId ?? 'parent')).toEqual(['parent', 'WI-007']);
+      checkPlan.mockClear();
+      expect(await checkPlanExecutionGuard(call(), deps)).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
+      expect(readBindings).toHaveBeenCalledTimes(2);
+      expect(resolveGoal).toHaveBeenCalledTimes(2);
+      expect(checkPlan.mock.calls.some(([b]) => b.canonical?.itemId === 'WI-007')).toBe(false);
+    });
+
+    it('still refuses an invalid selected mapping and an unstarted parent', async () => {
+      const bindings = census();
+      bindings[2] = { ...bindings[2], canonical: undefined, canonicalInvalid: true };
+      expect(await checkPlanExecutionGuard(call(), {
+        readBindings: async () => bindings,
+        resolveGoal: async () => ({ goal: goalFor('WI-007'), diagnostics: [] }), checkPlan: async () => [],
+      })).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
+      expect(await checkPlanExecutionGuard(call(), {
+        readBindings: async () => census(),
+        resolveGoal: async () => ({ goal: goalFor('WI-007'), diagnostics: [] }),
+        checkPlan: async () => ['plan_not_started'],
+      })).toMatchObject({ blockers: ['plan_not_started'] });
+    });
+
+    it.each(['plan-wide', 'missing-goal', 'unbound-selection', 'diagnostics', 'incomplete-metadata'])(
+      'keeps the full census for %s rather than trusting caller attribution', async kind => {
+        const bindings = census();
+        if (kind === 'incomplete-metadata') bindings[0] = { ...bindings[0], source: undefined };
+        const goal = kind === 'plan-wide' ? resolveAgentGoal({ override: { ref: binding.planSlug } })
+          : kind === 'missing-goal' ? null : goalFor(kind === 'unbound-selection' ? 'WI-not-held' : 'WI-007');
+        expect(await checkPlanExecutionGuard(call('code:run', { work_item_id: 'WI-007', code: 'return 1' }), {
+          readBindings: async () => bindings,
+          resolveGoal: async () => ({ goal, diagnostics: kind === 'diagnostics' ? ['goal_read_unavailable'] : [] }),
+          checkPlan: async () => [],
+        })).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
+      });
+
+    it('keeps the blocked sibling when selection is absent or times out', async () => {
+      const state: { signal?: AbortSignal; aborted: boolean } = { aborted: false };
+      expect(await checkPlanExecutionGuard(call(), {
+        readBindings: async () => census(), resolveGoal: abortableGoalRead(state),
+        goalResolutionBudgetMs: 5, checkPlan: async () => [],
+      })).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
+      expect(state.aborted).toBe(true);
+      expect(await checkPlanExecutionGuard(call(), {
+        readBindings: async () => census(), checkPlan: async () => [],
+      })).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
+    });
   });
   it('keeps the full binding census when current goal resolution is incomplete', async () => {
     const checkPlan = vi.fn(async (binding: { planSlug: string }) =>

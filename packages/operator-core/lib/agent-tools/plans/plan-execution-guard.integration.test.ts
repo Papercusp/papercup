@@ -2,6 +2,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import { resolveAgentGoal } from '../../agent-goal-ref';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
+import { resetOperatorCacheForTests, _refreshCacheLayerForTests } from '../../cache/instance';
+import { __setCachedReadEnabledForTests } from '../../cache/cached-read';
 
 const connection = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -50,7 +53,7 @@ vi.mock('./plan-start-critique-gate', async original => ({
   ...(await original<typeof import('./plan-start-critique-gate')>()),
   evaluatePlanStartBarCritique: (...args: unknown[]) => policy.critique(...args),
 }));
-import { checkExecutionPlan, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
+import { checkExecutionPlan, checkExecutionPlanLane, checkPlanExecutionGuard, readExecutionPlanBindings } from './plan-execution-guard';
 import { toolGuardText } from '../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
 import { controlAnchorKernelResolver } from '../../projected-tool-deps';
 
@@ -142,6 +145,137 @@ beforeEach(async () => {
     ${'---\ntitle: Draft\nstatus: draft\n---\n# Draft\n'}, 'draft-hash', NULL)`;
 });
 
+describe('held lane prerequisite admission (P-010)', () => {
+  async function seedLane(prerequisiteStatus = 'todo') {
+    const content = ['---', 'title: Feature', 'status: ready', '---', '# Feature', '## Tasks',
+      '- **P-001** `todo` Dependent feature. blocked-by: P-010',
+      '- **P-010** `' + prerequisiteStatus + '` Qualify baseline.', ''].join('\n');
+    const items = [
+      { id: 'P-001', status: 'todo', text: 'Dependent feature.', blockedBy: ['P-010'], decisionRefs: [], importance: 'normal' },
+      { id: 'P-010', status: prerequisiteStatus, text: 'Qualify baseline.', blockedBy: [], decisionRefs: [], importance: 'normal' },
+    ];
+    await db.sql`UPDATE harness_shared.harness_plans SET status='ready', content=${content}, items=${db.sql.json(items)}
+      WHERE workspace_id=${WS} AND plan_slug='draft-feature'`;
+  }
+
+  it('reads current prerequisite state for an already held claim, including a fresh resumed binding', async () => {
+    const lane = { ...binding, source: 'plan-item-claim' as const, sourceRef: 'draft-feature#P-001' };
+    await seedLane();
+    expect((await checkExecutionPlanLane(lane, WS)).join(' ')).toContain('P-010');
+    await seedLane('done');
+    expect(await checkExecutionPlanLane(JSON.parse(JSON.stringify(lane)), WS)).toEqual([]);
+    await seedLane();
+    expect((await checkExecutionPlanLane(lane, WS)).join(' ')).toContain('P-010');
+    await db.sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id=${WS}`;
+    await expect(checkExecutionPlanLane(lane, WS)).rejects.toThrow('current ready or active plan');
+  });
+
+  it('refuses held native and MCP/LSP writers before handlers even when plan-wide readiness is warm', async () => {
+    await seedLane();
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},${WS},'project','draft-feature','P-001',now()-interval '1 day')`;
+    // Isolate plan-wide start/readiness, which has its own integration suite.
+    // Keep the production per-call callbacks: even an always-positive cached
+    // plan verdict must run the lane preflight and final recheck.
+    const authority = await import('./plan-execution-authority');
+    const continuation = await import('./plan-continuation-readiness');
+    const start = vi.spyOn(authority, 'readPlanExecutionStart').mockResolvedValue([]);
+    const warm = vi.spyOn(continuation, 'checkContinuationReadiness').mockImplementation(async (b, ws, observe, deps) => {
+      const blockers = await deps.preflight?.(b, ws, observe);
+      return blockers?.length ? blockers : deps.recheck ? deps.recheck(b, ws, observe) : [];
+    });
+    try {
+      for (const tool of ['apply_patch', 'exec_command']) {
+        const text = await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+          call: { tool, input: { cmd: 'touch implementation.ts' }, client: 'codex' } }, async () => null);
+        expect(text).toContain('plan_item_lane_blocked');
+        expect(text).toContain('P-010');
+      }
+      for (const name of ['capability:write', 'lsp:apply']) {
+        const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'wrote source' }] }));
+        const tool: ProjectedTool = { pluginName: 'fixture', description: 'private write',
+          inputSchema: { type: 'object' }, capabilities: [], expose: { mcp: { name } }, fn: handler } as ProjectedTool;
+        const result = await dispatchProjectedTool(tool, name, {},
+          { workspaceId: WS, isSuperuser: true, uiClientId: OWNER, signal: new AbortController().signal,
+            log: () => {}, progress: () => {}, emit: () => {} }, { kernelEnforcement: controlAnchorKernelResolver });
+        expect(JSON.stringify(result)).toContain('plan_item_lane_blocked');
+        expect(handler).not.toHaveBeenCalled();
+      }
+      await seedLane('done');
+      expect(await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS, toolName: 'lsp:apply', args: {} })).toBeNull();
+      // Reopening the prerequisite must revoke the resumed write immediately.
+      await seedLane();
+      expect((await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
+        toolName: 'apply_patch', args: {} }))?.blockers.join(' ')).toContain('P-010');
+    } finally { start.mockRestore(); warm.mockRestore(); }
+  });
+
+  it.each(['before-cache', 'after-cache'] as const)('revokes a real cached positive for a resumed lane %s', async when => {
+    await seedLane('done');
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},${WS},'project','draft-feature','P-001',now()-interval '1 day')`;
+    const authority = await import('./plan-execution-authority');
+    const continuation = await import('./plan-continuation-readiness');
+    const realContinuation = continuation.checkContinuationReadiness;
+    const start = vi.spyOn(authority, 'readPlanExecutionStart').mockResolvedValue([]);
+    const evaluate = vi.fn(async () => [] as string[]);
+    let revokeAtFence = false;
+    // Control only the unrelated plan-wide evaluator/fence. Retain the actual
+    // cache and production per-call preflight/recheck; a stable fence must not
+    // conceal a reopened prerequisite, even across a serialized resumed binding.
+    const cached = vi.spyOn(continuation, 'checkContinuationReadiness').mockImplementation((b, ws, observe, deps) =>
+      realContinuation(b, ws, observe, { ...deps, evaluate, readFence: async () => {
+        if (revokeAtFence) await seedLane();
+        return { harnessSlug: 'project', contentHash: 'same-plan-edition', startSeq: 1, inputs: 'same-policy' };
+      } }));
+    resetOperatorCacheForTests();
+    continuation.resetSettledReadinessRefusalsForTests();
+    __setCachedReadEnabledForTests(true);
+    setFlagOverridesForTest({ 'papercusp-cache-layer': true });
+    await _refreshCacheLayerForTests();
+    try {
+      const lane = JSON.parse(JSON.stringify({ ...binding, source: 'plan-item-claim', sourceRef: 'draft-feature#P-001' }));
+      expect(await checkExecutionPlan(lane, WS)).toEqual([]);
+      const timings: string[] = [];
+      expect(await checkExecutionPlan(lane, WS, t => timings.push(t.stage))).toEqual([]);
+      expect(timings).toContain('readiness_reused');
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      if (when === 'before-cache') await seedLane();
+      else revokeAtFence = true;
+      // The after-cache case reaches the real cache hit before its final
+      // authority check observes revocation, independently of the entry routes.
+      const revokedTimings: string[] = [];
+      expect((await checkExecutionPlan(lane, WS, t => revokedTimings.push(t.stage))).join(' ')).toContain('P-010');
+      expect(revokedTimings.includes('readiness_reused')).toBe(when === 'after-cache');
+      for (const tool of ['apply_patch', 'exec_command']) {
+        expect(await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+          call: { tool, input: { cmd: 'touch implementation.ts' }, client: 'codex' } }, async () => null))
+          .toContain('plan_item_lane_blocked');
+      }
+      for (const name of ['capability:write', 'lsp:apply']) {
+        const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'wrote source' }] }));
+        const tool: ProjectedTool = { pluginName: 'fixture', description: 'private write',
+          inputSchema: { type: 'object' }, capabilities: [], expose: { mcp: { name } }, fn: handler } as ProjectedTool;
+        const result = await dispatchProjectedTool(tool, name, {},
+          { workspaceId: WS, isSuperuser: true, uiClientId: OWNER, signal: new AbortController().signal,
+            log: () => {}, progress: () => {}, emit: () => {} }, { kernelEnforcement: controlAnchorKernelResolver });
+        expect(JSON.stringify(result)).toContain('plan_item_lane_blocked');
+        expect(handler).not.toHaveBeenCalled();
+      }
+      expect(evaluate).toHaveBeenCalledTimes(1);
+    } finally {
+      start.mockRestore(); cached.mockRestore();
+      __setCachedReadEnabledForTests(false);
+      setFlagOverridesForTest(null);
+      await _refreshCacheLayerForTests();
+      resetOperatorCacheForTests();
+      continuation.resetSettledReadinessRefusalsForTests();
+    }
+  });
+});
+
 describe('binding census snapshot', () => {
   it('captures the session lane and held unbound work in one database read', async () => {
     await db.sql`INSERT INTO harness_shared.session_briefs (owner_id,workspace_id,current_plan_slug,harness_slug)
@@ -209,6 +343,34 @@ describe('canonical adopted repair binding', () => {
       readBindings:async()=>bindings,resolveGoal:async()=>({goal:resolveAgentGoal({workItems:[{id:'EI-other'}]})!,diagnostics:[]}),
       checkPlan:async()=>[],
     })).toMatchObject({blockers:['canonical_plan_binding_invalid']});
+  });
+  it.each(['claim-hold', 'admission-hold'])('isolates an exact runnable goal from a %s sibling without clearing either floor', async kind => {
+    await seed();
+    const payload = kind === 'claim-hold' ? { _claimHold: true } : { admissionHold: true };
+    await db.sql`INSERT INTO harness_shared.plan_items VALUES (${WS},'project','repair-plan','P-008')`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,taken_by,status,plan_slug,plan_line_id,payload)
+      VALUES (${WS},'project','EI-blocked','bug',${OWNER},'open','repair-plan','P-008',${db.sql.json(payload)})`;
+    const bindings = await readExecutionPlanBindings(OWNER,WS);
+    expect(bindings.find(b => b.sourceRef === 'EI-original')?.canonical?.itemId).toBe('EI-original');
+    expect(bindings.find(b => b.sourceRef === 'EI-blocked')?.canonicalInvalid).toBe(true);
+    const checkPlan = vi.fn(async () => [] as string[]);
+    const check = (ref: string) => checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
+      toolName: 'apply_patch', args: {} }, {
+      readBindings: readExecutionPlanBindings,
+      resolveGoal: async () => ({ goal: resolveAgentGoal({ workItems: [{ id: ref }] }), diagnostics: [] }),
+      checkPlan,
+    });
+    // Real SQL identity/selection proof; complete start admission stays independent.
+    expect(await check('EI-original')).toBeNull();
+    expect(checkPlan.mock.calls).toHaveLength(1);
+    expect(await check('EI-blocked')).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
+    const [parked] = await db.sql`SELECT payload FROM harness_shared.work_items WHERE feature_id='EI-blocked'`;
+    expect(parked.payload).toEqual(payload);
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,status,plan_slug,plan_line_id)
+      VALUES (${WS},'project','EI-duplicate','bug','open','repair-plan','P-001')`;
+    expect(await check('EI-original')).toMatchObject({ blockers: ['canonical_plan_binding_invalid'] });
   });
   it('rechecks exact canonical revision and normal start authority',async()=>{
     await seed();

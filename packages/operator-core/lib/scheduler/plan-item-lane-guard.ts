@@ -59,7 +59,7 @@
  * still applies as a backstop.
  */
 import type { WorkItem } from '../work-items';
-import { isTerminalItemStatus } from '../fleet-drained-events';
+import { isTerminalItemStatus } from '../plan-item-status';
 import { noteAttributesBlockTo } from '../plan-items/block-attribution';
 
 export interface PlanItemLaneBlock {
@@ -504,7 +504,7 @@ export async function planItemNeedsHumanContradiction(
 export async function planItemLaneBlockReason(
   workItem: Pick<WorkItem, 'payload' | 'harness'> &
     Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
-  options: { requireCompleteEvidence?: boolean } = {},
+  options: { requireCompleteEvidence?: boolean; workspaceId?: string } = {},
 ): Promise<PlanItemLaneBlock | null> {
   const stamp = await resolvePlanItemStamp(workItem);
   // Audits distinguish measured clearance from the scheduler's fail-open result.
@@ -515,7 +515,10 @@ export async function planItemLaneBlockReason(
       import('../agent-tools/plans/source'),
       import('@papercusp/plan-parser'),
     ]);
-    const row = await getPlanRow(stamp.plan_slug, { harnessSlug: workItem.harness ?? undefined });
+    const row = await getPlanRow(stamp.plan_slug, {
+      harnessSlug: workItem.harness ?? undefined,
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+    });
     if (options.requireCompleteEvidence && (!row || !['active', 'ready'].includes(row.status ?? '')
       || row.archived || row.opStatus === 'paused' || row.opStatus === 'done')) {
       throw new Error('A current ready or active plan was not established.');

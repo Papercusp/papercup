@@ -118,7 +118,7 @@ export interface PlanExecutionGuardDeps {
 
 const GOAL_RESOLUTION_BUDGET_MS = 650;
 
-const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit', 'write', 'apply_patch', 'capability:edit',
+const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit', 'write', 'apply_patch', 'lsp:apply', 'capability:edit',
   'capability:write', 'locks:acquire', 'locks:acquire_granular']);
 const shellTools = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell', 'capability:bash']);
 const executionTools = new Set(['code:run', 'capability:terminal', 'capability:git', 'templates:new-app',
@@ -350,7 +350,8 @@ function isPlanCanonicalControlCommand(command: unknown): boolean {
 }
 
 export function isPlanImplementationCall(toolName: string, args: unknown): boolean {
-  const name = toolName.replace(/^functions\./, '').replace(/^mcp__.+?__/, '').replace(/^capability_/, 'capability:');
+  const name = toolName.replace(/^functions\./, '').replace(/^mcp__.+?__/, '').replace(/^capability_/, 'capability:')
+    .replace(/^lsp_/, 'lsp:');
   if (name === 'write_stdin') {
     const chars = (args as { chars?: unknown } | null)?.chars;
     return typeof chars === 'string' && chars.length > 0;
@@ -488,9 +489,10 @@ function uniquePlanBindings(bindings: readonly ExecutionPlanBinding[]): Executio
   for (const binding of bindings) {
     // Unbound held work binds no plan; only plan bindings are checked.
     if (binding.unbound) continue;
+    const ownsLane = binding.source === 'work-item' || binding.source === 'plan-item-claim';
     const key = JSON.stringify([binding.planSlug, binding.harnessSlug,
-      binding.canonical || binding.canonicalInvalid ? binding.sourceRef : null]);
-    unique.set(key, binding.canonical || binding.canonicalInvalid ? { ...binding }
+      ownsLane || binding.canonical || binding.canonicalInvalid ? binding.sourceRef : null]);
+    unique.set(key, ownsLane || binding.canonical || binding.canonicalInvalid ? { ...binding }
       : { planSlug: binding.planSlug, harnessSlug: binding.harnessSlug });
   }
   return [...unique.values()];
@@ -524,8 +526,11 @@ export function selectExecutionPlanBindings(
 
   const selectedRefs = new Set([goal.ref, goal.corroboratedBy].filter((ref): ref is string => Boolean(ref)));
   const selectedPlanSlugs = new Set<string>();
+  const selectedWorkItemRefs = new Set<string>();
   for (const binding of bindings) {
     if (!binding.unbound && binding.sourceRef && selectedRefs.has(binding.sourceRef)) selectedPlanSlugs.add(binding.planSlug);
+    if (binding.source === 'work-item' && binding.sourceRef && selectedRefs.has(binding.sourceRef))
+      selectedWorkItemRefs.add(binding.sourceRef);
   }
   // A declared plan-slug override is itself a resolvable pointer. Work-item
   // overrides match their sourceRef above, while plan-item overrides match their
@@ -536,13 +541,17 @@ export function selectExecutionPlanBindings(
     }
   }
 
+  const selectsWholePlan = goal.source === 'author-override' && bindings.some(binding => binding.planSlug === goal.ref);
+  // An exact held-item goal retains the parent plan's checks without importing
+  // another held item's execution floors. A plan-wide goal still checks both.
   const selected = bindings.filter(binding =>
     Boolean(binding.sourceRef && selectedRefs.has(binding.sourceRef)) ||
-    selectedPlanSlugs.has(binding.planSlug));
-  // A plan-item or authored override without matching durable binding evidence is
+    (selectedPlanSlugs.has(binding.planSlug) &&
+      (binding.source !== 'work-item' || selectsWholePlan || selectedWorkItemRefs.size === 0)));
+  // A held-item, plan-item or authored override without matching binding evidence is
   // ambiguous. Keep the full census so the guard cannot turn a stale/missing
   // selected binding into permission.
-  if (selected.length === 0 && (goal.source === 'plan-item' || goal.source === 'author-override')) {
+  if (selected.length === 0 && (goal.source === 'work-item' || goal.source === 'plan-item' || goal.source === 'author-override')) {
     return uniquePlanBindings(bindings);
   }
   return uniquePlanBindings(selected);
@@ -555,6 +564,37 @@ async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
       () => import('../coordination/agent-goal-sources'));
     return measurePlanStage('goal_read', observe,
       () => resolveOwnerGoalForAuthority(ownerId, 'self', observe, signal));
+  });
+}
+
+/**
+ * P-010: an old claim is not clearance of the lane's CURRENT prerequisites.
+ * Reuse the scheduler's dependency/status semantics, with its fail-closed read
+ * option, at the shared native/MCP write boundary. This verdict is never cached.
+ */
+export async function checkExecutionPlanLane(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
+  const { planItemLaneBlockReason, resolvePlanItemStamp } = await import('../../scheduler/plan-item-lane-guard');
+  return runWithWorkspace(workspaceId, async () => {
+    let itemIds: string[];
+    if (binding.canonical) itemIds = [binding.canonical.lineId];
+    else if (binding.source === 'plan-item-claim') {
+      const prefix = binding.planSlug + '#';
+      const itemId = binding.sourceRef?.startsWith(prefix) ? binding.sourceRef.slice(prefix.length) : '';
+      if (!/^P-\d{3,}$/.test(itemId)) return ['plan_item_lane_unavailable'];
+      itemIds = [itemId];
+    } else if (binding.source === 'work-item') {
+      if (!binding.sourceRef || !binding.harnessSlug) return ['plan_item_lane_unavailable'];
+      const { getWorkItem } = await import('../../work-items');
+      const item = await getWorkItem(binding.sourceRef, binding.harnessSlug);
+      if (!item || item.harness !== binding.harnessSlug) return ['plan_item_lane_unavailable'];
+      const stamp = await resolvePlanItemStamp(item);
+      if (!stamp || stamp.plan_slug !== binding.planSlug) return ['plan_item_lane_unavailable'];
+      itemIds = stamp.item_ids;
+    } else return [];
+    if (!binding.harnessSlug) return ['plan_item_lane_unavailable'];
+    const block = await planItemLaneBlockReason({ harness: binding.harnessSlug, payload: null,
+      sourcePlanSlug: binding.planSlug, sourcePlanItemIds: itemIds }, { requireCompleteEvidence: true, workspaceId });
+    return block ? ['plan_item_lane_blocked:' + block.reason] : [];
   });
 }
 
@@ -571,11 +611,15 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
   // The start proof, binding identity and revision fence stay fresh on every call. Only
   // a positive verdict for the exact fenced revision is reused (WI-6554700010049220).
   return measurePlanStage('readiness', observe, () => checkContinuationReadiness(binding, workspaceId, observe, {
-    preflight: async () => !await canonicalCurrent() ? ['canonical_plan_binding_stale']
-      : measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId)),
+    preflight: async () => {
+      if (!await canonicalCurrent()) return ['canonical_plan_binding_stale'];
+      const start = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
+      return start.length ? start : measurePlanStage('lane', observe, () => checkExecutionPlanLane(binding, workspaceId));
+    },
     readFence: (b, ws) => measurePlanStage('readiness_fence', observe, () => readReadinessFence(b, ws)),
     evaluate: (b, ws, o) => checkPlanExecutionReadiness(b, ws, o, 'continuation'),
-    recheck: async () => await canonicalCurrent() ? [] : ['canonical_plan_binding_stale'],
+    recheck: async () => !await canonicalCurrent() ? ['canonical_plan_binding_stale']
+      : measurePlanStage('lane_recheck', observe, () => checkExecutionPlanLane(binding, workspaceId)),
     deadlineAtMs: readinessDeadlineAtMs,
   }));
 }
@@ -720,7 +764,11 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     // durable goal then decides which held item a write is for; skipping the
     // selector here refused every write for that other item.
     const holdsUnboundWork = allBindings.some(binding => binding.unbound);
-    if (namesSinglePlan(uniqueBindings) && !holdsUnboundWork) {
+    // Same-plan siblings can have different execution holds. Only a single
+    // held subject can safely share the one-plan goal-read shortcut.
+    const holdsMultipleWorkItems = new Set(allBindings.filter(binding => binding.source === 'work-item' && binding.sourceRef)
+      .map(binding => binding.sourceRef)).size > 1;
+    if (namesSinglePlan(uniqueBindings) && !holdsUnboundWork && !holdsMultipleWorkItems) {
       try { input.observeTiming?.({ stage: 'goal_selector_skipped', durationMs: 0 }); }
       catch { /* diagnostics cannot change the guard verdict */ }
     } else if (deps.resolveGoal) {
