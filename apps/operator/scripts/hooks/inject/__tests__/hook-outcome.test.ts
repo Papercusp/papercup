@@ -312,7 +312,8 @@ describe('spec-quality reads preserve the authority boundary (EI-282695001628319
   it('allows discarded CLI diagnostics during an outage while retaining redirection controls', async () => {
     const withRedirect = (redirect: string) => command('full').replace(" <<'JSON'", ' ' + redirect + " <<'JSON'");
     expect(await runCommand(withRedirect('2>/dev/null'), unavailable)).toBeNull();
-    expect(await runCommand(withRedirect('2>/dev/null'), answer('server-denial'))).toBe('server-denial');
+    expect(await runCommand(withRedirect('2>/dev/null'), answer('server-denial')))
+      .toMatch(/^server-denial\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
     for (const redirect of ['2>/tmp/output', '2>/dev/null 2>/dev/null', '2>/dev/null; touch output']) {
       expect(await runCommand(withRedirect(redirect), unavailable)).toContain('execution-authority lookup failed');
     }
@@ -351,7 +352,8 @@ describe('spec-quality reads preserve the authority boundary (EI-282695001628319
   });
 
   it('never replaces an actual server refusal with the read-only fallback', async () => {
-    expect(await runCommand(command('full'), answer('server-refused'))).toBe('server-refused');
+    expect(await runCommand(command('full'), answer('server-refused')))
+      .toMatch(/^server-refused\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
   });
 
   it.each([
@@ -373,7 +375,8 @@ describe('spec-quality reads preserve the authority boundary (EI-282695001628319
           'JSON',
         ].join('\n');
         expect(await runCommand(cmd, unavailable), cmd).toBeNull();
-        expect(await runCommand(cmd, answer('server-refused')), cmd).toBe('server-refused');
+        expect(await runCommand(cmd, answer('server-refused')), cmd)
+          .toMatch(/^server-refused\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
       }
     }
   });
@@ -385,7 +388,8 @@ describe('spec-quality reads preserve the authority boundary (EI-282695001628319
   ] as const)('keeps the canonical %s readiness inspection available', async (tool, args) => {
     const cmd = ['ptool ' + tool + " --json - <<'JSON'", JSON.stringify(args), 'JSON'].join('\n');
     expect(await runCommand(cmd, unavailable)).toBeNull();
-    expect(await runCommand(cmd, answer('server-refused'))).toBe('server-refused');
+    expect(await runCommand(cmd, answer('server-refused')))
+      .toMatch(/^server-refused\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
   });
 
   it('does not turn coordination recovery into permission for implementation or shell execution', async () => {
@@ -491,7 +495,7 @@ describe('unavailable mutation authority reports its transport branch', () => {
     }) as typeof fetch;
     const pending = runPinnedToProxy(fetchImpl);
     await vi.advanceTimersByTimeAsync(Math.floor(PORTS['pre-tool']!.timeoutMs / 2));
-    await expect(pending).resolves.toBe('server-verdict');
+    await expect(pending).resolves.toMatch(/^server-verdict\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
     expect(origins).toEqual(['http://127.0.0.1:9071', 'http://localhost:3070']);
   });
 
@@ -600,6 +604,7 @@ describe('unavailable mutation authority reports its transport branch', () => {
 
   it('keeps a successful empty verdict distinct from unavailable authority', async () => {
     expect(await run(answer(''))).toBeNull();
-    expect(await run(answer('named-rule refusal'))).toBe('named-rule refusal');
+    expect(await run(answer('named-rule refusal')))
+      .toMatch(/^named-rule refusal\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
   });
 });
