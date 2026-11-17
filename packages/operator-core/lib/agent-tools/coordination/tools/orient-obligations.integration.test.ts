@@ -395,6 +395,10 @@ describe('complete agenda recovery through coord:orient', () => {
   }, 90_000);
 
   it('preserves representative facts, worklists and exact obligation actions before matched R-5 timing', async () => {
+    // The host release pipeline is outside this isolated recovery contract.
+    // Keep its established null result deterministic, as in the other handler
+    // fixtures; goal/plan providers and their completeness assertions stay real.
+    const pipeline = vi.spyOn(pipelineHealth, 'fetchOrientPipeline').mockResolvedValue(null);
     const dueAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
     const realAgenda = obligationReader.readAgentObligationAgenda;
     type Arm = 'shared-portfolio' | 'independent-portfolio';
@@ -782,6 +786,7 @@ describe('complete agenda recovery through coord:orient', () => {
       await fact('harness', key, `R-5 harness fact ${key}`);
       await fact('owner', `hidden-${key}`, `R-5 hidden fleet fact ${key}`, `fleet:unjoined-${RUN}`);
       await read('seeded-guard');
+      expect(pipeline).toHaveBeenCalled();
       await fact('owner', key, `R-5 ordinary owner fact ${key} updated`);
       await read('fact-write-guard', true);
       await fx.admin`UPDATE harness_shared.goals SET status = 'paused' WHERE workspace_id = ${WS} AND id = ${GOAL}`;
