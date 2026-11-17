@@ -1556,6 +1556,210 @@
           ]
         }
       ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts\",\"asForceReleaseParams\",\"helper-edge\",\"0a6a154539d0422f4db98c39e6f30696baafac25cf551b00f50071f9bf369659\"]#1",
+      "sourceSha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+      "statementSha256": "0a6a154539d0422f4db98c39e6f30696baafac25cf551b00f50071f9bf369659",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local asReleaseParams body checks the required workspaceId, harnessSlug, planSlug, itemId, claimId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asReleaseParams",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceReleaseParams",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "asReleaseParams",
+          "reason": "The exact local asReleaseParams body checks the required workspaceId, harnessSlug, planSlug, itemId, claimId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asReleaseParams"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+          "reason": "The syntax-bound target and complete validator/delegation bodies are in this exact pinned receiving-authority file. No other call or handler receives an exemption.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asReleaseParams"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts\",\"registerPlanItemClaimAuthorityOps::<callback>\",\"helper-edge\",\"0a6a154539d0422f4db98c39e6f30696baafac25cf551b00f50071f9bf369659\"]#1",
+      "sourceSha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+      "statementSha256": "0a6a154539d0422f4db98c39e6f30696baafac25cf551b00f50071f9bf369659",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local asReleaseParams body checks the required workspaceId, harnessSlug, planSlug, itemId, claimId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asReleaseParams",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#registerPlanItemClaimAuthorityOps::<callback>",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "asReleaseParams",
+          "reason": "The exact local asReleaseParams body checks the required workspaceId, harnessSlug, planSlug, itemId, claimId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asReleaseParams"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+          "reason": "The syntax-bound target and complete validator/delegation bodies are in this exact pinned receiving-authority file. No other call or handler receives an exemption.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asReleaseParams"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts\",\"registerPlanItemClaimAuthorityOps::<callback>\",\"helper-edge\",\"2114b4b0494b56c4de95829d24fea08bf20c0ff62deb9eb547494b69df1f7b86\"]#1",
+      "sourceSha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+      "statementSha256": "2114b4b0494b56c4de95829d24fea08bf20c0ff62deb9eb547494b69df1f7b86",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local asAcquireOpts body checks the required workspaceId, harnessSlug, planSlug, itemId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asAcquireOpts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#registerPlanItemClaimAuthorityOps::<callback>",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "asAcquireOpts",
+          "reason": "The exact local asAcquireOpts body checks the required workspaceId, harnessSlug, planSlug, itemId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asAcquireOpts"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+          "reason": "The syntax-bound target and complete validator/delegation bodies are in this exact pinned receiving-authority file. No other call or handler receives an exemption.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asAcquireOpts"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts\",\"registerPlanItemClaimAuthorityOps::<callback>\",\"helper-edge\",\"24a9d3a967cacfc0d5a36e16cd882369733a12025b386143ca80f4b2d97bf2f7\"]#1",
+      "sourceSha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+      "statementSha256": "24a9d3a967cacfc0d5a36e16cd882369733a12025b386143ca80f4b2d97bf2f7",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local asForceTakeoverParams body checks the required workspaceId, harnessSlug, planSlug, itemId, owner, expectedClaimId and expectedOwner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceTakeoverParams",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#registerPlanItemClaimAuthorityOps::<callback>",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "asForceTakeoverParams",
+          "reason": "The exact local asForceTakeoverParams body checks the required workspaceId, harnessSlug, planSlug, itemId, owner, expectedClaimId and expectedOwner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceTakeoverParams"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+          "reason": "The syntax-bound target and complete validator/delegation bodies are in this exact pinned receiving-authority file. No other call or handler receives an exemption.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceTakeoverParams"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts\",\"registerPlanItemClaimAuthorityOps::<callback>\",\"helper-edge\",\"2c8bb9184cf60c1e71f0ec962dcb44933a7e10308ce93da56701794d5e9cdbf0\"]#1",
+      "sourceSha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+      "statementSha256": "2c8bb9184cf60c1e71f0ec962dcb44933a7e10308ce93da56701794d5e9cdbf0",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local asForceReleaseParams body only delegates to the inspected local asReleaseParams validator. That validator rejects absent/non-string identity fields and returns the same payload; neither function invokes a coordinator, mutates a claim or grants authority. The surrounding forceReleaseClaimLocal call and registration are separate candidates.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceReleaseParams",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#registerPlanItemClaimAuthorityOps::<callback>",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "asForceReleaseParams",
+          "reason": "The exact local asForceReleaseParams body only delegates to the inspected local asReleaseParams validator. That validator rejects absent/non-string identity fields and returns the same payload; neither function invokes a coordinator, mutates a claim or grants authority. The surrounding forceReleaseClaimLocal call and registration are separate candidates.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceReleaseParams"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+          "reason": "The syntax-bound target and complete validator/delegation bodies are in this exact pinned receiving-authority file. No other call or handler receives an exemption.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asForceReleaseParams"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts\",\"registerPlanItemClaimAuthorityOps::<callback>\",\"helper-edge\",\"3b9341be22362d087a06a50498bf8f3b1b142219ee985a8a5a2e8b06f0a956bc\"]#1",
+      "sourceSha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+      "statementSha256": "3b9341be22362d087a06a50498bf8f3b1b142219ee985a8a5a2e8b06f0a956bc",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local asHeartbeatParams body checks the required workspaceId, harnessSlug, planSlug, itemId, claimId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asHeartbeatParams",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#registerPlanItemClaimAuthorityOps::<callback>",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "asHeartbeatParams",
+          "reason": "The exact local asHeartbeatParams body checks the required workspaceId, harnessSlug, planSlug, itemId, claimId and owner fields are strings, throws for invalid input and returns the same payload with a type assertion. It performs no persistence, callback or mutation. This argument conversion does not exempt the surrounding coordinator/local authority call or its registration.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asHeartbeatParams"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1",
+          "reason": "The syntax-bound target and complete validator/delegation bodies are in this exact pinned receiving-authority file. No other call or handler receives an exemption.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts#asHeartbeatParams"
+          ]
+        }
+      ]
     }
   ],
   "pendingAdvancing": [

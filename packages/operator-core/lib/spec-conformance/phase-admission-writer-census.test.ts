@@ -161,6 +161,49 @@ describe('phase binding writer census', () => {
     }
   });
 
+  it('keeps receiving payload validation separate from coordinator execution', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+      };
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const receiver = 'packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts';
+    const inventory = inventoryPhaseWriters(sources);
+    const validators = inventory.sites.filter(site => site.path === receiver && site.kind === 'helper-edge'
+      && ['asAcquireOpts', 'asHeartbeatParams', 'asReleaseParams', 'asForceReleaseParams',
+        'asForceTakeoverParams'].includes(site.callees[0] ?? ''));
+    expect(validators.length).toBeGreaterThan(0);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    for (const site of validators) {
+      expect(byId.get(site.id)).toMatchObject({ disposition: 'metadata-only',
+        sourceProofs: [{ path: receiver, sha256: site.sourceSha256 }] });
+    }
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const coordinators = inventory.sites.filter(site => site.path === receiver && site.kind === 'unresolved'
+      && site.dynamicEdges.some(edge => edge.startsWith('coordinator.')));
+    expect(coordinators.map(site => site.dynamicEdges[0]).sort())
+      .toEqual(['coordinator.acquire', 'coordinator.heartbeat', 'coordinator.release']);
+    for (const site of coordinators) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(report.coverage.notChecked).toContain(site.id);
+      expect(report.coverage.residue).toContain(site.id);
+    }
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === receiver
+      ? { ...source, content: source.content.replace('function asAcquireOpts(payload: unknown): AcquireOpts {',
+        'function asAcquireOpts(payload: unknown): AcquireOpts { acquireClaimLocal({} as AcquireOpts);') }
+      : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    for (const site of validators) {
+      expect(changed.sites.some(current => current.id === site.id)).toBe(true);
+      expect(stale.coverage.notChecked).toContain(site.id);
+      expect(stale.problems.find(row => row.id === site.id)?.reasons)
+        .toContain(`stale-source-proof:${receiver}`);
+    }
+  });
+
   it('retains INSERT upsert UPDATE DELETE and writable CTE statements independently', () => {
     const inventory = inventoryPhaseWriters([source(`
       async function create(tx) {
