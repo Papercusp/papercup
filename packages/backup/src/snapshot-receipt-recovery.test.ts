@@ -41,6 +41,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   configureBackupStepRunner(null);
   vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
@@ -104,6 +105,64 @@ describe('snapshot receipt recovery', () => {
     expect(f.steps).not.toContain('backup-insert-row');
     expect(f.kopia).toHaveBeenCalledWith(expect.arrayContaining(['create', '--tags=papercusp-backup-row-id:78850']), expect.any(Object));
     expect(f.queries.find(q => q.text.includes('SET kopia_snapshot_id'))?.values).toContain(78850);
+  });
+
+  it('keeps host-backup admission pending across retries and replay, releasing the rendezvous between attempts', async () => {
+    const f = producerFixture();
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async () => ({ release }));
+    configureWithSql(f.sql, acquire);
+    const hookSteps: string[] = [];
+    // The first step is a replayed durable refusal. Later steps must really
+    // retry admission, without starting another receipt or Kopia capture.
+    configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      if (!name.startsWith('backup-pre-snapshot-hook')) return fn();
+      hookSteps.push(name);
+      return (hookSteps.length <= 3
+        ? { ok: false, error: 'host backup is in progress (phase host-backup, pid 4242)', deferred: 'host-backup-in-progress' }
+        : { ok: true }) as T;
+    } });
+    vi.useFakeTimers();
+    const pending = f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 });
+    await vi.waitFor(() => expect(hookSteps).toHaveLength(1));
+    expect(release).toHaveBeenCalledOnce();
+    expect(f.kopia.mock.calls.some(([args]) => (args as string[]).includes('create'))).toBe(false);
+    expect(f.queries.some(q => q.text.includes("status      = 'failed'"))).toBe(false);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(acquire).toHaveBeenCalledTimes(attempt + 1);
+      expect(hookSteps[attempt]).toBe(`backup-pre-snapshot-hook:resume:78850:123:admission-retry:${attempt}`);
+    }
+    await expect(pending).resolves.toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+    expect(release).toHaveBeenCalledTimes(4);
+    expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+    expect(f.queries.filter(q => q.values.some(v => typeof v === 'string'
+      && v.includes('host_backup_admission_wait')))).toHaveLength(3);
+    expect(f.kopia.mock.calls.filter(([args]) => (args as string[]).includes('create'))).toHaveLength(1);
+  });
+
+  it('still fails a real dump error after host admission clears', async () => {
+    const f = producerFixture();
+    const release = vi.fn(async () => {});
+    configureWithSql(f.sql, async () => ({ release }));
+    let hooks = 0;
+    configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      if (!name.startsWith('backup-pre-snapshot-hook')) return fn();
+      hooks += 1;
+      return (hooks === 1
+        ? { ok: false, error: 'host busy', deferred: 'host-backup-in-progress' }
+        : { ok: false, error: 'pg_dump failed' }) as T;
+    } });
+    vi.useFakeTimers();
+    const pending = f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 });
+    const rejected = expect(pending).rejects.toThrow('pg_dump failed');
+    await vi.waitFor(() => expect(hooks).toBe(1));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejected;
+    expect(hooks).toBe(2);
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(f.kopia.mock.calls.some(([args]) => (args as string[]).includes('create'))).toBe(false);
+    expect(f.queries.some(q => q.text.includes("status      = 'failed'"))).toBe(true);
   });
 
   it('joins the same row, refuses a different in-flight row, and rechecks completion after the lock wait', async () => {

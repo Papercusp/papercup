@@ -33,15 +33,27 @@ export async function repairRoleCodexHome(input: {
     const saved = rawRecord && typeof rawRecord === 'object'
       ? rawRecord as Record<string, unknown> : {};
     const { flagValueFromArgv, modelSpecFromArgv } = await import('./agent-config-constants');
+    let provenanceArgv = sessionRow.launchArgv;
+    if (!sessionRow.feature && !flagValueFromArgv(provenanceArgv, 'role')) {
+      const original = saved.originalMemberLaunch as Record<string, unknown> | undefined;
+      if (original?.v === 1 && original.advSessionId === advSessionId && original.ownerId === owner
+        && original.sessionId === sessionRow.sessionId && original.workspaceId === sessionRow.workspaceId
+        && original.agent === sessionRow.agent && Array.isArray(original.launchArgv)
+        && original.launchArgv.every((argument) => typeof argument === 'string')
+        && (typeof saved.harnessSlug !== 'string'
+          || flagValueFromArgv(original.launchArgv, 'harness') === saved.harnessSlug)) {
+        provenanceArgv = original.launchArgv;
+      }
+    }
     const harnessSlug = typeof saved.harnessSlug === 'string' ? saved.harnessSlug
-      : !sessionRow.feature ? flagValueFromArgv(sessionRow.launchArgv, 'harness') : null;
+      : !sessionRow.feature ? flagValueFromArgv(provenanceArgv, 'harness') : null;
     if (!harnessSlug || !sessionRow.sessionId || sessionRow.agent !== 'codex' || sessionRow.coordOwnerId !== owner) {
       return { status: 200, body: { ok: true, repaired: false, reason: 'role-home-preserved' } };
     }
-    const recordedModel = modelSpecFromArgv(sessionRow.launchArgv);
+    const recordedModel = modelSpecFromArgv(sessionRow.launchArgv) ?? modelSpecFromArgv(provenanceArgv);
     if (!sessionRow.feature) {
       if ((saved.role && saved.role !== sessionRow.role)
-        || flagValueFromArgv(sessionRow.launchArgv, 'role') !== sessionRow.role || !recordedModel) {
+        || flagValueFromArgv(provenanceArgv, 'role') !== sessionRow.role || !recordedModel) {
         return { status: 409, body: { ok: false, error: 'role_launch_provenance_unavailable' } };
       }
       const { existsSync, readFileSync } = await import('node:fs');

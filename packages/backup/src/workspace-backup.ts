@@ -46,6 +46,7 @@ import { BACKUP_APPLICATION_NAMES } from './application-names';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
+const SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS = 30_000;
 const SNAPSHOT_ROW_TAG_KEY = 'papercusp-backup-row-id';
 export const BACKUP_RETENTION_PIN = 'papercusp-legal-hold-retention';
 
@@ -618,8 +619,8 @@ export class WorkspaceBackup {
       // crash-resume replays the degradation instead of silently recovering to a
       // clean 'ok': the cached step result is the only record a resumed workflow
       // sees of what the dump did.
-      const dumpOutcome: Pick<PreSnapshotHookResult, 'ok' | 'error' | 'deferred'> | undefined = await steps.runStep(
-        dumpStepName,
+      const runDumpHook = (stepName: string): Promise<Pick<PreSnapshotHookResult, 'ok' | 'error' | 'deferred'> | undefined> => steps.runStep(
+        stepName,
         () =>
           runPreSnapshotHook({
             workspaceId: this.workspaceId,
@@ -659,6 +660,29 @@ export class WorkspaceBackup {
               return { ok: false, error: String(err) };
             }),
       );
+      let dumpOutcome = await runDumpHook(dumpStepName);
+      let admissionRetries = 0;
+      while (reason === 'pre_destructive' && dumpOutcome?.ok === false
+        && dumpOutcome.deferred === 'host-backup-in-progress') {
+        // A live host dump is an admission wait, not a failed restore point.
+        // Keep this exact intent running (and heartbeating) until the hook can
+        // prove coverage or perform its own dump. Never hold the migration
+        // rendezvous while waiting: the host producer needs it to finish.
+        await this.event(snapshotRowId!, 'progress', {
+          phase: 'host_backup_admission_wait', error: dumpOutcome.error,
+          retryAfterMs: SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS,
+        });
+        const held = migrationLock;
+        migrationLock = undefined;
+        migrationLockReleasedForGuard = false;
+        await held?.release();
+        await new Promise<void>((resolve) => setTimeout(resolve, SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS));
+        migrationLock = await acquireSnapshotMigrationLock();
+        // Step results are durable. Replaying the first deferred outcome must
+        // reach a NEW step, rather than caching that refusal forever. The
+        // ordinal is deterministic across workflow replay; no receipt is lost.
+        dumpOutcome = await runDumpHook(`${dumpStepName}:admission-retry:${++admissionRetries}`);
+      }
       if (migrationLockReleasedForGuard && !migrationLock) {
         // The guard can fail before READY (for example, its bounded flock
         // wait expires). Reacquire without the shared flock before allowing

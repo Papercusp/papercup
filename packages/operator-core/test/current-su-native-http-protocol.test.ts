@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
-import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
+import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectCurrentSuNativeCarryInput, inspectFrozenNativeCarryInput,
   freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT,
   serveCurrentSuNativeModelDiscovery } from './current-su-native-http-protocol';
 import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
@@ -79,6 +80,38 @@ it.each(['on', 'off'] as const)('checks exact native frozen carry %s bytes and r
   expect(() => inspectFrozenNativeCarryInput({ input: [...body.input,
     { type: 'function_call_output', output: 'prior result' }] }, expected)).toThrow(/predecessor tool results/);
   expect(() => inspectFrozenNativeCarryInput({ input: [body.input[0], body.input[0]] }, expected)).toThrow(/exactly one/);
+});
+
+it('retains the complete native carry packet with distinct character and UTF-8 byte counts', () => {
+  const packet = '⟦turn-origin:self-compaction nonce:1234abcd⟧\nScoped task 🦉\n\n' +
+    '⟦codex-carry-lineage predecessor:predecessor⟧\nRecovery facts: 雪\nComplete tail.';
+  const input = [{ role: 'user', content: [{ type: 'input_text', text: packet.slice(0, 60) },
+    { type: 'input_text', text: packet.slice(60) }] }];
+  const observed = inspectCurrentSuNativeCarryInput({ input }, { predecessorId: 'predecessor' });
+  expect(observed).toEqual({ schemaVersion: 1, client: 'codex', predecessorId: 'predecessor',
+    packet, packetSha256: createHash('sha256').update(packet).digest('hex'), packetChars: packet.length,
+    packetBytes: Buffer.byteLength(packet, 'utf8'),
+    inputSha256: createHash('sha256').update(JSON.stringify(input)).digest('hex') });
+  expect(observed.packetBytes).toBeGreaterThan(observed.packetChars);
+  const changed = inspectCurrentSuNativeCarryInput({ input: [{ role: 'user', content: packet + '\nChanged tail.' }] },
+    { predecessorId: 'predecessor' });
+  expect(changed.packetSha256).not.toBe(observed.packetSha256);
+});
+
+it('rejects tool echoes, foreign or ambiguous lineage and partially observed native packets', () => {
+  const packet = '⟦turn-origin:self-compaction nonce:1234abcd⟧\nTask\n\n' +
+    '⟦codex-carry-lineage predecessor:predecessor⟧\nFresh recovery.';
+  const inspect = (input: unknown[]) => inspectCurrentSuNativeCarryInput({ input }, { predecessorId: 'predecessor' });
+  expect(() => inspect([{ type: 'function_call_output', output: packet }])).toThrow(/exactly one/);
+  expect(() => inspect([{ role: 'assistant', content: packet }])).toThrow(/exactly one/);
+  expect(() => inspect([{ role: 'user', content: packet.replace('predecessor:predecessor', 'predecessor:foreign') }]))
+    .toThrow(/foreign predecessor/);
+  expect(() => inspect([{ role: 'user', content: packet + '\n⟦codex-carry-lineage predecessor:predecessor⟧\n' }]))
+    .toThrow(/ambiguous lineage/);
+  expect(() => inspect([{ role: 'user', content: [{ type: 'input_text', text: packet },
+    { type: 'input_image', image_url: 'fixture' }] }])).toThrow(/unobserved non-text/);
+  expect(() => inspectCurrentSuNativeCarryInput({ input: [{ role: 'user', content: packet }] },
+    { predecessorId: '' })).toThrow(/independently bound predecessor/);
 });
 
 it('drives the same frozen usage threshold and note through the native tool, retaining the queue receipt', async () => {

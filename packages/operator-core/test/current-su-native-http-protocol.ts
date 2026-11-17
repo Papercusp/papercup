@@ -54,25 +54,43 @@ export function freezeCurrentSuNativeCarryProtocol(config: CurrentBenchmarkProto
     capabilities: { ...allCapabilities('off'), 'carry-respawn': arm.id === 'papercusp' ? mode : 'off' } };
 }
 
-/** Observe actual native provider input, independently of the carry builder.
- * Hash the exact delivered bytes; an echo, a queue receipt or a substring in a
- * tool result cannot certify a fresh user turn. */
+/** Retain the complete managed user packet observed at the native transport.
+ * This observes delivery only; fixture/action/oracle bindings remain separate. */
+export function inspectCurrentSuNativeCarryInput(body: Body, expected: { predecessorId: string }) {
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const input = Array.isArray(body.input) ? body.input as Body[] : [];
+  const userTurns = input.filter(item => item.role === 'user').map(item => {
+    if (typeof item.content === 'string') return { text: item.content, complete: true };
+    const parts = Array.isArray(item.content) ? item.content as Body[] : [];
+    return { text: parts.map(part => typeof part?.text === 'string' ? part.text : '').join(''),
+      complete: parts.length > 0 && parts.every(part => part &&
+        ['input_text', 'text'].includes(String(part.type)) && typeof part.text === 'string') };
+  });
+  const turns = userTurns.filter(turn => /^⟦turn-origin:self-compaction nonce:[a-f0-9]+⟧\n/.test(turn.text));
+  assert.equal(turns.length, 1, 'Managed carry needs exactly one native user turn with its leading provenance');
+  assert.ok(turns[0].complete, 'Native carry packet contains unobserved non-text content');
+  assert.ok(!input.some(item => ['function_call_output', 'custom_tool_call_output'].includes(String(item.type))),
+    'Fresh carry must not replay predecessor tool results');
+  const actual = turns[0].text;
+  const match = /^⟦turn-origin:self-compaction nonce:[a-f0-9]+⟧\n([\s\S]*?)\n\n⟦codex-carry-lineage predecessor:([^⟧]+)⟧\n/.exec(actual);
+  assert.ok(match, 'Managed carry native turn lacks its first prompt and lineage boundary');
+  assert.ok(expected.predecessorId.trim(), 'Native carry needs an independently bound predecessor');
+  assert.equal(match[2], expected.predecessorId, 'Managed carry names a foreign predecessor');
+  assert.equal([...actual.matchAll(/^⟦codex-carry-lineage predecessor:[^⟧\n]+⟧$/gm)].length, 1,
+    'Native carry packet has ambiguous lineage');
+  return { schemaVersion: 1 as const, client: 'codex' as const, predecessorId: expected.predecessorId,
+    packet: actual, packetSha256: hash(actual), packetChars: actual.length,
+    packetBytes: Buffer.byteLength(actual, 'utf8'), inputSha256: hash(JSON.stringify(input)) };
+}
+
+/** Check the frozen assignment against independently observed native bytes. */
 export function inspectFrozenNativeCarryInput(body: Body, expected: {
   mode: 'on' | 'off'; initialPrompt: string; predecessorId: string;
 }) {
   const hash = (text: string) => createHash('sha256').update(text).digest('hex');
-  const input = Array.isArray(body.input) ? body.input as Body[] : [];
-  const userTurns = input.filter(item => item.role === 'user').map(item => typeof item.content === 'string'
-    ? item.content : Array.isArray(item.content) ? item.content.map(part =>
-      part && typeof part === 'object' && 'text' in part ? String(part.text) : '').join('') : '');
-  const turns = userTurns.filter(text => /^⟦turn-origin:self-compaction nonce:[a-f0-9]+⟧\n/.test(text));
-  assert.equal(turns.length, 1, 'Frozen carry needs exactly one native user turn with its leading provenance');
-  assert.ok(!input.some(item => ['function_call_output', 'custom_tool_call_output'].includes(String(item.type))),
-    'Fresh carry must not replay predecessor tool results');
-  const actual = turns[0];
-  const match = /^⟦turn-origin:self-compaction nonce:[a-f0-9]+⟧\n([\s\S]*?)\n\n⟦codex-carry-lineage predecessor:([^⟧]+)⟧\n/.exec(actual);
-  assert.ok(match, 'Frozen carry native turn lacks its exact first prompt and lineage boundary');
-  assert.equal(match[2], expected.predecessorId, 'Frozen carry names a foreign predecessor');
+  const delivered = inspectCurrentSuNativeCarryInput(body, expected);
+  const actual = delivered.packet;
+  const match = /^⟦turn-origin:self-compaction nonce:[a-f0-9]+⟧\n([\s\S]*?)\n\n⟦codex-carry-lineage predecessor:([^⟧]+)⟧\n/.exec(actual)!;
   const note = expected.mode === 'on' ? FROZEN_NATIVE_CARRY_NOTE : null;
   const firstPrompt = expected.initialPrompt + (note
     ? `\n\nContinuation note from this assignment's prior session:\n${note}` : '');
