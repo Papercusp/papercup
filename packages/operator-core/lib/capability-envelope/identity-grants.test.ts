@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   CAPABILITY_CLASS_EXACT_REF, compileAgentSpecification, GrantsSchema, type ResolvedCapabilityProviderInput,
 } from '@papercusp/orchestrator/blueprint';
@@ -142,6 +145,97 @@ describe('P-005 applied identity capability grants', () => {
       tools: new Map([...input.tools, ['acme:contacts', ['contacts:read']]]),
     });
     expect(result).toMatchObject({ allowedTools: ['acme:contacts', 'acme:send'], failures: [] });
+  });
+});
+
+describe('D-009 layer contributions and restrictions', () => {
+  const CONTACTS = 'crm.contacts@1.0.0';
+  function stack(layers: Array<Record<string, unknown>>) {
+    const dir = mkdtempSync(join(tmpdir(), 'identity-grant-stack-'));
+    try {
+      const paths = new Map(layers.map(layer => {
+        const path = join(dir, `${layer.id}.yaml`);
+        writeFileSync(path, JSON.stringify(layer));
+        return [String(layer.id), path];
+      }));
+      const specification = compileAgentSpecification({
+        source: { id: 'grant-stack', slots: [], extends: [...paths.keys()] },
+        resolve: id => paths.get(id) ?? null,
+        inputClosure: [pin(), pin({ ref: CONTACTS, verbBindings: { read: 'acme:contacts' } })],
+      });
+      return { ...fixture(), specification, appliedSpecificationRevision: specification.specificationRevision,
+        ceilings: [{ allowCapabilities: ['*'] }],
+        bindings: [binding(), binding({ classRef: CONTACTS, verbBindings: { read: 'acme:contacts' } })],
+        tools: new Map<string, readonly string[]>([['acme:send', ['mail:send']], ['acme:contacts', ['contacts:read']]]),
+      };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+  const mail = { id: 'mail', slots: [{ slot: 'domain' }], grants: { requires: [CLASS] },
+    ceiling: { tools: { allow: ['acme:send'] } } };
+  const contacts = { id: 'contacts', slots: [{ slot: 'practice' }], grants: { requires: [CONTACTS] },
+    ceiling: { tools: { allow: ['acme:contacts'] } } };
+
+  it('unions disjoint contributions without intersecting the layers maxima', () => {
+    expect(resolveIdentityGrantEnvelope(stack([mail, contacts])))
+      .toMatchObject({ allowedTools: ['acme:contacts', 'acme:send'], failures: [] });
+  });
+
+  it('a layer cannot borrow another layers maximum for its own grant', () => {
+    const restrictedMail = { ...mail, ceiling: { tools: { allow: [] } } };
+    for (const layers of [[restrictedMail, contacts], [contacts, restrictedMail]]) {
+      expect(resolveIdentityGrantEnvelope(stack(layers)))
+        .toMatchObject({ allowedTools: ['acme:contacts'], failures: [] });
+    }
+  });
+
+  it('one refused contribution does not veto the same tool granted within another layers maximum', () => {
+    expect(resolveIdentityGrantEnvelope(stack([
+      { ...mail, ceiling: { tools: { deny: ['acme:send'] } } },
+      { ...contacts, grants: { requires: [CLASS] }, ceiling: { tools: { allow: ['acme:send'] } } },
+    ]))).toMatchObject({ allowedTools: ['acme:send'], failures: [] });
+  });
+
+  it('restrictions from a layer with no grants subtract from every contribution in either order', () => {
+    const restriction = { id: 'restriction', slots: [{ slot: 'audience' }],
+      floors: { tools: { deny: ['acme:send'] } } };
+    for (const layers of [[restriction, mail, contacts], [mail, contacts, restriction]]) {
+      expect(resolveIdentityGrantEnvelope(stack(layers)))
+        .toMatchObject({ allowedTools: ['acme:contacts'], failures: [] });
+    }
+  });
+
+  it('an allow restriction narrows the entire stack and an empty one grants nothing', () => {
+    for (const allow of [['acme:contacts'], []]) {
+      expect(resolveIdentityGrantEnvelope(stack([mail, contacts, {
+        id: 'restriction', slots: [{ slot: 'audience' }], floors: { tools: { allow } },
+      }]))).toMatchObject({ allowedTools: allow, failures: [] });
+    }
+  });
+
+  it('ignores flattened maximum and restriction fields when deriving layer authority', () => {
+    const input = stack([mail, contacts]);
+    input.specification = structuredClone(input.specification);
+    input.specification.configuration.ceiling = { tools: { allow: [] } };
+    input.specification.configuration.floors = { tools: { deny: ['*'] } };
+    expect(resolveIdentityGrantEnvelope(input))
+      .toMatchObject({ allowedTools: ['acme:contacts', 'acme:send'], failures: [] });
+  });
+
+  it('fails closed when any pinned layer source document is missing', () => {
+    const input = stack([mail, contacts]);
+    input.specification = structuredClone(input.specification);
+    for (const entry of input.specification.inputs) {
+      if (entry.kind === 'blueprint-layer' && entry.ref === 'mail') delete entry.document;
+    }
+    expect(resolveIdentityGrantEnvelope(input))
+      .toMatchObject({ allowedTools: [], failures: [{ cause: 'policy-unavailable' }] });
+  });
+
+  it('still intersects host policy and fixed floors after unioning contributions', () => {
+    expect(resolveIdentityGrantEnvelope({ ...stack([mail, contacts]), ceilings: [{ allowCapabilities: ['mail:send'] }] }))
+      .toMatchObject({ allowedTools: [], failures: [{ cause: 'outside-ceiling', toolName: 'acme:contacts' }] });
+    expect(resolveIdentityGrantEnvelope({ ...stack([mail, contacts]), protectedAdditions: ['acme:send'] }))
+      .toMatchObject({ allowedTools: [], failures: [{ cause: 'outside-ceiling', toolName: 'acme:send' }] });
   });
 });
 

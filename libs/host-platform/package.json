@@ -28,6 +28,11 @@
       "import": "./src/process-environment.ts",
       "default": "./src/process-environment.ts"
     },
+    "./codex-turn-hooks": {
+      "types": "./src/codex-turn-hooks.d.mts",
+      "import": "./src/codex-turn-hooks.mjs",
+      "default": "./src/codex-turn-hooks.mjs"
+    },
     "./home": {
       "types": "./src/home.d.mts",
       "import": "./src/home.mjs",
