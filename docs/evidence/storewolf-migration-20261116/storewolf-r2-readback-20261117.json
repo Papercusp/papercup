@@ -1,0 +1,57 @@
+{
+  "schema": "storewolf-r2-rollback-source-readback-v1",
+  "workItem": "WI-10000337",
+  "plan": "storewolf-central-server-cloud-deployment-2026-09-03",
+  "criterion": "R-2",
+  "observedAt": "2026-11-17T10:51:45.998089+00:00",
+  "source": {
+    "path": "/mnt/data/db",
+    "isDirectory": true,
+    "markers": {
+      "WiredTiger": { "exists": true, "bytes": 50 },
+      "WiredTiger.wt": { "exists": true, "bytes": 1937408 },
+      "WiredTiger.turtle": { "exists": true, "bytes": 1534 },
+      "WiredTiger.lock": { "exists": true, "bytes": 21 }
+    }
+  },
+  "snapshot": {
+    "id": "3026971650485081332",
+    "name": "storewolf-pre-refresh-20261116-113342",
+    "status": "READY",
+    "sourceDisk": "https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/disks/storewolf-data",
+    "sourceDiskId": "5055055104574981624",
+    "creationTimestamp": "2026-11-16T03:33:47.681-08:00"
+  },
+  "instance": {
+    "id": "271429600984662238",
+    "name": "storewolf",
+    "status": "RUNNING",
+    "dataDisk": {
+      "deviceName": "storewolf-data",
+      "source": "https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/disks/storewolf-data",
+      "type": "PERSISTENT",
+      "boot": false,
+      "autoDelete": false,
+      "mode": "READ_WRITE"
+    }
+  },
+  "cloudMountReadback": {
+    "observedAt": "2026-11-17T10:12:26Z",
+    "deviceAlias": "/dev/disk/by-id/google-storewolf-data",
+    "resolvedDevice": "/dev/sdb",
+    "findmnt": "/dev/sdb ext4 /mnt/data",
+    "mongoConfigDbPath": "/mnt/data/db",
+    "provenance": "Prior read-only SSH observation retained in WI-10000337 checkpoint 517fde108021 and thread-post:1235043."
+  },
+  "observations": {
+    "snapshotSourceMatchesAttachedPersistentDataDisk": true,
+    "sourceDbPathAndAllNamedMarkersPresentAtObservedAt": true
+  },
+  "historicalEvidence": [
+    "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json",
+    "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.transfer.log",
+    "docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json",
+    "docs/evidence/storewolf-migration-20261116/evidence-index.json"
+  ],
+  "scope": "Read-only source retention and rollback identity observations. Historical copy ordering must be established separately from the retained original receipts. No copy, reboot, cutover, or cloud mutation was repeated."
+}
