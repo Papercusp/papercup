@@ -1316,6 +1316,23 @@ function admissionObjectRef(snapshot: Pick<AdmissionMergeSnapshot, 'kind' | 'har
     : { kind: 'feature', ref: `${snapshot.harnessSlug}#${snapshot.id}` };
 }
 
+/**
+ * The dependency refs a merge hands from loser to canonical. work_item_deps keys issue
+ * endpoints by bare feature_id and feature endpoints by harness#feature_id (the same
+ * shapes admissionObjectRef builds), so both are rewritten. The merge write and the
+ * reviewed-cleanup preview share this list so they cannot disagree on what moves.
+ */
+function admissionMergeDependencyRefRewrites(input: {
+  harnessSlug: string;
+  loserId: string;
+  canonicalId: string;
+}): Array<{ from: string; to: string }> {
+  return [
+    { from: input.loserId, to: input.canonicalId },
+    { from: `${input.harnessSlug}#${input.loserId}`, to: `${input.harnessSlug}#${input.canonicalId}` },
+  ];
+}
+
 async function persistAdmissionDuplicateLink(
   sql: OrgSql,
   input: {
@@ -5047,6 +5064,19 @@ async function persistApprovedAdmissionMerge(
   const eligibility = input.mergeAnyAdmission
     ? sql`(status IS NULL OR NOT (status = ANY(${terminal}::text[])))`
     : sql`admission IN ('pending', 'unreviewed')`;
+  // EI-28990041785851999: hand the loser's dependency edges to the canonical BEFORE the
+  // loser is dropped. work_items_dependency_lifecycle_guard_trg is a non-deferrable
+  // BEFORE UPDATE OF status row trigger, so it judges the loser's edges at the moment of
+  // the status write. A 'success' blocks edge from the loser to a claimed, progressed or
+  // terminal dependant makes that write raise ("cannot make dependency blocker ...
+  // unsatisfied"; migration 1621). The reviewed preview reads that edge as inactive once
+  // its dependant has succeeded, so it called such a pair eligible and the apply then
+  // refused it, even though the canonical carries the work. Same
+  // transaction: a later conditional-write miss rolls the repoint back with the merge.
+  const dependencyEdges = await repointWorkItemDependencyRefsInTransaction(sql, {
+    workspaceId: input.workspaceId,
+    rewrites: admissionMergeDependencyRefRewrites(input),
+  });
   const terminalized = await sql<Array<{ feature_id: string }>>`
     UPDATE harness_shared.work_items
        SET status = 'dropped',
@@ -5280,14 +5310,6 @@ async function persistApprovedAdmissionMerge(
       throw new Error(`admission incoming-reference conditional-write-miss: ${source.feature_id}`);
     }
   }
-
-  const dependencyEdges = await repointWorkItemDependencyRefsInTransaction(sql, {
-    workspaceId: input.workspaceId,
-    rewrites: [
-      { from: input.loserId, to: input.canonicalId },
-      { from: `${input.harnessSlug}#${input.loserId}`, to: `${input.harnessSlug}#${input.canonicalId}` },
-    ],
-  });
 
   const occurrenceRows = await sql<AdmissionMergeOccurrenceRow[]>`
     SELECT occurrence_id, canonical_harness_slug, canonical_work_item_id
