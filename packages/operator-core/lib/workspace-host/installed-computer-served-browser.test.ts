@@ -11,7 +11,7 @@ import { chromium } from 'playwright-core';
 import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crossOriginIsolationHeaders } from '../../../../libs/generic/desktop-ipc/src/csp-policy';
-import { assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledLocalConsent, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -56,6 +56,47 @@ async function currentNativeLoader(repo: string) {
 
 describe('served Portal prerequisite and document readiness', () => {
   const expectedSession = { userId: 'private-user', organizationId: 'private-org', workspaceId: 'private-workspace' };
+
+  it('waits for the actual local consent controls to render after the HTML entry', async () => {
+    const origin = await start((_, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end(`<html><title>Local settings</title><body>Loading<script>
+        setTimeout(() => { document.body.innerHTML = '<section aria-label="Desktop access"><label><input type="checkbox">Allow this browser to view desktops</label><button disabled>Approve desktop access</button></section>'; }, 100);
+      </script></body></html>`);
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      await expect(waitForInstalledLocalConsent(await browser.newPage(), origin, 1000))
+        .resolves.toMatchObject({ status: 200, title: 'Local settings' });
+    } finally { await browser.close(); }
+  });
+
+  it('refuses a local HTML shell even when it has the Portal launcher', async () => {
+    const origin = await start((_, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end('<html><title>Wrong surface</title><body><button>Connect your computer</button></body></html>');
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      await expect(waitForInstalledLocalConsent(await browser.newPage(), origin, 300))
+        .rejects.toThrow('Local consent browser prerequisite failed');
+    } finally { await browser.close(); }
+  });
+
+  it('retains local consent bootstrap failures before the private context closes', async () => {
+    const origin = await start((request, response) => {
+      if (request.url === '/missing-local.js') { response.writeHead(404); response.end('missing'); return; }
+      response.setHeader('content-type', 'text/html');
+      response.end('<html><title>Local bootstrap</title><body>Starting settings<script src="/missing-local.js"></script><script>throw new Error("local hydration failure")</script></body></html>');
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      const error = await waitForInstalledLocalConsent(await browser.newPage(), origin, 300)
+        .then(() => '', cause => String(cause));
+      for (const evidence of ['Local consent browser prerequisite failed', 'Starting settings',
+        'Local bootstrap', 'local hydration failure', '404 /missing-local.js']) expect(error).toContain(evidence);
+    } finally { await browser.close(); }
+  });
 
   it.each([false, true])('measures the local isolation policy severing the cross-origin approval opener: %s', async isolated => {
     const local = createServer((_, response) => {

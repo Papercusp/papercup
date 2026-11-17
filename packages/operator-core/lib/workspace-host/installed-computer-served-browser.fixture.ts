@@ -292,6 +292,16 @@ export async function waitForPortalDocument(child: ChildProcess, url: string, ti
 /** HTTP 200 alone does not prove the authenticated shell hydrated. Keep the
  * browser's actual failure evidence in the outer log before private cleanup. */
 export async function waitForInstalledPortalSetup(page: Page, url: string, timeoutMs = 10_000) {
+  return waitForInstalledBrowserSurface(page, url, 'portal', timeoutMs);
+}
+
+export async function waitForInstalledLocalConsent(page: Page, url: string, timeoutMs = 10_000) {
+  return waitForInstalledBrowserSurface(page, url, 'local-consent', timeoutMs);
+}
+
+async function waitForInstalledBrowserSurface(page: Page, url: string,
+  surface: 'portal' | 'local-consent', timeoutMs: number) {
+  const label = surface === 'portal' ? 'Portal' : 'Local consent';
   const errors: string[] = [], failedRequests: string[] = [], httpErrors: string[] = [];
   const onError = (error: Error) => { if (errors.length < 8) errors.push(error.message.slice(0, 500)); };
   const onFailed = (request: import('playwright-core').Request) => {
@@ -303,7 +313,16 @@ export async function waitForInstalledPortalSetup(page: Page, url: string, timeo
   page.on('pageerror', onError); page.on('requestfailed', onFailed); page.on('response', onResponse);
   try {
     const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-    assert.equal(response?.status(), 200, 'Authenticated Portal entry must return HTTP 200');
+    assert.equal(response?.status(), 200, `${label} entry must return HTTP 200`);
+    if (surface === 'local-consent') {
+      const consent = page.getByRole('region', { name: 'Desktop access', exact: true });
+      await consent.waitFor({ state: 'visible', timeout: timeoutMs });
+      await consent.getByRole('checkbox', { name: 'Allow this browser to view desktops', exact: true })
+        .waitFor({ state: 'visible', timeout: timeoutMs });
+      await consent.getByRole('button', { name: 'Approve desktop access', exact: true })
+        .waitFor({ state: 'visible', timeout: timeoutMs });
+      return { status: response!.status(), title: await page.title(), guideDisposition: 'not-shown' as const };
+    }
     const launcher = page.getByRole('button', { name: 'Connect your computer', exact: true }).first();
     const skipGuide = page.getByRole('button', { name: 'Skip guide', exact: true });
     await launcher.or(skipGuide).first().waitFor({ state: 'visible', timeout: timeoutMs });
@@ -328,7 +347,7 @@ export async function waitForInstalledPortalSetup(page: Page, url: string, timeo
   } catch (cause) {
     const rendered = await page.locator('body').innerText({ timeout: 1000 }).catch(() => 'body unavailable');
     const buttons = await page.getByRole('button').allTextContents().catch(() => []);
-    throw new Error(`Portal browser prerequisite failed: ${JSON.stringify({
+    throw new Error(`${label} browser prerequisite failed: ${JSON.stringify({
       location: new URL(page.url()).origin + new URL(page.url()).pathname,
       title: await page.title().catch(() => ''), rendered: rendered.slice(0, 4000),
       buttons: buttons.slice(0, 20), errors, failedRequests, httpErrors,
@@ -494,6 +513,8 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       browser = await chromium.launch({ channel: 'chrome', headless: true });
       const preflight = await browser.newContext({ storageState: storageStatePath, ignoreHTTPSErrors: true });
       try {
+        await stage('installed-local-consent-browser-prerequisite');
+        await waitForInstalledLocalConsent(await preflight.newPage(), `${guiOrigin}/settings/remote-access`);
         await assertInstalledPortalSession(await preflight.request.get(`${origin}/api/hosted/auth/session`,
           { timeout: 10_000 }), expectedSession);
         const url = new URL('/', origin);
