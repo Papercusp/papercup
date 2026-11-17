@@ -36,7 +36,7 @@
  * switch (PAPERCUSP_WI_FULLTEXT_DUPE=off) returns null — the caller proceeds
  * silently. Only OPEN (non-terminal) candidates are surfaced.
  */
-import { searchWorkItemDuplicateCandidates, type WorkItemDuplicateCandidateSearch } from '../../work-items';
+import { searchWorkItemDuplicateCandidates, type WorkItemDuplicateCandidateSearch, type WorkItemDuplicateCandidateSearchOptions } from '../../work-items';
 import { DUP_THRESHOLD, titleSimilarity } from '../../harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import type { DupeGuardDiagnostic, SemanticDupeCandidate } from './semantic-dupe-guard';
@@ -59,7 +59,7 @@ export interface FulltextLexicalDupeRow {
 /** Injectable seam (tests + any future non-issues space). */
 export interface FulltextLexicalDupeDeps {
   /** Null means complete candidate coverage could not be proven within its bound. */
-  searchWorkItems: (query: string) => Promise<FulltextLexicalDupeRow[] | WorkItemDuplicateCandidateSearch | null>;
+  searchWorkItems: (query: string, opts?: WorkItemDuplicateCandidateSearchOptions) => Promise<FulltextLexicalDupeRow[] | WorkItemDuplicateCandidateSearch | null>;
 }
 
 const realDeps: FulltextLexicalDupeDeps = {
@@ -95,14 +95,16 @@ async function classify(
   d: FulltextLexicalDupeDeps,
   input: { title: string; summary?: string; excludeId?: string },
   incomplete: (detail?: string) => void,
+  mark: (phase: string) => void,
 ): Promise<SemanticDupeCandidate[] | null> {
   const query = searchableText(input.title, input.summary);
-  const found = await d.searchWorkItems(query);
+  const found = await d.searchWorkItems(query, { onPhase: mark });
   if (found === null || (!Array.isArray(found) && !found.complete)) {
     incomplete(found?.reason);
     return null;
   }
   const rows = Array.isArray(found) ? found : found.items;
+  mark('score-candidates');
   const scored = rows
     .filter((r) => r.id !== input.excludeId && !ALL_TERMINAL_STATUSES.has(r.state))
     .map((r) => ({
@@ -136,14 +138,22 @@ export async function findFulltextLexicalDupes(
   onDiagnostic?: (diagnostic: DupeGuardDiagnostic) => void,
 ): Promise<SemanticDupeCandidate[] | null> {
   const startedAt = Date.now();
+  let phase = 'candidate-search';
+  let phaseStartedAt = startedAt;
+  const mark = (nextPhase: string) => {
+    if (phase !== nextPhase) phaseStartedAt = Date.now();
+    phase = nextPhase;
+  };
   let reason = 'complete';
   let detail: string | undefined;
   let error: unknown;
   const finish = (result: SemanticDupeCandidate[] | null): SemanticDupeCandidate[] | null => {
     try {
+      const finishedAt = Date.now();
       onDiagnostic?.({
-        outcome: result === null ? 'unavailable' : 'ok', reason, phase: 'candidate-search',
-        elapsedMs: Math.max(0, Date.now() - startedAt),
+        outcome: result === null ? 'unavailable' : 'ok', reason, phase,
+        elapsedMs: Math.max(0, finishedAt - startedAt),
+        phaseElapsedMs: Math.max(0, finishedAt - phaseStartedAt),
         ...(detail === undefined ? {} : { detail }),
         ...(error === undefined ? {} : { error: {
           name: error instanceof Error ? error.name : 'Error',
@@ -160,7 +170,7 @@ export async function findFulltextLexicalDupes(
   if (process.env.VITEST && !deps) { reason = 'test-environment'; return finish(null); }
   try {
     return finish(await withBudget(BUDGET_MS, classify(deps ?? realDeps, input,
-      (coverageReason) => { reason = 'incomplete-coverage'; detail = coverageReason; }),
+      (coverageReason) => { reason = 'incomplete-coverage'; detail = coverageReason; }, mark),
     (failure, cause) => { reason = failure; error = cause; }));
   } catch (cause) {
     reason = 'error'; error = cause;

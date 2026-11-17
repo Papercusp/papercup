@@ -458,6 +458,86 @@ describe('draft 1643 — custody capture through application claim/release write
     return row;
   }
 
+  it.each(['feature', 'issue'] as const)('%s: equal recorder endpoints do not witness a disabled application-writer interval', async (family) => {
+    const id = `${family === 'feature' ? 'F' : 'EI'}-CAPTURE-DISABLED-INTERVAL`;
+    const owner = 'su-capture-disabled-owner';
+    await seedCustody(family, id, owner);
+    const before = await receipts(id);
+    const prior = await custody(id);
+    const recorder = () => sql`SELECT t.tgenabled, p.prosrc, p.proconfig
+      FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+      WHERE t.tgrelid = 'harness_shared.work_items'::regclass
+        AND t.tgname = 'capture_work_item_custody_audit_trg'`;
+    const enabled = await recorder();
+    expect(enabled).toHaveLength(1);
+    expect(enabled[0]?.tgenabled).toBe('O');
+
+    await sql.unsafe('ALTER TABLE harness_shared.work_items DISABLE TRIGGER capture_work_item_custody_audit_trg');
+    try {
+      expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).not.toBeNull();
+      expect((await custody(id)).taken_by).toBeNull();
+      expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+    } finally {
+      await sql.unsafe('ALTER TABLE harness_shared.work_items ENABLE TRIGGER capture_work_item_custody_audit_trg');
+    }
+    expect(await recorder()).toEqual(enabled);
+    expect((await custody(id)).taken_by).toBe(prior.taken_by);
+    expect((await custody(id)).worked_by_history).not.toEqual(prior.worked_by_history);
+    expect(await receipts(id)).toEqual(before);
+
+    // Positive control: the exact application writers resume capture after
+    // restoration. Equal recorder/holder endpoints still leave an unwitnessed gap.
+    expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).not.toBeNull();
+    expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+    expect((await receipts(id)).slice(before.length).map(row =>
+      [row.details.before?.taken_by, row.details.after?.taken_by])).toEqual([
+      [owner, null], [null, owner],
+    ]);
+  });
+
+  it.each(['feature', 'issue'] as const)('%s: a restored receipt and retained holder do not prove audit integrity or retention', async (family) => {
+    const id = `${family === 'feature' ? 'F' : 'EI'}-CAPTURE-AUDIT-INTEGRITY`;
+    const owner = 'su-capture-audit-owner';
+    await seedCustody(family, id, owner);
+    expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).not.toBeNull();
+    expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+    const endpoint = await custody(id);
+    const lease = await getClaim(WS, HARNESS, id);
+    const records = () => sql<{ id: string; details: Record<string, unknown> }[]>`
+      SELECT id, details FROM harness_shared.audit_log
+      WHERE workspace_id = ${WS} AND subject = ${id}
+        AND action = 'work_items:custody:capture' ORDER BY ts, id`;
+    const original = await records();
+    expect(original.length).toBeGreaterThanOrEqual(3);
+    const target = original[0]!;
+    await sql`UPDATE harness_shared.audit_log
+      SET details = ${sql.json({ ...target.details, databaseRole: 'r46-forged-role' })}
+      WHERE workspace_id = ${WS} AND id = ${target.id}`;
+    expect((await records())[0]?.details.databaseRole).toBe('r46-forged-role');
+    await sql`UPDATE harness_shared.audit_log SET details = ${sql.json(target.details)}
+      WHERE workspace_id = ${WS} AND id = ${target.id}`;
+    expect(await records()).toEqual(original);
+
+    // Exercise deletion of actual draft-generated receipts in bounded batches;
+    // this characterizes admin mutability, not a production retention job.
+    let removed = 0;
+    for (;;) {
+      const batch = await sql`WITH batch AS (
+        SELECT id FROM harness_shared.audit_log
+        WHERE workspace_id = ${WS} AND subject = ${id}
+          AND action = 'work_items:custody:capture' ORDER BY ts, id LIMIT 2
+      ) DELETE FROM harness_shared.audit_log a USING batch
+        WHERE a.workspace_id = ${WS} AND a.id = batch.id RETURNING a.id`;
+      if (batch.length === 0) break;
+      removed += batch.length;
+      expect(removed).toBeLessThanOrEqual(original.length);
+    }
+    expect(removed).toBe(original.length);
+    expect(await records()).toEqual([]);
+    expect(await custody(id)).toEqual(endpoint);
+    expect(await getClaim(WS, HARNESS, id)).toEqual(lease);
+  });
+
   it.each(['feature', 'issue'] as const)('%s: refused writers emit no mutation, while release/reclaim retains the ABA interval', async (family) => {
     const id = family === 'feature' ? 'F-CAPTURE-WRITER-ABA' : 'EI-CAPTURE-WRITER-ABA';
     const owner = 'su-capture-writer-owner';

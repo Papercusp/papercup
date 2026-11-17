@@ -70,6 +70,68 @@ describe('failure diagnostics', () => {
   it('keeps a successful verdict even when its diagnostic consumer throws', async () => {
     expect(await findFulltextLexicalDupes({ title: 't' }, depsWith([]), () => { throw new Error('observer failed'); })).toEqual([]);
   });
+
+  it('attributes an exhausted budget to seed preparation when it has not finished', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      const deps: FulltextLexicalDupeDeps = {
+        searchWorkItems: (_query, opts) => {
+          opts?.onPhase?.('indexable-terms');
+          return new Promise(() => {});
+        },
+      };
+      const pending = findFulltextLexicalDupes({ title: 'seed preparation' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(await pending).toBeNull();
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        reason: 'budget-expired', phase: 'indexable-terms', elapsedMs: 1500, phaseElapsedMs: 1500,
+      }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('excludes earlier seed preparation from the timed-out candidate-query phase', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      const deps: FulltextLexicalDupeDeps = {
+        searchWorkItems: async (_query, opts) => {
+          opts?.onPhase?.('indexable-terms');
+          await new Promise((resolve) => setTimeout(resolve, 1100));
+          opts?.onPhase?.('candidate-query');
+          return new Promise(() => {});
+        },
+      };
+      const pending = findFulltextLexicalDupes({ title: 'candidate query' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(await pending).toBeNull();
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        reason: 'budget-expired', phase: 'candidate-query', elapsedMs: 1500, phaseElapsedMs: 400,
+      }));
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('preserves a successful verdict after both query phases and measures scoring separately', async () => {
+    vi.useFakeTimers();
+    try {
+      const observed = vi.fn();
+      const deps: FulltextLexicalDupeDeps = {
+        searchWorkItems: async (_query, opts) => {
+          opts?.onPhase?.('indexable-terms');
+          await new Promise((resolve) => setTimeout(resolve, 700));
+          opts?.onPhase?.('candidate-query');
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          return [];
+        },
+      };
+      const pending = findFulltextLexicalDupes({ title: 'completed query' }, deps, observed);
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(await pending).toEqual([]);
+      expect(observed).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        outcome: 'ok', reason: 'complete', phase: 'score-candidates', elapsedMs: 1100, phaseElapsedMs: 0,
+      }));
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 afterEach(() => {

@@ -2954,6 +2954,12 @@ export interface WorkItemDuplicateCandidateSearch {
   reason?: 'empty-query' | 'query-too-large' | 'insufficient-indexable-terms' | 'candidate-limit-exceeded';
 }
 
+export interface WorkItemDuplicateCandidateSearchOptions {
+  maxCandidates?: number;
+  /** Diagnostic boundaries include pool/setup time; they are not SQL-only timings. */
+  onPhase?: (phase: 'indexable-terms' | 'candidate-query') => void;
+}
+
 const DUPLICATE_CANDIDATE_MAX_QUERY_TOKENS = 512;
 const DUPLICATE_CANDIDATE_DEFAULT_LIMIT = 1000;
 const DUPLICATE_CANDIDATE_MAX_LIMIT = 5000;
@@ -2970,7 +2976,7 @@ const DUPLICATE_CANDIDATE_MAX_LIMIT = 5000;
  */
 export async function searchWorkItemDuplicateCandidates(
   query: string,
-  opts: { maxCandidates?: number } = {},
+  opts: WorkItemDuplicateCandidateSearchOptions = {},
 ): Promise<WorkItemDuplicateCandidateSearch> {
   const tokens = dedupSignature(query).split(' ').filter(Boolean);
   if (!tokens.length) return { complete: false, items: [], reason: 'empty-query' };
@@ -2983,12 +2989,16 @@ export async function searchWorkItemDuplicateCandidates(
   const maxCandidates = Math.max(1, Math.min(DUPLICATE_CANDIDATE_MAX_LIMIT, requestedLimit));
   const minimumOverlap = Math.ceil((DUP_THRESHOLD - 0.01) * tokens.length);
   const { sql } = getOrgPg();
+  const mark = (phase: 'indexable-terms' | 'candidate-query') => {
+    try { opts.onPhase?.(phase); } catch { /* Observers cannot change candidate coverage. */ }
+  };
   // Statistics affect ordering only: ANY seed subset of this size preserves the overlap
   // proof below. Missing/stale statistics cannot hide a duplicate. Reuse ANALYZE's existing
   // tsvector frequencies rather than counting the corpus for every token on the hot path.
   // A token can stem to several lexemes (AND semantics), whose minimum frequency is an
   // upper bound on its frequency. An unlisted lexeme is treated as rare; absent statistics
   // retain the previous length/lexical order.
+  mark('indexable-terms');
   const indexableTokens = await sql<{ token: string }[]>`
     WITH statistics AS MATERIALIZED (
       SELECT most_common_elems::text::text[] AS lexemes, most_common_elem_freqs AS frequencies
@@ -3020,6 +3030,7 @@ export async function searchWorkItemDuplicateCandidates(
   const maxSeedMisses = seedTokens.length - requiredSeedMatches;
   const issueWorkspace = issuesScopeWorkspace();
   const featureWorkspace = activeWorkspaceId();
+  mark('candidate-query');
   const rows = await sql<Array<{
     id: string;
     title: string;
