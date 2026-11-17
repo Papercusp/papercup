@@ -567,6 +567,7 @@ export async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise
      WHERE finished_at IS NOT NULL
        AND finished_at < now() - interval '1 hour'
        AND documentation_input IS NULL
+       AND native_proof_input IS NULL
   `);
 }
 
@@ -2126,6 +2127,213 @@ async function prepareRunAsync(req: SpawnRequest, inheritedEnvironment?: NodeJS.
     worktreeBefore: artifact.root === cwd ? worktreeBefore : await captureWorktreeSnapshotAsync(artifact.root),
   })));
   return prepareRun(req, { cwd, worktreeBefore, detachedReportArtifacts }, inheritedEnvironment);
+}
+
+const nativeProofDigest = z.string().regex(/^[a-f0-9]{64}$/);
+const nativeProofDigests = z.record(z.string().min(1), nativeProofDigest)
+  .refine(value => Object.keys(value).length > 0, 'required source identities are missing');
+
+/** Knowable BEFORE clone/install/build. Observed outputs never enter this key.
+ * Runtime labels, ports, run ids, timestamps and review labels are deliberately
+ * not accepted as identity fields. Retain the complete bytes at the cited refs. */
+const nativeProofInputSchema = z.object({
+  schemaVersion: z.literal(1),
+  scope: z.object({ workspaceId: z.string().min(1), harnessSlug: z.string().min(1),
+    planSlug: z.string().min(1) }).strict(),
+  original: z.object({ sourceSha: z.string().regex(/^[a-f0-9]{40}$/),
+    fixtureSha256: nativeProofDigest, captureSha256: nativeProofDigest,
+    sourceDigests: nativeProofDigests, dependenciesReconstructed: z.literal(false) }).strict(),
+  prerequisiteSources: nativeProofDigests,
+  method: z.object({ sha256: nativeProofDigest, configurationSha256: nativeProofDigest,
+    clientMatrix: z.array(z.string().min(1)).min(1)
+      .refine(values => new Set(values).size === values.length, 'duplicate client identity') }).strict(),
+  selectedInputs: z.record(z.string().min(1), nativeProofDigest.nullable())
+    .refine(value => Object.keys(value).length > 0, 'required selected inputs are missing'),
+  plannedRepair: z.object({ lockSha256: nativeProofDigest, packageDeltaSha256: nativeProofDigest,
+    candidateGraphSha256: nativeProofDigest }).strict(),
+  toolchain: z.object({ npmSha256: nativeProofDigest, npmVersion: z.string().min(1),
+    nodeVersion: z.string().min(1), nativeAbi: z.string().regex(/^\d+$/) }).strict(),
+}).strict();
+
+export type NativeProofInput = z.infer<typeof nativeProofInputSchema>;
+const nativeProofAdmissionSchema = z.object({
+  reviewedFingerprint: nativeProofDigest, reviewRef: z.string().min(1),
+  preflightRefs: z.object({ numericFold: z.string().min(1), physicalInstall: z.string().min(1),
+    priorFailureAudit: z.string().min(1) }).strict(),
+}).strict();
+export type NativeProofAdmission = z.infer<typeof nativeProofAdmissionSchema>;
+const NATIVE_PROOF_ORDER = ['reserved', 'started', 'installed', 'built', 'runtime', 'trace', 'sealed', 'readback'] as const;
+type NativeProofEventKind = typeof NATIVE_PROOF_ORDER[number];
+type NativeProofEvent = { kind: NativeProofEventKind; fingerprint: string;
+  receiptRef?: string; receiptSha256?: string };
+export type NativeProofRun = { runId: string; fingerprint: string; input: NativeProofInput;
+  admission: NativeProofAdmission; events: NativeProofEvent[]; childLaunch: NativeProofChildLaunch | null };
+const nativeProofChildSchema = z.object({ fingerprint: nativeProofDigest,
+  entryPoint: z.string().min(1), entryPointSha256: nativeProofDigest,
+  state: z.enum(['authorized', 'started']) }).strict();
+export type NativeProofChildLaunch = z.infer<typeof nativeProofChildSchema>;
+export type NativeProofChildHandoff = { runId: string; fingerprint: string;
+  entryPoint: string; entryPointSha256: string };
+
+export function nativeProofFingerprint(value: unknown) {
+  const input = nativeProofInputSchema.parse(value);
+  // The client matrix is a set, just like the digest maps. Caller permutations
+  // must not manufacture another expensive edition.
+  input.method.clientMatrix.sort();
+  return { input, fingerprint: createHash('sha256').update(canonicalJson(input)).digest('hex') };
+}
+
+function nativeProofRun(row: unknown): NativeProofRun {
+  const parsed = z.object({ run_id: z.string(), native_proof_input: z.object({
+    schemaVersion: z.literal(1), fingerprint: nativeProofDigest, input: nativeProofInputSchema,
+    admission: nativeProofAdmissionSchema,
+  }).strict(), native_proof_events: z.array(z.object({
+    kind: z.enum(NATIVE_PROOF_ORDER), fingerprint: nativeProofDigest,
+    receiptRef: z.string().min(1).optional(), receiptSha256: nativeProofDigest.optional(),
+  }).strict()).min(1).max(NATIVE_PROOF_ORDER.length),
+  native_proof_child_launch: nativeProofChildSchema.nullable() }).passthrough().parse(row);
+  const { fingerprint, input, admission } = parsed.native_proof_input;
+  if (nativeProofFingerprint(input).fingerprint !== fingerprint
+    || admission.reviewedFingerprint !== fingerprint || parsed.run_id !== 'native-proof-' + fingerprint
+    || parsed.native_proof_events.some((event, index) => event.kind !== NATIVE_PROOF_ORDER[index]
+      || event.fingerprint !== fingerprint
+      || (index >= 2 && (!event.receiptRef || !event.receiptSha256)))
+    || (parsed.native_proof_events.length === 8
+      && parsed.native_proof_events[7]!.receiptSha256 !== parsed.native_proof_events[6]!.receiptSha256))
+    throw new Error('native proof ledger identity or ordered custody is invalid');
+  const childLaunch = parsed.native_proof_child_launch;
+  if (childLaunch && (childLaunch.fingerprint !== fingerprint
+    || input.prerequisiteSources[childLaunch.entryPoint] !== childLaunch.entryPointSha256
+    || parsed.native_proof_events.length < 4))
+    throw new Error('native proof child is detached from its original prelaunch input');
+  return { runId: parsed.run_id, fingerprint, input, admission, events: parsed.native_proof_events, childLaunch };
+}
+
+/** Read the original intent after a crash; absence is distinct from an unknown
+ * started effect. Errors propagate rather than authorizing a replacement run. */
+export async function readNativeProofRun(sql: SqlLike, runId: string): Promise<NativeProofRun | null> {
+  const rows = await sql`SELECT run_id, native_proof_input, native_proof_events, native_proof_child_launch
+    FROM harness_shared.testing_run_snapshots WHERE run_id = ${runId}`;
+  if (!Array.isArray(rows)) throw new Error('native proof ledger unavailable');
+  if (rows.length === 0) return null;
+  if (rows.length !== 1) throw new Error('native proof ledger returned ambiguous identity');
+  return nativeProofRun(rows[0]);
+}
+
+/** The caller verifies canonical independent review/preflight authority first.
+ * This storage seam binds those receipts; their mere presence is not review.
+ * A single INSERT reserves the EXISTING ledger before any expensive allocation. */
+export async function reserveNativeProofRun(sql: SqlLike, value: NativeProofInput,
+  admissionValue: NativeProofAdmission): Promise<NativeProofRun> {
+  const { input, fingerprint } = nativeProofFingerprint(value);
+  const admission = nativeProofAdmissionSchema.parse(admissionValue);
+  if (admission.reviewedFingerprint !== fingerprint) throw new Error('native proof edition is not the reviewed edition');
+  const runId = 'native-proof-' + fingerprint;
+  const envelope = { schemaVersion: 1, fingerprint, input, admission };
+  const events = [{ kind: 'reserved', fingerprint }];
+  await sql`INSERT INTO harness_shared.testing_run_snapshots
+    (run_id, kind, label, command, status, exit_code, started_at, finished_at,
+     output, truncated, native_proof_input, native_proof_events)
+    VALUES (${runId}, 'node', 'native-proof', '["native-proof"]'::jsonb, 'running', NULL,
+      now(), NULL, '', FALSE, ${JSON.stringify(envelope)}::jsonb, ${JSON.stringify(events)}::jsonb)
+    ON CONFLICT (run_id) DO NOTHING`;
+  const retained = await readNativeProofRun(sql, runId);
+  if (!retained || retained.fingerprint !== fingerprint || canonicalJson(retained.input) !== canonicalJson(input))
+    throw new Error('native proof reservation did not retain its exact input');
+  return retained;
+}
+
+/** Compare-and-append on the original intent. No overwrite, lease expiry,
+ * timeout retry or new run label can turn a started/unknown effect into unstarted. */
+export async function appendNativeProofEvent(sql: SqlLike, runId: string, fingerprint: string,
+  priorEventCount: number, event: Omit<NativeProofEvent, 'fingerprint'>): Promise<NativeProofRun> {
+  nativeProofDigest.parse(fingerprint);
+  if (!Number.isInteger(priorEventCount) || priorEventCount < 1
+    || priorEventCount >= NATIVE_PROOF_ORDER.length || event.kind !== NATIVE_PROOF_ORDER[priorEventCount])
+    throw new Error('native proof event order or single-start violation');
+  const next = z.object({ kind: z.enum(NATIVE_PROOF_ORDER), fingerprint: nativeProofDigest,
+    receiptRef: z.string().min(1).optional(), receiptSha256: nativeProofDigest.optional(),
+  }).strict().parse({ ...event, fingerprint });
+  if (priorEventCount >= 2 && (!next.receiptRef || !next.receiptSha256))
+    throw new Error('native proof observation requires complete retained receipt identity');
+  const rows = await sql`UPDATE harness_shared.testing_run_snapshots
+    SET native_proof_events = native_proof_events || ${JSON.stringify([next])}::jsonb, updated_at = now()
+    WHERE run_id = ${runId} AND native_proof_input->>'fingerprint' = ${fingerprint}
+      AND jsonb_array_length(native_proof_events) = ${priorEventCount}
+    RETURNING run_id, native_proof_input, native_proof_events, native_proof_child_launch`;
+  if (!Array.isArray(rows) || rows.length !== 1)
+    throw new Error('native proof admission already consumed, unknown, or changed; reconcile original intent');
+  return nativeProofRun(rows[0]);
+}
+
+/** Covers the whole caller closure, including runHarness allocation/prepare.
+ * A failed/unknown effect keeps its committed start and is never auto-replaced. */
+export async function executeNativeProofOnce<T>(sql: SqlLike & Pick<import('postgres').Sql, 'begin'>, input: NativeProofInput,
+  admission: NativeProofAdmission, execute: (intent: NativeProofRun) => Promise<T>): Promise<T> {
+  // A transaction client would run the callback before its outer COMMIT. Require
+  // a pool and own this transaction so return establishes durable admission.
+  if (typeof sql.begin !== 'function') throw new Error('native proof execution requires a committing ledger pool');
+  const frozenInput = nativeProofFingerprint(input).input;
+  const frozenAdmission = nativeProofAdmissionSchema.parse(admission);
+  const started = await sql.begin(async tx => {
+    await tx`SET LOCAL statement_timeout = '30s'`;
+    const ledger = tx as unknown as SqlLike;
+    const reserved = await reserveNativeProofRun(ledger, frozenInput, frozenAdmission);
+    return appendNativeProofEvent(ledger, reserved.runId, reserved.fingerprint, 1, { kind: 'started' });
+  });
+  return execute(started);
+}
+
+/** Commit the single fork authorization on the SAME parent intent. A crash
+ * between COMMIT and fork remains unknown; expiry never grants another fork. */
+export async function executeNativeProofChildOnce<T>(sql: Parameters<typeof executeNativeProofOnce>[0],
+  runId: string, fingerprint: string, entryPoint: string,
+  forkChild: (handoff: NativeProofChildHandoff) => Promise<T>): Promise<T> {
+  if (typeof sql.begin !== 'function') throw new Error('native proof child requires a committing ledger pool');
+  const handoff = await sql.begin(async tx => {
+    await tx`SET LOCAL statement_timeout = '30s'`;
+    const ledger = tx as unknown as SqlLike;
+    const intent = await readNativeProofRun(ledger, runId);
+    const entryPointSha256 = intent?.input.prerequisiteSources[entryPoint];
+    if (!intent || intent.fingerprint !== fingerprint || intent.events.length !== 4 || !entryPointSha256)
+      throw new Error('native proof child requires the original built intent and reviewed entry point');
+    const child = { fingerprint, entryPoint, entryPointSha256, state: 'authorized' as const };
+    const rows = await tx`UPDATE harness_shared.testing_run_snapshots
+      SET native_proof_child_launch = ${JSON.stringify(child)}::jsonb, updated_at = now()
+      WHERE run_id = ${runId} AND native_proof_input->>'fingerprint' = ${fingerprint}
+        AND jsonb_array_length(native_proof_events) = 4 AND native_proof_child_launch IS NULL
+      RETURNING run_id`;
+    if (rows.length !== 1) throw new Error('native proof child fork already authorized or unknown; reconcile original intent');
+    return { runId, fingerprint, entryPoint, entryPointSha256 };
+  });
+  return forkChild(handoff);
+}
+
+/** The private child consumes its serialized handoff BEFORE runtime effects.
+ * Its own measured source bytes must match the parent's reviewed entry point. */
+export async function enterNativeProofChild<T>(sql: Parameters<typeof executeNativeProofOnce>[0],
+  handoff: NativeProofChildHandoff, actualEntryPoint: string, actualSha256: string,
+  execute: (intent: NativeProofRun) => Promise<T>): Promise<T> {
+  if (typeof sql.begin !== 'function') throw new Error('native proof child requires a committing ledger pool');
+  const identity = nativeProofChildSchema.omit({ state: true }).parse({
+    fingerprint: handoff.fingerprint, entryPoint: handoff.entryPoint, entryPointSha256: handoff.entryPointSha256 });
+  if (identity.entryPoint !== actualEntryPoint || identity.entryPointSha256 !== actualSha256)
+    throw new Error('native proof actual child entry point changed');
+  const started = await sql.begin(async tx => {
+    await tx`SET LOCAL statement_timeout = '30s'`;
+    const ledger = tx as unknown as SqlLike;
+    const intent = await readNativeProofRun(ledger, handoff.runId);
+    if (!intent || intent.fingerprint !== identity.fingerprint || intent.events.length !== 4
+      || canonicalJson(intent.childLaunch) !== canonicalJson({ ...identity, state: 'authorized' }))
+      throw new Error('native proof child handoff is absent, consumed, unknown or changed');
+    const rows = await tx`UPDATE harness_shared.testing_run_snapshots
+      SET native_proof_child_launch = ${JSON.stringify({ ...identity, state: 'started' })}::jsonb, updated_at = now()
+      WHERE run_id = ${handoff.runId} AND native_proof_child_launch = ${JSON.stringify(intent.childLaunch)}::jsonb
+      RETURNING run_id`;
+    if (rows.length !== 1) throw new Error('native proof child handoff already consumed; reconcile original intent');
+    return (await readNativeProofRun(ledger, handoff.runId))!;
+  });
+  return execute(started);
 }
 
 /** Immutable launch input for the documentation admission transaction. Source

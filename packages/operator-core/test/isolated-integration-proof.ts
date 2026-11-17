@@ -15,6 +15,9 @@ import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-ident
 import { readCommittedFiles } from '../lib/agent-tools/plans/committed-tree-reader';
 import { qualifyCommittedReaderOriginalPreparation as qualifyOriginalPreparation } from './private-http-workspace-preflight';
 import { it } from 'vitest';
+import type { executeNativeProofOnce, NativeProofRun, NativeProofChildHandoff } from '../lib/testing-run-store';
+// eslint-disable-next-line import/no-relative-packages -- same raw SQL parameter contract as the org client
+import { restoreRawJsonbSerializer } from '../../../libs/papercusp/libs/db/src/raw-serializers';
 // @ts-ignore -- reuse the maintained JS router's deadline contract.
 import { assertPrivateIntegrationEvidence, defaultTestFileRunTimeoutMs, testFileListTimeoutMs, testFileRunTimeoutMs, MAX_TEST_FILE_RUN_TIMEOUT_MS, TEST_FILE_KILL_GRACE_MS, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC } from '../../../scripts/test-files.mjs';
 // @ts-ignore -- same progress watchdog used by that router.
@@ -1018,21 +1021,89 @@ export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePath
   ])].sort();
 }
 
-export async function recordIsolatedIntegrationProof(options: {
+export type NativeProofRecorder = {
+  observe: (kind: 'installed' | 'built' | 'runtime' | 'trace' | 'sealed' | 'readback', receiptPath: string) => Promise<void>;
+};
+
+/** Deliberately require the dedicated shared-ledger pin. Falling back to the
+ * disposable product DB would allow a successor to mint another launch. */
+export async function withNativeProofLedger<T>(env: NodeJS.ProcessEnv,
+  execute: (sql: Parameters<typeof executeNativeProofOnce>[0]) => Promise<T>): Promise<T> {
+  const url = env.PAPERCUSP_TEST_RUNS_DB_URL?.trim();
+  assert.ok(url, 'Native proof requires an explicit durable test-run ledger URL');
+  const { default: postgres } = await import('postgres');
+  const sql = postgres(url, { max: 2, connect_timeout: 5 });
+  restoreRawJsonbSerializer(sql);
+  try { return await execute(sql as unknown as Parameters<typeof executeNativeProofOnce>[0]); }
+  finally { await sql.end({ timeout: 5 }); }
+}
+
+type IsolatedIntegrationProofOptions = {
   root: string; filePath: string; sourcePaths: string[];
   signal?: AbortSignal;
   /** Explicit encompassing allowance for multi-process proofs; validated before allocation. */
   minimumFileRunTimeoutMs?: number;
   /** Required original receipts, relative to the run directory. Missing files fail retention. */
   retainedArtifacts?: readonly string[];
-  prepare?: (evidenceDir: string) => Promise<void | CommittedReaderPreparationHandoff> | void | CommittedReaderPreparationHandoff;
+  prepare?: (evidenceDir: string, native?: NativeProofRecorder) => Promise<void | CommittedReaderPreparationHandoff> | void | CommittedReaderPreparationHandoff;
   requiredPreparation?: CommittedReaderObservationIdentity;
-  execute: (observe: (child: ChildProcess) => void, evidenceDir: string) => Promise<void>;
-}): Promise<string> {
+  /** Existing durable ledger admission covers allocation, prepare and execute. */
+  nativeProof?: { sql: Parameters<typeof executeNativeProofOnce>[0];
+    input: Parameters<typeof executeNativeProofOnce>[1];
+    admission: Parameters<typeof executeNativeProofOnce>[2] };
+  nativeChildEntryPoint?: string;
+  execute: (observe: (child: ChildProcess) => void, evidenceDir: string,
+    nativeChild?: NativeProofChildHandoff, native?: NativeProofRecorder) => Promise<void>;
+};
+
+export async function recordIsolatedIntegrationProof(options: IsolatedIntegrationProofOptions): Promise<string> {
   options.signal?.throwIfAborted();
   if (options.minimumFileRunTimeoutMs !== undefined)
     assertIsolatedFileRunBudget(options.minimumFileRunTimeoutMs);
+  // The baseline must not silently fall back to a fresh filesystem run after
+  // restart, including an older continuation calling the maintained helper.
+  if (options.filePath === 'packages/operator-core/lib/task-artifacts-client-baseline.integration.test.ts' && !options.nativeProof) {
+    // The existing run-group is a LOOKUP, never a new edition identity. Only a
+    // separately reserved durable native intent can enter this baseline path.
+    const runId = process.env.PAPERCUSP_TEST_RUN_GROUP;
+    assert.ok(runId && /^native-proof-[a-f0-9]{64}$/.test(runId),
+      'Native baseline requires durable prelaunch admission before allocation/prepare');
+    return withNativeProofLedger(process.env, async sql => {
+      const { readNativeProofRun } = await import('../lib/testing-run-store');
+      const intent = await readNativeProofRun(sql, runId);
+      assert.ok(intent, 'Native baseline original prelaunch intent is absent');
+      return recordIsolatedIntegrationProof({ ...options, nativeProof: {
+        sql, input: intent.input, admission: intent.admission,
+      } });
+    });
+  }
+  if (!options.nativeProof) return recordIsolatedIntegrationProofRun(options);
+  const { sql, input, admission } = options.nativeProof;
+  assert.ok(options.nativeChildEntryPoint && input.prerequisiteSources[options.nativeChildEntryPoint],
+    'Native proof requires its reviewed private child entry point before allocation/prepare');
+  const paths = isolatedIntegrationProofSourcePaths(options.filePath, options.sourcePaths);
+  const sources = Object.fromEntries(paths.map(path => [path, hash(readFileSync(join(options.root, path)))]));
+  assert.deepEqual(input.prerequisiteSources, sources, 'Native proof prelaunch source identity changed');
+  const { executeNativeProofOnce } = await import('../lib/testing-run-store');
+  return executeNativeProofOnce(sql, input, admission, async intent => {
+    options.signal?.throwIfAborted();
+    return recordIsolatedIntegrationProofRun(options, intent);
+  });
+}
+
+async function recordIsolatedIntegrationProofRun(options: IsolatedIntegrationProofOptions,
+  nativeIntent?: NativeProofRun): Promise<string> {
   const { root, filePath } = options;
+  const nativeRecorder: NativeProofRecorder | undefined = nativeIntent ? {
+    observe: async (kind, receiptPath) => {
+      const { readNativeProofRun, appendNativeProofEvent } = await import('../lib/testing-run-store');
+      const sql = options.nativeProof!.sql;
+      const current = await readNativeProofRun(sql, nativeIntent.runId);
+      assert.ok(current && current.fingerprint === nativeIntent.fingerprint, 'Native proof original intent changed');
+      await appendNativeProofEvent(sql, current.runId, current.fingerprint, current.events.length,
+        { kind, receiptRef: receiptPath, receiptSha256: hash(readFileSync(receiptPath)) });
+    },
+  } : undefined;
   const paths = isolatedIntegrationProofSourcePaths(filePath, options.sourcePaths);
   let source: any;
   let lifecycle: any;
@@ -1043,6 +1114,7 @@ export async function recordIsolatedIntegrationProof(options: {
   let original: ReturnType<typeof qualifyOriginalPreparation> | undefined;
   let retainedPreparationDir: string | undefined;
   const retainedArtifacts = [...new Set(['phases/prepare/source.json', 'phases/execute/lifecycle.json',
+    ...(nativeIntent ? ['phases/prepare/native-proof-intent.json', 'phases/execute/native-proof-child.json'] : []),
     ...(options.requiredPreparation ? ['phases/prepare/verifier-source.json', 'phases/prepare/operator-api-inputs.json',
       'phases/prepare/original-observations.json'] : []), ...(options.retainedArtifacts ?? [])])];
   const recheckPreparation = () => {
@@ -1053,6 +1125,7 @@ export async function recordIsolatedIntegrationProof(options: {
       assert.deepEqual(readFileSync(join(retainedPreparationDir!, name)), bytes, 'Retained original preparation bytes changed');
   };
   const result = await runHarness({
+    ...(nativeIntent ? { runId: nativeIntent.runId } : {}),
     contract: { name: 'isolated-integration', phases: [
       { id: 'prepare' }, { id: 'execute', dependsOn: ['prepare'] }, { id: 'teardown' },
     ] }, evidenceRoot: defaultEvidenceRoot('isolated-integration'),
@@ -1060,6 +1133,8 @@ export async function recordIsolatedIntegrationProof(options: {
     runPhase: async ctx => {
       if (ctx.phase === 'prepare') {
         options.signal?.throwIfAborted();
+        if (nativeIntent) await writeFile(join(ctx.evidenceDir, 'native-proof-intent.json'),
+          JSON.stringify(nativeIntent), { flag: 'wx' });
         const progress = (stage: string) => {
           ctx.markStep(stage);
           retainIsolatedWorkerProgress(ctx.evidenceDir, stage);
@@ -1072,7 +1147,7 @@ export async function recordIsolatedIntegrationProof(options: {
         // Required originals must be validated and retained before allocating
         // the parent observer. Legacy void callbacks retain their old order.
         if (options.requiredPreparation) {
-          original = qualifyOriginalPreparation(await options.prepare?.(ctx.evidenceDir), options.requiredPreparation);
+          original = qualifyOriginalPreparation(await options.prepare?.(ctx.evidenceDir, nativeRecorder), options.requiredPreparation);
           retainedPreparationDir = ctx.evidenceDir;
           for (const [name, bytes] of [['verifier-source.json', original.planned.sourceBytes],
             ['operator-api-inputs.json', original.planned.inputBytes], ['original-observations.json', original.bytes]] as const)
@@ -1102,18 +1177,26 @@ export async function recordIsolatedIntegrationProof(options: {
           } } : {}) };
         await writeFile(join(ctx.evidenceDir, 'source.json'), JSON.stringify(source), { flag: 'wx' });
         if (!options.requiredPreparation) {
-          const handoff = await options.prepare?.(ctx.evidenceDir);
+          const handoff = await options.prepare?.(ctx.evidenceDir, nativeRecorder);
           assert.equal(handoff, undefined, 'Original preparation handoff requires an explicit original identity');
         }
       } else if (ctx.phase === 'execute') {
         options.signal?.throwIfAborted();
         recheckPreparation();
         try {
-          await options.execute(child => {
-            assert.ok(!observedChild, 'one lifecycle per run');
-            observedChild = child;
-            observation = observeIsolatedWorkerLifetime(child, root, ctx.evidenceDir, ctx.runId);
-          }, ctx.evidenceDir);
+          const execute = async (handoff?: NativeProofChildHandoff) => {
+            if (handoff) await writeFile(join(ctx.evidenceDir, 'native-proof-child.json'), JSON.stringify(handoff), { flag: 'wx' });
+            await options.execute(child => {
+              assert.ok(!observedChild, 'one lifecycle per run');
+              observedChild = child;
+              observation = observeIsolatedWorkerLifetime(child, root, ctx.evidenceDir, ctx.runId);
+            }, ctx.evidenceDir, handoff, nativeRecorder);
+          };
+          if (nativeIntent) {
+            const { executeNativeProofChildOnce } = await import('../lib/testing-run-store');
+            await executeNativeProofChildOnce(options.nativeProof!.sql, nativeIntent.runId, nativeIntent.fingerprint,
+              options.nativeChildEntryPoint!, execute);
+          } else await execute();
         } finally {
           // Teardown uses the original observer even when the journey rejects.
           // A failed assertion must not erase an already observed cleanup.

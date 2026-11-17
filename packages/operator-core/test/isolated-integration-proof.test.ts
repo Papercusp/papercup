@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from './isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
 import { privateOperatorApiBuildBudget } from './private-http-workspace-preflight';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
@@ -69,6 +69,25 @@ describe('isolated negative preflight evidence', () => {
       await expect(assertIsolatedPreflightRejection(async () => { throw failure; }, expected, dir))
         .rejects.toMatchObject({ errors: [failure, expect.objectContaining({ code: 'EISDIR' })] });
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('P010 native proof allocation admission', () => {
+  it('refuses implicit product-database fallback without entering the effect', async () => {
+    const execute = vi.fn();
+    await expect(withNativeProofLedger({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://product-only/fixture' }, execute))
+      .rejects.toThrow('explicit durable test-run ledger URL');
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it('refuses a baseline successor with no durable intent before inspecting a root or entering prepare', async () => {
+    const prepare = vi.fn();
+    const execute = vi.fn();
+    await expect(recordIsolatedIntegrationProof({ root: '/must-not-allocate-native-baseline',
+      filePath: 'packages/operator-core/lib/task-artifacts-client-baseline.integration.test.ts',
+      sourcePaths: [], prepare, execute,
+    })).rejects.toThrow('durable prelaunch admission before allocation/prepare');
+    expect(prepare).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 });
 

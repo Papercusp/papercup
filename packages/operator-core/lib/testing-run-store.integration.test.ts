@@ -1,11 +1,17 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
+import { fork } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { withNativeProofLedger } from '../test/isolated-integration-proof';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { getRunAsync, TestingRunSnapshotUnavailableError, persistHarnessTestRunsWithIds,
   insertDocumentationRunInput, readDocumentationRunInput, persistRunSnapshot, prunePersistedRunSnapshots,
+  nativeProofFingerprint, reserveNativeProofRun, readNativeProofRun, appendNativeProofEvent, executeNativeProofOnce,
+  executeNativeProofChildOnce, enterNativeProofChild, type NativeProofChildHandoff,
+  type NativeProofInput, type NativeProofAdmission,
   type DocumentationRunInput, type RunSnapshot } from './testing-run-store';
 import { executeOperationalRun } from './agent-tools/testing/record-run';
 import { parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
@@ -134,6 +140,368 @@ describe('[plan:language-neutral-code-documentation-integration-2026-11-12] [R-1
     const before = await read(value.runId);
     await prunePersistedRunSnapshots(storeSql());
     expect(await read(value.runId)).toEqual(before);
+  });
+});
+
+describe('P010 native proof admission on the existing run ledger (real PG)', () => {
+  let db: OrgTestDb;
+  const sql = () => db.adminSql as unknown as Parameters<typeof executeNativeProofOnce>[0];
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const childEntry = 'packages/operator-core/test/native-proof-successor.mts';
+  const childSha = () => createHash('sha256').update(readFileSync(new URL('../test/native-proof-successor.mts', import.meta.url))).digest('hex');
+  const kinds = ['installed', 'built', 'runtime', 'trace', 'sealed', 'readback'] as const;
+  const input = (): NativeProofInput => ({
+    schemaVersion: 1,
+    scope: { workspaceId: 'native-proof-fixture', harnessSlug: 'fixture', planSlug: randomUUID() },
+    original: { sourceSha: 'a'.repeat(40), fixtureSha256: hash('fixture'), captureSha256: hash('capture'),
+      sourceDigests: { 'adapter-a.ts': hash('original a'), 'adapter-b.ts': hash('original b') },
+      dependenciesReconstructed: false },
+    prerequisiteSources: { 'harness.ts': hash('harness'), 'installer.mjs': hash('installer'), [childEntry]: childSha() },
+    method: { sha256: hash('method'), configurationSha256: hash('configuration'),
+      clientMatrix: ['mcp:text', 'ptool:text'] },
+    selectedInputs: { 'package.json': hash('manifest'), 'package-lock.json': hash('original lock'), '.npmrc': null },
+    plannedRepair: { lockSha256: hash('repaired lock'), packageDeltaSha256: hash('delta'),
+      candidateGraphSha256: hash('complete graph') },
+    toolchain: { npmSha256: hash('npm executable'), npmVersion: '11.19.0', nodeVersion: '25.9.0', nativeAbi: '141' },
+  });
+  const admission = (value: NativeProofInput): NativeProofAdmission => ({
+    reviewedFingerprint: nativeProofFingerprint(value).fingerprint,
+    reviewRef: 'review:independent-method-fixture', preflightRefs: {
+      numericFold: 'test_runs:numeric', physicalInstall: 'test_runs:physical', priorFailureAudit: 'audit:pre-run' },
+  });
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    for (const name of ['1641-native-proof-run-input', '1642-native-proof-child-launch']) {
+      const armed = new URL('../../../libs/papercusp/libs/db/sql/' + name + '.sql', import.meta.url);
+      const migration = readFileSync(existsSync(armed) ? armed : new URL(armed.href + '.DRAFT'), 'utf8');
+      await db.adminSql.unsafe(migration);
+      await db.adminSql.unsafe(migration); // prove replay before arming
+    }
+  }, 120_000);
+  afterAll(async () => { await db?.cleanup(); });
+
+  const built = async () => {
+    const value = input();
+    return executeNativeProofOnce(sql(), value, admission(value), async intent => {
+      for (const kind of ['installed', 'built'] as const) intent = await appendNativeProofEvent(sql(),
+        intent.runId, intent.fingerprint, intent.events.length,
+        { kind, receiptRef: 'retained:' + kind, receiptSha256: hash(kind) });
+      return intent;
+    });
+  };
+  async function successor(message: object) {
+    return new Promise<{ code: number | null; messages: Array<{ effect?: string; error?: string; pid: number }> }>((resolve, reject) => {
+      const child = fork(fileURLToPath(new URL('../test/native-proof-successor.mts', import.meta.url)), [], {
+        execArgv: ['--import', 'tsx/esm'], timeout: 60_000,
+        env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: db.adminDsn }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      });
+      const messages: Array<{ effect?: string; error?: string; pid: number }> = [];
+      let diagnostics = '';
+      child.stdout?.on('data', chunk => { diagnostics += chunk; });
+      child.stderr?.on('data', chunk => { diagnostics += chunk; });
+      child.on('message', value => { messages.push(value as typeof messages[number]); });
+      child.on('error', reject);
+      child.on('close', code => {
+        if (messages.length === 0) reject(new Error('Native successor produced no receipt: ' + diagnostics));
+        else resolve({ code, messages });
+      });
+      child.send(message);
+    });
+  }
+
+  it('commits exactly one fork authorization and one child start on the original built intent', async () => {
+    const intent = await built();
+    const forks: NativeProofChildHandoff[] = [];
+    const attempts = await Promise.allSettled(Array.from({ length: 8 }, () => executeNativeProofChildOnce(sql(),
+      intent.runId, intent.fingerprint, childEntry, async handoff => {
+        expect((await readNativeProofRun(sql(), intent.runId))!.childLaunch?.state).toBe('authorized');
+        forks.push(handoff);
+      })));
+    expect(attempts.filter(value => value.status === 'fulfilled')).toHaveLength(1);
+    expect(forks).toHaveLength(1);
+    let effects = 0;
+    const children = await Promise.allSettled(Array.from({ length: 8 }, () => enterNativeProofChild(sql(),
+      forks[0]!, childEntry, childSha(), async started => {
+        expect((await readNativeProofRun(sql(), intent.runId))!.childLaunch?.state).toBe('started');
+        expect(started.fingerprint).toBe(intent.fingerprint); effects++;
+      })));
+    expect(children.filter(value => value.status === 'fulfilled')).toHaveLength(1);
+    expect(effects).toBe(1);
+    expect((await readNativeProofRun(sql(), intent.runId))!.input).toEqual(intent.input);
+  });
+
+  it('uses the explicit shared ledger and canonical JSON parameters despite a separate product database pin', async () => {
+    const intent = await built();
+    await withNativeProofLedger({ PAPERCUSP_TEST_RUNS_DB_URL: db.adminDsn,
+      HARNESS_ADMIN_DATABASE_URL: 'postgresql://127.0.0.1:1/disposable-product' }, async ledger => {
+      expect(await readNativeProofRun(ledger, intent.runId)).toEqual(intent);
+      const rows = await ledger`SELECT jsonb_typeof(${JSON.stringify({ nativeProof: true })}::jsonb) AS parameter_type`;
+      expect(rows).toEqual([{ parameter_type: 'object' }]);
+      await executeNativeProofChildOnce(ledger, intent.runId, intent.fingerprint, childEntry, async handoff => {
+        await enterNativeProofChild(ledger, handoff, childEntry, childSha(), async started => {
+          expect(started.runId).toBe(intent.runId);
+          expect((await readNativeProofRun(sql(), intent.runId))!.childLaunch?.state).toBe('started');
+        });
+      });
+    });
+  });
+
+  it('consumes a serialized handoff in a fresh child and refuses replay in another fresh process', async () => {
+    const intent = await built();
+    await executeNativeProofChildOnce(sql(), intent.runId, intent.fingerprint, childEntry, async handoff => {
+      const first = await successor({ mode: 'child', handoff });
+      expect(first.code, JSON.stringify(first)).toBe(0);
+      expect(first.messages).toEqual([{ effect: intent.runId, pid: expect.any(Number), parameterType: 'object' }]);
+      expect(first.messages[0]!.pid).not.toBe(process.pid);
+      const replay = await successor({ mode: 'child', handoff });
+      expect(replay.code).toBe(2);
+      expect(replay.messages).toEqual([{ error: expect.stringContaining('consumed'), pid: expect.any(Number) }]);
+    });
+    const parentReplay = await successor({ mode: 'parent', input: intent.input, admission: intent.admission });
+    expect(parentReplay.code).toBe(2);
+    expect(parentReplay.messages[0]!.error).toContain('already consumed');
+  }, 120_000);
+
+  it.each(['before-fork', 'after-child-start'])('retains unknown %s custody without another fork', async phase => {
+    const intent = await built();
+    let handoff: NativeProofChildHandoff | undefined;
+    await expect(executeNativeProofChildOnce(sql(), intent.runId, intent.fingerprint, childEntry, async value => {
+      handoff = value;
+      if (phase === 'after-child-start') await enterNativeProofChild(sql(), value, childEntry, childSha(), async () => {
+        throw new Error('crash after child start');
+      });
+      throw new Error('crash before fork');
+    })).rejects.toThrow('crash');
+    const retained = await readNativeProofRun(sql(), intent.runId);
+    expect(retained!.childLaunch?.state).toBe(phase === 'before-fork' ? 'authorized' : 'started');
+    let effects = 0;
+    await expect(executeNativeProofChildOnce(sql(), intent.runId, intent.fingerprint, childEntry, async () => { effects++; }))
+      .rejects.toThrow('already authorized');
+    if (phase === 'after-child-start') await expect(enterNativeProofChild(sql(), handoff!, childEntry, childSha(), async () => { effects++; }))
+      .rejects.toThrow('consumed');
+    expect(effects).toBe(0);
+    expect(await readNativeProofRun(sql(), intent.runId)).toEqual(retained);
+  });
+
+  it('refuses missing preparation or substituted entry point before any child effect', async () => {
+    const value = input();
+    const reserved = await reserveNativeProofRun(sql(), value, admission(value));
+    let effects = 0;
+    await expect(executeNativeProofChildOnce(sql(), reserved.runId, reserved.fingerprint, childEntry, async () => { effects++; }))
+      .rejects.toThrow('built intent');
+    const intent = await built();
+    await executeNativeProofChildOnce(sql(), intent.runId, intent.fingerprint, childEntry, async handoff => {
+      for (const changed of [{ ...handoff, fingerprint: hash('other edition') },
+        { ...handoff, entryPoint: 'other-child.mts' }, { ...handoff, entryPointSha256: hash('substituted child') }])
+        await expect(enterNativeProofChild(sql(), changed, childEntry, childSha(), async () => { effects++; })).rejects.toThrow();
+      await expect(appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 4,
+        { kind: 'runtime', receiptRef: 'runtime', receiptSha256: hash('runtime') })).rejects.toMatchObject({ code: '23514' });
+      expect((await readNativeProofRun(sql(), intent.runId))!.childLaunch?.state).toBe('authorized');
+    });
+    expect(effects).toBe(0);
+  });
+
+  it.each(['clear', 'entry', 'digest', 'edition', 'state'])('rejects %s child-custody tampering in PostgreSQL', async mutation => {
+    const intent = await built();
+    await executeNativeProofChildOnce(sql(), intent.runId, intent.fingerprint, childEntry, async handoff => {
+      await enterNativeProofChild(sql(), handoff, childEntry, childSha(), async () => {});
+    });
+    const retained = await readNativeProofRun(sql(), intent.runId);
+    const changed = mutation === 'clear' ? null : { ...retained!.childLaunch,
+      ...(mutation === 'entry' ? { entryPoint: 'other.mts' } : {}),
+      ...(mutation === 'digest' ? { entryPointSha256: hash('other') } : {}),
+      ...(mutation === 'edition' ? { fingerprint: hash('other') } : {}),
+      ...(mutation === 'state' ? { state: 'authorized' } : {}) };
+    await expect(db.adminSql`UPDATE harness_shared.testing_run_snapshots SET native_proof_child_launch =
+      ${JSON.stringify(changed)}::jsonb WHERE run_id = ${intent.runId}`).rejects.toMatchObject({ code: '23514' });
+    expect(await readNativeProofRun(sql(), intent.runId)).toEqual(retained);
+  });
+
+  it('races independent continuations before the entire allocation/prepare/execute closure', async () => {
+    const value = input();
+    const effects: string[] = [];
+    const launch = () => executeNativeProofOnce(sql(), value, admission(value), async intent => {
+      const durable = await readNativeProofRun(sql(), intent.runId);
+      expect(durable!.events.map(event => event.kind)).toEqual(['reserved', 'started']);
+      effects.push('allocate', 'prepare', 'execute');
+    });
+    const results = await Promise.allSettled(Array.from({ length: 8 }, launch));
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(effects).toEqual(['allocate', 'prepare', 'execute']);
+    const runId = 'native-proof-' + nativeProofFingerprint(value).fingerprint;
+    expect((await readNativeProofRun(sql(), runId))!.events).toHaveLength(2);
+  });
+
+  it('resumes the serialized unstarted original reservation exactly once', async () => {
+    const value = input();
+    const reserved = await reserveNativeProofRun(sql(), value, admission(value));
+    const successor = JSON.parse(JSON.stringify({ input: value, admission: admission(value), runId: reserved.runId }));
+    let starts = 0;
+    await executeNativeProofOnce(sql(), successor.input, successor.admission, async intent => {
+      expect(intent.runId).toBe(successor.runId); starts++;
+    });
+    await expect(executeNativeProofOnce(sql(), successor.input, successor.admission, async () => { starts++; }))
+      .rejects.toThrow('already consumed');
+    expect(starts).toBe(1);
+  });
+
+  it('refuses an uncommitted transaction client before entering any protected effect', async () => {
+    const value = input();
+    let effects = 0;
+    await db.adminSql.begin(async tx => {
+      await expect(executeNativeProofOnce(tx as unknown as Parameters<typeof executeNativeProofOnce>[0],
+        value, admission(value), async () => { effects++; })).rejects.toThrow('committing ledger pool');
+    });
+    expect(effects).toBe(0);
+    expect(await readNativeProofRun(sql(), 'native-proof-' + nativeProofFingerprint(value).fingerprint)).toBeNull();
+  });
+
+  it.each([0, 1, 2, 3, 4, 5, 6])('keeps interrupted started custody after %i observations without a replacement launch', async count => {
+    const value = input();
+    let intent = await reserveNativeProofRun(sql(), value, admission(value));
+    intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 1, { kind: 'started' });
+    for (const kind of kinds.slice(0, count)) intent = await appendNativeProofEvent(sql(), intent.runId,
+      intent.fingerprint, intent.events.length, { kind, receiptRef: 'retained:' + kind,
+        receiptSha256: hash(kind === 'readback' ? 'sealed' : kind) });
+    const serialized = JSON.parse(JSON.stringify(intent));
+    expect(await readNativeProofRun(sql(), serialized.runId)).toEqual(serialized);
+    let effects = 0;
+    await expect(executeNativeProofOnce(sql(), serialized.input, serialized.admission, async () => { effects++; }))
+      .rejects.toThrow('already consumed');
+    expect(effects).toBe(0);
+    expect(await readNativeProofRun(sql(), intent.runId)).toEqual(intent);
+  });
+
+  it('retains a committed start when the protected closure fails before its first observation', async () => {
+    const value = input();
+    await expect(executeNativeProofOnce(sql(), value, admission(value), async () => {
+      throw new Error('crash before observation');
+    })).rejects.toThrow('crash before observation');
+    const intent = await reserveNativeProofRun(sql(), value, admission(value));
+    expect(intent.events.map(event => event.kind)).toEqual(['reserved', 'started']);
+    await expect(executeNativeProofOnce(sql(), value, admission(value), async () => {}))
+      .rejects.toThrow('already consumed');
+  });
+
+  it('canonicalizes map and client permutations; cosmetic review changes retain the original intent', async () => {
+    const value = input();
+    const permuted = structuredClone(value);
+    permuted.method.clientMatrix.reverse();
+    permuted.selectedInputs = Object.fromEntries(Object.entries(permuted.selectedInputs).reverse());
+    permuted.original.sourceDigests = Object.fromEntries(Object.entries(permuted.original.sourceDigests).reverse());
+    expect(nativeProofFingerprint(permuted)).toEqual(nativeProofFingerprint(value));
+    const first = await reserveNativeProofRun(sql(), value, admission(value));
+    const cosmetic = { ...admission(permuted), reviewRef: 'review:cosmetic-label-only' };
+    expect(await reserveNativeProofRun(sql(), permuted, cosmetic)).toEqual(first);
+  });
+
+  it.each(['original', 'prerequisiteSources', 'method', 'selectedInputs', 'plannedRepair', 'toolchain'])
+    ('refuses a missing prelaunch %s before any protected effect', async key => {
+      const value = input();
+      const reviewed = admission(value);
+      delete (value as unknown as Record<string, unknown>)[key];
+      let effects = 0;
+      await expect(executeNativeProofOnce(sql(), value, reviewed, async () => { effects++; })).rejects.toThrow();
+      expect(effects).toBe(0);
+    });
+
+  it.each(['runId', 'runtimeLabel', 'port', 'attempt', 'installedTreeSha256', 'servedRuntimeSha256'])
+    ('refuses attempt-local or later-observed field %s instead of minting a new edition', async key => {
+      const value = input();
+      const reviewed = admission(value);
+      Object.assign(value, { [key]: 'pending-or-label' });
+      let effects = 0;
+      await expect(executeNativeProofOnce(sql(), value, reviewed, async () => { effects++; })).rejects.toThrow();
+      expect(effects).toBe(0);
+    });
+
+  it('requires a content-changed edition to have its own matching review', async () => {
+    const value = input();
+    const reviewed = admission(value);
+    const changed = structuredClone(value);
+    changed.plannedRepair.lockSha256 = hash('different lock');
+    expect(nativeProofFingerprint(changed).fingerprint).not.toBe(reviewed.reviewedFingerprint);
+    let effects = 0;
+    await expect(executeNativeProofOnce(sql(), changed, reviewed, async () => { effects++; }))
+      .rejects.toThrow('not the reviewed edition');
+    expect(effects).toBe(0);
+  });
+
+  it('appends pending install/build/runtime/trace observations to the same intent without rekeying', async () => {
+    const value = input();
+    let intent = await reserveNativeProofRun(sql(), value, admission(value));
+    const original = structuredClone(intent);
+    intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 1, { kind: 'started' });
+    for (const kind of kinds) {
+      intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, intent.events.length,
+        { kind, receiptRef: 'retained:' + kind, receiptSha256: hash(kind === 'readback' ? 'sealed' : kind) });
+      expect(intent.runId).toBe(original.runId);
+      expect(intent.fingerprint).toBe(original.fingerprint);
+      expect(intent.input).toEqual(original.input);
+      expect(await readNativeProofRun(sql(), intent.runId)).toEqual(intent);
+    }
+    expect(intent.events.map(event => event.kind)).toEqual(['reserved', 'started', ...kinds]);
+  });
+
+  it('refuses reordered, missing, stale and detached observations without dropping prior custody', async () => {
+    const value = input();
+    let intent = await reserveNativeProofRun(sql(), value, admission(value));
+    intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 1, { kind: 'started' });
+    const receipt = { receiptRef: 'retained:installed', receiptSha256: hash('installed') };
+    await expect(appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 2, { kind: 'built', ...receipt }))
+      .rejects.toThrow('event order');
+    await expect(appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 2, { kind: 'installed' }))
+      .rejects.toThrow('complete retained receipt');
+    await expect(appendNativeProofEvent(sql(), intent.runId, hash('other edition'), 2, { kind: 'installed', ...receipt }))
+      .rejects.toThrow('already consumed');
+    intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 2, { kind: 'installed', ...receipt });
+    await expect(appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 2, { kind: 'installed', ...receipt }))
+      .rejects.toThrow('already consumed');
+    expect(await readNativeProofRun(sql(), intent.runId)).toEqual(intent);
+  });
+
+  it.each(['input', 'events', 'reorder', 'detach', 'replay-start', 'delete'])
+    ('enforces %s custody in PostgreSQL even when a caller bypasses the helper', async mutation => {
+      const value = input();
+      let intent = await reserveNativeProofRun(sql(), value, admission(value));
+      intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 1, { kind: 'started' });
+      const changed = structuredClone(intent.events);
+      if (mutation === 'events') changed[0]!.kind = 'started';
+      if (mutation === 'reorder') changed.push({ kind: 'built', fingerprint: intent.fingerprint,
+        receiptRef: 'retained:built', receiptSha256: hash('built') });
+      if (mutation === 'detach') changed.push({ kind: 'installed', fingerprint: hash('detached'),
+        receiptRef: 'retained:installed', receiptSha256: hash('installed') });
+      if (mutation === 'replay-start') changed.push({ kind: 'started', fingerprint: intent.fingerprint });
+      const query = mutation === 'delete'
+        ? db.adminSql`DELETE FROM harness_shared.testing_run_snapshots WHERE run_id = ${intent.runId}`
+        : mutation === 'input'
+          ? db.adminSql`UPDATE harness_shared.testing_run_snapshots SET native_proof_input = NULL WHERE run_id = ${intent.runId}`
+          : db.adminSql`UPDATE harness_shared.testing_run_snapshots SET native_proof_events = ${JSON.stringify(changed)}::jsonb
+              WHERE run_id = ${intent.runId}`;
+      await expect(query).rejects.toMatchObject({ code: '23514' });
+      expect(await readNativeProofRun(sql(), intent.runId)).toEqual(intent);
+    });
+
+  it('retains the complete original intent across ordinary snapshot expiry', async () => {
+    const value = input();
+    const intent = await reserveNativeProofRun(sql(), value, admission(value));
+    await db.adminSql`UPDATE harness_shared.testing_run_snapshots
+      SET finished_at = now() - interval '2 hours', status = 'error' WHERE run_id = ${intent.runId}`;
+    await prunePersistedRunSnapshots(sql());
+    expect(await readNativeProofRun(sql(), intent.runId)).toEqual(intent);
+  });
+
+  it('rejects a substituted seal readback digest and retains the unqualified sealed original', async () => {
+    const value = input();
+    let intent = await reserveNativeProofRun(sql(), value, admission(value));
+    intent = await appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 1, { kind: 'started' });
+    for (const kind of kinds.filter(kind => kind !== 'readback')) intent = await appendNativeProofEvent(sql(),
+      intent.runId, intent.fingerprint, intent.events.length,
+      { kind, receiptRef: 'retained:' + kind, receiptSha256: hash(kind) });
+    await expect(appendNativeProofEvent(sql(), intent.runId, intent.fingerprint, 7,
+      { kind: 'readback', receiptRef: 'retained:readback', receiptSha256: hash('substituted seal') }))
+      .rejects.toMatchObject({ code: '23514' });
+    expect(await readNativeProofRun(sql(), intent.runId)).toEqual(intent);
   });
 });
 
