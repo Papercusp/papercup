@@ -16325,6 +16325,9 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
     expect(calls[0].opts.headers["x-papercusp-mcp-attempt-id"]).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
+    expect(calls[0].opts.headers["x-papercusp-mcp-trace-id"]).toBe(
+      calls[0].opts.headers["x-papercusp-mcp-attempt-id"],
+    );
     expect(JSON.parse(calls[0].opts.body)).toMatchObject({
       advSessionId: 42,
       sessionId: freshId,
@@ -16505,8 +16508,10 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
     it.each([200, 503])("persists the real HTTP %i outcome without request or response secrets", async (status) => {
       const dir = mkdtempSync(join(tmpdir(), "respawn-report-events-"));
       const receivedAttemptIds: string[] = [];
+      const receivedTraceIds: string[] = [];
       const server = createServer((request, response) => {
         receivedAttemptIds.push(String(request.headers["x-papercusp-mcp-attempt-id"] ?? ""));
+        receivedTraceIds.push(String(request.headers["x-papercusp-mcp-trace-id"] ?? ""));
         response.writeHead(status);
         response.end("response-body-that-must-not-be-logged");
       });
@@ -16527,6 +16532,7 @@ describe("reportSessionRespawned (WI-5075: re-anchor adv row native id on carry-
           /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
         );
         expect(receivedAttemptIds).toEqual([rows[0].callerAttemptId]);
+        expect(receivedTraceIds).toEqual([rows[0].callerAttemptId]);
         expect(rows[0]).toMatchObject({
           kind: "respawn-report-attempt",
           nativeId: freshId,

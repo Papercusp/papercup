@@ -12363,6 +12363,8 @@ export async function reportSessionRespawned(
     headers = {
       "content-type": "application/json",
       "x-papercusp-mcp-attempt-id": callerAttemptId,
+      // Share the lifecycle ledger's UUID with the existing HTTP phase trace.
+      "x-papercusp-mcp-trace-id": callerAttemptId,
       "x-papercusp-respawn-receipt": "1",
       ...(tok ? { authorization: `Bearer ${tok}` } : {}),
     };
