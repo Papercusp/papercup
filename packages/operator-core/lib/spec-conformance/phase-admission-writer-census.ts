@@ -3,9 +3,12 @@
  * failure or unresolved edge is retained, never interpreted as an exemption.
  */
 import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import ts from 'typescript';
 import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
+import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
 
 export const PHASE_WRITER_ROOTS = ['packages/', 'apps/', 'libs/', 'scripts/'] as const;
 export const PHASE_WRITER_RELATIONS = new Set([
@@ -37,6 +40,7 @@ export interface PhaseWriterSite {
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
+  scope: { kind: 'supplied-sources' } | { kind: 'repository'; root: string };
   sites: PhaseWriterSite[];
   sources: Array<{ path: string; sha256: string }>;
   /** Enumeration/read/parse gaps remain identities in the coverage population. */
@@ -80,7 +84,9 @@ function sqlFacts(sql: string) {
     if (['update', 'insert', 'delete', 'merge'].includes(String(node.type))) {
       const table = (node.table ?? node.into ?? node.from) as { name?: string; schema?: string } | undefined;
       if (!table?.name) unresolved.push('mutation-relation-unresolved');
-      else if (PHASE_WRITER_RELATIONS.has(table.name.toLowerCase())) {
+      else {
+        // Keep other relation writers as candidates too: their triggers may
+        // reach a phase relation. Exclusion requires a source-bound review.
         relations.add([table.schema, table.name].filter(Boolean).join('.'));
         const fields = node.type === 'insert' ? node.columns : node.sets;
         if (Array.isArray(fields)) for (const field of fields) {
@@ -99,7 +105,7 @@ function sqlFacts(sql: string) {
     if (node.type === 'create function' && typeof node.code === 'string') {
       // PL/pgSQL is not the SQL grammar. Keep its whole body for review and
       // reachable-trigger analysis instead of treating an opaque body as clean.
-      if (relationText.test(node.code) && mutationText.test(node.code)) {
+      if (mutationText.test(node.code)) {
         functions.push(node.code);
         unresolved.push('sql-function-body-requires-reachability-review');
       }
@@ -119,15 +125,19 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   gaps: PhaseWriterInventory['gaps'] = []): PhaseWriterInventory {
   const sites: PhaseWriterSite[] = [], sources: PhaseWriterInventory['sources'] = [];
   const seenPaths = new Set<string>();
+  const byPath = new Map(input.map(source => [source.path, source]));
+  const sourceHashes = new Map(input.map(source => [source.path, digest(source.content)]));
+  const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; statement: string;
-    line: number; sourceSha256: string }> = [];
+    line: number; importedName?: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
     kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
       'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees'>> = {}) => {
-    const statementSha256 = digest(statement), sourceSha256 = digest(source.content);
+    const statementSha256 = digest(statement), sourceSha256 = sourceHashes.get(source.path)!;
     // Identical statements in the same operation are separate source occurrences.
     const base = JSON.stringify([source.path, operation, kind, statementSha256]);
-    const occurrence = sites.filter(site => site.id.startsWith(base + '#')).length + 1;
+    const occurrence = (occurrences.get(base) ?? 0) + 1;
+    occurrences.set(base, occurrence);
     sites.push({ id: base + '#' + occurrence, path: source.path, operation, kind,
       statement, line, statementSha256, sourceSha256, relations: [], columns: [],
       dynamicEdges: [], unresolved: [], callees: [], ...facts });
@@ -138,7 +148,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       throw new Error(`phase_writer_source_identity_invalid:${source.path}`);
     }
     seenPaths.add(source.path);
-    sources.push({ path: source.path, sha256: digest(source.content) });
+    sources.push({ path: source.path, sha256: sourceHashes.get(source.path)! });
     if (/\.[cm]?[jt]sx?$/.test(source.path)) {
       let unit: ReturnType<typeof censusSites>;
       try { unit = censusSites(source.path, source.content); }
@@ -158,8 +168,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       };
       const inspectSql = (node: ts.Node, sql: string, edges: string[]) => {
         const facts = sqlFacts(sql);
-        if (!facts.relations.length && !facts.functions.length
-          && !(relationText.test(sql) && mutationText.test(sql))) return;
+        if (!facts.relations.length && !facts.functions.length && !mutationText.test(sql)) return;
         add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
           facts.functions.length ? 'sql-function' : 'sql', {
             relations: facts.relations, columns: facts.columns,
@@ -177,6 +186,8 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         });
         return { sql, edges };
       };
+      const bindings = new Map(unit.sites.filter(site => site.kind === 'call')
+        .map(site => [site.node, site.binding]));
       const visit = (node: ts.Node): void => {
         if (ts.isTaggedTemplateExpression(node)) {
           const text = literal(node.template);
@@ -184,7 +195,8 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         } else if (ts.isCallExpression(node)) {
           const callee = node.expression.getText(unit.ast);
           calls.push({ path: source.path, operation: operation(node), callee,
-            statement: node.getText(unit.ast), line: unit.span(node).line, sourceSha256: digest(source.content) });
+            statement: node.getText(unit.ast), line: unit.span(node).line,
+            ...(bindings.get(node)?.imported ? { importedName: bindings.get(node)!.imported } : {}) });
           if (sqlMethod.test(callee)) {
             const text = node.arguments[0] && literal(node.arguments[0]);
             if (text) inspectSql(node, text.sql, text.edges);
@@ -197,13 +209,24 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
             add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
               'authority-append', { dynamicEdges: node.arguments.map(arg => arg.getText(unit.ast)) });
           }
+        } else if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) {
+          // A dormant/indirect SQL literal is still in the population. Looking
+          // only at .unsafe/query calls would miss a newly introduced wrapper.
+          const parent = node.parent;
+          const alreadyInspected = ts.isTaggedTemplateExpression(parent)
+            || ts.isCallExpression(parent) && sqlMethod.test(parent.expression.getText(unit.ast))
+              && parent.arguments[0] === node;
+          if (!alreadyInspected) {
+            const text = literal(node);
+            if (text && mutationText.test(text.sql)) inspectSql(node, text.sql, text.edges);
+          }
         }
         ts.forEachChild(node, visit);
       };
       visit(unit.ast);
     } else if (/\.sql$/.test(source.path)) {
       const facts = sqlFacts(source.content);
-      if (facts.relations.length || relationText.test(source.content) && mutationText.test(source.content)) {
+      if (facts.relations.length || mutationText.test(source.content)) {
         add(source, '<sql-module>', source.content, 1, facts.functions.length ? 'sql-function' : 'sql', facts);
       }
     } else if (relationText.test(source.content) && mutationText.test(source.content)) {
@@ -221,11 +244,11 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   while (changed) {
     changed = false;
     for (const call of calls) {
-      const name = call.callee.split('.').at(-1)!;
+      const name = call.importedName ?? call.callee.split('.').at(-1)!;
       const key = JSON.stringify([call.path, call.operation, call.statement, call.line]);
       if (!writers.has(name) || added.has(key)) continue;
       added.add(key);
-      const source = input.find(source => source.path === call.path)!;
+      const source = byPath.get(call.path)!;
       add(source, call.operation, call.statement, call.line, 'helper-edge', {
         callees: [call.callee], dynamicEdges: [call.callee],
       });
@@ -233,8 +256,53 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       if (!writers.has(wrapper)) { writers.add(wrapper); changed = true; }
     }
   }
-  return { schemaVersion: 1, sources, sites: sites.sort((a, b) => compare(a.id, b.id)),
+  return { schemaVersion: 1, scope: { kind: 'supplied-sources' }, sources, sites: sites.sort((a, b) => compare(a.id, b.id)),
     gaps: retainedGaps.sort((a, b) => compare(a.id, b.id)) };
+}
+
+/** Complete maintained tree enumeration, including checked-out submodules and
+ * new source files. Missing submodules, unreadable files and symlinks are gaps.
+ * Named exclusions retain every path; no page/file cap selects the truth.
+ */
+export function inventoryPhaseWriterTree(root: string) {
+  const enumeration = listFilesIncludingUntracked(root);
+  const input: PhaseWriterSource[] = [];
+  const gaps: PhaseWriterInventory['gaps'] = [];
+  const excluded: Array<{ path: string; reason: string }> = [];
+  const files: string[] = [];
+  for (const path of enumeration.files) {
+    if (typeof path !== 'string' || !canonicalPath(path)) {
+      throw new Error(`phase_writer_enumeration_identity_invalid:${String(path)}`);
+    }
+    files.push(path);
+  }
+  const generated = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'coverage', '.next', '.turbo']);
+  const sourceExtension = /\.(?:[cm]?[jt]sx?|sql|py|rs|sh|bash|ps1|json|ya?ml|toml)$/;
+  for (const path of [...new Set(files)].sort(compare)) {
+    if (!PHASE_WRITER_ROOTS.some(prefix => path.startsWith(prefix))) {
+      excluded.push({ path, reason: 'outside-declared-runtime-roots' }); continue;
+    }
+    if (path.split('/').some(part => generated.has(part))) {
+      excluded.push({ path, reason: 'generated-or-vendor-output' }); continue;
+    }
+    if (!sourceExtension.test(path)) {
+      excluded.push({ path, reason: 'non-runtime-source-extension' }); continue;
+    }
+    try {
+      const fullPath = join(root, path), stat = lstatSync(fullPath);
+      if (!stat.isFile()) { gaps.push({ id: `source:${path}`, reason: 'non-regular-source' }); continue; }
+      const bytes = readFileSync(fullPath), content = bytes.toString('utf8');
+      if (!Buffer.from(content).equals(bytes)) { gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' }); continue; }
+      input.push({ path, content });
+    } catch { gaps.push({ id: `source:${path}`, reason: 'source-read-failed' }); }
+  }
+  for (const path of enumeration.unscanned) {
+    if (PHASE_WRITER_ROOTS.some(prefix => path.startsWith(prefix))) {
+      gaps.push({ id: `submodule:${path}`, reason: 'declared-submodule-not-enumerated' });
+    }
+  }
+  return { ...inventoryPhaseWriters(input, gaps), scope: { kind: 'repository' as const, root }, excluded,
+    enumeration: { scanned: enumeration.scanned, unscanned: enumeration.unscanned } };
 }
 
 const dispositions = new Set<PhaseWriterDisposition>([
@@ -287,7 +355,7 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
     coverage.population.push(id); coverage.notChecked.push(id); coverage.residue.push(id);
     problems.push({ id, reasons: ['reviewed-writer-missing'] });
   }
-  return { schemaVersion: 1 as const, ready: problems.length === 0, coverage, problems };
+  return { schemaVersion: 1 as const, scope: inventory.scope, ready: problems.length === 0, coverage, problems };
 }
 
 export function assertPhaseWriterCensus(inventory: PhaseWriterInventory, reviews: readonly PhaseWriterReview[]) {

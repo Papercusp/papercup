@@ -58,6 +58,21 @@ describe('phase binding writer census', () => {
     expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected, reason: '' }])).toThrow('review-proof-missing');
   });
 
+  it('discovers dormant literals renamed imports and dynamic relation targets', () => {
+    const inventory = inventoryPhaseWriters([
+      source(write),
+      source("import { exampleWrite as renamed } from './example'; async function alias(tx) { await renamed(tx); }", 'packages/operator-core/lib/alias.ts'),
+      source('const dormant = "UPDATE harness_shared.work_items SET status=\'open\'";', 'scripts/dormant.ts'),
+      source('async function dynamic(tx, table) { await tx`UPDATE ${table} SET status=${status}`; }', 'apps/operator/lib/dynamic.ts'),
+    ]);
+    expect(inventory.sites.some(site => site.path === 'scripts/dormant.ts' && site.kind === 'sql')).toBe(true);
+    expect(inventory.sites.some(site => site.operation === 'alias' && site.kind === 'helper-edge')).toBe(true);
+    const dynamic = inventory.sites.find(site => site.operation === 'dynamic')!;
+    expect(dynamic.dynamicEdges).toContain('table');
+    expect(dynamic.unresolved).toContain('sql-parse-unresolved');
+    expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
+  });
+
   it('follows wrapper calls across the complete supplied population to a fixed point', () => {
     const inventory = inventoryPhaseWriters([
       source(write),
