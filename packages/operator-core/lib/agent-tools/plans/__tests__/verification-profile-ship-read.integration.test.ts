@@ -20,6 +20,7 @@ import '../add-item';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { evaluatePlanAcceptanceGate } from '../../../plan-acceptance-gate';
 import { runWithWorkspace } from '../../../workspace-als';
+import { resolveAgentIdentity } from '../../coordination/identity';
 import { setupPlanPgFixture, cleanupPlans, registerHarnessProject, type PlanPgFixture } from './_pg-tool-fixture';
 
 const shipRead = vi.hoisted(() => ({ fail: false }));
@@ -48,6 +49,8 @@ function ctx(): never {
     workspaceId: WS,
     harnessSlug: HARNESS,
     runId: 'plans-verification-profile-ship-read',
+    isSuperuser: true,
+    uiClientId: HARNESS,
     role: 'su',
     gateBypass: { role: true, capability: true, quota: true },
     transport: 'mcp',
@@ -81,6 +84,7 @@ async function shipCodes(force?: { reason: string }): Promise<string[]> {
 }
 
 beforeAll(async () => {
+  expect(resolveAgentIdentity(ctx()).ownerId).toBe(HARNESS);
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
   await registerHarnessProject(admin, WS, HARNESS);
