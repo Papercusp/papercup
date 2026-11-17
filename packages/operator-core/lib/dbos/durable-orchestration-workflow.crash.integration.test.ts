@@ -254,10 +254,9 @@ describe('GEC frozen B durable consumer captures', () => {
       insertOrNoop?: unknown; serializedParameters?: { sourceRef: string } } }) =>
       row.sql.rowOutcome?.allOrNoneRows === 'zero-only' && !row.sql.insertOrNoop
       && row.sql.serializedParameters?.sourceRef.startsWith('source:@dbos-inc/dbos-sdk/'));
-    expect(sdkNoops.length).toBeGreaterThan(0);
-    expect(sdkNoops.some((row: { persistedBytes: unknown }) => row.persistedBytes === 0)).toBe(true);
-    for (const row of sdkNoops.filter((row: { sql: { serverWrite?: unknown } }) => !row.sql.serverWrite)) expect(row.persistedBytes)
-      .toBe(row.sql.status === 'ok' && row.sql.rowOutcome.affectedRows === 0 ? 0 : null);
+    // These workflow writers now have a server-value oracle. They must not
+    // retain a competing parameter-only registration after composition.
+    expect(sdkNoops).toEqual([]);
     const serverWrites = recovered.storage.rows.filter((row: { sql: { serverWrite?: unknown } }) => row.sql.serverWrite);
     expect(serverWrites.length).toBeGreaterThan(0);
     for (const row of serverWrites) {
@@ -286,9 +285,14 @@ describe('GEC frozen B durable consumer captures', () => {
       .filter((row: { sql: { serializedParameters?: { sourceRef: string } } }) =>
         row.sql.serializedParameters?.sourceRef === outputSourceRef);
     const outputWrites = registeredWrites.filter((row: { sql: { command: string } }) => row.sql.command === 'INSERT');
-    const executorWrites = registeredWrites.filter((row: { sql: { command: string } }) => row.sql.command === 'UPDATE');
     expect(outputWrites.length).toBeGreaterThan(0);
-    expect(executorWrites.length).toBeGreaterThan(0);
+    expect(registeredWrites.filter((row: { sql: { command: string } }) => row.sql.command === 'UPDATE')).toEqual([]);
+    expect([...crash.storage.rows, ...recovered.storage.rows]).toContainEqual(expect.objectContaining({
+      sql: expect.objectContaining({
+        queryHash: '4f01eb87844c709f81c32a23f49c07f9bfe0bdadb9799f15064d758807bc4435',
+        serverWrite: expect.objectContaining({ sourceRef: expect.stringContaining('#executor-assignment') }),
+      }),
+    }));
     for (const row of outputWrites) {
       expect(row.kind).toBe('write');
       expect(row.sql.rowOutcome.allOrNoneRows).toBe('zero-only');
@@ -305,15 +309,6 @@ describe('GEC frozen B durable consumer captures', () => {
     // neither the source registration nor the recorder computes this oracle.
     expect(recoveredOutputs.reduce((sum: number, row: { persistedBytes: number }) => sum + row.persistedBytes, 0))
       .toBe(persistedOutputBytes);
-    for (const row of executorWrites) {
-      expect(row.kind).toBe('write');
-      expect(row.sql.rowOutcome.allOrNoneRows).toBe(1);
-      expect(row.sql.serializedParameters.parameterCount).toBe(2);
-      const [value] = row.sql.serializedParameters.values;
-      expect(value.parameter).toBe(0);
-      const count = row.sql.rowOutcome.affectedRows;
-      expect(row.persistedBytes).toBe(row.sql.status !== 'ok' ? null : count === 0 ? 0 : count === 1 ? value.bytes : null);
-    }
     expect(crash.invocations.scope).toEqual(scope);
     expect(crash.invocations.complete).toBe(false);
     expect(crash.invocations.diagnostics).toMatchObject({ pending: 1, late: false, captureFailed: false });
