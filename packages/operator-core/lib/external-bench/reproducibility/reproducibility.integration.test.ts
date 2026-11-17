@@ -139,7 +139,7 @@ afterAll(async () => {
 });
 
 describe('preregister', () => {
-  it('round-trips the frozen HLB profile through the existing PG and file stores and refuses replacement', async () => {
+  it('round-trips the frozen HLB profile through PG and files, exports it unchanged and refuses replacement', async () => {
     const protocol = hlbProtocolFixture('hlb-profile-pg');
     const config = currentBenchmarkProtocolSchema.parse(protocol);
     const registered = await preregister({ runId: protocol.runId, suites: ['terminal-bench'], config,
@@ -152,6 +152,11 @@ describe('preregister', () => {
     const saved = JSON.parse(fileBefore);
     expect(currentBenchmarkProtocolSchema.parse(saved.config)).toEqual(config);
     expect(computePreregHash(saved.config)).toBe(registered.preregHash);
+    const exported = await exportRunBundle(protocol.runId, { repoRoot, sql, workspaceId: WS });
+    const manifest = JSON.parse(readFileSync(join(repoRoot, exported.manifestPath), 'utf8'));
+    expect(currentBenchmarkProtocolSchema.parse(manifest.preregistration.config)).toEqual(config);
+    expect(computePreregHash(manifest.preregistration.config)).toBe(registered.preregHash);
+    expect(manifest.preregHash).toBe(registered.preregHash);
     const changed = structuredClone(config);
     changed.sourceProfile!.verifierTimeoutMs += 1;
     expect(computePreregHash(changed)).not.toBe(registered.preregHash);
