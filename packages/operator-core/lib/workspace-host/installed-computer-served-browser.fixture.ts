@@ -193,10 +193,16 @@ export async function installedPortalRelease(portal: string, source?: string) {
   const root = await realpath(source);
   const identity = JSON.parse(await readFile(join(root, '.papercusp-release.json'), 'utf8')) as PortalReleaseIdentity;
   const integrity = await import(pathToFileURL(join(portal, 'scripts/source-integrity.mjs')).href);
-  const fingerprint = await integrity.fingerprintReleaseSource(portal);
+  // Root freshness consumes only this checkout's records. Linked server code
+  // is checked independently against the immutable artifact's bundle bytes.
+  console.info('[installed-portal-release] source root fingerprint start');
+  const fingerprint = await integrity.fingerprintReleaseSource(portal, { includeLinkedSources: false });
+  console.info('[installed-portal-release] source root fingerprint complete');
   const release = validateInstalledPortalRelease(portal, root, identity, fingerprint.rootDigest);
   await access(release.entry);
+  console.info('[installed-portal-release] artifact provenance start');
   await integrity.assertBuildProvenance(identity.buildProvenance, root, identity.sourceRootDigest);
+  console.info('[installed-portal-release] artifact provenance complete');
   return release;
 }
 
