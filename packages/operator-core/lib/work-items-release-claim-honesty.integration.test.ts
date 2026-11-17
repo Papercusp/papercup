@@ -23,8 +23,12 @@
  * live database, for BOTH work-item families (feature + issue).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+// eslint-disable-next-line import/no-relative-packages -- reuse the maintained private-database schema observer; no public export
+import { captureOwnedDatabaseSchema } from '../../../libs/test-config/src/owned-database-schema';
 
 const hoisted = vi.hoisted(() => ({ sql: null as unknown }));
 const WS = 'ws-release-claim-honesty-test';
@@ -378,4 +382,155 @@ describe('P-003: work_items:claim honesty (non-force) — real two-ledger DB', (
     expect(claimed).toBeNull();
     expect(await issueAssignee('EI-LIVE-CLAIM-1')).toBe('su-issue-live-holder');
   });
+});
+
+describe('draft 1643 — custody capture through application claim/release writers', () => {
+  beforeAll(async () => {
+    // Install only in this disposable database. The draft is not a deployed
+    // migration and these controls grant no historical continuity or identity proof.
+    await sql.unsafe(await readFile(new URL(
+      '../../../libs/papercusp/libs/db/sql/1643-work-item-custody-audit-capture.sql.DRAFT', import.meta.url,
+    ), 'utf8'));
+  });
+
+  it('qualifies the installed draft schema and detects a disabled capture trigger', async () => {
+    const draft = await readFile(new URL(
+      '../../../libs/papercusp/libs/db/sql/1643-work-item-custody-audit-capture.sql.DRAFT', import.meta.url,
+    ), 'utf8');
+    const [installed] = await sql`SELECT t.tgenabled, t.tgtype, p.prosrc, p.prosecdef, p.proconfig
+      FROM pg_trigger t JOIN pg_proc p ON p.oid = t.tgfoid
+      WHERE t.tgrelid = 'harness_shared.work_items'::regclass
+        AND t.tgname = 'capture_work_item_custody_audit_trg'`;
+    expect(installed).toMatchObject({ tgenabled: 'O', tgtype: 29, prosecdef: false,
+      proconfig: ['search_path=pg_catalog'] });
+    expect(installed?.prosrc.trim()).toBe(draft.split('$custody_audit$')[1]?.trim());
+
+    const enabled = await captureOwnedDatabaseSchema(db.adminDsn);
+    expect(enabled).not.toBeNull();
+    expect(enabled).toMatchObject({ schemaVersion: 'owned-database-schema-v2',
+      populationStatus: 'unknown', missing: ['unowned-connections-unobserved'] });
+    let disabled: Awaited<ReturnType<typeof captureOwnedDatabaseSchema>> = null;
+    await sql.unsafe('ALTER TABLE harness_shared.work_items DISABLE TRIGGER capture_work_item_custody_audit_trg');
+    try {
+      disabled = await captureOwnedDatabaseSchema(db.adminDsn);
+      expect(disabled).not.toBeNull();
+      expect(disabled?.schemaSha256).not.toBe(enabled?.schemaSha256);
+      expect(disabled?.appliedMigrationsSha256).toBe(enabled?.appliedMigrationsSha256);
+    } finally {
+      await sql.unsafe('ALTER TABLE harness_shared.work_items ENABLE TRIGGER capture_work_item_custody_audit_trg');
+    }
+    const restored = await captureOwnedDatabaseSchema(db.adminDsn);
+    expect(restored).toEqual(enabled);
+    // Only digests leave the disposable fixture. Equal endpoints do not prove
+    // continuous capture, authenticated identity, retention, or a deployed draft.
+    console.info('R46_PRIVATE_SCHEMA_QUALIFICATION', JSON.stringify({
+      draftSha256: createHash('sha256').update(draft).digest('hex'), enabled, disabled, restored,
+    }));
+  }, 120_000);
+
+  async function seedCustody(family: 'feature' | 'issue', id: string, owner: string | null) {
+    if (family === 'feature') await seedFeature(id, owner);
+    else {
+      await seedIssue(id, owner);
+      // Exercise existing legacy custody, separately from new-issue admission.
+      await sql`UPDATE harness_shared.work_items SET created_ts = 1
+        WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    }
+    if (owner) await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner });
+  }
+
+  async function receipts(id: string) {
+    return sql<{
+      actor: string;
+      details: {
+        eventId: string; transactionId: string; databaseRole: string; operation: string;
+        before: { taken_by: string | null } | null;
+        after: { taken_by: string | null } | null;
+      };
+    }[]>`SELECT actor, details FROM harness_shared.audit_log
+      WHERE workspace_id = ${WS} AND subject = ${id}
+        AND action = 'work_items:custody:capture' ORDER BY ts, id`;
+  }
+
+  async function custody(id: string) {
+    const [row] = await sql`SELECT taken_by, worked_by_history FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    return row;
+  }
+
+  it.each(['feature', 'issue'] as const)('%s: refused writers emit no mutation, while release/reclaim retains the ABA interval', async (family) => {
+    const id = family === 'feature' ? 'F-CAPTURE-WRITER-ABA' : 'EI-CAPTURE-WRITER-ABA';
+    const owner = 'su-capture-writer-owner';
+    await seedCustody(family, id, owner);
+    const before = await receipts(id);
+    const prior = await custody(id);
+    const lease = await getClaim(WS, HARNESS, id);
+
+    expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: 'su-other' })).toBeNull();
+    expect(await claimWorkItem(id, 'su-other', { harness: HARNESS })).toBeNull();
+    expect(await receipts(id)).toEqual(before);
+    expect(await custody(id)).toEqual(prior);
+    expect(await getClaim(WS, HARNESS, id)).toEqual(lease);
+
+    expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner })).not.toBeNull();
+    expect(await getClaim(WS, HARNESS, id)).toBeNull();
+    expect(await claimWorkItem(id, owner, { harness: HARNESS })).not.toBeNull();
+    expect((await custody(id)).taken_by).toBe(owner);
+
+    const transitions = (await receipts(id)).filter(row => row.details.operation === 'UPDATE'
+      && row.details.before?.taken_by !== row.details.after?.taken_by);
+    expect(transitions.map(row => [row.details.before?.taken_by, row.details.after?.taken_by])).toEqual([
+      [owner, null], [null, owner],
+    ]);
+    expect(new Set(transitions.map(row => row.details.eventId)).size).toBe(2);
+    expect(new Set(transitions.map(row => row.details.transactionId)).size).toBe(2);
+    for (const row of transitions) {
+      expect(row.details.databaseRole).toBe('harness_admin');
+      expect(row.actor).toBe('database:harness_admin');
+    }
+  });
+
+  it.each(['feature', 'issue'] as const)('%s: self-transfer, expected-holder takeover and involuntary release retain each ownership edge', async (family) => {
+    const id = family === 'feature' ? 'F-CAPTURE-WRITER-TRANSFER' : 'EI-CAPTURE-WRITER-TRANSFER';
+    const owner = 'su-capture-transfer-owner';
+    const successor = 'su-capture-transfer-successor';
+    await seedCustody(family, id, owner);
+    expect(await claimWorkItem(id, successor, { harness: HARNESS, fromHolder: owner })).not.toBeNull();
+    // This is the writer's exact-holder CAS, not proof of the tool's force authorization.
+    expect(await claimWorkItem(id, owner, { harness: HARNESS, expectedAssignee: successor })).not.toBeNull();
+    expect(await releaseWorkItem(id, { harness: HARNESS })).not.toBeNull();
+    expect((await custody(id)).taken_by).toBeNull();
+    expect(await getClaim(WS, HARNESS, id)).toBeNull();
+
+    const transitions = (await receipts(id)).filter(row => row.details.operation === 'UPDATE'
+      && row.details.before?.taken_by !== row.details.after?.taken_by);
+    expect(transitions.map(row => [row.details.before?.taken_by, row.details.after?.taken_by])).toEqual([
+      [owner, successor], [successor, owner], [owner, null],
+    ]);
+    expect(new Set(transitions.map(row => row.details.eventId)).size).toBe(3);
+  });
+
+  for (const operation of ['claim', 'release'] as const) {
+    it.each(['feature', 'issue'] as const)(`%s: audit refusal rolls back the actual ${operation} writer`, async (family) => {
+      const id = `${family === 'feature' ? 'F' : 'EI'}-CAPTURE-WRITER-ROLLBACK-${operation}`;
+      const owner = 'su-capture-rollback-owner';
+      await seedCustody(family, id, operation === 'release' ? owner : null);
+      const before = await custody(id);
+      const auditBefore = await receipts(id);
+      const leaseBefore = await getClaim(WS, HARNESS, id);
+      await sql.unsafe(`ALTER TABLE harness_shared.audit_log ADD CONSTRAINT refuse_writer_custody_capture
+        CHECK (action <> 'work_items:custody:capture') NOT VALID`);
+      try {
+        const write = operation === 'claim'
+          ? claimWorkItem(id, owner, { harness: HARNESS })
+          : releaseWorkItem(id, { harness: HARNESS, expectedAssignee: owner });
+        await expect(write).rejects.toThrow(/refuse_writer_custody_capture/);
+      } finally {
+        await sql.unsafe('ALTER TABLE harness_shared.audit_log DROP CONSTRAINT refuse_writer_custody_capture');
+      }
+      expect(await custody(id)).toEqual(before);
+      expect(await receipts(id)).toEqual(auditBefore);
+      expect(await getClaim(WS, HARNESS, id)).toEqual(leaseBefore);
+    });
+  }
 });
