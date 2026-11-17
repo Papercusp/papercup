@@ -21737,7 +21737,7 @@
           "POST"
         ]
       },
-      "description": "Search the owner-local Personal Vault with hybrid lexical + local EmbeddingGemma retrieval. DEFAULT DENY: the server resolves this call's plan-template/binding/role identity and refuses without a live owner grant. Coding roles are refused even if a grant row exists.",
+      "description": "Search the owner-local Personal Vault, or read an imported mail message and its attachments live with read:{sourceId,messageId,attachmentId?}. Query describes the search or read purpose. DEFAULT DENY: a live owner grant is required; coding roles are refused even if a grant row exists.",
       "capabilities": [
         "search:read"
       ],
@@ -21759,7 +21759,7 @@
       "guidance": {
         "when": "A granted plan or binding needs the owner's imported Gmail, Calendar, Contacts, Facebook/Instagram, or X context. Pass scopes and participant/time filters as narrowly as possible.",
         "notWhen": "General workspace memory/search — use memory:search or search:semantic. Never use from coding/review work; those roles are hard-denied.",
-        "chaining": "The result contains bounded snippets only. Use the returned source/externalId as provenance in the consuming brief."
+        "chaining": "Search returns ranked imported documents. To inspect an original email, pass its sourceId/externalId as read.sourceId/messageId. A live read returns the complete normalized message in results[].metadata; attachmentId retrieves one of its listed attachments as attachment.contentBase64. Large results use the normal recoverable result spill."
       }
     },
     {
