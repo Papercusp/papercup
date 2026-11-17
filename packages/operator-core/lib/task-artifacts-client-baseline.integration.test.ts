@@ -1,9 +1,9 @@
 /** Pre-edit client evidence from the pinned original source, never candidate handlers. */
 import { fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { createScratchClone } from './scratch-git-clone';
 import { preparePrivateOperatorApiBundle, privateGitCloneBundleEnv,
@@ -14,9 +14,13 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
 import { runVerifierDependencyCommand } from '../../../scripts/source-preview.mjs';
 // @ts-ignore -- same immutable dependency preflight used by committed verifiers.
 import { assertCommittedWorkspaceLockMatches } from '../../../scripts/lint-as-committed.mjs';
-import { assertBaselineInstalledTree, captureBaselineInstalledTree,
+import { assertBaselineInstalledTree, assertBaselineToolchain, captureBaselineInstalledTree,
   assertBaselinePlannedRepair, assertBaselineRepairInputs, assertFrozenBaselineSources, baselineProductBoundary,
-  baselineRepairFailureArtifacts, repairedBaselineEdition } from '../test/task-artifacts-baseline-repair';
+  repairedBaselineEdition } from '../test/task-artifacts-baseline-repair';
+import { readBaselinePacket, readBaselineQualification, retainBaselineProducerPacket,
+  sealBaselineQualification } from '../test/task-artifacts-baseline-repair';
+import { withNativeProofLedger } from '../test/isolated-integration-proof';
+import { appendNativeProofEvent, readNativeProofRun } from './testing-run-store';
 
 const root = resolve(import.meta.dirname, '../../..');
 const sourceSha = '729986dd35171f1e0cb11bd1505295917f2d946f';
@@ -33,6 +37,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
   let sourceRoot: string | undefined;
   let scratch: string | undefined;
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
+  let baselineSucceeded = false;
   try {
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/task-artifacts-client-baseline.integration.test.ts',
@@ -47,26 +52,46 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         'papercusp-desktop/bin/lib/pinned-deps.sh', 'apps/operator/bin/bundle-host.sh',
         'apps/operator/bin/hono-host.ts', 'apps/operator/scripts/ptool.mjs',
         'packages/operator-core/lib/agent-mcp-client.ts'],
-      retainedArtifacts: ['phases/prepare/baseline-source.json',
-        'phases/prepare/baseline-preconditions.json', 'phases/prepare/dependency-preflight.log',
-        'phases/prepare/dependency-generation.log', 'phases/prepare/dependency-snapshot.log',
-        'phases/prepare/dependency-prediction.log', 'phases/prepare/dependency-install.log',
-        'phases/prepare/original-coherence-refusal.json', 'phases/prepare/dependency-repair.log',
-        'phases/prepare/dependency-repair-inputs.json', 'phases/prepare/dependency-repair-receipt.json',
-        ...baselineRepairFailureArtifacts,
-        'phases/prepare/dependency-lock-original.json', 'phases/prepare/dependency-lock-repaired.json',
-        'phases/prepare/dependency-repair-delta.json', 'phases/prepare/dependency-edition.json',
-        'phases/prepare/dependency-edition-after-build.json',
-        'phases/prepare/dependency-candidate-graph.json', 'phases/prepare/dependency-installed.json',
-        'phases/prepare/dependency-installed-tree.json',
-        'phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build-result.json',
-        'phases/execute/client-traces.json', 'phases/execute/wire-requests.ndjson',
-        'phases/execute/wire-errors.ndjson', 'phases/execute/baseline-runtime.json'],
+      retainProducedArtifacts: async runDir => {
+        // The durable intent is written before preparation (even its failures).
+        const intentPath = join(runDir, 'phases/prepare/native-proof-intent.json');
+        if (!existsSync(intentPath)) return [];
+        const fingerprint: string = JSON.parse(readFileSync(intentPath, 'utf8')).fingerprint;
+        expect(fingerprint).toMatch(/^[a-f0-9]{64}$/);
+        // Recursively retain every producer original and a stable census. The
+        // builder's one verified installed-tree binding is recorded explicitly;
+        // no other symlink, special file or changed population can be omitted.
+        const seal = retainBaselineProducerPacket(runDir,
+          join(runDir, '../retained', basename(runDir), 'native-objects'), fingerprint,
+          sourceRoot ? { 'phases/prepare/node_modules': join(sourceRoot, 'node_modules') } : {});
+        const path = join(runDir, 'phases/teardown/baseline-packet-seal.json');
+        readBaselinePacket(seal, digest(seal), fingerprint);
+        // Immutable locator is itself retained by the existing harness, beside
+        // its objects; failed runs preserve bytes but never become qualified.
+        await writeFile(path, seal, { flag: 'wx' });
+        if (baselineSucceeded) await withNativeProofLedger(process.env, async sql => {
+          const run = await readNativeProofRun(sql, basename(runDir));
+          expect(run?.events).toHaveLength(6);
+          const qualified = sealBaselineQualification(seal, run!, runDir);
+          const sealed = await appendNativeProofEvent(sql, run!.runId, fingerprint, 6,
+            { kind: 'sealed', receiptRef: qualified.path, receiptSha256: qualified.sha256 });
+          expect(readFileSync(qualified.path).equals(qualified.bytes)).toBe(true);
+          const readback = await appendNativeProofEvent(sql, run!.runId, fingerprint, sealed.events.length,
+            { kind: 'readback', receiptRef: qualified.path, receiptSha256: digest(readFileSync(qualified.path)) });
+          readBaselineQualification(readback);
+          await writeFile(join(runDir, 'phases/teardown/baseline-qualification.json'),
+            JSON.stringify({ runId: run!.runId, fingerprint, path: qualified.path, sha256: qualified.sha256 }), { flag: 'wx' });
+        });
+        return ['phases/teardown/baseline-packet-seal.json',
+          ...(baselineSucceeded ? ['phases/teardown/baseline-qualification.json'] : [])];
+      },
       prepare: async (evidenceDir, native) => {
         expect(native, 'Qualifying baseline requires its original durable intent').toBeDefined();
+        assertBaselineToolchain(native!.input.toolchain);
         const raw = readFileSync(join(root, fixturePath));
         expect(digest(raw)).toBe(fixtureSha);
         const fixture = JSON.parse(raw.toString());
+        await writeFile(join(evidenceDir, 'baseline-fixture.json'), raw, { flag: 'wx' });
         expect(fixture.sourceSha).toBe(sourceSha);
         // Preserve the measured refusal of the original edition before any
         // allocation. This new edition explicitly repairs its dependency lock;
@@ -145,6 +170,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         const afterInstallProductBoundary = baselineProductBoundary(sourceRoot, ['package-lock.json']);
         expect(digest(readFileSync(join(sourceRoot, 'package-lock.json')))).toBe(edition.repairedLockSha256);
         const installedTree = await captureBaselineInstalledTree(sourceRoot, root);
+        assertBaselineToolchain(native!.input.toolchain);
         await writeFile(join(evidenceDir, 'dependency-installed-tree.json'), JSON.stringify(installedTree), { flag: 'wx' });
         const installedReceipt = join(evidenceDir, 'dependency-installed.json');
         await writeFile(installedReceipt, JSON.stringify({ sourceSha, repairedLockSha256: edition.repairedLockSha256,
@@ -161,6 +187,7 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         const afterBuildSources = assertFrozenBaselineSources(sourceRoot, fixture.files);
         const afterBuildProductBoundary = baselineProductBoundary(sourceRoot, ['package-lock.json']);
         await assertBaselineInstalledTree(sourceRoot, installedTree, root);
+        assertBaselineToolchain(native!.input.toolchain);
         expect(digest(readFileSync(join(sourceRoot, 'package-lock.json')))).toBe(edition.repairedLockSha256);
         await writeFile(join(evidenceDir, 'dependency-edition-after-build.json'), JSON.stringify({
           ...edition, afterInstallSources, afterBuildSources, afterInstallProductBoundary,
@@ -194,7 +221,12 @@ it('retains real MCP and ptool text requests for the source-frozen dependency-re
         const receipt = JSON.parse(line!);
         expect(receipt).toMatchObject({ sourceSha, bundleSha256: prepared!.sha256, hostStopped: true,
           completedMatrix: false, adapters: ['mcp-http', 'ptool-http'] });
+        const beforeCustody = readFileSync(join(evidenceDir, 'baseline-runtime-custody-before.json'));
+        const afterCustody = readFileSync(join(evidenceDir, 'baseline-runtime-custody-after.json'));
+        expect(afterCustody).toEqual(beforeCustody);
+        expect(receipt).toMatchObject(JSON.parse(afterCustody.toString()));
         expect(receipt.traces).toHaveLength(6);
+        baselineSucceeded = true;
         console.info('TASK_ARTIFACT_CLIENT_BASELINE_VERIFIED ' + JSON.stringify(receipt));
       },
     });

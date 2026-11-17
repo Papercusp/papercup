@@ -6,11 +6,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { readBaselinePacket, retainBaselinePacket } from './task-artifacts-baseline-repair';
 import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, cleanupCurrentSuNativeEgress, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST, currentSuNativeRetainedArtifacts, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedIntegrationProofSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
 import type { ProcExec } from '../lib/external-bench/grader/swe-bench-pro';
 import { nativeProofFingerprint, type NativeProofInput } from '../lib/testing-run-store';
@@ -19,6 +20,44 @@ import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restr
 
 const methodAuthority = vi.hoisted(() => vi.fn());
 vi.mock('./native-method-authority', () => ({ verifyNativeMethodAuthority: methodAuthority }));
+
+describe('isolated producer archive retention', () => {
+  it('retains complete large originals through the actual failed-prepare teardown and a fresh reader', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'isolated-produced-retention-'));
+    vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(directory, 'canonical'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(directory, 'mutex'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(directory, 'pins'));
+    const original = Buffer.alloc(16 * 1024 * 1024 + 1, 97);
+    original[original.length - 1] = 122;
+    const fingerprint = createHash('sha256').update('retention-only edition').digest('hex');
+    const execute = vi.fn();
+    const archive = vi.fn(async (runDir: string) => {
+      const seal = retainBaselinePacket(runDir, join(runDir, '../retained', runDir.split('/').at(-1)!, 'objects'),
+        fingerprint, ['phases/prepare/original.json']);
+      await writeFile(join(runDir, 'phases/teardown/packet.json'), seal, { flag: 'wx' });
+      return ['phases/teardown/packet.json'];
+    });
+    try {
+      await expect(recordIsolatedIntegrationProof({ root: resolve(import.meta.dirname, '../../..'),
+        filePath: 'packages/operator-core/test/isolated-integration-proof.test.ts', sourcePaths: [],
+        // The real pre-observer path runs prepare before allocating the org DB.
+        // The intentional preparation failure owns no worker or private PG.
+        requiredPreparation: {} as never,
+        prepare: async evidenceDir => {
+          await writeFile(join(evidenceDir, 'original.json'), original);
+          throw new Error('original-producer-refused-after-writing');
+        }, retainProducedArtifacts: archive, execute,
+      })).rejects.toThrow('original-producer-refused-after-writing');
+      expect(archive).toHaveBeenCalledTimes(1); expect(execute).not.toHaveBeenCalled();
+      const runDir = await realpath(join(directory, 'canonical/isolated-integration/latest'));
+      const retained = join(runDir, '../retained', runDir.split('/').at(-1)!);
+      const seal = await readFile(join(retained, 'phases/teardown/packet.json'));
+      await rm(runDir, { recursive: true });
+      const recovered = readBaselinePacket(seal, createHash('sha256').update(seal).digest('hex'), fingerprint);
+      expect(recovered.read('phases/prepare/original.json').equals(original)).toBe(true);
+    } finally { vi.unstubAllEnvs(); await rm(directory, { recursive: true, force: true }); }
+  });
+});
 
 describe('native egress parent recovery', () => {
   const runId = 'PRIVATE-CURRENT-SU-12345678-1234-4123-8123-123456789abc';

@@ -5,7 +5,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { Readable } from 'node:stream';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import postgres from 'postgres';
 // eslint-disable-next-line import/no-relative-packages -- same raw SQL contract as the org client
@@ -14,7 +14,9 @@ import { connectAgentMcp } from '../lib/agent-mcp-client';
 import { readProcessIdentity } from '../lib/process-identity';
 import { superuserTokenPath } from '../lib/superuser-token';
 import { appendNativeProofEvent, enterNativeProofChild, readNativeProofRun,
-  type NativeProofChildHandoff } from '../lib/testing-run-store';
+  type NativeProofChildHandoff, type NativeProofRun } from '../lib/testing-run-store';
+import { assertBaselineRuntimeCustody, baselineClientEntryPaths,
+  retainBaselineClientOriginals } from './task-artifacts-baseline-repair';
 import type { NativeProofRecorder } from './isolated-integration-proof';
 import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle,
   stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
@@ -22,6 +24,7 @@ import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle,
 const sourceSha = '729986dd35171f1e0cb11bd1505295917f2d946f';
 const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 type Request = { id: string; method: string; order: number; argsSha256: string;
+  entryPointSha256: string; handlerSource: { path: string; sha256: string };
   resultSha256?: string; failed?: boolean; retry: boolean; page: boolean; fallback: boolean;
   wireRequests: Array<{ id: string | number; method: string; argsSha256: string }> };
 type Trace = { scenario: string; adapter: string; requests: Request[]; helperWakes: string[];
@@ -39,7 +42,7 @@ function decode(result: any): any {
   return text ? JSON.parse(text.text) : result?.data ?? result;
 }
 
-async function main(native: NativeProofRecorder) {
+async function main(native: NativeProofRecorder, intent: NativeProofRun) {
   const env = process.env;
   const workspace = env.PAPERCUSP_WORKSPACE_ID!;
   const base = env.PAPERCUSP_OPERATOR_URL!;
@@ -65,6 +68,16 @@ async function main(native: NativeProofRecorder) {
   assert.equal(dependencyEdition.rebuiltBundleSha256, bundleSha256);
   assert.equal(digest(readFileSync(join(sourceRoot, 'package-lock.json'))), dependencyEdition.repairedLockSha256);
   for (const file of source.files) assert.equal(digest(readFileSync(join(sourceRoot, file.path))), file.sha256);
+  const beforeCustody = await assertBaselineRuntimeCustody(sourceRoot, preparedDir, intent);
+  const entryPoints = retainBaselineClientOriginals(evidenceDir, {
+    'mcp-http': { root: resolve(import.meta.dirname, '../../..'),
+      expectedSha256: intent.input.prerequisiteSources[baselineClientEntryPaths['mcp-http']] },
+    'ptool-http': { root: sourceRoot,
+      expectedSha256: intent.input.original.sourceDigests[baselineClientEntryPaths['ptool-http']] },
+  });
+  writeFileSync(join(evidenceDir, 'baseline-client-entrypoints.json'), JSON.stringify(entryPoints), { flag: 'wx' });
+  const beforeCustodyPath = join(evidenceDir, 'baseline-runtime-custody-before.json');
+  writeFileSync(beforeCustodyPath, JSON.stringify(beforeCustody), { flag: 'wx' });
   mkdirSync(env.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString('base64url');
   writeFileSync(superuserTokenPath(), token, { mode: 0o600, flag: 'wx' });
@@ -80,6 +93,7 @@ async function main(native: NativeProofRecorder) {
   writeFileSync(join(evidenceDir, 'wire-errors.ndjson'), '', { flag: 'wx' });
   writeFileSync(join(evidenceDir, 'baseline-runtime.json'), JSON.stringify({ sourceSha, bundleSha256,
     hostIdentity, health, qualification: source.qualification, edition: source.edition,
+    custodyBeforeSha256: digest(readFileSync(beforeCustodyPath)),
     originalDependenciesReconstructed: false, repairedLockSha256: dependencyEdition.repairedLockSha256 }), { flag: 'wx' });
   await native.observe('runtime', join(evidenceDir, 'baseline-runtime.json'));
   // Observe both clients at their actual HTTP boundary. A logical UUID cannot
@@ -91,6 +105,7 @@ async function main(native: NativeProofRecorder) {
       const body = Buffer.concat(chunks);
       const message = body.length ? JSON.parse(body.toString()) : undefined;
       const wire = { id: message?.id ?? null, method: message?.method ?? incoming.method,
+        transport: 'http', endpointPath: new URL(incoming.url!, base).pathname,
         tool: message?.params?.name ?? null, logicalId: activeEntry?.id ?? null,
         argsSha256: digest(JSON.stringify(message?.params?.arguments ?? null)) };
       appendFileSync(join(evidenceDir, 'wire-requests.ndjson'), JSON.stringify(wire) + '\n');
@@ -127,14 +142,23 @@ async function main(native: NativeProofRecorder) {
   ({ client } = await connectAgentMcp({ url: url.href, mode: 'http', name: 'artifact-baseline',
     headers: { Authorization: `Bearer ${token}` } }));
   const traces: Trace[] = [];
+  let custodyAfterSha256: string | null = null;
   const journal = () => writeFileSync(join(evidenceDir, 'client-traces.json'), JSON.stringify({
     schemaVersion: 1, sourceSha, fixtureSha256: source.fixtureSha256, bundleSha256,
+    entryPoints,
+    custodyBeforeSha256: digest(readFileSync(beforeCustodyPath)), custodyAfterSha256,
     completedMatrix: false, traces,
     unmeasured: ['shell', 'native Codex', 'native Claude', 'native OMP', 'test runner', 'computer',
       'claim/resume/handoff', 'candidate comparison', 'helper-wake ledger'],
   }, null, 2));
   const request = async (trace: Trace, method: string, args: Record<string, unknown>) => {
+    assert.ok(trace.adapter === 'mcp-http' || trace.adapter === 'ptool-http', 'baseline_client_route');
+    assert.ok(['artifacts:save', 'artifacts:append', 'artifacts:load'].includes(method), 'baseline_handler_route');
+    const path = 'packages/agent-mcp/src/tools/artifacts/' + method.split(':')[1] + '.ts';
+    const handlerSource = { path, sha256: digest(readFileSync(join(sourceRoot, path))) };
+    assert.equal(handlerSource.sha256, intent.input.original.sourceDigests[path], 'baseline_handler_source_changed');
     const entry: Request = { id: randomUUID(), method, order: trace.requests.length,
+      entryPointSha256: entryPoints[trace.adapter].sha256, handlerSource,
       argsSha256: digest(JSON.stringify(args)), retry: false, page: false, fallback: false, wireRequests: [] };
     activeEntry = entry;
     trace.requests.push(entry); journal();
@@ -196,8 +220,19 @@ async function main(native: NativeProofRecorder) {
   await new Promise<void>((resolve, reject) => proxy!.close(error => error ? reject(error) : resolve()));
   proxy = undefined;
   await stopPrivateOperatorHost(host); host = undefined;
+  assert.equal(digest(readFileSync(join(import.meta.dirname, '../lib/agent-mcp-client.ts'))),
+    entryPoints['mcp-http'].sha256, 'baseline_client_entry_changed');
+  assert.equal(digest(readFileSync(join(sourceRoot, entryPoints['ptool-http'].path))),
+    entryPoints['ptool-http'].sha256, 'baseline_client_entry_changed');
+  const afterCustody = await assertBaselineRuntimeCustody(sourceRoot, preparedDir, intent);
+  assert.deepEqual(afterCustody, beforeCustody, 'baseline_runtime_custody_changed');
+  const afterCustodyPath = join(evidenceDir, 'baseline-runtime-custody-after.json');
+  writeFileSync(afterCustodyPath, JSON.stringify(afterCustody), { flag: 'wx' });
+  custodyAfterSha256 = digest(readFileSync(afterCustodyPath));
+  journal();
   await native.observe('trace', join(evidenceDir, 'client-traces.json'));
   console.log('TASK_ARTIFACT_CLIENT_BASELINE_RECEIPT ' + JSON.stringify({ sourceSha, bundleSha256,
+    ...afterCustody,
     hostStopped: true, completedMatrix: false, adapters: ['mcp-http', 'ptool-http'],
     traces: traces.map(({ scenario, adapter, count, outcomeSha256 }) => ({ scenario, adapter, count, outcomeSha256 })) }));
 }
@@ -225,7 +260,7 @@ try {
           await appendNativeProofEvent(sql, intent.runId, intent.fingerprint, current!.events.length,
             { kind, receiptRef: receiptPath, receiptSha256: digest(readFileSync(receiptPath)) });
         },
-        });
+        }, intent);
       });
   } finally { await pool.end({ timeout: 5 }); }
 }
