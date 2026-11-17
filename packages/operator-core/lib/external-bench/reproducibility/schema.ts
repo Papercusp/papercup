@@ -30,6 +30,8 @@ import { canonicalJson } from './canonical-json';
 import { MIN_COMPACTION_LIMIT_TOKENS } from '../../agent-config-constants';
 // Value import; capability-ablations.ts imports this module for types only, so there is no runtime cycle.
 import { requireRunnableAblation } from '../capability-ablations';
+import hlbManifest from '../harness-leaderboard-manifest.json';
+import { assertModelRegistrySnapshot, resolveEvaluatedModel, type ModelRegistrySnapshot } from '../model-registry-snapshot';
 
 const pin = z.string().trim().min(1);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -40,6 +42,43 @@ const generationCap = z.object({
   maxUsd: z.number().finite().positive(),
   maxTokens: z.number().int().positive().optional(),
   maxWallClockMs: z.number().int().positive(),
+}).strict();
+
+/** D-070 / P-023: an optional source profile in the existing immutable protocol.
+ * Runtime pins are measured by the adapter, not inferred from this source witness.
+ * In particular Harbor 0.24 here does not change Proximus's independent 0.23 pin.
+ */
+const hlbSourceProfile = z.object({
+  kind: z.literal('harness-leaderboard-v1'),
+  sourceRevision: z.literal(hlbManifest.sourceRevision),
+  sourceRegistrySha256: z.literal(hlbManifest.sourceRegistrySha256),
+  manifestSha256: z.literal('948cedf2bdd10631ec53b12d1aa5ba2dfb3822773d71f067f595598c1bb09806'),
+  suite: z.enum(['terminal-bench-2.1', 'deep-swe']),
+  datasetRevision: z.string().regex(/^[a-f0-9]{40}$/),
+  license: z.literal('Apache-2.0'),
+  stage: z.enum(['smoke', 'pilot', 'full']),
+  comparison: z.enum(['incomplete-descriptive', 'full-board-descriptive', 'withheld-confirmatory']),
+  generationsPerTask: z.literal(3),
+  harborVersion: z.literal('0.24.0'),
+  harborRuntimeSha256: digest,
+  adapterRevision: z.string().regex(/^[a-f0-9]{40}$/),
+  networkPolicy: z.enum(['enforced', 'task-declared']),
+  networkPolicySha256: digest,
+  agentTimeoutMs: z.number().int().safe().positive(),
+  verifierTimeoutMs: z.number().int().safe().positive(),
+  verifiers: z.record(pin, digest),
+  modelRegistry: z.custom<ModelRegistrySnapshot>(value => {
+    try { assertModelRegistrySnapshot(value); return true; } catch { return false; }
+  }, 'A content-verified frozen model registry snapshot is required.'),
+  models: z.record(pin, z.object({
+    provider: z.enum(['openai', 'anthropic']), resolvedModelId: pin,
+    weightsRevision: pin, precision: pin,
+    supportedEfforts: z.array(pin).min(1).refine(distinct, 'Efforts must be unique.'),
+    compatibilitySourceSha256: digest,
+    contextTokens: z.number().int().safe().positive(),
+    outputTokens: z.number().int().safe().positive(),
+    compactionLimitTokens: z.number().int().safe().min(MIN_COMPACTION_LIMIT_TOKENS),
+  }).strict()),
 }).strict();
 
 /**
@@ -250,6 +289,7 @@ export const currentBenchmarkProtocolSchema = z.object({
   runId: pin,
   taskIds: taskRoster,
   seeds,
+  sourceProfile: hlbSourceProfile.optional(),
   arms: z.array(z.object({
     id: pin,
     agent: z.enum(['codex', 'claude', 'proximus']),
@@ -308,14 +348,14 @@ export const currentBenchmarkProtocolSchema = z.object({
   stopping: z.object({
     maxAttemptsPerAssignment: z.number().int().positive(),
     budgetAction: z.literal('record-cap-outcome'), graderOutage: z.literal('repair-or-inconclusive'),
-    superiorityClaim: z.literal('withheld-confirmation-only'),
+    superiorityClaim: z.enum(['withheld-confirmation-only', 'descriptive-only']),
   }).strict(),
   confirmation: z.object({
     taskIds: taskRoster, seeds,
     plannedPairedTasks: z.number().int().positive(),
     minimumEffect: z.number().finite().gt(0).lte(1), alpha: z.number().finite().gt(0).lt(1),
     power: z.number().finite().gt(0).lt(1), method: pin,
-  }).strict(),
+  }).strict().nullable(),
 }).strict().superRefine((protocol, ctx) => {
   const issue = (path: (string | number)[], message: string) => ctx.addIssue({ code: 'custom', path, message });
   if (!distinct(protocol.arms.map(arm => arm.id))) issue(['arms'], 'Arm ids must be unique.');
@@ -371,10 +411,74 @@ export const currentBenchmarkProtocolSchema = z.object({
       issue(['arms', index, 'payer'], 'A subscription arm needs frozen provider input and output ceilings.');
     }
   });
-  if (protocol.confirmation.taskIds.some(id => protocol.taskIds.includes(id))) issue(['confirmation', 'taskIds'], 'Confirmation tasks must be withheld from the pilot.');
-  if (protocol.confirmation.plannedPairedTasks > protocol.confirmation.taskIds.length) issue(['confirmation', 'plannedPairedTasks'], 'The confirmation roster must reserve the planned paired tasks.');
+  const confirmation = protocol.confirmation;
+  if (confirmation) {
+    if (confirmation.taskIds.some(id => protocol.taskIds.includes(id))) issue(['confirmation', 'taskIds'], 'Confirmation tasks must be withheld from the pilot.');
+    if (confirmation.plannedPairedTasks > confirmation.taskIds.length) issue(['confirmation', 'plannedPairedTasks'], 'The confirmation roster must reserve the planned paired tasks.');
+  }
+  const profile = protocol.sourceProfile;
+  if (!profile) {
+    if (!confirmation) issue(['confirmation'], 'Legacy protocols require withheld confirmation.');
+    if (protocol.stopping.superiorityClaim !== 'withheld-confirmation-only') issue(['stopping', 'superiorityClaim'], 'Legacy protocols require withheld confirmation.');
+  } else {
+    const source = hlbManifest.suites[profile.suite];
+    const assigned = [...protocol.taskIds, ...(confirmation?.taskIds ?? [])];
+    const sameKeys = (record: Record<string, unknown>, keys: string[]) =>
+      canonicalJson(Object.keys(record).sort()) === canonicalJson([...keys].sort());
+    if (profile.datasetRevision !== source.revision || profile.networkPolicy !== source.network)
+      issue(['sourceProfile'], 'Dataset revision and network policy must match the frozen suite.');
+    if (canonicalJson(protocol.taskIds) !== canonicalJson(source.subsets[profile.stage]))
+      issue(['taskIds'], 'Task selection must be the exact ordered frozen stage roster.');
+    if (canonicalJson([...protocol.exclusions].sort()) !== canonicalJson(Object.keys(source.excluded).sort()))
+      issue(['exclusions'], 'The frozen upstream exclusions must be retained exactly.');
+    if (protocol.seeds.length !== 3 || confirmation && confirmation.seeds.length !== 3)
+      issue(['seeds'], 'HLB requires exactly three independent generation slots; retries are separate.');
+    const descriptive = profile.comparison !== 'withheld-confirmatory';
+    if (descriptive) {
+      if (confirmation !== null || protocol.stopping.superiorityClaim !== 'descriptive-only')
+        issue(['confirmation'], 'Descriptive runs must explicitly omit confirmation and withhold superiority claims.');
+      if ((profile.stage === 'full') !== (profile.comparison === 'full-board-descriptive'))
+        issue(['sourceProfile', 'comparison'], 'Only the complete full roster can have a full-board label.');
+    } else if (!confirmation || profile.stage === 'full' ||
+        protocol.stopping.superiorityClaim !== 'withheld-confirmation-only' ||
+        confirmation.taskIds.some(id => !source.subsets.full.includes(id))) {
+      issue(['confirmation'], 'Confirmatory runs need a disjoint withheld roster from the frozen population and cannot claim the full board.');
+    }
+    if (!sameKeys(profile.verifiers, assigned) || !protocol.grader.images || !sameKeys(protocol.grader.images, assigned) ||
+        !protocol.grader.datasetSha256)
+      issue(['grader'], 'Every assigned task needs an immutable image, verifier digest and dataset digest.');
+    if (!sameKeys(profile.models, protocol.arms.map(arm => arm.id)))
+      issue(['sourceProfile', 'models'], 'Model execution pins must cover exactly the frozen arms.');
+    protocol.arms.forEach((arm, index) => {
+      const model = profile.models[arm.id];
+      if (arm.agent === 'proximus') issue(['arms', index], 'The HLB Harbor runtime is separate from the Proximus reference runtime.');
+      if (arm.model !== protocol.arms[0].model || arm.effort !== protocol.arms[0].effort)
+        issue(['arms', index], 'HLB comparisons must hold model and effort fixed.');
+      if (!model) return;
+      const sharedModel = profile.models[protocol.arms[0].id];
+      if (sharedModel && (model.weightsRevision !== sharedModel.weightsRevision || model.precision !== sharedModel.precision ||
+          model.contextTokens !== sharedModel.contextTokens || model.outputTokens !== sharedModel.outputTokens))
+        issue(['sourceProfile', 'models', arm.id], 'Matched arms must freeze identical weights, precision and model limits.');
+      const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model);
+      if (!rate?.inputTokenCeiling || !rate.outputTokenCeiling || rate.inputTokenCeiling > model.contextTokens ||
+          model.outputTokens > rate.outputTokenCeiling)
+        issue(['priceSchedule'], 'HLB model limits require compatible frozen provider input/output ceilings.');
+      try {
+        const resolved = resolveEvaluatedModel(arm.model, profile.modelRegistry);
+        if (resolved.modelId !== model.resolvedModelId || resolved.backend !== arm.agent ||
+            model.provider !== (resolved.backend === 'codex' ? 'openai' : 'anthropic'))
+          issue(['sourceProfile', 'models', arm.id], 'The harness/provider/model must match the frozen registry resolution.');
+      } catch { issue(['sourceProfile', 'modelRegistry'], 'The arm model must resolve in the frozen registry.'); }
+      if (!model.supportedEfforts.includes(arm.effort) || model.outputTokens > model.contextTokens ||
+          model.compactionLimitTokens > model.contextTokens ||
+          arm.control?.compactionLimit !== undefined && arm.control.compactionLimit !== model.compactionLimitTokens ||
+          arm.generationBudget.maxWallClockMs > profile.agentTimeoutMs ||
+          !digest.safeParse(arm.runtime.runtimeRevision).success || !/^[a-f0-9]{40}$/.test(arm.runtime.sourceRevision))
+        issue(['sourceProfile', 'models', arm.id], 'Effort, context, compaction, timeout and installed runtime pins must be compatible.');
+    });
+  }
   if (protocol.sampling) {
-    const taskIds = new Set([...protocol.taskIds, ...protocol.confirmation.taskIds]);
+    const taskIds = new Set([...protocol.taskIds, ...(confirmation?.taskIds ?? [])]);
     const mapping = protocol.sampling.taskRepositories;
     if (Object.keys(mapping).length !== taskIds.size || [...taskIds].some(id => !Object.hasOwn(mapping, id))) {
       issue(['sampling', 'taskRepositories'], 'Repository mapping must cover exactly pilot and withheld confirmation tasks.');
@@ -399,6 +503,7 @@ export function planCurrentBenchmarkConfirmation(config: unknown) {
   const protocol = currentBenchmarkProtocolSchema.parse(config);
   if (!protocol.sampling) throw new Error('Confirmation planning requires the frozen repository mapping.');
   const confirmation = protocol.confirmation;
+  if (!confirmation) throw new Error('Descriptive HLB runs do not authorize confirmation planning.');
   if (confirmation.method !== 'paired-repository-hoeffding-v1') {
     throw new Error('Confirmation planning requires the paired-repository-hoeffding-v1 rejection rule.');
   }
@@ -479,11 +584,16 @@ export function requireCurrentBenchmarkAssignment(config: unknown, execution: {
   budget: { maxUsd?: number; maxTokens?: number; maxWallClockMs?: number };
   /** Required when the frozen arm declares a control block: the topology the runner will actually execute. */
   topology?: ArmTopology;
+  /** Adapter-measured runtime/source witness. Required for HLB before allocation. */
+  sourceProfile?: CurrentBenchmarkProtocol['sourceProfile'];
 }): CurrentBenchmarkProtocol {
   const parsed = currentBenchmarkProtocolSchema.safeParse(config);
   if (!parsed.success) throw new Error(`Current benchmark requires a complete frozen protocol: ${parsed.error.message}`);
   const protocol = parsed.data;
-  if (!protocol.sampling) throw new Error('Current benchmark launch requires a frozen repository sampling policy.');
+  if (!protocol.sampling && (!protocol.sourceProfile || protocol.sourceProfile.comparison === 'withheld-confirmatory'))
+    throw new Error('Current benchmark launch requires a frozen repository sampling policy.');
+  if (canonicalJson(protocol.sourceProfile ?? null) !== canonicalJson(execution.sourceProfile ?? null))
+    throw new Error('Current benchmark source profile is missing or drifts from the frozen runtime witness.');
   const arm = protocol.arms.find(candidate => candidate.id === execution.armId);
   if (protocol.runId !== execution.runId || !arm || !protocol.taskIds.includes(execution.taskId) || !protocol.seeds.includes(execution.seed)) {
     throw new Error('Current benchmark assignment is not in the frozen protocol.');

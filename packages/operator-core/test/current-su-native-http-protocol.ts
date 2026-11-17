@@ -78,9 +78,13 @@ export function inspectCurrentSuNativeCarryInput(body: Body, expected: { predece
   assert.equal(match[2], expected.predecessorId, 'Managed carry names a foreign predecessor');
   assert.equal([...actual.matchAll(/^⟦codex-carry-lineage predecessor:[^⟧\n]+⟧$/gm)].length, 1,
     'Native carry packet has ambiguous lineage');
+  const inputPacket = JSON.stringify(input);
   return { schemaVersion: 1 as const, client: 'codex' as const, predecessorId: expected.predecessorId,
     packet: actual, packetSha256: hash(actual), packetChars: actual.length,
-    packetBytes: Buffer.byteLength(actual, 'utf8'), inputSha256: hash(JSON.stringify(input)) };
+    packetBytes: Buffer.byteLength(actual, 'utf8'), inputSha256: hash(inputPacket),
+    // Other native input items can contain injected developer/orientation text.
+    // Retain them rather than measuring only the marked carry user turn.
+    inputPacket, inputChars: inputPacket.length, inputBytes: Buffer.byteLength(inputPacket, 'utf8') };
 }
 
 /** Check the frozen assignment against independently observed native bytes. */
@@ -139,7 +143,146 @@ function scriptedTool(body: Body, kind: 'edit' | 'compact', options: { frozen?: 
       ? { response } : { output_index: 0, item: call }) })}\n\n`).join('') + 'data: [DONE]\n\n';
 }
 
-export function createCurrentSuNativeProtocol(options: { frozen?: boolean; carryMode?: 'on' | 'off' } = {}) {
+/** One real MCP call at a time, using the native client's offered surface. */
+function scriptedRecoveryTool(body: Body, name: string, args: Body, callId: string) {
+  const tools = offeredTools(body), suffix = name.replace(/[:-]/g, '_');
+  const direct = tools.find(tool => tool.type === 'function' &&
+    (tool.name === suffix || tool.name.endsWith('__' + suffix)));
+  const invoke = tools.find(tool => tool.type === 'function' && /(?:^|__)tools_invoke$/.test(tool.name));
+  const exec = tools.find(tool => tool.type === 'custom' && tool.name === 'exec' && tool.namespace === 'functions');
+  const tool = direct ?? invoke ?? exec;
+  assert.ok(tool, 'Native recovery tool unavailable: ' + name);
+  const input = direct ? args : { name, args: { ...args, payloadTier: 'full' } };
+  const encoded = tool === exec
+    ? `text(await tools.mcp__papercusp_su__tools_invoke(${JSON.stringify(input)}));` : JSON.stringify(input);
+  const call = { type: tool.type === 'custom' ? 'custom_tool_call' : 'function_call',
+    id: 'fc_' + callId, call_id: callId, name: tool.name,
+    ...(tool.namespace ? { namespace: tool.namespace } : {}),
+    ...(tool.type === 'custom' ? { input: encoded } : { arguments: encoded }), status: 'completed' };
+  const response = { ...codexCliResponsesBody({ model: String(body.model), text: '', inputTokens: 100, outputTokens: 8 }),
+    output: [call] };
+  return ['response.output_item.added', 'response.output_item.done', 'response.completed'].map(type =>
+    `event: ${type}\ndata: ${JSON.stringify({ type, ...(type === 'response.completed'
+      ? { response } : { output_index: 0, item: call }) })}\n\n`).join('') + 'data: [DONE]\n\n';
+}
+
+/** Decode only actual result envelopes. Incidental prose is not a receipt. */
+function recoveryResultBodies(value: unknown, depth = 0): Body[] {
+  if (depth > 16) return [];
+  if (typeof value === 'string') {
+    try { return recoveryResultBodies(JSON.parse(value), depth + 1); } catch { /* Try lossless TOON. */ }
+    const marker = /^format:\s*toon\n/.exec(value);
+    if (!marker) return [];
+    try { return recoveryResultBodies(decode(value.slice(marker[0].length), 'toon'), depth + 1); }
+    catch { return []; }
+  }
+  if (Array.isArray(value)) return value.flatMap(item => recoveryResultBodies(item, depth + 1));
+  if (!value || typeof value !== 'object') return [];
+  const result = value as Body;
+  if (result.isError === true || result.ok === false) return [result];
+  if (result.structuredContent !== undefined) return recoveryResultBodies(result.structuredContent, depth + 1);
+  if (Array.isArray(result.content)) return recoveryResultBodies(result.content, depth + 1);
+  if (['text', 'input_text'].includes(String(result.type)) && typeof result.text === 'string')
+    return recoveryResultBodies(result.text, depth + 1);
+  return [result];
+}
+
+export interface CurrentSuRecoveryContinuationInput {
+  predecessorId: string;
+  ownerId: string;
+  workItemId: string;
+  harnessSlug: string;
+  facts: Array<{ scope: 'workspace' | 'owner' | 'harness' | 'work_item'; scopeRef?: string; key: string; body: string }>;
+  /** Exact independently frozen permitted action, not inferred from a packet. */
+  action: { slug: string; rel_path: string; content: string };
+}
+
+/** Native baseline protocol extension, not a paired measurement or an oracle.
+ * It reacquires the specified premises through exact canonical reads, checks
+ * current custody, and observes the permitted save followed by exact readback.
+ * Actual leaf IDs, validity adjudication and outcome grading remain with P015. */
+export function createCurrentSuRecoveryContinuation(value: CurrentSuRecoveryContinuationInput) {
+  const input: CurrentSuRecoveryContinuationInput = JSON.parse(JSON.stringify(value));
+  assert.ok(input.predecessorId && input.ownerId && input.harnessSlug);
+  assert.match(input.workItemId, /^(?:WI|EI|F)-\d+$/);
+  assert.equal(input.action.slug, input.harnessSlug);
+  assert.ok(input.action.rel_path && input.facts.length);
+  let state: 'initial' | 'custody' | 'fact' | 'save' | 'load' | 'done' | 'stopped' = 'initial';
+  let pending: { callId: string; name: string; args: Body; issuedAt: string; rawOutput?: unknown; receivedAt?: string } | undefined;
+  const calls: NonNullable<typeof pending>[] = [];
+  let factIndex = 0, stopReason: string | undefined;
+  let delivery: ReturnType<typeof inspectCurrentSuNativeCarryInput> | undefined;
+  const stop = (reason: string) => { state = 'stopped'; stopReason = reason; return undefined; };
+  const issue = (body: Body, name: string, args: Body, next: typeof state) => {
+    const callId = 'call_private_recovery_' + calls.length;
+    const wire = scriptedRecoveryTool(body, name, args, callId);
+    pending = { callId, name, args, issuedAt: new Date().toISOString() };
+    calls.push(pending); state = next;
+    return wire;
+  };
+  const nextFact = (body: Body) => {
+    const fact = input.facts[factIndex];
+    return fact ? issue(body, 'facts:list', { scope: fact.scope,
+      ...(fact.scopeRef !== undefined ? { scopeRef: fact.scopeRef } : {}), key: fact.key, full: true }, 'fact')
+      : issue(body, 'artifacts:save', input.action, 'save');
+  };
+  return {
+    get finished() { return state === 'done' || state === 'stopped'; },
+    get receipt() { return structuredClone({ schemaVersion: 1, state, stopReason, delivery, calls,
+      correctReadbackObserved: state === 'done',
+      notExercised: ['canonical-leaf-read-ids', 'source-validity-adjudication', 'paired-outcome-ledger'] }); },
+    respond(body: Body): string | undefined {
+      if (state === 'done' || state === 'stopped') return undefined;
+      if (state === 'initial') {
+        delivery = inspectCurrentSuNativeCarryInput(body, { predecessorId: input.predecessorId });
+        return issue(body, 'work_items:get', { id: input.workItemId, harness: input.harnessSlug }, 'custody');
+      }
+      const items = Array.isArray(body.input) ? body.input as Body[] : [];
+      const result = items.find(item => ['function_call_output', 'custom_tool_call_output'].includes(String(item.type))
+        && item.call_id === pending?.callId);
+      // An uncorrelated request cannot repeat an outstanding write or prove it.
+      if (!result || !pending) return undefined;
+      pending.rawOutput = result.output; pending.receivedAt = new Date().toISOString();
+      const bodies = recoveryResultBodies(result.output);
+      if (!bodies.length || bodies.some(item => item.isError === true || item.ok === false))
+        return stop('unqualified-' + state + '-receipt');
+      if (state === 'custody') {
+        const rows = bodies.flatMap(item => Array.isArray(item.results) ? item.results as Body[] : []);
+        const row = rows.find(item => item.id === input.workItemId && item.ok === true && item.availability === 'available');
+        const held = row?.workItem as Body | undefined;
+        if (!held || held.id !== input.workItemId || held.assignee !== input.ownerId
+          || held.harness !== input.harnessSlug || !['open', 'wip'].includes(String(held.state)))
+          return stop('current-custody-not-proven');
+        return nextFact(body);
+      }
+      if (state === 'fact') {
+        const fact = input.facts[factIndex];
+        const rows = bodies.flatMap(item => Array.isArray(item.facts) ? item.facts as Body[] : []);
+        const exact = rows.filter(row => row.scope === fact.scope && (row.ref ?? row.scopeRef ?? null) === (fact.scopeRef ?? null)
+          && row.key === fact.key && row.body === fact.body && row.retractedAt === null && row.body_truncated !== true);
+        if (exact.length !== 1) return stop('exact-scoped-premise-not-proven');
+        factIndex++;
+        return nextFact(body);
+      }
+      const rows = bodies.flatMap(item => Array.isArray(item.results) ? item.results as Body[] : []);
+      const exact = rows.filter(row => row.ok === true && row.slug === input.action.slug && row.rel_path === input.action.rel_path);
+      if (exact.length !== 1) return stop('exact-artifact-receipt-not-proven');
+      if (state === 'save') {
+        if (exact[0].bytes !== Buffer.byteLength(input.action.content, 'utf8')) return stop('artifact-save-size-mismatch');
+        return issue(body, 'artifacts:load', { slug: input.action.slug, rel_path: input.action.rel_path,
+          offset: 0, max_chars: 4000 }, 'load');
+      }
+      if (exact[0].found !== true || exact[0].content !== input.action.content
+        || exact[0].content_total_chars !== input.action.content.length || exact[0].content_offset !== 0)
+        return stop('exact-artifact-readback-not-proven');
+      state = 'done'; pending = undefined;
+      return undefined;
+    },
+  };
+}
+
+export function createCurrentSuNativeProtocol(options: { frozen?: boolean; carryMode?: 'on' | 'off';
+  afterCarry?: (body: Body) => Promise<string | undefined> | string | undefined } = {}) {
   let initialBody: Body | undefined, initialInput: string | undefined;
   let stage: 'initial' | 'edit' | 'compact' | 'queued' = 'initial';
   let carryInputSeen = false;
@@ -187,7 +330,11 @@ export function createCurrentSuNativeProtocol(options: { frozen?: boolean; carry
         carryInputSeen ||= stage === 'queued' && lineage;
         // A tool-free request has no driving step. Its purpose is deliberately
         // not inferred; the census preserves the framing for native diagnosis.
-        if (!tools.length || stage === 'queued') return acknowledgement(body);
+        if (!tools.length) return acknowledgement(body);
+        if (stage === 'queued') {
+          const wire = carryInputSeen ? await options.afterCarry?.(body) : undefined;
+          return wire ?? acknowledgement(body);
+        }
         if (stage === 'initial' && input.includes('<cwd>/app</cwd>')) {
           const wire = scriptedTool(body, 'edit', options);
           initialBody = body; initialInput = input; stage = 'edit'; row.action = 'edit';

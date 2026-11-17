@@ -24,7 +24,8 @@ import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fle
 import { exportRunBundle } from './export';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
-import { currentProtocolFixture, controlledProtocolFixture } from './_protocol-test-fixture';
+import { currentProtocolFixture, controlledProtocolFixture, hlbProtocolFixture } from './_protocol-test-fixture';
+import { currentBenchmarkProtocolSchema } from './schema';
 import { freezeMinecraftManifest, freezeMinecraftPair, freezeMinecraftSelection, freezeMinecraftTrial } from '../minecraft-protocol';
 import { runMinecraftProvisionedTrial, type MinecraftProvisionedTrialPorts, type MinecraftTaskLaunch } from '../minecraft-launch-adapter';
 import type { CurrentTaskInput } from '../run-launcher';
@@ -138,6 +139,28 @@ afterAll(async () => {
 });
 
 describe('preregister', () => {
+  it('round-trips the frozen HLB profile through the existing PG and file stores and refuses replacement', async () => {
+    const protocol = hlbProtocolFixture('hlb-profile-pg');
+    const config = currentBenchmarkProtocolSchema.parse(protocol);
+    const registered = await preregister({ runId: protocol.runId, suites: ['terminal-bench'], config,
+      sql, workspaceId: WS, repoRoot });
+    const fileBefore = readFileSync(registered.absFilePath, 'utf8');
+    const row = await getPrereg({ runId: protocol.runId }, { sql, workspaceId: WS });
+    expect(row).not.toBeNull();
+    expect(currentBenchmarkProtocolSchema.parse(row!.config)).toEqual(config);
+    expect(computePreregHash(row!.config)).toBe(registered.preregHash);
+    const saved = JSON.parse(fileBefore);
+    expect(currentBenchmarkProtocolSchema.parse(saved.config)).toEqual(config);
+    expect(computePreregHash(saved.config)).toBe(registered.preregHash);
+    const changed = structuredClone(config);
+    changed.sourceProfile!.verifierTimeoutMs += 1;
+    expect(computePreregHash(changed)).not.toBe(registered.preregHash);
+    await expect(preregister({ runId: protocol.runId, suites: ['terminal-bench'], config: changed,
+      sql, workspaceId: WS, repoRoot })).rejects.toThrow();
+    expect(readFileSync(registered.absFilePath, 'utf8')).toBe(fileBefore);
+    expect((await getPrereg({ runId: protocol.runId }, { sql, workspaceId: WS }))!.config).toEqual(config);
+  });
+
   it('writes the config file + a PG row whose hash matches the config', async () => {
     const { preregHash, filePath } = await preregister({
       runId: RUN,

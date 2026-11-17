@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
-import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectCurrentSuNativeCarryInput, inspectFrozenNativeCarryInput,
+import { createCurrentSuNativeProtocol, createCurrentSuRecoveryContinuation, guardedCurrentSuNativeHandler, inspectCurrentSuNativeCarryInput, inspectFrozenNativeCarryInput,
   freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_NOTE, FROZEN_NATIVE_CARRY_LIMIT,
   serveCurrentSuNativeModelDiscovery } from './current-su-native-http-protocol';
 import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
@@ -91,7 +91,9 @@ it('retains the complete native carry packet with distinct character and UTF-8 b
   expect(observed).toEqual({ schemaVersion: 1, client: 'codex', predecessorId: 'predecessor',
     packet, packetSha256: createHash('sha256').update(packet).digest('hex'), packetChars: packet.length,
     packetBytes: Buffer.byteLength(packet, 'utf8'),
-    inputSha256: createHash('sha256').update(JSON.stringify(input)).digest('hex') });
+    inputSha256: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
+    inputPacket: JSON.stringify(input), inputChars: JSON.stringify(input).length,
+    inputBytes: Buffer.byteLength(JSON.stringify(input), 'utf8') });
   expect(observed.packetBytes).toBeGreaterThan(observed.packetChars);
   const changed = inspectCurrentSuNativeCarryInput({ input: [{ role: 'user', content: packet + '\nChanged tail.' }] },
     { predecessorId: 'predecessor' });
@@ -112,6 +114,125 @@ it('rejects tool echoes, foreign or ambiguous lineage and partially observed nat
     { type: 'input_image', image_url: 'fixture' }] }])).toThrow(/unobserved non-text/);
   expect(() => inspectCurrentSuNativeCarryInput({ input: [{ role: 'user', content: packet }] },
     { predecessorId: '' })).toThrow(/independently bound predecessor/);
+});
+
+const recoveryInput = {
+  predecessorId: 'predecessor', ownerId: 'fixture-owner', workItemId: 'WI-123', harnessSlug: 'fixture-harness',
+  facts: [{ scope: 'workspace' as const, key: 'guard-rail:fixture', body: 'Use exact scoped recovery.' }],
+  action: { slug: 'fixture-harness', rel_path: 'fact-recovery-fixture/result.txt', content: 'fixture complete\n' },
+};
+const recoveryKickoff = { model: 'fixture', tools: [{ type: 'function', name: 'mcp__papercusp_su__tools_invoke' }],
+  input: [{ role: 'user', content: '⟦turn-origin:self-compaction nonce:1234abcd⟧\nTask\n\n' +
+    '⟦codex-carry-lineage predecessor:predecessor⟧\nRecovery.' },
+  { role: 'developer', content: 'Actual injected orientation 🦉' }],
+};
+const custody = { ok: true, results: [{ id: 'WI-123', ok: true, availability: 'available', workItem: {
+  id: 'WI-123', state: 'open', harness: 'fixture-harness', assignee: 'fixture-owner' } }] };
+const recovered = { ok: true, facts: [{ scope: 'workspace', ref: null, key: 'guard-rail:fixture',
+  body: 'Use exact scoped recovery.', retractedAt: null }] };
+const saved = { ok: true, results: [{ ok: true, slug: recoveryInput.action.slug,
+  rel_path: recoveryInput.action.rel_path, bytes: Buffer.byteLength(recoveryInput.action.content) }] };
+const loaded = { ok: true, results: [{ ok: true, slug: recoveryInput.action.slug,
+  rel_path: recoveryInput.action.rel_path, found: true, content: recoveryInput.action.content,
+  content_offset: 0, content_total_chars: recoveryInput.action.content.length }] };
+const recoveryResult = (index: number, value: unknown) => ({ ...recoveryKickoff,
+  input: [output('call_private_recovery_' + index, JSON.stringify(value))] });
+
+it('retains non-user native injection and drives actual correlated custody, exact recovery, save and readback', () => {
+  const continuation = createCurrentSuRecoveryContinuation(recoveryInput);
+  const invokeArgs = (wire: string | undefined) => JSON.parse(calls(wire!)[0].arguments);
+  expect(invokeArgs(continuation.respond(recoveryKickoff))).toEqual({ name: 'work_items:get',
+    args: { id: 'WI-123', harness: 'fixture-harness', payloadTier: 'full' } });
+  expect(continuation.receipt.delivery?.inputPacket).toBe(JSON.stringify(recoveryKickoff.input));
+  expect(continuation.receipt.delivery?.inputPacket).toContain('Actual injected orientation 🦉');
+  expect(invokeArgs(continuation.respond(recoveryResult(0, custody)))).toEqual({ name: 'facts:list',
+    args: { scope: 'workspace', key: 'guard-rail:fixture', full: true, payloadTier: 'full' } });
+  expect(invokeArgs(continuation.respond(recoveryResult(1, recovered)))).toEqual({ name: 'artifacts:save',
+    args: { ...recoveryInput.action, payloadTier: 'full' } });
+  expect(invokeArgs(continuation.respond(recoveryResult(2, saved)))).toEqual({ name: 'artifacts:load',
+    args: { slug: recoveryInput.action.slug, rel_path: recoveryInput.action.rel_path,
+      offset: 0, max_chars: 4000, payloadTier: 'full' } });
+  expect(continuation.finished).toBe(false);
+  expect(continuation.respond(recoveryResult(3, loaded))).toBeUndefined();
+  expect(continuation.receipt).toMatchObject({ state: 'done', correctReadbackObserved: true });
+  expect(continuation.receipt.calls.map(call => call.name)).toEqual([
+    'work_items:get', 'facts:list', 'artifacts:save', 'artifacts:load']);
+  expect(continuation.receipt.calls.every(call => call.rawOutput && call.receivedAt)).toBe(true);
+});
+
+it.each([
+  { ...custody, results: [{ ...custody.results[0], availability: 'unavailable' }] },
+  { ...custody, results: [{ ...custody.results[0], workItem: { ...custody.results[0].workItem, assignee: 'peer' } }] },
+  { ...custody, results: [{ ...custody.results[0], workItem: { ...custody.results[0].workItem, state: 'done' } }] },
+  { ok: true, results: [{ id: 'WI-123', ok: true, availability: 'unavailable' }] },
+  { isError: true, content: [{ type: 'text', text: JSON.stringify(custody) }] },
+])('never acts without current own-item custody (%#)', result => {
+  const continuation = createCurrentSuRecoveryContinuation(recoveryInput);
+  continuation.respond(recoveryKickoff);
+  expect(continuation.respond(recoveryResult(0, result))).toBeUndefined();
+  expect(continuation.receipt).toMatchObject({ state: 'stopped', correctReadbackObserved: false });
+  expect(continuation.receipt.calls.map(call => call.name)).toEqual(['work_items:get']);
+});
+
+it('uses lossless native code-mode framing and keeps the frozen action independent of caller mutation', () => {
+  const original = structuredClone(recoveryInput);
+  const continuation = createCurrentSuRecoveryContinuation(original);
+  original.action.content = 'substituted';
+  continuation.respond(recoveryKickoff);
+  const envelope = [{ type: 'input_text', text: 'Wall time: 1 seconds\nOutput:' },
+    { type: 'input_text', text: JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(custody) }] }) }];
+  continuation.respond(recoveryResult(0, envelope));
+  const factToon = 'format: toon\nok: true\nfacts[1]{scope,ref,key,body,retractedAt}:\n' +
+    '  workspace,null,"guard-rail:fixture","Use exact scoped recovery.",null';
+  const wire = continuation.respond(recoveryResult(1, { content: [{ type: 'text', text: factToon }] }));
+  expect(JSON.parse(calls(wire!)[0].arguments).args.content).toBe(recoveryInput.action.content);
+  const receipt = continuation.receipt;
+  receipt.calls[0].name = 'substituted';
+  expect(continuation.receipt.calls[0].name).toBe('work_items:get');
+});
+
+it.each([
+  { ...recovered, facts: [{ ...recovered.facts[0], scope: 'owner', ref: 'fixture-owner' }] },
+  { ...recovered, facts: [{ ...recovered.facts[0], body: 'Wrong bytes.' }] },
+  { ...recovered, facts: [{ ...recovered.facts[0], retractedAt: '2026-01-01' }] },
+  { ...recovered, facts: [{ ...recovered.facts[0], body_truncated: true }] },
+  { ok: true, facts: [] },
+  { ok: false, note: JSON.stringify(recovered) },
+])('keeps a failed or mismatched scoped premise from authorizing the artifact (%#)', result => {
+  const continuation = createCurrentSuRecoveryContinuation(recoveryInput);
+  continuation.respond(recoveryKickoff);
+  continuation.respond(recoveryResult(0, custody));
+  expect(continuation.respond(recoveryResult(1, result))).toBeUndefined();
+  expect(continuation.receipt.state).toBe('stopped');
+  expect(continuation.receipt.calls.some(call => call.name === 'artifacts:save')).toBe(false);
+});
+
+it('does not repeat an outstanding write or accept an old result as its receipt', () => {
+  const continuation = createCurrentSuRecoveryContinuation(recoveryInput);
+  continuation.respond(recoveryKickoff);
+  continuation.respond(recoveryResult(0, custody));
+  continuation.respond(recoveryResult(1, recovered));
+  expect(continuation.respond(recoveryResult(1, recovered))).toBeUndefined();
+  expect(continuation.respond(recoveryKickoff)).toBeUndefined();
+  expect(continuation.receipt.calls.filter(call => call.name === 'artifacts:save')).toHaveLength(1);
+  expect(continuation.respond(recoveryResult(2, { ok: false }))).toBeUndefined();
+  expect(continuation.receipt).toMatchObject({ state: 'stopped', correctReadbackObserved: false });
+  expect(continuation.receipt.calls.some(call => call.name === 'artifacts:load')).toBe(false);
+});
+
+it.each([
+  { ...loaded, results: [{ ...loaded.results[0], content: 'Wrong result.' }] },
+  { ...loaded, results: [{ ...loaded.results[0], content_total_chars: recoveryInput.action.content.length + 1 }] },
+  { ...loaded, results: [{ ...loaded.results[0], slug: 'foreign-harness' }] },
+  { ...loaded, results: [{ ...loaded.results[0], found: false }] },
+])('requires the complete exact scoped readback after a successful save (%#)', result => {
+  const continuation = createCurrentSuRecoveryContinuation(recoveryInput);
+  continuation.respond(recoveryKickoff);
+  continuation.respond(recoveryResult(0, custody));
+  continuation.respond(recoveryResult(1, recovered));
+  continuation.respond(recoveryResult(2, saved));
+  continuation.respond(recoveryResult(3, result));
+  expect(continuation.receipt).toMatchObject({ state: 'stopped', correctReadbackObserved: false });
 });
 
 it('drives the same frozen usage threshold and note through the native tool, retaining the queue receipt', async () => {

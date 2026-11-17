@@ -1,4 +1,6 @@
 import { BENCHMARK_CAPABILITIES, type ArmControl, type CurrentBenchmarkProtocol } from './schema';
+import hlbManifest from '../harness-leaderboard-manifest.json';
+import { MODEL_REGISTRY_SNAPSHOT_SCHEMA, modelRegistrySnapshotId, type ModelRegistrySnapshot } from '../model-registry-snapshot';
 import type { CurrentBenchNativeRunCost } from '../current-su';
 
 /** Closed native receipts, with separate uncached/cache tokens and billed dollars. */
@@ -27,7 +29,7 @@ export function allCapabilities(toggle: 'on' | 'off'): ArmControl['capabilities'
  * independent, coordinated, a coordinated single-capability ablation, an ensemble
  * and a fresh-session baseline paired to the coordinated treatment.
  */
-export function controlledProtocolFixture(): CurrentBenchmarkProtocol {
+export function controlledProtocolFixture(): ReturnType<typeof currentProtocolFixture> {
   const protocol = currentProtocolFixture();
   const template = protocol.arms[0];
   const shared = { solverGroup: 'fixture-solver', solverToolsHash: 'f'.repeat(64) };
@@ -49,7 +51,63 @@ export function controlledProtocolFixture(): CurrentBenchmarkProtocol {
 }
 
 /** Shared no-inference fixture; runtime/context pins are deliberately synthetic. */
-export function currentProtocolFixture(runId = 'run-1', maxWallClockMs = 100): CurrentBenchmarkProtocol {
+/** Synthetic, no-inference HLB controls; all execution pins are fixture witnesses. */
+export function hlbProtocolFixture(
+  runId = 'hlb-fixture',
+  suite: 'terminal-bench-2.1' | 'deep-swe' = 'terminal-bench-2.1',
+  stage: 'smoke' | 'pilot' | 'full' = 'smoke',
+  confirmatory = false,
+): CurrentBenchmarkProtocol & { sourceProfile: NonNullable<CurrentBenchmarkProtocol['sourceProfile']> } {
+  const base = currentProtocolFixture(runId);
+  const source = hlbManifest.suites[suite];
+  const taskIds = [...source.subsets[stage]];
+  const withheld = source.subsets.full.filter(id => !taskIds.includes(id)).slice(0, 2);
+  const assigned = [...taskIds, ...(confirmatory ? withheld : [])];
+  const modelId = 'gpt-5.1-codex';
+  const modelRegistry: ModelRegistrySnapshot = {
+    schema: MODEL_REGISTRY_SNAPSHOT_SCHEMA, snapshotId: '', capturedAt: '2026-11-12T00:00:00.000Z',
+    priceTableVersion: 'fixture-prices', entries: [
+      { alias: 'fixture-hlb-model', backend: 'codex', modelId, resolution: 'codex-cli', priced: true },
+    ], pricedModelIds: [modelId],
+  };
+  modelRegistry.snapshotId = modelRegistrySnapshotId(modelRegistry);
+  const arms = base.arms.map(arm => ({ ...arm, model: 'fixture-hlb-model',
+    runtime: { ...arm.runtime, sourceRevision: '1'.repeat(40), runtimeRevision: '2'.repeat(64) } }));
+  const sourceProfile: NonNullable<CurrentBenchmarkProtocol['sourceProfile']> = {
+    kind: 'harness-leaderboard-v1', sourceRevision: hlbManifest.sourceRevision,
+    sourceRegistrySha256: hlbManifest.sourceRegistrySha256,
+    manifestSha256: '948cedf2bdd10631ec53b12d1aa5ba2dfb3822773d71f067f595598c1bb09806',
+    suite, datasetRevision: source.revision, license: 'Apache-2.0', stage,
+    comparison: confirmatory ? 'withheld-confirmatory' :
+      stage === 'full' ? 'full-board-descriptive' : 'incomplete-descriptive',
+    generationsPerTask: 3, harborVersion: '0.24.0', harborRuntimeSha256: '3'.repeat(64),
+    adapterRevision: '4'.repeat(40), networkPolicy: suite === 'deep-swe' ? 'enforced' : 'task-declared',
+    networkPolicySha256: '5'.repeat(64), agentTimeoutMs: 1000, verifierTimeoutMs: 30000,
+    verifiers: Object.fromEntries(assigned.map(id => [id, '6'.repeat(64)])), modelRegistry,
+    models: Object.fromEntries(arms.map(arm => [arm.id, {
+      provider: 'openai' as const, resolvedModelId: modelId, weightsRevision: 'fixture-weights',
+      precision: 'fixture-fp16', supportedEfforts: ['high'], compatibilitySourceSha256: '7'.repeat(64),
+      contextTokens: 1000000, outputTokens: 4096, compactionLimitTokens: 200000,
+    }])),
+  };
+  return { ...base, taskIds, seeds: [1, 2, 3], arms, sourceProfile,
+    priceSchedule: { ...base.priceSchedule, rates: [{ ...base.priceSchedule.rates[0],
+      model: 'fixture-hlb-model', inputTokenCeiling: 100000,
+      inputTokenCeilingSourceSha256: '8'.repeat(64), outputTokenCeiling: 4096 }] },
+    grader: { ...base.grader, datasetSha256: '9'.repeat(64),
+      images: Object.fromEntries(assigned.map(id => [id, 'registry.invalid/fixture@sha256:' + 'a'.repeat(64)])) },
+    exclusions: Object.keys(source.excluded),
+    stopping: { ...base.stopping, superiorityClaim: confirmatory ? 'withheld-confirmation-only' : 'descriptive-only' },
+    confirmation: confirmatory ? { ...base.confirmation, taskIds: withheld, seeds: [1, 2, 3],
+      plannedPairedTasks: withheld.length } : null,
+    sampling: confirmatory ? { ...base.sampling!,
+      taskRepositories: Object.fromEntries(assigned.map(id => [id, 'fixture-repository'])) } : undefined,
+  };
+}
+
+export function currentProtocolFixture(runId = 'run-1', maxWallClockMs = 100): CurrentBenchmarkProtocol & {
+  confirmation: NonNullable<CurrentBenchmarkProtocol['confirmation']>;
+} {
   const arm = (id: string) => ({
     id, agent: 'codex' as const, model: 'configured-alias', effort: 'high', account: 'auto',
     generationBudget: { maxUsd: 3, maxWallClockMs },

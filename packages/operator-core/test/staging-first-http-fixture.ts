@@ -19,7 +19,8 @@ import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, bu
   qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment,
   parsePrivateCompletionFixtureControls, parsePrivateHttpScenario,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, resolvePreparedPrivateApiSourceSha } from './private-http-workspace-preflight';
-import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
+  retainIsolatedWorkerProgress, withNativeProofLedger, nativeProofRecorder, type NativeProofRecorder } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
@@ -64,7 +65,7 @@ async function stopHost(afterExit?: () => Promise<void>) {
   retainLoadedSources = undefined;
 }
 
-async function main() {
+async function main(native?: NativeProofRecorder) {
   const e = process.env;
   const completionControls = parsePrivateCompletionFixtureControls(process.argv.slice(2));
 
@@ -205,7 +206,8 @@ async function main() {
   const isBlueprintRoute = e.STAGING_FIRST_HTTP_SCENARIO === 'blueprint-account-route';
   const isPrivateMcpPreflightOnly = e.STAGING_FIRST_HTTP_SCENARIO === 'private-mcp-preflight-only';
   const isCurrentSuNative = ['current-su-native', 'current-su-native-carry',
-    'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
+    'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off',
+    'current-su-native-recovery-baseline'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
   // The supervisor deliberately strips DOCKER_* credentials and routing.
   // Reconstitute only this run's selected local endpoint before host launch.
   if (isCurrentSuNative) e.DOCKER_HOST = privateNativeDockerHost(process.argv.slice(2));
@@ -567,11 +569,19 @@ async function main() {
     return;
   }
   if (isCurrentSuNative) {
+    if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-recovery-baseline') {
+      assert.ok(native, 'Native F01 needs its original reviewed single-fork admission');
+      const runtimePath = join(evidenceDir, 'native-recovery-runtime.json');
+      writeFileSync(runtimePath, JSON.stringify({ workspace, base, bundleSha256, health, hostIdentity }), { flag: 'wx' });
+      await native.observe('runtime', runtimePath);
+    }
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuNativeScenario({
       workspace, base, evidenceDir, managedCarry: e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-carry',
+      recoveryBaseline: e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-recovery-baseline',
       ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-on' ? { frozenCarryMode: 'on' as const } : {}),
       ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-off' ? { frozenCarryMode: 'off' as const } : {}),
     });
+    if (native) await native.observe('trace', join(evidenceDir, 'native-recovery-continuation.json'));
     await stopHost();
     console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health,
       dockerHost: e.DOCKER_HOST }));
@@ -751,7 +761,23 @@ async function main() {
     hostStopped: true, sourcePath, sourceSha256, bundleSha256, health, requests }));
 }
 
-try { await main(); }
+try {
+  const handoffPath = process.argv.find(arg => arg.startsWith('--native-proof-child='))?.slice('--native-proof-child='.length);
+  if (handoffPath) {
+    assert.equal(process.env.STAGING_FIRST_HTTP_SCENARIO, 'current-su-native-recovery-baseline');
+    await withNativeProofLedger(process.env, async sql => {
+      const { enterNativeProofChild } = await import('../lib/testing-run-store');
+      return enterNativeProofChild(sql, JSON.parse(readFileSync(handoffPath, 'utf8')),
+        'packages/operator-core/test/staging-first-http-fixture.ts',
+        createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex'),
+        intent => main(nativeProofRecorder(sql, intent)));
+    });
+  } else {
+    assert.notEqual(process.env.STAGING_FIRST_HTTP_SCENARIO, 'current-su-native-recovery-baseline',
+      'Native F01 cannot bypass its original reviewed single-fork admission');
+    await main();
+  }
+}
 catch (error) {
   const assertion = error as { message?: string; stack?: string; actual?: unknown; expected?: unknown };
   console.error('STAGING_FIRST_HTTP_FAILURE ' + JSON.stringify({ message: assertion.message ?? String(error),

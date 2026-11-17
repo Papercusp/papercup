@@ -11,13 +11,14 @@ import { eventLogPathForOwner } from '../../../apps/operator/scripts/psu-pty-hos
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
 import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssignmentId, currentBenchGatewayController, type CurrentBenchTask } from '../lib/external-bench/current-su';
 import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
-import { retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from './isolated-integration-proof';
+import { CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from './isolated-integration-proof';
 import { psuLaunchLogPath } from '../lib/psu-launch-log.mjs';
 import { startFrontierSweLaunchAdapter, type FrontierSweNativeLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
 import { startBenchEgress, sweepBenchEgress } from '../lib/external-bench/bench-egress';
 import { liveProcExec, type ProcExec } from '../lib/external-bench/grader';
 import type { FrontierSweEnvHandle } from '../lib/external-bench/frontier-swe-seam';
+import { materializeDockerExecWrapper } from '../lib/external-bench/container-exec-target';
 import { currentProtocolFixture } from '../lib/external-bench/reproducibility/_protocol-test-fixture';
 import { preregister } from '../lib/external-bench/reproducibility/prereg';
 import { getModes } from '../lib/modes/store';
@@ -27,11 +28,9 @@ import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 import { isValidSuperuserBearer, readSuperuserToken, superuserTokenPath } from '../lib/superuser-token';
-import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler, inspectFrozenNativeCarryInput,
+import { createCurrentSuNativeProtocol, createCurrentSuRecoveryContinuation, guardedCurrentSuNativeHandler, inspectCurrentSuNativeCarryInput, inspectFrozenNativeCarryInput,
   freezeCurrentSuNativeCarryProtocol, FROZEN_NATIVE_CARRY_LIMIT,
   serveCurrentSuNativeModelDiscovery } from './current-su-native-http-protocol';
-
-const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
 
 /** Real allocation/store prerequisite, independent of the native model protocol.
  * Tool paging and canonical validity controls do not certify an emitted native epoch. */
@@ -405,9 +404,10 @@ export async function measureCurrentSuHomeRepairScenario(input: { workspace: str
 }
 
 export async function measureCurrentSuNativeScenario(input: { workspace: string; base: string; evidenceDir: string;
-  managedCarry?: boolean; frozenCarryMode?: 'on' | 'off' }) {
-  const { workspace, base, evidenceDir, frozenCarryMode } = input;
-  const managedCarry = input.managedCarry === true || frozenCarryMode !== undefined;
+  managedCarry?: boolean; frozenCarryMode?: 'on' | 'off'; recoveryBaseline?: boolean }) {
+  const { workspace, base, evidenceDir, frozenCarryMode, recoveryBaseline } = input;
+  assert.ok(!recoveryBaseline || frozenCarryMode === undefined, 'Normal recovery is separate from frozen benchmark carry');
+  const managedCarry = input.managedCarry === true || frozenCarryMode !== undefined || recoveryBaseline === true;
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
   assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
@@ -473,7 +473,18 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
   let successorId: string | undefined;
   let stoppedAfterCarry = false;
-  const protocol = createCurrentSuNativeProtocol({ frozen: frozenCarryMode !== undefined, carryMode: frozenCarryMode });
+  let recoveryAssignment: { workItemId: string; harnessSlug: string } | undefined;
+  let recoveryContinuation: ReturnType<typeof createCurrentSuRecoveryContinuation> | undefined;
+  const recoveryAllowedTools = ['coord:whoami', 'session:request-compaction', 'work_items:get',
+    'work_items:checkpoint', 'work_items:complete', 'facts:list', 'artifacts:save', 'artifacts:load'];
+  const protocol = createCurrentSuNativeProtocol({ frozen: frozenCarryMode !== undefined, carryMode: frozenCarryMode,
+    ...(recoveryBaseline ? { afterCarry: (body: Record<string, unknown>) => {
+      assert.ok(recoveryContinuation, 'Recovery input must be frozen before compaction');
+      const wire = recoveryContinuation.respond(body);
+      writeFileSync(join(evidenceDir, 'native-recovery-continuation.json'), JSON.stringify(recoveryContinuation.receipt, null, 2));
+      return wire;
+    } } : {}) });
+  let carryDelivery: (ReturnType<typeof inspectCurrentSuNativeCarryInput> & { observedAt: string }) | undefined;
   let frozenInitialPrompt: string | undefined;
   let frozenDelivery: ReturnType<typeof inspectFrozenNativeCarryInput> | undefined;
   const nativeDriveTimeoutMs = 180_000;
@@ -502,8 +513,58 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
             // A trusted observer verifies the launch-owned immutable policy.
             // This exercises real native delivery/handler thresholds, NOT
             // controlled-arm admission or complete gateway accounting.
-            ...(frozenCarryMode ? { beforeCompaction: async (nativeId: string) => {
+            ...(frozenCarryMode || recoveryBaseline ? { beforeCompaction: async (nativeId: string) => {
               assert.equal(nativeId, protocol.predecessorSessionId);
+              if (recoveryBaseline) {
+                assert.ok(recoveryAssignment && !recoveryContinuation);
+                const { createWorkItem, claimWorkItem, getWorkItem } = await import('../lib/work-items');
+                const facts = await import('../lib/agent-facts/store');
+                const artifacts = await import('../lib/text-artifacts');
+                assert.equal(facts.validateFactScopeRefShape('work_item', recoveryAssignment.workItemId), null);
+                const current = await getWorkItem(recoveryAssignment.workItemId, recoveryAssignment.harnessSlug);
+                assert.ok(current && (!current.assignee || current.assignee === row.coord_owner_id),
+                  'Recovery cannot take another owner\'s item');
+                if (!current.assignee) assert.equal((await claimWorkItem(current.id, row.coord_owner_id,
+                  { harness: recoveryAssignment.harnessSlug, assignedBy: row.coord_owner_id }))?.assignee, row.coord_owner_id);
+                const peer = await createWorkItem({ kind: 'task', title: 'Excluded native recovery peer',
+                  workspaceId: workspace, harness: recoveryAssignment.harnessSlug,
+                  createdBy: row.coord_owner_id, assignee: 'fixture-peer' });
+                const clock = await sql.unsafe("SELECT to_char(date_trunc('milliseconds', clock_timestamp()) AT TIME ZONE 'UTC', " +
+                  "'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') AS epoch");
+                const epoch = String(clock[0].epoch), rowGenerations = [];
+                const seeds = [{ key: 'guard-rail:fixture', body: 'Use exact scoped recovery.', minute: 0 },
+                  ...Array.from({ length: 20 }, (_, index) => ({ key: 'fixture-unrelated-' + String(index + 1).padStart(2, '0'),
+                    body: 'Unrelated row ' + String(index + 1).padStart(2, '0') + '.', minute: index + 1 }))];
+                for (const seed of seeds) {
+                  const written = await facts.assertFact({ scope: 'workspace', key: seed.key, body: seed.body,
+                    workspaceId: workspace, createdBy: row.coord_owner_id, confidence: 'verified', ttlSec: 86400,
+                    sourceRef: 'fixture:independent-literal-inputs' });
+                  assert.ok(written.id);
+                  await sql.unsafe("UPDATE harness_shared.agent_facts SET updated_at=$2::timestamptz - interval '2 hours' " +
+                    "+ $3::integer * interval '1 minute', expires_at=$2::timestamptz + interval '24 hours' " +
+                    "WHERE workspace_id=$1 AND id=$4", [workspace, epoch, seed.minute, written.id]);
+                  const actual = (await facts.listFacts({ scope: 'workspace' }, { workspaceId: workspace, limit: 50 }))
+                    .find(fact => fact.id === written.id);
+                  assert.ok(actual && actual.body === seed.body);
+                  rowGenerations.push(actual);
+                }
+                // Decode of the reviewed contract's JSON content literal: its
+                // final bytes are 5c6e (a literal backslash and n), not LF.
+                const action = { slug: recoveryAssignment.harnessSlug, rel_path: 'fact-recovery-fixture/result.txt',
+                  content: 'fact-recovery-fixture:complete\\n' };
+                assert.equal(await artifacts.loadTextArtifact(action.slug, action.rel_path), null);
+                const fixture = { schemaVersion: 1, fixtureId: 'F01', phase: 'native-baseline-binding', workspace,
+                  ownerId: row.coord_owner_id, nativePredecessorId: nativeId, nativeTaskId: row.task_id,
+                  aliases: { CURRENT_REF: current.id, PEER_REF: peer.id }, harness: recoveryAssignment.harnessSlug,
+                  clock: { source: 'PostgreSQL clock_timestamp', epoch }, rowGenerations, action,
+                  expectedBodies: ['Use exact scoped recovery.', ...seeds.slice(-8).reverse().map(seed => seed.body)],
+                  notExercised: ['F02-F10', 'candidate', 'paired-outcome-ledger', 'source-validity-adjudication'] };
+                writeFileSync(join(evidenceDir, 'native-recovery-fixture.json'), JSON.stringify(fixture, null, 2), { flag: 'wx' });
+                recoveryContinuation = createCurrentSuRecoveryContinuation({ predecessorId: nativeId,
+                  ownerId: row.coord_owner_id, workItemId: current.id, harnessSlug: action.slug,
+                  facts: [{ scope: 'workspace', key: seeds[0].key, body: seeds[0].body }], action });
+                return;
+              }
               const previous = await readSessionConfinement(row.coord_owner_id, workspace);
               assert.ok(previous?.denyCarryOutside, 'Native frozen carry requires its launch-owned initial prompt');
               assert.equal(previous.denyCarryOutside.mode, frozenCarryMode);
@@ -541,6 +602,15 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
             ownerId: row.coord_owner_id, sessionId: row.session_id }, {}, codexHomeForSessionKey(row.id));
           writeFileSync(join(evidenceDir, 'native-model-requests.json'), JSON.stringify(protocol.census, null, 2));
           progress('model-protocol-request', { census: protocol.census.at(-1) });
+        }
+        if (protocol.carryInputSeen && !carryDelivery) {
+          assert.ok(protocol.predecessorSessionId);
+          const delivered = inspectCurrentSuNativeCarryInput(body, { predecessorId: protocol.predecessorSessionId });
+          carryDelivery = { ...delivered, observedAt: new Date().toISOString() };
+          // Preserve the original observation even if later identity or native
+          // cleanup checks fail. The final binding is a separate receipt.
+          writeFileSync(join(evidenceDir, 'native-carry-packet.json'), JSON.stringify(carryDelivery, null, 2),
+            { flag: 'wx' });
         }
         if (frozenCarryMode && protocol.carryInputSeen) {
           assert.ok(frozenInitialPrompt && protocol.predecessorSessionId);
@@ -620,11 +690,38 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       createDriver: (options, context, observations) => {
         phase('driver-start');
         const ports = liveCurrentSuBenchPorts(context, observations, options);
-        return currentSuBenchHarnessDriver(liveBenchHarnessOps(options), { ...ports,
+        const ops = liveBenchHarnessOps(options);
+        const fixtureOps = recoveryBaseline ? { ...ops,
+          createHarness: async (request: Parameters<typeof ops.createHarness>[0]) => {
+            const handle = await ops.createHarness(request);
+            const { createWorkItem } = await import('../lib/work-items');
+            const item = await createWorkItem({ kind: 'task', title: 'Native F01 recovery binding',
+              workspaceId: workspace, harness: handle.slug, createdBy: context.uiClientId! });
+            recoveryAssignment = { workItemId: item.id, harnessSlug: handle.slug };
+            return { ...handle, featureId: item.id };
+          } } : ops;
+        return currentSuBenchHarnessDriver(fixtureOps, { ...ports,
           launch: async args => {
             phase('launch-start');
             try { return await withIsolatedNativeLaunchDiagnostics(evidenceDir, async () => {
-              const receipt = await ports.launch(args); progress('launch-returned', { receipt }); return receipt;
+              let receipt;
+              if (recoveryBaseline) {
+                assert.ok(observations.containerExec && observations.nativeGateway && recoveryAssignment);
+                const module = await import('../lib/agent-tools/capability/launch-agent');
+                const wrapper = materializeDockerExecWrapper(observations.containerExec);
+                // Reuse the canonical private handler and container boundary.
+                // Benchmark ports.launch keeps its exact ambient/carry policy.
+                receipt = await module.default.handler(args, { ...context,
+                  [module.INTERNAL_SCOPED_INFERENCE_GATEWAY]: observations.nativeGateway,
+                  [module.INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: wrapper.nativeBoundary },
+                  [module.INTERNAL_SCOPED_SESSION_CONFINEMENT]: { denyTools: [], denyOutside: recoveryAllowedTools,
+                    denyAmbientContext: false, denyWorkItemsOutside: { id: recoveryAssignment.workItemId,
+                      harness: recoveryAssignment.harnessSlug, checkout: args.cwd },
+                    imposedBy: 'private P015 native recovery fixture',
+                    reason: 'Normal fact delivery with exact owned-task and local no-forwarding boundaries' },
+                } as PapercuspUnifiedToolContext);
+              } else receipt = await ports.launch(args);
+              progress('launch-returned', { receipt }); return receipt;
             }, async () => {
               assert.ok(args.label, 'native launch diagnostic scope requires its exact assignment label');
               const tasks = await ports.listTasks({ workspaceId: workspace, labelPrefix: args.label, includeEnded: true, limit: 100 });
@@ -637,7 +734,8 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
           },
           getTask: async id => {
             let task = await ports.getTask(id);
-            if (managedCarry && protocol.carryInputSeen && predecessor && task?.sessionId && task.sessionId !== predecessor.sessionId && !stoppedAfterCarry) {
+            if (managedCarry && protocol.carryInputSeen && predecessor && task?.sessionId && task.sessionId !== predecessor.sessionId
+              && !stoppedAfterCarry && (!recoveryBaseline || recoveryContinuation?.finished)) {
               assert.equal(task.detail.coordOwnerId, predecessor.ownerId);
               assert.equal(task.taskId, predecessor.taskId);
               successorId = task.sessionId;
@@ -712,8 +810,10 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     const confinement = await readSessionConfinement(row.coord_owner_id, workspace);
     assert.ok(confinement, 'native session has no host confinement');
     assert.ok(JSON.stringify(confinement).includes(assignmentId), 'assignment confinement missing');
-    assert.deepEqual(confinement.denyOutside, ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']);
-    assert.equal(confinement.denyAmbientContext, true);
+    assert.deepEqual(confinement.denyOutside, recoveryBaseline ? recoveryAllowedTools
+      : ['coord:whoami', 'session:request-compaction', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']);
+    assert.equal(confinement.denyAmbientContext, recoveryBaseline ? false : true);
+    if (recoveryBaseline) assert.equal(confinement.denyCarryOutside, undefined);
     assert.ok(bridge!.stats().calls > 0 && bridge!.stats().pings > 0, JSON.stringify(bridge!.stats()));
     assert.notEqual(output.status, 'completed', diagnostic);
     assert.ok(adapter.egress.stats().gw.connections > 0 && adapter.egress.stats().mcp.connections > 0);
@@ -721,6 +821,23 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     if (managedCarry) {
       assert.ok(protocol.carryRequested && protocol.carryInputSeen && stoppedAfterCarry && successorId && predecessor, diagnostic);
       assert.notEqual(successorId, predecessor.sessionId);
+      assert.ok(carryDelivery, 'Managed carry needs its original observed user packet');
+      assert.equal(carryDelivery.predecessorId, predecessor.sessionId);
+      assert.equal(row.session_id, successorId, 'Retained packet needs the actual bound successor');
+      assert.equal(row.coord_owner_id, predecessor.ownerId);
+      assert.equal(row.task_id, predecessor.taskId);
+      const originalPacket = readFileSync(join(evidenceDir, 'native-carry-packet.json'));
+      assert.deepEqual(JSON.parse(originalPacket.toString('utf8')), carryDelivery,
+        'Original native packet observation changed before identity binding');
+      writeFileSync(join(evidenceDir, 'native-carry-input.json'), JSON.stringify({ ...carryDelivery,
+        workspace, ownerId: row.coord_owner_id, nativeTaskId: row.task_id, nativeSessionId: successorId,
+        packetArtifact: { path: 'native-carry-packet.json',
+          sha256: createHash('sha256').update(originalPacket).digest('hex') },
+        identitySource: 'adv_sessions+task_ledger and original managed delivery observation',
+        notExercised: recoveryBaseline
+          ? ['F02-F10', 'paired-outcome-ledger', 'source-validity-adjudication', 'claude-native', 'omp-native']
+          : ['fact-baseline', 'paired-outcome-ledger', 'permitted-action-readback', 'claude-native', 'omp-native'],
+      }, null, 2));
       assert.equal(taskGit('rev-parse', 'HEAD'), taskHead);
       assert.equal(readFileSync(join(taskCheckout, 'answer.txt'), 'utf8'), 'after\n');
       assert.ok(taskGit('diff', '--', 'answer.txt').includes('-before\n+after'));
@@ -750,10 +867,27 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       frozenCarryReceipt = { ...frozenDelivery, trigger, policySeed: 'private-observer',
         gatewayAccounting: 'not-measured', controlledArmAdmission: 'not-exercised' };
     }
+    let recoveryReceipt;
+    if (recoveryBaseline) {
+      assert.ok(recoveryAssignment && recoveryContinuation?.receipt.correctReadbackObserved,
+        JSON.stringify(recoveryContinuation?.receipt));
+      const fixture = JSON.parse(readFileSync(join(evidenceDir, 'native-recovery-fixture.json'), 'utf8'));
+      const artifacts = await import('../lib/text-artifacts');
+      const actual = await artifacts.loadTextArtifact(recoveryAssignment.harnessSlug, fixture.action.rel_path);
+      assert.equal(actual, fixture.action.content);
+      recoveryReceipt = { schemaVersion: 1, fixtureId: 'F01', workspace, ownerId: row.coord_owner_id,
+        nativeTaskId: row.task_id, nativeSessionId: row.session_id,
+        fixtureSha256: createHash('sha256').update(readFileSync(join(evidenceDir, 'native-recovery-fixture.json'))).digest('hex'),
+        inputSha256: recoveryContinuation.receipt.delivery!.inputSha256,
+        action: fixture.action, independentStoreReadback: actual,
+        notExercised: ['F02-F10', 'paired-outcome-ledger', 'canonical-leaf-read-ids', 'source-validity-adjudication'] };
+      writeFileSync(join(evidenceDir, 'native-recovery-readback.json'), JSON.stringify(recoveryReceipt, null, 2), { flag: 'wx' });
+    }
     return { workspace, assignmentId, nativeSessionId: row.session_id, nativeTaskId: row.task_id,
       modelRequests: bodies.length, providerForwarding: false, autoRegistered: true, hooksBridged: true,
       containerWorkdir: '/app', mcpConfined: true, status: output.status,
       ...(managedCarryReceipt ? { managedCarry: managedCarryReceipt } : {}),
+      ...(recoveryReceipt ? { recoveryBaseline: recoveryReceipt } : {}),
       ...(frozenCarryReceipt ? { frozenCarry: frozenCarryReceipt } : {}) };
   } finally {
     try { progress('native-cleanup-start', { bridge: bridge?.stats(), egress: adapter?.egress.stats() }); }

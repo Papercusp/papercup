@@ -1125,6 +1125,10 @@ type IsolatedIntegrationProofOptions = {
   minimumFileRunTimeoutMs?: number;
   /** Required original receipts, relative to the run directory. Missing files fail retention. */
   retainedArtifacts?: readonly string[];
+  /** Archive producer originals before bounded inline retention, replacing
+   * automatic diagnostic selectors with the returned complete custody refs.
+   * Called during teardown on passing AND failed preparations. */
+  retainProducedArtifacts?: (runDir: string) => Promise<readonly string[]> | readonly string[];
   prepare?: (evidenceDir: string, native?: NativeProofRecorder) => Promise<void | CommittedReaderPreparationHandoff> | void | CommittedReaderPreparationHandoff;
   requiredPreparation?: CommittedReaderObservationIdentity;
   /** Existing durable ledger admission covers allocation, prepare and execute. */
@@ -1296,7 +1300,9 @@ async function recordIsolatedIntegrationProofRun(options: IsolatedIntegrationPro
         // Preserve available original diagnostics even if cleanup validation
         // rejects: that rejection is exactly when the observations matter.
         const runDir = join(ctx.evidenceDir, '../..');
-        for (const receipt of isolatedIntegrationDiagnosticArtifacts(runDir))
+        const produced = options.retainProducedArtifacts
+          ? await options.retainProducedArtifacts(runDir) : isolatedIntegrationDiagnosticArtifacts(runDir);
+        for (const receipt of produced)
           if (!retainedArtifacts.includes(receipt)) retainedArtifacts.push(receipt);
         // A failed preparation allocated no worker or private database.
         if (!observedChild) {
