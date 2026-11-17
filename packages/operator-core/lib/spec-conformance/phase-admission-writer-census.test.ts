@@ -159,7 +159,11 @@ describe('phase binding writer census', () => {
       const dynamic = inventoryPhaseWriterTree(root);
       const unproved = dynamic.sites.map(site => site.path === dynamicPath
         ? { ...review(site), resolvedEdges: [] } : reviews.find(row => row.siteId === site.id)!);
-      expect(() => assertPhaseWriterTreeCensus(root, unproved)).toThrow('unresolved-edge:statement');
+      let dynamicReport: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, unproved); }
+      catch (error) { dynamicReport = (error as Error & { report: NonNullable<typeof dynamicReport> }).report; }
+      expect(dynamicReport?.ready).toBe(false);
+      expect(dynamicReport?.census.problems.some(problem => problem.reasons.includes('unresolved-edge:statement'))).toBe(true);
       rmSync(join(root, dynamicPath));
       writeFileSync(join(root, 'packages/broken.ts'), 'export function broken( {');
       let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
