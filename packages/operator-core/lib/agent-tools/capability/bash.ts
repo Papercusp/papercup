@@ -28,6 +28,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
+import { trackPhase } from '@papercusp/tooldef';
 import {
   CAPABILITY_BASH_FOREGROUND_ENV,
   CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV,
@@ -591,16 +592,18 @@ export default defineTool({
     // The scan is a pure regex; the disclosure ledger is read only when the
     // command names a provider host, a sidecar, or the sidecars' secrets.
     if (findProviderEgressTargets(command).length) {
-      const { checkRestrictedEgress, egressRefusalPayload } = await import('../../personal-vault/binding-enforcement');
       let egressOwnerId: string | null = null;
       try {
         egressOwnerId = resolveAgentIdentity(ctx as unknown as ResolveIdentityCtx).ownerId;
       } catch {
         egressOwnerId = null;
       }
-      const refusal = egressRefusalPayload(
-        await checkRestrictedEgress({ ownerId: egressOwnerId, tool: 'capability:bash', texts: [command] }),
-      );
+      const refusal = await trackPhase(ctx.phases, 'handler:restricted-egress', async () => {
+        const { checkRestrictedEgress, egressRefusalPayload } = await import('../../personal-vault/binding-enforcement');
+        return egressRefusalPayload(
+          await checkRestrictedEgress({ ownerId: egressOwnerId, tool: 'capability:bash', texts: [command] }),
+        );
+      });
       if (refusal) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(refusal) }], isError: true };
       }
@@ -663,12 +666,12 @@ export default defineTool({
     // it carries RTK's output compression too. Every gate above and below judges
     // the ORIGINAL command; only the spawned text is the RTK form. Fail-open: any
     // RTK problem runs the original command unchanged.
-    const rtk = await rtkCommandForCapabilityBash(command, {
+    const rtk = await trackPhase(ctx.phases, 'handler:command-rewrite', () => rtkCommandForCapabilityBash(command, {
       cwd,
       structuredCaller: Boolean(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)),
       streamingTest: isBackgroundTestCommand(command),
       flagEnabled: () => getFlag(FLAGS.CAPABILITY_BASH_RTK, 'system'),
-    });
+    }));
     const execCommand = rtk.command;
     const rtkApplied = rtk.outcome.kind === 'rewritten';
     // EI-21910156647461981: an explicitly detached task survives the caller's
@@ -681,7 +684,7 @@ export default defineTool({
     if (args.run_in_background && !args.allow_duplicate && workspaceId) {
       // The live task's argv holds the SPAWNED text, so compare against that.
       const expectedArgv = ['bash', '-o', 'pipefail', '-c', execCommand];
-      const duplicate = (await listLiveTasks(workspaceId)).find(
+      const duplicate = (await trackPhase(ctx.phases, 'handler:live-task-census', () => listLiveTasks(workspaceId))).find(
         (task) =>
           task.class === 'bash-job' &&
           task.cwd === cwd &&
@@ -724,7 +727,7 @@ export default defineTool({
     // Resolve from server-owned caller identity. Trusted owner automation keeps
     // the rollout flag's compatibility behavior; confined work forces a real
     // wrapper and refuses before spawn when none is available.
-    const sandboxPolicy = await capabilityExecSandboxPolicy(ctx);
+    const sandboxPolicy = await trackPhase(ctx.phases, 'handler:sandbox-policy', () => capabilityExecSandboxPolicy(ctx));
     // computer-tool-plan Gap C: if the calling bee's hive holds a leased sandbox desktop,
     // run its shell with DISPLAY bound to that desktop so GUI apps it launches (`firefox &`,
     // `soffice --calc &`) appear ON the leased Xvfb — capability:computer then drives them.
@@ -739,13 +742,13 @@ export default defineTool({
       throw new Error('capability:bash integration_env requires superuser or operator, architect, or mug authority');
     }
 
-    const resolvedIntegrationEntries = await Promise.all(
+    const resolvedIntegrationEntries = await trackPhase(ctx.phases, 'handler:integration-credentials', () => Promise.all(
       integrationEntries.map(async ([envName, sourceName]) => ({
         envName,
         sourceName,
         value: await readIntegrationKey(sourceName),
       })),
-    );
+    ));
     const missingIntegrationSources = [
       ...new Set(resolvedIntegrationEntries.filter((entry) => !entry.value).map((entry) => entry.sourceName)),
     ];
@@ -783,19 +786,21 @@ export default defineTool({
     // no working bwrap refuses before spawn. Matching provider names in the text
     // (above) cannot see a host built at run time; an empty network namespace can.
     // Fail closed: an unreadable ledger (null) also runs offline.
-    const { readSessionRestriction } = await import('../../personal-vault/binding-enforcement');
-    const sessionRestricted = (await readSessionRestriction(callerSid || null)) !== false;
+    const sessionRestricted = await trackPhase(ctx.phases, 'handler:session-restriction', async () => {
+      const { readSessionRestriction } = await import('../../personal-vault/binding-enforcement');
+      return (await readSessionRestriction(callerSid || null)) !== false;
+    });
     // This runs inside the already-loaded operator bundle, before the only spawn.
     // A live-tree hold must fence every integration-tree shell, even when this
     // caller has no personal disclosure; an unknown root/census is fail-closed.
-    const sourceHold = await readRestrictedSourceHoldState(frozenLineageRoot);
+    const sourceHold = await trackPhase(ctx.phases, 'handler:restricted-source-hold', () => readRestrictedSourceHoldState(frozenLineageRoot));
     const runOffline = sessionRestricted || sourceHold !== 'clear';
     let provenance: Awaited<ReturnType<typeof resolveCapabilityBashTaskProvenance>>;
     try {
-      provenance = await resolveCapabilityBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
+      provenance = await trackPhase(ctx.phases, 'handler:task-provenance', () => resolveCapabilityBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
         explicitWorkItemId: args.work_item_id ?? null,
         explicitParentTaskId: args.parent_task_id,
-      });
+      }));
     } catch (error) {
       if (!(error instanceof BashProvenanceRefusal)) throw error;
       return {
@@ -836,7 +841,7 @@ export default defineTool({
     const integrationHeader =
       integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
     const processNotice = processTableNotice(command);
-    const frozenRefusal = await frozenLineageRefusal();
+    const frozenRefusal = await trackPhase(ctx.phases, 'handler:frozen-lineage-policy', frozenLineageRefusal);
     if (frozenRefusal) {
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
@@ -845,12 +850,12 @@ export default defineTool({
     }
     // expensive-verification-loops P-002: a slow launch for a work item that keeps failing
     // slow attempts is held until the loop is audited on the item (quick calls pass).
-    const loopRefusal = await loopLaunchRefusal({
+    const loopRefusal = await trackPhase(ctx.phases, 'handler:verification-loop-gate', () => loopLaunchRefusal({
       workspaceId,
       workItemId: provenance.workItemId,
       background: Boolean(args.run_in_background),
       timeoutMs: executionTimeoutMs,
-    });
+    }));
     if (loopRefusal) {
       return { content: [{ type: 'text' as const, text: JSON.stringify(loopRefusal) }], isError: true };
     }
