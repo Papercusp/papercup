@@ -315,8 +315,16 @@ export function reconstructDurableCapture(path: string) {
 
 /** The parent publishes one familiar JSON postimage after child death/exit. The
  * append-only journal remains beside it as the original, independently hashable tape. */
-export function materializeDurableCapture(path: string) {
-  const capture = reconstructDurableCapture(path);
+export function materializeDurableCapture(path: string, child?: {
+  status: number | null; signal: NodeJS.Signals | null; error?: Error; stdout?: string; stderr?: string;
+}) {
+  let capture: ReturnType<typeof reconstructDurableCapture>;
+  try { capture = reconstructDurableCapture(path); }
+  catch (error) {
+    if (!child) throw error;
+    throw new Error(`Durable child capture failed: status=${child.status}, signal=${child.signal}, spawnError=${child.error?.message ?? 'none'}\nstdout: ${child.stdout ?? ''}\nstderr: ${child.stderr ?? ''}`,
+      { cause: error });
+  }
   retainDurableCapture(path, capture);
   return capture;
 }
@@ -327,6 +335,7 @@ export function materializeDurableCapture(path: string) {
  * Keep this edition separate so a new run cannot complete a historical tape. */
 export function captureDurableProcessBoundary<T extends {
   pid: number; status: number | null; signal: NodeJS.Signals | null; error?: Error;
+  stdout?: string; stderr?: string;
 }>(path: string, scope: GroundedMeasurementScope, run: () => T) {
   const sourceRef = path + '.process.json';
   const admittedAt = new Date().toISOString();
@@ -385,7 +394,8 @@ export function captureDurableProcessBoundary<T extends {
     accountingScope: 'process-lifetime-and-admissions', scope: { ...scope }, sourceRef,
     originalCaptureRef: path, journal: original?.retentionJournal ?? null,
     admittedAt, settledAt, monotonicStartMs, monotonicEndMs,
-    process: { pid: child.pid, status: child.status, signal: child.signal, error: child.error?.message ?? null },
+    process: { pid: child.pid, status: child.status, signal: child.signal, error: child.error?.message ?? null,
+      stdout: child.stdout ?? null, stderr: child.stderr ?? null },
     terminal: expectedKill ? 'intentional-sigkill' : normalExit ? 'drained-exit' : 'unqualified',
     complete, gaps, populations,
     values: { processWallMs: monotonicEndMs - monotonicStartMs,

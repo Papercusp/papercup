@@ -30,16 +30,18 @@ describe('administrative binding correction', () => {
   const effect = { link: { id: 'WI-2', harness: 'h', dst: { kind: 'issue', ref: 'WI-1' },
     rel: 'blocks', remove: true, satisfaction: 'success' } };
   function fixture() {
-    const initial = prepareBlockerDecision({}, { ...defer(), evidenceRefs: [provider],
+    const initialDecision = defer();
+    if (initialDecision.disposition !== 'defer') throw new Error('invalid fixture disposition');
+    const { deferral, ...common } = initialDecision;
+    const initial = prepareBlockerDecision({}, { ...initialDecision, evidenceRefs: [provider],
       investigation: [{ action: 'Inspect provider', outcome: 'Pending', evidenceRefs: [provider] }],
-      deferral: { ...defer().deferral, reasonEvidenceRefs: [provider], recheckRef: provider } }, actor, options);
+      deferral: { ...deferral, reasonEvidenceRefs: [provider], recheckRef: provider } }, actor, options);
     if (!initial.ok) throw new Error('invalid fixture');
-    const input = { ...defer(), disposition: 'self_resolve' as const, deferral: undefined,
+    const input = { ...common, disposition: 'self_resolve' as const,
       idempotencyKey: 'correction', priorRevision: 1, evidenceRefs: [provider],
       investigation: [{ action: 'Inspect original scope', outcome: 'Own voluntary binding was mistaken', evidenceRefs: [provider] }],
       verification: { outcome: 'Withdraw only this consumer binding; shipment unverified', evidenceRefs: [provider] },
       bindingCorrection: { edgeId: '1', rationale: 'The provider was agent-added bookkeeping outside the repair acceptance.' } };
-    delete input.deferral;
     const prepared = prepareBlockerDecision(initial.patch, input, actor, { ...options, effect });
     if (!prepared.ok) throw new Error('invalid fixture correction');
     const scope = { workspaceId: 'w', expectedWorkspaceId: 'w', ownerId: actor.ownerId, custodianId: actor.ownerId,
@@ -91,9 +93,20 @@ describe('administrative binding correction', () => {
     expect(consumeBindingCorrection(prepared)).toBe(true);
     expect(consumeBindingCorrection(prepared)).toBe(false);
   });
+  it('refuses unknown evidence even for an admitted administrative fact', async () => {
+    const { prepared, scope } = fixture();
+    const admission = admitBindingCorrection(prepared, scope);
+    if ('ok' in admission) throw new Error('refused fixture');
+    expect(await validateBlockerDecisionEvidence(prepared.record.decision, {
+      ...context(prepared.record.requestHash), bindingCorrectionAdmission: admission,
+      readEvidence: async () => ({ status: 'unknown', detail: 'Unavailable canonical reader' }),
+    })).toMatchObject({ ok: false });
+    expect(consumeBindingCorrection(prepared)).toBe(false);
+  });
   it.each(['foreign-history', 'null-creator', 'lineage-alias', 'wrong-tenant', 'wrong-provider', 'wrong-kind',
     'wrong-harness', 'wrong-edge', 'recreated-edge', 'changed-satisfaction', 'moved-custody', 'plan-bound',
-    'external-condition', 'missing-defer', 'unrelated-recheck', 'incomplete-census', 'non-removal'])(
+    'external-condition', 'missing-defer', 'unrelated-recheck', 'incomplete-census', 'incomplete-history',
+    'foreign-earlier-latest-self', 'non-removal'])(
     'refuses %s provenance or effect', (variant) => {
       const { prepared, scope } = fixture();
       if (variant === 'foreign-history') (prepared.expectedState as typeof prepared.state).history[0].authorId = 'foreign';
@@ -110,6 +123,13 @@ describe('administrative binding correction', () => {
       if (variant === 'plan-bound') scope.unbound = false;
       if (variant === 'external-condition') scope.noExternalConditions = false;
       if (variant === 'missing-defer') prepared.expectedState = undefined;
+      if (variant === 'incomplete-history') (prepared.expectedState as typeof prepared.state).history[0].revision = 2;
+      if (variant === 'foreign-earlier-latest-self') {
+        const history = (prepared.expectedState as typeof prepared.state).history;
+        history.push({ ...history[0], revision: 2 });
+        history[0] = { ...history[0], authorId: 'foreign' };
+        if (prepared.record.decision.disposition === 'self_resolve') prepared.record.decision.priorRevision = 2;
+      }
       if (variant === 'unrelated-recheck') {
         const prior = prepared.expectedState as typeof prepared.state;
         if (prior.history[0].decision.disposition === 'defer') prior.history[0].decision.deferral.recheckRef = { kind: 'event', ref: 'unrelated' };

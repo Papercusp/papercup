@@ -601,6 +601,19 @@ describe('parent-owned durable process boundary', () => {
     expect(JSON.parse(readFileSync(path + '.process.json', 'utf8'))).toMatchObject({
       state: 'launch-threw', complete: false, error: failure.message });
   });
+
+  it('retains and reports a child startup failure before its first journal frame', () => {
+    const { path } = fixture();
+    const { child: result, processCapture } = captureDurableProcessBoundary(path, scope, () =>
+      spawnSync(process.execPath, ['-e', "process.stdout.write('startup output'); process.stderr.write('original startup failure'); process.exit(7)"],
+        { timeout: 20_000, encoding: 'utf8' }));
+    expect(processCapture).toMatchObject({ complete: false, terminal: 'unqualified',
+      process: { status: 7, signal: null, stdout: 'startup output', stderr: 'original startup failure' },
+      values: { durableAdmissions: null, dispatchAdmissions: null, storageAdmissions: null } });
+    expect(JSON.parse(readFileSync(path + '.process.json', 'utf8'))).toEqual(processCapture);
+    expect(() => materializeDurableCapture(path, result)).toThrow(/status=7[\s\S]*startup output[\s\S]*original startup failure/);
+    expect(() => reconstructDurableCapture(path)).toThrow(/ENOENT/);
+  });
 });
 
 it('retains unregistered original Bind inputs before a terminal without qualifying pending or failed writes', async () => {

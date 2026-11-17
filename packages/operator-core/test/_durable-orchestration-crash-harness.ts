@@ -114,7 +114,7 @@ export function createDurableCrashHarness(config: {
     if (scenario.gecScope) writeFileSync(join(config.artifacts, `${scenario.runKey}-${mode}-startup.json`),
       JSON.stringify({ mode, runKey: scenario.runKey, phases: startup,
         status: child.status, signal: child.signal, error: child.error?.message ?? null }));
-    if (scenario.gecScope) materializeDurableCapture(join(config.artifacts, `${scenario.runKey}-${mode}.json`));
+    if (scenario.gecScope) materializeDurableCapture(join(config.artifacts, `${scenario.runKey}-${mode}.json`), child);
     if (startup.length) console.info('DURABLE_DBOS_STARTUP_TRACE ' + JSON.stringify({
       mode, runKey: scenario.runKey, phases: startup,
     }));

@@ -250,6 +250,12 @@ export function admitBindingCorrection(
     'Read the canonical binding, complete decision history and remaining conditions; preserve custody and provider state.');
   const input = prepared.record.decision;
   const prior = readBlockerResolution({ blockerResolution: prepared.expectedState });
+  const revisions = new Map<string, number>();
+  const completeHistory = prior.status === 'recorded' && prior.state.history.every(record => {
+    const expected = (revisions.get(record.id) ?? 0) + 1;
+    revisions.set(record.id, record.revision);
+    return record.revision === expected;
+  });
   const providerRefs = [scope.provider.id, `${scope.provider.harness}#${scope.provider.id}`];
   const namesProvider = (ref: BlockerEvidenceRef) => ref.kind === 'work-item' && providerRefs.includes(ref.ref);
   const link = object(object(scope.effect).link);
@@ -260,7 +266,7 @@ export function admitBindingCorrection(
       !scope.workspaceId || scope.workspaceId !== scope.expectedWorkspaceId || !scope.harness || !scope.provider.harness ||
       scope.ownerId !== scope.custodianId || prepared.record.authorId !== scope.ownerId ||
       prepared.record.workItemId !== scope.workItemId || !scope.unbound || !scope.noExternalConditions ||
-      prior.status !== 'recorded' || prior.current.decision.disposition !== 'defer' ||
+      prior.status !== 'recorded' || !completeHistory || prior.current.decision.disposition !== 'defer' ||
       prior.state.history.some(record => record.authorId !== scope.ownerId || record.workItemId !== scope.workItemId) ||
       input.priorRevision !== prior.current.revision || !namesProvider(prior.current.decision.deferral.recheckRef) ||
       !input.evidenceRefs.some(namesProvider) || !input.verification.evidenceRefs.some(namesProvider) ||

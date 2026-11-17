@@ -82,7 +82,37 @@ function input(overrides: Partial<ClassifierInput> = {}): ClassifierInput {
   };
 }
 
-describe('classifier revision 3', () => {
+describe('classifier revision 4', () => {
+  it.each([
+    ['agent-managed-compaction-2026-07-01', 'Agent-managed compaction', 'Run a live launch smoke after implementing the watchdog.'],
+    ['bug-queue-legitimacy-and-actionable-validation-2026-10-10', 'Truthful bug queue categories', 'The canonical clause smoke passes; finish validation.'],
+    ['design-acceptance-journey-enforcement-2026-09-08', 'Bind approved UI designs to navigation and shipment evidence', 'Implement the independent canary census.'],
+    ['shared-vector-search-libraries-2026-09-29', 'Move vector-search machinery into shared libraries', 'Run fixture-host tests for the libraries.'],
+    ['repair-fixture-classification-2026-11-17', 'Repair fixture classification in product audits', 'Implement the product repair and regression tests.'],
+  ])('keeps product plan %s out of fixture retirement', (planSlug, title, nowNext) => {
+    const row = classifyUnshippedPlan(input({
+      plan: plan({ planSlug, title, nowState: 'Implementation is active.', nowNext }),
+    }));
+    expect(row.category).not.toBe('supersede-or-archive-fixture');
+  });
+
+  it.each([
+    ['goal-brief-r3-probe-fixture-2026-09-30', 'Goal-brief R-3 live-probe fixture',
+      'Fixture for the goal-brief R-3 live probe. Its only purpose is to be placed by a goal holder.'],
+    ['lane-7-draft-pr-proposal-smoke-2026-06-18', 'Lane 7 draft-PR proposal smoke',
+      'Proposal created via apply-plan-block to test the draft-PR proposal to review to promote path.'],
+  ])('retains the explicit test-only purpose of %s', (planSlug, title, nowState) => {
+    const candidate = plan({ planSlug, title, nowState });
+    expect(classifyUnshippedPlan(input({ plan: candidate })).category).toBe('supersede-or-archive-fixture');
+    expect(classifyUnshippedPlan(input({
+      plan: { ...candidate, nowState: 'This plan is superseded by replacement-plan.' },
+    })).category).toBe('supersede-documented');
+    expect(classifyUnshippedPlan(input({
+      plan: candidate,
+      owners: [{ ownerId: 'su-live', ownerLabel: null, fleet: null, intent: 'Run the probe', source: 'work-item-hold' }],
+    })).category).toBe('ongoing-protected');
+  });
+
   it('requires an explicit plan-subject supersession assertion', () => {
     expect(hasExplicitPlanLevelSupersession('This plan is superseded by plan-b.')).toBe(true);
     expect(hasExplicitPlanLevelSupersession('Superseded: replaced by plan-b.')).toBe(true);
