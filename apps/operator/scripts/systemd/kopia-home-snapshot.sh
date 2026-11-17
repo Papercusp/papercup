@@ -117,25 +117,31 @@ cleanup_kopia_pid() {
   local -a targets=() waits=()
   if [ -s "$PID_FILE" ]; then
     recorded="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
-    if kopia_pid_matches "$recorded"; then
-      targets+=("$recorded")
-      seen+="$recorded "
-    else
-      echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${recorded:-<empty>}" >>"$LOG"
-    fi
+    targets+=("$recorded")
+    # Only numeric entries may suppress a matching cgroup candidate. Validation
+    # still happens in the worker before any signal is delivered.
+    [[ "$recorded" =~ ^[0-9]+$ ]] && seen+="$recorded "
   fi
   while read -r pid; do
     [ -n "$pid" ] || continue
     case "$seen" in *" $pid "*) continue ;; esac
     seen+="$pid "
-    kopia_pid_matches "$pid" || continue
-    echo "CLEANUP: leftover Kopia PID $pid found in this unit's cgroup" >>"$LOG"
     targets+=("$pid")
   done < <(unit_cgroup_pids)
-  # Stop them in parallel, so any number of leftovers shares ONE flush grace inside
-  # the unit's TimeoutStopSec instead of N graces in sequence.
+  # Validate AND stop in parallel. Serial privileged exe checks consume up to one
+  # sudo timeout per leftover before any signal, exhausting TimeoutStopSec even
+  # though the signal/grace workers themselves run in parallel.
   for pid in "${targets[@]}"; do
-    stop_kopia_pid_logged "$pid" &
+    (
+      if kopia_pid_matches "$pid"; then
+        if [ "$pid" != "$recorded" ]; then
+          echo "CLEANUP: leftover Kopia PID $pid found in this unit's cgroup" >>"$LOG"
+        fi
+        stop_kopia_pid_logged "$pid"
+      elif [ "$pid" = "$recorded" ]; then
+        echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${recorded:-<empty>}" >>"$LOG"
+      fi
+    ) &
     waits+=("$!")
   done
   for pid in "${waits[@]}"; do wait "$pid" || true; done
