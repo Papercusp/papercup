@@ -537,7 +537,10 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
         (markerDecision.action === 'silent' && ['pid-alive', 'own-run'].includes(markerDecision.reason)))) {
       await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
+    // A typed pre-suite settlement ends its physical runner while the logical attempt waits.
+    // Its old observer alarm no longer describes a current runner; retain the waiting outcome.
     if (row.progress_alarmed_key && (row.qualification == null || transaction?.phase === 'terminal' ||
+        (transaction?.phase === 'waiting' && !runner) ||
         (liveness === 'live' && qualification?.runnerHealth.state === 'progressing' && !postVerdictHang && !observerFailure))) {
       await resolveAlarm(`green-checkpoint-run-progress:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
