@@ -219,6 +219,71 @@ describe('postgres.js reserved query queue after backend close', () => {
     }
   });
 
+  it('node-postgres server messages retain original generated values and transaction outcomes across actual Clients', async () => {
+    const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
+    const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const clientSource = await readFile(new URL('../../../node_modules/pg/lib/client.js', import.meta.url));
+    const scope = { workspaceId: 'gec-server-messages', potId: 'gec', harness: 'gec', runId: 'gec-server-messages',
+      ownerId: 'gec-server-messages', caseId: 'N7', arm: 'pre' as const, iteration: 1,
+      manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: 'native-private-pg', sourceFingerprint: digest(clientSource),
+      testFingerprint: digest(await readFile(new URL(import.meta.url))), runtimeFingerprint: process.version,
+      configFingerprint: 'actual-notice-and-ready-for-query' };
+    await sql`CREATE TABLE server_message_values (key text PRIMARY KEY, value text DEFAULT clock_timestamp()::text)`;
+    await sql.unsafe(`CREATE FUNCTION retain_server_value() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE NOTICE '%', json_build_object('key', NEW.key, 'value', NEW.value,
+          'backend', pg_backend_pid(), 'transactionId', pg_current_xact_id()::text)::text;
+        RETURN NEW;
+      END $$`);
+    await sql.unsafe('CREATE TRIGGER retain_server_value AFTER INSERT ON server_message_values FOR EACH ROW EXECUTE FUNCTION retain_server_value()');
+    const observations: import('./grounded-evidence-measurement').GroundedSqlObservation[] = [];
+    const delivered: unknown[] = [];
+    const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:actual-server-messages',
+      attemptId: 'actual-server-messages', nodePostgres: [{ pool: 'actual-pg', clientPrototype: pg.Client.prototype,
+        queryPrototype: pg.Query.prototype, serializerSourceRef: 'source:installed-pg-original-mapper',
+        serverMessageSourceRef: `source:pg/lib/client.js@${digest(clientSource)}#NoticeResponse+ReadyForQuery` }],
+      onSqlObservation: observation => observations.push(observation) });
+    const clients = [new pg.Client({ connectionString: db.url }), new pg.Client({ connectionString: db.url })];
+    try {
+      clients.forEach(client => client.on('notice', notice => delivered.push(notice)));
+      await Promise.all(clients.map(client => client.connect()));
+      const insert = 'INSERT INTO server_message_values (key) VALUES ($1)';
+      const run = (index: number, statement: string, args?: unknown[]) => tap.run(() => clients[index]!.query(statement, args));
+      await Promise.all([run(0, insert, ['first']), run(0, insert, ['queued']), run(1, insert, ['other'])]);
+      await run(0, 'BEGIN'); await run(0, insert, ['rolled-back']); await run(0, 'ROLLBACK');
+      await run(1, 'BEGIN');
+      await expect(run(1, 'SELECT 1 / 0')).rejects.toMatchObject({ code: '22012' });
+      await run(1, 'ROLLBACK');
+      const census = tap.seal();
+      expect(census.complete).toBe(true); expect(census.rows).toHaveLength(9);
+      expect(census.rows.every(row => row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
+      const byId = new Map(census.rows.map(row => [row.id, row]));
+      const notices = observations.filter(row => row.phase === 'notice');
+      expect(notices).toHaveLength(4); expect(delivered).toHaveLength(4);
+      const saved = await sql`SELECT key, value FROM server_message_values ORDER BY key`;
+      expect(saved.map(row => row.key)).toEqual(['first', 'other', 'queued']);
+      for (const observation of notices) {
+        const original = JSON.parse(observation.notice!.message!);
+        expect(observation.association).toBe('executing-query');
+        expect(observation.query).toBe(insert);
+        expect(observation.backendProcessId).toBe(original.backend);
+        expect(original.transactionId).toMatch(/^\d+$/);
+        const record = byId.get(observation.id)!;
+        expect(record.sql?.serverMessages?.notices).toContainEqual(observation.notice);
+        expect(record.sql?.serverMessages?.transactionStatus).toBe(original.key === 'rolled-back' ? 'T' : 'I');
+        if (original.key !== 'rolled-back') expect(saved.find(row => row.key === original.key)?.value).toBe(original.value);
+      }
+      const failed = census.rows.find(row => row.sql?.status === 'error')!;
+      expect(failed.sql?.serverMessages?.transactionStatus).toBe('E');
+      expect(observations.find(row => row.id === failed.id && row.phase === 'ready')?.transactionStatus).toBe('E');
+      expect(census.rows.filter(row => row.sql?.command === 'ROLLBACK').every(row => row.sql?.serverMessages?.transactionStatus === 'I')).toBe(true);
+      if (process.env.PAPERCUSP_TEST_ARTIFACT_DIR) await writeFile(join(process.env.PAPERCUSP_TEST_ARTIFACT_DIR,
+        'gec-original-server-messages.json'), JSON.stringify({ scope, census, observations }));
+    } finally {
+      tap.restore(); await Promise.all(clients.map(client => client.end()));
+    }
+  });
+
   it('records node-postgres Pool and bootstrap Clients with original serialization and terminal-loss controls', async () => {
     const { observeGroundedStoreOperations, GROUNDED_MANIFEST_SHA256 } = await import('./grounded-evidence-measurement');
     const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');

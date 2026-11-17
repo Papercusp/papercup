@@ -106,6 +106,10 @@ export interface GroundedStorageOperation {
   sql?: { pool: string; queryId: number; queryHash: string; command: string | null; status: 'ok' | 'error';
     /** Actual node-postgres backend at submit, never the host process or pool. */
     backendProcessId?: number | null;
+    /** Original protocol diagnostics only; neither a notice nor an idle
+     * transaction status certifies the values persisted by this statement. */
+    serverMessages?: { sourceRef: string; notices: GroundedServerNotice[];
+      transactionStatus: 'I' | 'T' | 'E' | null };
     rowOutcome?: { allOrNoneRows: GroundedPersistedRows; affectedRows: number | null };
     nonPersisting?: { sourceRef: string; kind: 'read' | 'control' };
     serializedWrite?: { sourceRef: string; templateHash: string;
@@ -133,14 +137,22 @@ export interface GroundedNonPersistingSql {
 }
 /** Optional original-driver diagnostics. These observations never classify SQL
  * or certify persisted bytes; the caller must retain/review them separately. */
+export interface GroundedServerNotice {
+  message: string | null; severity: string | null; code: string | null;
+  detail: string | null; where: string | null;
+}
 export interface GroundedSqlObservation {
-  id: string; pool: string; phase: 'admission' | 'submit' | 'terminal';
+  id: string; pool: string; phase: 'admission' | 'submit' | 'terminal' | 'notice' | 'ready';
   monotonicMs: number; query: string | null;
   /** node-postgres only. Admission may precede connection; submit/terminal use
    * the executing Client's backend identity pinned at submit. Diagnostic only:
    * this does not certify server values, transaction commit or persisted bytes. */
   backendProcessId?: number | null;
   command?: string | null; status?: 'ok' | 'error';
+  serverMessageSourceRef?: string;
+  notice?: GroundedServerNotice;
+  association?: 'executing-query' | 'unattributed';
+  transactionStatus?: 'I' | 'T' | 'E' | null;
 }
 export interface GroundedContractChange {
   id: string;
@@ -776,7 +788,10 @@ export function observeGroundedStoreOperations<T extends object>(input: {
    * child clients. This covers Pool clients AND DBOS's standalone bootstrap
    * Clients without counting Pool.query's delegation a second time. */
   nodePostgres?: readonly { pool: string; clientPrototype: object; queryPrototype: object;
-    serializerSourceRef: string }[];
+    serializerSourceRef: string;
+    /** Opt in before constructing Clients; pin the installed client.js that
+     * routes NoticeResponse and ReadyForQuery to its actual active Query. */
+    serverMessageSourceRef?: string }[];
   isReadOnlySql?: (result: postgres.QueryResultDiagnostic) => boolean;
   /** Exact reviewed reads and session/transaction controls. A failed SELECT
    * needs its own registration; failure alone never proves zero write bytes. */
@@ -808,6 +823,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
   const ids: string[] = [], rows: GroundedStorageOperation[] = [];
   let pending = 0, sealed = false, late = false, captureFailed = false, restored = false;
   const active = new AsyncLocalStorage<boolean>();
+  const awaitingServerReady = new Set<string>();
   const notify = () => { try { input.onObservation?.(); } catch { captureFailed = true; } };
   const notifySql = (observation: Omit<GroundedSqlObservation, 'monotonicMs'>) => {
     if (!input.onSqlObservation) return;
@@ -841,6 +857,9 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       || typeof client.query !== 'function'
       || ['submit', 'handleReadyForQuery', 'handleError'].some(key => typeof query[key] !== 'function'))
       throw new Error('GEC invalid node-postgres driver boundary');
+    if (driver.serverMessageSourceRef !== undefined && (!driver.serverMessageSourceRef.trim()
+      || ['_getActiveQuery', '_handleNotice', '_handleReadyForQuery'].some(key => typeof client[key] !== 'function')))
+      throw new Error('GEC invalid node-postgres server message boundary');
     optionsSeen.add(client); optionsSeen.add(query);
     return { ...driver, client, query };
   });
@@ -950,10 +969,14 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     const originalSubmit = driver.query.submit as (...args: unknown[]) => unknown;
     const originalReady = driver.query.handleReadyForQuery as (...args: unknown[]) => unknown;
     const originalError = driver.query.handleError as (...args: unknown[]) => unknown;
+    const originalNotice = driver.client._handleNotice as (...args: unknown[]) => unknown;
+    const originalClientReady = driver.client._handleReadyForQuery as (...args: unknown[]) => unknown;
+    const originalActiveQuery = driver.client._getActiveQuery as (...args: unknown[]) => unknown;
     type Query = Record<string, unknown>;
     type Entry = { id: string; admission: typeof admissions[number]; client: Query; backendProcessId: number | null;
       query?: Query; queryHash?: string; parameterCount?: number;
-      values: Map<number, { parameter: number; sha256: string | null; bytes: number }>; bound: boolean };
+      values: Map<number, { parameter: number; sha256: string | null; bytes: number }>; bound: boolean;
+      serverMessages?: NonNullable<GroundedStorageOperation['sql']>['serverMessages'] };
     // pg.Client._handleBackendKeyData writes this after the actual connection
     // handshake. A queued query can be admitted before that handshake finishes.
     const backendProcessId = (client: Query): number | null =>
@@ -961,6 +984,9 @@ export function observeGroundedStoreOperations<T extends object>(input: {
         ? client.processID : null;
     const current = new AsyncLocalStorage<Entry>();
     const queries = new WeakMap<object, Entry>();
+    const submitted = new WeakMap<object, Entry>();
+    const seenClients = new WeakSet<object>();
+    let unattributedNotices = 0;
     const associate = (query: Query): Entry | undefined => {
       const entry = queries.get(query) ?? current.getStore();
       if (!entry) return;
@@ -1007,6 +1033,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       rows.push({ id: entry.id, kind, persistedBytes, sql: { pool: driver.pool,
         queryId: Number(entry.id.split(':node:').at(-1)), queryHash: queryHash ?? '', command, status,
         backendProcessId: entry.backendProcessId,
+        ...(entry.serverMessages ? { serverMessages: entry.serverMessages } : {}),
         ...(registration?.allOrNoneRows !== undefined
           ? { rowOutcome: { allOrNoneRows: registration.allOrNoneRows, affectedRows } } : {}),
         ...(reviewed ? { nonPersisting: { sourceRef: reviewed.sourceRef, kind: reviewed.kind } } : {}),
@@ -1025,7 +1052,10 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       const id = `${input.attemptId}:store:${ids.length + 1}:node:${ids.length + 1}`;
       const admission: typeof admissions[number] = {
         id, origin: new Error().stack?.split('\n').slice(2, 10).join('\n') ?? null };
-      const entry: Entry = { id, admission, client: this, backendProcessId: null, values: new Map(), bound: false };
+      const entry: Entry = { id, admission, client: this, backendProcessId: null, values: new Map(), bound: false,
+        ...(driver.serverMessageSourceRef ? { serverMessages: { sourceRef: driver.serverMessageSourceRef,
+          notices: [], transactionStatus: null } } : {}) };
+      seenClients.add(this);
       ids.push(id); outstanding.add(id); pending++;
       admissions.push(admission);
       const queryText = typeof args[0] === 'string' ? args[0]
@@ -1054,6 +1084,8 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       else captureFailed = true;
       entry.parameterCount = Array.isArray(this.values) ? this.values.length : 0;
       entry.backendProcessId = backendProcessId(entry.client);
+      submitted.set(entry.client, entry);
+      if (driver.serverMessageSourceRef) awaitingServerReady.add(entry.id);
       notifySql({ id: entry.id, pool: driver.pool, phase: 'submit', query: typeof this.text === 'string' ? this.text : null,
         backendProcessId: entry.backendProcessId });
       const connection = args[0] as Record<string, unknown> | undefined;
@@ -1112,15 +1144,74 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     const error = function(this: Query, ...args: unknown[]) {
       terminal(this, 'error'); return Reflect.apply(originalError, this, args);
     };
+    const notice = function(this: Query, ...args: unknown[]) {
+      // Socket events do not carry the caller's AsyncLocalStorage context.
+      // Read the driver's active Query; never infer identity from notice text,
+      // matching SQL, backend PID alone, or the order of two connections.
+      try {
+        const query = Reflect.apply(originalActiveQuery, this, []);
+        const entry = query && typeof query === 'object' ? queries.get(query) : undefined;
+        if (entry || seenClients.has(this)) {
+          late ||= sealed;
+          const message = args[0] as Record<string, unknown> | null;
+          const field = (key: string) => message && typeof message[key] === 'string' ? message[key] as string : null;
+          const original = { message: field('message'), severity: field('severity'), code: field('code'),
+            detail: field('detail'), where: field('where') };
+          const associated = entry?.client === this && submitted.get(this) === entry ? entry : undefined;
+          if (associated) associated.serverMessages?.notices.push(original);
+          notifySql({ id: associated ? associated.id : `${input.attemptId}:unattributed-notice:${++unattributedNotices}`,
+            pool: driver.pool, phase: 'notice', query: typeof associated?.query?.text === 'string' ? associated.query.text : null,
+            backendProcessId: associated ? associated.backendProcessId : backendProcessId(this),
+            serverMessageSourceRef: driver.serverMessageSourceRef, notice: original,
+            association: associated ? 'executing-query' : 'unattributed' });
+          notify();
+        }
+      } catch { captureFailed = true; }
+      return Reflect.apply(originalNotice, this, args);
+    };
+    const clientReady = function(this: Query, ...args: unknown[]) {
+      // pg clears its active Query before invoking Query.handleReadyForQuery;
+      // failed statements were cleared even earlier in _handleErrorMessage.
+      // Keep the exact submitted identity until its ReadyForQuery arrives.
+      const entry = submitted.get(this);
+      if (entry) {
+        late ||= sealed;
+        try {
+          const message = args[0] as { status?: unknown } | undefined;
+          const status = message?.status;
+          const transactionStatus = status === 'I' || status === 'T' || status === 'E' ? status : null;
+          const query = Reflect.apply(originalActiveQuery, this, []);
+          if ((query && query !== entry.query) || transactionStatus === null) captureFailed = true;
+          if (entry.serverMessages) entry.serverMessages.transactionStatus = transactionStatus;
+          notifySql({ id: entry.id, pool: driver.pool, phase: 'ready',
+            query: typeof entry.query?.text === 'string' ? entry.query.text : null,
+            backendProcessId: entry.backendProcessId, serverMessageSourceRef: driver.serverMessageSourceRef,
+            transactionStatus });
+          notify();
+        } catch { captureFailed = true; }
+        submitted.delete(this);
+        awaitingServerReady.delete(entry.id);
+      }
+      return Reflect.apply(originalClientReady, this, args);
+    };
     driver.client.query = query; driver.query.submit = submit;
     driver.query.handleReadyForQuery = ready; driver.query.handleError = error;
+    if (driver.serverMessageSourceRef) {
+      driver.client._handleNotice = notice; driver.client._handleReadyForQuery = clientReady;
+    }
     restorers.push({ intact: () => driver.client.query === query && driver.query.submit === submit
-        && driver.query.handleReadyForQuery === ready && driver.query.handleError === error,
+        && driver.query.handleReadyForQuery === ready && driver.query.handleError === error
+        && (!driver.serverMessageSourceRef || (driver.client._handleNotice === notice
+          && driver.client._handleReadyForQuery === clientReady)),
       restore: () => {
         if (driver.client.query === query) driver.client.query = originalQuery;
         if (driver.query.submit === submit) driver.query.submit = originalSubmit;
         if (driver.query.handleReadyForQuery === ready) driver.query.handleReadyForQuery = originalReady;
         if (driver.query.handleError === error) driver.query.handleError = originalError;
+        if (driver.serverMessageSourceRef) {
+          if (driver.client._handleNotice === notice) driver.client._handleNotice = originalNotice;
+          if (driver.client._handleReadyForQuery === clientReady) driver.client._handleReadyForQuery = originalClientReady;
+        }
       } });
   }
   for (const { pool, client } of input.postgres ?? []) {
@@ -1289,6 +1380,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
   } });
   const capture = (): GroundedCensus<GroundedStorageOperation> & { diagnostics: {
       pending: number; pendingIds: string[]; late: boolean; captureFailed: boolean; hooksIntact: boolean;
+      serverMessagesPending: string[];
       admissions: typeof admissions; excludedUnexecutedIds: string[];
     } } => {
     const excluded = new Set([...queryStates].filter(([id, query]) => {
@@ -1303,8 +1395,10 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     const pendingIds = [...outstanding].filter(id => !excluded.has(id));
     return { scope: { ...input.scope }, sourceRef: input.sourceRef,
       complete: sealed && pendingIds.length === 0 && pending === outstanding.size && !late && !captureFailed
+        && awaitingServerReady.size === 0
         && (restored || restorers.every(hook => hook.intact())),
       diagnostics: { pending: pendingIds.length, pendingIds, late, captureFailed,
+        serverMessagesPending: [...awaitingServerReady],
         hooksIntact: restored || restorers.every(hook => hook.intact()), admissions: structuredClone(admissions),
         excludedUnexecutedIds: [...excluded] },
       ids: ids.filter(id => !excluded.has(id)), rows: structuredClone(rows) };
@@ -1313,7 +1407,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
       if (restored) throw new Error('GEC store recorder already restored');
       return active.run(true, fn);
     },
-    restore: () => { captureFailed ||= pending !== outstanding.size
+    restore: () => { captureFailed ||= awaitingServerReady.size > 0 || pending !== outstanding.size
         || [...outstanding].some(id => queryStates.get(id)?.executed !== false)
         || restorers.some(hook => !hook.intact());
       for (const hook of restorers) hook.restore(); restored = true; },

@@ -287,6 +287,118 @@ it('keeps unknown backend identities explicit and pins queued query identity bef
   } finally { tap.restore(); }
 });
 
+it('node-postgres server messages retain exact query identity, failed transaction status and original delivery', async () => {
+  const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+  class Query {
+    _results = { command: 'INSERT', rowCount: 1 };
+    values: unknown[] = [];
+    constructor(readonly text: string) {}
+    submit(connection: { bind(config: { values: unknown[]; valueMapper(value: unknown): unknown }): void }) {
+      connection.bind({ values: [], valueMapper: value => value });
+    }
+    handleReadyForQuery() {}
+    handleError(error: Error) { return error; }
+  }
+  class Client {
+    processID = 321;
+    _queryQueue: Query[] = [];
+    _activeQuery: Query | null = null;
+    delivered: unknown[] = [];
+    query(text: string) { const query = new Query(text); this._queryQueue.push(query); return query; }
+    _getActiveQuery() { return this._activeQuery; }
+    _handleNotice(message: unknown) { this.delivered.push(message); return message; }
+    _handleReadyForQuery(message: unknown) {
+      const query = this._activeQuery; this._activeQuery = null;
+      query?.handleReadyForQuery(); return message;
+    }
+    submit() { this._activeQuery = this._queryQueue.shift()!;
+      this._activeQuery.submit({ bind: () => {} }); return this._activeQuery; }
+  }
+  const originalNotice = Client.prototype._handleNotice, originalReady = Client.prototype._handleReadyForQuery;
+  const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+    ownerId: 'server-messages', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+    sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+  const observations: GroundedSqlObservation[] = [];
+  const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:server-messages',
+    attemptId: 'server-messages', nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype,
+      queryPrototype: Query.prototype, serializerSourceRef: 'original-mapper', serverMessageSourceRef: 'original-client' }],
+    onSqlObservation: observation => observations.push(observation) });
+  try {
+    const first = new Client(), second = new Client(); second.processID = 654;
+    const failed = tap.run(() => first.query('INSERT INTO original_writer DEFAULT VALUES'));
+    tap.run(() => first.query('INSERT INTO original_writer DEFAULT VALUES'));
+    tap.run(() => second.query('INSERT INTO original_writer DEFAULT VALUES'));
+    first.submit(); second.submit();
+    const a = { message: '{"value":"λ.😺"}', severity: 'NOTICE', code: '00000', detail: 'original' };
+    const b = { message: '{"value":"other backend"}', severity: 'NOTICE', code: '00000' };
+    expect(second._handleNotice(b)).toBe(b); expect(first._handleNotice(a)).toBe(a);
+    // The original listener may mutate the message after delivery. The tape
+    // retains its original fields without invoking a serializer or listener again.
+    a.message = 'listener mutation';
+    expect(second._handleReadyForQuery({ status: 'I' })).toEqual({ status: 'I' });
+    expect(failed.handleError(new Error('actual failed statement'))).toBeInstanceOf(Error);
+    first._activeQuery = null; // pg._handleErrorMessage clears it before ReadyForQuery.
+    first._handleReadyForQuery({ status: 'E' });
+    first.submit();
+    first._handleNotice({ message: 'queued statement', severity: 'NOTICE', code: '00000' });
+    first._handleReadyForQuery({ status: 'T' });
+    first._handleNotice({ message: 'unattributed', severity: 'NOTICE', code: '00000' });
+    const census = tap.seal();
+    expect(census.complete).toBe(true); expect(census.rows).toHaveLength(3);
+    expect(census.rows.map(row => row.sql?.serverMessages?.transactionStatus)).toEqual(['I', 'E', 'T']);
+    expect(census.rows.map(row => row.sql?.serverMessages?.notices[0]?.message))
+      .toEqual([b.message, '{"value":"λ.😺"}', 'queued statement']);
+    expect(census.rows.every(row => row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
+    expect(observations.filter(row => row.phase === 'notice').map(row => [row.id, row.association]))
+      .toEqual([[census.ids[2], 'executing-query'], [census.ids[0], 'executing-query'],
+        [census.ids[1], 'executing-query'], ['server-messages:unattributed-notice:1', 'unattributed']]);
+    expect(observations.find(row => row.id === census.ids[0] && row.phase === 'ready')?.transactionStatus).toBe('E');
+    expect(first.delivered[0]).toBe(a); expect(second.delivered[0]).toBe(b);
+  } finally { tap.restore(); }
+  expect(Client.prototype._handleNotice).toBe(originalNotice);
+  expect(Client.prototype._handleReadyForQuery).toBe(originalReady);
+});
+
+it.each(['missing', 'invalid', 'foreign', 'observer-error'])('node-postgres server messages fail closed after %s ready evidence', async fault => {
+  const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+  class Query {
+    text = 'INSERT INTO original_writer DEFAULT VALUES'; values: unknown[] = [];
+    _results = { command: 'INSERT', rowCount: 1 };
+    submit(connection: { bind(config: { valueMapper(value: unknown): unknown }): void }) { connection.bind({ valueMapper: value => value }); }
+    handleReadyForQuery() {}
+    handleError() {}
+  }
+  class Client {
+    processID = 321; _activeQuery: Query | null = null;
+    query() { const query = new Query(); this._activeQuery = query; query.submit({ bind: () => {} }); return query; }
+    _getActiveQuery() { return this._activeQuery; }
+    _handleNotice(message: unknown) { return message; }
+    _handleReadyForQuery(message: unknown) { return message; }
+  }
+  const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+    ownerId: 'server-messages', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+    sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+  const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:server-messages',
+    attemptId: fault, nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype,
+      queryPrototype: Query.prototype, serializerSourceRef: 'original-mapper', serverMessageSourceRef: 'original-client' }],
+    onSqlObservation: observation => { if (fault === 'observer-error' && observation.phase === 'notice') throw new Error('lost notice'); } });
+  try {
+    const client = new Client(), query = tap.run(() => client.query());
+    // Error completion can arrive before the server's transaction status.
+    query.handleError(); client._activeQuery = null;
+    if (fault === 'foreign') client._activeQuery = new Query();
+    const original = { message: 'must still reach original listener' };
+    expect(client._handleNotice(original)).toBe(original);
+    if (fault !== 'missing') expect(client._handleReadyForQuery({ status: fault === 'invalid' ? '?' : 'E' }))
+      .toEqual({ status: fault === 'invalid' ? '?' : 'E' });
+    const census = tap.seal();
+    expect(census.complete).toBe(false);
+    expect(census.diagnostics.serverMessagesPending).toEqual(fault === 'missing' ? [census.ids[0]] : []);
+    expect(census.diagnostics.captureFailed).toBe(fault !== 'missing');
+    expect(census.rows[0]?.persistedBytes).toBeNull();
+  } finally { tap.restore(); }
+});
+
 describe('parent-owned durable process boundary', () => {
   const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
     ownerId: 'capture-unit', caseId: 'J3', arm: 'pre', iteration: 1, manifestHash: 'manifest', fixtureHash: 'fixture',
