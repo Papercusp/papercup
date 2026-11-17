@@ -68,6 +68,73 @@ describe('tools/list discovery phase evidence', () => {
 });
 
 describe('HTTP MCP handler phase evidence', () => {
+  it('starts one slow observer without waiting for it to settle', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    let release!: (value: string) => void;
+    const wait = new Promise<string>(resolve => { release = resolve; });
+    const observe = vi.fn(() => new Promise<void>(() => {}));
+    try {
+      const response = withMcpHttpHandlerPhaseTrace('trace', 'session_respawn', () => wait, 50, undefined, observe);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(observe).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(201);
+      expect(observe).toHaveBeenCalledExactlyOnceWith();
+      release('authoritative response');
+      await expect(response).resolves.toBe('authoritative response');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(observe).toHaveBeenCalledTimes(1);
+    } finally {
+      release('cleanup');
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['throw', 'reject'] as const)('preserves the request error when its observer fails by %s', async failure => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const refusal = new Error('authority refused');
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const observe = vi.fn(() => {
+      if (failure === 'throw') throw new Error('diagnostic failed');
+      return Promise.reject(new Error('diagnostic failed'));
+    });
+    try {
+      const response = withMcpHttpHandlerPhaseTrace('trace', 'session_respawn', async () => {
+        await wait;
+        throw refusal;
+      }, 50, undefined, observe);
+      const rejected = expect(response).rejects.toBe(refusal);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(observe).toHaveBeenCalledTimes(1);
+      release();
+      await rejected;
+    } finally {
+      release();
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the observer for fast success and refusal', async () => {
+    vi.useFakeTimers();
+    const observe = vi.fn();
+    const refusal = new Error('authority refused');
+    try {
+      await expect(withMcpHttpHandlerPhaseTrace('trace', 'session_respawn', async () => 'ok', 50, undefined, observe))
+        .resolves.toBe('ok');
+      await expect(withMcpHttpHandlerPhaseTrace('trace', 'session_respawn', async () => {
+        throw refusal;
+      }, 50, undefined, observe)).rejects.toBe(refusal);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(observe).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('logs a bounded correlated phase only after it crosses the pending threshold', async () => {
     vi.useFakeTimers();
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});

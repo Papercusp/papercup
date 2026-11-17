@@ -19,6 +19,8 @@ import { createHash } from 'node:crypto';
 import type { PhaseTracker } from '@papercusp/tooldef';
 
 const receipts = vi.hoisted(() => ({ rows: new Map<string, unknown>() }));
+const poolSample = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+vi.mock('../transport/pgbouncer-pool-sample.mjs', () => ({ samplePgBouncerPools: poolSample }));
 vi.mock('../transport/_mcp-result-replay', () => ({
   claimPendingMcpResult: vi.fn(async (args) => {
     const key = `${args.ownerKey}:${args.idempotencyKey}`;
@@ -130,6 +132,7 @@ vi.mock('../../../task-manager/store', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  poolSample.mockResolvedValue({ ok: true });
   receipts.rows.clear();
   reanchorMock.mockResolvedValue({ reanchored: true, owner: 'su-resp-owner' });
   reanchorByOwnerMock.mockResolvedValue({ reanchored: true, owner: 'su-interactive-owner' });
@@ -257,6 +260,9 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
           { phase: 'principal', startMs: 0, elapsedMs: 1_000 },
           { phase: 'principal:bearer', startMs: 0, elapsedMs: 1_000 },
         ]) } });
+      expect(poolSample).toHaveBeenCalledExactlyOnceWith('session-respawn-pending', {
+        requestFingerprint: createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16),
+      });
       release();
       expect((await response).status).toBe(200);
       const settled = JSON.parse(String(info.mock.calls[1][0]).replace('[mcp-request-trace] ', ''));
@@ -277,6 +283,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const traceId = '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4';
     const caller = new AbortController();
+    poolSample.mockRejectedValueOnce(new Error('diagnostic unavailable'));
     let release!: (value: { reanchored: boolean; owner: string }) => void;
     let enter!: () => void;
     const entered = new Promise<void>(resolve => { enter = resolve; });
@@ -314,6 +321,8 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
         expect(serialized).not.toContain(privateValue);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(info).toHaveBeenCalledTimes(2);
+      expect(poolSample).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(poolSample.mock.calls)).not.toContain(FRESH_ID);
     } finally {
       release({ reanchored: true, owner: 'su-cleanup' });
       await response;
@@ -360,6 +369,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
       expect((await postRespawned({ sessionId: 'invalid' })).status).toBe(400);
       await vi.advanceTimersByTimeAsync(10_000);
       expect(info).not.toHaveBeenCalled();
+      expect(poolSample).not.toHaveBeenCalled();
     } finally {
       info.mockRestore();
       vi.useRealTimers();

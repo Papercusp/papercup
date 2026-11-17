@@ -317,6 +317,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
   work: () => Promise<T>,
   pendingAfterMs = 5_000,
   phases?: PhaseTracker,
+  onPending?: () => void | Promise<unknown>,
 ): Promise<T> {
   const startedAt = Date.now();
   let pending = false;
@@ -330,6 +331,13 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
       elapsedMs: Math.max(0, Date.now() - startedAt),
       ...(phases ? { httpHandlerPhases: phases.toMetadata() } : {}),
     });
+    // Start a bounded observer while the wait exists, without joining it to
+    // the request or allowing its failure to replace an authority verdict.
+    try {
+      void Promise.resolve(onPending?.()).catch(() => {});
+    } catch {
+      // A synchronous diagnostic failure must also leave the request alone.
+    }
   }, pendingAfterMs);
   timer.unref?.();
   let outcome: McpRequestTraceEvent['outcome'] = 'success';

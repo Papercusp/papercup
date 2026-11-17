@@ -660,7 +660,14 @@ const sessionRespawned = defineTool({
         return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
       }
       });
-    }, 1_000, phases);
+    }, 1_000, phases, async () => {
+      // Reuse the existing debounce, subprocess deadlines and retained sources.
+      // A snapshot collected only after settlement cannot explain the wait.
+      const { samplePgBouncerPools } = await import('../transport/pgbouncer-pool-sample.mjs');
+      await samplePgBouncerPools('session-respawn-pending', {
+        requestFingerprint: createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16),
+      });
+    });
   },
 });
 
