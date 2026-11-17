@@ -409,6 +409,23 @@ const stepTokens = (value: unknown): number | null => {
   const n = stepNumber(value);
   return n !== null && Number.isSafeInteger(n) ? n : null;
 };
+const stepRowOrder = (a: WorkflowStepUsageRow, b: WorkflowStepUsageRow): number => {
+  if (/^\d+$/.test(a.id) && /^\d+$/.test(b.id)) {
+    const left = BigInt(a.id), right = BigInt(b.id);
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+};
+const stepObservationIdentity = (row: WorkflowStepUsageRow) => stepHash({
+  session: row.session_id, run: row.run_id ?? null,
+  eventTime: row.event_ts === null ? null : stepNumber(row.event_ts) ?? row.event_ts,
+  input: row.input_tokens === null ? null : String(row.input_tokens),
+  output: row.output_tokens === null ? null : String(row.output_tokens),
+  cacheRead: row.cache_read_tokens === null ? null : String(row.cache_read_tokens),
+  cacheWrite: row.cache_creation_tokens === null ? null : String(row.cache_creation_tokens),
+  cost: row.cost_usd === null ? null : String(row.cost_usd), costSource: row.cost_source,
+  provenance: row.usage_provenance,
+});
 
 /** Observed tool spans overlap. Their union is not active LLM effort, queueing,
  * owner pauses, or elapsed time attributable to this step. */
@@ -433,7 +450,8 @@ export function summarizeWorkflowStepUsage(input: {
   ledger: { totalRecords: number | null; limit: number; complete: boolean; error?: string };
   toolIntervals?: readonly (readonly [number, number])[];
 }) {
-  const { source, rows, ledger } = input;
+  const { source, ledger } = input;
+  const rows = [...input.rows].sort(stepRowOrder);
   const start = Date.parse(source.subject.windowStart), end = Date.parse(source.subject.windowEnd);
   const validScope = !!source.workspaceId.trim() && !!source.harnessSlug.trim() && !!source.subject.ref.trim() &&
     Number.isFinite(start) && Number.isFinite(end) && start < end && source.workItemIds.length > 0;
@@ -443,16 +461,41 @@ export function summarizeWorkflowStepUsage(input: {
   const place = (row: WorkflowStepUsageRow, bucket: WorkflowStepPartition, reason: string) =>
     partitions[bucket].push({ rowId: row.id, requestKey: row.usage_event_key, reason });
   const candidates = new Map<string, WorkflowStepUsageRow[]>();
+  const allGroups = new Map<string, Map<string, number>>();
+  const observationIdentities = new Map<WorkflowStepUsageRow, string>();
+  for (const row of rows) {
+    const identity = stepObservationIdentity(row);
+    observationIdentities.set(row, identity);
+    if (!row.usage_event_key) continue;
+    const group = allGroups.get(row.usage_event_key) ?? new Map<string, number>();
+    group.set(identity, (group.get(identity) ?? 0) + 1); allGroups.set(row.usage_event_key, group);
+  }
+  const diagnostics: Array<{ rowId: string; requestKey: string | null; flags: string[] }> = [];
   const selected: WorkflowStepUsageRow[] = [];
   for (const row of rows) {
     const provenance = row.usage_provenance ?? {};
     const native = row.session_id ?? row.run_id;
     const inNative = native !== null && native !== undefined && source.nativeSessionIds.includes(native);
     const inOwner = typeof provenance.sessionOwnerId === 'string' && source.ownerIds.includes(provenance.sessionOwnerId);
-    let excluded = !validScope ? 'invalid-or-unresolved-subject' : row.workspace_id !== source.workspaceId ? 'foreign-workspace' :
-      row.harness_slug !== source.harnessSlug ? 'foreign-or-missing-harness' : !inNative && !inOwner ? 'foreign-session' : null;
     const eventTime = stepNumber(row.event_ts);
-    if (!excluded && eventTime !== null && (eventTime < start || eventTime >= end)) excluded = 'outside-event-window';
+    const flags = [
+      ...(!validScope ? ['invalid-or-unresolved-subject'] : []),
+      ...(row.workspace_id !== source.workspaceId ? ['foreign-workspace'] : []),
+      ...(row.harness_slug !== source.harnessSlug ? ['foreign-or-missing-harness'] : []),
+      ...(!inNative && !inOwner ? ['foreign-session'] : []),
+      ...(eventTime !== null && (eventTime < start || eventTime >= end) ? ['outside-event-window'] : []),
+      ...(eventTime === null || !Number.isSafeInteger(eventTime) ? ['missing-original-event-time'] : []),
+      ...(!row.usage_event_key ? ['missing-request-identity'] : []),
+      ...(provenance.grain !== 'request' ? ['non-request-or-unknown-grain'] : []),
+    ];
+    const observationGroup = allGroups.get(row.usage_event_key ?? '');
+    if ((observationGroup?.get(observationIdentities.get(row)!) ?? 0) > 1) flags.push('duplicate-observation');
+    if (observationGroup && observationGroup.size > 1) flags.push('conflicting-request-observations');
+    if (source.sharedSessionIds.includes(native ?? '')) flags.push('shared-native-context');
+    flags.push('causal-request-to-step-binding-unavailable');
+    diagnostics.push({ rowId: row.id, requestKey: row.usage_event_key, flags });
+    const excluded = flags.find(flag => ['invalid-or-unresolved-subject', 'foreign-workspace',
+      'foreign-or-missing-harness', 'foreign-session', 'outside-event-window'].includes(flag));
     if (excluded) { place(row, 'excluded', excluded); continue; }
     if (eventTime === null || !Number.isSafeInteger(eventTime) || provenance.grain !== 'request' || !row.usage_event_key) {
       place(row, 'missing-time-unknown-grain', 'Request identity, original event time and request grain are required.');
@@ -462,16 +505,7 @@ export function summarizeWorkflowStepUsage(input: {
     group.push(row); candidates.set(row.usage_event_key, group);
   }
   for (const group of candidates.values()) {
-    const quantity = (row: WorkflowStepUsageRow) => stepHash({
-      session: row.session_id, run: row.run_id ?? null, eventTime: row.event_ts === null ? null : Number(row.event_ts),
-      input: row.input_tokens === null ? null : String(row.input_tokens),
-      output: row.output_tokens === null ? null : String(row.output_tokens),
-      cacheRead: row.cache_read_tokens === null ? null : String(row.cache_read_tokens),
-      cacheWrite: row.cache_creation_tokens === null ? null : String(row.cache_creation_tokens),
-      cost: row.cost_usd === null ? null : String(row.cost_usd), costSource: row.cost_source,
-      costBound: row.usage_provenance?.costBound ?? null,
-    });
-    if (new Set(group.map(quantity)).size !== 1) {
+    if (new Set(group.map(row => observationIdentities.get(row))).size !== 1) {
       group.forEach(row => place(row, 'conflicting', 'Same request identity has incompatible observations.'));
       continue;
     }
@@ -517,11 +551,13 @@ export function summarizeWorkflowStepUsage(input: {
   ];
   return {
     resolverVersion: WORKFLOW_STEP_MEASUREMENT_VERSION,
-    source, observations: rows.map(row => stepEvidence(row)),
+    source, observations: rows.map(row => stepEvidence(row)), diagnostics,
     inputFingerprint: stepHash({ source, rows, ledger, toolIntervals: input.toolIntervals ?? [] }),
     population: { expectedRequests: source.expectedRequests, expectedUniqueRequests: knownExpected?.length ?? null,
       observedRecords: rows.length, observedUniqueKeys: observedKeys.size, selectedUniqueRequests: selectedKeys.length,
       selectedRequestKeys: selectedKeys, missingExpectedRequestKeys: missingExpected,
+      missingLedgerRequestKeys: knownExpected?.filter(key => !observedKeys.has(key)) ?? [],
+      unusableExpectedRequestKeys: missingExpected.filter(key => observedKeys.has(key)),
       query: { ...ledger, complete: snapshotComplete }, truncatedResidueRecords: residue },
     partitions,
     totals: { scope: 'observed-selected-native-or-owner-window' as const,

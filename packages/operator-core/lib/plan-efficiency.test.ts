@@ -129,7 +129,7 @@ describe('selected-step usage population (not a causal spend claim)', () => {
   it('does not sum duplicate events or pick a favorable conflicting observation', () => {
     const duplicate = row({ id: 'copy' });
     const result = measure([row(), duplicate]);
-    expect(result.partitions.duplicate.map(r => r.rowId)).toEqual(['copy']);
+    expect(result.partitions.duplicate.map(r => r.rowId)).toEqual(['row-a']);
     expect(result.population).toMatchObject({ observedRecords: 2, observedUniqueKeys: 1, selectedUniqueRequests: 1 });
     expect(result.totals.inputTokens.value).toBe(100);
     const conflict = row({ id: 'conflict', input_tokens: 101 });
@@ -151,6 +151,43 @@ describe('selected-step usage population (not a causal spend claim)', () => {
     expect(result.partitions['missing-time-unknown-grain']).toHaveLength(1);
     expect(result.totals.inputTokens.value).toBeNull();
     expect(result.exactStepSpendKnown).toBe(false);
+  });
+
+  it.each([
+    { patch: { event_ts: null }, primary: 'missing-time-unknown-grain', flags: ['duplicate-observation', 'missing-original-event-time'] },
+    { patch: { usage_provenance: { grain: 'cumulative' } }, primary: 'missing-time-unknown-grain', flags: ['duplicate-observation', 'non-request-or-unknown-grain'] },
+    { patch: { workspace_id: 'foreign' }, primary: 'excluded', flags: ['duplicate-observation', 'foreign-workspace'] },
+  ] as const)('retains combined diagnostics under primary precedence: $primary / $flags', ({ patch, primary, flags }) => {
+    const rows = [row({ ...patch, id: '2' }), row({ ...patch, id: '10' })];
+    const forward = measure(rows), reversed = measure([...rows].reverse());
+    expect(forward).toEqual(reversed);
+    expect(forward.partitions[primary]).toHaveLength(2);
+    expect(Object.values(forward.partitions).flat()).toHaveLength(2);
+    for (const diagnostic of forward.diagnostics) expect(diagnostic.flags).toEqual(expect.arrayContaining(flags));
+  });
+
+  it('retains conflicting/shared flags and distinguishes absent from unusable expected keys', () => {
+    const result = measure([row({ id: '2' }), row({ id: '10', input_tokens: 101 })], {
+      sharedSessionIds: ['native'], expectedRequests: { state: 'known', keys: ['request-a', 'absent'], sourceRef: 'source' },
+    });
+    expect(result.partitions.conflicting).toHaveLength(2);
+    for (const diagnostic of result.diagnostics) expect(diagnostic.flags).toEqual(expect.arrayContaining([
+      'conflicting-request-observations', 'shared-native-context',
+    ]));
+    expect(result.population.missingLedgerRequestKeys).toEqual(['absent']);
+    expect(result.population.unusableExpectedRequestKeys).toEqual(['request-a']);
+  });
+
+  it('selects the lowest canonical row identity independent of permutation and provenance object order', () => {
+    const rows = [row({ id: '10', usage_provenance: { grain: 'request', costBound: 'exact' } }),
+      row({ id: '2', usage_provenance: { costBound: 'exact', grain: 'request' } })];
+    const result = measure(rows);
+    expect(result).toEqual(measure([...rows].reverse()));
+    expect(result.partitions['unallocated-shared'].map(entry => entry.rowId)).toEqual(['2']);
+    expect(result.partitions.duplicate.map(entry => entry.rowId)).toEqual(['10']);
+    expect(result.totals.inputTokens.value).toBe(100);
+    expect(measure([row({ id: '2' }), row({ id: '10', usage_provenance: { grain: 'request', priceTableVersion: 'changed' } })])
+      .partitions.conflicting).toHaveLength(2);
   });
 
   it('retains provider and estimate lower bounds and failed-call cost as incurred', () => {
