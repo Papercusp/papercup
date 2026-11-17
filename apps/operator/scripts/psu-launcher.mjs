@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { papercuspHome, papercuspPath } from '@papercusp/host-platform/home';
+import { codexManagedTurnHooks } from '@papercusp/host-platform/codex-turn-hooks';
 import { composeOmpCapabilityTools } from '@papercusp/orchestrator/managed-capability-policy';
 /**
  * psu-launcher.mjs — the `psu` command.
@@ -2832,7 +2833,20 @@ export function prepareSuLaunch(boot, {
 /** @param {NodeJS.ProcessEnv} envelopeEnv
  * @param {NodeJS.ProcessEnv} inheritedEnv */
 export function prepareSuLaunchEnvironment(envelopeEnv, inheritedEnv = process.env) {
-  return { ...sanitizeInheritedEnv(inheritedEnv), ...envelopeEnv };
+  const env = { ...sanitizeInheritedEnv(inheritedEnv), ...envelopeEnv };
+  // The authenticated launch envelope can come from an isolated operator whose
+  // homes are outside the desktop default. Carry that exact root into the host;
+  // deriving it later from inherited CODEX_HOME would bless a foreign home.
+  const home = envelopeEnv.CODEX_HOME;
+  const id = envelopeEnv.PAPERCUSP_ADV_SESSION_ID;
+  if (envelopeEnv.PAPERCUSP_AGENT === 'codex' && typeof home === 'string' && isAbsolute(home)
+      && /^[1-9][0-9]*$/.test(String(id)) && basename(home) === `session-${id}`) {
+    const root = dirname(home);
+    if (envelopeEnv.PAPERCUSP_SU_CODEX_HOMES_DIR && envelopeEnv.PAPERCUSP_SU_CODEX_HOMES_DIR !== root)
+      throw new Error('Codex home root contradicts its authenticated launch envelope');
+    env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+  }
+  return env;
 }
 
 /**
@@ -17750,15 +17764,12 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
 function codexManagedTurnHookReadiness(codexHome, expectedOwner, hooks = undefined) {
   const installedHome = papercuspHome({}, homedir());
   const provenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(installedHome, "turn-provenance");
-  const provenancePin = "PAPERCUSP_TURN_PROVENANCE_DIR='" + provenanceDir.replaceAll("'", "'\\''") + "'";
-  const required = [
-    ["UserPromptSubmit", "userpromptsubmit-provenance.sh", provenancePin],
-    ["Stop", "stop-turn-journal.sh", "PAPERCUSP_JOURNAL_SYNC=1"],
-  ].filter(([, script]) => existsSync(join(installedHome, "hooks", "cc", script)));
+  const required = codexManagedTurnHooks({ provenanceOwner: expectedOwner, journalOwner: expectedOwner,
+    hookDir: join(installedHome, 'hooks', 'cc'), provenanceDir });
   if (required.length === 0) return null;
   try {
     const parsed = hooks ?? JSON.parse(readFileSync(join(codexHome, "hooks.json"), "utf8"));
-    for (const [event, script, marker] of required) {
+    for (const { event, script, marker } of required) {
       const enrolled = parsed?.hooks?.[event]?.some((group) =>
         group?.hooks?.some((hook) => {
           const command = String(hook?.command || "");
@@ -17773,6 +17784,38 @@ function codexManagedTurnHookReadiness(codexHome, expectedOwner, hooks = undefin
   } catch {
     return "hooks.json could not be read for managed turn enrollment";
   }
+}
+
+/** Reconcile only absent installed hooks after a successful canonical repair.
+ * An older writer may omit newer enrollment. Existing contradictory enrollment,
+ * foreign identities, missing authority files and symlinks remain refusals.
+ * Reuse the writer's exact contract; preserve every unrelated hook and setting. */
+function reconcileCodexManagedTurnHooks(codexHome, owner, role) {
+  if (codexHomeLaunchReadiness(codexHome, owner, role, { authorityOnly: true }) !== null) return false;
+  const path = join(codexHome, 'hooks.json');
+  if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) return false;
+  const before = readFileSync(path, 'utf8');
+  const parsed = JSON.parse(before);
+  const installedHome = papercuspHome({}, homedir());
+  const required = codexManagedTurnHooks({ provenanceOwner: owner, journalOwner: owner,
+    hookDir: join(installedHome, 'hooks', 'cc'),
+    provenanceDir: process.env.PAPERCUSP_TURN_PROVENANCE_DIR || join(installedHome, 'turn-provenance') });
+  const missing = required.filter(({ event, script }) =>
+    !parsed.hooks?.[event]?.some(group => group.hooks?.some(hook => String(hook.command || '').includes(script))));
+  if (!missing.length) return false;
+  // A registration in another event is a contradiction, not a missing hook.
+  const commands = Object.values(parsed.hooks).flatMap(groups => groups.flatMap(group => group.hooks || []));
+  if (missing.some(({ script }) => commands.some(hook => String(hook.command || '').includes(script)))) return false;
+  for (const { event, group } of missing) (parsed.hooks[event] ??= []).push(group);
+  if (codexManagedTurnHookReadiness(codexHome, owner, parsed)) return false;
+  // Refuse a concurrent writer rather than overwrite its update.
+  if (readFileSync(path, 'utf8') !== before) return false;
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(parsed, null, 2), { mode: 0o600, flag: 'wx' });
+    renameSync(temporary, path);
+  } finally { rmSync(temporary, { force: true }); }
+  return true;
 }
 
 /**
@@ -18176,7 +18219,9 @@ export async function ensureCodexHomeViaOperator(
       });
     }
     stage = 'home-hooks';
-    const enrollmentFailure = codexManagedTurnHookReadiness(codexHome, owner);
+    let enrollmentFailure = codexManagedTurnHookReadiness(codexHome, owner);
+    if (enrollmentFailure && reconcileCodexManagedTurnHooks(codexHome, owner, env.PAPERCUSP_AGENT_ROLE || null))
+      enrollmentFailure = codexManagedTurnHookReadiness(codexHome, owner);
     if (enrollmentFailure) {
       return failed('managed-turn-enrollment-incomplete', null, { readiness: enrollmentFailure });
     }

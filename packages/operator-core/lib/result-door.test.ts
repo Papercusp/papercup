@@ -619,8 +619,8 @@ describe('applyResultDoor', () => {
   });
 
   describe('bounded artifacts:load pages', () => {
-    const pageResult = () => ({
-      content: [{ type: 'text' as const, text: JSON.stringify({
+    const pageResult = (format: 'json' | 'toon' | 'toon-meta' = 'json') => {
+      const body = {
         ok: true,
         results: [{
           ok: true,
@@ -634,13 +634,23 @@ describe('applyResultDoor', () => {
           content_truncated: true,
         }],
         counts: { ok: 1, failed: 0 },
-      }) }],
-    });
+      };
+      return {
+        content: [{ type: 'text' as const, text: format === 'json' ? JSON.stringify(body)
+          : (format === 'toon' ? 'format: toon\n' : '') + encode(body, 'toon') }],
+        ...(format === 'toon-meta' ? { _meta: { format: 'toon' } } : {}),
+      };
+    };
 
-    it.each(['direct', 'nested'] as const)(
-      'keeps a valid %s artifacts:load page inline without requiring scratch persistence',
-      (route) => {
-        const result = pageResult();
+    it.each([
+      ['direct', 'json'], ['nested', 'json'],
+      ['direct', 'toon'], ['nested', 'toon'],
+      ['direct', 'toon-meta'], ['nested', 'toon-meta'],
+    ] as const)(
+      'keeps a valid %s %s artifacts:load page inline without requiring scratch persistence',
+      (route, format) => {
+        const result = pageResult(format);
+        result.content.push({ type: 'text', text: 'See also: artifacts:load (read the next content page)' });
         const out = applyResultDoor(result, {
           toolName: route === 'direct' ? 'artifacts:load' : 'tools:invoke',
           ...(route === 'nested' ? { nestedTargetToolName: 'artifacts:load' } : {}),
@@ -652,6 +662,21 @@ describe('applyResultDoor', () => {
         expect(out).toBe(result);
       },
     );
+
+    it('does not mistake unrelated clipping in a compact page for pagination', () => {
+      const text = 'format: toon\n' + encode({
+        ok: true,
+        results: [{ ok: true, found: true, content: 'page', content_offset: 0,
+          content_total_chars: 20, content_truncated: true }],
+        summary_truncated: true,
+      }, 'toon');
+      const result = { content: [{ type: 'text' as const, text }] };
+      const out = applyResultDoor(result, {
+        toolName: 'artifacts:load', workspaceId: 'ws-1', runId: RUN_ID,
+      });
+      expect(out).not.toBe(result);
+      expect((out as DoorableResult)._meta?.resultDoor).toMatchObject({ reason: 'under-budget-partial-result' });
+    });
 
     it('keeps malformed content_truncated metadata on the conservative spill path', () => {
       const result = {

@@ -609,6 +609,7 @@ function hasOnlyRecoverableArtifactsLoadMarkers(
   markers: readonly string[],
   toolName: string,
   nestedTargetToolName?: string,
+  formatHint?: unknown,
 ): boolean {
   const target = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
   if (target !== 'artifacts:load' || markers.length === 0 ||
@@ -616,15 +617,12 @@ function hasOnlyRecoverableArtifactsLoadMarkers(
     return false;
   }
 
-  const sourceText = textItems.join('\n\n');
-  const jsonSlice = findJsonPrefixSlice(sourceText);
-  let value: unknown;
-  try {
-    value = JSON.parse(jsonSlice ? sourceText.slice(jsonSlice.start, jsonSlice.end) : sourceText);
-  } catch {
-    return false;
-  }
-  if (!isJsonObject(value) || !Array.isArray(value.results) || value.results.length === 0) return false;
+  // Share marker detection's parser and keep routing advisories out of TOON.
+  const bodies = textItems.map((text) => parseStructuredMarkerBody(text, formatHint))
+    .filter((body): body is JsonObject => isJsonObject(body) && Array.isArray(body.results));
+  if (bodies.length !== 1) return false;
+  const value = bodies[0];
+  if (!Array.isArray(value.results) || value.results.length === 0) return false;
 
   const pageRows = value.results.filter(
     (row): row is JsonObject => isJsonObject(row) && row.content_truncated === true,
@@ -3865,6 +3863,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         innerTruncationMarkers,
         opts.toolName,
         opts.nestedTargetToolName,
+        result._meta?.format,
       );
       const projectedNotes = (
         result._meta as { resultProjection?: { notes?: unknown } } | undefined

@@ -3,7 +3,7 @@
  *
  * The audit is deliberately split into three layers:
  *   1. canonical readers (plans, work items, blockers, rubrics, audits, presence),
- *   2. a pure classifier (classifier revision 3), and
+ *   2. a pure classifier (classifier revision 4), and
  *   3. PG-canonical text-artifact publication.
  *
  * Nothing in this module imports a lifecycle writer. The only writes are the JSON
@@ -27,7 +27,7 @@ import {
   type PlanProvenance,
 } from './agent-tools/plans/plan-provenance';
 
-export const UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION = 3;
+export const UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION = 4;
 export const UNSHIPPED_PLANS_AUDIT_JSON_ARTIFACT = 'reports/unshipped-plans-audit/latest.json';
 export const UNSHIPPED_PLANS_AUDIT_HTML_ARTIFACT = 'reports/unshipped-plans-audit/latest.html';
 
@@ -294,6 +294,14 @@ function textSignals(input: ClassifierInput) {
   const text = [input.plan.planSlug, input.plan.title, input.plan.nowState, input.plan.nowNext]
     .filter(Boolean)
     .join(' ');
+  // A product's verification may use fixtures, smoke tests or canaries. Retiring
+  // the plan requires a statement about its own purpose, not that vocabulary.
+  const identity = [input.plan.planSlug, input.plan.title].filter(Boolean).join(' ');
+  const state = (input.plan.nowState ?? '').trim();
+  const namedProbe = /(?:^|[-\s])(fixture|smoke|drill|demo|canary|heartbeat|behaviou?r[-\s]grade[-\s]run)(?:[-\s]|$)/i.test(identity);
+  const fixturePurpose =
+    /^(?:(?:this|the)\s+(?:plan|proposal)\s+(?:is|was)\s+(?:(?:only|just)\s+)?(?:an?\s+)?)?(?:(?:test|probe)[-\s]only\s+)?fixture\s+(?:for|to)\b/i.test(state) ||
+    (namedProbe && /^(?:this\s+)?(?:plan|proposal)\s+(?:was\s+)?created\b[\s\S]*\bto\s+(?:test|exercise|probe)\b/i.test(state));
   // Revision 3: blocker classification is about the plan's CURRENT state, not
   // vocabulary anywhere in its identity/history. Scanning slug/title made
   // `abolish-human-review-*` a human blocker; matching bare `credential` made
@@ -319,7 +327,7 @@ function textSignals(input: ClassifierInput) {
       /\b(?:cannot|hold|wait)\b.{0,80}\buntil\b.{0,40}\b(?:lands|ships|completes|recovers)\b/i.test(nowText) ||
       /\b(?:once|when)\b.{0,80}\b(?:reaches|lands|ships|completes|recovers)\b/i.test(nowText));
   return {
-    fixture: /(?:^|[-\s])(fixture|smoke|drill|demo|canary|heartbeat|behaviou?r[-\s]grade[-\s]run)(?:[-\s]|$)/i.test(text),
+    fixture: fixturePurpose,
     deferred: /\b(awaiting (?:owner|review|approval)|designed[,;:]? not built|not approved|deferred|paused indefinitely|draft[,;:]? awaiting)\b/i.test(text),
     human,
     external,

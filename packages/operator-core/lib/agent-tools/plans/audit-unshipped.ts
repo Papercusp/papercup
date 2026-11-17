@@ -15,7 +15,7 @@ export default defineTool({
   name: 'plans:audit-unshipped',
   profile: 'engineer',
   description:
-      'FIRE the workspace-wide unshipped-plans audit NOW. Deterministic and read-only with respect to plan lifecycle, items, blockers, claims, assignments, fleets, and agents. It re-reads live ownership, classifies the current nonterminal portfolio with classifier revision 3, and publishes PG-canonical JSON+HTML text artifacts. It does not create or arm a schedule.',
+      'FIRE the workspace-wide unshipped-plans audit NOW. Deterministic and read-only with respect to plan lifecycle, items, blockers, claims, assignments, fleets, and agents. It re-reads live ownership, classifies the current nonterminal portfolio with the current classifier, and publishes PG-canonical JSON+HTML text artifacts. It does not create or arm a schedule.',
   capability: 'operator:write',
   guidance: {
     when: 'You need a fresh evidence manifest of nonterminal plans, disposition bands, stale/prose-only blockers, and live-owned exclusions. This is the on-demand audit lever.',

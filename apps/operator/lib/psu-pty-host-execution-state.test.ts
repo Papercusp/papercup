@@ -65,10 +65,10 @@ describe('native execution observations', () => {
 
   it.each([
     { info: { response_too_many_failed_attempts: { http_status_code: 429 } },
-      code: 'response_too_many_failed_attempts', retryable: false },
+      code: 'response_too_many_failed_attempts', retryable: true },
     { info: { server_overloaded: {} }, code: 'server_overloaded', retryable: true },
     { info: { invalid_request: {} }, code: 'invalid_request', retryable: false },
-    { info: { first: {}, second: {} }, code: 'task_complete', retryable: false },
+    { info: { first: {}, second: {} }, code: 'task_complete', retryable: true },
   ])('preserves structured Codex error classification as $code', ({ info, code, retryable }) => {
     const observed = nativeExecutionFromRows([
       { type: 'event_msg', timestamp, payload: { type: 'task_started' } },
@@ -404,7 +404,61 @@ describe('native execution observations', () => {
 
     expect(nativeExecutionFromRows([row], { agent: 'claude', ...ctx })).toMatchObject({
       phase: 'failed',
-      failure: { code: 'api_error_429', retryable: false, retryAfterMs: 60_000 },
+      failure: { code: 'api_error_429', retryable: true, retryAfterMs: 60_000 },
+    });
+  });
+
+  describe('shared Claude/Codex provider recovery policy', () => {
+    function providerRow(agent: string, text: string, status = 429) {
+      return agent === 'codex'
+        ? { type: 'event_msg', timestamp, payload: { type: 'task_complete', error: {
+          codex_error_info: { response_too_many_failed_attempts: { http_status_code: status } }, message: text,
+        } } }
+        : { type: 'assistant', timestamp, isApiErrorMessage: true, apiErrorStatus: status,
+          message: { role: 'assistant', content: [{ type: 'text', text }] } };
+    }
+
+    it.each(['claude', 'codex'])('honors the same retry deadline in the recovery consumer for %s', agent => {
+      const nowMs = 40_000;
+      const observed = nativeExecutionFromRows([
+        providerRow(agent, 'exceeded retry limit, last status: 429 Too Many Requests; retry after 90 seconds'),
+      ], { agent, receivedAtMs: 900, nowMs });
+      expect(observed).toMatchObject({ phase: 'failed', pendingTools: 0,
+        failure: { retryable: true, retryAfterMs: 90_000, atMs: 1000 } });
+      const decision = decideLoopExecutionRecovery({ ownerId: 'parity-owner', active: true, parked: true,
+        firedAt: 900, nowMs, inference: { active: 0, observedAt: nowMs },
+        host: { ownerId: 'parity-owner', advSessionId: null, pid: 1, ptyPid: 2, sock: '/fixture',
+          command: agent, startedAt: 0, execution: { ...observed, ownerId: 'parity-owner',
+            hostPid: 1, childPid: 2, childGeneration: 1, receivedAtMs: 900, observedAt: nowMs } } });
+      expect(decision).toMatchObject({ action: 'recover', state: {
+        status: 'recovering', attempts: 1, nextProbeAt: 91_000,
+      } });
+    });
+
+    it.each(['claude', 'codex'])('uses structured %s HTTP status even when its error text is opaque', agent => {
+      expect(nativeExecutionFromRows([providerRow(agent, 'request failed')], { agent, ...ctx }))
+        .toMatchObject({ phase: 'failed', failure: { retryable: true, retryAfterMs: 60_000 } });
+      expect(nativeExecutionFromRows([providerRow(agent, 'request failed', 401)], { agent, ...ctx }))
+        .toMatchObject({ phase: 'failed', failure: { retryable: false, retryAfterMs: null } });
+    });
+
+    it.each(['claude', 'codex'])('does not retry %s quota/billing errors beyond the old preview boundary', agent => {
+      for (const offset of [2047, 2048, 2049, 8192]) {
+        for (const reason of ['insufficient_quota', 'credit_balance_exhausted', 'project_spend_limit_exceeded']) {
+          const text = '429 Too Many Requests '.padEnd(offset, ' ') + reason;
+          expect(nativeExecutionFromRows([providerRow(agent, text)], { agent, ...ctx }).failure?.retryable,
+            `${agent} ${reason} at ${offset}`).toBe(false);
+        }
+      }
+    });
+
+    it.each(['claude', 'codex'])('does not treat ordinary %s assistant explanations as failures', agent => {
+      const text = 'exceeded retry limit, last status: 429 Too Many Requests';
+      const row = agent === 'codex'
+        ? { type: 'response_item', timestamp, payload: { type: 'message', role: 'assistant',
+          content: [{ type: 'output_text', text }] } }
+        : { type: 'assistant', timestamp, message: { role: 'assistant', content: [{ type: 'text', text }] } };
+      expect(nativeExecutionFromRows([row], { agent, ...ctx })).not.toHaveProperty('failure');
     });
   });
 

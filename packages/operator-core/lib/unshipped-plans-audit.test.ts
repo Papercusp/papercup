@@ -91,7 +91,7 @@ describe('classifier revision 4', () => {
     ['repair-fixture-classification-2026-11-17', 'Repair fixture classification in product audits', 'Implement the product repair and regression tests.'],
   ])('keeps product plan %s out of fixture retirement', (planSlug, title, nowNext) => {
     const row = classifyUnshippedPlan(input({
-      plan: plan({ planSlug, title, nowState: 'Implementation is active.', nowNext }),
+      plan: plan({ planSlug, title, nowState: `Implementation is active. ${nowNext}`, nowNext }),
     }));
     expect(row.category).not.toBe('supersede-or-archive-fixture');
   });
@@ -101,6 +101,8 @@ describe('classifier revision 4', () => {
       'Fixture for the goal-brief R-3 live probe. Its only purpose is to be placed by a goal holder.'],
     ['lane-7-draft-pr-proposal-smoke-2026-06-18', 'Lane 7 draft-PR proposal smoke',
       'Proposal created via apply-plan-block to test the draft-PR proposal to review to promote path.'],
+    ['synthetic-plan-2026-11-17', 'Synthetic workflow plan',
+      'This plan is a test-only fixture for exercising the workflow.'],
   ])('retains the explicit test-only purpose of %s', (planSlug, title, nowState) => {
     const candidate = plan({ planSlug, title, nowState });
     expect(classifyUnshippedPlan(input({ plan: candidate })).category).toBe('supersede-or-archive-fixture');

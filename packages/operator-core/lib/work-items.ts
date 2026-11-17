@@ -11600,9 +11600,10 @@ async function mutateAgentBlockingRelation(
         provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming,
       });
       if ('ok' in admission) throw Object.assign(new Error(admission.nextAction), admission);
-      attempt = await preflightBlockerDecision({ ...dependent, payload, state: row.status, assignee: row.taken_by },
+      const checked = await preflightBlockerDecision({ ...dependent, payload, state: row.status, assignee: row.taken_by },
         input, opts.blockerEvidenceContext!, { effect, bindingCorrectionAdmission: admission });
-      if (!attempt.ok || 'ordinary' in attempt) throw Object.assign(new Error('Binding correction evidence refused.'), attempt);
+      if (!checked.ok || 'ordinary' in checked) throw Object.assign(new Error('Binding correction evidence refused.'), checked);
+      attempt = checked;
     }
     if ('ordinary' in prepared) {
       const rows = await tx`SELECT feature_id FROM harness_shared.work_items

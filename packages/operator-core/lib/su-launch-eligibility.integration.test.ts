@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hermeticEnv } from '../../../apps/operator/vitest-shims/psu-pty-temp-dir';
-import { prepareSuLaunch } from '../../../apps/operator/scripts/psu-launcher.mjs';
+import { prepareSuLaunch, suCodexHomeForAdvSession } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import { hostThroughPty } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
@@ -146,6 +146,14 @@ describe('SU bootstrap account eligibility through launch preparation', () => {
       expect(result.status).toBe('ok');
       expect(result.promptFile.startsWith(home + '/')).toBe(true);
       expect(readFileSync(result.promptFile, 'utf8')).toContain('Chosen SU persona');
+      if (agent === 'codex') {
+        const prepared = prepareSuLaunch(result, { inheritedEnv: {} });
+        expect(prepared.env.PAPERCUSP_SU_CODEX_HOMES_DIR).toBe(join(home, 'codex-homes'));
+        expect(suCodexHomeForAdvSession(result.sessionId, prepared.env)).toBe(result.codexHome);
+        expect(suCodexHomeForAdvSession(result.sessionId, {})).not.toBe(result.codexHome);
+      } else {
+        expect(result.envelopeEnv.PAPERCUSP_SU_CODEX_HOMES_DIR).toBeUndefined();
+      }
       expect(transport.allocations).toBe(0);
     }, 60_000);
 

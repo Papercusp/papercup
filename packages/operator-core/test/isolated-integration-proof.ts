@@ -4,7 +4,7 @@ import type { ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, closeSync, existsSync, openSync, readFileSync, readlinkSync, statSync, writeFileSync, writeSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect, stripVTControlCharacters } from 'node:util';
@@ -118,6 +118,58 @@ export async function withIsolatedIntegrationSourceObserver<T>(
 /** Shared with the cheap context guard so the expensive fixture uses the tested API. */
 export const isolatedIntegrationCases = it.for([false, true]);
 
+export const CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST = 'current-su-native-egress-run-id';
+const CURRENT_SU_NATIVE_EGRESS_CLEANUP_RECEIPT = 'current-su-native-egress-cleanup.json';
+
+/** A killed fixture cannot run adapter.stop(). Recover only its recorded run,
+ * after the supervisor is reaped, on the same explicitly selected daemon. */
+export async function cleanupCurrentSuNativeEgress(evidenceDir: string, input: {
+  worker: Pick<ChildProcess, 'exitCode' | 'signalCode'>;
+  dockerHost: string;
+  exec?: import('../lib/external-bench/grader/swe-bench-pro').ProcExec;
+}) {
+  const workerReaped = input.worker.exitCode !== null || input.worker.signalCode !== null;
+  let runId: string | null = null;
+  let status: 'not-started' | 'cleaned' | 'failed' = 'not-started';
+  const errors: string[] = [];
+  let failure: unknown;
+  try {
+    const path = join(evidenceDir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST);
+    const manifest = await lstat(path).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    });
+    if (manifest) {
+      assert.ok(manifest.isFile() && manifest.size <= 128, 'Native egress manifest must be a bounded regular file');
+      runId = (await readFile(path, 'utf8')).trim();
+      assert.match(runId, /^PRIVATE-CURRENT-SU-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/,
+        'Native egress cleanup requires the exact private fixture runId');
+      assert.ok(workerReaped, 'Native egress cleanup requires a reaped worker');
+      assert.ok(input.dockerHost.trim(), 'Native egress cleanup requires an explicit Docker host');
+      const { sweepBenchEgress } = await import('../lib/external-bench/bench-egress');
+      const execute = input.exec ?? (await import('../lib/external-bench/grader/index')).liveProcExec;
+      const report = await sweepBenchEgress(runId, (command, args, options) =>
+        execute(command, ['--host', input.dockerHost, ...args], options));
+      errors.push(...report.errors);
+      assert.deepEqual(errors, [], 'Native egress recovery cleanup must complete');
+      status = 'cleaned';
+    }
+  } catch (error) {
+    failure = error;
+    status = 'failed';
+    errors.push(String(error));
+  }
+  const receipt = { schemaVersion: 1, observedAt: new Date().toISOString(),
+    runId, dockerHost: input.dockerHost, workerReaped, status, errors };
+  try { await writeFile(join(evidenceDir, CURRENT_SU_NATIVE_EGRESS_CLEANUP_RECEIPT), JSON.stringify(receipt), { mode: 0o600 }); }
+  catch (error) {
+    if (failure) throw new AggregateError([failure, error], 'Native egress cleanup and receipt retention failed');
+    throw error;
+  }
+  if (failure) throw failure;
+  return receipt;
+}
+
 /** Exercise the maintained Docker startup path before compiling a private API.
  * This is a prerequisite receipt, not native delivery or a Docker latency fix.
  * The relay has no model service and readiness sends no endpoint requests. */
@@ -191,6 +243,8 @@ export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[
   return [
     'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
     'phases/prepare/native-egress-preflight.json',
+    'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST,
+    'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_CLEANUP_RECEIPT,
     'phases/execute/private-mcp-preflight.json',
     ...(managedCarry ? ['phases/execute/native-model-requests.json'] : []),
     'phases/prepare/bundle-restricted-hold-inputs.json',

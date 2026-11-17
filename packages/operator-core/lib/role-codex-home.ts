@@ -67,6 +67,7 @@ import { homedir as osHomedir } from 'node:os';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { papercuspHome } from '@papercusp/host-platform/home';
+import { codexManagedTurnHooks } from '@papercusp/host-platform/codex-turn-hooks';
 import { parse as parseToml } from '@iarna/toml';
 import { CODEX_CAPABILITY_CONTROLS } from '@papercusp/orchestrator/managed-capability-policy';
 import {
@@ -1032,19 +1033,11 @@ export function writeCodexLockHooks(
   // §5 explains why the frozen array interface absorbs that).
   const injectDispatcher = installedHookPath('inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
-  const provenance = join(dir, 'userpromptsubmit-provenance.sh');
-  if (opts.injectSid && existsSync(provenance)) {
-    userPromptSubmit.push({
-      matcher: '.*',
-      hooks: [
-        {
-          type: 'command',
-          command: `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex ` +
-            `PAPERCUSP_TURN_PROVENANCE_DIR=${shellSingleQuote(codexHookProvenanceDir())} ${provenance}`,
-        },
-      ],
-    });
-  }
+  const managedTurnHooks = codexManagedTurnHooks({
+    provenanceOwner: opts.injectSid, journalOwner: opts.activitySid,
+    hookDir: dir, provenanceDir: codexHookProvenanceDir(),
+  });
+  userPromptSubmit.push(...managedTurnHooks.filter(row => row.event === 'UserPromptSubmit').map(row => row.group));
   if (opts.injectSid && existsSync(injectDispatcher)) {
     const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;
     userPromptSubmit.push({
@@ -1261,18 +1254,7 @@ export function writeCodexLockHooks(
   // sessions ever journaled a turn end. The POST is bounded by the script's
   // HTTP_TIMEOUT (5s) and fails open, so a slow operator delays the turn end by at
   // most that.
-  const turnJournal = join(dir, CODEX_TURN_JOURNAL_HOOK);
-  if (opts.activitySid && existsSync(turnJournal)) {
-    stop.push({
-      matcher: '.*',
-      hooks: [
-        {
-          type: 'command',
-          command: `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} PAPERCUSP_AGENT=codex PAPERCUSP_JOURNAL_SYNC=1 ${turnJournal}`,
-        },
-      ],
-    });
-  }
+  stop.push(...managedTurnHooks.filter(row => row.event === 'Stop').map(row => row.group));
 
   if (opts.injectSid && existsSync(injectDispatcher)) {
     const injectIdentity = `PAPERCUSP_SID=${shellSingleQuote(opts.injectSid)} PAPERCUSP_AGENT=codex`;

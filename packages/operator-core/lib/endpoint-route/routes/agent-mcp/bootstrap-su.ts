@@ -20,7 +20,7 @@
  * 'public'` — requirePrincipal() inline, mirroring console-launch.ts.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isIP } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -3437,7 +3437,12 @@ export const bootstrapSu = defineTool({
       PAPERCUSP_PROFILE: profile,
       PAPERCUSP_SPECIFICATION_REVISION: launchArtifact.specificationRevision,
       PAPERCUSP_STATE_REVISION: launchArtifact.stateRevision,
-      ...(codexHome ? { CODEX_HOME: codexHome } : {}),
+      // Carry repair must recognize the same server-materialized home even
+      // when the operator uses a different homes root than the launcher.
+      ...(codexHome ? {
+        CODEX_HOME: codexHome,
+        PAPERCUSP_SU_CODEX_HOMES_DIR: dirname(codexHome),
+      } : {}),
       ...(claudeConfigDir ? { CLAUDE_CONFIG_DIR: claudeConfigDir } : {}),
       ...(sessionId != null ? { PAPERCUSP_ADV_SESSION_ID: String(sessionId) } : {}),
       // solo-launch-provenance: the launcher's ownerId, readable by hooks/tools.

@@ -56,6 +56,7 @@ const receiptDb = vi.hoisted(() => {
   const progressControl = {
     beforeWrite: undefined as (() => Promise<void>) | undefined,
     afterWrite: undefined as (() => void) | undefined,
+    beforeRegistration: undefined as ((rubric: string) => Promise<void>) | undefined,
   };
   const progressWrites = { count: 0 };
   const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
@@ -66,6 +67,7 @@ const receiptDb = vi.hoisted(() => {
     if (query.includes('DELETE FROM harness_shared.rubric_amend_receipts')) return [];
     if (query.includes('INSERT INTO harness_shared.rubric_amend_receipts')) {
       const [workspace, rubric, key] = values as string[];
+      await progressControl.beforeRegistration?.(rubric!);
       const id = `${workspace}:${rubric}:${key}`;
       if (rows.has(id)) return [];
       rows.set(id, { idempotency_key: key!, rubric_ref: rubric!, state: 'running', started_at: new Date(), finished_at: null,
@@ -209,6 +211,7 @@ beforeEach(() => {
   receiptDb.rows.clear();
   receiptDb.progressControl.beforeWrite = undefined;
   receiptDb.progressControl.afterWrite = undefined;
+  receiptDb.progressControl.beforeRegistration = undefined;
   receiptDb.progressWrites.count = 0;
   rubricsMocks.getRubric.mockResolvedValue(undefined);
   planMocks.getPlanRow.mockResolvedValue(null);
@@ -345,24 +348,36 @@ describe('rubrics:amend complete acceptance criteria input', () => {
 
   it.each([true, false])('production cancellation preserves only a confirmed durable receipt (registered=%s)', async registered => {
     vi.useFakeTimers();
+    const cancellation = new AbortController();
     let releaseRegistration: (() => void) | undefined;
     let releasePreview!: (value: any) => void;
     const preview = new Promise<any>(resolve => { releasePreview = resolve; });
     rubricsMocks.previewAcceptanceBarAmendment.mockImplementation(() => preview);
-    if (!registered) receiptDb.sql.mockImplementationOnce(() => new Promise(resolve => { releaseRegistration = () => resolve([]); }));
+    const registrationReached = vi.fn();
+    receiptDb.progressControl.beforeRegistration = async rubric => {
+      if (rubric !== 'acceptance-cancellation') return;
+      registrationReached();
+      if (!registered) await new Promise<void>(resolve => { releaseRegistration = resolve; });
+    };
     try {
       const projected = lookupByMcpName('rubrics:amend')!;
       const resultPromise = dispatchProjectedTool(
-        { ...projected, timeoutSec: 0.1 }, 'rubrics:amend',
+        { ...projected, timeoutSec: 5 }, 'rubrics:amend',
         { rubricRef: 'acceptance-cancellation', dryRun: true, criteria: [criterion] },
         {
-          signal: new AbortController().signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn(),
+          signal: cancellation.signal, log: vi.fn(), progress: vi.fn(), emit: vi.fn(),
           workspaceId: 'ws-amend-test', runId: `amend-cancel-${registered}`, isSuperuser: true,
           uiClientId: 'amend-test', role: 'su', gateBypass: { role: true, capability: true, quota: true },
           transport: 'mcp', requestedFormat: 'json', contextTier: 'trimmed', tx: {},
         }, {},
       );
-      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(0);
+      // Delay the actual receipt INSERT, not an incidental earlier SQL call.
+      // Abort explicitly: a short dispatcher deadline is also propagated to
+      // the handler, whose earlier foreground response is not cancellation.
+      expect(registrationReached).toHaveBeenCalledOnce();
+      cancellation.abort();
+      await vi.advanceTimersByTimeAsync(1);
       const result = await resultPromise;
       if (registered) {
         expect(result.error).toBeUndefined();
@@ -372,7 +387,8 @@ describe('rubrics:amend complete acceptance criteria input', () => {
         expect(status.data.state).toBe('running');
       } else {
         expect(result.ok).toBe(false);
-        expect(result.error?.code).toBe('timeout');
+        expect(result.error?.code).toBe('aborted');
+        expect(result.error?.meta?.abortCompletionReceipt).toMatchObject({ status: 'recovery-incomplete' });
         expect(receiptDb.rows.size).toBe(0);
       }
       releaseRegistration?.();

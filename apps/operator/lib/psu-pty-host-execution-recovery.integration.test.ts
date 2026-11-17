@@ -52,7 +52,7 @@ async function until(check: () => boolean, timeoutMs = 10_000) {
 }
 
 /** Real PTY and socket, sanitized native event shapes, no model or live DB. */
-async function fixture(agent: string, autoStart: boolean, failInitially: boolean | 'capacity' | 'active-tool' = false,
+async function fixture(agent: string, autoStart: boolean, failInitially: boolean | 'capacity' | 'active-tool' | 'rate-limit' = false,
   bridgeTty = false) {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-recovery-'));
   const config = join(root, '.papercusp', `session-${agent}`);
@@ -69,6 +69,19 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
   let output = '';
   const stdin = Object.assign(new EventEmitter(), { isTTY: false, resume() {}, pause() {} });
   const stdout = { isTTY: false, columns: 120, rows: 30, write(chunk: string) { output += chunk; return true; } };
+  const rateMessage = 'exceeded retry limit, last status: 429 Too Many Requests; retry after 60 seconds';
+  const initialFailure = agent === 'codex'
+    ? { type: 'event_msg', payload: failInitially === 'capacity'
+      ? { type: 'task_complete', turn_id: 'capacity-turn', error: {
+        codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } }
+      : failInitially === 'rate-limit' ? { type: 'task_complete', turn_id: 'throttled-turn', error: {
+        codex_error_info: { response_too_many_failed_attempts: { http_status_code: 429 } }, message: rateMessage } }
+      : { type: 'turn_aborted' } }
+    : agent === 'claude' ? failInitially === 'rate-limit'
+      ? { type: 'assistant', isApiErrorMessage: true, apiErrorStatus: 429,
+        message: { role: 'assistant', content: [{ type: 'text', text: rateMessage }] } }
+      : { type: 'system', subtype: 'api_error' }
+    : { type: 'message', message: { role: 'assistant', stopReason: 'aborted', content: [] } };
   const code = `
     const fs = require('node:fs');
     const agent = ${JSON.stringify(agent)}, path = ${JSON.stringify(transcript)};
@@ -84,11 +97,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
         const capacity = ${failInitially === 'capacity'};
         const fail = () => {
           if (${failInitially === 'active-tool'}) append({type:'response_item',payload:{type:'function_call',call_id:'unfinished',name:'exec_command'}});
-          append(agent === 'codex' ? {type:'event_msg',payload: ${failInitially === 'capacity'
-            ? JSON.stringify({type:'task_complete',turn_id:'capacity-turn',error:{codex_error_info:'server_overloaded',message:'Selected model is at capacity.'}})
-            : "{type:'turn_aborted'}"}} :
-            agent === 'claude' ? {type:'system',subtype:'api_error'} :
-            {type:'message',message:{role:'assistant',stopReason:'aborted',content:[]}});
+          append(${JSON.stringify(initialFailure)});
           if (!capacity) process.stdout.write('NATIVE_FAILED\\n');
         };
         if (capacity) { process.stdout.write('NATIVE_FAILED · 2 warnings · f2 to view'); setTimeout(fail, 60); }
@@ -314,6 +323,7 @@ describe('cross-client native recovery handshake', () => {
 describe('failed native turn → durable routine retry → native wake', () => {
   it.each([
     ['codex', true], ['claude', true], ['omp', true], ['codex', 'capacity'],
+    ['codex', 'rate-limit'], ['claude', 'rate-limit'],
   ] as const)('recovers one %s turn (%s) through the real claim and AUTO wake paths', async (agent, failureKind) => {
     const f = await fixture(agent, true, failureKind);
     const sql = org.adminSql;
@@ -344,6 +354,9 @@ describe('failed native turn → durable routine retry → native wake', () => {
         expect(failure.failure).toMatchObject({ code: 'server_overloaded',
           retryable: true, retryAfterMs: 60_000 });
       }
+      if (failureKind === 'rate-limit') {
+        expect(failure.failure).toMatchObject({ retryable: true, retryAfterMs: 60_000 });
+      }
       // Exercise the real failed-turn grace and retry deadline, with no clock override.
       await until(() => Date.now() - failedAt >= 30_000, 35_000);
       const arm = vi.fn(async () => ({ awaitId: 1, eventKey: 'fixture-inbox', handleNote: 'fixture', minSleepSec: 60 }));
@@ -360,7 +373,9 @@ describe('failed native turn → durable routine retry → native wake', () => {
         FROM harness_shared.routines WHERE id = ${routineId}`)[0]!;
       expect(Number(stored.next_ms)).toBe(recovery.state!.nextProbeAt);
       expect(stored.metadata.executionRecovery).toMatchObject({ status: 'recovering', attempts: 1 });
-      if (failureKind === 'capacity') expect(Number(stored.next_ms)).toBeGreaterThanOrEqual(failedAt + 60_000);
+      if (failureKind === 'capacity' || failureKind === 'rate-limit') {
+        expect(Number(stored.next_ms)).toBeGreaterThanOrEqual(failedAt + 60_000);
+      }
       expect((await listDueCronRoutines(sql)).some(row => row.id === routineId)).toBe(false);
       await until(() => Date.now() >= recovery.state!.nextProbeAt, 35_000);
       const due = (await listDueCronRoutines(sql)).find(row => row.id === routineId)!;

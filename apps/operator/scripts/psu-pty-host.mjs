@@ -48,7 +48,8 @@ import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 // Keep the interactive bootstrap independent of operator packages while using
 // the same dependency-free signature as the governed turn taxonomy.
-import { makeModelCapacityDetector, modelCapacityLineMatch, modelCapacityRetryAfterMs } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
+import { makeModelCapacityDetector, modelCapacityRetryAfterMs } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
+import { classifyProviderError } from '../../../libs/papercusp-shared/src/agent/provider-error.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
 import { controlPlaneTempCandidates } from '../../../packages/operator-core/lib/control-plane-temp.mjs';
 import { KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV, publishKickoffProofReceipt } from '../../../packages/operator-core/lib/agent-kickoff/prompt-transport.mjs';
@@ -1980,8 +1981,7 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
         const text = [errorMessage, contentText]
           .map(value => String(value ?? ''))
           .filter(Boolean)
-          .join('\n')
-          .slice(0, 2048);
+          .join('\n');
         const apiErrorStatus = agent === 'claude' && Number.isInteger(row?.apiErrorStatus)
           ? row.apiErrorStatus : null;
         // Codex also serializes error-info variants as externally tagged
@@ -1997,10 +1997,12 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
         const code = String(explicitCode ?? apiErrorCode ?? row.payload?.type
           ?? row.subtype ?? message?.stopReason ?? message?.stop_reason ?? 'native_error')
           .replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
-        const claudeHttp429 = agent === 'claude' && apiErrorStatus === 429;
-        const retryable = !claudeHttp429 &&
-          (code === 'server_overloaded' || modelCapacityLineMatch(text) != null);
-        const retryAfterMs = retryable || claudeHttp429 ? modelCapacityRetryAfterMs(text) : null;
+        // Client adapters extract evidence; governed turns and native sessions
+        // share the provider policy instead of maintaining separate retry rules.
+        const status = apiErrorStatus ?? (taggedCode ? info[taggedCode]?.http_status_code : undefined);
+        const policy = classifyProviderError({ status, code, message: text });
+        const retryable = policy?.retryable ?? false;
+        const retryAfterMs = retryable || status === 429 ? modelCapacityRetryAfterMs(text) : null;
         failure = { code, retryable, retryAfterMs, atMs: at };
       }
       // An aborted model does not prove its external tool effects stopped.

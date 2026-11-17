@@ -2,21 +2,111 @@
  * as the worker's own failure (WI-6554700010042656: a 180s execute deadline killed
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedIntegrationProofSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, cleanupCurrentSuNativeEgress, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST, currentSuNativeRetainedArtifacts, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedIntegrationProofSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
+import type { ProcExec } from '../lib/external-bench/grader/swe-bench-pro';
 import { nativeProofFingerprint, type NativeProofInput } from '../lib/testing-run-store';
 import { privateOperatorApiBuildBudget } from './private-http-workspace-preflight';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
 const methodAuthority = vi.hoisted(() => vi.fn());
 vi.mock('./native-method-authority', () => ({ verifyNativeMethodAuthority: methodAuthority }));
+
+describe('native egress parent recovery', () => {
+  const runId = 'PRIVATE-CURRENT-SU-12345678-1234-4123-8123-123456789abc';
+  const dockerHost = 'unix:///run/docker-bench.sock';
+  const reaped = { exitCode: null, signalCode: 'SIGKILL' as const };
+  const withEvidence = async (run: (dir: string) => Promise<void>) => {
+    const dir = await mkdtemp(join(tmpdir(), 'native-egress-parent-'));
+    try { await run(dir); }
+    finally { await rm(dir, { recursive: true, force: true }); }
+  };
+  const receipt = async (dir: string) => JSON.parse(await readFile(join(dir, 'current-su-native-egress-cleanup.json'), 'utf8'));
+
+  it('recovers only the recorded run after a real worker is killed before its finally', async () => withEvidence(async dir => {
+    const child = spawn(process.execPath, ['-e',
+      "require('node:fs').writeFileSync(process.argv[1], process.argv[2]); process.kill(process.pid, 'SIGKILL')",
+      join(dir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), runId + '\n'], { stdio: 'ignore' });
+    await once(child, 'close');
+    expect(child.signalCode).toBe('SIGKILL');
+    const calls: string[][] = [];
+    const exec: ProcExec = async (command, args) => {
+      expect(command).toBe('docker'); calls.push([...args]);
+      const op = args.slice(2, 4).join(' ');
+      return { code: 0, stderr: '', stdout: op === 'ps -aq' ? 'owned-container\n'
+        : op === 'network ls' ? 'owned-network\n' : '' };
+    };
+    await expect(cleanupCurrentSuNativeEgress(dir, { worker: child, dockerHost, exec }))
+      .resolves.toMatchObject({ runId, workerReaped: true, status: 'cleaned', errors: [] });
+    expect(calls).toEqual([
+      ['--host', dockerHost, 'ps', '-aq', '--filter', 'label=papercusp.bench-egress=' + runId.toLowerCase()],
+      ['--host', dockerHost, 'rm', '-f', 'owned-container'],
+      ['--host', dockerHost, 'network', 'ls', '-q', '--filter', 'label=papercusp.bench-egress=' + runId.toLowerCase()],
+      ['--host', dockerHost, 'network', 'rm', 'owned-network'],
+    ]);
+    expect(await receipt(dir)).toMatchObject({ runId, dockerHost, status: 'cleaned', workerReaped: true });
+    expect(child.signalCode).toBe('SIGKILL');
+    expect(currentSuNativeRetainedArtifacts(true)).toEqual(expect.arrayContaining([
+      'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST,
+      'phases/execute/current-su-native-egress-cleanup.json',
+    ]));
+  }));
+
+  it('records no allocation without querying Docker when the worker never wrote a manifest', async () => withEvidence(async dir => {
+    const exec = vi.fn<ProcExec>();
+    await expect(cleanupCurrentSuNativeEgress(dir, { worker: reaped, dockerHost, exec }))
+      .resolves.toMatchObject({ runId: null, status: 'not-started' });
+    expect(exec).not.toHaveBeenCalled();
+    expect(await receipt(dir)).toMatchObject({ status: 'not-started' });
+  }));
+
+  it.each(['peer-run', runId + '\npeer-run', ''])('refuses an invalid cleanup key (%j) before any Docker call', async value => withEvidence(async dir => {
+    await writeFile(join(dir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), value);
+    const exec = vi.fn<ProcExec>();
+    await expect(cleanupCurrentSuNativeEgress(dir, { worker: reaped, dockerHost, exec }))
+      .rejects.toThrow('exact private fixture runId');
+    expect(exec).not.toHaveBeenCalled();
+    expect(await receipt(dir)).toMatchObject({ status: 'failed' });
+  }));
+
+  it('refuses a manifest symlink before reading a cleanup key', async () => withEvidence(async dir => {
+    await writeFile(join(dir, 'peer-key'), runId);
+    await symlink(join(dir, 'peer-key'), join(dir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST));
+    const exec = vi.fn<ProcExec>();
+    await expect(cleanupCurrentSuNativeEgress(dir, { worker: reaped, dockerHost, exec }))
+      .rejects.toThrow('bounded regular file');
+    expect(exec).not.toHaveBeenCalled();
+  }));
+
+  it.each(['live-worker', 'missing-daemon'])('refuses unsafe cleanup (%s)', async boundary => withEvidence(async dir => {
+    await writeFile(join(dir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), runId);
+    const exec = vi.fn<ProcExec>();
+    await expect(cleanupCurrentSuNativeEgress(dir, {
+      worker: boundary === 'live-worker' ? { exitCode: null, signalCode: null } : reaped,
+      dockerHost: boundary === 'missing-daemon' ? '' : dockerHost, exec,
+    })).rejects.toThrow(boundary === 'live-worker' ? 'reaped worker' : 'explicit Docker host');
+    expect(exec).not.toHaveBeenCalled();
+    expect(await receipt(dir)).toMatchObject({ status: 'failed' });
+  }));
+
+  it('retains failed cleanup and fails acceptance when Docker refuses a scoped sweep', async () => withEvidence(async dir => {
+    await writeFile(join(dir, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST), runId);
+    const exec: ProcExec = async () => ({ code: 1, stdout: '', stderr: 'engine refused' });
+    await expect(cleanupCurrentSuNativeEgress(dir, { worker: reaped, dockerHost, exec }))
+      .rejects.toThrow('recovery cleanup must complete');
+    expect(await receipt(dir)).toMatchObject({ runId, status: 'failed', errors: expect.arrayContaining([
+      expect.stringContaining('engine refused'),
+    ]) });
+  }));
+});
 
 describe('isolated negative preflight evidence', () => {
   const expected = 'MCP tool call requires approval, but approval policy is never';
