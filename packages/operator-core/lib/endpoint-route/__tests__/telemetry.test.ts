@@ -273,6 +273,27 @@ describe('recordRouteInvocation — native guard route correlation', () => {
     }
   });
 
+  it.each(['readiness_pending', 'readiness_reused', 'readiness_settled_refusal'])(
+    'retains continuation-readiness evidence (%s)', async (outcome) => {
+      const exec = execWith({ method: 'POST', path, status: 'timeout',
+        headers: { 'x-papercusp-guard-request-id': requestId } });
+      const marker = 'guard_plan_' + outcome;
+      exec.routeDiagnostics = { measure: async (_phase, work) => work(),
+        snapshot: () => ({ auth: 0, input: 0, invoke: 1037,
+          guard_plan_total: 1032, guard_plan_binding: 996,
+          guard_plan_readiness: 995.736, guard_plan_readiness_fence: 12.4,
+          [marker]: 0, guard_plan_readiness_private_marker: 99 }) };
+      recordRouteInvocation(exec);
+      await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
+        guardRequestId: requestId, routePhaseTimingsMs: {
+          auth: 0, input: 0, invoke: 1037, guard_plan_total: 1032,
+          guard_plan_binding: 996, guard_plan_readiness: 996,
+          guard_plan_readiness_fence: 12, [marker]: 0,
+        },
+      })));
+    },
+  );
+
   it('omits detailed guard timing fields for fast invocations', async () => {
     const exec = execWith({ method: 'POST', path, status: 'ok',
       headers: { 'x-papercusp-guard-request-id': requestId },
@@ -282,6 +303,7 @@ describe('recordRouteInvocation — native guard route correlation', () => {
         auth: 1, input: 0, invoke: 499, guard_setup: 4,
         auth_remote: 0, auth_tier_modules: 0, auth_tier_flag: 1,
         guard_plan_bindings: 25, guard_pg_acquire_org_admin_acquired_1: 11,
+        guard_plan_readiness: 20, guard_plan_readiness_fence: 1, guard_plan_readiness_pending: 0,
       }) };
     recordRouteInvocation(exec);
     await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({

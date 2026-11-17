@@ -43,6 +43,8 @@ const GUARD_SUMMARY_PHASES = new Set(['guard_setup', 'guard_plan_total', 'guard_
 const GUARD_PLAN_PHASES = new Set([
   'guard_plan_bindings', 'guard_plan_goal_module', 'guard_plan_goal_read', 'guard_plan_goal',
   'guard_plan_start_proof', 'guard_plan_scope', 'guard_plan_plan_row', 'guard_plan_audit',
+  'guard_plan_readiness', 'guard_plan_readiness_fence', 'guard_plan_readiness_pending',
+  'guard_plan_readiness_reused', 'guard_plan_readiness_settled_refusal',
   'guard_plan_activation', 'guard_plan_admission', 'guard_plan_start_gate', 'guard_plan_spec_quality',
   'guard_plan_critique', 'guard_plan_recheck', 'guard_plan_binding',
   'guard_plan_goal_leg_work_items', 'guard_plan_goal_leg_plan_items', 'guard_plan_goal_leg_fleet',
