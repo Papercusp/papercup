@@ -9,7 +9,7 @@ import { access, cp, copyFile, mkdir, readFile, realpath, symlink, writeFile } f
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { chromium, request as playwrightRequest, type Browser } from 'playwright-core';
+import { chromium, request as playwrightRequest, type Browser, type Page } from 'playwright-core';
 import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
 
 type Input = {
@@ -245,6 +245,36 @@ export async function waitForPortalDocument(child: ChildProcess, url: string, ti
   throw new Error(`Portal document readiness deadline: ${last}`);
 }
 
+/** HTTP 200 alone does not prove the authenticated shell hydrated. Keep the
+ * browser's actual failure evidence in the outer log before private cleanup. */
+export async function waitForInstalledPortalSetup(page: Page, url: string, timeoutMs = 10_000) {
+  const errors: string[] = [], failedRequests: string[] = [], httpErrors: string[] = [];
+  const onError = (error: Error) => { if (errors.length < 8) errors.push(error.message.slice(0, 500)); };
+  const onFailed = (request: import('playwright-core').Request) => {
+    if (failedRequests.length < 8) failedRequests.push(`${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`);
+  };
+  const onResponse = (response: import('playwright-core').Response) => {
+    if (response.status() >= 400 && httpErrors.length < 8) httpErrors.push(`${response.status()} ${new URL(response.url()).pathname}`);
+  };
+  page.on('pageerror', onError); page.on('requestfailed', onFailed); page.on('response', onResponse);
+  try {
+    const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    assert.equal(response?.status(), 200, 'Authenticated Portal entry must return HTTP 200');
+    await page.getByRole('button', { name: 'Connect your computer', exact: true }).first()
+      .waitFor({ state: 'visible', timeout: timeoutMs });
+    return { status: response!.status(), title: await page.title() };
+  } catch (cause) {
+    const rendered = await page.locator('body').innerText({ timeout: 1000 }).catch(() => 'body unavailable');
+    const buttons = await page.getByRole('button').allTextContents().catch(() => []);
+    throw new Error(`Portal browser prerequisite failed: ${JSON.stringify({
+      location: new URL(page.url()).origin + new URL(page.url()).pathname,
+      title: await page.title().catch(() => ''), rendered: rendered.slice(0, 4000),
+      buttons: buttons.slice(0, 20), errors, failedRequests, httpErrors,
+      cause: cause instanceof Error ? cause.message : String(cause),
+    })}`);
+  } finally { page.off('pageerror', onError); page.off('requestfailed', onFailed); page.off('response', onResponse); }
+}
+
 export async function runInstalledComputerServedBrowser(input: Input) {
   const { repo, privateRoot, evidence, control, origin, certPath, userId, orgId, hosted, stage, waitFor } = input;
   await stage('installed-prerequisites');
@@ -390,6 +420,18 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       await writeFile(storageStatePath, JSON.stringify({ cookies: [{ name: HOSTED_SESSION_COOKIE,
         value: hosted.plane.components.sessionCookieCodec.encode(session.id), domain: new URL(origin).hostname,
         path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' }], origins: [] }), { mode: 0o600 });
+      await stage('installed-portal-browser-prerequisites');
+      browser = await chromium.launch({ channel: 'chrome', headless: true });
+      const preflight = await browser.newContext({ storageState: storageStatePath, ignoreHTTPSErrors: true });
+      try {
+        const url = new URL('/', origin);
+        url.search = new URLSearchParams({ app: 'desktops', desktopHost: linked.hostId,
+          ws: linked.customerWorkspaceId, accountsPane: 'false', chatPane: 'false' }).toString();
+        await waitForInstalledPortalSetup(await preflight.newPage(), url.href);
+      } catch (error) {
+        console.error(error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally { await preflight.close(); await browser.close(); browser = undefined; }
       const fixturePath = `${evidence}-portal-fixture.json`;
       const stoppedOrigin = `http://127.0.0.1:${await input.freePort()}`;
       await writeFile(fixturePath, JSON.stringify({ portalOrigin: origin, localOrigin: guiOrigin, stoppedOrigin,

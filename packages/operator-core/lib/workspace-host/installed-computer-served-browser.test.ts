@@ -7,9 +7,10 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer, type RequestListener, type Server } from 'node:http';
 import { gzipSync } from 'node:zlib';
+import { chromium } from 'playwright-core';
 import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -53,6 +54,36 @@ async function currentNativeLoader(repo: string) {
 }
 
 describe('served Portal prerequisite and document readiness', () => {
+  it('waits for the actual browser launcher after document readiness', async () => {
+    const origin = await start((_, response) => {
+      response.setHeader('content-type', 'text/html');
+      response.end('<html><body>Loading<script>setTimeout(() => { document.body.innerHTML = "<button>Connect your computer</button>" }, 50)</script></body></html>');
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      await expect(waitForInstalledPortalSetup(await browser.newPage(), origin, 2000))
+        .resolves.toMatchObject({ status: 200 });
+    } finally { await browser.close(); }
+  });
+
+  it('retains browser errors and rendered state when HTTP 200 never hydrates the launcher', async () => {
+    const origin = await start((request, response) => {
+      if (request.url === '/missing-bootstrap.js') { response.writeHead(404); response.end('missing'); return; }
+      response.setHeader('content-type', 'text/html');
+      response.end('<html><title>Private fixture</title><body>Checking your portal session<script src="/missing-bootstrap.js"></script><script>throw new Error("fixture hydration failure")</script></body></html>');
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      const error = await waitForInstalledPortalSetup(await browser.newPage(), origin, 500)
+        .then(() => '', cause => String(cause));
+      expect(error).toContain('Portal browser prerequisite failed');
+      expect(error).toContain('Checking your portal session');
+      expect(error).toContain('fixture hydration failure');
+      expect(error).toContain('Private fixture');
+      expect(error).toContain('404 /missing-bootstrap.js');
+    } finally { await browser.close(); }
+  });
+
   it('serves a compressed upstream document through the real HTTP Portal proxy', async () => {
     const html = '<html><body>Private Portal document</body></html>';
     const wire = gzipSync(html);
