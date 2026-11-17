@@ -889,6 +889,66 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     }
   });
 
+  it('pre-tool: authority timeout preserves literal read arguments without admitting expansions or writes', async () => {
+    const { runInjection } = await import('../core.mjs');
+    const spec = ports.PORTS['pre-tool'];
+    const stalledFetch = ((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    })) as unknown as typeof fetch;
+    const reads = [
+      "rg -n -F '$PAPERCUSP_SID' source.ts",
+      'rg -n -F \\$PAPERCUSP_SID source.ts',
+      'rg -n -F "\\$PAPERCUSP_SID" source.ts',
+      "rg -n -F '`literal`' source.ts",
+      "sed -n '$p' source.ts",
+      "sed -n '1,20p; 30,40p; $p' source.ts",
+      'cat apps/operator/scripts/hooks/inject/*.mjs',
+      "rg -n -F 'authority' apps/operator/scripts/hooks/inject/*.mjs",
+      "sed -n '1p' apps/operator/scripts/hooks/inject/*.mjs",
+    ];
+    const refused = [
+      'rg -n -F "$PAPERCUSP_SID" source.ts',
+      'rg -n -F $(touch source.ts) source.ts',
+      'rg -n -F "$(touch source.ts)" source.ts',
+      'rg -n -F `touch source.ts` source.ts',
+      "rg -n -F 'unfinished source.ts",
+      'rg -n -F "unfinished source.ts',
+      "sed -n '1p;w output' source.ts",
+      "sed -n '1p;e touch output' source.ts",
+      'cat *.ts',
+      'r? -n source.ts',
+      'rg --pre=helper* pattern source.ts',
+      'cat apps/operator/scripts/hooks/inject/*.mjs > output',
+    ];
+    for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+      vi.useFakeTimers();
+      try {
+        for (const cmd of [...reads, ...refused]) {
+          const pending = runInjection({ adapter, nativeEvent,
+            event: { tool_name: 'exec_command', tool_input: { cmd } },
+            env: hookEnv({ PAPERCUSP_SID: 'sid-literal-reads' }), fetchImpl: stalledFetch });
+          await vi.advanceTimersByTimeAsync(spec.timeoutMs * spec.unavailableAttempts);
+          const result = await pending;
+          if (reads.includes(cmd)) expect(result, cmd).toBeNull();
+          else expect(JSON.parse(result!).hookSpecificOutput, cmd).toMatchObject({
+            permissionDecision: 'deny',
+            permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+          });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+    // A real server denial remains authoritative even for locally safe reads.
+    const denied = await runInjection({ adapter: codex, nativeEvent: 'pre-tool-use',
+      event: { tool_name: 'exec_command', tool_input: { cmd: reads[0] } },
+      env: hookEnv({ PAPERCUSP_SID: 'sid-literal-reads' }),
+      fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit authority denial' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch });
+    expect(JSON.parse(denied!).hookSpecificOutput.permissionDecisionReason).toBe('Explicit authority denial');
+  });
+
   it('pre-tool: unavailable authority permits typed plan edits on local staging but refuses arbitrary destinations and shell execution', async () => {
     const { runInjection } = await import('../core.mjs');
     const fetchImpl = (async () => { throw Error('authority unavailable'); }) as typeof fetch;

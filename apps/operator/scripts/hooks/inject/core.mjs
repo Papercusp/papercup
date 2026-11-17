@@ -856,6 +856,28 @@ function shellCommandFromPartial(partial) {
   return typeof input.command === 'string' ? input.command : null;
 }
 
+/** Reject active interpolation and unfinished quoting, preserving literal arguments. */
+function hasActiveShellExpansion(command) {
+  let quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      continue;
+    }
+    if (char === '\\') {
+      const next = command[i + 1];
+      if (!next) return true;
+      if (quote !== '"' || /["\\$`]/.test(next)) i++;
+      continue;
+    }
+    if (char === "'" && quote === null) quote = "'";
+    else if (char === '"') quote = quote === '"' ? null : '"';
+    else if (char === '$' || char === '`') return true;
+  }
+  return quote !== null;
+}
+
 /**
  * Parse a bounded shell command into simple invocations. Newlines, semicolons,
  * logical AND/OR, and a pipe separate command segments; every stage must independently
@@ -869,17 +891,14 @@ function shellCommandFromPartial(partial) {
  * @returns {string[][] | null}
  */
 function readOnlyCommandSegments(command) {
-  if (command.length > 16_384 ||
-      command.includes(String.fromCharCode(0)) ||
-      command.includes(String.fromCharCode(96)) ||
-      command.includes('$')) return null;
+  if (command.length > 16_384 || command.includes(String.fromCharCode(0))) return null;
 
   const normalized = command.replace(/\r\n/g, '\n');
   if (normalized.includes(String.fromCharCode(13))) return null;
   const segments = [];
   for (const line of normalized.split('\n')) {
     if (!line.trim()) continue;
-    if (line.trimEnd().endsWith('\\')) return null;
+    if (line.trimEnd().endsWith('\\') || hasActiveShellExpansion(line)) return null;
 
     let tokens;
     try {
@@ -894,6 +913,13 @@ function readOnlyCommandSegments(command) {
       const token = tokens[i];
       if (typeof token === 'string') {
         current.push(token);
+        continue;
+      }
+      // A literal filename prefix prevents glob expansion into leading options.
+      // Never admit globs as command names or helper/option switches.
+      if (token?.op === 'glob' && typeof token.pattern === 'string' &&
+          /^[A-Za-z0-9_./]/.test(token.pattern) && current.length > 0) {
+        current.push(token.pattern);
         continue;
       }
       if (token && typeof token === 'object' &&
@@ -1010,7 +1036,7 @@ function isReadOnlyFileReadInvocation(tokens) {
     return args.length > 0 && args.every(arg => arg.length > 0 && !arg.startsWith('-'));
   }
   if (tool !== 'sed' || args.length < 3 || args[0] !== '-n') return false;
-  if (!/^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1])) return false;
+  if (!/^(?:\d+|\$)(?:,(?:\d+|\$))?p(?:[ \t]*;[ \t]*(?:\d+|\$)(?:,(?:\d+|\$))?p)*$/.test(args[1])) return false;
   const inputFiles = args.slice(2);
   return inputFiles.length > 0 && inputFiles.every(arg => arg.length > 0 && !arg.startsWith('-'));
 }
