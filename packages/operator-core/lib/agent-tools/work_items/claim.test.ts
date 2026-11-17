@@ -209,6 +209,17 @@ const forceAuditM = vi.mocked(recordForceTransitionAudit);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
+const readClaimReceipt = (structuredContent: unknown): Out['data'] => {
+  // Dispatch wraps the legacy keyed claim result in one canonical batch item.
+  // All public-dispatch fixtures must cross that boundary before asserting the
+  // handler's id, hint, changeKinds, or per-item counts.
+  const batch = structuredContent as BatchResult;
+  expect(batch.results).toHaveLength(1);
+  expect(batch.results[0].output).toBeDefined();
+  const receipt = batch.results[0].output?.structuredContent;
+  expect(receipt).toBeDefined();
+  return receipt;
+};
 const body = async (args: unknown, ctx: unknown = {}) => {
   const originalInput = structuredClone(args);
   expect(tool.args.parse(args)).toEqual(args);
@@ -233,14 +244,7 @@ const body = async (args: unknown, ctx: unknown = {}) => {
   } as never, {});
   expect(dispatched.ok).toBe(true);
   expect(args).toEqual(originalInput);
-  // Dispatch wraps the legacy keyed claim result in one canonical batch item.
-  // Assert that transport boundary before testing the handler's own results.
-  const batch = dispatched.result?.structuredContent as unknown as BatchResult;
-  expect(batch.results).toHaveLength(1);
-  expect(batch.results[0].output).toBeDefined();
-  const result = batch.results[0].output?.structuredContent as Out['data'] | undefined;
-  expect(result).toBeDefined();
-  return result;
+  return readClaimReceipt(dispatched.result?.structuredContent);
 };
 
 beforeEach(() => {
@@ -329,8 +333,7 @@ describe('R3 claim receipt stack defaults (independent P023 acceptance)', () => 
       } as never, {});
       expect(dispatched.ok).toBe(true);
       expect(input).toEqual(originalInput);
-      const receipt = dispatched.result?.structuredContent as Out['data'] | undefined;
-      expect(receipt).toBeDefined();
+      const receipt = readClaimReceipt(dispatched.result?.structuredContent);
       const result = receipt.results[0];
       expect(result).toMatchObject({ ok: true, changeKinds: { recorded: true, current: ['ui'] } });
       expect(JSON.stringify(result)).toMatch(expectedTool);
@@ -369,9 +372,7 @@ describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-
     } as never, {});
     expect(dispatched.ok).toBe(true);
     expect(input).toEqual(originalInput);
-    const result = dispatched.result?.structuredContent as Out['data'] | undefined;
-    expect(result).toBeDefined();
-    return result;
+    return readClaimReceipt(dispatched.result?.structuredContent);
   };
 
   it('refuses a gate-red-streak singleton before mutation when the CLAIMANT has no guaranteed re-wake', async () => {
@@ -531,8 +532,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     } as never, {});
     expect(dispatched.ok).toBe(true);
     expect(input).toEqual(originalInput);
-    const b = dispatched.result?.structuredContent as Out['data'] | undefined;
-    expect(b).toBeDefined();
+    const b = readClaimReceipt(dispatched.result?.structuredContent);
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
@@ -712,8 +712,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     } as never, {});
     expect(dispatched.ok).toBe(true);
     expect(input).toEqual(originalInput);
-    const b = dispatched.result?.structuredContent as Out['data'] | undefined;
-    expect(b).toBeDefined();
+    const b = readClaimReceipt(dispatched.result?.structuredContent);
     expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-out', error: 'fleet_scope_violation' });
     expect(claimM).not.toHaveBeenCalled();
