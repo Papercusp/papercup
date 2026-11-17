@@ -176,6 +176,88 @@ it('serializes a resumed launch kickoff before a concurrent wake', async () => {
   expect(existsSync(metaPathFor(ownerId))).toBe(false);
 }, 20000);
 
+it.each([false, true])('recovers a resumed kickoff after late binding unless owner input intervenes (%s)', async (interrupted) => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-kickoff-late-binding-'));
+  const codexHome = join(root, 'codex-home');
+  const nativeId = '01234567-89ab-4cde-8fab-0123456789ab';
+  const nativeFile = join(codexHome, 'sessions', `rollout-${nativeId}.jsonl`);
+  const ownerId = uniqueOwner(`KICKOFF-LATE-BINDING-${interrupted}`);
+  const kickoff = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nResume the saved task';
+  const { captured, io, type } = bridgedIo();
+  const signalSource = new EventEmitter();
+  let confirmBinding: (() => void) | undefined;
+  const childCode = [
+    "const fs=require('node:fs'),path=require('node:path');let composer='',turn=0;",
+    "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+    "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+    "process.stdin.on('data',data=>{for(const ch of data){if(ch!=='\\r'){composer+=ch;continue;}if(!composer)continue;",
+    "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString(),turn_id=String(++turn);",
+    "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},",
+    "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id}}];",
+    "fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));composer='';process.stdout.write('NATIVE_ACCEPTED\\n');",
+    "}process.stdout.write('COMPOSER_ECHO:'+composer+'\\n');});",
+  ].join('');
+  const done = hostThroughPty({
+    command: execPath, args: ['-e', childCode, 'resume'], cwd: root, ownerId,
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
+      NATIVE_FILE: nativeFile,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20',
+      PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+      PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '20',
+      PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+      PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '20',
+    }),
+    io, bridgeTty: true, signalSource, kickoff, nativePersistenceTimeoutMs: 1000,
+    resolveRespawnNativeId: () => nativeId,
+    onRespawn: async (_id: string, options: { onConfirmed?: () => void } = {}) => {
+      confirmBinding = options.onConfirmed;
+      return false;
+    },
+    onExit: () => undefined,
+  });
+  try {
+    await vi.waitFor(() => {
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(events, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
+        kind: 'respawn-binding-unconfirmed', reason: 'successor-reanchor-unconfirmed',
+      }));
+    }, { timeout: CHILD_START_OUTPUT_TIMEOUT_MS });
+    expect(confirmBinding).toBeTypeOf('function');
+    expect(existsSync(nativeFile)).toBe(false);
+    if (interrupted) type('owner draft');
+    confirmBinding!();
+    confirmBinding!();
+    if (interrupted) {
+      await vi.waitFor(() => expect(captured()).toContain('COMPOSER_ECHO:owner draft'));
+      await sleep(300);
+      expect(existsSync(nativeFile)).toBe(false);
+      expect(captured()).not.toContain(leadingTurnOriginMarker(kickoff));
+    } else {
+      await vi.waitFor(() => expect(existsSync(nativeFile), hostTestDiagnostics(ownerId, captured)).toBe(true), { timeout: 5000 });
+      const wake = '⟦turn-origin:loop-fire nonce:fedcba9876543210⟧\nContinue the queued unit';
+      expect(await injectIntoHostWithConfirmation(socketPathFor(ownerId), {
+        mode: 'turn', ownerId, data: wake, deliveryId: 'queued-after-late-binding',
+      })).toMatchObject({ ok: true, reason: 'accepted' });
+      await vi.waitFor(() => {
+        const prompts = readFileSync(nativeFile, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+          .filter(row => row.type === 'response_item' && row.payload?.role === 'user')
+          .map(row => row.payload.content[0].text);
+        expect(prompts, hostTestDiagnostics(ownerId, captured)).toEqual([kickoff, wake]);
+      }, { timeout: 5000 });
+    }
+  } finally {
+    signalSource.emit('SIGTERM');
+    await done;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(eventLogPathForOwner(ownerId), { force: true });
+  }
+}, 20000);
+
 it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-after-reconcile', 'rearmed-replaced'] as const)(
   'keeps a repainting tagged wake pending until native submission: %s',
   async (scenario) => {
@@ -1145,11 +1227,11 @@ describe('Codex native id discovered after carry binding deadline (EI-2534455650
       }));
       expect(reportedIds).toEqual([]);
       resolvedNativeId = nativeId;
-      const accepted = await injectIntoHost(socketPathFor(ownerId), {
+      const accepted = await injectIntoHostWithConfirmation(socketPathFor(ownerId), {
         mode: 'turn', data: 'later wake', ownerId,
       });
       // Socket acceptance precedes the gated pipeline's terminal outcome.
-      expect(accepted).toBe(true);
+      expect(accepted, hostTestDiagnostics(ownerId, captured)).toMatchObject({ ok: true });
       const settledDeadline = Date.now() + 2000;
       let confirmation: Array<Record<string, unknown>> = [];
       while (Date.now() < settledDeadline) {
