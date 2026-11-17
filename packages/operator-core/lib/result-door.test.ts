@@ -66,6 +66,97 @@ function longText(chars: number): string {
     .slice(0, chars);
 }
 
+describe('recoverable session text pages (EI-28900495887295394)', () => {
+  const ref = 'session_turn:codex:session-paged:4';
+  function page(text: string, offset: number, limit: number): {
+    ok: boolean; session_id: string; turn_count: number;
+    turns: Array<{
+      ref: string; turn_idx: number; speaker: string; text: string;
+      text_offset?: number; text_truncated?: boolean; text_full_chars?: number;
+      source_completeness?: string;
+      readMore?: { tool: string; args: { ref: string; text_offset: number; text_limit: number } };
+    }>;
+  } {
+    const chunk = text.slice(offset, offset + limit);
+    const end = offset + chunk.length;
+    return { ok: true, session_id: 'session-paged', turn_count: 5, turns: [
+      ...Array.from({ length: 4 }, (_, turn_idx) => ({
+        ref: `session_turn:codex:session-paged:${turn_idx}`, turn_idx,
+        speaker: 'user', text: `short turn ${turn_idx}`,
+      })),
+      { ref, turn_idx: 4, speaker: 'assistant', text: chunk,
+        ...(offset ? { text_offset: offset } : {}),
+        ...(end < text.length ? { text_truncated: true, text_full_chars: text.length,
+          readMore: { tool: 'sessions:read', args: { ref, text_offset: end, text_limit: limit } },
+        } : {}),
+      },
+    ] };
+  }
+
+  it.each([false, true])('retains bounded pages and follows every continuation (nested=%s)', (nested) => {
+    // Boundary cases and several continuation pages: the decisive tail must
+    // survive, including when the same page is read after a consumer restart.
+    for (const length of [599, 600, 601, 2_431]) {
+      const text = 'x'.repeat(length - 1) + '!';
+      let offset = 0;
+      let recovered = '';
+      for (;;) {
+        const body = page(text, offset, 600);
+        const result = { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
+        const opts = { toolName: nested ? 'tools:invoke' : 'sessions:read',
+          ...(nested ? { nestedTargetToolName: 'sessions:read' } : {}),
+          workspaceId: 'ws-1', runId: RUN_ID };
+        const out = applyResultDoor(result, opts);
+        expect(out).toBe(result);
+        expect(applyResultDoor(result, opts)).toBe(result);
+        expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+        const emitted = JSON.parse((out.content[0] as { text: string }).text);
+        expect(emitted.turns.slice(0, 4)).toEqual(body.turns.slice(0, 4));
+        const turn = emitted.turns[4];
+        recovered += turn.text;
+        if (!turn.text_truncated) break;
+        expect(turn.readMore).toEqual(body.turns[4].readMore);
+        expect(turn.readMore.args.text_offset).toBeGreaterThan(offset);
+        offset = turn.readMore.args.text_offset;
+      }
+      expect(recovered).toBe(text);
+    }
+  });
+
+  it.each(['missing', 'wrong-ref', 'stalled-offset', 'extra-partial'])(
+    'keeps incomplete handling for an unusable continuation: %s', (fault) => {
+      const body = page('x'.repeat(601), 0, 600);
+      const turn = body.turns[4];
+      if (fault === 'missing') delete turn.readMore;
+      if (fault === 'wrong-ref') turn.readMore!.args.ref = 'session_turn:codex:other:4';
+      if (fault === 'stalled-offset') turn.readMore!.args.text_offset = 0;
+      const result = { content: [{ type: 'text' as const, text: JSON.stringify({ ...body,
+        ...(fault === 'extra-partial' ? { _partial: true } : {}),
+      }) }] };
+      const out = applyResultDoor(result, { toolName: 'sessions:read', workspaceId: 'ws-1', runId: RUN_ID });
+      expect(out).not.toBe(result);
+      expect((out as any)._meta.resultDoor.truncated).toBe(true);
+    },
+  );
+
+  it('continues to bound oversized recoverable pages', () => {
+    const body = page('x'.repeat(BUDGET_CHARS * 3), 0, BUDGET_CHARS * 2);
+    const result = { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
+    const out = applyResultDoor(result, { toolName: 'sessions:read', workspaceId: 'ws-1', runId: RUN_ID });
+    expect(out).not.toBe(result);
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+    expect(readSpill('ws-1', 'sessions:read', RUN_ID)).toContain(JSON.stringify(body));
+  });
+
+  it('keeps an index-capped source explicitly unknown while preserving its recovery handle', () => {
+    const body = page('x'.repeat(601), 0, 600);
+    body.turns[4].text_full_chars = 600;
+    body.turns[4].source_completeness = 'unknown';
+    const result = { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
+    expect(applyResultDoor(result, { toolName: 'sessions:read', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
+  });
+});
+
 describe('discovery schema integrity', () => {
   it.each([
     { toolName: 'tools:find' },
