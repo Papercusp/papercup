@@ -22,6 +22,7 @@ const phases = vi.hoisted(() => ({
   buildRemeasure: vi.fn(),
   detach: vi.fn(),
   snapshot: vi.fn(),
+  persist: vi.fn(),
 }));
 // This suite owns refusal/deadline behavior. The provenance collector uses
 // governed subprocesses and the loop gate reads live claims; their own suites
@@ -35,6 +36,7 @@ vi.mock('../../testing-run-store', async (original) => ({
   ...(await original<typeof import('../../testing-run-store')>()),
   startRunDurable: phases.detach,
   captureWorktreeSnapshotAsync: phases.snapshot,
+  persistHarnessTestRuns: phases.persist,
 }));
 vi.mock('./evidence', async (original) => ({
   ...(await original<typeof import('./evidence')>()),
@@ -51,6 +53,7 @@ const refusal = { error: 'mutation_probe_active' as const, hint: 'active mutatio
 const roots: string[] = [];
 beforeEach(() => {
   phases.snapshot.mockResolvedValue({ commit: null, porcelain: null });
+  phases.persist.mockResolvedValue(1);
 });
 async function cleanupDetachedReports() {
   // Legacy recovery writes a unique file in a shared temporary directory.
@@ -509,6 +512,46 @@ it('reads a complete report containing escaped receipt JSON without a false no_r
   expect(result).toMatchObject({ ok: true, files: 1, passed: 1, failed: 0 });
   expect(runRouterFn).toHaveBeenCalledOnce();
 });
+
+it.each(['baseline', 'copy-baseline', 'mutant'])(
+  'forwards the measured JSON mutation %s and receipt destinations through the native caller', async phase => {
+    const root = await makeTestRoot(true);
+    const receiptPath = join(root, 'mutation-receipts.jsonl');
+    const invocation = { schemaVersion: 1, probeInvocationId: 'native-mutation-regression', mode: 'copy-out',
+      subjectPath: 'subject.ts', mutateExpression: 's/cost/zero/', againstCommit: null,
+      subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+      mutantDiff: '-cost\n+zero', mutantDiffTruncated: false, testCommandSha256: 'c'.repeat(64) };
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+    vi.stubEnv('PAPERCUSP_MUTATION_PHASE', phase);
+    vi.stubEnv('PAPERCUSP_MUTATION_DESCRIPTOR', JSON.stringify(invocation));
+    vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', receiptPath);
+    const failed = phase === 'mutant';
+    const runRouterFn = vi.fn(async (args: string[]) => {
+      // The host can change after launch; the child's captured environment wins.
+      vi.stubEnv('PAPERCUSP_MUTATION_PHASE', 'later-host-phase');
+      const output = args.find(arg => arg.startsWith('--outputFile='))!.slice('--outputFile='.length);
+      await writeFile(output, JSON.stringify({ success: !failed, numPassedTests: failed ? 0 : 1,
+        numFailedTests: failed ? 1 : 0, numPendingTests: 0, testResults: [{ name: join(root, 'feature.test.ts'),
+          status: failed ? 'failed' : 'passed', startTime: 1, endTime: 2,
+          assertionResults: [{ fullName: 'cost remains exactly 5500', status: failed ? 'failed' : 'passed',
+            ...(failed ? { failureMessages: ['AssertionError: expected 0 to be 5500'] } : {}) }] }] }));
+      return { code: failed ? 1 : 0, signal: null, timedOut: false, aborted: false, output: '' };
+    });
+    const result = await runTestFilesCore({ root, files: ['feature.test.ts'], workspaceId: 'mutation-workspace',
+      harnessSlug: 'mutation-harness', timeoutMs: 45_000, allowDetachedRecovery: false },
+    { runRouterFn, artifactBaseDir: root });
+    expect(runRouterFn).toHaveBeenCalledOnce();
+    expect(phases.persist).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      source: 'mutation-probe', mutationPhase: phase,
+      receiptEnvironment: expect.objectContaining({ PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptPath }),
+      rows: [expect.objectContaining({ execution: expect.objectContaining({
+        mutation: expect.objectContaining({ probeInvocationId: invocation.probeInvocationId, leg: phase }),
+      }) })],
+    }));
+    const ledger = JSON.parse(await readFile(join(result.artifacts!.directory, 'ledger.json'), 'utf8'));
+    expect(ledger).toMatchObject({ lookup: { source: 'mutation-probe' },
+      mutationContext: { phase, invocation } });
+  });
 
 it('retains replay report bytes after the detached store consumes its temporary sink', async () => {
   vi.spyOn(Date, 'now').mockReturnValue(10_000);

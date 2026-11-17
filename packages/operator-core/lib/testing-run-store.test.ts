@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
 import { buildDetachedTestRunRequest } from './agent-tools/testing/run';
@@ -1278,6 +1279,66 @@ describe('computeWorktreeDirty (EI-18795303393201472)', () => {
 });
 
 describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
+  it.each(['baseline', 'copy-baseline', 'mutant'])('preserves JSON mutation %s identity and exact insert receipts', async (phase) => {
+    const root = await mkdtemp(join(tmpdir(), 'json-mutation-recorder-'));
+    try {
+      const filePath = 'guard.test.ts';
+      const testBytes = 'export const expectedCost = 5500;';
+      await writeFile(join(root, filePath), testBytes);
+      const invocation = { schemaVersion: 1, probeInvocationId: 'json-mutation-regression', mode: 'copy-out',
+        subjectPath: 'subject.ts', mutateExpression: 's/cost/zero/', againstCommit: null,
+        subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+        mutantDiff: '-cost\n+zero', mutantDiffTruncated: false, testCommandSha256: 'c'.repeat(64) };
+      const environment = { PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: phase,
+        PAPERCUSP_MUTATION_DESCRIPTOR: JSON.stringify(invocation),
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(root, 'receipts.jsonl') };
+      const failed = phase === 'mutant';
+      const rows = store.parseVitestJsonForHarnessRows(JSON.stringify({ testResults: [{ name: join(root, filePath),
+        status: failed ? 'failed' : 'passed', startTime: 1, endTime: 2,
+        assertionResults: [{ status: failed ? 'failed' : 'passed', fullName: 'cost remains exactly 5500',
+          ...(failed ? { failureMessages: ['AssertionError: expected 0 to be 5500'] } : {}) }] }] }), root, environment);
+      let inserted: Record<string, unknown> = {};
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        inserted = insertedColumns(strings, values); return [{ id: 501 }];
+      });
+      await store.persistHarnessTestRunsWithIds({ harnessSlug: 'harness', workspaceId: 'workspace', root,
+        rows, source: 'mutation-probe', mutationPhase: phase, receiptEnvironment: environment,
+        commit: 'd'.repeat(40), worktreeDirty: false, runGroupId: 'recorded-mutation', sql });
+      expect(inserted.source).toBe('mutation-probe');
+      expect(inserted.execution_details).toMatchObject({ mutationPhase: phase,
+        mutation: { ...invocation, leg: phase, testFileSha256: createHash('sha256').update(testBytes).digest('hex') },
+        ...(failed ? { failedCaseTitles: ['cost remains exactly 5500'] } : { passedCaseTitles: ['cost remains exactly 5500'] }) });
+      const receipt = JSON.parse((await readFile(environment.PAPERCUSP_TEST_RUN_RECEIPT_FILE, 'utf8')).trim());
+      expect(receipt).toMatchObject({ outcome: 'inserted', id: '501', filePath,
+        row: { executionDetails: { mutationPhase: phase, mutation: { probeInvocationId: invocation.probeInvocationId } } } });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('ignores mutation descriptors without the measured probe marker', () => {
+    const rows = store.parseVitestJsonForHarnessRows(JSON.stringify({ testResults: [{ name: '/root/plain.test.ts',
+      status: 'passed', assertionResults: [{ status: 'passed', fullName: 'ordinary assertion' }] }] }), '/root',
+    { PAPERCUSP_MUTATION_PHASE: 'mutant', PAPERCUSP_MUTATION_DESCRIPTOR: '{}' });
+    expect(rows[0]?.execution).not.toHaveProperty('mutation');
+  });
+
+  it('preserves an unknown duration without manufacturing a reporter receipt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'json-unknown-duration-'));
+    try {
+      const receiptPath = join(root, 'receipts.jsonl');
+      let inserted: Record<string, unknown> = {};
+      const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        inserted = insertedColumns(strings, values); return [{ id: 502 }];
+      });
+      const result = await store.persistHarnessTestRunsWithIds({ harnessSlug: 'harness', workspaceId: 'workspace',
+        rows: [{ filePath: 'guard.test.ts', status: 'pass', durationMs: null,
+          startedAt: new Date(1), finishedAt: new Date(2), outputTail: null }],
+        runGroupId: 'unknown-duration', receiptEnvironment: { PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptPath }, sql });
+      expect(result).toEqual({ written: 1, ids: [502] });
+      expect(inserted.duration_ms).toBeNull();
+      await expect(readFile(receiptPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   const oneRow = () => [
     {
       filePath: 'lib/x.test.ts',
