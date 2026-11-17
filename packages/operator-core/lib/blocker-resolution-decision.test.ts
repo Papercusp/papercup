@@ -10,6 +10,7 @@ import {
   admitBindingCorrection,
   consumeBindingCorrection,
   type BlockerEvidenceMeasurement,
+  type BlockerEvidenceRef,
   type BlockerDecisionInput,
   type PreparedBlockerDecision,
 } from './blocker-resolution-decision';
@@ -458,13 +459,13 @@ describe('canonical blocker decision evidence', () => {
     }
 
     for (const readEvidence of [
-      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+      async (r: BlockerEvidenceRef): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
         ? { status: 'available', condition: 'pending', subjectWorkItemId: 'WI-1' } : scoped.readEvidence(r),
-      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+      async (r: BlockerEvidenceRef): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
         ? { status: 'unknown', detail: 'owner provenance unavailable' } : scoped.readEvidence(r),
-      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
+      async (r: BlockerEvidenceRef): Promise<BlockerEvidenceMeasurement> => r.kind === 'authority'
         ? { status: 'available', condition: 'satisfied', subjectWorkItemId: 'WI-other' } : scoped.readEvidence(r),
-      async (r: typeof authority | typeof self): Promise<BlockerEvidenceMeasurement> => r.kind === 'work-item'
+      async (r: BlockerEvidenceRef): Promise<BlockerEvidenceMeasurement> => r.kind === 'work-item'
         ? { status: 'available', condition: 'pending', reachable: true, canonicalWorkItemId: 'WI-other' }
         : scoped.readEvidence(r),
     ]) {
