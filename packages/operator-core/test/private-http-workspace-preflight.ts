@@ -42,7 +42,13 @@ export type PrivateCompletionFixtureControls = { maintenance: boolean; transport
 
 const privateHttpScenarios = ['saved-plan-lines', 'rubric-coverage', 'current-su-native-recovery-allocation', 'testing-background',
   'private-mcp-preflight-only', 'current-su-native', 'current-su-native-carry',
-  'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off'] as const;
+  'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off',
+  'current-su-native-home-repair', 'current-su-native-setup',
+  'current-su-native-pool-cleanup', 'current-su-native-pool-cleanup-failure',
+  'current-su-native-launch-cleanup', 'current-su-native-launch-cleanup-failure',
+  'current-su-native-spawn-cleanup', 'current-su-native-spawn-cleanup-failure',
+  'current-su-native-hub-cleanup', 'current-su-native-hub-cleanup-failure',
+  'current-su-native-hooks-cleanup', 'current-su-native-hooks-cleanup-failure'] as const;
 type PrivateHttpScenario = typeof privateHttpScenarios[number];
 
 /** Carry an explicit verifier selection across the launcher's environment scrub. */

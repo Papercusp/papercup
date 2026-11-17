@@ -11,7 +11,7 @@ import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration,
   buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle,
   privateOperatorApiBuildBudget, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha,
-  privatePgStartupIdentity, readPrivateMcpServingGeneration, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
+  privatePgStartupIdentity, parsePrivateHttpScenario, readPrivateMcpServingGeneration, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
   waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
@@ -33,6 +33,24 @@ afterEach(({ task }) => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
   cleanupPrivateHostTestDirectories(dirs.splice(0), task.result?.state === 'fail');
+});
+
+it('keeps native cleanup controls explicit across the private supervisor environment scrub', () => {
+  vi.stubEnv('STAGING_FIRST_HTTP_SCENARIO', 'untrusted-ambient-scenario');
+  expect(parsePrivateHttpScenario([])).toBeNull();
+  for (const kind of ['pool', 'launch', 'spawn', 'hub', 'hooks']) {
+    for (const suffix of ['', '-failure']) {
+      const scenario = `current-su-native-${kind}-cleanup${suffix}`;
+      expect(parsePrivateHttpScenario(['--private-http-scenario=' + scenario])).toBe(scenario);
+    }
+  }
+  for (const scenario of ['current-su-native-setup', 'current-su-native-home-repair'])
+    expect(parsePrivateHttpScenario(['--private-http-scenario=' + scenario])).toBe(scenario);
+  expect(() => parsePrivateHttpScenario(['--private-http-scenario=current-su-native-unknown-cleanup']))
+    .toThrow('unsupported private HTTP scenario');
+  expect(() => parsePrivateHttpScenario(['--private-http-scenario=current-su-native-setup',
+    '--private-http-scenario=current-su-native-pool-cleanup']))
+    .toThrow('private HTTP scenario must be selected exactly once');
 });
 
 it.each([false, true])('preserves private-host failure evidence and cleans successful fixtures (failed=%s)', failed => {
