@@ -1547,7 +1547,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       await wrongPoolTap.run(() => emitFallbackBatches('wrong-pool'));
       const census = wrongPoolTap.seal();
       expect(census.complete).toBe(true);
-      expect(census.rows).toHaveLength(2);
+      expect(census.rows).toHaveLength(FALLBACK_FLUSH_BATCH);
       expect(census.rows.every(row => row.sql?.pool === 'org-admin'
         && row.kind === 'unknown' && row.persistedBytes === null)).toBe(true);
       expect(measureGroundedEvidence({ scope: sqlScope, storage: census,
