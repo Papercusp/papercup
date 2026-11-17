@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -120,6 +120,7 @@ describe('papercusp-db-backup server-side priority', () => {
       '  return "$TEST_QUERY_STATUS"',
       '}',
       'sudo() { printf "priority:%s\\n" "$*" >&3; }',
+      'timeout() { shift 2; "$@"; }',
       'log() { printf "log:%s\\n" "$*" >&3; }',
       helper,
       'prioritize_backup_backends 3>&1',
@@ -144,6 +145,59 @@ describe('papercusp-db-backup server-side priority', () => {
     expect(prioritize('123', 1)).toEqual([
       'log:WARN: could not inspect backup backend priority; retrying at the next watchdog sample',
     ]);
+  });
+
+  it.each(['query', 'query-ignore-term', 'renice', 'ionice'])('returns to the watchdog when %s hangs', (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-priority-deadline-'));
+    try {
+      const sudo = join(root, 'sudo');
+      const calls = join(root, 'calls');
+      writeFileSync(sudo, [
+        '#!/bin/bash',
+        'printf "%s\\n" "$*" >> "$CALLS"',
+        'operation="$4"',
+        'if { [ "$operation" = psql ] && [[ "$HANG_MODE" = query* ]]; } || [ "$operation" = "$HANG_MODE" ]; then',
+        '  [ "$operation" != psql ] || printf "123\\n"',
+        '  [ "$HANG_MODE" != query-ignore-term ] || trap "" TERM',
+        '  exec /bin/sleep 30',
+        'fi',
+        '[ "$operation" != psql ] || printf "123\\n"',
+      ].join('\n'));
+      chmodSync(sudo, 0o755);
+      const run = spawnSync('timeout', ['--kill-after=1s', '2s', 'bash', '-c', [
+        'HOST_BACKUP_APPLICATION_NAME=pcbackup',
+        'PSQL="sudo -n -u postgres psql"',
+        // Preserve the production deadline contract while accelerating only
+        // the real GNU timeout clock. The outer deadline also reaps a mutant
+        // that omits the inner timeout, including its sleeping descendants.
+        'timeout() {',
+        '  [ "$1" = --kill-after=1s ] && [ "$2" = 4s ] || return 98',
+        '  shift 2',
+        '  command timeout --kill-after=0.1s 0.1s "$@"',
+        '}',
+        'log() { printf "%s\\n" "$*"; }',
+        helper,
+        'prioritize_backup_backends',
+        'printf "watchdog continues\\n"',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 4_000,
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HANG_MODE: mode, CALLS: calls },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('watchdog continues');
+      const operations = readFileSync(calls, 'utf8');
+      if (mode.startsWith('query')) {
+        expect(run.stdout).toContain('could not inspect backup backend priority');
+        expect(operations).not.toContain('renice');
+        expect(operations).not.toContain('ionice');
+      } else {
+        expect(operations).toContain('renice -n 19 -p 123');
+        expect(operations).toContain('ionice -c 2 -n 7 -p 123');
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -5338,7 +5338,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "cancelled" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "cancelled" | "pending" | "completed" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;

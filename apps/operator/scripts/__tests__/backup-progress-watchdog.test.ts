@@ -146,6 +146,7 @@ fs_avail_gb() { echo 999999; }
 log() { printf '%s\\n' "$*" >&2; }
 reap_own_stragglers() { :; }
 sudo() { shift 3; command "$@"; }
+timeout() { shift 2; "$@"; }
 date() {
   local now
   now=$(cat "$CLOCK")
@@ -316,6 +317,7 @@ sudo() {
   fi
   command "$@"
 }
+timeout() { shift 2; "$@"; }
 ${watchdogSource()}
 case "$1" in
   growing)
