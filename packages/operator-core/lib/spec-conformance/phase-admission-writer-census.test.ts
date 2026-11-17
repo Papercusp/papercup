@@ -11,6 +11,7 @@ import {
 const source = (content: string, path = 'packages/operator-core/lib/example.ts') => ({ path, content });
 function review(site: PhaseWriterSite, disposition: PhaseWriterReview['disposition'] = 'advancing'): PhaseWriterReview {
   return { siteId: site.id, sourceSha256: site.sourceSha256, statementSha256: site.statementSha256,
+    sourceProofs: [{ path: site.path, sha256: site.sourceSha256 }],
     disposition, reason: 'Inspected the complete synthetic statement and its transaction boundary.',
     evidenceRefs: [`source:${site.path}#${site.operation}`],
     resolvedEdges: [...new Set([...site.dynamicEdges, ...site.unresolved, ...site.callees])].map(edge => ({
@@ -51,6 +52,29 @@ describe('phase binding writer census', () => {
     expect(() => assertPhaseWriterCensus(deleted, [exemption])).toThrow('reviewed-writer-missing');
   });
 
+  it('distinguishes SELECT row locks from UPDATE statements without dropping either source identity', () => {
+    const statements = [
+      'SELECT item_id FROM harness_shared.plan_item_claims FOR UPDATE',
+      'UPDATE harness_shared.plan_item_claims SET owner = \'current\' RETURNING item_id',
+      'WITH changed AS (UPDATE harness_shared.plan_item_claims SET owner = \'current\' RETURNING item_id) SELECT item_id FROM changed FOR UPDATE',
+    ];
+    const inventory = inventoryPhaseWriters(statements.map((sql, i) =>
+      source(`export const result = sql\`${sql}\`;`, `packages/lock-${i}.ts`)));
+    expect(inventory.gaps).toEqual([]);
+    expect(inventory.sites).toHaveLength(3);
+    for (const site of inventory.sites) expect(site.unresolved).not.toContain('mutation-relation-unresolved');
+    const lock = inventory.sites.find(site => site.path === 'packages/lock-0.ts')!;
+    expect(lock.statement).toBe(`sql\`${statements[0]}\``);
+    expect(lock.relations).toEqual([]);
+    expect(lock.columns).toEqual([]);
+    for (const path of ['packages/lock-1.ts', 'packages/lock-2.ts']) {
+      const mutation = inventory.sites.find(site => site.path === path)!;
+      expect(mutation.relations).toEqual(['harness_shared.plan_item_claims']);
+      expect(mutation.columns).toEqual(['owner']);
+    }
+    expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
+  });
+
   it('rejects unresolved dynamic edges and removed classification guards', () => {
     const inventory = inventoryPhaseWriters([source('async function execute(db, statement) { await db.unsafe(statement); }')]);
     const site = inventory.sites[0]!;
@@ -60,6 +84,84 @@ describe('phase binding writer census', () => {
     expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
     expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected, revalidationSeam: undefined }])).toThrow('advancing-seam-or-race-test-missing');
     expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected, reason: '' }])).toThrow('review-proof-missing');
+  });
+
+  it('invalidates an unchanged writer exemption when its reviewed authority dependency changes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-proof-source-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const writerPath = 'packages/writer.ts', policyPath = 'packages/authority.ts';
+      writeFileSync(join(root, writerPath), write);
+      writeFileSync(join(root, policyPath), 'export const mayDispatch = false;');
+      const before = inventoryPhaseWriterTree(root), site = before.sites[0]!;
+      const inspected = { ...review(site, 'metadata-only'), sourceProofs: before.sources,
+        reason: 'The independently registered authority policy prevents this audit writer from granting execution.',
+        evidenceRefs: [`source:${writerPath}`, `source:${policyPath}`] };
+      expect(assertPhaseWriterTreeCensus(root, [inspected]).ready).toBe(true);
+
+      // The writer bytes, its statement and all discovered call frontiers stay
+      // unchanged. Only the source used to justify its exemption has changed.
+      writeFileSync(join(root, policyPath), 'export const mayDispatch = true;');
+      const after = inventoryPhaseWriterTree(root);
+      expect(after.sites).toEqual(before.sites);
+      expect(verifyPhaseWriterTreeSnapshot(after).ready).toBe(true);
+      const report = reconcilePhaseWriterCensus(after, [inspected]);
+      expect(report.ready).toBe(false);
+      expect(report.problems).toEqual([{ id: site.id, reasons: [`stale-source-proof:${policyPath}`] }]);
+      expect(report.coverage.notChecked).toEqual([site.id]);
+      expect(report.coverage.residue).toEqual([site.id]);
+      expect(() => assertPhaseWriterTreeCensus(root, [inspected])).toThrow('stale-source-proof');
+      // Updating hashes is an explicit new source review, never an automatic
+      // consequence of rebuilding a fresh inventory.
+      const revised = { ...inspected, disposition: 'advancing' as const,
+        sourceProofs: after.sources, reason: 'Re-reviewed the changed execution policy; admission is required.' };
+      expect(assertPhaseWriterTreeCensus(root, [revised]).ready).toBe(true);
+      rmSync(join(root, policyPath));
+      expect(reconcilePhaseWriterCensus(inventoryPhaseWriterTree(root), [revised]).problems)
+        .toEqual([{ id: site.id, reasons: [`missing-source-proof:${policyPath}`] }]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('requires complete valid source proofs and preserves a changed dependency after the boundary and recovery', async () => {
+    for (const size of [63, 64, 65]) {
+      const sources = [source(write), ...Array.from({ length: size }, (_, i) =>
+        source(`export const policy = ${i};`, `packages/policy-${i}.ts`))];
+      const inventory = inventoryPhaseWriters(sources), site = inventory.sites[0]!;
+      const inspected = { ...review(site, 'historical/unreachable'), sourceProofs: inventory.sources };
+      const rows: string[] = [];
+      await writePhaseWriterCensus(inventory, [inspected], line => { rows.push(line); });
+      let recovered: PhaseWriterReview | undefined;
+      await readPhaseWriterCensus(rows, row => {
+        if (row.kind === 'review') recovered = row.value as PhaseWriterReview;
+      });
+      expect(recovered).toEqual(inspected);
+      const decisive = `packages/policy-${size - 1}.ts`;
+      const changed = inventoryPhaseWriters(sources.map(s => s.path === decisive
+        ? { ...s, content: 'export const policy = "new authority";' } : s).reverse());
+      for (const sourceProofs of [recovered!.sourceProofs, [...recovered!.sourceProofs].reverse()]) {
+        const report = reconcilePhaseWriterCensus(changed, [{ ...recovered!, sourceProofs }]);
+        expect(report.problems).toEqual([{ id: site.id, reasons: [`stale-source-proof:${decisive}`] }]);
+        expect(report.coverage).toEqual({ population: [site.id], checked: [], notChecked: [site.id],
+          notApplicable: [], residue: [site.id] });
+      }
+      expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected, sourceProofs: [] }]))
+        .toThrow('review-source-proofs-missing');
+      const legacy = { ...inspected };
+      Reflect.deleteProperty(legacy, 'sourceProofs');
+      expect(() => assertPhaseWriterCensus(inventory, [legacy])).toThrow('review-source-proofs-missing');
+      const own = inspected.sourceProofs.find(proof => proof.path === site.path)!;
+      expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected, sourceProofs: [own, own] }]))
+        .toThrow('duplicate-source-proof');
+      expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected,
+        sourceProofs: inspected.sourceProofs.filter(proof => proof.path !== site.path) }]))
+        .toThrow('writer-source-proof-missing');
+      expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected,
+        sourceProofs: [{ path: '../outside.ts', sha256: own.sha256 }] }]))
+        .toThrow('invalid-source-proof');
+      expect(() => assertPhaseWriterCensus(inventory, [{ ...inspected,
+        sourceProofs: [{ ...own, sha256: 'incomplete-digest' }] }]))
+        .toThrow('invalid-source-proof');
+    }
   });
 
   it('retains ORM and SQL builder mutations without relying on another writer name', () => {

@@ -69,6 +69,10 @@ export interface PhaseWriterReview {
   siteId: string;
   sourceSha256: string;
   statementSha256: string;
+  /** Pin every inspected source used to justify the classification, including
+   * indirect registration/policy/trigger dependencies. Rebuilding an inventory
+   * never re-approves an old proof against changed dependency bytes. */
+  sourceProofs: Array<{ path: string; sha256: string }>;
   disposition: PhaseWriterDisposition;
   reason: string;
   evidenceRefs: string[];
@@ -184,7 +188,13 @@ function sqlFacts(sql: string) {
       functions.push(node.code);
       unresolved.push('sql-function-body-requires-reachability-review');
     }
-    Object.values(node).forEach(visit);
+    for (const [key, child] of Object.entries(node)) {
+      // pgsql-ast-parser represents FOR UPDATE as select.for={type:'update'}.
+      // This is a row-lock mode, not an UPDATE statement with a missing table.
+      // Keep inspecting the SELECT's CTEs/subqueries and its whole source text.
+      if (node.type === 'select' && key === 'for') continue;
+      visit(child);
+    }
   };
   try { visit(parse(sql)); }
   catch { unresolved.push('sql-parse-unresolved'); }
@@ -556,6 +566,7 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
   reviews: readonly PhaseWriterReview[]) {
   const coverage: PhaseWriterCoverage = { population: [], checked: [], notChecked: [], notApplicable: [], residue: [] };
   const problems: Array<{ id: string; reasons: string[] }> = [];
+  const sourceHashes = new Map(inventory.sources.map(source => [source.path, source.sha256]));
   const byId = new Map<string, PhaseWriterReview[]>();
   for (const review of reviews) byId.set(review.siteId, [...(byId.get(review.siteId) ?? []), review]);
   for (const site of inventory.sites) {
@@ -566,6 +577,22 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
     if (!review) reasons.push(candidates.length ? 'duplicate-review' : 'unclassified-writer');
     else {
       if (review.sourceSha256 !== site.sourceSha256 || review.statementSha256 !== site.statementSha256) reasons.push('stale-review');
+      if (!Array.isArray(review.sourceProofs) || !review.sourceProofs.length) {
+        reasons.push('review-source-proofs-missing');
+      } else {
+        const seen = new Set<string>();
+        for (const proof of review.sourceProofs) {
+          if (!canonicalPath(proof.path) || !/^[a-f0-9]{64}$/.test(proof.sha256)) {
+            reasons.push(`invalid-source-proof:${proof.path}`); continue;
+          }
+          if (seen.has(proof.path)) reasons.push(`duplicate-source-proof:${proof.path}`);
+          seen.add(proof.path);
+          const current = sourceHashes.get(proof.path);
+          if (current === undefined) reasons.push(`missing-source-proof:${proof.path}`);
+          else if (current !== proof.sha256) reasons.push(`stale-source-proof:${proof.path}`);
+        }
+        if (!seen.has(site.path)) reasons.push(`writer-source-proof-missing:${site.path}`);
+      }
       if (!dispositions.has(review.disposition) || !review.reason.trim()
         || !review.evidenceRefs.length || review.evidenceRefs.some(ref => !ref.trim())) reasons.push('review-proof-missing');
       if (review.disposition === 'advancing' && (!review.revalidationSeam?.trim() || !review.raceTest?.trim())) reasons.push('advancing-seam-or-race-test-missing');
