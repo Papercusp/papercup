@@ -150,6 +150,20 @@ describe('serializeStoredMcpResult', () => {
 });
 
 describe('normalizeStructuredReplayResult', () => {
+  it('retains version identity across storage and refuses a different requested version', () => {
+    const canonical: StoredMcpResult = { content: [{ type: 'text', text: '{"ok":true,"results":[]}' }],
+      _meta: { batchResponseVersion: 'batch-v1', replayed: true } };
+    const stored = roundTrip(canonical) as StoredMcpResult;
+    expect(normalizeStructuredReplayResult(stored, false, 'batch-v1')).toBe(stored);
+    const mismatch = normalizeStructuredReplayResult(stored, true, 'operation-v0');
+    expect(mismatch.isError).toBe(true);
+    expect(mismatch._meta).toEqual({ replayed: true, replayResponseVersionMismatch: {
+      storedVersion: 'batch-v1', requestedBatchResponseVersion: 'operation-v0' } });
+    expect(mismatch.structuredContent).toBeUndefined();
+    const legacy: StoredMcpResult = { content: [{ type: 'text', text: '{"created":"WI-fixture"}' }] };
+    expect(normalizeStructuredReplayResult(legacy, false, 'operation-v0')).toBe(legacy);
+    expect(normalizeStructuredReplayResult(legacy, false, 'batch-v1').isError).toBe(true);
+  });
   it('rehydrates one unambiguous JSON object for a structured retry', () => {
     const original: StoredMcpResult = {
       content: [{ type: 'text', text: '{"ok":true,"claimReceipt":{"workItemId":"EI-1"}}' }],

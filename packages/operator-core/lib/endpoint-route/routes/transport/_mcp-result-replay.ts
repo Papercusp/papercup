@@ -172,7 +172,15 @@ function decodeStoredMcpResult(result: unknown, isError: boolean): StoredMcpResu
 export function normalizeStructuredReplayResult(
   result: StoredMcpResult,
   requestedStructured: boolean,
+  requestedBatchResponseVersion?: 'batch-v1' | 'operation-v0',
 ): StoredMcpResult {
+  const storedVersion = result._meta?.batchResponseVersion ?? 'operation-v0';
+  if (requestedBatchResponseVersion !== undefined && storedVersion !== requestedBatchResponseVersion) {
+    return { isError: true, content: [{ type: 'text', text:
+      'idempotency_response_version_mismatch: the retained result uses ' + String(storedVersion) +
+      '. Retry the same idempotency key with that response version; do not re-execute with a new key.' }],
+      _meta: { replayed: true, replayResponseVersionMismatch: { storedVersion, requestedBatchResponseVersion } } };
+  }
   if (!requestedStructured || result.structuredContent !== undefined) return result;
 
   let structuredUnavailableReason = 'stored-result-not-rehydratable';

@@ -17,6 +17,8 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import type { PhaseTracker } from '@papercusp/tooldef';
+import { capturePgDiagnosticContext, recordPgResult, resetAcquireRegistryForTest } from '@papercusp/db-org/acquire-registry';
+import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 
 const receipts = vi.hoisted(() => ({ rows: new Map<string, unknown>() }));
 const poolSample = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
@@ -235,6 +237,50 @@ describe('respawn-report receipts — preserve the completed readiness verdict',
 });
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
+  it('correlates query queue/build timings with this request without retaining SQL or another request', async () => {
+    vi.useFakeTimers();
+    resetAcquireRegistryForTest();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '8b9adbf7-5788-4c5d-80d1-467e932cfba0';
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    reanchorMock.mockImplementationOnce(async () => {
+      const record = (queryId: number, preBuildMs: number) => recordPgResult('org-admin', {
+        connectionId: 1, queryId, backendPid: 42, query: "SELECT 'private-native-value'",
+        command: 'SELECT', rowCount: 1, wireBytes: 20, elapsedMs: 5, preBuildMs, status: 'ok',
+        context: capturePgDiagnosticContext(),
+      });
+      record(11, 900);
+      withNamedQueryDiagnosticContext('unrelated-request', () => record(22, 7),
+        'f6830036-a772-4a12-9166-9d7df7d570fe');
+      entered();
+      await new Promise<void>(resolve => { release = resolve; });
+      return { reanchored: true, owner: 'su-private-owner' };
+    });
+    const response = postRespawned({ advSessionId: 42, sessionId: FRESH_ID }, { traceId });
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(1_000);
+      const pending = JSON.parse(String(info.mock.calls[0][0]).replace('[mcp-request-trace] ', ''));
+      expect(pending.httpHandlerDatabase).toEqual({ status: 'observed',
+        coverage: 'retained-completed-results-only', omittedRetained: 0,
+        queries: [{ pool: 'org-admin', queryId: 11, preBuildMs: 900, elapsedMs: 5, status: 'ok' }] });
+      release();
+      expect((await response).status).toBe(200);
+      const settled = JSON.parse(String(info.mock.calls[1][0]).replace('[mcp-request-trace] ', ''));
+      expect(settled.httpHandlerDatabase).toEqual(pending.httpHandlerDatabase);
+      expect(JSON.stringify(info.mock.calls)).not.toContain('private-native-value');
+      expect(JSON.stringify(info.mock.calls)).not.toContain('su-private-owner');
+    } finally {
+      release?.();
+      await response;
+      info.mockRestore();
+      resetAcquireRegistryForTest();
+      vi.useRealTimers();
+    }
+  });
+
   it('propagates resolver timing to the pending and settled HTTP trace', async () => {
     vi.useFakeTimers();
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});

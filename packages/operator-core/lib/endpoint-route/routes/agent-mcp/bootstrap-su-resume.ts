@@ -2,6 +2,7 @@
 import { isAbsolute } from 'node:path';
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { pgDiagnosticIdentity, pgResultDiagnosticSnapshot } from '@papercusp/db-org/acquire-registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { bindLiveAgentSessionTasksToNativeSession } from '../../../task-manager/store';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -21,6 +22,25 @@ import {
 } from '../../../adv-sessions';
 import { CORS_HEADERS, gatePrincipal, jsonRes } from './bootstrap-su-shared';
 import { committedRouteResponse } from '../../route-stack';
+import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
+
+/** Reuse the bounded query registry, joining by request AND process rather than
+ * timestamps or row counts. In-flight and evicted queries remain unmeasured. */
+function respawnDatabaseTimings(traceId: string): import('../../../mcp-request-trace').McpHttpDatabaseTimings {
+  const processInstanceId = pgDiagnosticIdentity().processInstanceId;
+  const queries: NonNullable<import('../../../mcp-request-trace').McpHttpDatabaseTimings['queries']> = [];
+  let omittedRetained = 0;
+  for (const pool of ['org-admin', 'org-app']) {
+    const matching = pgResultDiagnosticSnapshot(pool, 32).results.filter(record =>
+      record.source.processInstanceId === processInstanceId && record.correlation?.requestId === traceId);
+    omittedRetained += Math.max(0, matching.length - 8);
+    queries.push(...matching.slice(-8).map(record => ({
+      pool, queryId: record.queryId, preBuildMs: record.preBuildMs,
+      elapsedMs: record.elapsedMs, status: record.status,
+    })));
+  }
+  return { status: 'observed', coverage: 'retained-completed-results-only', omittedRetained, queries };
+}
 
 type RespawnReportReceipt = {
   advSessionId: number | null;
@@ -437,7 +457,8 @@ const sessionRespawned = defineTool({
     } } });
     // Observe before the launcher's 2s deadline; keep tracing after a disconnect.
     // Timing evidence neither acknowledges a binding nor shortens authority checks.
-    return withMcpHttpHandlerPhaseTrace(traceId, 'session_respawn', async () => {
+    return withNamedQueryDiagnosticContext('session-respawn', () =>
+      withMcpHttpHandlerPhaseTrace(traceId, 'session_respawn', async () => {
       const denied = await phases.track('principal', () => gatePrincipal(req.headers, phases));
       if (denied) return denied;
       return withRespawnReportReceipt(req, async () => {
@@ -667,7 +688,7 @@ const sessionRespawned = defineTool({
       await samplePgBouncerPools('session-respawn-pending', {
         requestFingerprint: createHash('sha256').update(traceId, 'utf8').digest('hex').slice(0, 16),
       });
-    });
+    }, () => respawnDatabaseTimings(traceId)), traceId);
   },
 });
 
