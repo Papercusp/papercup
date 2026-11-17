@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSyn
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import ts from 'typescript';
 import { captureTestingCoreInputUniverse, collectStaleTestingCoreSnapshots, createTestingCoreResolverNamespace, prepareTestingCore, prepareTestingCoreFromSnapshot, retainTestingCoreResolverMetadata, verifyTestingCoreReceipt } from '../../../scripts/lib/testing-core-witness.mjs';
 import { createCompilerInputCustody } from '../../../scripts/lib/compiler-input-custody.mjs';
 import { localEsbuildNpxPath } from './test-fixtures/local-esbuild-npx';
@@ -53,6 +54,31 @@ function fixture() {
 }
 
 describe('testing core producing-build witness', () => {
+  it('keeps the legacy reporter in the serving checkout after core relocation', async () => {
+    const f = fixture();
+    const source = ts.createSourceFile('run.ts', readFileSync(join(repoRoot,
+      'packages/operator-core/lib/agent-tools/testing/run.ts'), 'utf8'), ts.ScriptTarget.Latest, true);
+    const selector = source.statements.find(statement => ts.isFunctionDeclaration(statement)
+      && statement.name?.text === 'resolveVitestJsonReporterPath');
+    expect(selector).toBeDefined();
+    f.put('selector.ts', `import {createRequire} from 'node:module';
+      import {readFileSync} from 'node:fs'; import {join} from 'node:path';
+      import {fileURLToPath} from 'node:url'; const REPO_ROOT = ${JSON.stringify(f.root)};
+      ${selector!.getText(source)}`);
+    f.put('node_modules/vitest/package.json', JSON.stringify({ name: 'vitest', version: '2.1.9' }));
+    const reporter = 'packages/operator-core/lib/agent-tools/testing/legacy-vitest-json-reporter.ts';
+    f.put(reporter, 'export default class Reporter {}');
+    f.put(entry, `import {resolveVitestJsonReporterPath} from '../../../../../selector';
+      export const testingCoreSourceSha256 = __PAPERCUSP_TESTING_CORE_SOURCE_SHA256__;
+      export function runTestFilesCore(root: string) { return resolveVitestJsonReporterPath(root); }`);
+    await prepareTestingCore(f);
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'const core=await import(process.argv[1]);console.log(JSON.stringify(core.runTestFilesCore(process.argv[2])));',
+      f.outfile, f.root], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toBe(join(f.root, reporter));
+  });
+
   it('reports a killed final qualifier without publishing an artifact', async () => {
     const f = fixture();
     f.put('apps/operator/bin/ascii-escape-bundle.mjs', 'process.kill(process.pid, "SIGKILL");');
