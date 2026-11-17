@@ -34,6 +34,7 @@ import { listFleetRosterDiagnosed, liveFleetMemberIds } from '../../fleet/fleet-
 import { readFleetLaneHealthDiagnosed } from '../../fleet/lane-health';
 import { isWorkspaceWideLoopStanddownActive } from './release-pause-ttl';
 import { getLoopStatuses } from './loop';
+import { runSweepStepWithOverrunBudget } from '../../dbos/routines-sweep-step-overrun';
 import {
   composeModelSpec,
   composeMemberLaunchContext,
@@ -1163,6 +1164,8 @@ async function readFleetHeadcountLeaderAdmission(args: {
   fleetSlug: string;
   workspaceId: string;
   leaderOwnerId: string | null;
+  workflowId: string | null;
+  phase: 'repair-admission' | 'final-admission';
 }): Promise<FleetHeadcountLeaderAdmission> {
   if (args.leaderOwnerId == null) {
     return {
@@ -1176,11 +1179,15 @@ async function readFleetHeadcountLeaderAdmission(args: {
 
   let roster;
   try {
-    roster = await listFleetRosterDiagnosed({
-      fleetSlug: args.fleetSlug,
-      workspaceId: args.workspaceId,
-      leaderOwnerId: args.leaderOwnerId,
-    });
+    roster = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${args.fleetSlug}:${args.phase}:leader-roster-read`,
+      () => listFleetRosterDiagnosed({
+        fleetSlug: args.fleetSlug,
+        workspaceId: args.workspaceId,
+        leaderOwnerId: args.leaderOwnerId,
+      }),
+      { workflowId: args.workflowId },
+    );
   } catch (error) {
     return {
       live: false,
@@ -1225,9 +1232,16 @@ async function readFleetHeadcountRepairAdmission(args: {
   fleetSlug: string;
   workspaceId: string;
   leaderOwnerId: string | null;
+  workflowId: string | null;
   harness?: string;
 }): Promise<FleetHeadcountRepairAdmission> {
-  const leader = await readFleetHeadcountLeaderAdmission(args);
+  const leader = await readFleetHeadcountLeaderAdmission({
+    fleetSlug: args.fleetSlug,
+    workspaceId: args.workspaceId,
+    leaderOwnerId: args.leaderOwnerId,
+    workflowId: args.workflowId,
+    phase: 'repair-admission',
+  });
   if (!leader.live) {
     return {
       allowed: false,
@@ -1238,11 +1252,15 @@ async function readFleetHeadcountRepairAdmission(args: {
 
   let lane;
   try {
-    lane = await readFleetLaneHealthDiagnosed({
-      fleet: args.fleetSlug,
-      harness: args.harness,
-      workspaceId: args.workspaceId,
-    });
+    lane = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${args.fleetSlug}:repair-admission:lane-health-read`,
+      () => readFleetLaneHealthDiagnosed({
+        fleet: args.fleetSlug,
+        harness: args.harness,
+        workspaceId: args.workspaceId,
+      }),
+      { workflowId: args.workflowId },
+    );
   } catch (error) {
     return {
       allowed: false,
@@ -1289,7 +1307,11 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
   // `headcount_next_attempt_at` by a lease, so claiming first would burn a
   // backoff window on a top-up that is about to be refused anyway and delay the
   // legitimate refill once the stand-down lifts.
-  if (await isWorkspaceWideLoopStanddownActive(getOrgPg().sql, { workspaceId })) {
+  if (await runSweepStepWithOverrunBudget(
+    `fleet-headcount:${fleetSlug}:standdown-before-claim`,
+    () => isWorkspaceWideLoopStanddownActive(getOrgPg().sql, { workspaceId }),
+    { workflowId: ctx.workflowId },
+  )) {
     console.warn(
       `[${FLEET_HEADCOUNT_EVENT_PREFIX}] top-up blocked for ${fleetSlug}: a workspace-wide `
       + 'loop:standdown-all is in force; members would repopulate behind the stand-down',
@@ -1298,11 +1320,27 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
   }
   // Exact continuation takes precedence over manufacturing another identity.
   // Both this actor and the interruption routine enter the same durable claim.
-  const { sweepSessionInterruptions } = await import('./session-interruption-runtime');
-  const recovery = await sweepSessionInterruptions(ctx, false, { fleetSlug });
-  const attempt = await claimFleetHeadcountAttempt({ workspaceId, fleetSlug });
+  const { sweepSessionInterruptions } = await runSweepStepWithOverrunBudget(
+    `fleet-headcount:${fleetSlug}:interruption-runtime-import`,
+    () => import('./session-interruption-runtime'),
+    { workflowId: ctx.workflowId },
+  );
+  const recovery = await runSweepStepWithOverrunBudget(
+    `fleet-headcount:${fleetSlug}:interruption-sweep-before-claim`,
+    () => sweepSessionInterruptions(ctx, false, { fleetSlug }),
+    { workflowId: ctx.workflowId },
+  );
+  const attempt = await runSweepStepWithOverrunBudget(
+    `fleet-headcount:${fleetSlug}:attempt-claim`,
+    () => claimFleetHeadcountAttempt({ workspaceId, fleetSlug }),
+    { workflowId: ctx.workflowId },
+  );
   if (!attempt) return;
-  const fleet = await getFleet(workspaceId, fleetSlug);
+  const fleet = await runSweepStepWithOverrunBudget(
+    `fleet-headcount:${fleetSlug}:fleet-read`,
+    () => getFleet(workspaceId, fleetSlug),
+    { workflowId: ctx.workflowId },
+  );
   if (!fleet) return;
   let transaction = fleet.lastLaunchTransaction;
   let persistedLaunchRevision = transaction
@@ -1378,13 +1416,21 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       config.productiveCapacityFloor,
     );
     const now = Date.now();
-    liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
+    liveMemberIds = (await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:initial-live-member-roster`,
+      () => liveFleetMemberIds(fleetSlug, workspaceId, 'launch'),
+      { workflowId: ctx.workflowId },
+    ))
       .filter((id) => id !== fleet.leaderOwnerId);
     // P-007 / R-17: a member silent past FLEET_MEMBER_SILENCE_THRESHOLD_MS (heartbeats
     // only) does not count, so its seat is refilled. The governor only reaches this
     // point for a fleet that is not winding down, hence fleetPaused:false.
     executingMemberIds = countedMemberSet(
-      await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
+      await runSweepStepWithOverrunBudget(
+        `fleet-headcount:${fleetSlug}:initial-member-execution-census`,
+        () => readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
+        { workflowId: ctx.workflowId },
+      ),
     );
     const pendingOriginals = recovery.protectedOwnerIds.filter(id => !executingMemberIds?.has(id));
     if (pendingOriginals.length > 0) {
@@ -1409,7 +1455,11 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       if (owners.length === 0) return false;
       let reason: string;
       try {
-        const loops = await getLoopStatuses(owners);
+        const loops = await runSweepStepWithOverrunBudget(
+          `fleet-headcount:${fleetSlug}:deliberate-loop-stop-read`,
+          () => getLoopStatuses(owners),
+          { workflowId: ctx.workflowId },
+        );
         const stopped = owners.filter(owner => {
           const loop = loops.get(owner);
           return loop?.active === false && loop.explicitlyEnded === true;
@@ -1501,6 +1551,7 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
         fleetSlug,
         workspaceId,
         leaderOwnerId: fleet.leaderOwnerId,
+        workflowId: ctx.workflowId,
         harness: config.harness,
       });
       if (!admission.allowed) {
@@ -1561,21 +1612,29 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     // Resolve the actual future launch profile before measuring capacity. Goal
     // profiles can override the fleet recipe's account route, and the pool
     // exhaustion gate below only applies when those members use the gateway.
-    const goalRole = await resolveFleetHeadcountLaunchRoleForFleet(
-      workspaceId,
-      fleetSlug,
-      launcherOwnerId,
+    const goalRole = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:launch-role-read`,
+      () => resolveFleetHeadcountLaunchRoleForFleet(
+        workspaceId,
+        fleetSlug,
+        launcherOwnerId,
+      ),
+      { workflowId: ctx.workflowId },
     );
-    const requestedGoalLaunch = await resolveGoalLaunch({
-      workspaceId,
-      launcherOwnerId,
-      // D-016 (WI-38048): `config.role` is psu `--role`, a persona — NOT a launch
-      // slot, so it must not key the goal's profiles. The slot above is derived
-      // from durable goal context instead.
-      goalRole,
-      fleetSlug,
-      count: requestedWaveCount,
-    });
+    const requestedGoalLaunch = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:requested-goal-launch-read`,
+      () => resolveGoalLaunch({
+        workspaceId,
+        launcherOwnerId,
+        // D-016 (WI-38048): `config.role` is psu `--role`, a persona — NOT a launch
+        // slot, so it must not key the goal's profiles. The slot above is derived
+        // from durable goal context instead.
+        goalRole,
+        fleetSlug,
+        count: requestedWaveCount,
+      }),
+      { workflowId: ctx.workflowId },
+    );
     const requestedLaunchProfile = resolveGovernorMemberLaunchProfile(requestedGoalLaunch.effective, config);
     const gatewayRouted = requestedLaunchProfile.account !== 'default' && requestedLaunchProfile.account !== 'system';
 
@@ -1583,13 +1642,17 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     // A respawn with no provider headroom must leave the existing member alive;
     // a bulk refill is reduced to the measured allowance rather than consuming
     // a slot and then discovering that the provider is exhausted.
-    const capacityDecision = await measureFleetRefillCapacity({
-      workspaceId,
-      fleetSlug,
-      harness: config.harness,
-      requested: requestedWaveCount,
-      gatewayRouted,
-    });
+    const capacityDecision = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:refill-capacity-read`,
+      () => measureFleetRefillCapacity({
+        workspaceId,
+        fleetSlug,
+        harness: config.harness,
+        requested: requestedWaveCount,
+        gatewayRouted,
+      }),
+      { workflowId: ctx.workflowId },
+    );
     const residualShortfall = Math.max(0, requestedWaveCount - capacityDecision.allowance);
     const capacitySnapshot: FleetLaunchCapacitySnapshot = {
       measuredAt: Date.now(),
@@ -1672,13 +1735,17 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     // count-sensitive goal profile still matches the members actually opened.
     const goalLaunch = waveCount === requestedWaveCount
       ? requestedGoalLaunch
-      : await resolveGoalLaunch({
+      : await runSweepStepWithOverrunBudget(
+          `fleet-headcount:${fleetSlug}:adjusted-goal-launch-read`,
+          () => resolveGoalLaunch({
           workspaceId,
           launcherOwnerId,
           goalRole,
           fleetSlug,
           count: waveCount,
-        });
+          }),
+          { workflowId: ctx.workflowId },
+        );
     if (goalLaunch.refusal) {
       // Recorded as a failed attempt rather than thrown: the governor must keep
       // running (the fleet may shrink back under the ceiling on its own), and the
@@ -1740,7 +1807,11 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     } = resolveGovernorMemberLaunchProfile(goalLaunch.effective, config);
     const modelSpec = composeModelSpec(effectiveModel, effectiveEffort) ?? null;
     const newMemberIds = Array.from({ length: waveCount }, () => `su-${randomUUID()}`);
-    const memberLaunchMode = await readGovernorMemberLaunchMode(workspaceId, launcherOwnerId, config);
+    const memberLaunchMode = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:member-launch-mode-read`,
+      () => readGovernorMemberLaunchMode(workspaceId, launcherOwnerId, config),
+      { workflowId: ctx.workflowId },
+    );
     const commands = newMemberIds.map((ownerId) => injectLaunchedByArg(memberLaunchCommand({
       fleetSlug,
       agent: effectiveAgent,
@@ -1781,12 +1852,16 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       fleetRole: 'member',
     }));
 
-    const slot = await claimFleetLaunchSlot({
-      workspaceId,
-      fleetSlug,
-      count: waveCount,
-      windowMs: FLEET_HEADCOUNT_LAUNCH_WINDOW_MS,
-    });
+    const slot = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:launch-slot-claim`,
+      () => claimFleetLaunchSlot({
+        workspaceId,
+        fleetSlug,
+        count: waveCount,
+        windowMs: FLEET_HEADCOUNT_LAUNCH_WINDOW_MS,
+      }),
+      { workflowId: ctx.workflowId },
+    );
     if (!slot.won) {
       transaction = transactionForGovernorVerdict({
         transaction,
@@ -1818,7 +1893,11 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     // The earlier admission read precedes provider, goal, and slot preflight.
     // Recheck the governing mission at the side-effect boundary so a plan archived
     // or leader reaped during that work cannot open a stale replacement.
-    const finalPlanStatus = await terminalPlanStatusForFleet(workspaceId, config);
+    const finalPlanStatus = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${fleetSlug}:prelaunch-plan-status-read`,
+      () => terminalPlanStatusForFleet(workspaceId, config),
+      { workflowId: ctx.workflowId },
+    );
     if (finalPlanStatus) {
       await recordAdmissionRefusal(
         `plan ${config.plan ?? '(unknown)'} is ${finalPlanStatus}; stale mission has no authorized assignment`,
@@ -1831,6 +1910,8 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       fleetSlug,
       workspaceId,
       leaderOwnerId: launcherOwnerId,
+      workflowId: ctx.workflowId,
+      phase: 'final-admission',
     });
     if (!finalLeader.live) {
       await recordAdmissionRefusal(finalLeader.reason, finalLeader.terminal, launcherOwnerId);
@@ -1847,7 +1928,11 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       // independent execution/wait signal after the asynchronous launch preflight
       // so a worker that resumed meanwhile is not killed by an old prune decision.
       const currentExecuting = countedMemberSet(
-        await readFleetMemberSilence([pruneOwnerId], { fleetPaused: false }),
+        await runSweepStepWithOverrunBudget(
+          `fleet-headcount:${fleetSlug}:pre-prune-member-execution-census`,
+          () => readFleetMemberSilence([pruneOwnerId], { fleetPaused: false }),
+          { workflowId: ctx.workflowId },
+        ),
       );
       if (currentExecuting == null || currentExecuting.has(pruneOwnerId)) {
         await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
@@ -2045,12 +2130,20 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
 
     let rosterError: string | null = null;
     try {
-      liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
+      liveMemberIds = (await runSweepStepWithOverrunBudget(
+        `fleet-headcount:${fleetSlug}:post-launch-live-member-roster`,
+        () => liveFleetMemberIds(fleetSlug, workspaceId, 'launch'),
+        { workflowId: ctx.workflowId },
+      ))
         .filter((id) => id !== launcherOwnerId);
       // Re-attest over the post-launch roster: the members just opened are the
       // ones whose execution the next deficit must account for.
       executingMemberIds = countedMemberSet(
-        await readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
+        await runSweepStepWithOverrunBudget(
+          `fleet-headcount:${fleetSlug}:post-launch-member-execution-census`,
+          () => readFleetMemberSilence(liveMemberIds, { fleetPaused: false }),
+          { workflowId: ctx.workflowId },
+        ),
       );
     } catch (error) {
       rosterError = `post-launch live roster read failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -2276,7 +2369,12 @@ export async function lapseExpiredTopUpRules(
 }
 
 export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<void> {
-  if (!(await getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false))) return;
+  const enabled = await runSweepStepWithOverrunBudget(
+    'fleet-headcount-governor:feature-flag-read',
+    () => getFlag(FLEET_HEADCOUNT_FLAG, 'system').catch(() => false),
+    { workflowId: ctx.workflowId },
+  );
+  if (!enabled) return;
   // EI-23259368987233359, half 1 of 2 — a workspace-wide `loop:standdown-all`
   // freezes the CONTROLLER, not just the members' loops. Without this, a
   // stand-down verified at zero live sessions silently repopulated a fleet
@@ -2290,7 +2388,11 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
   // would permanently erase the restoration target of every fleet it touched.
   // Stand-down is reversible by design; wind-down is terminal. Guard, do not
   // wind down.
-  if (await isWorkspaceWideLoopStanddownActive(getOrgPg().sql, { workspaceId: ctx.workspaceId })) {
+  if (await runSweepStepWithOverrunBudget(
+    'fleet-headcount-governor:workspace-standdown-read',
+    () => isWorkspaceWideLoopStanddownActive(getOrgPg().sql, { workspaceId: ctx.workspaceId }),
+    { workflowId: ctx.workflowId },
+  )) {
     console.warn(
       `[${FLEET_HEADCOUNT_EVENT_PREFIX}] governor wave skipped: a workspace-wide `
       + 'loop:standdown-all is in force (auto-resumes on its TTL, which lifts this hold too)',
@@ -2300,7 +2402,11 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
   // P-005 / D-030: end expired no-top-up rules BEFORE listing granting targets, so
   // a fleet whose rule lapsed is held again on this same tick. Never fatal: a
   // failed lapse leaves the rule expired-and-alarming on every read surface.
-  await lapseExpiredTopUpRules(ctx.workspaceId).catch((e) => {
+  await runSweepStepWithOverrunBudget(
+    'fleet-headcount-governor:expired-top-up-rule-lapse',
+    () => lapseExpiredTopUpRules(ctx.workspaceId),
+    { workflowId: ctx.workflowId },
+  ).catch((e) => {
     console.warn(
       `[${FLEET_HEADCOUNT_EVENT_PREFIX}] top-up rule lapse sweep failed: ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -2310,7 +2416,11 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
   // per-tick budget nor receive any action (top-up OR the terminal-plan
   // disarm) — an ungranted armed row is inert by construction, because this
   // sweep is topUpOneFleet's only caller.
-  const targets = grantingHeadcountTargets(await listFleetHeadcountTargets(ctx.workspaceId));
+  const targets = grantingHeadcountTargets(await runSweepStepWithOverrunBudget(
+    'fleet-headcount-governor:target-list',
+    () => listFleetHeadcountTargets(ctx.workspaceId),
+    { workflowId: ctx.workflowId },
+  ));
   // Bounded one-wave-per-tick: the durable per-fleet lease prevents duplicate
   // opens, while this cap prevents a large fleet registry from creating a burst.
   for (const target of targets.slice(0, 4)) {
@@ -2320,7 +2430,11 @@ export async function runFleetHeadcountGovernor(ctx: SystemActionCtx): Promise<v
     // self-heals the fleets already stuck in this state. The launch RECIPE is preserved
     // (setFleetHeadcountTarget(null) keeps headcount_config), so an explicit re-arm still
     // has the boot-baked model/account/headless/carry contract.
-    const terminalStatus = await terminalPlanStatusForFleet(ctx.workspaceId, target.config);
+    const terminalStatus = await runSweepStepWithOverrunBudget(
+      `fleet-headcount:${target.fleetSlug}:top-level-plan-status-read`,
+      () => terminalPlanStatusForFleet(ctx.workspaceId, target.config),
+      { workflowId: ctx.workflowId },
+    );
     if (terminalStatus) {
       await disarmStaleMissionTarget({
         workspaceId: ctx.workspaceId,

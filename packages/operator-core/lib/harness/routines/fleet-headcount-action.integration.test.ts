@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FleetLaunchTransaction } from '../../agent-fleets-store';
+import { ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from '../../dbos/routines-sweep-step-overrun';
 
 const mocks = vi.hoisted(() => ({
   getFlag: vi.fn(),
@@ -575,6 +576,158 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
     expect(mocks.kill).not.toHaveBeenCalled();
     expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('fleet headcount diagnostic overrun phases', () => {
+  it('reports a pending top-level target read and preserves success when diagnostic logging throws', async () => {
+    vi.useFakeTimers();
+    let resolveTargets: ((targets: ReturnType<typeof grantedTarget>[]) => void) | undefined;
+    mocks.listTargets.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveTargets = resolve;
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation((message) => {
+      if (String(message).startsWith('[routines-sweep-step]')) {
+        throw new Error('diagnostic logger failure');
+      }
+    });
+    const action = runFleetHeadcountGovernor({
+      installSlug: 'papercusp',
+      workspaceId: 'ws',
+      workflowId: 'wf-target-list',
+      triggerConfig: {},
+      payloadTemplate: null,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] exceeded diagnostic budget; step is still running',
+        expect.objectContaining({
+          stepName: 'fleet-headcount-governor:target-list',
+          workflowId: 'wf-target-list',
+          phase: 'still-running',
+        }),
+      );
+      resolveTargets?.([]);
+      await expect(action).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] step completed over diagnostic budget',
+        expect.objectContaining({
+          stepName: 'fleet-headcount-governor:target-list',
+          workflowId: 'wf-target-list',
+          phase: 'completed',
+          outcome: 'succeeded',
+        }),
+      );
+      expect(mocks.claimAttempt).not.toHaveBeenCalled();
+      expect(mocks.listTargets).toHaveBeenCalledTimes(1);
+    } finally {
+      resolveTargets?.([]);
+      await action.catch(() => {});
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a pending pre-claim interruption sweep ahead of the attempt claim', async () => {
+    vi.useFakeTimers();
+    let resolveRecovery: ((result: { protectedOwnerIds: string[] }) => void) | undefined;
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.recoverInterruptions.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRecovery = resolve;
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const action = runFleetHeadcountGovernor({
+      installSlug: 'papercusp',
+      workspaceId: 'ws',
+      workflowId: 'wf-interruption-sweep',
+      triggerConfig: {},
+      payloadTemplate: null,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] exceeded diagnostic budget; step is still running',
+        expect.objectContaining({
+          stepName: 'fleet-headcount:fleet-a:interruption-sweep-before-claim',
+          workflowId: 'wf-interruption-sweep',
+          phase: 'still-running',
+        }),
+      );
+      expect(mocks.claimAttempt).not.toHaveBeenCalled();
+      resolveRecovery?.({ protectedOwnerIds: ['original-member'] });
+      await expect(action).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] step completed over diagnostic budget',
+        expect.objectContaining({
+          stepName: 'fleet-headcount:fleet-a:interruption-sweep-before-claim',
+          workflowId: 'wf-interruption-sweep',
+          phase: 'completed',
+          outcome: 'succeeded',
+        }),
+      );
+      expect(mocks.recoverInterruptions).toHaveBeenCalledTimes(1);
+      expect(mocks.claimAttempt).toHaveBeenCalledTimes(1);
+      expect(mocks.claimSlot).not.toHaveBeenCalled();
+      expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+      expect(mocks.recordAttempt).toHaveBeenCalledWith(expect.objectContaining({
+        error: expect.stringContaining('original-member'),
+      }));
+    } finally {
+      resolveRecovery?.({ protectedOwnerIds: [] });
+      await action.catch(() => {});
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves the target-read rejection and records its terminal diagnostic outcome', async () => {
+    vi.useFakeTimers();
+    let rejectTargets: ((error: Error) => void) | undefined;
+    mocks.listTargets.mockImplementationOnce(() => new Promise((_, reject) => {
+      rejectTargets = reject;
+    }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failure = new Error('target read failed');
+    const action = runFleetHeadcountGovernor({
+      installSlug: 'papercusp',
+      workspaceId: 'ws',
+      workflowId: 'wf-target-list-failure',
+      triggerConfig: {},
+      payloadTemplate: null,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] exceeded diagnostic budget; step is still running',
+        expect.objectContaining({
+          stepName: 'fleet-headcount-governor:target-list',
+          workflowId: 'wf-target-list-failure',
+          phase: 'still-running',
+        }),
+      );
+      rejectTargets?.(failure);
+      await expect(action).rejects.toBe(failure);
+      expect(mocks.listTargets).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[routines-sweep-step] step completed over diagnostic budget',
+        expect.objectContaining({
+          stepName: 'fleet-headcount-governor:target-list',
+          workflowId: 'wf-target-list-failure',
+          phase: 'completed',
+          outcome: 'failed',
+        }),
+      );
+    } finally {
+      rejectTargets?.(failure);
+      await action.catch(() => {});
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
 });
 
 describe('interrupted original members precede refill', () => {
