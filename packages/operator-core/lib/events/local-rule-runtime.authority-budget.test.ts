@@ -48,13 +48,19 @@ describe('local sync rules share the native authority lifetime', () => {
 
   it('does not open a transaction when registry resolution outlives its caller', async () => {
     const registry = deferred<string[]>();
-    h.resolvePot.mockReturnValue(registry.promise);
+    const registryStarted = deferred<void>();
+    h.resolvePot.mockImplementation(() => {
+      registryStarted.resolve();
+      return registry.promise;
+    });
     const controller = new AbortController();
     const reason = new Error('native call ended during registry read');
     const pending = readLocalSyncRules('owner', 'ws', 'harness', {
       signal: controller.signal, deadlineAtMs: 100,
     });
     const rejected = expect(pending).rejects.toBe(reason);
+    await registryStarted.promise;
+    expect(h.resolvePot).toHaveBeenCalledOnce();
     controller.abort(reason);
     registry.resolve(['pot']);
     await rejected;
