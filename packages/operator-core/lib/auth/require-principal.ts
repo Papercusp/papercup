@@ -34,6 +34,7 @@ import type { Principal, PrincipalKind, PrincipalTrust, PrincipalRequirements } 
 // Keep the pre-auth purpose check on the existing leaf; the agent-mcp barrel
 // also imports operator routes and must not become this resolver's runtime edge.
 import { hasLegacyBootstrapAuthorization } from '@papercusp/agent-mcp/auth';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import { principalFromCookie } from './principal/from-cookie';
 import { principalFromDeviceJwt } from './principal/from-device-jwt';
 import { principalFromSuperuserToken } from './principal/from-superuser-token';
@@ -79,10 +80,14 @@ export function refuseLegacyBootstrapPrincipal(headers: Headers): void {
 export async function requirePrincipal(
   headers: Headers,
   reqs: PrincipalRequirements = {},
+  phases?: PhaseTracker,
 ): Promise<Principal> {
   refuseLegacyBootstrapPrincipal(headers);
-  const cookiePrincipal = await principalFromCookie(headers);
-  const appKey = cookiePrincipal ? null : await resolveAppKeyPrincipal(headers);
+  // Fixed phase names only: credentials and resolved identities never enter timing metadata.
+  // Keep the chain sequential, including terminal app-key and revocation failures.
+  const cookiePrincipal = await trackPhase(phases, 'principal:cookie', () => principalFromCookie(headers));
+  const appKey = cookiePrincipal ? null
+    : await trackPhase(phases, 'principal:appKey', () => resolveAppKeyPrincipal(headers));
   if (appKey && !appKey.ok) {
     throw new PrincipalCheckError(401, `app key refused: ${appKey.reason}`, {
       headers: headerSnapshot(headers),
@@ -91,10 +96,10 @@ export async function requirePrincipal(
   const principal =
     cookiePrincipal ??
     appKey?.principal ??
-    (await principalFromDeviceJwt(headers)) ??
-    principalFromSuperuserToken(headers) ??
-    (await principalFromBearerToken(headers)) ??
-    principalFromLoopback(headers);
+    (await trackPhase(phases, 'principal:device', () => principalFromDeviceJwt(headers))) ??
+    (await trackPhase(phases, 'principal:superuser', () => principalFromSuperuserToken(headers))) ??
+    (await trackPhase(phases, 'principal:bearer', () => principalFromBearerToken(headers))) ??
+    (await trackPhase(phases, 'principal:loopback', () => principalFromLoopback(headers)));
 
   if (!principal) {
     throw new PrincipalCheckError(401, 'no principal resolved', { headers: headerSnapshot(headers) });

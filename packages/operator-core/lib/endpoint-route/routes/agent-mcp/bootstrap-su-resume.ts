@@ -431,14 +431,14 @@ const sessionRespawned = defineTool({
   path: '/agent-mcp/console/bootstrap-su/session-respawned',
   auth: 'loopback',
   async handler(req) {
-    const phases = createPhaseTracker({ historyCap: 32 });
+    const phases = createPhaseTracker();
     const traceId = resolveMcpRequestTraceId({ requestInfo: { headers: {
       [MCP_REQUEST_TRACE_HEADER]: req.headers.get(MCP_REQUEST_TRACE_HEADER) ?? undefined,
     } } });
     // Observe before the launcher's 2s deadline; keep tracing after a disconnect.
     // Timing evidence neither acknowledges a binding nor shortens authority checks.
     return withMcpHttpHandlerPhaseTrace(traceId, 'session_respawn', async () => {
-      const denied = await phases.track('principal', () => gatePrincipal(req.headers));
+      const denied = await phases.track('principal', () => gatePrincipal(req.headers, phases));
       if (denied) return denied;
       return withRespawnReportReceipt(req, async () => {
       let advSessionId: number | null = null;

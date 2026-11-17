@@ -98,12 +98,9 @@ vi.mock('../../workspace-registry', () => ({
     return 'default';
   },
 }));
-// This route imports only recordAdvSession. Spawn hydration is mocked below, so
-// importing and spreading the complete production adv-sessions module here
-// needlessly pulls its database/liveness graph into the beforeAll transform.
-vi.mock('../../adv-sessions', () => ({
-  // Pin the persisted discriminator without evaluating the lifecycle graph.
-  DISPLAY_TERMINAL_LAUNCH: 'terminal' satisfies typeof import('../../adv-sessions').DISPLAY_TERMINAL_LAUNCH,
+// Preserve transitive lifecycle exports while replacing the launch side effects.
+vi.mock('../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../adv-sessions')>()),
   recordAdvSession: recordAdvSessionMock,
   recordSuLaunchSpec: recordSuLaunchSpecMock,
   adoptStartingTerminalLaunch: adoptStartingTerminalLaunchMock,

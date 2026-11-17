@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { SessionActivation } from '@papercusp/orchestrator/blueprint';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 
 export type SessionIdentityActivationPhase = 'desired' | 'prepared' | 'applied' | 'failed';
 export type SessionIdentityActivationSource = 'launch' | 'control' | 'restart' | 'reanchor';
@@ -58,6 +59,7 @@ export async function recordCurrentSessionIdentityActivation(input: {
   /** Override for an event that is not itself a control transition (a re-anchor). */
   transitionId?: string;
   sql?: Sql;
+  phases?: PhaseTracker;
 }): Promise<SessionIdentityActivationRecordResult> {
   const sql = input.sql ?? getOrgPg().sql;
   const transitionId = input.transitionId
@@ -65,7 +67,7 @@ export async function recordCurrentSessionIdentityActivation(input: {
   const revisionJson = JSON.stringify(input.revision);
   const nativeSessionId = input.nativeSessionId ?? null;
   const recordedAt = input.recordedAt ?? null;
-  const rows = await sql<Array<{ id: number | string }>>`
+  const rows = await trackPhase(input.phases, 'nativeReanchor:identityWrite', () => sql<Array<{ id: number | string }>>`
     INSERT INTO harness_shared.session_identity_activation_events
       (workspace_id, owner_id, actor_id, principal_id, session_id,
        adv_session_id, native_session_id, transition_id, control_generation,
@@ -143,9 +145,9 @@ export async function recordCurrentSessionIdentityActivation(input: {
            END = ${revisionJson}::text::jsonb
     ON CONFLICT (workspace_id, owner_id, transition_id, phase) DO NOTHING
     RETURNING id
-  `;
+  `);
   if (rows.length > 0) return 'inserted';
-  const replay = await sql<Array<{ found: boolean }>>`
+  const replay = await trackPhase(input.phases, 'nativeReanchor:identityReplayRead', () => sql<Array<{ found: boolean }>>`
     SELECT true AS found
       FROM harness_shared.session_identity_activation_events
      WHERE workspace_id = ${input.workspaceId}
@@ -153,7 +155,7 @@ export async function recordCurrentSessionIdentityActivation(input: {
        AND transition_id = ${transitionId}
        AND phase = ${input.phase}
      LIMIT 1
-  `;
+  `);
   return replay.length > 0 ? 'replayed' : 'missing';
 }
 
@@ -174,9 +176,11 @@ export async function recordSessionIdentityReanchor(input: {
   ownerId: string;
   nativeSessionId: string;
   sql?: Sql;
+  /** Wall time includes pool waiting; these phases do not claim server execution time. */
+  phases?: PhaseTracker;
 }): Promise<SessionIdentityActivationRecordResult> {
   const sql = input.sql ?? getOrgPg().sql;
-  const [anchor] = await sql<Array<{
+  const [anchor] = await trackPhase(input.phases, 'nativeReanchor:identityAnchorRead', () => sql<Array<{
     generation: number | string;
     applied: string | null;
     last_id: number | string | null;
@@ -197,7 +201,7 @@ export async function recordSessionIdentityReanchor(input: {
       ) last ON true
      WHERE b.owner_id = ${input.ownerId}
        AND b.workspace_id = ${input.workspaceId}
-  `;
+  `);
   const applied = anchor?.applied ? JSON.parse(anchor.applied) as SessionActivation['desired'] | null : null;
   if (!anchor || !applied) return 'missing';
   if (anchor.last_native === input.nativeSessionId) return 'replayed';
@@ -213,5 +217,6 @@ export async function recordSessionIdentityReanchor(input: {
     transitionId: `${sessionIdentityTransitionId(input.ownerId, generation, applied)}:reanchor:`
       + `${input.nativeSessionId}:after:${anchor.last_id ?? 0}`,
     sql,
+    phases: input.phases,
   });
 }

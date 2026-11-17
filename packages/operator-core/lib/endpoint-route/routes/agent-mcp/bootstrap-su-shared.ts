@@ -1,5 +1,6 @@
 /** Shared launch/refresh helpers, kept independent of the bootstrap route graph. */
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
+import type { PhaseTracker } from '@papercusp/tooldef';
 
 // Exported for the sibling launcher-facing routes split out of this file (the
 // persona refresh) — one copy of the CORS/principal boilerplate, not two.
@@ -15,9 +16,9 @@ export function jsonRes(body: unknown, init?: number | ResponseInit): Response {
   return r;
 }
 
-export async function gatePrincipal(headers: Headers): Promise<Response | null> {
+export async function gatePrincipal(headers: Headers, phases?: PhaseTracker): Promise<Response | null> {
   try {
-    await requirePrincipal(headers);
+    await requirePrincipal(headers, {}, phases);
     return null;
   } catch (err) {
     if (err instanceof PrincipalCheckError) {

@@ -16,6 +16,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import type { PhaseTracker } from '@papercusp/tooldef';
 
 const receipts = vi.hoisted(() => ({ rows: new Map<string, unknown>() }));
 vi.mock('../transport/_mcp-result-replay', () => ({
@@ -66,7 +67,9 @@ const clearContextAnchorMock = vi.hoisted(() => vi.fn());
 const clearContextEstimateMock = vi.hoisted(() => vi.fn(async () => {}));
 const bindTasksMock = vi.hoisted(() => vi.fn(async (): Promise<string[]> => ['task-bound']));
 const managedReserve = vi.hoisted(() => vi.fn());
-const managedPrincipal = vi.hoisted(() => vi.fn(async () => ({ slug: 'system:superuser', authMethod: 'bearer-token' })));
+const managedPrincipal = vi.hoisted(() => vi.fn(async (
+  _headers?: Headers, _requirements?: unknown, _phases?: PhaseTracker,
+) => ({ slug: 'system:superuser', authMethod: 'bearer-token' })));
 vi.mock('../../../blind-review-continuation-custody', () => ({ reserveBlindReviewManagedSuccession: managedReserve }));
 const readiness = vi.hoisted(() => ({
   launch: vi.fn(async (): Promise<unknown> => null),
@@ -229,6 +232,46 @@ describe('respawn-report receipts — preserve the completed readiness verdict',
 });
 
 describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)', () => {
+  it('propagates resolver timing to the pending and settled HTTP trace', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '6ca1872b-2ca0-4342-a319-9c0b834857f2';
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    managedPrincipal.mockImplementationOnce(async (_headers, _requirements, phases) => {
+      expect(phases).toBeDefined();
+      return phases!.track('principal:bearer', async () => {
+        entered();
+        await new Promise<void>(resolve => { release = resolve; });
+        return { slug: 'system:superuser', authMethod: 'bearer-token' };
+      });
+    });
+    const response = postRespawned({ advSessionId: 42, sessionId: FRESH_ID }, { traceId });
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(1_000);
+      const pending = JSON.parse(String(info.mock.calls[0][0]).replace('[mcp-request-trace] ', ''));
+      expect(pending).toMatchObject({ traceId, stage: 'http_handler_phase_pending',
+        httpHandlerPhases: { pending: expect.arrayContaining([
+          { phase: 'principal', startMs: 0, elapsedMs: 1_000 },
+          { phase: 'principal:bearer', startMs: 0, elapsedMs: 1_000 },
+        ]) } });
+      release();
+      expect((await response).status).toBe(200);
+      const settled = JSON.parse(String(info.mock.calls[1][0]).replace('[mcp-request-trace] ', ''));
+      expect(settled).toMatchObject({ stage: 'http_handler_phase_settled', httpHandlerPhases: {
+        phases: expect.arrayContaining([expect.objectContaining({ phase: 'principal:bearer', durationMs: 1_000 })]),
+        pending: [], omittedCompletedCount: 0,
+      } });
+    } finally {
+      release?.();
+      await response;
+      info.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('identifies a pending native reanchor before the caller deadline and records settlement after disconnect', async () => {
     vi.useFakeTimers();
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});

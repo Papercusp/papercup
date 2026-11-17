@@ -1837,10 +1837,11 @@ async function recordReanchorSpan(
   workspaceId: string | null,
   owner: string | null,
   sessionId: string,
+  phases?: PhaseTracker,
 ): Promise<void> {
   if (!workspaceId || !owner) return;
   try {
-    await recordSessionIdentityReanchor({ workspaceId, ownerId: owner, nativeSessionId: sessionId });
+    await recordSessionIdentityReanchor({ workspaceId, ownerId: owner, nativeSessionId: sessionId, phases });
   } catch (e) {
     warnUnlessMissingTable(e, 'recordSessionIdentityReanchor');
   }
@@ -1958,7 +1959,7 @@ export async function reanchorAdvSessionNativeId(
     }));
     if (transactionWorkEnded !== undefined)
       opts.phases?.addCompleted('nativeReanchor:transactionCommit', transactionWorkEnded, Date.now() - transactionWorkEnded);
-    await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId));
+    await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId, opts.phases));
     return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
@@ -2070,7 +2071,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
     }));
     if (transactionWorkEnded !== undefined)
       opts.phases?.addCompleted('nativeReanchor:transactionCommit', transactionWorkEnded, Date.now() - transactionWorkEnded);
-    await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId));
+    await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId, opts.phases));
     return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
