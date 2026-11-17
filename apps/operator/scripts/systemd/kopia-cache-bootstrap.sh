@@ -265,18 +265,32 @@ kopia_proc_stat_field() {
 # could not establish identity. An unavailable validator is not a stale PID.
 kopia_exact_snapshot_pid() {
   local pid="$1" exe="" cmdline=""
+  local direct_rc=0 privileged_rc=0 started=0 direct_seconds=0 privileged_seconds=0
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   [ "$pid" -gt 1 ] 2>/dev/null || return 1
   cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
   [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]] || return 1
-  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
+  started=$SECONDS
+  exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null)" || direct_rc=$?
+  direct_seconds=$((SECONDS - started))
   if [ "$exe" != "$KOPIA_BIN" ]; then
-    if ! exe="$(/usr/bin/timeout --kill-after=1s "$(kopia_sudo_signal_timeout)s" \
-      "$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null)"; then
+    started=$SECONDS
+    exe="$(/usr/bin/timeout --kill-after=1s "$(kopia_sudo_signal_timeout)s" \
+      "$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null)" || privileged_rc=$?
+    privileged_seconds=$((SECONDS - started))
+    if [ "$privileged_rc" -ne 0 ]; then
       [ -d "$PROC_ROOT/$pid" ] || return 1
+      # Preserve the phase/status evidence without forwarding arbitrary sudo output.
+      # A timeout (124/137) and an immediate refusal must remain distinguishable.
+      printf 'WARN: Kopia identity validation unavailable: pid=%s privileged_status=%s unprivileged_status=%s unprivileged_seconds=%s privileged_seconds=%s\n' \
+        "$pid" "$privileged_rc" "$direct_rc" "$direct_seconds" "$privileged_seconds" >&2
       return 2
     fi
-    [ -n "$exe" ] || return 2
+    if [ -z "$exe" ]; then
+      printf 'WARN: Kopia identity validation unavailable: pid=%s privileged_status=0 empty_executable=1 unprivileged_status=%s unprivileged_seconds=%s privileged_seconds=%s\n' \
+        "$pid" "$direct_rc" "$direct_seconds" "$privileged_seconds" >&2
+      return 2
+    fi
   fi
   [ "$exe" = "$KOPIA_BIN" ]
 }
