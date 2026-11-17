@@ -2818,6 +2818,53 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain("agent's first turn");
   });
 
+  describe('ordinary fleet successor saved carry (EI-29051600339947740)', () => {
+    it.each([
+      ['warm', undefined, undefined, 'warm'],
+      ['cold', undefined, undefined, 'cold'],
+      ['warm', 'cold', undefined, 'cold'],
+      ['cold', 'warm', undefined, 'warm'],
+      ['cold', 'cold', 'warm', 'warm'],
+      ['warm', 'warm', 'cold', 'cold'],
+    ] as const)('uses saved=%s, explicit=%s, goal=%s as carry=%s', async (saved, explicit, goal, expected) => {
+      findLiveHostMock.mockReturnValue(null);
+      resolveResumeTargetMock.mockResolvedValue(dead);
+      latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+      getFleetMock.mockResolvedValue({ fleetSlug: 'target-fleet', leaderOwnerId: 'su-other-leader' });
+      getFleetHeadcountTargetMock.mockResolvedValue({
+        workspaceId: 'ws-test', fleetSlug: 'target-fleet', target: 12,
+        config: { harness: 'papercusp', agent: 'claude', model: 'sonnet',
+          account: 'default', headless: true, carry: saved },
+      });
+      if (goal) goalLaunchResolveMock.mockResolvedValue({
+        goalId: 'goal-1', settings: null, effective: { carry: goal },
+        refusal: null, budget: null, goalBrief: null,
+        ceilings: { maxAgents: 12, maxPerFleet: 12 },
+        headcount: { total: 1, fleet: null }, degraded: false, degradedReasons: [],
+      });
+
+      const result = await launchAgent.handler({
+        successor: { agentId: dead.ownerId },
+        ...(explicit ? { carry: explicit } : {}),
+        brief: 'continue the original member',
+      }, ctx);
+
+      expect(isError(result), textOf(result)).toBe(false);
+      expect(spawnHeadlessMock).toHaveBeenCalledOnce();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      const command = spawnedCommand(spawnHeadlessMock);
+      expect(command).toContain(`--carry=${expected}`);
+      expect(command).not.toContain(`--carry=${expected === 'warm' ? 'cold' : 'warm'}`);
+      expect(command).toContain('--owner-id=su-a1a71');
+      expect(command).toContain('--fleet=target-fleet');
+      expect(command).not.toContain('--resume=');
+      expect(dataOf(result)?.launch).toMatchObject({
+        mode: 'successor', resumedOwnerId: dead.ownerId,
+        headcountProfile: { applied: true, provenance: { source: 'fleet:headcount-target' } },
+      });
+    });
+  });
+
   describe('retained bridge leader successor (EI-28900390755237885)', () => {
     beforeEach(() => {
       findLiveHostMock.mockReturnValue(null);
