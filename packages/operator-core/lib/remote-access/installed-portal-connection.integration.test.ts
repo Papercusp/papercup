@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import SecretStream from '@hyperswarm/secret-stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
+import { getOrgPg } from '@papercusp/db-org';
 import { createOrgTestDb } from '../../test/_org-test-db';
+import { drainDetached } from '../detached-imports';
 import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 import { linkedWorkspaceIdentity } from '../endpoint-route/routes/hosted-cli/store';
@@ -23,6 +25,11 @@ import { PORTAL_RELAY_NOTICE_VERSION } from './relay-notice';
 describe('persisted installed Portal connection', () => {
   it('enforces consent, account/install/browser identity, restart and revocation through the production local runtime', async () => {
     const db = await createOrgTestDb();
+    // Registry writes also publish invalidations through the process-wide
+    // client. Keep that real side effect on this same throwaway database.
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', db.adminDsn);
+    vi.stubEnv('HARNESS_DATABASE_URL', db.appDsn);
+    vi.stubEnv('DATABASE_URL', db.adminDsn);
     const root = await mkdtemp(join(tmpdir(), 'installed-portal-integration-'));
     const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0 });
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
@@ -114,7 +121,7 @@ describe('persisted installed Portal connection', () => {
         appBaseUrl: `${portalOrigin}/apps/${identity.customerWorkspaceId}`, connectorUrl: url,
         connectorBearer: 'private-integration-connector', operatorPort: 3070 }, opts);
       const desktop = await registerDesktopSession({ workspaceId: localWorkspaceId, kind: 'xvfb-local',
-        scope: 'agent', scopeRef: 'integration-agent', name: 'PRIVATE_PERSISTED_DESKTOP',
+        scope: 'agent', scopeRef: 'integration-agent', name: 'private-persisted-desktop',
         display: ':192', displayGeometry: { width: 800, height: 600 } }, db.adminSql);
       await markDesktopReady(desktop.id, {}, db.adminSql);
       boot();
@@ -136,7 +143,7 @@ describe('persisted installed Portal connection', () => {
       const connection = await connect(linked.machinePublicKey);
       await connection.noise.send({ type: 'desktop.roster', requestId: 'before-restart' });
       await vi.waitFor(() => expect(connection.frames).toContainEqual(expect.objectContaining({ type: 'desktop.roster.result',
-        requestId: 'before-restart', desktops: [expect.objectContaining({ desktopSessionId: desktop.id, name: 'PRIVATE_PERSISTED_DESKTOP' })] })));
+        requestId: 'before-restart', desktops: [expect.objectContaining({ desktopSessionId: desktop.id, name: 'private-persisted-desktop' })] })));
       await expect(connect(linked.machinePublicKey, 'other-user')).rejects.toThrow();
       await expect(connect(linked.machinePublicKey, userId, 83)).rejects.toThrow();
       const closed = once(connection.socket, 'close');
@@ -156,13 +163,16 @@ describe('persisted installed Portal connection', () => {
       const afterRevocation = await request('start', { url: `${url}?peer=host` });
       expect(afterRevocation).toMatchObject({ installId, grant: null });
       await expect(connect(afterRevocation.machinePublicKey)).rejects.toThrow();
-      expect(wire.join('\n')).not.toContain('PRIVATE_PERSISTED_DESKTOP');
+      expect(wire.join('\n')).not.toContain('private-persisted-desktop');
       expect(wire.some(packet => packet.includes('sealed.packet'))).toBe(true);
     } finally {
       for (const connection of connections) { connection.noise.close(); connection.socket.terminate(); }
       await stop(); broker.dispose();
       for (const socket of server.clients) socket.terminate();
       await new Promise<void>(resolve => server.close(() => resolve()));
+      await drainDetached();
+      await getOrgPg().sql.end();
+      vi.unstubAllEnvs();
       await db.cleanup(); await rm(root, { recursive: true, force: true });
     }
   }, 120_000);
