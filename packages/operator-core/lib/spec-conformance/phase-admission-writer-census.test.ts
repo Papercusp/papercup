@@ -118,6 +118,49 @@ describe('phase binding writer census', () => {
       expect(report.coverage.residue).toContain(candidate.id);
     }
   });
+  it('pins read only claim accessors without accepting their following authority routes', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+      };
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const claims = 'packages/operator-core/lib/plan-items/claims.ts';
+    const inventory = inventoryPhaseWriters(sources);
+    const accessors = inventory.sites.filter(site => site.path === claims && site.kind === 'helper-edge'
+      && ['getClaimAuthority', 'planItemRef'].includes(site.callees[0] ?? ''));
+    expect(accessors.length).toBeGreaterThan(0);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    for (const site of accessors) {
+      expect(byId.get(site.id)).toMatchObject({ disposition: 'metadata-only' });
+      expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+        path: site.helperTarget!.path, sha256: site.helperTarget!.sha256,
+      });
+    }
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const routes = inventory.sites.filter(site => site.path === claims && site.kind === 'unresolved'
+      && site.dynamicEdges.includes('getClaimAuthority().route'));
+    expect(routes.length).toBeGreaterThan(0);
+    for (const site of routes) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(report.coverage.notChecked).toContain(site.id);
+      expect(report.coverage.residue).toContain(site.id);
+    }
+    for (const target of new Set(accessors.map(site => site.helperTarget!.path))) {
+      const changed = inventoryPhaseWriters(sources.map(source => source.path === target
+        ? { ...source, content: source.content + '\nexport const changedAccessorSource = true;\n' } : source));
+      const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+      for (const site of accessors.filter(site => site.helperTarget!.path === target)) {
+        expect(changed.sites.some(current => current.id === site.id)).toBe(true);
+        expect(stale.coverage.notChecked).toContain(site.id);
+        expect(stale.problems.find(row => row.id === site.id)?.reasons)
+          .toContain(`stale-source-proof:${target}`);
+      }
+    }
+  });
+
   it('retains INSERT upsert UPDATE DELETE and writable CTE statements independently', () => {
     const inventory = inventoryPhaseWriters([source(`
       async function create(tx) {

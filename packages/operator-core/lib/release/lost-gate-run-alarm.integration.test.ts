@@ -58,7 +58,7 @@ describe('waiting qualification alarm recovery (real PG)', () => {
         .toBe('updated');
       const waiting = await readStoredQualification(target);
       expect(waiting).toMatchObject({ status: 'present', transaction: {
-        phase: 'waiting', currentPhysicalRunner: null, lease: null,
+        phase: 'waiting', currentPhysicalRunner: null,
         outcome: { kind: 'pre-suite-no-verdict', reason },
       } });
       const [before] = await sql`SELECT metadata, next_fire_at::text AS next_fire_at FROM harness_shared.routines

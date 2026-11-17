@@ -8,7 +8,9 @@
     "packages/operator-core/lib/agent-tools/plan-items/index.ts",
     "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
     "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
-    "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql"
+    "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+    "packages/operator-core/lib/plan-items/claim-authority.ts",
+    "packages/operator-core/lib/agent-goal-ref.ts"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -808,8 +810,7 @@
           ]
         }
       ]
-    }
-    ,
+    },
     {
       "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"171f52faa7c9e981a5349a271eb2f68e84a6c4a3fc555456f4328571afa76b88\"]#1",
       "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
@@ -1248,6 +1249,310 @@
           "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
           "evidenceRefs": [
             "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaim\",\"helper-edge\",\"5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/claim-authority.ts",
+          "sha256": "3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaim",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getClaimAuthority",
+          "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claim-authority.ts#3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"deleteClaimLocal\",\"helper-edge\",\"fe5961d520d0dc13291d43d972dae5df1066c74e7de5cfd282e3f44d6119e7ff\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "fe5961d520d0dc13291d43d972dae5df1066c74e7de5cfd282e3f44d6119e7ff",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-goal-ref.ts",
+          "sha256": "adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact planItemRef call trims its two scalar string arguments, returns null if either is empty, otherwise constructs the complete planSlug#itemId identity. The inspected lexical function performs no persistence, callback or authority operation. Its following goal-clear or takeover operation remains independently classified.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef",
+        "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "planItemRef",
+          "reason": "This exact planItemRef call trims its two scalar string arguments, returns null if either is empty, otherwise constructs the complete planSlug#itemId identity. The inspected lexical function performs no persistence, callback or authority operation. Its following goal-clear or takeover operation remains independently classified.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/agent-goal-ref.ts#adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceReleaseClaim\",\"helper-edge\",\"5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/claim-authority.ts",
+          "sha256": "3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority",
+        "source:packages/operator-core/lib/plan-items/claims.ts#forceReleaseClaim",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getClaimAuthority",
+          "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claim-authority.ts#3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaim\",\"helper-edge\",\"5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/claim-authority.ts",
+          "sha256": "3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority",
+        "source:packages/operator-core/lib/plan-items/claims.ts#forceTakeoverClaim",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getClaimAuthority",
+          "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claim-authority.ts#3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaimLocal\",\"helper-edge\",\"119f9fdf028c8ef75cfeee5c6d6b2b1e969fbce43f9e2575ba0b2f871232c57c\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "119f9fdf028c8ef75cfeee5c6d6b2b1e969fbce43f9e2575ba0b2f871232c57c",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-goal-ref.ts",
+          "sha256": "adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact planItemRef call trims its two scalar string arguments, returns null if either is empty, otherwise constructs the complete planSlug#itemId identity. The inspected lexical function performs no persistence, callback or authority operation. Its following goal-clear or takeover operation remains independently classified.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef",
+        "source:packages/operator-core/lib/plan-items/claims.ts#forceTakeoverClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "planItemRef",
+          "reason": "This exact planItemRef call trims its two scalar string arguments, returns null if either is empty, otherwise constructs the complete planSlug#itemId identity. The inspected lexical function performs no persistence, callback or authority operation. Its following goal-clear or takeover operation remains independently classified.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/agent-goal-ref.ts#adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"heartbeatClaim\",\"helper-edge\",\"5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/claim-authority.ts",
+          "sha256": "3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority",
+        "source:packages/operator-core/lib/plan-items/claims.ts#heartbeatClaim",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getClaimAuthority",
+          "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claim-authority.ts#3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"releaseAllClaimsForOwner\",\"helper-edge\",\"3b1fc562147621b6864072388a4dfac91672545907afd4320f8b8cc913de4d2e\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "3b1fc562147621b6864072388a4dfac91672545907afd4320f8b8cc913de4d2e",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-goal-ref.ts",
+          "sha256": "adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact planItemRef call trims its two scalar string arguments, returns null if either is empty, otherwise constructs the complete planSlug#itemId identity. The inspected lexical function performs no persistence, callback or authority operation. Its following goal-clear or takeover operation remains independently classified.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef",
+        "source:packages/operator-core/lib/plan-items/claims.ts#releaseAllClaimsForOwner",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "planItemRef",
+          "reason": "This exact planItemRef call trims its two scalar string arguments, returns null if either is empty, otherwise constructs the complete planSlug#itemId identity. The inspected lexical function performs no persistence, callback or authority operation. Its following goal-clear or takeover operation remains independently classified.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/agent-goal-ref.ts#adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-goal-ref.ts#planItemRef"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"releaseClaim\",\"helper-edge\",\"5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "5c58a031de8a636f496eb3c21711dd29c8477e070ca5744243feb846c5e14736",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/claim-authority.ts",
+          "sha256": "3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority",
+        "source:packages/operator-core/lib/plan-items/claims.ts#releaseClaim",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getClaimAuthority",
+          "reason": "This exact getter call reads and returns the process-local current router object from the inspected lexical getClaimAuthority binding. It does not invoke route, install a router, run a local operation or send an RPC. The following getClaimAuthority().route invocation remains a separate unresolved frontier; reading the object cannot exempt its authority operation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claim-authority.ts#3536b3c96b451b3e4ac3603b4f8cabe965613790e88eee4fb79fd8f1a77502f2",
+          "reason": "The maintained resolver binds this exact call to the inspected target file; both caller and target full bytes are pinned. This is source identity proof only, without exempting other calls in either file.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claim-authority.ts#getClaimAuthority"
           ]
         }
       ]
