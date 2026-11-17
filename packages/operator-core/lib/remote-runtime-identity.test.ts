@@ -52,6 +52,83 @@ const describing = (doc: unknown): RemoteDescribe & { calls: string[][] } => {
   return fn;
 };
 
+describe('GCE VM control-plane identity (WI-6554700010051333)', () => {
+  const unit = 'gcp-gce:example-cloud-prod/us-central1-a/example-vm';
+  const resource = 'https://www.googleapis.com/compute/v1/projects/example-cloud-prod/zones/us-central1-a';
+  const gce = (over: Record<string, unknown> = {}) => ({
+    id: '271429600984662238', name: 'example-vm', status: 'RUNNING',
+    selfLink: `${resource}/instances/example-vm`, zone: resource,
+    creationTimestamp: '2026-09-03T20:42:41.875-07:00',
+    lastStartTimestamp: '2026-09-04T07:50:20.295-07:00', fingerprint: 'instance-generation',
+    metadata: { fingerprint: 'metadata-generation', items: [{ key: 'startup-script', value: 'retained-launch' }] },
+    disks: [{ deviceName: 'data', source: `${resource}/disks/data`, type: 'PERSISTENT', autoDelete: false }],
+    ...over,
+  });
+
+  it('uses a bounded read-only exact-resource describe and participates in native environment measurement', async () => {
+    const reader = describing(gce());
+    expect(isRemoteRuntimeUnit(unit)).toBe(true);
+    expect(await measureRemoteRuntimeIdentity(unit, reader)).toMatch(/^[a-f0-9]{64}$/);
+    expect(reader.calls).toEqual([['compute', 'instances', 'describe', 'example-vm',
+      '--project=example-cloud-prod', '--zone=us-central1-a', '--format=json', '--quiet']]);
+    expect(await measureRuntimeEnvironment([], [unit], { describe: reader })).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('remeasures resource replacement, stop/start generation, metadata and disk changes', async () => {
+    const baseline = await measureRuntimeEnvironment([], [unit], { describe: describing(gce()) });
+    for (const over of [
+      { id: '271429600984662239' },
+      { creationTimestamp: '2026-09-04T00:00:00Z' },
+      { lastStartTimestamp: '2026-11-17T11:00:00Z' },
+      { fingerprint: 'new-generation' },
+      { metadata: { fingerprint: 'new-metadata', items: [{ key: 'startup-script', value: 'changed-launch' }] } },
+      { disks: [{ deviceName: 'data', source: `${resource}/disks/replacement`, type: 'PERSISTENT', autoDelete: true }] },
+    ]) expect(await measureRuntimeEnvironment([], [unit], { describe: describing(gce(over)) })).not.toBe(baseline);
+  });
+
+  it('hashes every metadata record, including decisive records after a typical page boundary', async () => {
+    for (const count of [127, 128, 129]) {
+      const items = Array.from({ length: count }, (_, index) => ({ key: `key-${index}`, value: `value-${index}` }));
+      const baseline = await measureRemoteRuntimeIdentity(unit, describing(gce({ metadata: { fingerprint: 'same', items } })));
+      items[count - 1]!.value = 'changed-after-boundary';
+      expect(await measureRemoteRuntimeIdentity(unit, describing(gce({ metadata: { fingerprint: 'same', items } })))).not.toBe(baseline);
+    }
+  });
+
+  it('ignores object key order while retaining complete configuration values', async () => {
+    const doc = gce();
+    const reversed = Object.fromEntries(Object.entries(doc).reverse());
+    expect(await measureRemoteRuntimeIdentity(unit, describing(reversed)))
+      .toBe(await measureRemoteRuntimeIdentity(unit, describing(doc)));
+  });
+
+  it('refuses mismatched, stopped, missing, rounded or ambiguous resource identities', async () => {
+    for (const over of [
+      { name: 'other-vm' }, { selfLink: `${resource}/instances/other-vm` },
+      { zone: resource.replace('us-central1-a', 'us-central1-b') },
+      { selfLink: `${resource}/instances/example-vm?different=resource` },
+      { status: 'TERMINATED' }, { id: 271429600984662240 }, { id: '' },
+      { creationTimestamp: 'invalid' }, { lastStartTimestamp: undefined },
+      { lastStartTimestamp: '2020-01-01T00:00:00Z' }, { fingerprint: undefined }, { metadata: {} },
+    ]) expect(await measureRuntimeEnvironment([], [unit], { describe: describing(gce(over)) })).toBeNull();
+    for (const raw of [null, 'not json', JSON.stringify([gce(), gce()])])
+      expect(await measureRemoteRuntimeIdentity(unit, describing(raw))).toBeNull();
+    expect(await measureRemoteRuntimeIdentity(unit, async () => { throw new Error('unavailable'); })).toBeNull();
+  });
+
+  it('refuses malformed selectors before invoking the provider', async () => {
+    for (const invalid of [
+      'gcp-gce:--project/us-central1-a/example-vm', `${unit}/extra`,
+      'gcp-gce:example-cloud-prod/../example-vm', 'gcp-gce:example-cloud-prod/us-central1-a/--quiet',
+      'gcp-gce:example-cloud-prod/us-central1-a/example-vm?other',
+    ]) {
+      const reader = describing(gce());
+      expect(await measureRemoteRuntimeIdentity(invalid, reader)).toBeNull();
+      expect(reader.calls).toEqual([]);
+    }
+  });
+});
+
 describe('installed focused compiler identity', () => {
   const unit = 'focused-tsc:installed';
   const doc = { identity: { root: '/installed', compilerInstall: '/installed/compiler', compilerVersion: '1',

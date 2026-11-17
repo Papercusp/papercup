@@ -300,7 +300,20 @@ export class TestRunArtifactPacket {
     for (const name of routers) {
       const directory = join(this.paths.directory, name);
       const declaration = JSON.parse(await readFile(join(directory, 'expected.json'), 'utf8'));
-      const locator = JSON.parse(await readFile(join(directory, 'locator.json'), 'utf8'));
+      let locator: NativeCustodyLocator;
+      try {
+        locator = JSON.parse(await readFile(join(directory, 'locator.json'), 'utf8'));
+      } catch (error) {
+        if (this.childState !== 'closed' || (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        // The router may have captured every byte before exhausting its child
+        // cutoff. Seal that exact packet within the parent's existing reserve;
+        // never recapture producers or change the original execution verdict.
+        const pending = JSON.parse(await readFile(join(directory, 'pending-locator.json'), 'utf8'));
+        const recovered = await retainNativeProofPacketAsync(directory, { identity, expected: declaration.expected,
+          retainedLocator: pending, deadlineAtMs: this.deadline.taskDeadlineAtMs });
+        locator = recovered.locator;
+        await writeFile(join(directory, 'locator.json'), JSON.stringify(locator), { mode: 0o600, flag: 'wx' });
+      }
       const verified = verifyNativeProofPacket(directory, locator, { identity, expected: declaration.expected });
       routerGroups.push(...declaration.expected);
       routerVerdicts.push(verified.status);

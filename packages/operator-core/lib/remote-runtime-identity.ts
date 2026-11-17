@@ -69,6 +69,49 @@ const gcpCloudSql: RemoteRuntimeProvider = {
   },
 };
 
+// GCE names and projects are separate argv entries; anchored selectors cannot
+// inject flags, path components, or a different resource into the describe call.
+const GCP_GCE_UNIT = /^gcp-gce:([a-z][a-z0-9-]{4,28}[a-z0-9])\/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)$/;
+
+/** VM control-plane identity, not an assertion about guest processes or files.
+ * GCE's lastStartTimestamp can survive an in-guest reboot or reset. Application
+ * health, guest boot identity and historical migration ordering need their own
+ * proof; this unit identifies the resource and its observed configuration only.
+ */
+const gcpGce: RemoteRuntimeProvider = {
+  prefix: 'gcp-gce:',
+  describeArgv(unit) {
+    const match = GCP_GCE_UNIT.exec(unit);
+    return match ? ['compute', 'instances', 'describe', match[3]!,
+      `--project=${match[1]}`, `--zone=${match[2]}`, '--format=json', '--quiet'] : null;
+  },
+  identity(unit, doc) {
+    const match = GCP_GCE_UNIT.exec(unit);
+    if (!match || doc.name !== match[3] || doc.status !== 'RUNNING') return null;
+    const resourcePath = `/compute/v1/projects/${match[1]}/zones/${match[2]}`;
+    const resourceUri = (value: unknown, path: string) => {
+      if (typeof value !== 'string') return false;
+      try {
+        const uri = new URL(value);
+        return ['https://www.googleapis.com', 'https://compute.googleapis.com'].includes(uri.origin)
+          && uri.pathname === path && !uri.search && !uri.hash && !uri.username && !uri.password;
+      } catch { return false; }
+    };
+    if (!resourceUri(doc.zone, resourcePath) ||
+      !resourceUri(doc.selfLink, `${resourcePath}/instances/${match[3]}`)) return null;
+    // Resource ids must stay strings: coercing a JSON number could silently pin
+    // a rounded uint64 identity. Missing generations remain unknown.
+    const id = str(doc.id), created = str(doc.creationTimestamp), started = str(doc.lastStartTimestamp);
+    const metadata = record(doc.metadata);
+    if (!id || !/^[1-9]\d*$/.test(id) || !created || !started ||
+      !Number.isFinite(Date.parse(created)) || !Number.isFinite(Date.parse(started)) ||
+      Date.parse(started) < Date.parse(created) || !str(doc.fingerprint) || !str(metadata?.fingerprint)) return null;
+    // Hash the complete document, without a prefix/top-N projection. Metadata
+    // values (which can contain credentials) never leave this identity reader.
+    return [id, created, started, sha256(workerCanonical(doc))];
+  },
+};
+
 const POSTHOG_PROJECT_UNIT = /^posthog-project:([a-z0-9][a-z0-9.-]{0,252}(?::[1-9]\d{0,4})?)\/([1-9]\d{0,11})$/;
 // Only configuration that affects this evidence plane; no personal credentials,
 // usage counters or mutable request timestamps enter the identity.
@@ -380,7 +423,7 @@ const focusedTsc: RemoteRuntimeProvider = {
   },
 };
 
-const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject, cloudflarePages, cloudflareWorker, focusedTsc];
+const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, gcpGce, posthogProject, cloudflarePages, cloudflareWorker, focusedTsc];
 
 function providerFor(unit: string): RemoteRuntimeProvider | undefined {
   return PROVIDERS.find((provider) => unit.startsWith(provider.prefix));

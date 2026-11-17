@@ -4,7 +4,7 @@ import { open as openAsync } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { retainDetachedVitestReport, TestRunArtifactPacket, testRunDeadline } from './run-artifacts';
-import { verifyNativeProofPacket } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { retainNativeProofPacketAsync, verifyNativeProofPacket } from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 /**
  * WI-6554700010048955 tripwire: when armed, the sync fs calls the packet used to make on
@@ -166,6 +166,50 @@ describe('maintained run deadlines and retained artifacts', () => {
     });
     const locator = JSON.parse(readFileSync(join(packet.paths.nativeProof, 'pending-locator.json'), 'utf8'));
     expect(locator.identity.runId).toBe('expired-custody');
+  });
+  it.each([false, true])('recovers interrupted router custody while preserving parent log loss=%s', async retireParentLog => {
+    const { source, packet } = nativePacket();
+    await packet.flush();
+    const directory = join(packet.paths.directory, 'native-router-interrupted');
+    mkdirSync(directory, { mode: 0o700 });
+    const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
+    const reportPath = join(source, 'report.json');
+    const reportBytes = Buffer.from(JSON.stringify({ success: true, numPassedTests: 6, numFailedTests: 0 }));
+    writeFileSync(reportPath, reportBytes);
+    const expected = [{ id: 'router-primary', attempt: 'primary' as const,
+      selected: [join(source, 'subject.test.ts')], runner: 'unsupported' as const, armed: false, out: null,
+      auxiliary: [{ role: 'original-report', state: 'produced' as const, path: reportPath }] }];
+    writeFileSync(join(directory, 'expected.json'), JSON.stringify({ identity, expected }), { mode: 0o600 });
+    await expect(retainNativeProofPacketAsync(directory, { identity, expected,
+      observations: [{ id: 'router-primary', out: null }], execution: 'router-settled',
+      deadlineAtMs: Date.now() - 1 })).rejects.toMatchObject({ code: 'NATIVE_PROOF_SYNC_DEADLINE' });
+    const pendingBytes = readFileSync(join(directory, 'pending-locator.json'));
+    const pendingLocator = JSON.parse(pendingBytes.toString('utf8'));
+    const retained = verifyNativeProofPacket(directory, pendingLocator, { identity, expected });
+    const report = retained.manifest.groups[0].auxiliary.find(row => row.role === 'original-report')!.artifact!;
+    // Retire the router's producers without accidentally retiring the parent's
+    // independent output log. Its deliberate loss must remain a custody gap.
+    rmSync(reportPath);
+    rmSync(join(source, 'subject.test.ts'));
+    if (retireParentLog) rmSync(join(source, 'stdout.log'));
+
+    packet.childState = 'closed';
+    const result = { ok: false, error: 'timeout', passed: 6, failed: 0 };
+    await packet.finish({ result, cleanup: { complete: true } });
+
+    const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
+    expect(manifest.result).toEqual(result);
+    expect(manifest.cleanup).toEqual({ complete: true });
+    expect(manifest.nativeCustody.byteCustody, JSON.stringify(manifest.nativeCustody))
+      .toBe(retireParentLog ? 'partial' : 'complete');
+    expect(manifest.nativeCustody).toMatchObject({ routerCustody: ['complete'], writerState: 'settled',
+      nativeProof: 'unqualified', acceptance: 'unmeasured',
+    });
+    rmSync(source, { recursive: true });
+    expect(JSON.parse(readFileSync(join(directory, 'locator.json'), 'utf8'))).toEqual(pendingLocator);
+    expect(readFileSync(join(directory, 'pending-locator.json'))).toEqual(pendingBytes);
+    expect(readFileSync(join(directory, 'objects', report.ref))).toEqual(reportBytes);
+    expect(verifyNativeProofPacket(directory, pendingLocator, { identity, expected }).status).toBe('complete');
   });
   it('holds an explicit cleanup reserve behind one absolute child cutoff', () => {
     expect(testRunDeadline(45_000, { now: 1000, cleanupReserveMs: 10_000 })).toEqual({
