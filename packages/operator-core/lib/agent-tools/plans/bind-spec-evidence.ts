@@ -1,5 +1,6 @@
 /** plans:bind-spec-evidence — append exact work-item/spec-revision proof bindings. */
 import { z } from 'zod';
+import { nativeProofWitnessSchema } from '../../native-proof-clearance';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
@@ -234,6 +235,7 @@ const CAUSAL_PAIR_EVIDENCE_KINDS = new Set([
 ]);
 export const bindingSchema = z
   .object({
+    nativeProof: nativeProofWitnessSchema.optional(),
     workItemId: z.string().trim().min(1).max(200),
     specId: z.string().trim().min(1).max(200).optional(),
     sourceValId: z

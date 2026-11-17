@@ -35,6 +35,7 @@ import type { FixtureAbsencePairingKey } from './spec-test-adequacy';
 import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import type { resolvePlanScope as ResolvePlanScope } from './source';
 import { trackDetached } from '../../detached-imports';
+import { NATIVE_PROOF_WITNESS_KEY, nativeProofWitnessSchema, type NativeProofWitness } from '../../native-proof-clearance';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
 import { foldTreeInstrumentFingerprint, measureTreeInstrumentAtCommit, treeInstrumentKeySchema, type TreeInstrumentKey } from './tree-instruments';
@@ -1587,6 +1588,7 @@ export interface DuplicateLiveTestRunBindingAdvisory {
 }
 
 export interface BindSpecEvidenceInput extends EvidenceFingerprints {
+  nativeProof?: NativeProofWitness;
   harnessSlug?: string;
   /** Explicit workspace for internal callers such as plan promotion; public tool calls use the active workspace. */
   workspaceId?: string;
@@ -1877,6 +1879,9 @@ interface PriorTestRunBindingRow {
 /** Resolve the selector and append one idempotent exact evidence binding. */
 export async function bindSpecEvidence(input: BindSpecEvidenceInput,
   measured?: MeasuredRepoEvidenceFingerprints): Promise<BindSpecEvidenceResult> {
+  if (input.details && Object.prototype.hasOwnProperty.call(input.details, NATIVE_PROOF_WITNESS_KEY))
+    throw new Error('native_proof_reserved: use the typed nativeProof witness');
+  const nativeProof = input.nativeProof === undefined ? undefined : nativeProofWitnessSchema.parse(input.nativeProof);
   if (input.details && Object.prototype.hasOwnProperty.call(input.details, HISTORICAL_MEASUREMENT_DETAILS_KEY)) {
     throw new Error('historical_measurement_reserved: only the measured binding producer may write historicalMeasurement');
   }
@@ -2341,6 +2346,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput,
         : undefined;
 
     let details = withoutHistoricalMeasurement(input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {});
+    const { [NATIVE_PROOF_WITNESS_KEY]: _priorNativeProof, ...withoutPriorNativeProof } = details;
+    details = { ...withoutPriorNativeProof, ...(nativeProof ? { [NATIVE_PROOF_WITNESS_KEY]: nativeProof } : {}) };
     if (canonicalizedTestCases !== undefined) {
       const rawAdequacy = details.adequacy;
       if (rawAdequacy !== null && typeof rawAdequacy === 'object' && !Array.isArray(rawAdequacy)) {

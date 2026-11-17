@@ -7,6 +7,7 @@ import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolveSpecScopeSlug } from './adhoc-spec-scope';
 import { normalizeSpecSemanticText } from './spec-clause-compiler';
+import { nativeProofRequirementSchema, type NativeProofRequirement } from '../../native-proof-clearance';
 import type { resolvePlanScope as ResolvePlanScope } from './source';
 
 // The plan runtime reaches rubric checks and testing:run, whose schema imports
@@ -62,6 +63,7 @@ export interface SpecClauseFalsifier {
   requiredScenarios?: string[];
   /** Same-scope successful terminal receipts required in addition to executable proof. */
   requiredSuccessfulWorkItemIds?: string[];
+  requiredNativeProof?: NativeProofRequirement;
   /** Require one immutable negative and one repaired recurrence binding per causal pair id. */
   causalPairing?: SpecCausalPairingMode;
 }
@@ -72,6 +74,7 @@ export interface SpecClauseFalsifierWrite {
   probeMethod?: string | null;
   requiredScenarios?: string[] | null;
   requiredSuccessfulWorkItemIds?: string[] | null;
+  requiredNativeProof?: NativeProofRequirement | null;
   causalPairing?: SpecCausalPairingMode | null;
 }
 
@@ -142,6 +145,7 @@ export const specWriteSchema = z.object({
       .min(1).max(100).refine((ids) => new Set(ids).size === ids.length, 'proof obligation ids must be unique')
       .nullable().optional(),
     causalPairing: z.enum(SPEC_CAUSAL_PAIRING_MODES).nullable().optional(),
+    requiredNativeProof: nativeProofRequirementSchema.nullable().optional(),
     requiredSuccessfulWorkItemIds: z.array(z.string().trim().regex(/^(?:WI|EI)-[0-9]+$/))
       .min(1).max(64).refine((ids) => new Set(ids).size === ids.length, 'receipt work-item ids must be unique')
       .nullable().optional(),
@@ -242,7 +246,8 @@ export type FalsifierIssue =
   | 'required_scenario_invalid'
   | 'required_scenario_duplicate'
   | 'required_successful_work_item_ids_invalid'
-  | 'causal_pairing_invalid';
+  | 'causal_pairing_invalid'
+  | 'native_proof_requirement_invalid';
 
 /**
  * Structured refusal for a MALFORMED declaration — never for an ABSENT one.
@@ -265,6 +270,8 @@ function falsifierIssueOf(value: SpecClauseWrite['falsifier']): FalsifierIssue |
     return 'probe_method_blank';
   }
   const scenarios = value.requiredScenarios;
+  if (value.requiredNativeProof != null && !nativeProofRequirementSchema.safeParse(value.requiredNativeProof).success)
+    return 'native_proof_requirement_invalid';
   const receipts = value.requiredSuccessfulWorkItemIds;
   if (receipts !== undefined && receipts !== null && (
     !Array.isArray(receipts) || receipts.length === 0 || receipts.length > 64 ||
@@ -302,6 +309,7 @@ function normalizedFalsifier(value: SpecClauseWrite['falsifier']): SpecClauseFal
     ...(requiredScenarios.length > 0 ? { requiredScenarios } : {}),
     ...(requiredSuccessfulWorkItemIds.length > 0 ? { requiredSuccessfulWorkItemIds } : {}),
     ...(value.causalPairing ? { causalPairing: value.causalPairing } : {}),
+    ...(value.requiredNativeProof ? { requiredNativeProof: nativeProofRequirementSchema.parse(value.requiredNativeProof) } : {}),
   };
 }
 

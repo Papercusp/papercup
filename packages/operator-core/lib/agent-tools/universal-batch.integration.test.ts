@@ -1,16 +1,19 @@
 /** P-002: operator compatibility exports and the production MCP batching boundary. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 import Ajv2020 from 'ajv/dist/2020';
 import {
   _resetCatalogForTests, _resetProjectionRegistryForTests, defineTool, listMcpProjections,
-  lookupByMcpName, setJsonSchemaAdapter, zodJsonSchemaAdapter,
+  lookupByMcpName, runDispatchStack, setJsonSchemaAdapter, zodJsonSchemaAdapter,
   type BatchResult, type DispatchProjectedDeps, type StandardSchemaV1,
   type ToolBatchDeclaration, type UnifiedToolContext,
 } from '@papercusp/tooldef';
 import { runBulk as frameworkRunBulk } from '@papercusp/tooldef/_bulk';
 import { runBulk as compatibilityRunBulk } from '@papercusp/agent-mcp/_bulk';
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
+import { buildCgroupLimits, buildUlimitFloor } from '../p2p/sandbox/cgroup-limits';
 import { runBulk } from './_bulk';
 
 afterEach(() => { _resetCatalogForTests(); _resetProjectionRegistryForTests(); });
@@ -117,6 +120,80 @@ describe('universal batching in the operator', () => {
     expect(seen).toContainEqual(invalid);
     expect(fn).toHaveBeenCalledOnce();
     expect(result.results[1].error).toMatchObject({ code: 'invalid_input' });
+  });
+
+  it.each([1, 3])('uses the original operation schema minimum %i for batch child validation', async minimum => {
+    const args = z.strictObject({ key: z.string().min(minimum) });
+    const handler = vi.fn(async (value: z.infer<typeof args>) => ({ data: value }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', args, handler });
+    // The same submitted operation changes validity when only its declaration changes.
+    const result = data(await call({ _batch: 1, items: [item('ab', 'changed'), item('valid', 'control')] }));
+    expect(result.results.map(row => [row.itemId, row.ok])).toEqual([
+      ['changed', minimum <= 2], ['control', true],
+    ]);
+    expect(handler.mock.calls.map(([value]) => value.key)).toEqual(minimum <= 2 ? ['ab', 'valid'] : ['valid']);
+    if (minimum > 2) expect(result.results[0].error).toMatchObject({ code: 'invalid_input' });
+  });
+
+  it('retains real child process CPU and memory limits from ordinary host dispatch', async () => {
+    const limits = buildUlimitFloor(buildCgroupLimits({ cpuMaxPercent: 50,
+      memoryMaxBytes: 64 * 1024 * 1024, ioMaxBytesPerSec: 1024 * 1024 }));
+    const transaction = { processLimits: limits };
+    const child = promisify(execFile);
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', args: operation,
+      needsWorkspaceTx: true, handler: async (_value, ctx) => {
+        const floor = (ctx.tx as unknown as typeof transaction).processLimits;
+        const { stdout } = await child('/usr/bin/prlimit', [
+          '--cpu=' + floor.cpuSeconds + ':' + floor.cpuSeconds,
+          '--as=' + floor.addressSpaceBytes + ':' + floor.addressSpaceBytes,
+          '--', '/usr/bin/cat', '/proc/self/limits',
+        ], { timeout: 5000, maxBuffer: 8192 });
+        const cpu = /^Max cpu time\s+(\d+)\s+(\d+)\s+seconds\s*$/m.exec(stdout);
+        const memory = /^Max address space\s+(\d+)\s+(\d+)\s+bytes\s*$/m.exec(stdout);
+        expect(cpu, stdout).not.toBeNull(); expect(memory, stdout).not.toBeNull();
+        return { data: { cpu: cpu!.slice(1).map(Number), memory: memory!.slice(1).map(Number) } };
+      } });
+    const tool = lookupByMcpName(name)!;
+    // Removing the batching contract selects the ordinary operation stack. Both
+    // routes receive the same host-bound profile; dispatch installs its tx guard.
+    const host = () => ({ ...context(), tx: transaction });
+    const ordinary = await runDispatchStack({ ...tool, batchContract: undefined }, name, { key: 'ordinary' }, host(), {});
+    expect(ordinary.ok, JSON.stringify(ordinary)).toBe(true);
+    const expected = { cpu: [limits.cpuSeconds, limits.cpuSeconds],
+      memory: [limits.addressSpaceBytes, limits.addressSpaceBytes] };
+    expect(ordinary.result?.structuredContent).toEqual(expected);
+    const result = data(await call({ _batch: 1, items: [item('first', 'first'), item('second', 'second')] }, {
+      deps: { aroundInvoke: async ({ ctx, invoke }) => {
+        expect(ctx.tx).toBe(transaction);
+        return invoke();
+      } }, ctx: host(),
+    }));
+    expect(result.counts, JSON.stringify(result)).toEqual({ ok: 2, failed: 0 });
+    expect(result.results.map(row => [row.itemId, row.ok, row.output?.structuredContent])).toEqual([
+      ['first', true, expected], ['second', true, expected],
+    ]);
+  });
+
+  it('keeps native event-producing reads on ordered fallback with keyed terminal results', async () => {
+    const emissions: unknown[] = [];
+    const execute = vi.fn<NonNullable<ToolBatchDeclaration<{ key: string }>['execute']>>(async items =>
+      items.map(item => ({ itemId: item.itemId, response: { data: { key: item.args.key } } })));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read', args: operation,
+      events: { sample: z.object({ key: z.string(), sequence: z.number() }) }, batch: { execute },
+      handler: async (value, ctx) => {
+        ctx.emit('sample', { key: value.key, sequence: 1 });
+        ctx.emit('sample', { key: value.key, sequence: 2 });
+        return { data: { key: value.key } };
+      } });
+    const result = data(await call({ _batch: 1, items: [item('a', 'left'), item('b', 'right')] }, {
+      ctx: { emit: (kind, event) => { if (kind === 'sample') emissions.push(event); } },
+    }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(emissions).toEqual([{ key: 'a', sequence: 1 }, { key: 'a', sequence: 2 },
+      { key: 'b', sequence: 1 }, { key: 'b', sequence: 2 }]);
+    expect(result.results.map(row => [row.itemId, row.status, row.output?.structuredContent])).toEqual([
+      ['left', 'completed', { key: 'a' }], ['right', 'completed', { key: 'b' }],
+    ]);
   });
 
   it('keeps duplicate business keys distinct and reserves later supplied identities', async () => {

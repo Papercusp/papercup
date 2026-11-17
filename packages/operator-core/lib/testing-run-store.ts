@@ -2143,7 +2143,7 @@ const nativeProofDigests = z.record(z.string().min(1), nativeProofDigest)
 const nativeProofInputSchema = z.object({
   schemaVersion: z.literal(1),
   scope: z.object({ workspaceId: z.string().min(1), harnessSlug: z.string().min(1),
-    planSlug: z.string().min(1) }).strict(),
+    planSlug: z.string().min(1), planItemId: z.string().regex(/^P-\d{3,}$/).optional() }).strict(),
   original: z.object({ sourceSha: z.string().regex(/^[a-f0-9]{40}$/),
     fixtureSha256: nativeProofDigest, captureSha256: nativeProofDigest,
     sourceDigests: nativeProofDigests, dependenciesReconstructed: z.literal(false) }).strict(),

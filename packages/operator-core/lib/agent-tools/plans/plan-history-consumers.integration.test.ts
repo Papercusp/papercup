@@ -2262,6 +2262,8 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                 operationalBrief: true, shipReadiness: true, includeHistory: true } },
               { tool: 'plans:get', args: { slug: p, harness: h, mode: 'full',
                 operationalBrief: true, executionReadiness: true } },
+              { tool: 'plans:get', args: { slug: p, harness: h, mode: 'full',
+                activationReadiness: true } },
               { tool: 'plans:get', args: { slug: p, harness: h, includeHistory: true,
                 priorAttemptRefs: [`plan:${p}#comment:${materialized.mapping.e1}`, `${children[24]}#checkpoint`] } },
               ...[true, false].map(include_context => ({ tool: 'graph:query', args: {
