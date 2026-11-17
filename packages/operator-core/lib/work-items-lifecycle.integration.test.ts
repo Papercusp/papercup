@@ -364,35 +364,42 @@ beforeEach(async () => {
 });
 
 describe('P-010 actual lifecycle native proof clearance', () => {
+  const harness = 'papercusp';
   it.each([
     { kind: 'feature', state: 'done' },
     { kind: 'feature', state: 'passed' },
     { kind: 'bug', state: 'resolved' },
   ] as const)('refuses $kind/$state without proof, including force, before any terminal write', async ({ kind, state }) => {
-    const item = await wi.createWorkItem({ kind, title: 'native proof required', harness: 'papercup',
+    const item = await wi.createWorkItem({ kind, title: 'native proof required', harness,
       workspaceId: 'default', createdBy: 'native-owner' });
     await db.sql`UPDATE harness_shared.work_items SET payload = ${db.sql.json({
       plan_item: { plan_slug: 'native-proof-plan', item_id: 'P-010' },
     })} WHERE feature_id = ${item.id}`;
     await db.sql`INSERT INTO harness_shared.plan_spec_clauses
       (workspace_id,harness_slug,plan_slug,spec_id,current_revision,created_by)
-      VALUES ('default','papercup','native-proof-plan','native-floor',1,'native-owner')`;
+      VALUES ('default',${harness},'native-proof-plan','native-floor',1,'native-owner')`;
     await db.sql`INSERT INTO harness_shared.plan_spec_clause_revisions
       (workspace_id,harness_slug,plan_slug,spec_id,revision,plan_item_id,behavior,behavior_class,
        lifecycle_status,content_hash,created_by,accepted_by,accepted_at,falsifier)
-      VALUES ('default','papercup','native-proof-plan','native-floor',1,'P-010','Require native custody',
+      VALUES ('default',${harness},'native-proof-plan','native-floor',1,'P-010','Require native custody',
         'lifecycle','active',${'a'.repeat(64)},'native-owner','native-owner',now(),${db.sql.json({
           observation: 'A terminal state bypasses native custody',
           requiredNativeProof: { profile: 'retained-baseline-v1', preflightSpecIds: {
             numericFold: 'fold', physicalInstall: 'install', priorFailureAudit: 'audit',
           } },
         })})`;
-    const before = await wi.getWorkItem(item.id, 'papercup');
+    // Fail at the fixture boundary if either workspace routing or canonical
+    // harness identity hides the current clause, before grading the writer.
+    const { listSpecClauses } = await import('./agent-tools/plans/spec-clauses-store');
+    expect(await listSpecClauses({ workspaceId: 'default', harnessSlug: harness,
+      planSlug: 'native-proof-plan' })).toMatchObject([{ specId: 'native-floor', revision: 1,
+        falsifier: { requiredNativeProof: { profile: 'retained-baseline-v1' } } }]);
+    const before = await wi.getWorkItem(item.id, harness);
     fh.spy.mockClear();
-    for (const force of [false, true]) {
-      await expect(wi.setWorkItemState(item.id, state, { harness: 'papercup', by: 'native-owner',
+    for (const force of [true, false]) {
+      await expect(wi.setWorkItemState(item.id, state, { harness, by: 'native-owner',
         completionRef: 'Caller prose cannot waive custody', force })).rejects.toThrow(/native_proof_required.*native-floor@1/);
-      const after = await wi.getWorkItem(item.id, 'papercup');
+      const after = await wi.getWorkItem(item.id, harness);
       expect(after?.state).toBe(before?.state);
       expect(after?.payload).toEqual(before?.payload);
       expect(after?.terminalCompletionRef).toBe(before?.terminalCompletionRef);
@@ -400,9 +407,9 @@ describe('P-010 actual lifecycle native proof clearance', () => {
     }
     expect(fh.spy).not.toHaveBeenCalled();
     // Keep an ordinary successful transition as a control on the SAME writer.
-    const ordinary = await wi.createWorkItem({ kind, title: 'ordinary completion', harness: 'papercup',
+    const ordinary = await wi.createWorkItem({ kind, title: 'ordinary completion', harness,
       workspaceId: 'default', createdBy: 'native-owner' });
-    expect((await wi.setWorkItemState(ordinary.id, state, { harness: 'papercup', by: 'native-owner',
+    expect((await wi.setWorkItemState(ordinary.id, state, { harness, by: 'native-owner',
       completionRef: 'Ordinary work has no native clause' }))?.state).toBe('done');
   });
 });
