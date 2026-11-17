@@ -72,8 +72,11 @@ describe('draft 1643 — actual identity rebind custody capture', () => {
 
     const result = await rebind();
     expect(result.refused).toBeUndefined();
-    expect(result.surfaces.find(s => s.surface === 'held-items')).toMatchObject({ moved: 1, error: undefined });
-    expect(result.surfaces.find(s => s.surface === 'held-work-items')).toMatchObject({ moved: 1, error: undefined });
+    for (const surface of ['held-items', 'held-work-items']) {
+      const observed = result.surfaces.find(s => s.surface === surface);
+      expect(observed?.moved).toBe(1);
+      expect(observed?.error).toBeUndefined();
+    }
     for (const [index, id] of ids.entries()) {
       expect(await row(id)).toMatchObject({ taken_by: TO });
       const captured = (await receipts(id)).slice(before[index]!.length);
