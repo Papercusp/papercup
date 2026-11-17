@@ -84,7 +84,8 @@ beforeAll(async () => {
   fx = await setupPlanPgFixture({ isolated: true });
   admin = fx.admin;
   await registerHarnessProject(admin, WS, HARNESS);
-  const created = await call('plans:new', { slug: SLUG, title: 'Vshipread fixture', verificationProfile: 'general', force: true });
+  const created = await call('plans:new', { slug: SLUG, title: 'Vshipread fixture', verificationProfile: 'general', force: true,
+    rationale: 'Isolated verification-profile fixture; similar test plans must not block this independent database.' });
   expect(created?.ok, brief(created)).toBe(true);
   const added = await call('plans:add-item', {
     slug: SLUG,
