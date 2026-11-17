@@ -186,7 +186,14 @@ describe('work_items:get — priorAttempts (the read that used to require a clai
     expect(getWorkItemDetail).toHaveBeenCalledTimes(1);
     expect(getClaimTimePriorAttemptBrief).toHaveBeenCalledTimes(1);
     Object.values(writes).forEach(write => expect(write).not.toHaveBeenCalled());
-    expect(r.priorAttempts).toMatchObject({ fingerprint: 'fp-1' });
+    // Pin the producer separately from transport shaping: otherwise a missing
+    // field cannot distinguish a failed history read from a projection loss.
+    const raw = await get.handler(input as never, ctx) as Out;
+    expect(raw.data.results[0].priorAttempts).toMatchObject({ fingerprint: 'fp-1' });
+    expect(r.priorAttempts, JSON.stringify({
+      rowKeys: Object.keys(r),
+      shapeNote: (data as Record<string, unknown>)._shapeNote,
+    })).toMatchObject({ fingerprint: 'fp-1' });
     // The whole point of the field: the caller learns "tried X, X was wrong"
     // from a READ. Before this, only work_items:claim carried that sentence.
     expect(r.priorAttempts.attempts[0].text).toBe('tried X; X was wrong');
