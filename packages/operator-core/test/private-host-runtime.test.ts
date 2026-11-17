@@ -1330,10 +1330,33 @@ it.each(['logs', 'repeated-step', 'repeated-step-new-pid', 'incomplete-step'])('
 it('stops the entire async builder group when no completed progress exists', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const childFile = join(evidenceDir, 'descendant.pid');
-  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+  const logFile = join(evidenceDir, 'operator-api-build.log');
+  const { setTimeout: realDelay } = await import('node:timers/promises');
+  // Hold the watchdog clock until the real descendant is ready. A 600ms
+  // startup assumption can kill the shell before it creates any descendant,
+  // leaving this process-group guard unexercised.
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  const build = buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
     args: ['-c', 'source "$2"; BUNDLE_HOST_STEP_LOG="$3"; bundle_host_run_step stuck bash -c \'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait\' _ "$1"',
       '_', childFile, common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
-    timeoutMs: 600, maxMs: 2400, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*progress-unknown/);
+    timeoutMs: 600, maxMs: 2400, pollMs: 20 });
+  const rejected = expect(build).rejects.toThrow(/ETIMEDOUT.*progress-unknown/);
+  try {
+    const readyDeadline = performance.now() + 5000;
+    while (!existsSync(childFile) || !readFileSync(logFile, 'utf8').includes('CHILD_READY')) {
+      assertReady: {
+        if (performance.now() < readyDeadline) break assertReady;
+        throw new Error('Real builder descendant did not become ready before watchdog exercise');
+      }
+      await realDelay(10);
+    }
+    await vi.advanceTimersByTimeAsync(600);
+    await rejected;
+  } finally {
+    await vi.advanceTimersByTimeAsync(2400);
+    await build.catch(() => {});
+    vi.useRealTimers();
+  }
   const descendant = Number(readFileSync(childFile, 'utf8'));
   await expect.poll(() => {
     try { return readFileSync(`/proc/${descendant}/stat`, 'utf8').split(') ')[1].split(' ')[0]; }
