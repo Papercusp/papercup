@@ -57,7 +57,9 @@ export async function measureTestingBackgroundScenario(o: Options) {
   // Derive observation from that anchored deadline rather than a second clock.
   const end = accepted.deadline.taskDeadlineAtMs + 15_000;
   while (Date.now() < end) {
-    const status = await call('testing:run-status', { runId: accepted.detachedRunId });
+    // This verifier consumes the result record, bootstrap phases and command;
+    // follow the status surface's recovery contract instead of parsing its preview.
+    const status = await call('testing:run-status', { runId: accepted.detachedRunId, payloadTier: 'full' });
     if (status.snapshot && status.snapshot.status !== 'running') { terminal = status.snapshot; break; }
     await delay(500);
   }
