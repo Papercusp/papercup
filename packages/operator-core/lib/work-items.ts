@@ -6466,7 +6466,33 @@ export async function claimWorkItem(
      * revision. Both families retain the self-select hold when using this capability.
      */
     revisionAdoptionAdmission?: AgentReviewRevisionAdoptionAdmission;
+    /** Internal dispatch identity, never a tool argument or a holder assertion. */
+    invocation?: { callId: string; ownerId: string; workspaceId: string };
   } = {},
+  transaction?: WorkItemClaimTransaction,
+): Promise<WorkItem | null> {
+  if (opts.invocation) {
+    if (Object.values(opts.invocation).some(value => !value?.trim())) {
+      throw new Error('Claim invocation identity is unavailable');
+    }
+    // Include the mutation AND its corroboration in one transaction/savepoint.
+    // Even an outer caller that catches a refusal cannot commit an uncorrelated
+    // claim; its notifications are appended only after this savepoint succeeds.
+    const afterCommit: WorkItemClaimTransaction['afterCommit'] = [];
+    const claimed = await boundedOrgTxn(client => claimWorkItemInTransaction(
+      id, assignee, opts, { client, afterCommit },
+    ), { ...(transaction ? { client: transaction.client } : {}), phase: 'work_items:claim:invocation' });
+    if (transaction) transaction.afterCommit.push(...afterCommit);
+    else for (const publish of afterCommit) await publish();
+    return claimed;
+  }
+  return claimWorkItemInTransaction(id, assignee, opts, transaction);
+}
+
+async function claimWorkItemInTransaction(
+  id: string,
+  assignee: string,
+  opts: NonNullable<Parameters<typeof claimWorkItem>[2]>,
   transaction?: WorkItemClaimTransaction,
 ): Promise<WorkItem | null> {
   // EI-23701433507513915: the WRITE backstop — a truncated su- owner id is never persisted as
@@ -6712,6 +6738,33 @@ export async function claimWorkItem(
   // (events:await leg; reaction rules observe the claim tools via postInvoke).
   if (claimed) {
     const won = claimed;
+    if (opts.invocation) {
+      const { callId, ownerId, workspaceId } = opts.invocation;
+      const sql = transaction!.client;
+      // Reuse the mandatory pre-handler record, preserving its original identity
+      // and pending settlement. This attests only to this successful claim's
+      // transaction. Same-holder claims, direct SQL, DDL and retention continuity
+      // require separate evidence; a holder is not the authenticated actor.
+      const rows = await sql<{ id: string }[]>`
+        UPDATE harness_shared.tool_invocations
+           SET metadata_json = jsonb_set(metadata_json, '{workItemClaims}',
+             COALESCE(metadata_json->'workItemClaims', '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
+               'schemaVersion', 'work-item-claim-transaction-v1',
+               'itemId', ${won.id}::text, 'harness', ${won.harness ?? null}::text, 'family', ${won.family}::text,
+               'claimWorkspaceId', ${claimWorkspaceId}::text, 'holder', ${won.assignee ?? null}::text,
+               'transactionId', txid_current()::text)), true)
+         WHERE workspace_id = ${workspaceId} AND tool_name = 'work_items:claim'
+           AND coord_owner_id = ${ownerId} AND status = 'pending'
+           AND metadata_json->'originalInvocation'->>'schemaVersion' = 'original-tool-invocation-v1'
+           AND metadata_json->'originalInvocation'->>'callId' = ${callId}
+           AND metadata_json->'originalInvocation'->>'ownerId' = ${ownerId}
+           AND metadata_json->'originalInvocation'->>'workspaceId' = ${workspaceId}
+           AND metadata_json->'responseObservation'->>'state' = 'pending'
+           AND (metadata_json->'workItemClaims' IS NULL
+             OR jsonb_typeof(metadata_json->'workItemClaims') = 'array')
+         RETURNING id::text`;
+      if (rows.length !== 1) throw new Error('Claim invocation correlation is unavailable');
+    }
     const publish = async () => {
     const priorHolder = prior?.assignee?.trim() || null;
     const explicitTransferHolder =

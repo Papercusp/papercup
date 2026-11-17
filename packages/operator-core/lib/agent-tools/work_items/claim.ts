@@ -370,6 +370,7 @@ async function claimOne(
   declaredById: ReadonlyMap<string, DeclaredChangeKinds>,
   callerRole: string | undefined,
   judgeRequestIsSingleSelfClaim: boolean,
+  dispatchCallId: string | undefined,
   reuse?: import('../../code-intelligence/task-brief').ClaimBriefReuseIdentity,
 ): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
@@ -680,6 +681,11 @@ async function claimOne(
   const workItem = await claimWorkItem(it.id, claimer, {
     harness: it.harness,
     fromHolder: legacySelfHolder ?? claimerDefault,
+    invocation: {
+      callId: dispatchCallId ?? '',
+      ownerId: identity.ownerId,
+      workspaceId: identity.workspaceId ?? '',
+    },
     ...(forced ? { expectedAssignee: forced.holder } : {}),
     ...(forceTakeoverAdmission ? { forceTakeoverAdmission } : {}),
     ...(legacyFleetScopeDowngradeAdmission ? { legacyFleetScopeDowngradeAdmission } : {}),
@@ -1549,7 +1555,7 @@ export default defineTool({
         : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
     );
     const claimed = await runBulk(list, (it) => claimOne(
-      it, ident, reader, verifiedCallerAlias, declaredById, callerRole, judgeRequestIsSingleSelfClaim, reuse,
+      it, ident, reader, verifiedCallerAlias, declaredById, callerRole, judgeRequestIsSingleSelfClaim, ctx.dispatchCallId, reuse,
     ), {
       keyOf: (it) => ({ id: it.id }),
     });

@@ -189,6 +189,18 @@ beforeAll(async () => {
   // tables, Scout ledger) go LAST — every statement is IF NOT EXISTS, so it only fills
   // what the hand-built schema above (adv_sessions, event substrate) left out.
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple());
+  // Narrow existing production seams: these tests exercise only the columns
+  // consumed by original-invocation corroboration and the private draft trigger.
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, tool_name text NOT NULL,
+      coord_owner_id text, status text NOT NULL, metadata_json jsonb NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS harness_shared.audit_log (
+      id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL,
+      action text NOT NULL, subject text NOT NULL, details jsonb, workspace_id text NOT NULL
+    );
+  `).simple();
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
@@ -201,12 +213,151 @@ beforeEach(async () => {
              harness_shared.event_wake_deliveries,
              harness_shared.event_key_fires,
              harness_shared.predicate_watches`;
+  await db.sql`TRUNCATE harness_shared.tool_invocations, harness_shared.audit_log`;
   releaseReclaimedWorkItemLocks.mockReset();
   releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
   leaderDispatchAdmission.resolveFleetScopeContext.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.fleetControlWindDownRefusal.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.leaderDispatchedAdmission.mockReset().mockResolvedValue(false);
   leaderDispatchAdmission.selfFiledFalloutAdmission.mockReset().mockReturnValue(false);
+});
+
+describe('claim invocation transaction corroboration', () => {
+  const invocation = { callId: 'claim-dispatch-call', ownerId: 'agent-actor', workspaceId: 'dispatch-workspace' };
+  async function seedInvocation(overrides: Record<string, unknown> = {}) {
+    const metadata = {
+      originalInvocation: { schemaVersion: 'original-tool-invocation-v1', ...invocation },
+      executionObservation: { state: 'unknown' }, responseObservation: { state: 'pending' },
+      preserve: 'original-metadata',
+      ...overrides,
+    };
+    const [row] = await db.sql<{ id: string }[]>`
+      INSERT INTO harness_shared.tool_invocations (workspace_id, tool_name, coord_owner_id, status, metadata_json)
+      VALUES (${invocation.workspaceId}, 'work_items:claim', ${invocation.ownerId}, 'pending', ${db.sql.json(metadata)})
+      RETURNING id::text`;
+    return row.id;
+  }
+  async function receipts() {
+    const rows = await db.sql`SELECT metadata_json FROM harness_shared.tool_invocations ORDER BY id`;
+    return rows.map(row => row.metadata_json);
+  }
+  beforeAll(async () => {
+    await db.sql.unsafe(readMigration('1643-work-item-custody-audit-capture.sql.DRAFT')).simple();
+  });
+  afterAll(async () => {
+    await db.sql`DROP TRIGGER capture_work_item_custody_audit_trg ON harness_shared.work_items`;
+  });
+
+  it.each(['feature', 'issue'] as const)('binds a delegated %s claim to its exact capture transaction and both scopes', async family => {
+    const id = family === 'feature' ? 'F-invocation' : 'EI-invocation';
+    if (family === 'feature') await seedFeature(id, { takenBy: invocation.ownerId });
+    else await seedIssue(id, { takenBy: invocation.ownerId });
+    await seedInvocation();
+    const won = await wi.claimWorkItem(id, 'agent-recipient', { harness: H, fromHolder: invocation.ownerId, invocation });
+    expect(won?.assignee).toBe('agent-recipient');
+    const [capture] = await db.sql`SELECT details FROM harness_shared.audit_log
+      WHERE subject = ${id} AND details->>'operation' = 'UPDATE'`;
+    const [metadata] = await receipts();
+    expect(metadata.originalInvocation).toMatchObject(invocation);
+    expect(metadata.preserve).toBe('original-metadata');
+    expect(metadata.responseObservation.state).toBe('pending');
+    expect(metadata.workItemClaims).toEqual([{
+      schemaVersion: 'work-item-claim-transaction-v1', itemId: id, harness: H, family,
+      claimWorkspaceId: 'default', holder: 'agent-recipient', transactionId: capture.details.transactionId,
+    }]);
+    expect(capture.details.before.taken_by).toBe(invocation.ownerId);
+    expect(capture.details.after.taken_by).toBe('agent-recipient');
+  });
+
+  it('retains separate batch transactions and does not turn a same-holder claim into a holder transition', async () => {
+    await seedFeature('F-same', { takenBy: 'agent-recipient' });
+    await seedIssue('EI-next');
+    await seedInvocation();
+    await wi.claimWorkItem('F-same', 'agent-recipient', { harness: H, invocation });
+    await wi.claimWorkItem('EI-next', 'agent-recipient', { harness: H, invocation });
+    const [metadata] = await receipts();
+    expect(metadata.workItemClaims).toHaveLength(2);
+    expect(metadata.workItemClaims[0].transactionId).not.toBe(metadata.workItemClaims[1].transactionId);
+    const [capture] = await db.sql`SELECT details FROM harness_shared.audit_log
+      WHERE subject = 'F-same' AND details->>'operation' = 'UPDATE'`;
+    expect(capture.details.before.taken_by).toBe(capture.details.after.taken_by);
+  });
+
+  it.each(['feature', 'issue'] as const)('rolls back %s holder/capture/publication on each missing or mismatched mandatory identity', async family => {
+    const cases = ['missing', 'call', 'owner', 'scope', 'schema', 'tool', 'coord-owner', 'settled', 'response', 'malformed', 'duplicate'] as const;
+    for (const mismatch of cases) {
+      await db.sql`TRUNCATE harness_shared.tool_invocations, harness_shared.audit_log, harness_shared.work_items`;
+      const id = family === 'feature' ? 'F-rollback' : 'EI-rollback';
+      if (family === 'feature') await seedFeature(id, { takenBy: invocation.ownerId });
+      else await seedIssue(id, { takenBy: invocation.ownerId });
+      if (mismatch !== 'missing') {
+        const originalInvocation = { schemaVersion: 'original-tool-invocation-v1', ...invocation };
+        if (mismatch === 'call') originalInvocation.callId = 'different-call';
+        if (mismatch === 'owner') originalInvocation.ownerId = 'different-actor';
+        if (mismatch === 'scope') originalInvocation.workspaceId = 'different-scope';
+        if (mismatch === 'schema') originalInvocation.schemaVersion = 'unknown-generation';
+        await seedInvocation({ originalInvocation,
+          ...(mismatch === 'response' ? { responseObservation: { state: 'produced' } } : {}),
+          ...(mismatch === 'malformed' ? { workItemClaims: {} } : {}),
+        });
+        if (mismatch === 'tool') await db.sql`UPDATE harness_shared.tool_invocations SET tool_name = 'work_items:release'`;
+        if (mismatch === 'coord-owner') await db.sql`UPDATE harness_shared.tool_invocations SET coord_owner_id = 'different-actor'`;
+        if (mismatch === 'settled') await db.sql`UPDATE harness_shared.tool_invocations SET status = 'ok'`;
+        if (mismatch === 'duplicate') await seedInvocation();
+      }
+      const before = await receipts();
+      releaseReclaimedWorkItemLocks.mockClear();
+      await expect(wi.claimWorkItem(id, 'agent-recipient', {
+        harness: H, fromHolder: invocation.ownerId, invocation,
+      }), mismatch).rejects.toThrow('Claim invocation correlation is unavailable');
+      const [row] = await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${id}`;
+      expect(row.taken_by, mismatch).toBe(invocation.ownerId);
+      expect(await receipts(), mismatch).toEqual(before);
+      const captures = await db.sql`SELECT id FROM harness_shared.audit_log WHERE details->>'operation' = 'UPDATE'`;
+      expect(captures, mismatch).toHaveLength(0);
+      expect(releaseReclaimedWorkItemLocks, mismatch).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rolls back its savepoint even when an outer transaction catches missing corroboration', async () => {
+    await seedIssue('EI-outer', { takenBy: invocation.ownerId });
+    const afterCommit: Array<() => Promise<void>> = [];
+    await db.sql.begin(async client => {
+      await expect(wi.claimWorkItem('EI-outer', 'agent-recipient', {
+        harness: H, fromHolder: invocation.ownerId, invocation,
+      }, { client: client as unknown as typeof h.sql, afterCommit })).rejects.toThrow('Claim invocation correlation');
+      const [row] = await client`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'EI-outer'`;
+      expect(row.taken_by).toBe(invocation.ownerId);
+    });
+    expect(afterCommit).toEqual([]);
+  });
+
+  it('defers publication to its supplied outer transaction and discards receipts on outer rollback', async () => {
+    await seedFeature('F-outer', { takenBy: invocation.ownerId });
+    await seedInvocation();
+    const afterCommit: Array<() => Promise<void>> = [];
+    await expect(db.sql.begin(async client => {
+      await wi.claimWorkItem('F-outer', 'agent-recipient', {
+        harness: H, fromHolder: invocation.ownerId, invocation,
+      }, { client: client as unknown as typeof h.sql, afterCommit });
+      expect(afterCommit.length).toBeGreaterThan(0);
+      expect(releaseReclaimedWorkItemLocks).not.toHaveBeenCalled();
+      throw new Error('outer rollback');
+    })).rejects.toThrow('outer rollback');
+    const [row] = await db.sql`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = 'F-outer'`;
+    expect(row.taken_by).toBe(invocation.ownerId);
+    expect((await receipts())[0].workItemClaims).toBeUndefined();
+  });
+
+  it('does not corroborate a lost claim or accept an empty dispatch identity', async () => {
+    await seedFeature('F-lost', { takenBy: 'another-agent' });
+    await seedInvocation();
+    expect(await wi.claimWorkItem('F-lost', 'agent-recipient', { harness: H, invocation })).toBeNull();
+    expect((await receipts())[0].workItemClaims).toBeUndefined();
+    await expect(wi.claimWorkItem('F-lost', 'agent-recipient', {
+      harness: H, invocation: { ...invocation, callId: '' },
+    })).rejects.toThrow('Claim invocation identity is unavailable');
+  });
 });
 
 describe('known-family lifecycle reads (EI-27984315103577037)', () => {

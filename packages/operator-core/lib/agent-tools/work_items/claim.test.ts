@@ -5,7 +5,7 @@
  * classify) fails only that item and carries holder/hint; top-level ok stays true.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
+import { dispatchProjectedTool, lookupByMcpName, type BatchResult } from '@papercusp/tooldef';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -233,7 +233,12 @@ const body = async (args: unknown, ctx: unknown = {}) => {
   } as never, {});
   expect(dispatched.ok).toBe(true);
   expect(args).toEqual(originalInput);
-  const result = dispatched.result?.structuredContent as Out['data'] | undefined;
+  // Dispatch wraps the legacy keyed claim result in one canonical batch item.
+  // Assert that transport boundary before testing the handler's own results.
+  const batch = dispatched.result?.structuredContent as unknown as BatchResult;
+  expect(batch.results).toHaveLength(1);
+  expect(batch.results[0].output).toBeDefined();
+  const result = batch.results[0].output?.structuredContent as Out['data'] | undefined;
   expect(result).toBeDefined();
   return result;
 };
@@ -267,6 +272,24 @@ beforeEach(() => {
   pilotReceipts.persistBinding.mockReset();
   gateSingleton.conditionKey = null;
   gateSingleton.rewake = { guaranteed: true, reason: null };
+});
+
+describe('claim invocation identity', () => {
+  it('binds a delegated claim to the server call ID and admitted actor, preserving the target holder', async () => {
+    // Isolate writer wiring from unrelated post-claim advisory DB reads. The
+    // real-PG suite separately proves successful mutation/correlation atomicity.
+    claimM.mockResolvedValue(null);
+    classifyM.mockReturnValue({ reason: 'not_found' });
+    await body({ id: 'WI-correlated', assignee: 'agent-recipient' }, { dispatchCallId: 'caller-forged-id' });
+    const [id, holder, options] = claimM.mock.calls[0];
+    expect(id).toBe('WI-correlated');
+    expect(holder).toBe('agent-recipient');
+    expect(options?.invocation).toEqual({
+      callId: expect.any(String), ownerId: 'me', workspaceId: 'ws-1',
+    });
+    expect(options?.invocation?.callId).not.toBe('caller-forged-id');
+    expect(options?.invocation?.callId.length).toBeGreaterThan(0);
+  });
 });
 
 describe('R3 claim receipt stack defaults (independent P023 acceptance)', () => {
@@ -313,6 +336,7 @@ describe('R3 claim receipt stack defaults (independent P023 acceptance)', () => 
       expect(JSON.stringify(result)).toMatch(expectedTool);
       expect(JSON.stringify(result)).toMatch(/artifact|recorded/i);
       expect(claimM).toHaveBeenCalledExactlyOnceWith('WI-R3-STACK', 'me', {
+        invocation: expect.any(Object),
         harness: 'r3-fixture', fromHolder: identity.ownerId,
       });
     } finally {
@@ -379,7 +403,7 @@ describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-conv' });
     expect(gateSingleton.readRewake).toHaveBeenCalledWith('me');
     expect(claimM).toHaveBeenCalledOnce();
-    expect(claimM).toHaveBeenCalledWith('EI-conv', 'me', { fromHolder: 'me' });
+    expect(claimM).toHaveBeenCalledWith('EI-conv', 'me', { invocation: expect.any(Object), fromHolder: 'me' });
   });
 
   it('never guards a per-leg frozen-repair-leg item, even for a claimant with no loop (D-028(2))', async () => {
@@ -390,7 +414,7 @@ describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-leg' });
     expect(gateSingleton.readRewake).not.toHaveBeenCalled();
     expect(claimM).toHaveBeenCalledOnce();
-    expect(claimM).toHaveBeenCalledWith('EI-leg', 'me', { fromHolder: 'me' });
+    expect(claimM).toHaveBeenCalledWith('EI-leg', 'me', { invocation: expect.any(Object), fromHolder: 'me' });
   });
 });
 
@@ -428,7 +452,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     const b = await body({ id: 'WI-REVIEW', harness: 'papercusp', changeKinds: ['no-code-change'] }, { role: 'judge' });
 
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-REVIEW' });
-    expect(claimM).toHaveBeenCalledWith('WI-REVIEW', 'me', { harness: 'papercusp', fromHolder: 'me' });
+    expect(claimM).toHaveBeenCalledWith('WI-REVIEW', 'me', { invocation: expect.any(Object), harness: 'papercusp', fromHolder: 'me' });
     expect((tool as { agentRoles?: readonly string[] }).agentRoles).toContain('judge');
   });
 
@@ -511,7 +535,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b).toBeDefined();
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
-    expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
     expect(claimM).toHaveBeenCalledTimes(1);
   });
 
@@ -521,7 +545,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     getM.mockResolvedValue(issueItem({ assignee: session }));
     const ctx = { uiClientId: session, principal: { slug: 'system:judge', authMethod: 'spawn-url', trust: 'trusted' } };
     await tool.handler({ id: 'WI-1' } as never, ctx as never);
-    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { harness: undefined, fromHolder: session });
+    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { invocation: expect.any(Object), harness: undefined, fromHolder: session });
     expect(assessForceM).not.toHaveBeenCalled();
   });
 
@@ -531,7 +555,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     getM.mockResolvedValue(issueItem({ assignee: session }));
     const ctx = { uiClientId: session, principal: { slug: 'system:judge', authMethod: 'bearer', trust: 'trusted' } };
     await tool.handler({ id: 'WI-1' } as never, ctx as never);
-    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-1', identity.ownerId, { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
   });
 
   it('mints a canonical pilot binding only after a caller-owned claim lands', async () => {
@@ -649,7 +673,7 @@ describe('work_items:claim handler (keyed-array)', () => {
   it('claims MANY via ids:[…] for an explicit assignee', async () => {
     const b = await body({ ids: ['WI-1', 'WI-2'], assignee: 'bee-7' });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
-    expect(claimM).toHaveBeenCalledWith('WI-2', 'bee-7', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-2', 'bee-7', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
   });
 
   it('P-016 refuses an out-of-scope named claim before mutation and alerts the leader', async () => {
@@ -724,6 +748,7 @@ describe('work_items:claim handler (keyed-array)', () => {
       actor: 'me',
     });
     expect(claimM).toHaveBeenCalledWith('WI-PLAN-EXCEPTION', 'me', {
+      invocation: expect.any(Object),
       harness: 'sidestage',
       fromHolder: identity.ownerId,
     });
@@ -784,7 +809,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     identity.ownerId = 'su-loopback';
     const b = await body({ id: 'WI-DIRECTED', assignee: 's-bee-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(claimM).toHaveBeenCalledWith('WI-DIRECTED', 's-bee-1', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-DIRECTED', 's-bee-1', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
   });
 
   // EI-8509: scripts/mcp-call.mjs mints `mcp-call-<pid>` when invoked with no
@@ -809,7 +834,7 @@ describe('work_items:claim handler (keyed-array)', () => {
     identity.ownerId = 'mcp-call-12345';
     const b = await body({ id: 'WI-DIRECTED-2', assignee: 's-bee-2' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(claimM).toHaveBeenCalledWith('WI-DIRECTED-2', 's-bee-2', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-DIRECTED-2', 's-bee-2', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
   });
 
   it('a claim_conflict fails only that item (top-level ok stays true) with holder + hint', async () => {
@@ -838,7 +863,7 @@ describe('work_items:claim handler (keyed-array)', () => {
       expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
       // fromHolder is the whole mechanism: it widens the CAS by the caller's OWN claim.
       // Without it the UPDATE matches only an unheld row and the transfer is refused.
-      expect(claimM).toHaveBeenCalledWith('WI-MINE', 'peer', { harness: undefined, fromHolder: 'me' });
+      expect(claimM).toHaveBeenCalledWith('WI-MINE', 'peer', { invocation: expect.any(Object), harness: undefined, fromHolder: 'me' });
     });
 
     it('never offers a THIRD party as fromHolder — only ever the caller', async () => {
@@ -898,6 +923,7 @@ describe('work_items:claim handler (keyed-array)', () => {
         releaseRequest: null,
       });
       expect(claimM).toHaveBeenCalledWith('WI-DEAD', 'me', {
+        invocation: expect.any(Object),
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer',
@@ -960,6 +986,7 @@ describe('work_items:claim handler (keyed-array)', () => {
 
       expect(assessForceM).toHaveBeenCalledWith(expect.objectContaining({ releaseRequest: request }));
       expect(claimM).toHaveBeenCalledWith('WI-EXPIRED', 'me', {
+        invocation: expect.any(Object),
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer',
@@ -1095,6 +1122,7 @@ describe('work_items:claim handler (keyed-array)', () => {
 
       expect(b.counts).toEqual({ ok: 2, failed: 0 });
       expect(claimM).toHaveBeenNthCalledWith(1, 'WI-A', 'me', {
+        invocation: expect.any(Object),
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer-a',
@@ -1106,6 +1134,7 @@ describe('work_items:claim handler (keyed-array)', () => {
         }),
       });
       expect(claimM).toHaveBeenNthCalledWith(2, 'WI-B', 'me', {
+        invocation: expect.any(Object),
         harness: undefined,
         fromHolder: 'me',
         expectedAssignee: 'peer-b',
@@ -1309,7 +1338,7 @@ describe('work_items:claim handler (keyed-array)', () => {
   it('EI-9274: assignee:"self" resolves to the caller ownerId, not the literal string', async () => {
     const b = await body({ id: 'WI-1', assignee: 'self' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
   });
 
   it('EI-9274: assignee:"self" under the su-loopback fallback is refused the same as an omitted assignee', async () => {
@@ -1323,7 +1352,7 @@ describe('work_items:claim handler (keyed-array)', () => {
   it('a concrete assignee ownerId literally named "self-service-bot" is passed through unchanged', async () => {
     const b = await body({ id: 'WI-1', assignee: 'self-service-bot' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
-    expect(claimM).toHaveBeenCalledWith('WI-1', 'self-service-bot', { harness: undefined, fromHolder: identity.ownerId });
+    expect(claimM).toHaveBeenCalledWith('WI-1', 'self-service-bot', { invocation: expect.any(Object), harness: undefined, fromHolder: identity.ownerId });
   });
 
   describe('readiness-floor contract for named claims (D-008)', () => {
@@ -1365,6 +1394,7 @@ describe('work_items:claim handler (keyed-array)', () => {
 
       expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-UNPARK', workItem: { assignee: 'me' } });
       expect(claimM).toHaveBeenCalledWith('WI-UNPARK', 'me', {
+        invocation: expect.any(Object),
         harness: undefined,
         fromHolder: identity.ownerId,
       });
@@ -1388,7 +1418,7 @@ describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
 
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     // taken_by holds the short string, so the CAS must match THAT, while the claim writes ME.
-    expect(claimM).toHaveBeenCalledWith('WI-LEGACY', ME, { harness: undefined, fromHolder: 'su-851c1a7a' });
+    expect(claimM).toHaveBeenCalledWith('WI-LEGACY', ME, { invocation: expect.any(Object), harness: undefined, fromHolder: 'su-851c1a7a' });
     expect(assessForceM).not.toHaveBeenCalled();
   });
 
