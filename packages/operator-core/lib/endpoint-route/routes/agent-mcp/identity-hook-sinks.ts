@@ -134,14 +134,14 @@ function toolGuardPgTimings(requestId: string) {
   }
 }
 
-/** This bounded history excludes bare SQL users and waits still in progress. */
+/** Only this request's instrumented waits are visible; bare SQL users remain outside coverage. */
 function toolGuardPgAcquisitions(snapshot: typeof pgAcquireTimingSnapshot) {
   try {
     const timing = snapshot();
     return timing ? {
       coverage: 'instrumented-acquisition-seam-only',
       timing: 'begin-to-acquired-or-release-not-query-time',
-      pendingAcquisitions: 'not-retained',
+      pendingAcquisitions: Array.isArray(timing.pending) ? 'request-scoped-active-tickets-only' : 'not-retained',
       ...timing,
     } : { coverage: 'unavailable' };
   } catch {
@@ -406,7 +406,12 @@ const toolGuard = defineTool({
     const timings = { guard: performance.now() - startedAt, setup: setupMs, ...phases,
       ...Object.fromEntries(Object.entries(planStages).map(([stage, duration]) => ['plan_' + stage, duration])),
       ...Object.fromEntries(Object.entries(identityStages).map(([stage, duration]) => ['identity_' + stage, duration])) };
-    return Response.json({ ok: true, text }, { headers: {
+    // Native clients render the refusal text, not response headers. Retain the
+    // same validated opaque id there so a server verdict can be matched to its
+    // diagnostic log too. Empty text must stay empty: it means no refusal.
+    const responseText = text && guardRequestId
+      ? `${text}\nGuard diagnostic: requestId=${guardRequestId}.` : text;
+    return Response.json({ ok: true, text: responseText }, { headers: {
       ...(guardRequestId ? { 'X-Papercusp-Guard-Request-Id': guardRequestId } : {}),
       'Server-Timing': Object.entries(timings).map(([phase, duration]) => `${phase};dur=${duration.toFixed(1)}`).join(', '),
     } });
