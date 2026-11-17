@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { createImplementationReadiness, sealImplementationAcceptance, countWorkItemPresentationStages, intakeStageAdmitsClaim, implementationReadinessAdmitsClaim } from './harness/improvements/agent-review-policy';
 import { getBuildInfo } from './build-info';
 import { readProcessIdentity } from './process-identity';
@@ -66,6 +66,7 @@ vi.mock('./work-scope-policy', async (orig) => {
 
 const {
   ADMISSION_REVIEW_MOOT_OUTCOME,
+  admissionReviewSubjectEligible,
   admissionPairKey,
   applyReviewedAdmissionCleanup,
   closeMootAdmissionReviews,
@@ -91,6 +92,8 @@ const {
   withWorkItemDependencyAdmissionTransaction,
 } = await import('./dbos/work-item-deps-store');
 
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+
 const WS = 'default';
 const HARNESS = 'papercusp';
 const NOW = Date.parse('2026-08-26T12:00:00Z');
@@ -100,6 +103,13 @@ let vintage: InMemoryRuntimeVintageStore;
 const DDL = `
   CREATE EXTENSION IF NOT EXISTS vector;
   CREATE SCHEMA IF NOT EXISTS harness_shared;
+  CREATE TABLE harness_shared.predicate_watches (
+    id uuid PRIMARY KEY, workspace_id text NOT NULL, owner_id text NOT NULL,
+    role text NOT NULL, harness_slug text, event_key text NOT NULL,
+    tool text NOT NULL, args jsonb NOT NULL, path text NOT NULL, op text NOT NULL,
+    value jsonb, once boolean NOT NULL, bound_to jsonb,
+    active boolean NOT NULL DEFAULT false, last_value jsonb
+  );
   CREATE TABLE harness_shared.audit_log (
     id text PRIMARY KEY, ts bigint NOT NULL, workspace_id text NOT NULL,
     actor text NOT NULL, action text NOT NULL, subject text NOT NULL, details jsonb
@@ -308,6 +318,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await flushFallbackObservations();
   await db.sql`TRUNCATE harness_shared.audit_log, harness_shared.work_items, harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.dedup_edges,
+    harness_shared.predicate_watches,
     harness_shared.dedup_adjudications, harness_shared.admission_runs,
     harness_shared.work_item_occurrences, harness_shared.routines, harness_shared.fallback_observations RESTART IDENTITY`;
   h.scopeTerms = undefined;
@@ -393,6 +404,188 @@ function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
     };
   });
 }
+
+describe('canonical admission predicate review adapter', () => {
+  const owner = 'su-predicate-custodian';
+  const targetId = 'EI-predicate-review';
+  const predicateId = '00000000-0000-4000-8000-000000000001';
+  const ref = `predicate:${predicateId}`;
+  const blocker = { kind: 'event', capability: 'live-dependency', capabilitySource: 'explicit',
+    ref, summary: 'Review this exact admission', status: 'active', createdBy: owner,
+    createdAt: '2026-08-26T00:00:00Z', updatedAt: '2026-08-26T00:00:00Z' };
+  const payload = { externalBlockers: [blocker], admissionReview: { state: 'pending' },
+    admissionHold: { reason: 'original review hold' }, _admissionReviewRequest: { requestId: 'original-request' } };
+  const seed = async (workspaceId = WS) => {
+    await seedItem({ id: targetId, admission: 'unreviewed', status: 'blocked', takenBy: owner, payload });
+    await db.sql`INSERT INTO harness_shared.predicate_watches
+      (id, workspace_id, owner_id, role, harness_slug, event_key, tool, args, path, op, value, once, last_value)
+      VALUES (${predicateId}, ${workspaceId}, ${owner}, 'operator', ${HARNESS}, ${ref}, 'work_items:get',
+        ${JSON.stringify({ id: targetId, detail: true, harness: HARNESS })}::text::jsonb,
+        'results.0.workItem.payload.admissionReview.state', 'ne', '"pending"'::jsonb, true, '"pending"'::jsonb)`;
+  };
+  const snapshots = () => readAdmissionMergeSnapshots(db.sql, { workspaceId: WS, harnessSlug: HARNESS, ids: [targetId] });
+  const run = (beforePersist?: () => Promise<void>) => runWorkItemAdmissionPromoter({
+    workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, runId: 'predicate-review',
+    targetItemIds: [targetId], now: () => NOW, beforePersist,
+    llmCall: vi.fn(async () => { throw new Error('no neighbour requires model work'); }),
+    reviewOnly: { itemId: targetId, beforeWrite: vi.fn(async () => {}), afterWrite: vi.fn(async () => {}) },
+  });
+
+  it('reviews a retired self-predicate while preserving custody, request and unsatisfied event history', async () => {
+    await seed();
+    const captured = (await snapshots()).get(targetId)!;
+    expect(admissionReviewSubjectEligible(captured), JSON.stringify({
+      predicates: captured.admissionReviewPredicates, workspaceId: captured.workspaceId,
+      harnessSlug: captured.harnessSlug, state: captured.state, admission: captured.admission,
+      assignee: captured.assignee, payload: captured.payload, dependencies: captured.dependencies,
+    })).toBe(true);
+    expect(captured.payload).toEqual(payload);
+    const result = await run();
+    expect(result.promoted).toBe(1);
+    const [current] = await db.sql`SELECT status, taken_by, payload FROM harness_shared.work_items WHERE feature_id = ${targetId}`;
+    expect(current).toMatchObject({ status: 'blocked', taken_by: owner, payload: {
+      externalBlockers: [blocker], _admissionReviewRequest: payload._admissionReviewRequest,
+      admissionReview: { state: 'reviewed' },
+    } });
+    const [watch] = await db.sql`SELECT active, last_value FROM harness_shared.predicate_watches WHERE id = ${predicateId}`;
+    expect(watch).toEqual({ active: false, last_value: 'pending' });
+  });
+
+  it('does not borrow an exact-looking descriptor from another tenant', async () => {
+    await seed('foreign-workspace');
+    const captured = (await snapshots()).get(targetId)!;
+    expect(captured.admissionReviewPredicates).toEqual([]);
+    expect(admissionReviewSubjectEligible(captured)).toBe(false);
+    const result = await run();
+    expect(result.promoted).toBe(0);
+  });
+
+  it('revalidates descriptor identity before the guarded admission write', async () => {
+    await seed();
+    const before = (await snapshots()).get(targetId)!;
+    const result = await run(async () => {
+      await db.sql`UPDATE harness_shared.predicate_watches SET args =
+        ${JSON.stringify({ id: 'EI-independent', detail: true, harness: HARNESS })}::text::jsonb WHERE id = ${predicateId}`;
+    });
+    const after = (await snapshots()).get(targetId)!;
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+    expect(admissionReviewSubjectEligible(after)).toBe(false);
+    expect(result.promoted).toBe(0);
+    const [current] = await db.sql`SELECT admission, payload FROM harness_shared.work_items WHERE feature_id = ${targetId}`;
+    expect(current).toMatchObject({ admission: 'unreviewed', payload });
+  });
+});
+
+describe('explicit admission review read-only references', () => {
+  const targetId = 'WI-review-target';
+  const referenceId = 'WI-review-reference';
+  const pendingReview = { status: 'pending', submittedBy: 'su-reviewer', ledgerIdeaId: 'review-gate', round: 1 };
+  const readItem = async (id: string) => (await db.sql`
+    SELECT * FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`)[0]!;
+  const review = () => ({ itemId: targetId, beforeWrite: vi.fn(async () => {}),
+    afterWrite: vi.fn(async () => {}), afterGuardRefusal: vi.fn(async () => {}) });
+  const run = (reviewOnly: ReturnType<typeof review>, overrides = {}) => runWorkItemAdmissionPromoter({
+    workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, runId: 'explicit-reference-review',
+    targetItemIds: [targetId], reviewOnly, now: () => NOW,
+    llmCall: vi.fn(async () => ({ text: '', inputTokens: 100, outputTokens: 20,
+      json: { judgements: [{ pairKey: admissionPairKey(targetId, referenceId), verdict: 'distinct',
+        reason: 'rubric discovery and measurement existence have different contracts' }] } })),
+    ...overrides,
+  });
+  const seedTarget = () => seedItem({ id: targetId, admission: 'unreviewed', takenBy: 'su-author',
+    payload: { keep: 'author custody', admissionReview: { state: 'pending' },
+      admissionHold: { reason: `deferred: twin ${referenceId} is blocked-state; held until it can be judged` } } });
+
+  it.each([
+    { label: 'blocked', status: 'blocked' },
+    { label: 'human-blocked', status: 'needs-human', payload: { needsOwnerAction: true } },
+    { label: 'claimed', takenBy: 'su-peer' },
+    { label: 'claim-held', payload: { _claimHold: true } },
+    { label: 'review-gated', payload: { agentReview: pendingReview } },
+    { label: 'remote-owned', origin: 'remote', authorPubkey: 'remote-node' },
+  ])('admits a distinct target without mutating its $label reference', async ({ label: _label, ...reference }) => {
+    await seedItem({ id: referenceId, admission: 'admitted', createdAtMs: NOW - 20_000, ...reference });
+    await seedTarget();
+    const before = await readItem(referenceId);
+    const reviewOnly = review();
+
+    const result = await run(reviewOnly);
+
+    expect(result).toMatchObject({ promoted: 1, merged: 0, held: 0, guardRefusals: [] });
+    expect(await readItem(referenceId)).toEqual(before);
+    const target = await readItem(targetId);
+    expect(target).toMatchObject({ admission: 'admitted', taken_by: 'su-author', payload: { keep: 'author custody' } });
+    expect(target.payload.admissionHold).toBeUndefined();
+    expect(reviewOnly.beforeWrite).toHaveBeenCalledOnce();
+    expect(reviewOnly.afterWrite).toHaveBeenCalledOnce();
+    expect(reviewOnly.afterGuardRefusal).not.toHaveBeenCalled();
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    expect(await db.sql`SELECT 1 FROM harness_shared.coord_links`).toHaveLength(0);
+  }, 60_000);
+
+  it('keeps a real duplicate held without merging or changing the protected reference', async () => {
+    await seedItem({ id: referenceId, admission: 'admitted', status: 'blocked', createdAtMs: NOW - 20_000 });
+    await seedTarget();
+    const before = await readItem(referenceId);
+    const reviewOnly = review();
+    const result = await run(reviewOnly, { llmCall: judgementCall('r-finding-merge') });
+
+    expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1, guardRefusals: [] });
+    expect(await readItem(referenceId)).toEqual(before);
+    expect(await readItem(targetId)).toMatchObject({ admission: 'unreviewed', taken_by: 'su-author',
+      payload: { admissionHold: { reason: 'review-only purpose cannot merge endpoints' } } });
+    expect(reviewOnly.afterWrite).toHaveBeenCalledOnce();
+    expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
+    expect(await db.sql`SELECT 1 FROM harness_shared.coord_links`).toHaveLength(0);
+  }, 60_000);
+
+  it.each(['content', 'custody', 'scope', 'missing'])('refuses a reference whose %s changes after judging', async (change) => {
+    await seedItem({ id: referenceId, admission: 'admitted', status: 'blocked', createdAtMs: NOW - 20_000 });
+    await seedTarget();
+    const reviewOnly = review();
+    const result = await run(reviewOnly, { beforePersist: async () => {
+      if (change === 'content') await db.sql`UPDATE harness_shared.work_items SET title = 'changed finding' WHERE feature_id = ${referenceId}`;
+      if (change === 'custody') await db.sql`UPDATE harness_shared.work_items SET taken_by = 'su-new-holder' WHERE feature_id = ${referenceId}`;
+      if (change === 'scope') await db.sql`UPDATE harness_shared.work_items SET harness_slug = 'other-harness' WHERE feature_id = ${referenceId}`;
+      if (change === 'missing') await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = ${referenceId}`;
+    } });
+
+    expect(result).toMatchObject({ promoted: 0, merged: 0, held: 1 });
+    expect(result.guardRefusals).toEqual([expect.objectContaining({ itemId: targetId,
+      reason: ['scope', 'missing'].includes(change) ? 'scope-or-identity-changed' : 'snapshot-drift' })]);
+    expect(await readItem(targetId)).toMatchObject({ admission: 'unreviewed', taken_by: 'su-author' });
+    expect(reviewOnly.afterWrite).not.toHaveBeenCalled();
+    expect(reviewOnly.afterGuardRefusal).toHaveBeenCalledOnce();
+  }, 60_000);
+
+  it.each([
+    { label: 'needs-human', status: 'needs-human' },
+    { label: 'remote-owned', origin: 'remote', authorPubkey: 'remote-node' },
+    { label: 'review-gated', payload: { agentReview: pendingReview } },
+    { label: 'owner-gated', payload: { needsOwnerAction: true } },
+  ])('retains the $label target protection', async ({ label: _label, ...protection }) => {
+    await seedItem({ id: targetId, ...protection });
+    const before = await readItem(targetId);
+    const reviewOnly = review();
+    const result = await run(reviewOnly);
+
+    expect(result).toMatchObject({ promoted: 0, merged: 0 });
+    expect(result.guardRefusals).not.toHaveLength(0);
+    expect(await readItem(targetId)).toEqual(before);
+    expect(reviewOnly.afterWrite).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('renews signed request and custody authorization before any review write', async () => {
+    await seedItem({ id: referenceId, admission: 'admitted', status: 'blocked', createdAtMs: NOW - 20_000 });
+    await seedTarget();
+    const before = await readItem(targetId);
+    const reviewOnly = review();
+    reviewOnly.beforeWrite.mockRejectedValueOnce(new Error('signed request or custody changed'));
+    await expect(run(reviewOnly)).rejects.toThrow('signed request or custody changed');
+    expect(await readItem(targetId)).toEqual(before);
+    expect(reviewOnly.afterWrite).not.toHaveBeenCalled();
+  }, 60_000);
+});
 
 describe('work-item admission promoter (real Postgres)', () => {
   it.each([false, true])('excludes typed source and direct child lineage in either screening direction (reverse=%s)', async (reverse) => {
@@ -5010,6 +5203,42 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
       SELECT admission, jsonb_typeof(payload -> 'dedupCoverage') AS coverage_type, payload
         FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`)[0]!;
 
+  it('retains every failed-leg diagnostic on the row and run after a later clean re-screen replaces row coverage', async () => {
+    const ids = ['WI-rs-diag-z', 'WI-rs-diag-a', 'WI-rs-diag-m'];
+    const failures: Record<string, DedupRescreenVerdict> = {};
+    for (const [index, id] of ids.entries()) {
+      await seedItem({ id, createdAtMs: OLD - index * 1_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
+      failures[id] = {
+        ...stillDown,
+        diagnostics: { lexical: {
+          outcome: 'unavailable', reason: 'error', phase: 'candidate-search', elapsedMs: 17 + index,
+          error: { name: 'Error', message: `query failure for ${id}`, code: 'CONNECTION_CLOSED' },
+        } },
+      };
+    }
+    const failed = await failOpenAt(NOW, screenWith(failures), 'fail-open-diagnostic-failure');
+    const expected = ids.map(itemId => ({ itemId, diagnostics: failures[itemId]!.diagnostics }));
+    expect((failed.dedupRescreen as DedupRescreenSummary).screenFailures)
+      .toEqual(expect.arrayContaining(expected));
+    expect((failed.dedupRescreen as DedupRescreenSummary).screenFailures).toHaveLength(ids.length);
+    for (const id of ids) {
+      const row = await readRow(id);
+      expect(row.admission).toBe('pending');
+      expect(row.payload.dedupCoverage.rescreen.diagnostics).toEqual(failures[id]!.diagnostics);
+    }
+
+    const recovered = await failOpenAt(NOW + 3 * 60 * 60_000,
+      screenWith(Object.fromEntries(ids.map(id => [id, clean]))), 'fail-open-diagnostic-recovery');
+    expect((recovered.dedupRescreen as DedupRescreenSummary).screenFailures).toEqual([]);
+    expect([...recovered.autoPromoted].sort()).toEqual([...ids].sort());
+    for (const id of ids) expect((await readRow(id)).payload.dedupCoverage.degraded).toBe(false);
+    const [run] = await db.sql<Array<{ rescreen: DedupRescreenSummary }>>`
+      SELECT detail -> 'dedupRescreen' AS rescreen FROM harness_shared.admission_runs
+       WHERE workspace_id = ${WS} AND id = 'fail-open-diagnostic-failure'`;
+    expect(run!.rescreen.screenFailures).toEqual(expect.arrayContaining(expected));
+    expect(run!.rescreen.screenFailures).toHaveLength(ids.length);
+  });
+
   it('admits a clean re-screen in the same run, stamps found twins for the promoter, and records a still-degraded attempt', async () => {
     await seedItem({ id: 'WI-rs-clean', createdAtMs: OLD - 3_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
     await seedItem({ id: 'WI-rs-twin', createdAtMs: OLD - 2_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
@@ -5252,5 +5481,297 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
     expect(maxInFlight).toBe(DEFAULT_DEDUP_RESCREEN_CONCURRENCY);
     expect(summary).toMatchObject({ attempted: BACKLOG, budgetExhausted: false, errored: [], raceSkipped: [] });
     expect(summary.clean).toEqual(backlogIds);
+  });
+});
+
+// EI-28990041785851999: a reviewed merge must move the loser's dependency edges
+// BEFORE it drops the loser. Production enforces dependency lifecycle with a
+// non-deferrable BEFORE UPDATE OF status trigger. This file's hand-rolled schema
+// lacks it, so this block applies the shipping migrations verbatim (never a
+// restated function) and removes the trigger afterwards.
+describe('reviewed admission merge under the shipping dependency lifecycle guard', () => {
+  const sqlDir = new URL('../../../libs/papercusp/libs/db/sql/', import.meta.url);
+
+  beforeAll(async () => {
+    await db.sql`TRUNCATE harness_shared.work_item_deps`;
+    // The 1621 trigger body reads dependant.last_progress_at; plpgsql resolves columns
+    // only at execution, so applying the migration succeeds and the first status write
+    // fails instead. Migration 357 added the column (to work_items' predecessor table);
+    // this file's minimal DDL omits it, and it is the only column the three bodies read
+    // that the DDL lacks.
+    await db.sql`ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS last_progress_at timestamptz`;
+    for (const file of [
+      '991-work-item-dependency-lifecycle-transition-guard.sql',
+      '992-work-item-dependency-satisfaction.sql',
+      '1621-dependency-reopen-untouched-dependants.sql',
+    ]) {
+      await applyMigrationForTest(db.sql, new URL(file, sqlDir).pathname);
+    }
+  }, 60_000);
+
+  afterAll(async () => {
+    await db.sql`DROP TRIGGER IF EXISTS work_items_dependency_lifecycle_guard_trg ON harness_shared.work_items`;
+  });
+
+  // The production shape: the preview reads a 'success' edge as inactive once its
+  // dependant has succeeded, so the pair is eligible, while migration 1621 still
+  // refuses to drop a blocker whose dependant is terminal.
+  it('moves a success-satisfied blocks edge to the canonical before dropping the loser', async () => {
+    for (const id of ['WI-twin', 'WI-canonical']) {
+      await seedItem({ id, admission: 'admitted', conditionKey: 'watch:clone', payload: {} });
+    }
+    await seedItem({
+      id: 'WI-dependant',
+      title: 'distinct dependant',
+      summary: 'unrelated downstream work',
+      admission: 'admitted',
+      status: 'done',
+      closedTs: NOW - 5_000,
+      payload: {},
+      vector: '[0,1,0]',
+    });
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES (${WS}, 'issue', 'WI-dependant', 'issue', 'WI-twin', 'blocks', 'success', 'twin-writer')`;
+    const proposals = [
+      {
+        itemId: 'WI-twin',
+        action: 'merge' as const,
+        canonicalId: 'WI-canonical',
+        evidence: {
+          status: 'ready' as const,
+          ref: 'ledger#WI-twin',
+          reason: 'current full-body equivalence verified',
+          sourceSha256: 'b'.repeat(64),
+        },
+      },
+    ];
+    const preview = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      proposals,
+    });
+    expect(preview.entries).toMatchObject([{ itemId: 'WI-twin', outcome: 'eligible', reasons: [] }]);
+
+    // Assert on the promise itself. Before the fix the loser's status write raised inside
+    // the apply; a bare await would report that as a thrown PostgresError, not as the
+    // failed expectation "the eligible merge applies".
+    await expect(
+      applyReviewedAdmissionCleanup(db.sql, {
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        proposals,
+        previewHash: preview.previewHash,
+        runId: 'reviewed-apply-dependency-guard',
+        actor: 'su:review-owner',
+        nowMs: NOW,
+      }),
+    ).resolves.toMatchObject({
+      applied: true,
+      reason: 'applied',
+      counts: { eligible: 1, merged: 1 },
+      persistence: { mergedIds: ['WI-twin'] },
+    });
+    const items = await db.sql<Array<{ feature_id: string; status: string }>>`
+      SELECT feature_id, status
+        FROM harness_shared.work_items
+       WHERE feature_id IN ('WI-twin', 'WI-canonical', 'WI-dependant')
+       ORDER BY feature_id`;
+    expect(items).toEqual([
+      { feature_id: 'WI-canonical', status: 'open' },
+      { feature_id: 'WI-dependant', status: 'done' },
+      { feature_id: 'WI-twin', status: 'dropped' },
+    ]);
+    const deps = await db.sql<Array<{ blocked_ref: string; blocker_ref: string; satisfaction: string }>>`
+      SELECT blocked_ref, blocker_ref, satisfaction
+        FROM harness_shared.work_item_deps
+       ORDER BY blocked_ref, blocker_ref`;
+    expect(deps).toEqual([{ blocked_ref: 'WI-dependant', blocker_ref: 'WI-canonical', satisfaction: 'success' }]);
+  });
+
+  // EI-28990041785851999: production items live in a named workspace while every
+  // work_item_deps row is keyed by the coordination workspace. Before the fix the preview
+  // read and the merge repoint both passed the ITEM workspace as the deps-store key, so
+  // they saw and moved no edge, and the loser drop tripped migration 1621, whose deps join
+  // does not filter by workspace. The fixture above uses WS='default' for both sides, which
+  // is exactly why it could not see this.
+  it.each([false, true])('validates coordination-keyed rewrites in a named workspace (active dependant=%s)', async (active) => {
+    const itemWs = 'papercusp-workspace';
+    expect(itemWs).not.toBe(DEFAULT_COORD_WORKSPACE);
+    for (const id of ['WI-ws-twin', 'WI-ws-canonical']) {
+      await seedItem({ id, workspaceId: itemWs, admission: 'admitted', conditionKey: 'watch:ws-clone', payload: {} });
+    }
+    // The absorb path applies only to an unbound plan twin (isUnboundPlanTwinPair): both
+    // rows carry the same plan item, and only the canonical is bound to its plan line.
+    // Without it the active-dependency rule keeps protecting the loser.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET source_plan_slug = 'ws-twin-plan',
+             source_plan_item_ids = ARRAY['P-001'],
+             plan_slug = CASE WHEN feature_id = 'WI-ws-canonical' THEN 'ws-twin-plan' END,
+             plan_seq = CASE WHEN feature_id = 'WI-ws-canonical' THEN 1 END,
+             plan_line_id = CASE WHEN feature_id = 'WI-ws-canonical' THEN 'ws-twin-plan:P-001' END
+       WHERE workspace_id = ${itemWs} AND feature_id IN ('WI-ws-twin', 'WI-ws-canonical')`;
+    // A claimed, progressed, nonterminal dependant: the shape migration 1621 refuses to
+    // leave behind an unsatisfied blocker (the live WI-6554700010045782 -> 45728 edge).
+    await seedItem({
+      id: 'WI-ws-dependant',
+      workspaceId: itemWs,
+      title: 'distinct claimed dependant',
+      summary: 'unrelated downstream work already in hand',
+      admission: 'admitted',
+      takenBy: active ? 'su:dependant-owner' : undefined,
+      firstClaimedAt: active ? new Date(NOW - 60_000).toISOString() : undefined,
+      payload: {},
+      vector: '[0,1,0]',
+    });
+    if (active) {
+      await db.sql`
+        UPDATE harness_shared.work_items
+           SET last_progress_at = to_timestamp(${NOW - 30_000} / 1000.0)
+         WHERE workspace_id = ${itemWs} AND feature_id = 'WI-ws-dependant'`;
+    }
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', 'WI-ws-dependant', 'issue', 'WI-ws-twin', 'blocks', 'success', 'twin-writer')`;
+    const proposals = [
+      {
+        itemId: 'WI-ws-twin',
+        action: 'merge' as const,
+        canonicalId: 'WI-ws-canonical',
+        evidence: {
+          status: 'ready' as const,
+          ref: 'ledger#WI-ws-twin',
+          reason: 'current full-body equivalence verified',
+          sourceSha256: 'c'.repeat(64),
+        },
+      },
+    ];
+    const preview = await previewReviewedAdmissionCleanup(db.sql, {
+      workspaceId: itemWs,
+      harnessSlug: HARNESS,
+      proposals,
+    });
+    if (active) {
+      expect(preview.entries).toMatchObject([{
+        itemId: 'WI-ws-twin',
+        outcome: 'preserved',
+        reasons: [{ code: 'active-dependency', detail: expect.stringContaining('active dependant') }],
+      }]);
+      await expect(applyReviewedAdmissionCleanup(db.sql, {
+        workspaceId: itemWs,
+        harnessSlug: HARNESS,
+        proposals,
+        previewHash: preview.previewHash,
+        runId: 'reviewed-apply-active-dependant-preserved',
+        actor: 'su:review-owner',
+        nowMs: NOW,
+      })).resolves.toMatchObject({ applied: false, mutates: false, reason: 'no-eligible-entries' });
+      expect(await db.sql`SELECT feature_id, status, taken_by FROM harness_shared.work_items
+        WHERE workspace_id = ${itemWs} ORDER BY feature_id`).toEqual([
+        { feature_id: 'WI-ws-canonical', status: 'open', taken_by: null },
+        { feature_id: 'WI-ws-dependant', status: 'open', taken_by: 'su:dependant-owner' },
+        { feature_id: 'WI-ws-twin', status: 'open', taken_by: null },
+      ]);
+      expect(await db.sql`SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps`).toEqual([
+        { blocked_ref: 'WI-ws-dependant', blocker_ref: 'WI-ws-twin' },
+      ]);
+      expect(await db.sql`SELECT count(*)::int AS count FROM harness_shared.dedup_adjudications`).toEqual([{ count: 0 }]);
+      return;
+    }
+    expect(preview.entries).toMatchObject([{ itemId: 'WI-ws-twin', outcome: 'eligible', reasons: [] }]);
+
+    await expect(
+      applyReviewedAdmissionCleanup(db.sql, {
+        workspaceId: itemWs,
+        harnessSlug: HARNESS,
+        proposals,
+        previewHash: preview.previewHash,
+        runId: 'reviewed-apply-coordination-keyed-deps',
+        actor: 'su:review-owner',
+        nowMs: NOW,
+      }),
+    ).resolves.toMatchObject({
+      applied: true,
+      reason: 'applied',
+      counts: { eligible: 1, merged: 1 },
+      persistence: { mergedIds: ['WI-ws-twin'] },
+    });
+    const items = await db.sql<Array<{ feature_id: string; status: string }>>`
+      SELECT feature_id, status
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${itemWs}
+         AND feature_id IN ('WI-ws-twin', 'WI-ws-canonical', 'WI-ws-dependant')
+       ORDER BY feature_id`;
+    expect(items).toEqual([
+      { feature_id: 'WI-ws-canonical', status: 'open' },
+      { feature_id: 'WI-ws-dependant', status: 'open' },
+      { feature_id: 'WI-ws-twin', status: 'dropped' },
+    ]);
+    const deps = await db.sql<Array<{ workspace_id: string; blocked_ref: string; blocker_ref: string }>>`
+      SELECT workspace_id, blocked_ref, blocker_ref
+        FROM harness_shared.work_item_deps
+       ORDER BY blocked_ref, blocker_ref`;
+    expect(deps).toEqual([
+      { workspace_id: DEFAULT_COORD_WORKSPACE, blocked_ref: 'WI-ws-dependant', blocker_ref: 'WI-ws-canonical' },
+    ]);
+  });
+
+  async function seedReviewedPlanTwinPair() {
+    for (const id of ['WI-twin', 'WI-canonical']) {
+      await seedItem({ id, admission: 'admitted', conditionKey: 'watch:edge-clone', payload: {} });
+    }
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET source_plan_slug = 'edge-twin-plan',
+             source_plan_item_ids = ARRAY['P-001'],
+             plan_slug = CASE WHEN feature_id = 'WI-canonical' THEN 'edge-twin-plan' END,
+             plan_seq = CASE WHEN feature_id = 'WI-canonical' THEN 1 END,
+             plan_line_id = CASE WHEN feature_id = 'WI-canonical' THEN 'edge-twin-plan:P-001' END
+       WHERE feature_id IN ('WI-twin', 'WI-canonical')`;
+    return [{
+      itemId: 'WI-twin', action: 'merge' as const, canonicalId: 'WI-canonical',
+      evidence: { status: 'ready' as const, ref: 'ledger#edge-twin', reason: 'same reviewed plan item' },
+    }];
+  }
+
+  it.each(['WI-twin', 'WI-canonical'])('preserves a plan pair joined by a live edge from %s', async (blocker) => {
+    const proposals = await seedReviewedPlanTwinPair();
+    const blocked = blocker === 'WI-twin' ? 'WI-canonical' : 'WI-twin';
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', ${blocked}, 'issue', ${blocker}, 'blocks', 'success', 'twin-writer')`;
+    const preview = await previewReviewedAdmissionCleanup(db.sql, { workspaceId: WS, harnessSlug: HARNESS, proposals });
+    expect(preview.entries).toMatchObject([{
+      itemId: 'WI-twin', outcome: 'preserved',
+      reasons: expect.arrayContaining([expect.objectContaining({ code: 'active-dependency' })]),
+    }]);
+    expect(await db.sql`SELECT blocked_ref, blocker_ref FROM harness_shared.work_item_deps`).toEqual([
+      { blocked_ref: blocked, blocker_ref: blocker },
+    ]);
+  });
+
+  it('previews without writes and coalesces duplicate edges while retaining the stronger requirement', async () => {
+    const proposals = await seedReviewedPlanTwinPair();
+    await seedItem({ id: 'WI-dependant', state: 'done', admission: 'admitted', payload: {} });
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', 'WI-dependant', 'issue', 'WI-twin', 'blocks', 'success', 'twin-writer'),
+             (${DEFAULT_COORD_WORKSPACE}, 'issue', 'WI-dependant', 'issue', 'WI-canonical', 'blocks', 'settled', 'canonical-writer')`;
+    const before = await db.sql`SELECT id, blocked_ref, blocker_ref, satisfaction FROM harness_shared.work_item_deps ORDER BY id`;
+    const preview = await db.sql.begin('READ ONLY', async (tx) => previewReviewedAdmissionCleanup(tx as typeof db.sql, {
+      workspaceId: WS, harnessSlug: HARNESS, proposals,
+    }));
+    expect(preview.entries).toMatchObject([{ itemId: 'WI-twin', outcome: 'eligible', reasons: [] }]);
+    expect(await db.sql`SELECT id, blocked_ref, blocker_ref, satisfaction FROM harness_shared.work_item_deps ORDER BY id`).toEqual(before);
+    await expect(applyReviewedAdmissionCleanup(db.sql, {
+      workspaceId: WS, harnessSlug: HARNESS, proposals, previewHash: preview.previewHash,
+      runId: 'reviewed-apply-duplicate-edge', actor: 'su:review-owner', nowMs: NOW,
+    })).resolves.toMatchObject({ applied: true, counts: { merged: 1 } });
+    expect(await db.sql`SELECT blocked_ref, blocker_ref, satisfaction FROM harness_shared.work_item_deps`).toEqual([
+      { blocked_ref: 'WI-dependant', blocker_ref: 'WI-canonical', satisfaction: 'success' },
+    ]);
   });
 });

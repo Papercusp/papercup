@@ -60,9 +60,12 @@ import {
   activeWorkItemDependencyRefsSql,
   readWorkItemDependenciesForRefs,
   repointWorkItemDependencyRefsInTransaction,
+  validateWorkItemDependencyRefRewrites,
+  WorkItemDependencyAdmissionError,
   withWorkItemDependencyAdmissionTransaction,
   type StoredWorkItemDependencyRow,
 } from './dbos/work-item-deps-store';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import {
   evaluateWorkScope,
   isPlatformNonPotHarness,
@@ -179,6 +182,23 @@ export interface AdmissionMergeDependency {
   active: boolean;
 }
 
+/** Canonical descriptor bytes, never an observation that the predicate fired. */
+export interface AdmissionReviewPredicate {
+  id: string;
+  workspace_id: string;
+  owner_id: string;
+  role: string;
+  harness_slug: string | null;
+  event_key: string;
+  tool: string;
+  args: unknown;
+  path: string;
+  op: string;
+  value: unknown;
+  once: boolean;
+  bound_to: unknown;
+}
+
 /**
  * Versioned endpoint/reference identity captured immediately before judging.
  * Any difference at the transactional re-read invalidates the judgement; no
@@ -209,6 +229,8 @@ export interface AdmissionMergeSnapshot {
   ownNode?: true;
   /** Server-read durable-park audit, never taken from caller payload metadata. */
   agentParkAudit?: { id: string; atMs: number; actor: string; action: string; details: unknown };
+  /** Host-read descriptors bound into the captured and transactional fingerprints. */
+  admissionReviewPredicates?: AdmissionReviewPredicate[];
   assignee: string | null;
   payload: unknown;
   completionRef: unknown;
@@ -1529,6 +1551,24 @@ export async function readAdmissionMergeSnapshots(
     id: row.id, atMs: Number(row.ts), actor: row.actor, action: row.action, details: row.details,
   }]));
 
+  const predicateRefsById = new Map(rows.map(row => [row.feature_id,
+    activeExternalBlockers(row.payload).filter(blocker => blocker.kind === 'event' &&
+      /^predicate:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(blocker.ref))
+      .map(blocker => blocker.ref)]));
+  const predicateRefs = [...new Set([...predicateRefsById.values()].flat())].sort();
+  // Retired watches retain their descriptor. Reading it must neither re-arm the
+  // watch nor interpret a historical last_value as current satisfaction. Fetch
+  // every requested ref, without a reporting-page cap; tenant scope is mandatory.
+  const predicateLock = input.lockRows ? sql`FOR SHARE` : sql``;
+  const predicates = predicateRefs.length ? await sql<AdmissionReviewPredicate[]>`
+    SELECT id, workspace_id, owner_id, role, harness_slug, event_key, tool, args,
+           path, op, value, once, bound_to
+      FROM harness_shared.predicate_watches
+     WHERE workspace_id = ${input.workspaceId}
+       AND event_key = ANY(${predicateRefs}::text[])
+     ORDER BY id
+     ${predicateLock}` : [];
+
   const incoming = await sql<IncomingReferenceRow[]>`
     SELECT target.target_id, source.feature_id AS source_id,
            source.updated_ts AS source_updated_ts
@@ -1540,8 +1580,12 @@ export async function readAdmissionMergeSnapshots(
      ORDER BY target.target_id, source.feature_id`;
 
   const endpointRefs = [...new Set(rows.flatMap(snapshotRefKeys))].sort();
+  // EI-28990041785851999: work_item_deps rows are keyed by the coordination workspace
+  // (DEFAULT_COORD_WORKSPACE), not the item workspace. Reading them under the item
+  // workspace returned no edges, so the reviewed preview judged a loser with a live
+  // blocks edge eligible.
   const dependencies = await readWorkItemDependenciesForRefs(sql, {
-    workspaceId: input.workspaceId,
+    workspaceId: DEFAULT_COORD_WORKSPACE,
     refs: endpointRefs,
   });
 
@@ -1626,6 +1670,10 @@ export async function readAdmissionMergeSnapshots(
       origin: row.origin ?? null,
       ...(ownNodeIds.has(row.feature_id) ? { ownNode: true as const } : {}),
       ...(parkAuditById.has(row.feature_id) ? { agentParkAudit: parkAuditById.get(row.feature_id)! } : {}),
+      ...(predicateRefsById.get(row.feature_id)?.length ? {
+        admissionReviewPredicates: predicates.filter(predicate =>
+          predicateRefsById.get(row.feature_id)!.includes(predicate.event_key)),
+      } : {}),
       assignee: row.taken_by?.trim() || null,
       payload: row.payload ?? null,
       completionRef: row.completion_ref ?? null,
@@ -4017,6 +4065,18 @@ export interface EndpointProtectionOptions {
    * protection still applies.
    */
   absorbUnboundPlanTwin?: boolean;
+  /**
+   * EI-28990041785851999: the other endpoint of the reviewed twin pair, set with
+   * absorbUnboundPlanTwin for BOTH roles. The merge repoints every loser edge onto the
+   * canonical inside its transaction and never touches the canonical's own edges, so an
+   * active edge stops protecting either endpoint. An edge joining the pair still protects:
+   * the repoint would collapse it into a self-edge.
+   */
+  absorbUnboundPlanTwinCounterpartId?: string;
+}
+
+function dependencyJoinsRef(dependency: { blockedRef: string; blockerRef: string }, id: string): boolean {
+  return [dependency.blockedRef, dependency.blockerRef].some((ref) => ref === id || ref.endsWith(`#${id}`));
 }
 
 export function endpointProtection(
@@ -4132,6 +4192,7 @@ export function endpointProtection(
     !(readOnlyHumanBlockerComparison && blocker.kind === 'human') &&
     !(absorbTwin && blocker.kind !== 'human') &&
     (!terminalTwin || blocker.kind === 'human' || blocker.capability !== 'live-dependency') &&
+    !(explicitReview && isAdmissionReviewPredicateBlocker(snapshot, blocker)) &&
     !((overdueClaimedReview || explicitReview) && blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
       blocker.capabilitySource === 'explicit' &&
       (blocker.ref === ADMISSION_REVIEW_ALERT_KEY || blocker.ref === `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}` ||
@@ -4143,7 +4204,12 @@ export function endpointProtection(
       detail: `${role} ${snapshot.id} has active external blocker(s): ${blockers.map((b) => b.ref).join(', ')}`,
     };
   }
-  const activeDependencies = snapshot.dependencies.filter((dependency) => dependency.active);
+  // EI-28990041785851999: see EndpointProtectionOptions.absorbUnboundPlanTwinCounterpartId.
+  const absorbedCounterpart = options.absorbUnboundPlanTwin === true
+    ? options.absorbUnboundPlanTwinCounterpartId
+    : undefined;
+  const activeDependencies = snapshot.dependencies.filter((dependency) =>
+    dependency.active && (!absorbedCounterpart || dependencyJoinsRef(dependency, absorbedCounterpart)));
   if (activeDependencies.length > 0) {
     return {
       reason: 'active-dependency',
@@ -4240,14 +4306,30 @@ export function reviewedCleanupCanonicalProtection(
   canonical: AdmissionMergeSnapshot,
   base: EndpointProtectionOptions,
 ): EndpointProtectionOptions {
-  return isUnboundPlanTwinPair(loser, canonical) ? { ...base, absorbUnboundPlanTwin: true } : base;
+  return isUnboundPlanTwinPair(loser, canonical)
+    ? { ...base, absorbUnboundPlanTwin: true, absorbUnboundPlanTwinCounterpartId: loser.id }
+    : base;
 }
 
-function snapshotIdentityProblem(
+/**
+ * Loser-endpoint options for one reviewed cleanup pair. Preview and persist share it.
+ * endpointProtection keeps absorbTwin canonical-only, so for the loser this lifts only
+ * the active-dependency protection; isUnboundPlanTwinPair already requires it unclaimed.
+ */
+export function reviewedCleanupLoserProtection(
+  loser: AdmissionMergeSnapshot,
+  canonical: AdmissionMergeSnapshot,
+  base: EndpointProtectionOptions,
+): EndpointProtectionOptions {
+  return isUnboundPlanTwinPair(loser, canonical)
+    ? { ...base, absorbUnboundPlanTwin: true, absorbUnboundPlanTwinCounterpartId: canonical.id }
+    : base;
+}
+
+function snapshotIdentityDrift(
   captured: AdmissionMergeSnapshot | undefined,
   live: AdmissionMergeSnapshot | undefined,
   role: MergeEndpointRole,
-  options: EndpointProtectionOptions = {},
 ): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
   if (!captured) return { reason: 'snapshot-missing', detail: `${role} was not captured before judging` };
   if (!live) {
@@ -4264,7 +4346,16 @@ function snapshotIdentityProblem(
         `(${captured.fingerprint.slice(0, 12)} -> ${live.fingerprint.slice(0, 12)})`,
     };
   }
-  return endpointProtection(live, role, options);
+  return null;
+}
+
+function snapshotIdentityProblem(
+  captured: AdmissionMergeSnapshot | undefined,
+  live: AdmissionMergeSnapshot | undefined,
+  role: MergeEndpointRole,
+  options: EndpointProtectionOptions = {},
+): Pick<AdmissionMergeGuardRefusal, 'reason' | 'detail'> | null {
+  return snapshotIdentityDrift(captured, live, role) ?? endpointProtection(live!, role, options);
 }
 
 /**
@@ -4449,6 +4540,28 @@ function qualifiedAgentPark(snapshot: AdmissionMergeSnapshot) {
       JSON.stringify(canonicalJsonValue(park.payload.claim_hold_release ?? null));
 }
 
+/** Exact subject adapter: this event waits only for this custodian's admission
+ * review. Its descriptor permits signed REVIEW, never execution or blocker clear. */
+function isAdmissionReviewPredicateBlocker(
+  snapshot: AdmissionMergeSnapshot,
+  value: unknown,
+): boolean {
+  const blocker = recordValue(value);
+  if (blocker.kind !== 'event' || blocker.capability !== 'live-dependency' ||
+      blocker.capabilitySource !== 'explicit' || !snapshot.assignee ||
+      blocker.createdBy !== snapshot.assignee) return false;
+  const descriptors = snapshot.admissionReviewPredicates?.filter(row => row.event_key === blocker.ref) ?? [];
+  if (descriptors.length !== 1) return false;
+  const row = descriptors[0]!;
+  return row.event_key === `predicate:${row.id}` && row.workspace_id === snapshot.workspaceId &&
+    row.owner_id === snapshot.assignee && row.role === 'operator' && row.harness_slug === snapshot.harnessSlug &&
+    row.tool === 'work_items:get' && row.path === 'results.0.workItem.payload.admissionReview.state' &&
+    row.op === 'ne' && row.value === 'pending' && row.once === true && row.bound_to === null &&
+    JSON.stringify(canonicalJsonValue(row.args)) === JSON.stringify(canonicalJsonValue({
+      id: snapshot.id, detail: true, harness: snapshot.harnessSlug,
+    }));
+}
+
 /** Exact admission-only parks require the canonical hold audit and a complete
  * release contract. A matching phrase in caller-controlled prose grants nothing. */
 function admissionReviewCustodyEligible(snapshot: AdmissionMergeSnapshot): boolean {
@@ -4457,20 +4570,20 @@ function admissionReviewCustodyEligible(snapshot: AdmissionMergeSnapshot): boole
       !['open', 'todo', 'failing', 'wip', 'in_progress', 'validating', 'blocked'].includes(snapshot.state)) return false;
   const payload = recordValue(snapshot.payload);
   if (Object.keys(payload).some(key => key.startsWith('held_open_')) || payload.needsOwnerAction === true) return false;
-  const exactBlocker = (blocker: ReturnType<typeof activeExternalBlockers>[number]) =>
-    blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
-    blocker.capabilitySource === 'explicit' &&
-    [ `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`, `admission-review:${snapshot.id}` ].includes(blocker.ref);
+  const exactBlocker = (value: unknown): boolean => {
+    const blocker = recordValue(value);
+    return isAdmissionReviewPredicateBlocker(snapshot, blocker) ||
+      blocker.kind === 'runtime' && blocker.capability === 'live-dependency' &&
+      blocker.capabilitySource === 'explicit' && typeof blocker.ref === 'string' &&
+      [ `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`, `admission-review:${snapshot.id}` ].includes(blocker.ref);
+  };
   const blockers = activeExternalBlockers(snapshot.payload);
   if (payload.externalBlockers !== undefined) {
     if (!Array.isArray(payload.externalBlockers)) return false;
     const raw = payload.externalBlockers.map(recordValue);
     if (raw.some(blocker => blocker.status !== 'active' && blocker.status !== 'cleared')) return false;
     const active = raw.filter(blocker => blocker.status === 'active');
-    if (active.length !== blockers.length || active.some(blocker =>
-      blocker.kind !== 'runtime' || blocker.capability !== 'live-dependency' ||
-      blocker.capabilitySource !== 'explicit' ||
-      ![ `${ADMISSION_REVIEW_ALERT_KEY}:${snapshot.id}`, `admission-review:${snapshot.id}` ].includes(String(blocker.ref)))) return false;
+    if (active.length !== blockers.length || active.some(blocker => !exactBlocker(blocker))) return false;
   }
   if (blockers.some(blocker => !exactBlocker(blocker))) return false;
   if (String(payload._claimHold) !== 'true') return snapshot.state !== 'blocked';
@@ -4847,7 +4960,7 @@ async function buildReviewedAdmissionCleanupPreview(
     ids,
     lockRows: options.lockRows,
   });
-  const entries: ReviewedAdmissionCleanupPreview['entries'] = proposals.map((proposal) => {
+  const entries: ReviewedAdmissionCleanupPreview['entries'] = await Promise.all(proposals.map(async (proposal) => {
     const item = snapshots.get(proposal.itemId);
     const canonical = proposal.canonicalId ? snapshots.get(proposal.canonicalId) : undefined;
     const reasons: ReviewedAdmissionPreviewReason[] = [];
@@ -4882,7 +4995,11 @@ async function buildReviewedAdmissionCleanupPreview(
       });
     } else {
       const protectionOptions = { requireImplementationReadiness: true, reviewedEvidenceReady: true };
-      const candidateProblem = endpointProtection(item, 'loser', protectionOptions);
+      const candidateProblem = endpointProtection(
+        item,
+        'loser',
+        reviewedCleanupLoserProtection(item, canonical!, protectionOptions),
+      );
       const canonicalProblem = endpointProtection(
         canonical!,
         'canonical',
@@ -4895,6 +5012,22 @@ async function buildReviewedAdmissionCleanupPreview(
         [proposal.itemId, pairProblem],
       ] as const) {
         if (problem) reasons.push({ ...problem, code: problem.reason, endpointId });
+      }
+      if (reasons.length === 0) {
+        try {
+          await validateWorkItemDependencyRefRewrites(sql, {
+            workspaceId: DEFAULT_COORD_WORKSPACE,
+            itemWorkspaceId: input.workspaceId,
+            rewrites: admissionMergeDependencyRefRewrites({
+              harnessSlug: input.harnessSlug,
+              loserId: item.id,
+              canonicalId: canonical!.id,
+            }),
+          });
+        } catch (error) {
+          if (!(error instanceof WorkItemDependencyAdmissionError)) throw error;
+          reasons.push({ code: 'active-dependency', detail: error.message, endpointId: item.id });
+        }
       }
       outcome = reasons.length > 0 ? 'preserved' : 'eligible';
     }
@@ -4911,7 +5044,7 @@ async function buildReviewedAdmissionCleanupPreview(
         canonical: canonical ? retainedAdmissionObligations(canonical) : null,
       },
     };
-  });
+  }));
   const inputHash = createHash('sha256').update(JSON.stringify(proposals)).digest('hex');
   const schemaVersion = 'reviewed-admission-cleanup-preview-v1' as const;
   const previewHash = createHash('sha256')
@@ -5073,8 +5206,12 @@ async function persistApprovedAdmissionMerge(
   // its dependant has succeeded, so it called such a pair eligible and the apply then
   // refused it, even though the canonical carries the work. Same
   // transaction: a later conditional-write miss rolls the repoint back with the merge.
+  // The deps store is keyed by DEFAULT_COORD_WORKSPACE; the endpoints live in the item
+  // workspace (the same split every other store caller passes). Passing the item
+  // workspace as the store key matched zero edges, so nothing moved and the drop raised.
   const dependencyEdges = await repointWorkItemDependencyRefsInTransaction(sql, {
-    workspaceId: input.workspaceId,
+    workspaceId: DEFAULT_COORD_WORKSPACE,
+    itemWorkspaceId: input.workspaceId,
     rewrites: admissionMergeDependencyRefRewrites(input),
   });
   const terminalized = await sql<Array<{ feature_id: string }>>`
@@ -5770,9 +5907,11 @@ async function persistAdmissionPlanInTransaction(
   if (input.reviewOnly) {
     for (const [id, captured] of capturedById) {
       if (id === input.reviewOnly.itemId) continue;
-      const problem = snapshotIdentityProblem(captured, liveById.get(id), 'reference', {
-        readOnlyClaimedComparison: true, readOnlyAgentParkComparison: true,
-      });
+      // Review-only plans cannot write references, adjudications, links or merges.
+      // Their protections govern mutations, not whether a fresh, scope-bound
+      // snapshot may establish that the target describes a different defect.
+      // The target still passes its own protection and renewable custody checks.
+      const problem = snapshotIdentityDrift(captured, liveById.get(id), 'reference');
       if (problem) {
         registerRefusal(input.reviewOnly.itemId, null, problem, [id]);
         await input.reviewOnly.afterGuardRefusal?.(
@@ -5901,11 +6040,16 @@ async function persistAdmissionPlanInTransaction(
       replayedIds.add(disposition.itemId);
       continue;
     }
+    const loserOptions = protectionOptions(disposition.itemId);
+    const loserCanonical = liveById.get(disposition.canonicalId);
     const loserProblem = snapshotIdentityProblem(
       capturedLoser,
       liveLoser,
       'loser',
-      protectionOptions(disposition.itemId),
+      // EI-28990041785851999: lift the same active-dependency protection the preview did.
+      input.reviewedCleanupBindings?.has(disposition.itemId) && liveLoser && loserCanonical
+        ? reviewedCleanupLoserProtection(liveLoser, loserCanonical, loserOptions)
+        : loserOptions,
     );
     if (loserProblem) {
       registerRefusal(disposition.itemId, disposition.canonicalId, loserProblem);

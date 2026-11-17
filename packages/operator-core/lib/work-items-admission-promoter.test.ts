@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   admissionEndpointBlock,
+  admissionReviewSubjectEligible,
   admissionPairKey,
   endpointProtection,
   isUnboundPlanTwinPair,
@@ -10,6 +11,7 @@ import {
   type AdmissionMergeSnapshot,
   ADMISSION_REVIEW_ALERT_KEY,
   ADMISSION_REVIEW_RETRY_OWNER,
+  type AdmissionReviewPredicate,
   DEFAULT_ADMISSION_REVIEW_SLO_MINUTES,
   buildAdmissionReviewMetadata,
   buildPromoterPrompt,
@@ -645,6 +647,81 @@ describe('admission endpoint protection — terminal twins', () => {
     dependencies: [],
     fingerprint: id,
     ...overrides,
+  });
+
+  describe('canonical admission predicate review adapter (EI-28997799399480830)', () => {
+    const owner = 'su-custodian';
+    const predicateId = '00000000-0000-4000-8000-000000000001';
+    const eventBlocker = { ...executionBlocker, kind: 'event', ref: `predicate:${predicateId}`, createdBy: owner };
+    const descriptor: AdmissionReviewPredicate = {
+      id: predicateId, workspace_id: 'ws', owner_id: owner, role: 'operator', harness_slug: 'h',
+      event_key: eventBlocker.ref, tool: 'work_items:get', args: { harness: 'h', detail: true, id: 'EI-self-review' },
+      path: 'results.0.workItem.payload.admissionReview.state', op: 'ne', value: 'pending', once: true, bound_to: null,
+    };
+    const reviewSubject = (overrides: Partial<AdmissionMergeSnapshot> = {}) => snapshot('EI-self-review', {
+      state: 'blocked', admission: 'unreviewed', assignee: owner,
+      admissionReviewPredicates: [descriptor],
+      payload: { externalBlockers: [eventBlocker], admissionReview: { state: 'pending' },
+        admissionHold: { active: true }, _admissionReviewRequest: { requestId: 'keep-original' } },
+      ...overrides,
+    });
+
+    it('allows signed review without resolving its event, changing custody or granting merge authority', () => {
+      const subject = reviewSubject();
+      const before = structuredClone(subject);
+      expect(admissionReviewSubjectEligible(subject)).toBe(true);
+      expect(endpointProtection(subject, 'promote', { admissionReview: true })).toBeNull();
+      expect(endpointProtection(subject, 'promote')?.reason).toBe('claimed');
+      for (const role of ['loser', 'canonical'] as const) {
+        expect(endpointProtection(subject, role, { admissionReview: true })?.reason).toBe('claimed');
+      }
+      expect(subject).toEqual(before);
+    });
+
+    it('requires canonical descriptor evidence rather than a predicate prefix or payload assertion', () => {
+      expect(admissionReviewSubjectEligible(reviewSubject({ admissionReviewPredicates: undefined }))).toBe(false);
+      expect(admissionReviewSubjectEligible(reviewSubject({ admissionReviewPredicates: [] }))).toBe(false);
+      expect(admissionReviewSubjectEligible(reviewSubject({ admissionReviewPredicates: [descriptor, descriptor] }))).toBe(false);
+    });
+
+    it.each([
+      { id: '00000000-0000-4000-8000-000000000002' }, { workspace_id: 'foreign' },
+      { owner_id: 'su-peer' }, { role: 'worker' }, { harness_slug: 'foreign' },
+      { event_key: 'predicate:foreign' }, { tool: 'work_items:list' },
+      { args: { id: 'EI-neighbor', detail: true, harness: 'h' } },
+      { args: { id: 'EI-self-review', detail: true, harness: 'foreign' } },
+      { args: { id: 'EI-self-review', detail: true, harness: 'h', ids: ['EI-neighbor'] } },
+      { args: { id: 'EI-self-review', harness: 'h' } },
+      { path: 'results.0.workItem.state' }, { op: 'eq' }, { value: 'reviewed' },
+      { once: false }, { bound_to: { kind: 'other' } },
+    ])('refuses a different descriptor: %j', change => {
+      expect(admissionReviewSubjectEligible(reviewSubject({ admissionReviewPredicates: [{ ...descriptor, ...change }] })))
+        .toBe(false);
+    });
+
+    it.each([
+      { ...eventBlocker, ref: 'predicate:independent' },
+      { ...executionBlocker },
+      { ...executionBlocker, kind: 'human', capability: 'credential' },
+      { ...eventBlocker, createdBy: 'su-peer' },
+      { ...eventBlocker, capabilitySource: 'inferred' },
+    ])('preserves the independent blocker %j', other => {
+      const subject = reviewSubject();
+      subject.payload = { ...(subject.payload as object), externalBlockers: [eventBlocker, other] };
+      expect(admissionReviewSubjectEligible(subject)).toBe(false);
+    });
+
+    it.each([
+      { state: 'needs-human' }, { state: 'done' }, { assignee: 'su-peer' },
+      { payload: { _claimHold: true, externalBlockers: [eventBlocker] } },
+      { payload: { needsOwnerAction: true, externalBlockers: [eventBlocker] } },
+      { payload: { held_open_reason: 'independent hold', externalBlockers: [eventBlocker] } },
+      { dependencies: [{ id: 'dep', blockedKind: 'work-item', blockedRef: 'EI-self-review',
+        blockerKind: 'work-item', blockerRef: 'EI-other', depType: 'blocks', satisfaction: 'success' as const,
+        createdBy: owner, active: true }] },
+    ])('preserves the independent endpoint protection %j', protection => {
+      expect(admissionReviewSubjectEligible(reviewSubject(protection))).toBe(false);
+    });
   });
 
   it('keeps an OPEN twin with a pending agent review as a transient review gate', () => {
