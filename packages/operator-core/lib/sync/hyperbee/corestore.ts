@@ -15,7 +15,7 @@
  */
 
 import Corestore from 'corestore';
-import { mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
+import { link, mkdir, open, readFile, rename, unlink, type FileHandle } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { channel } from 'node:diagnostics_channel';
 import { join } from 'node:path';
@@ -218,67 +218,63 @@ async function acquireHarnessStoreLock(
   opts: HarnessStoreOpts,
 ): Promise<HarnessStoreLock> {
   const lockPath = harnessStoreLockPath(opts);
-
-  // O_EXCL gives us an atomic cross-process claim without depending on a
-  // platform-specific flock executable. The PID makes a lock left by a crash
-  // recoverable while still refusing a live duplicate loudly.
-  for (;;) {
-    let handle: FileHandle;
-    try {
-      handle = await open(lockPath, 'wx');
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST') throw error;
-
-      let holder: HarnessStoreLockHolder;
+  const token = randomUUID();
+  const candidatePath = `${lockPath}.candidate-${token}`;
+  const handle = await open(candidatePath, 'wx');
+  let published = false;
+  try {
+    // Never expose an empty/partial owner record. A same-directory hard link
+    // publishes the complete, synced inode atomically and refuses replacement
+    // with EEXIST, retaining the cross-process exclusive-claim fence.
+    await handle.writeFile(
+      JSON.stringify({
+        pid: process.pid,
+        token,
+        processIdentity: readProcessIdentity(process.pid),
+        startedAt: new Date().toISOString(),
+      }),
+      'utf8',
+    );
+    await handle.sync();
+    for (;;) {
       try {
-        holder = JSON.parse(await readFile(lockPath, 'utf8')) as typeof holder;
-      } catch {
-        throw new Error(
-          `Harness Corestore lock is busy or corrupt: ${lockPath}. ` +
-            'Stop the duplicate operator process and remove the lock only after verifying no owner is running.',
-        );
-      }
+        await link(candidatePath, lockPath);
+        published = true;
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== 'EEXIST') throw error;
 
-      if (!lockHolderIsProvablyStale(holder)) {
-        throw new Error(
-          `Harness Corestore is already open by process ${holder.pid ?? 'unknown'} ` +
-            `(lock: ${lockPath}). Stop the duplicate operator/sidecar process before retrying.`,
-        );
-      }
+        let holder: HarnessStoreLockHolder;
+        try {
+          holder = JSON.parse(await readFile(lockPath, 'utf8')) as typeof holder;
+        } catch {
+          throw new Error(
+            `Harness Corestore lock is busy or corrupt: ${lockPath}. ` +
+              'Stop the duplicate operator process and remove the lock only after verifying no owner is running.',
+          );
+        }
 
-      // Atomically move the stale lock out of the well-known path before
-      // removing it. This prevents a concurrent opener from creating a fresh
-      // lock and then having that new owner's lock unlinked by our cleanup.
-      const stalePath = `${lockPath}.stale-${randomUUID()}`;
-      try {
-        await rename(lockPath, stalePath);
-      } catch (renameError) {
-        if ((renameError as NodeJS.ErrnoException).code !== 'ENOENT') throw renameError;
-        continue;
+        if (!lockHolderIsProvablyStale(holder)) {
+          throw new Error(
+            `Harness Corestore is already open by process ${holder.pid ?? 'unknown'} ` +
+              `(lock: ${lockPath}). Stop the duplicate operator/sidecar process before retrying.`,
+          );
+        }
+
+        const stalePath = `${lockPath}.stale-${randomUUID()}`;
+        try {
+          await rename(lockPath, stalePath);
+        } catch (renameError) {
+          if ((renameError as NodeJS.ErrnoException).code !== 'ENOENT') throw renameError;
+          continue;
+        }
+        await unlink(stalePath).catch((unlinkError) => {
+          if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
+        });
       }
-      await unlink(stalePath).catch((unlinkError) => {
-        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
-      });
-      continue;
     }
-
-    const token = randomUUID();
-    try {
-      await handle.writeFile(
-        JSON.stringify({
-          pid: process.pid,
-          token,
-          processIdentity: readProcessIdentity(process.pid),
-          startedAt: new Date().toISOString(),
-        }),
-        'utf8',
-      );
-    } catch (error) {
-      await handle.close().catch(() => {});
-      await unlink(lockPath).catch(() => {});
-      throw error;
-    }
+    await unlink(candidatePath);
 
     let released = false;
     return {
@@ -288,6 +284,11 @@ async function acquireHarnessStoreLock(
         await releaseLockFile(handle, lockPath, token);
       },
     };
+  } catch (error) {
+    if (published) await releaseLockFile(handle, lockPath, token).catch(() => {});
+    else await handle.close().catch(() => {});
+    await unlink(candidatePath).catch(() => {});
+    throw error;
   }
 }
 

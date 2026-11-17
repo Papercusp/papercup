@@ -17,11 +17,16 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const h = vi.hoisted(() => ({ readyCalls: 0, failuresRemaining: 0 }));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 vi.mock('corestore', () => ({
   default: class FakeCorestore {
@@ -42,13 +47,19 @@ vi.mock('./remote-core-host', () => ({
   forgetStore: vi.fn(),
 }));
 
-const { getHarnessStore, closeHarnessStore, getHarnessScopedStore } = await import('./corestore');
+const {
+  getHarnessStore, closeHarnessStore, getHarnessScopedStore,
+  getForeignHarnessStoreOwner, harnessStoreLockPath,
+} = await import('./corestore');
+const realFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
 
 async function opts() {
   return { workspaceRoot: await mkdtemp(join(tmpdir(), 'corestore-evict-')), harnessSlug: 'hw3' };
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.mocked(open).mockImplementation(realFs.open);
   h.readyCalls = 0;
   h.failuresRemaining = 0;
 });
@@ -142,5 +153,111 @@ describe('failed corestore opens are evicted from the cache', () => {
     expect(h.readyCalls).toBe(1);
 
     await closeHarnessStore(o);
+  });
+});
+
+describe('Corestore owner records are complete before publication', () => {
+  it.each(['writeFile', 'sync'] as const)('keeps ownership undiscoverable until %s finishes', async (stage) => {
+    const o = await opts();
+    const lockPath = harnessStoreLockPath(o);
+    let entered!: () => void;
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => { entered = resolve; });
+    const proceed = new Promise<void>((resolve) => { resume = resolve; });
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await realFs.open(...args);
+      if (stage === 'writeFile') {
+        const write = handle.writeFile.bind(handle);
+        vi.spyOn(handle, 'writeFile').mockImplementation(async (...writeArgs) => {
+          entered();
+          await proceed;
+          return write(...writeArgs);
+        });
+      } else {
+        const sync = handle.sync.bind(handle);
+        vi.spyOn(handle, 'sync').mockImplementation(async () => {
+          entered();
+          await proceed;
+          return sync();
+        });
+      }
+      return handle;
+    });
+
+    const pending = getHarnessStore(o);
+    try {
+      await paused;
+      await expect(readFile(lockPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(getForeignHarnessStoreOwner(o)).resolves.toBeNull();
+      expect(h.readyCalls).toBe(0);
+    } finally {
+      resume();
+      await pending;
+      await closeHarnessStore(o);
+    }
+    await expect(readFile(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readdir(join(o.workspaceRoot, '.papercusp', o.harnessSlug))).toEqual(['hyperbee']);
+  });
+
+  it.each(['writeFile', 'sync'] as const)('cleans its candidate and retries after failed %s', async (stage) => {
+    const o = await opts();
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await realFs.open(...args);
+      vi.spyOn(handle, stage).mockRejectedValueOnce(new Error('injected metadata IO failure'));
+      return handle;
+    });
+    await expect(getHarnessStore(o)).rejects.toThrow('injected metadata IO failure');
+    await expect(readFile(harnessStoreLockPath(o))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readdir(join(o.workspaceRoot, '.papercusp', o.harnessSlug))).toEqual(['hyperbee']);
+    expect(h.readyCalls).toBe(0);
+
+    await getHarnessStore(o);
+    const record = JSON.parse(await readFile(harnessStoreLockPath(o), 'utf8'));
+    expect(record).toMatchObject({ pid: process.pid, token: expect.any(String), startedAt: expect.any(String) });
+    expect(record).toHaveProperty('processIdentity');
+    expect(h.readyCalls).toBe(1);
+    await closeHarnessStore(o);
+  });
+
+  it.each([
+    { label: 'live', contents: JSON.stringify({ pid: process.pid, token: 'existing-live' }), message: 'already open' },
+    { label: 'empty', contents: '', message: 'busy or corrupt' },
+    { label: 'malformed', contents: '{broken', message: 'busy or corrupt' },
+  ])('preserves a pre-existing $label owner record', async ({ contents, message }) => {
+    const o = await opts();
+    const dir = join(o.workspaceRoot, '.papercusp', o.harnessSlug);
+    await mkdir(dir, { recursive: true });
+    await writeFile(harnessStoreLockPath(o), contents);
+
+    await expect(getHarnessStore(o)).rejects.toThrow(message);
+    expect(await readFile(harnessStoreLockPath(o), 'utf8')).toBe(contents);
+    expect((await readdir(dir)).filter((name) => name.includes('.candidate-'))).toEqual([]);
+    expect(h.readyCalls).toBe(0);
+  });
+
+  it('refuses a live owner published while its candidate was being synced', async () => {
+    const o = await opts();
+    const contents = JSON.stringify({ pid: process.pid, token: 'concurrent-live' });
+    vi.mocked(open).mockImplementationOnce(async (...args) => {
+      const handle = await realFs.open(...args);
+      const sync = handle.sync.bind(handle);
+      vi.spyOn(handle, 'sync').mockImplementationOnce(async () => {
+        await writeFile(harnessStoreLockPath(o), contents, { flag: 'wx' });
+        await sync();
+      });
+      return handle;
+    });
+    await expect(getHarnessStore(o)).rejects.toThrow('already open');
+    expect(await readFile(harnessStoreLockPath(o), 'utf8')).toBe(contents);
+    expect(h.readyCalls).toBe(0);
+  });
+
+  it('keeps release fenced to the published token', async () => {
+    const o = await opts();
+    await getHarnessStore(o);
+    const replacement = JSON.stringify({ pid: process.pid, token: 'replacement-owner' });
+    await writeFile(harnessStoreLockPath(o), replacement);
+    await closeHarnessStore(o);
+    expect(await readFile(harnessStoreLockPath(o), 'utf8')).toBe(replacement);
   });
 });
