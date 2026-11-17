@@ -154,16 +154,16 @@ describe('selected-step usage population (not a causal spend claim)', () => {
   });
 
   it.each([
-    { patch: { event_ts: null }, primary: 'missing-time-unknown-grain', flags: ['duplicate-observation', 'missing-original-event-time'] },
-    { patch: { usage_provenance: { grain: 'cumulative' } }, primary: 'missing-time-unknown-grain', flags: ['duplicate-observation', 'non-request-or-unknown-grain'] },
-    { patch: { workspace_id: 'foreign' }, primary: 'excluded', flags: ['duplicate-observation', 'foreign-workspace'] },
-  ] as const)('retains combined diagnostics under primary precedence: $primary / $flags', ({ patch, primary, flags }) => {
+    { scenario: 'duplicate-missing-time', patch: { event_ts: null }, primary: 'missing-time-unknown-grain', flags: ['duplicate-observation', 'missing-original-event-time'] },
+    { scenario: 'unknown-grain-duplicate', patch: { usage_provenance: { grain: 'cumulative' } }, primary: 'missing-time-unknown-grain', flags: ['duplicate-observation', 'non-request-or-unknown-grain'] },
+    { scenario: 'foreign-duplicate', patch: { workspace_id: 'foreign' }, primary: 'excluded', flags: ['duplicate-observation', 'foreign-workspace'] },
+  ] as const)('retains combined diagnostics under primary precedence: $scenario', ({ patch, primary, flags }) => {
     const rows = [row({ ...patch, id: '2' }), row({ ...patch, id: '10' })];
     const forward = measure(rows), reversed = measure([...rows].reverse());
     expect(forward).toEqual(reversed);
     expect(forward.partitions[primary]).toHaveLength(2);
     expect(Object.values(forward.partitions).flat()).toHaveLength(2);
-    for (const diagnostic of forward.diagnostics) expect(diagnostic.flags).toEqual(expect.arrayContaining(flags));
+    for (const diagnostic of forward.diagnostics) expect(diagnostic.flags).toEqual(expect.arrayContaining([...flags]));
   });
 
   it('retains conflicting/shared flags and distinguishes absent from unusable expected keys', () => {
@@ -229,6 +229,32 @@ describe('selected-step usage population (not a causal spend claim)', () => {
     expect(measure([row({ input_tokens: Infinity })]).observations).toMatchObject([
       { input_tokens: { nonFiniteNumber: 'Infinity' } },
     ]);
+  });
+
+  it.each([1, 2, 3])('reconciles %i observations across fixed-size pages without increasing the page limit', count => {
+    const rows = Array.from({ length: count }, (_, i) => row({ id: String(i), usage_event_key: `key-${i}`, input_tokens: i + 1 }));
+    const result = summarizeWorkflowStepUsage({ source, rows,
+      ledger: { totalRecords: count, limit: 2, pages: Math.ceil(count / 2), complete: true } });
+    expect(result.population.query).toMatchObject({ complete: true, limit: 2 });
+    expect(result.population.observedRecords).toBe(count);
+    expect(result.population.truncatedResidueRecords).toBe(0);
+    expect(result.totals.inputTokens.value).toBe(count * (count + 1) / 2);
+    if (count > 2) expect(summarizeWorkflowStepUsage({ source, rows,
+      ledger: { totalRecords: count, limit: 2, pages: 1, complete: true } }).population.query.complete).toBe(false);
+    expect(result.exactStepSpendKnown).toBe(false);
+  });
+
+  it('groups equal keys across page boundaries and restart permutations before choosing representatives', () => {
+    const pages = [[row({ id: '2' }), row({ id: '3', usage_event_key: 'conflict', input_tokens: 1 })],
+      [row({ id: '10' }), row({ id: '11', usage_event_key: 'conflict', input_tokens: 2 })]];
+    const collect = (rows: WorkflowStepUsageRow[]) => summarizeWorkflowStepUsage({ source, rows,
+      ledger: { totalRecords: 4, limit: 2, pages: 2, complete: true } });
+    const expected = collect(pages.flat());
+    const reversed = JSON.parse(JSON.stringify([...pages[1], ...pages[0]]));
+    expect(collect(reversed)).toEqual(expected);
+    expect(expected.partitions.duplicate.map(row => row.rowId)).toEqual(['10']);
+    expect(expected.partitions.conflicting.map(row => row.rowId)).toEqual(['3', '11']);
+    expect(Object.values(expected.partitions).flat()).toHaveLength(4);
   });
 
   it('unions overlapping tool intervals while other time categories remain unknown', () => {

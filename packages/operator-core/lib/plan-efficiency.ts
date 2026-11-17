@@ -447,7 +447,7 @@ export function unionWorkflowStepIntervals(intervals: readonly (readonly [number
 export function summarizeWorkflowStepUsage(input: {
   source: WorkflowStepSource;
   rows: readonly WorkflowStepUsageRow[];
-  ledger: { totalRecords: number | null; limit: number; complete: boolean; error?: string };
+  ledger: { totalRecords: number | null; limit: number; complete: boolean; pages?: number; error?: string };
   toolIntervals?: readonly (readonly [number, number])[];
 }) {
   const { source, ledger } = input;
@@ -529,7 +529,7 @@ export function summarizeWorkflowStepUsage(input: {
   const missingExpected = knownExpected?.filter(key => !selectedKeys.includes(key)) ?? [];
   const totalRecords = stepTokens(ledger.totalRecords);
   const snapshotComplete = validScope && ledger.complete && !ledger.error && totalRecords === rows.length &&
-    rows.length <= ledger.limit;
+    rows.length <= ledger.limit * (ledger.pages ?? 1);
   const residue = totalRecords === null ? null : Math.max(0, totalRecords - rows.length);
   const tokenFields = ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens'] as const;
   const quantityInvalid = selected.some(row => tokenFields.some(field => row[field] !== null && stepTokens(row[field]) === null) ||
@@ -577,13 +577,39 @@ export function summarizeWorkflowStepUsage(input: {
   };
 }
 
-/** Resolve canonical work/owner/native predicates and read one repeatable SQL
- * snapshot. There is deliberately no caller-supplied owner, request list, charge
- * completeness bit or per-step allocation. Missing history is an explicit gap. */
-export async function readWorkflowStepMeasurement(input: {
+const STEP_STAGES = ['workItems', 'calls', 'sessions', 'usage'] as const;
+type StepStage = (typeof STEP_STAGES)[number];
+type StepCall = { id: string; coord_owner_id: string | null; invoked_at: string;
+  duration_ms: number | null; goal_ref: string };
+type StepEvidence = { workItems: Array<{ feature_id: string }>; calls: StepCall[];
+  sessions: Array<{ session_id: string }>; usage: WorkflowStepUsageRow[] };
+type StepCensus = { count: number; highWater: string | null; checksum: string[] };
+/** Retained results are recovery hints; SQL revalidates their exact prefix. */
+export interface WorkflowStepRecoveryState {
+  version: 1; scopeFingerprint: string; generation: string; pageLimit: number;
+  census: Record<StepStage, StepCensus>;
+  lastKeys: Record<StepStage, string | null>;
+  evidence: StepEvidence;
+}
+export interface WorkflowStepMeasurementInput {
   workspaceId: string; harnessSlug: string; subject: WorkflowStepSubject;
   sql?: ReturnType<typeof getOrgPg>['sql']; maxRows?: number;
-}) {
+  resume?: WorkflowStepRecoveryState;
+}
+/** Separate finite retention budget; reaching it preserves an incomplete reading. */
+const STEP_EVIDENCE_ROW_BUDGET = 100_000;
+const stepKey = (stage: StepStage, row: Record<string, unknown>): string =>
+  String(row[stage === 'workItems' ? 'feature_id' : stage === 'sessions' ? 'session_id' : 'id']);
+const stepKeyOrder = (stage: StepStage, a: string, b: string) =>
+  stage === 'calls' || stage === 'usage' ? (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0)
+    : Buffer.compare(Buffer.from(a), Buffer.from(b));
+
+/** One bounded keyset page per stage, with a frozen generation and validated
+ * accumulated evidence. Canonical SQL joins resolve the full dependency set;
+ * first-page owners/items never silently restrict a later stage's population.
+ * Persist recovery.state in the existing result snapshot, then supply it on
+ * restart. Changed or unreconstructable sources require explicit resync. */
+export async function readWorkflowStepMeasurement(input: WorkflowStepMeasurementInput) {
   const sql = input.sql ?? getOrgPg().sql;
   const limit = input.maxRows ?? WORKFLOW_STEP_MAX_ROWS;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > WORKFLOW_STEP_MAX_ROWS ||
@@ -597,63 +623,172 @@ export async function readWorkflowStepMeasurement(input: {
     fingerprint: '', expectedRequests: { state: 'unknown', reason: 'Complete native request history and ingestion frontier are not established by goal-stamped tool calls.' },
     complete: false };
   const runtime = { build: getBuildInfo(), node: process.version };
+  const scopeFingerprint = stepHash({ workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+    subject: input.subject, resolverVersion: WORKFLOW_STEP_MEASUREMENT_VERSION });
+  let state: WorkflowStepRecoveryState | null = null;
+  const finish = (measuredAt: string, status: 'complete' | 'continue' | 'resync-required' | 'incomplete', reason?: string) => {
+    // Keep the rejected cursor for diagnosis, but never relabel its unverified
+    // observations as a new platform measurement (even a partial one).
+    const evidence = (status === 'resync-required' ? null : state?.evidence) ??
+      { workItems: [], calls: [], sessions: [], usage: [] };
+    source.workItemIds = evidence.workItems.map(row => row.feature_id);
+    source.ownerIds = [...new Set(evidence.calls.map(row => row.coord_owner_id).filter((id): id is string => !!id))].sort();
+    source.nativeSessionIds = evidence.sessions.map(row => row.session_id);
+    source.complete = status === 'complete';
+    const sourceEvidence = { workItems: evidence.workItems, calls: evidence.calls, sessions: evidence.sessions };
+    source.fingerprint = stepHash({ scopeFingerprint, generation: state?.generation, sourceEvidence });
+    const intervals = evidence.calls.flatMap(row => {
+      const duration = stepNumber(row.duration_ms), at = Date.parse(row.invoked_at);
+      return duration === null || !Number.isFinite(at) ? [] :
+        [[at, Math.min(at + duration, Date.parse(input.subject.windowEnd))] as const];
+    });
+    const result = summarizeWorkflowStepUsage({ source, rows: evidence.usage,
+      ledger: { totalRecords: status === 'resync-required' ? null : state?.census.usage.count ?? null, limit, complete: source.complete,
+        pages: Math.max(1, Math.ceil(evidence.usage.length / limit)), ...(reason ? { error: reason } : {}) },
+      toolIntervals: intervals });
+    return { ...result, measuredAt, runtime, provenance: 'platform-computed' as const, sourceEvidence,
+      sourceReadLimits: { workItems: evidence.workItems.length, calls: evidence.calls.length,
+        sessions: evidence.sessions.length, limit, complete: source.complete },
+      recovery: { status, ...(reason ? { reason } : {}), state,
+        stages: state ? Object.fromEntries(STEP_STAGES.map(stage => [stage, {
+          highWater: state!.census[stage].highWater, lastKey: state!.lastKeys[stage],
+          processed: state!.evidence[stage].length, total: state!.census[stage].count,
+          complete: (status === 'complete' || status === 'continue') &&
+            state!.evidence[stage].length === state!.census[stage].count &&
+            state!.lastKeys[stage] === state!.census[stage].highWater,
+        }])) : null } };
+  };
   try {
     return await sql.begin('isolation level repeatable read read only', async tx => {
       const [clock] = await tx<Array<{ measured_at: string }>>`SELECT transaction_timestamp()::text AS measured_at`;
-      const work = await tx<Array<{ feature_id: string }>>`
+      const measuredAt = new Date(clock.measured_at).toISOString();
+      if (input.resume) {
+        const saved = input.resume;
+        if (saved.version !== 1 || saved.scopeFingerprint !== scopeFingerprint || saved.pageLimit !== limit ||
+            !saved.evidence || !saved.lastKeys || !saved.census ||
+            !STEP_STAGES.every(stage => {
+              const census = saved.census[stage], key = saved.lastKeys[stage];
+              return census && Number.isSafeInteger(census.count) && census.count >= 0 &&
+                (census.highWater === null || typeof census.highWater === 'string') &&
+                Array.isArray(census.checksum) && census.checksum.length === 2 &&
+                census.checksum.every(value => typeof value === 'string') &&
+                (key === null || typeof key === 'string') && Array.isArray(saved.evidence[stage]) &&
+                saved.evidence[stage].every(row => row && typeof row === 'object');
+            }) ||
+            STEP_STAGES.reduce((sum, stage) => sum + saved.evidence[stage].length, 0) > STEP_EVIDENCE_ROW_BUDGET) {
+          return finish(measuredAt, 'resync-required', 'invalid-recovery-scope-or-budget');
+        }
+        state = JSON.parse(JSON.stringify(saved)) as WorkflowStepRecoveryState;
+        for (const stage of STEP_STAGES) {
+          const keys = state.evidence[stage].map(row => stepKey(stage, row as unknown as Record<string, unknown>));
+          if (keys.some((key, i) => !key || (stage === 'calls' || stage === 'usage') && !/^\d+$/.test(key) ||
+              i > 0 && stepKeyOrder(stage, keys[i - 1], key) >= 0) ||
+              state.lastKeys[stage] !== (keys.at(-1) ?? null)) {
+            state = null;
+            return finish(measuredAt, 'resync-required', 'invalid-recovery-keyset');
+          }
+        }
+      }
+      // Census every selected observation, including unconsumed tails. Two
+      // independent 64-bit checksum sums plus count avoid unbounded string_agg.
+      const observations = tx`WITH work AS (
         SELECT feature_id FROM harness_shared.work_items
         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
           AND lane IS DISTINCT FROM 'observation'
           AND (feature_id = ${input.subject.ref} OR
             (source_plan_slug = ${planItem?.[1] ?? null} AND ${planItem?.[2] ?? null} = ANY(source_plan_item_ids)))
-        ORDER BY feature_id LIMIT ${limit + 1}`;
-      source.workItemIds = work.slice(0, limit).map(row => row.feature_id);
-      const calls = await tx<Array<{ id: string; coord_owner_id: string | null; invoked_at: Date;
-        duration_ms: number | null; goal_ref: string; population_count: string }>>`
-        SELECT id::text, coord_owner_id, invoked_at, duration_ms, goal_ref, count(*) OVER ()::text AS population_count
+      ), calls AS (
+        SELECT id, coord_owner_id, invoked_at, duration_ms, goal_ref
         FROM harness_shared.tool_invocations
         WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
-          AND call_origin = 'agent' AND goal_ref = ANY(${source.workItemIds}::text[])
+          AND call_origin = 'agent' AND goal_ref IN (SELECT feature_id FROM work)
           AND invoked_at >= ${input.subject.windowStart}::timestamptz AND invoked_at < ${input.subject.windowEnd}::timestamptz
-        ORDER BY id LIMIT ${limit + 1}`;
-      source.ownerIds = [...new Set(calls.slice(0, limit).map(row => row.coord_owner_id).filter((id): id is string => !!id))].sort();
-      const sessions = await tx<Array<{ session_id: string }>>`
+      ), sessions AS (
         SELECT DISTINCT session_id FROM harness_shared.session_turn_parts
-        WHERE workspace_id IN ('default', ${input.workspaceId}) AND owner = ANY(${source.ownerIds}::text[])
+        WHERE workspace_id IN ('default', ${input.workspaceId}) AND owner IN (SELECT coord_owner_id FROM calls)
           AND ts >= ${input.subject.windowStart}::timestamptz AND ts < ${input.subject.windowEnd}::timestamptz
-        ORDER BY session_id LIMIT ${limit + 1}`;
-      source.nativeSessionIds = sessions.slice(0, limit).map(row => row.session_id);
-      const sourceEvidence = { workItems: work, calls: calls.map(row => ({ ...row,
-        invoked_at: new Date(row.invoked_at).toISOString() })), sessions };
-      source.fingerprint = stepHash({ source, sourceEvidence });
-      const rows = await tx<Array<WorkflowStepUsageRow & { population_count: string }>>`
+          AND session_id IS NOT NULL
+      ), usage AS (
         SELECT id::text, workspace_id, harness_slug, session_id, run_id, usage_event_key, event_ts::text,
-          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, cost_source, usage_provenance,
-          count(*) OVER ()::text AS population_count
+          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, cost_source, usage_provenance
         FROM harness_shared.agent_usage_samples
         WHERE workspace_id = ${input.workspaceId} AND
-          (session_id = ANY(${source.nativeSessionIds}::text[]) OR run_id = ANY(${source.nativeSessionIds}::text[])
-           OR usage_provenance->>'sessionOwnerId' = ANY(${source.ownerIds}::text[]))
-        ORDER BY id LIMIT ${limit + 1}`;
-      const totalRecords = rows.length ? Number(rows[0].population_count) : 0;
-      const complete = work.length <= limit && calls.length <= limit && sessions.length <= limit &&
-        rows.length <= limit && rows.every(row => Number(row.population_count) === totalRecords);
-      const toolIntervals = calls.slice(0, limit).flatMap(row => {
-        const duration = stepNumber(row.duration_ms), at = new Date(row.invoked_at).getTime();
-        return duration === null || !Number.isFinite(at) ? [] : [[at, Math.min(at + duration, Date.parse(input.subject.windowEnd))] as const];
-      });
-      const result = summarizeWorkflowStepUsage({ source, rows: rows.slice(0, limit),
-        ledger: { totalRecords, limit, complete }, toolIntervals });
-      return { ...result, measuredAt: new Date(clock.measured_at).toISOString(), runtime,
-        provenance: 'platform-computed' as const, sourceEvidence,
-        sourceReadLimits: { workItems: work.length, calls: calls.length, sessions: sessions.length, limit, complete } };
+          (session_id IN (SELECT session_id FROM sessions) OR run_id IN (SELECT session_id FROM sessions)
+           OR usage_provenance->>'sessionOwnerId' IN (SELECT coord_owner_id FROM calls))
+      ), observations AS (
+        SELECT 'workItems'::text AS stage, feature_id AS key, NULL::bigint AS numeric_key, to_jsonb(work) AS value FROM work
+        UNION ALL SELECT 'calls', id::text, id, jsonb_build_object('id', id::text,
+          'coord_owner_id', coord_owner_id, 'invoked_at', to_char(invoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+          'duration_ms', duration_ms, 'goal_ref', goal_ref) FROM calls
+        UNION ALL SELECT 'sessions', session_id, NULL::bigint, to_jsonb(sessions) FROM sessions
+        UNION ALL SELECT 'usage', id, id::bigint, to_jsonb(usage) FROM usage
+      )`;
+      const lastKeys = state?.lastKeys ?? { workItems: null, calls: null, sessions: null, usage: null };
+      const boundaries = STEP_STAGES.map(stage => ({ stage, last_key: lastKeys[stage] }));
+      const censusRows = await tx<Array<{ stage: StepStage; count: string; high_water: string | null;
+        a: string; b: string; prefix_count: string }>>`${observations}
+        SELECT o.stage, count(*)::text AS count,
+          CASE WHEN max(numeric_key) IS NOT NULL THEN max(numeric_key)::text ELSE max(key COLLATE "C") END AS high_water,
+          sum(('x' || substr(md5(value::text), 1, 16))::bit(64)::bigint)::text AS a,
+          sum(('x' || substr(md5(value::text), 17, 16))::bit(64)::bigint)::text AS b,
+          count(*) FILTER (WHERE b.last_key IS NOT NULL AND CASE WHEN numeric_key IS NOT NULL
+            THEN numeric_key <= b.last_key::bigint ELSE key COLLATE "C" <= b.last_key COLLATE "C" END)::text AS prefix_count
+        FROM observations o LEFT JOIN jsonb_to_recordset(${JSON.stringify(boundaries)}::jsonb) AS b(stage text, last_key text)
+          ON b.stage = o.stage GROUP BY o.stage`;
+      const census = Object.fromEntries(STEP_STAGES.map(stage => {
+        const row = censusRows.find(row => row.stage === stage);
+        return [stage, { count: Number(row?.count ?? 0), highWater: row?.high_water ?? null,
+          checksum: [row?.a ?? '0', row?.b ?? '0'] }];
+      })) as Record<StepStage, StepCensus>;
+      if (STEP_STAGES.some(stage => !Number.isSafeInteger(census[stage].count))) throw new Error('unsafe-source-population-count');
+      const generation = stepHash({ scopeFingerprint, census });
+      if (state) {
+        if (state.generation !== generation || stepHash(state.census) !== stepHash(census)) {
+          return finish(measuredAt, 'resync-required', 'source-generation-changed');
+        }
+        const retained = STEP_STAGES.flatMap(stage => state!.evidence[stage].map(value => ({
+          stage, key: stepKey(stage, value as unknown as Record<string, unknown>), value,
+        })));
+        const [validation] = await tx<Array<{ errors: string }>>`${observations}
+          SELECT count(*)::text AS errors FROM jsonb_to_recordset(${JSON.stringify(retained)}::jsonb) AS r(stage text, key text, value jsonb)
+          LEFT JOIN observations o ON o.stage = r.stage AND o.key = r.key
+          WHERE o.key IS NULL OR o.value IS DISTINCT FROM r.value`;
+        if (Number(validation.errors) !== 0 || STEP_STAGES.some(stage =>
+            state!.evidence[stage].length !== Number(censusRows.find(row => row.stage === stage)?.prefix_count ?? 0))) {
+          state = null;
+          return finish(measuredAt, 'resync-required', 'retained-prefix-does-not-match-source');
+        }
+      } else {
+        state = { version: 1, scopeFingerprint, generation, pageLimit: limit, census,
+          lastKeys: { ...lastKeys }, evidence: { workItems: [], calls: [], sessions: [], usage: [] } };
+      }
+      for (const stage of STEP_STAGES) {
+        if (state.evidence[stage].length === census[stage].count) continue;
+        const remaining = STEP_EVIDENCE_ROW_BUDGET - STEP_STAGES.reduce((sum, key) => sum + state!.evidence[key].length, 0);
+        if (remaining === 0) return finish(measuredAt, 'incomplete', 'evidence-row-budget-exhausted');
+        const pageLimit = Math.min(limit, remaining), last = state.lastKeys[stage];
+        // Choose the typed predicate before SQL planning: a CASE containing a
+        // constant text-key::bigint can fail during constant folding even when
+        // its numeric branch would never be selected at execution time.
+        const after = last === null ? tx`TRUE` : stage === 'calls' || stage === 'usage'
+          ? tx`numeric_key > ${last}::bigint` : tx`key COLLATE "C" > ${last}::text COLLATE "C"`;
+        const page = await tx<Array<{ key: string; value: Record<string, unknown> }>>`${observations}
+          SELECT key, value FROM observations WHERE stage = ${stage} AND ${after}
+          ORDER BY numeric_key, key COLLATE "C" LIMIT ${pageLimit + 1}`;
+        const accepted = page.slice(0, pageLimit);
+        if (!accepted.length) return finish(measuredAt, 'resync-required', 'keyset-ended-before-census');
+        (state.evidence[stage] as unknown[]).push(...accepted.map(row => row.value));
+        state.lastKeys[stage] = accepted.at(-1)!.key;
+        // Finish dependency identities before exposing downstream observations;
+        // an unread canonical tail session is not a foreign usage session.
+        if (state.evidence[stage].length < census[stage].count) break;
+      }
+      const complete = STEP_STAGES.every(stage => state!.evidence[stage].length === census[stage].count &&
+        state!.lastKeys[stage] === census[stage].highWater);
+      return finish(measuredAt, complete ? 'complete' : 'continue');
     });
   } catch (error) {
-    source.fingerprint ||= stepHash(source);
-    return { ...summarizeWorkflowStepUsage({ source, rows: [], ledger: {
-      totalRecords: null, limit, complete: false, error: error instanceof Error ? error.message : String(error) } }),
-      measuredAt: new Date().toISOString(), runtime, provenance: 'platform-computed' as const,
-      sourceEvidence: null,
-      sourceReadLimits: { workItems: null, calls: null, sessions: null, limit, complete: false } };
+    return finish(new Date().toISOString(), input.resume ? 'resync-required' : 'incomplete',
+      error instanceof Error ? error.message : String(error));
   }
 }

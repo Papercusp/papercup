@@ -13,7 +13,7 @@ import type { OrgTestDb } from '../test/_org-test-db';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { readPlanEfficiency, readWorkflowStepMeasurement } = await import('./plan-efficiency');
-const { recordRubricCheckResults, readLatestRubricCheckResults } = await import('./check-results-ledger');
+const { recordRubricCheckResults, readLatestRubricCheckResults, recordWorkflowStepMeasurement } = await import('./check-results-ledger');
 const { retainMeasurementProvenance } = await import('./measurement-provenance');
 
 const WS = 'ws-plan-efficiency';
@@ -216,7 +216,11 @@ describe('readPlanEfficiency (real PG)', () => {
   it('keeps query overflow and unresolved subjects unknown rather than reporting complete zero spend', async () => {
     const limited = await readWorkflowStepMeasurement({ ...stepInput(), maxRows: 2 });
     expect(limited.population.query.complete).toBe(false);
-    expect(limited.population.truncatedResidueRecords).toBe(6);
+    // Four canonical calls require continuation before native/usage reads.
+    // All eight usage observations remain unread, rather than two being
+    // prematurely classified against an incomplete dependency population.
+    expect(limited.population.observedRecords).toBe(0);
+    expect(limited.population.truncatedResidueRecords).toBe(8);
     expect(limited.sourceReadLimits.complete).toBe(false);
     expect(limited.exactStepSpendKnown).toBe(false);
     const absent = await readWorkflowStepMeasurement({ ...stepInput(),
@@ -234,6 +238,7 @@ describe('readPlanEfficiency (real PG)', () => {
   });
 
   it('retains an actual PG read failure as unknown without a false empty-population measurement', async () => {
+    const retained = await readWorkflowStepMeasurement({ ...stepInput(), maxRows: 2 });
     // Only this private fixture DB is changed, and restored even if the assertion fails.
     await db.adminSql`ALTER TABLE harness_shared.agent_usage_samples RENAME TO step_usage_unavailable`;
     try {
@@ -242,6 +247,11 @@ describe('readPlanEfficiency (real PG)', () => {
       expect(result.population.query.error).toContain('agent_usage_samples');
       expect(result.totals.inputTokens.value).toBeNull();
       expect(result.gaps).toContain('ledger-read-failed');
+      const resumed = await readWorkflowStepMeasurement({ ...stepInput(), maxRows: 2, resume: retained.recovery.state! });
+      expect(resumed.recovery.status).toBe('resync-required');
+      expect(resumed.recovery.state).toEqual(retained.recovery.state);
+      expect(resumed.observations).toEqual([]);
+      expect(resumed.totals.inputTokens.value).toBeNull();
     } finally {
       await db.adminSql`ALTER TABLE harness_shared.step_usage_unavailable RENAME TO agent_usage_samples`;
     }
@@ -270,4 +280,146 @@ describe('readPlanEfficiency (real PG)', () => {
     expect(JSON.parse(row!.detail!)).toEqual(JSON.parse(JSON.stringify(measurement)));
     expect(row?.provenanceStatus).toBe('retained');
   });
+
+  async function paginationFixture(name: string, counts = { workItems: 3, calls: 3, sessions: 3, usage: 3 }) {
+    const ws = `ws-step-pages-${name}`, plan = `step-pages-${name}`;
+    const work = Array.from({ length: counts.workItems }, (_, i) => `WI-${name}-${i}`);
+    const calls: number[] = [];
+    const sessions = Array.from({ length: counts.sessions }, (_, i) => `session-${ws}-${i}`);
+    for (const id of work) await db.adminSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, source_plan_slug, source_plan_item_ids)
+      VALUES (${ws}, ${HARNESS}, ${id}, 'pagination fixture', 'open', 'feature', ${plan}, ARRAY['P-001'])`;
+    for (let i = 0; i < counts.calls; i++) {
+      const id = nextId++; calls.push(id);
+      await db.adminSql`
+        INSERT INTO harness_shared.tool_invocations
+          (id, workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, coord_owner_id,
+           invoked_at, window_key, status, transport, call_origin, goal_ref)
+        VALUES (${id}, ${ws}, ${HARNESS}, 'core', 'testing:run', 'su', ${`sp-${id}`}, ${`${ws}-owner-${i}`},
+          ${at(1)}::timestamptz, 'w', 'ok', 'mcp', 'agent', ${work.at(-1)!})`;
+    }
+    for (const session of sessions) await db.adminSql`
+      INSERT INTO harness_shared.session_turn_parts
+        (workspace_id, source_kind, session_id, part_idx, ts, owner, speaker, part_kind, text)
+      VALUES (${ws}, 'codex', ${session}, 0, ${at(2)}::timestamptz,
+        ${`${ws}-owner-${counts.calls - 1}`}, 'assistant', 'text', 'pagination fixture')`;
+    for (let i = 0; i < counts.usage; i++) await db.adminSql`
+      INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, ts, bucket_key, provider, model_class, source, model, harness_slug,
+         session_id, usage_event_key, event_ts, input_tokens, output_tokens, cost_usd, cost_source, usage_provenance)
+      VALUES (${ws}, ${T0}, 'pagination', 'openai', 'gpt', 'interactive', 'gpt-test', ${HARNESS},
+        ${sessions.at(-1)!}, ${`request-${i}`}, ${T0 + 1000}, ${i + 1}, 1, 0, 'provider',
+        ${db.adminSql.json({ grain: 'request', workItemSource: 'unavailable' })})`;
+    const input = { workspaceId: ws, harnessSlug: HARNESS, sql: db.adminSql, maxRows: 2,
+      subject: { kind: 'work-item', ref: `${plan}:P-001`, windowStart: at(0), windowEnd: at(60) } };
+    return { input, work, calls, sessions };
+  }
+
+  const stages = ['workItems', 'calls', 'sessions', 'usage'] as const;
+  it.each(stages.flatMap(stage => [1, 2, 3].map(n => ({ stage, n }))))(
+    'recovers N-1/N/N+1 at $stage: $n records with unchanged page bound',
+    async ({ stage, n }) => {
+      const counts = { workItems: 1, calls: 1, sessions: 1, usage: 1, [stage]: n };
+      const { input } = await paginationFixture(`boundary-${stage}-${n}`, counts);
+      let result = await readWorkflowStepMeasurement(input);
+      expect(result.recovery.state?.census[stage].count).toBe(n);
+      expect(result.recovery.state?.evidence[stage]).toHaveLength(Math.min(n, 2));
+      let reads = 1;
+      while (result.recovery.status === 'continue' && reads++ < 4) {
+        const before = result.recovery.state!;
+        result = await readWorkflowStepMeasurement({ ...input, resume: JSON.parse(JSON.stringify(before)) });
+        for (const key of stages) {
+          expect(result.recovery.state?.evidence[key].length! - before.evidence[key].length).toBeLessThanOrEqual(2);
+        }
+      }
+      expect(result.recovery.status, result.recovery.reason).toBe('complete');
+      expect(result.population.query).toMatchObject({ limit: 2, complete: true });
+      expect(result.recovery.state?.evidence[stage]).toHaveLength(n);
+      expect(result.population.truncatedResidueRecords).toBe(0);
+      const unpaged = await readWorkflowStepMeasurement({ ...input, maxRows: 10_000 });
+      expect(result.observations).toEqual(unpaged.observations);
+      expect(result.partitions).toEqual(unpaged.partitions);
+      expect(result.diagnostics).toEqual(unpaged.diagnostics);
+      expect(result.totals).toEqual(unpaged.totals);
+      expect(result.source.fingerprint).toBe(unpaged.source.fingerprint);
+      expect(result.exactStepSpendKnown).toBe(false);
+    });
+
+  it('durably resumes an exact results-ledger receipt and drains later pages without process-local state', async () => {
+    const { input } = await paginationFixture('ledger-restart', { workItems: 5, calls: 5, sessions: 5, usage: 5 });
+    const scope = { ...input, rubricRef: 'step-pagination-fixture', criterionKey: 'measurement' };
+    const first = await recordWorkflowStepMeasurement({ ...scope, maxReads: 1 });
+    expect(first.measurement.recovery.status).toBe('continue');
+    const resumed = await recordWorkflowStepMeasurement({ ...scope, resumeFrom: first.testRunId, maxReads: 12 });
+    expect(resumed.measurement.recovery.status).toBe('complete');
+    expect(resumed.measurement.observations).toHaveLength(5);
+    expect(resumed.measurement.totals.inputTokens.value).toBe(15);
+    const rows = await readLatestRubricCheckResults({ rubricRef: scope.rubricRef, workspaceId: input.workspaceId,
+      subject: { kind: input.subject.kind, ref: input.subject.ref }, testRunIds: [resumed.testRunId] }, db.adminSql);
+    expect(JSON.parse(rows.get('measurement:instrument')!.detail!)).toEqual(JSON.parse(JSON.stringify(resumed.measurement)));
+    expect(rows.get('measurement:instrument')!.check.value).toBeNull();
+    await expect(recordWorkflowStepMeasurement({ ...scope,
+      subject: { ...input.subject, windowEnd: at(61) }, resumeFrom: first.testRunId })).rejects.toThrow('receipt-unavailable');
+  });
+
+  it('finishes dependency pages before classifying usage from canonical tail sessions', async () => {
+    const { input } = await paginationFixture('dependency-tail');
+    let result = await readWorkflowStepMeasurement(input);
+    expect(result.observations).toEqual([]);
+    let sawPartialUsage = false;
+    for (let reads = 0; result.recovery.status === 'continue' && reads < 10; reads++) {
+      result = await readWorkflowStepMeasurement({ ...input, resume: JSON.parse(JSON.stringify(result.recovery.state)) });
+      if (result.observations.length) {
+        for (const stage of ['workItems', 'calls', 'sessions'] as const) {
+          expect(result.recovery.state!.evidence[stage]).toHaveLength(3);
+        }
+        expect(result.partitions.excluded).toEqual([]);
+        sawPartialUsage ||= result.recovery.status === 'continue';
+      }
+    }
+    expect(sawPartialUsage).toBe(true);
+    expect(result.recovery.status).toBe('complete');
+  });
+
+  it.each(stages)('requires resync for changed unconsumed $stage observations without mixing old/new generations', async stage => {
+    const fixture = await paginationFixture(`changed-${stage}`);
+    const first = await readWorkflowStepMeasurement(fixture.input);
+    expect(first.recovery.status).toBe('continue');
+    if (stage === 'workItems') await db.adminSql`DELETE FROM harness_shared.work_items
+      WHERE workspace_id = ${fixture.input.workspaceId} AND feature_id = ${fixture.work.at(-1)!}`;
+    if (stage === 'calls') await db.adminSql`UPDATE harness_shared.tool_invocations SET duration_ms = 987
+      WHERE id = ${fixture.calls.at(-1)!}`;
+    if (stage === 'sessions') await db.adminSql`UPDATE harness_shared.session_turn_parts SET session_id = 'changed-session'
+      WHERE workspace_id = ${fixture.input.workspaceId} AND session_id = ${fixture.sessions.at(-1)!}`;
+    if (stage === 'usage') await db.adminSql`UPDATE harness_shared.agent_usage_samples SET input_tokens = 987
+      WHERE workspace_id = ${fixture.input.workspaceId} AND usage_event_key = 'request-2'`;
+    const changed = await readWorkflowStepMeasurement({ ...fixture.input, resume: first.recovery.state! });
+    expect(changed.recovery).toMatchObject({ status: 'resync-required', reason: 'source-generation-changed' });
+    expect(changed.population.query.complete).toBe(false);
+    expect(changed.recovery.state).toEqual(first.recovery.state);
+    expect(changed.observations).toEqual([]);
+    expect(changed.population.query.totalRecords).toBeNull();
+    expect(changed.exactStepSpendKnown).toBe(false);
+  });
+
+  it.each(['quantity', 'omission', 'permutation', 'scope', 'page-limit', 'malformed-census', 'malformed-row'] as const)(
+    'rejects a forged or incompatible retained prefix: %s', async mutation => {
+      const { input } = await paginationFixture(`forged-${mutation}`, { workItems: 1, calls: 1, sessions: 1, usage: 3 });
+      const first = await readWorkflowStepMeasurement(input);
+      const resume = JSON.parse(JSON.stringify(first.recovery.state!));
+      if (mutation === 'quantity') resume.evidence.usage[0].input_tokens = 999999;
+      if (mutation === 'omission') resume.evidence.usage.shift();
+      if (mutation === 'permutation') resume.evidence.usage.reverse();
+      if (mutation === 'malformed-census') resume.census = {};
+      if (mutation === 'malformed-row') resume.evidence.usage[0] = null;
+      const result = await readWorkflowStepMeasurement({ ...input, resume,
+        ...(mutation === 'scope' ? { subject: { ...input.subject, windowEnd: at(61) } } : {}),
+        ...(mutation === 'page-limit' ? { maxRows: 3 } : {}) });
+      expect(result.recovery.status).toBe('resync-required');
+      expect(result.population.query.complete).toBe(false);
+      expect(result.totals.inputTokens.value).toBeNull();
+      expect(result.exactStepSpendKnown).toBe(false);
+    });
+
 });

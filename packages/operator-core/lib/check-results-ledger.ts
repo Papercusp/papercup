@@ -41,6 +41,7 @@ import {
 } from '@papercusp/test-config/execution-details';
 import type { ScorecardProbeCheckRun, ScorecardTestsCheckRun } from './harness/improvements/observation-types';
 import { measurementProvenanceStatus, retainMeasurementProvenance } from './measurement-provenance';
+import type { WorkflowStepMeasurementInput, WorkflowStepRecoveryState } from './plan-efficiency';
 import { measureWorkOverheadWindow, type WorkOverheadMetrics, type WorkOverheadWindow } from './agent-work-overhead-metrics';
 import {
   getRegisteredInstrument,
@@ -472,6 +473,56 @@ export async function recordRubricCheckResults(
     ids.push(Number(inserted[0]!.id));
   }
   return ids;
+}
+
+/** Drain a bounded number of usage pages, retaining EACH reading before the
+ * next one. Restart from an exact existing check row, never a mutable latest
+ * pointer or a caller-certified population. This is a measurement snapshot:
+ * unknown complete step spend remains an error/null check even after recovery. */
+export async function recordWorkflowStepMeasurement(input: Omit<WorkflowStepMeasurementInput, 'resume'> & {
+  rubricRef: string; criterionKey: string; maxReads?: number; resumeFrom?: number;
+}) {
+  const sql = input.sql ?? getOrgPg().sql;
+  const maxReads = input.maxReads ?? 1;
+  if (!Number.isSafeInteger(maxReads) || maxReads < 1 || maxReads > 64 ||
+      input.resumeFrom !== undefined && (!Number.isSafeInteger(input.resumeFrom) || input.resumeFrom < 1)) {
+    throw new Error('invalid-workflow-recovery-budget-or-receipt');
+  }
+  const subject = { ...(input.subject.kind ? { kind: input.subject.kind } : {}), ref: input.subject.ref };
+  const checkId = instrumentCheckId(input.criterionKey);
+  let resume: WorkflowStepRecoveryState | undefined;
+  if (input.resumeFrom !== undefined) {
+    const rows = await readLatestRubricCheckResults({ rubricRef: input.rubricRef, workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug, subject, subjectWindow: input.subject, testRunIds: [input.resumeFrom] }, sql);
+    const row = rows.get(checkId);
+    if (!row?.detail || row.testRunId !== input.resumeFrom) throw new Error('workflow-recovery-receipt-unavailable');
+    const saved = JSON.parse(row.detail);
+    if (!saved.recovery?.state) throw new Error('workflow-recovery-state-unavailable');
+    resume = saved.recovery.state;
+  }
+  const { readWorkflowStepMeasurement } = await import('./plan-efficiency');
+  let receipt = input.resumeFrom;
+  for (let reads = 1; reads <= maxReads; reads++) {
+    const startedAt = new Date().toISOString();
+    const measurement = await readWorkflowStepMeasurement({ ...input, ...(resume ? { resume } : {}) });
+    const provenance = retainMeasurementProvenance({
+      procedure: { kind: 'platform-instrument',
+        window: { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, subject,
+          windowStart: input.subject.windowStart, windowEnd: input.subject.windowEnd } },
+      result: { inputFingerprint: measurement.inputFingerprint, sourceFingerprint: measurement.source.fingerprint,
+        generation: measurement.recovery.state?.generation, continuationOf: receipt ?? null },
+      startedAt, finishedAt: new Date().toISOString(),
+    });
+    const [testRunId] = await recordRubricCheckResults([{
+      check: { id: checkId, rubricRef: input.rubricRef, criterionKey: input.criterionKey,
+        kind: 'instrument', value: null, unit: null, subject, provenance },
+      verdict: 'error', measuredAt: measurement.measuredAt, durationMs: null, detail: JSON.stringify(measurement),
+    }], { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }, sql);
+    receipt = testRunId;
+    if (measurement.recovery.status !== 'continue' || reads === maxReads) return { testRunId, measurement, reads };
+    resume = measurement.recovery.state!;
+  }
+  throw new Error('unreachable-workflow-recovery-budget');
 }
 
 /** What a caller reports after trying to record executed checks: ids, or why nothing was written. */
