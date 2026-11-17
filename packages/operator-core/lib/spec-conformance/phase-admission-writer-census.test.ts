@@ -51,8 +51,8 @@ describe('phase binding writer census', () => {
     }
     expect(reviewed.pendingAdvancing.length).toBeGreaterThan(0);
 
-    // A new source snapshot cannot silently re-approve the notifier dependency,
-    // even though none of these exact claim statements changed.
+    // A new source snapshot cannot silently re-approve the notifier dependency.
+    // Claim statements stay identical; a whole SQL module gets a new identity.
     const dependency = 'libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql';
     const changed = inventoryPhaseWriters(sources.map(source => source.path === dependency
       ? { ...source, content: source.content + '\n-- changed notifier source\n' } : source));
@@ -62,6 +62,19 @@ describe('phase binding writer census', () => {
         expect(stale.coverage.checked).toContain(id);
         continue;
       }
+      if (!changed.sites.some(site => site.id === id)) {
+        const orphan = `orphan-review:${id}`;
+        expect(stale.problems).toContainEqual({ id: orphan, reasons: ['reviewed-writer-missing'] });
+        expect(stale.coverage.notChecked).toContain(orphan);
+        expect(stale.coverage.residue).toContain(orphan);
+        const replacements = changed.sites.filter(site => site.path === dependency);
+        expect(replacements.length).toBeGreaterThan(0);
+        for (const site of replacements) {
+          expect(stale.problems).toContainEqual({ id: site.id, reasons: ['unclassified-writer'] });
+          expect(stale.coverage.residue).toContain(site.id);
+        }
+        continue;
+      }
       expect(stale.problems).toContainEqual({ id, reasons: [`stale-source-proof:${dependency}`] });
       expect(stale.coverage.notChecked).toContain(id);
       expect(stale.coverage.residue).toContain(id);
@@ -69,6 +82,51 @@ describe('phase binding writer census', () => {
     expect([...stale.coverage.checked].sort()).toEqual(reviewed.reviews
       .filter(row => !row.sourceProofs.some(proof => proof.path === dependency))
       .map(row => row.siteId).sort());
+  });
+
+  it('pins manually reviewed SQL modules without accepting changed bodies or adjacent migrations', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+      };
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const inventory = inventoryPhaseWriters(sources);
+    const modules = inventory.sites.filter(site => site.path.endsWith('.sql'));
+    expect(modules.map(site => site.path).sort()).toEqual(sources
+      .filter(source => source.path.endsWith('.sql')).map(source => source.path).sort());
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    for (const site of modules) {
+      expect(byId.get(site.id)).toMatchObject({ disposition: 'metadata-only',
+        sourceSha256: site.sourceSha256, statementSha256: site.statementSha256 });
+      expect(report.coverage.checked).toContain(site.id);
+      for (const dependency of modules) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+        path: dependency.path, sha256: dependency.sourceSha256,
+      });
+      const changed = inventoryPhaseWriters(sources.map(source => source.path === site.path
+        ? { ...source, content: source.content + '\nUPDATE harness_shared.plan_item_claims SET owner = \'new-holder\';\n' }
+        : source));
+      const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+      const changedSite = changed.sites.find(row => row.path === site.path && row.operation === '<sql-module>')!;
+      expect(stale.coverage.notChecked).toContain(changedSite.id);
+      expect(stale.coverage.residue).toContain(changedSite.id);
+      expect(stale.problems).toContainEqual({ id: changedSite.id, reasons: ['unclassified-writer'] });
+      for (const other of modules.filter(row => row.path !== site.path)) {
+        expect(stale.problems).toContainEqual({ id: other.id, reasons: [`stale-source-proof:${site.path}`] });
+      }
+    }
+    const adjacent = source('UPDATE harness_shared.plan_item_claims SET owner = \'new-holder\';',
+      'libs/papercusp/libs/db/sql/unreviewed-claim-migration.sql');
+    const extended = inventoryPhaseWriters([...sources, adjacent]);
+    const unexplained = extended.sites.filter(site => site.path === adjacent.path);
+    expect(unexplained).toHaveLength(1);
+    const extendedReport = reconcilePhaseWriterCensus(extended, reviewed.reviews);
+    expect(extendedReport.ready).toBe(false);
+    expect(extendedReport.problems).toContainEqual({ id: unexplained[0]!.id, reasons: ['unclassified-writer'] });
+    expect(extendedReport.coverage.residue).toContain(unexplained[0]!.id);
   });
 
   it('binds pure claim helper reviews to their exact source without exempting same named writers', () => {
