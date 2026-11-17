@@ -296,6 +296,51 @@ describe('canonical suite operations and acceptance', () => {
     await f.edit({ suiteRef: 'test-suite', members: [{ rubricRef: 'two' }] });
     expect((await f.read())?.members).toEqual([{ rubricRef: 'two' }]);
   });
+  it('persists member additions replacements and removals without retaining a removed failure', async () => {
+    const f = fixture(); f.add('one', 'healthy'); f.add('two', 'broken'); await f.create();
+    expect((await f.evaluate()).verdict).toBe('pass');
+    await f.edit({ suiteRef: 'test-suite', members: [{ rubricRef: 'one' }, { rubricRef: 'two' }] });
+    expect((await f.read())?.members).toEqual([{ rubricRef: 'one' }, { rubricRef: 'two' }]);
+    expect((await f.evaluate()).verdict).toBe('fail');
+    await f.edit({ suiteRef: 'test-suite', members: [{ rubricRef: 'two' }] });
+    expect((await f.read())?.members).toEqual([{ rubricRef: 'two' }]);
+    expect((await f.evaluate()).verdict).toBe('fail');
+    await f.edit({ suiteRef: 'test-suite', members: [{ rubricRef: 'one' }] });
+    expect((await f.read())?.members).toEqual([{ rubricRef: 'one' }]);
+    expect((await f.evaluate()).verdict).toBe('pass');
+    expect(f.histories.get('two')?.[0].ratings.behavior.rating).toBe('broken');
+  });
+  it('uses a failing criterion among passing criteria as the member verdict', async () => {
+    const f = fixture(); f.add('one');
+    f.rubrics.get('one')!.criteria.push({ ...f.rubrics.get('one')!.criteria[0], key: 'other' });
+    const ratings = { behavior: { rating: 'healthy', evidence: 'Passing control' },
+      other: { rating: 'healthy', evidence: 'Initially passing second criterion' } };
+    f.histories.set('one', [card('one', 'healthy', { ratings, nKeys: 2 })]); await f.create();
+    expect((await f.evaluate()).verdict).toBe('pass');
+    ratings.other = { rating: 'broken', evidence: 'Decisive failing second criterion' };
+    expect((await f.evaluate()).members[0].verdict).toBe('fail');
+    expect((await f.evaluate()).verdict).toBe('fail');
+  });
+  it('keeps an old current scorecard eligible when the suite declares no rescore interval', async () => {
+    const f = fixture(); f.add('one');
+    f.histories.set('one', [card('one', 'healthy', { createdAt: new Date(NOW - 86_400_000).toISOString() })]);
+    await f.create(); expect((await f.evaluate()).verdict).toBe('unknown');
+    await f.edit({ suiteRef: 'test-suite', rescoreIntervalMs: null });
+    expect((await f.read())?.rescoreIntervalMs).toBeNull();
+    expect((await f.evaluate()).members[0].verdict).toBe('pass');
+    expect((await f.evaluate()).verdict).toBe('pass');
+  });
+  it('refuses missing and retired members atomically on create and edit', async () => {
+    const f = fixture(); f.add('one'); f.rubrics.set('retired', { ...rubric('retired'), status: 'retired' });
+    await f.create(); const before = JSON.stringify([...f.plans]);
+    for (const rubricRef of ['absent', 'retired']) {
+      await expect(f.edit({ suiteRef: 'test-suite', members: [{ rubricRef }] })).rejects.toThrow();
+      expect(JSON.stringify([...f.plans])).toBe(before);
+      await expect(f.create(`invalid-${rubricRef}`, [rubricRef])).rejects.toThrow();
+      expect(await f.read(`invalid-${rubricRef}`)).toBeNull();
+      expect(JSON.stringify([...f.plans])).toBe(before);
+    }
+  });
   it('R-40 A rubric in two suites stays in both', async () => {
     const f = fixture(); f.add('shared', 'broken'); await f.create('suite-a', ['shared']); await f.create('suite-b', ['shared']);
     for (const ref of ['suite-a', 'suite-b']) { expect((await f.read(ref))?.members).toEqual([{ rubricRef: 'shared' }]); expect((await f.evaluate(ref)).verdict).toBe('fail'); }
