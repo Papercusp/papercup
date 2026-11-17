@@ -110,10 +110,11 @@ stop_kopia_pid_logged() {
     2) echo "CLEANUP: killed exact Kopia PID $pid after SIGTERM grace" >>"$LOG" ;;
     *) echo "WARN: failed to kill exact Kopia PID $pid" >>"$LOG" ;;
   esac
+  [ "$rc" = 0 ] || [ "$rc" = 2 ]
 }
 
 cleanup_kopia_pid() {
-  local recorded="" pid="" seen=" "
+  local recorded="" pid="" seen=" " rc=0
   local -a targets=() waits=()
   if [ -s "$PID_FILE" ]; then
     recorded="$(tr -d '[:space:]' <"$PID_FILE" 2>/dev/null || true)"
@@ -133,18 +134,33 @@ cleanup_kopia_pid() {
   # though the signal/grace workers themselves run in parallel.
   for pid in "${targets[@]}"; do
     (
-      if kopia_pid_matches "$pid"; then
-        if [ "$pid" != "$recorded" ]; then
-          echo "CLEANUP: leftover Kopia PID $pid found in this unit's cgroup" >>"$LOG"
-        fi
-        stop_kopia_pid_logged "$pid"
-      elif [ "$pid" = "$recorded" ]; then
-        echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${recorded:-<empty>}" >>"$LOG"
-      fi
+      match_rc=0
+      kopia_pid_matches "$pid" || match_rc=$?
+      case "$match_rc" in
+        0)
+          if [ "$pid" != "$recorded" ]; then
+            echo "CLEANUP: leftover Kopia PID $pid found in this unit's cgroup" >>"$LOG"
+          fi
+          stop_kopia_pid_logged "$pid"
+          ;;
+        1)
+          if [ "$pid" = "$recorded" ]; then
+            echo "INFO: stale/non-Kopia PID file $PID_FILE; refusing to kill PID ${recorded:-<empty>}" >>"$LOG"
+          fi
+          ;;
+        *)
+          echo "WARN: unable to validate Kopia PID $pid; cleanup must retry" >>"$LOG"
+          exit 1
+          ;;
+      esac
     ) &
     waits+=("$!")
   done
-  for pid in "${waits[@]}"; do wait "$pid" || true; done
+  for pid in "${waits[@]}"; do wait "$pid" || rc=1; done
+  if [ "$rc" -ne 0 ]; then
+    echo "WARN: Kopia cleanup incomplete; retaining PID marker and refusing startup" >>"$LOG"
+    return 1
+  fi
   rm -f -- "$PID_FILE"
 }
 
@@ -154,7 +170,7 @@ cleanup_kopia_pid() {
 # exact-PID guard. With no PID file and no leftover in the cgroup it is a no-op.
 if [ "${1:-}" = "--cleanup" ]; then
   cleanup_kopia_pid
-  exit 0
+  exit "$?"
 fi
 
 # D-001: daily home/VM work waits for the SAME lock as the hot and protected
