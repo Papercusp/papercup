@@ -595,7 +595,7 @@ export default defineTool({
   description:
     "Create a plan with a unique slug. suggestedAnchors come from this caller's trail; pass chosen links to plans:add-item anchors to store them.",
   guidance: {
-    when: 'Starting a plan: plans:new { slug, title, content }. Shape brief/scenarios before requirements/tasks; plans:audit phase:shaping returns ownerWalkthrough for approval. Finalize incorporated Discovery findings before implementation review. Requirements need R-N plus requirement JSON (METHOD/check/layers) and Design "### Bar-to-work map for this plan". Fill reuse/libraries declarations (scaffolded; or notApplicable).',
+    when: 'Starting a plan: plans:new { slug, title, content }. Shape scenarios before requirements/tasks; plans:audit phase:shaping returns ownerWalkthrough for approval. Incorporate Discovery before implementation review. Requirements need R-N JSON (METHOD/check/layers) and Design "### Bar-to-work map for this plan". Fill ## Existing infrastructure reused and ## Third-party libraries (scaffolded; or notApplicable).',
     notWhen:
       'Existing plan: plans:set-content / set-now / add-decision / add-item.',
     chaining:
