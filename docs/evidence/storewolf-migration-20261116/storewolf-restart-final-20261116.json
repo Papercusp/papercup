@@ -1,0 +1,433 @@
+{
+  "schema": "storewolf-whole-vm-restart-v2",
+  "workItem": "WI-10000337",
+  "startedAt": 1794840013.8420017,
+  "stage": "restart-public-verified",
+  "authenticatedApiPreflight": {
+    "result": "passed",
+    "phase": "before",
+    "hosts": [
+      "prod.storewolf.com",
+      "dev.storewolf.com",
+      "avi.storewolf.com"
+    ],
+    "authenticatedResult": "Poll Not Found, running=false",
+    "unauthenticatedResult": "You have not authed roles",
+    "evidence": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/storewolf-auth-api-final-20261116.json"
+  },
+  "sourceBefore": "MainPID=0\nActiveState=inactive\nUnitFileState=disabled\n",
+  "authenticatedApiBeforeRef": ".papercusp/scratch/storewolf-auth-api-final-20261116.json",
+  "before": {
+    "bootId": "ea1c08b7-6be4-40e0-b5ae-77d1d7a31f77",
+    "kernel": "7.0.0-1017-gcp",
+    "mount": "/dev/sda ext4   /mnt/data",
+    "units": {
+      "mongod.service": "MainPID=1669\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n",
+      "storewolf@All.service": "MainPID=3946\nResult=success\nNRestarts=0\nWorkingDirectory=/opt/storewolf\nActiveState=active\nUnitFileState=enabled\n",
+      "storewolf-avi-allnolive.service": "MainPID=3947\nResult=success\nNRestarts=0\nWorkingDirectory=/home/builduser/storewolf-central-server\nActiveState=active\nUnitFileState=enabled\n",
+      "wolfcastle.service": "MainPID=726\nResult=success\nNRestarts=0\nWorkingDirectory=/opt/wolfcastle\nActiveState=active\nUnitFileState=enabled\n",
+      "cloudflared-storewolf.service": "MainPID=1014\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n",
+      "nginx.service": "MainPID=814\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n"
+    },
+    "health": {
+      "8000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "All",
+        "port": "8000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 55
+      },
+      "9000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "AllNOLIVE",
+        "port": "9000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 57
+      }
+    },
+    "repositories": {
+      "storewolf-central-server": {
+        "exit": 0,
+        "output": "05f961f453907daa662369cb90c4d480369f5b02\nfalse"
+      },
+      "Storewolf-Libs": {
+        "exit": 0,
+        "output": "de7721eccf882e87d242162ae833b00f1dfc3914\nfalse"
+      },
+      "castle": {
+        "exit": 0,
+        "output": "0b34fd624cb5c9c028000eae7e148c5f6507d8be\nfalse"
+      },
+      "wolfcastle": {
+        "exit": 0,
+        "output": "8fded67cc47093a4649fa082c790431bfdc1d328\nfalse"
+      }
+    },
+    "mongoVersion": "8.0.38",
+    "googleStartup": {
+      "Result": "success",
+      "ExecMainExitTimestamp": "Mon 2026-11-16 14:34:05 UTC",
+      "ExecMainStatus": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "startupScriptSha256": "e5985c8430ec748d5d4da0c2d8d2997574f4944b60223e12db340358c5083d67",
+    "bootStopEvents": [
+      {
+        "at": "1794838573557627",
+        "message": "Stopping storewolf-avi-allnolive.service - StoreWolf Avi AllNOLIVE developer runtime..."
+      },
+      {
+        "at": "1794838574929041",
+        "message": "Stopping storewolf@All.service - StoreWolf (All)..."
+      },
+      {
+        "at": "1794838576635018",
+        "message": "Stopped storewolf@All.service - StoreWolf (All)."
+      },
+      {
+        "at": "1794838576637858",
+        "message": "Stopped storewolf-avi-allnolive.service - StoreWolf Avi AllNOLIVE developer runtime."
+      },
+      {
+        "at": "1794838576638804",
+        "message": "Stopping mongod.service - MongoDB Database Server..."
+      },
+      {
+        "at": "1794838576644203",
+        "message": "Stopped mongod.service - MongoDB Database Server."
+      }
+    ],
+    "mountLifecycleMessages": [
+      "starting; dev=/dev/disk/by-id/google-storewolf-data mnt=/mnt/data",
+      "stopping mongod: it started on the boot disk before this mount",
+      "existing filesystem on /dev/disk/by-id/google-storewolf-data — mounting, NOT formatting",
+      "done; mongod=active; /dev/sda        295G  141G  155G  48% /mnt/data",
+      "starting; dev=/dev/disk/by-id/google-storewolf-data mnt=/mnt/data",
+      "expected data disk already mounted; preserving running mongod and dependent apps",
+      "existing filesystem on /dev/disk/by-id/google-storewolf-data — mounting, NOT formatting",
+      "done; mongod=active; /dev/sda        295G  141G  155G  48% /mnt/data"
+    ]
+  },
+  "resetRequestedAt": 1794840018.086595,
+  "resetCommand": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": "Updated [https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/instances/storewolf].\n"
+  },
+  "newBootId": "d6fa9e46-5450-47fb-99fe-220495f72eab",
+  "bootChangedAt": 1794840067.6451802,
+  "after": {
+    "bootId": "d6fa9e46-5450-47fb-99fe-220495f72eab",
+    "kernel": "7.0.0-1017-gcp",
+    "mount": "/dev/sdb ext4   /mnt/data",
+    "units": {
+      "mongod.service": "MainPID=688\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n",
+      "storewolf@All.service": "MainPID=708\nResult=success\nNRestarts=0\nWorkingDirectory=/opt/storewolf\nActiveState=active\nUnitFileState=enabled\n",
+      "storewolf-avi-allnolive.service": "MainPID=707\nResult=success\nNRestarts=0\nWorkingDirectory=/home/builduser/storewolf-central-server\nActiveState=active\nUnitFileState=enabled\n",
+      "wolfcastle.service": "MainPID=722\nResult=success\nNRestarts=0\nWorkingDirectory=/opt/wolfcastle\nActiveState=active\nUnitFileState=enabled\n",
+      "cloudflared-storewolf.service": "MainPID=1016\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n",
+      "nginx.service": "MainPID=807\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n"
+    },
+    "health": {
+      "8000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "All",
+        "port": "8000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 55
+      },
+      "9000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "AllNOLIVE",
+        "port": "9000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 57
+      }
+    },
+    "repositories": {
+      "storewolf-central-server": {
+        "exit": 0,
+        "output": "05f961f453907daa662369cb90c4d480369f5b02\nfalse"
+      },
+      "Storewolf-Libs": {
+        "exit": 0,
+        "output": "de7721eccf882e87d242162ae833b00f1dfc3914\nfalse"
+      },
+      "castle": {
+        "exit": 0,
+        "output": "0b34fd624cb5c9c028000eae7e148c5f6507d8be\nfalse"
+      },
+      "wolfcastle": {
+        "exit": 0,
+        "output": "8fded67cc47093a4649fa082c790431bfdc1d328\nfalse"
+      }
+    },
+    "mongoVersion": "8.0.38",
+    "googleStartup": {
+      "Result": "success",
+      "ExecMainExitTimestamp": "Mon 2026-11-16 14:41:06 UTC",
+      "ExecMainStatus": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "startupScriptSha256": "e5985c8430ec748d5d4da0c2d8d2997574f4944b60223e12db340358c5083d67",
+    "bootStopEvents": [],
+    "mountLifecycleMessages": [
+      "starting; dev=/dev/disk/by-id/google-storewolf-data mnt=/mnt/data",
+      "expected data disk already mounted; preserving running mongod and dependent apps",
+      "existing filesystem on /dev/disk/by-id/google-storewolf-data — mounting, NOT formatting",
+      "done; mongod=active; /dev/sdb        295G  141G  155G  48% /mnt/data"
+    ]
+  },
+  "connections": [
+    {
+      "id": "9f709f32-179f-4ae5-b03f-a7db29dc0203",
+      "features": [
+        "support_datagram_v2",
+        "support_quic_eof",
+        "management_logs",
+        "allow_remote_config",
+        "serialized_headers"
+      ],
+      "version": "2026.3.0",
+      "arch": "linux_amd64",
+      "conns": [
+        {
+          "colo_name": "ord11",
+          "uuid": "0de69c01-378b-4d77-990f-c9c95af7e97f",
+          "id": "0de69c01-378b-4d77-990f-c9c95af7e97f",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T14:41:05.196539Z",
+          "client_id": "9f709f32-179f-4ae5-b03f-a7db29dc0203",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ord10",
+          "uuid": "89744d42-2b7f-4f33-8ecc-e3d7c2622b0a",
+          "id": "89744d42-2b7f-4f33-8ecc-e3d7c2622b0a",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T14:41:05.442506Z",
+          "client_id": "9f709f32-179f-4ae5-b03f-a7db29dc0203",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ord14",
+          "uuid": "f15d0422-5f33-4536-b149-468c9a4e6d33",
+          "id": "f15d0422-5f33-4536-b149-468c9a4e6d33",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T14:41:06.356722Z",
+          "client_id": "9f709f32-179f-4ae5-b03f-a7db29dc0203",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ord08",
+          "uuid": "66f074ba-0791-4d4a-84b2-00b83ff911b3",
+          "id": "66f074ba-0791-4d4a-84b2-00b83ff911b3",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T14:41:07.344916Z",
+          "client_id": "9f709f32-179f-4ae5-b03f-a7db29dc0203",
+          "client_version": "2026.3.0"
+        }
+      ],
+      "run_at": "2026-11-16T14:41:05.196539Z",
+      "ha_status": null
+    }
+  ],
+  "configuration": {
+    "tunnel_id": "6345fa92-b37d-4e60-b871-3fe8d256b16a",
+    "version": 5,
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:9000",
+          "hostname": "prod.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http://localhost:9000",
+          "hostname": "dev.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http://localhost:9000",
+          "hostname": "avi.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http_status:404",
+          "originRequest": {}
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      },
+      "__configuration_flags": {
+        "no-autoupdate": "true"
+      }
+    },
+    "source": "cloudflare",
+    "created_at": "2026-09-03T12:42:46.544732Z"
+  },
+  "public": {
+    "prod.storewolf.com": {
+      "health": {
+        "status": 200,
+        "bytes": 137,
+        "location": null,
+        "loginForm": false,
+        "health": {
+          "ok": true,
+          "service": "storewolf-central-server",
+          "mode": "AllNOLIVE",
+          "port": "9000",
+          "live": false,
+          "databaseConnected": true,
+          "serviceCount": 57
+        }
+      },
+      "login": {
+        "status": 200,
+        "bytes": 938,
+        "location": null,
+        "loginForm": true
+      },
+      "unauth": {
+        "status": 403,
+        "bytes": 0,
+        "location": null,
+        "loginForm": false
+      },
+      "protected": {
+        "status": 302,
+        "bytes": 30,
+        "location": "/m/login",
+        "loginForm": false
+      },
+      "invalidLogin": {
+        "status": 401,
+        "bytes": 12,
+        "location": null,
+        "loginForm": false
+      }
+    },
+    "dev.storewolf.com": {
+      "health": {
+        "status": 200,
+        "bytes": 137,
+        "location": null,
+        "loginForm": false,
+        "health": {
+          "ok": true,
+          "service": "storewolf-central-server",
+          "mode": "AllNOLIVE",
+          "port": "9000",
+          "live": false,
+          "databaseConnected": true,
+          "serviceCount": 57
+        }
+      },
+      "login": {
+        "status": 200,
+        "bytes": 938,
+        "location": null,
+        "loginForm": true
+      },
+      "unauth": {
+        "status": 403,
+        "bytes": 0,
+        "location": null,
+        "loginForm": false
+      },
+      "protected": {
+        "status": 302,
+        "bytes": 30,
+        "location": "/m/login",
+        "loginForm": false
+      },
+      "invalidLogin": {
+        "status": 401,
+        "bytes": 12,
+        "location": null,
+        "loginForm": false
+      }
+    },
+    "avi.storewolf.com": {
+      "health": {
+        "status": 200,
+        "bytes": 137,
+        "location": null,
+        "loginForm": false,
+        "health": {
+          "ok": true,
+          "service": "storewolf-central-server",
+          "mode": "AllNOLIVE",
+          "port": "9000",
+          "live": false,
+          "databaseConnected": true,
+          "serviceCount": 57
+        }
+      },
+      "login": {
+        "status": 200,
+        "bytes": 938,
+        "location": null,
+        "loginForm": true
+      },
+      "unauth": {
+        "status": 403,
+        "bytes": 0,
+        "location": null,
+        "loginForm": false
+      },
+      "protected": {
+        "status": 302,
+        "bytes": 30,
+        "location": "/m/login",
+        "loginForm": false
+      },
+      "invalidLogin": {
+        "status": 401,
+        "bytes": 12,
+        "location": null,
+        "loginForm": false
+      }
+    }
+  },
+  "sourceMongoPortClosed": true,
+  "sourceAfter": "MainPID=0\nActiveState=inactive\nUnitFileState=disabled\n",
+  "authenticatedApiAfter": {
+    "result": "passed",
+    "phase": "after",
+    "hosts": [
+      "prod.storewolf.com",
+      "dev.storewolf.com",
+      "avi.storewolf.com"
+    ],
+    "authenticatedResult": "Poll Not Found, running=false",
+    "unauthenticatedResult": "You have not authed roles",
+    "evidence": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/storewolf-auth-api-final-20261116.json"
+  },
+  "completedAt": 1794840081.8163924
+}

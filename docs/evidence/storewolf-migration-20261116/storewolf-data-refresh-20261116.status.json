@@ -1,0 +1,18 @@
+{
+  "schema": "storewolf-cold-data-refresh-v1",
+  "startedAt": 1794831362.2941597,
+  "workItem": "WI-10000337",
+  "snapshot": "storewolf-pre-refresh-20261116-113342",
+  "source": "/mnt/data/db/",
+  "target": "builduser@34.173.157.14:/mnt/data/db/",
+  "stage": "complete",
+  "updatedAt": 1794834474.2674127,
+  "transferLog": "/tmp/storewolf-data-refresh-20261116.transfer.log",
+  "cloudStopProof": "cold-target-verified",
+  "transferExit": 0,
+  "checksumLog": "/tmp/storewolf-data-refresh-20261116.checksum.log",
+  "checksumExit": 0,
+  "differenceLogBytes": 0,
+  "completedAt": 1794834474.266468,
+  "next": "Start cloud MongoDB only, compare complete namespace census, then runtime and exclusive tunnel cutover. Source stays stopped and intact."
+}

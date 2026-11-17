@@ -1,0 +1,205 @@
+{
+  "schema": "storewolf-retained-evidence-v1",
+  "workItem": "WI-10000337",
+  "subjectPlan": "storewolf-central-server-cloud-deployment-2026-09-03",
+  "sourcePlanRevision": 146,
+  "sourceRubricRevision": 2,
+  "sourceCriteriaHash": "f7656440b5278dbe42475fbb625178642b943d3538750d87ab57b8c866dab6fa",
+  "status": "Historical operational proofs retained byte-for-byte; canonical acceptance and shipment remain pending.",
+  "files": [
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-auth-api-final-20261116.json",
+      "bytes": 3648,
+      "sha256": "af04af41beb74379c8f0a97acbb1d25a1c74f953b1414e76e09b1b0a8005ce50",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-auth-api-final-20261116.json",
+        "bytes": 3648,
+        "sha256": "af04af41beb74379c8f0a97acbb1d25a1c74f953b1414e76e09b1b0a8005ce50"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json",
+      "bytes": 126803,
+      "sha256": "2d03601c9b639357e7871f621e484d3a579318ed5fced9d983a87d0165a972ec",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-cloud-census-20261116.json",
+        "bytes": 126806,
+        "sha256": "451dc0ea4d64b17b4193d043156b8cb5bd7b6949bff59c692e60b558955a7a94"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-cutover-20261116.json",
+      "bytes": 10656,
+      "sha256": "718fa4da22ca0d403e4fa5ebae02b04158817f154f1ce910cdf31393b306d33b",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-cutover-20261116.json",
+        "bytes": 10668,
+        "sha256": "2ee7fd8a1179862f2b2054812a61b9abfa89af1690d7a272fc5562af1f778fa0"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.checksum.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.checksum.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json",
+      "bytes": 747,
+      "sha256": "915a34b9cf66cff2720fbd8229e1ce7b7f17321c8c7189370c6cd6aa6149d393",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.status.json",
+        "bytes": 715,
+        "sha256": "1777b6c1ff1102f18198477bc40e549cbbc63c48a4be2d84604d39a13d97c19b"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.transfer.log",
+      "bytes": 89709,
+      "sha256": "837e62abdee180fc9bd3d287060cb5ec84530c740326aa636c6bb4e37ad45041",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.transfer.log",
+        "bytes": 89709,
+        "sha256": "837e62abdee180fc9bd3d287060cb5ec84530c740326aa636c6bb4e37ad45041"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json",
+      "bytes": 45885,
+      "sha256": "f4317c594309b65e36f572cc736af79d15ecbd6ed32e783283668ec285b873ed",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-final-verification-20261116.json",
+        "bytes": 45891,
+        "sha256": "8034af643a95348b4aff14b352b055eb8c76cbe19f7aa638b9e3ad9573ee7e66"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-mongo8038-repair-20261116.json",
+      "bytes": 7751,
+      "sha256": "95f4f076297be439a83bce03e134156a3b69a0cc0ce7d8084e437cdd9e1f2cfa",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-mongo8038-repair-20261116.json",
+        "bytes": 7751,
+        "sha256": "95f4f076297be439a83bce03e134156a3b69a0cc0ce7d8084e437cdd9e1f2cfa"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json",
+      "bytes": 14294,
+      "sha256": "b78aa036a3cdae8fc95dd46df2d5139fb4ba535d6d1af35270a3bd3080e3f59b",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-restart-final-20261116.json",
+        "bytes": 14315,
+        "sha256": "d6ca14f727d5ec9055124005e5f100ba491cd6d577f35fdfc796396b583013ec"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-source-census-20261116.json",
+      "bytes": 98500,
+      "sha256": "3325cb9fbe78923534a1fa0a4768330899745df4425d739d5665c7bd8e5f5dca",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-source-census-20261116.json",
+        "bytes": 47705,
+        "sha256": "aee45017126c435238e2c378a4671485beb840449539dd9bc9de4181a14ecbe5"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    },
+    {
+      "path": "docs/evidence/storewolf-migration-20261116/storewolf-startup-repair-20261116.json",
+      "bytes": 2470,
+      "sha256": "b4ef838216b4f5d17cece48bcf9f1e4d70f2933d6cede2c6d720c20d8f449191",
+      "rawArtifact": {
+        "slug": "papercusp",
+        "rel_path": "evidence/storewolf-migration-20261116/raw/storewolf-startup-repair-20261116.json",
+        "bytes": 2470,
+        "sha256": "b4ef838216b4f5d17cece48bcf9f1e4d70f2933d6cede2c6d720c20d8f449191"
+      },
+      "exportKind": "identity-safe projection; original retained canonically without modification"
+    }
+  ],
+  "criterionArtifacts": {
+    "r-1": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json"
+    ],
+    "r-2": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.transfer.log",
+      "docs/evidence/storewolf-migration-20261116/storewolf-mongo8038-repair-20261116.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json"
+    ],
+    "r-3": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.checksum.log",
+      "docs/evidence/storewolf-migration-20261116/storewolf-source-census-20261116.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json"
+    ],
+    "r-4": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-startup-repair-20261116.json"
+    ],
+    "r-5": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-cutover-20261116.json"
+    ],
+    "r-6": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json",
+      "docs/evidence/storewolf-migration-20261116/storewolf-auth-api-final-20261116.json"
+    ],
+    "r-7": [
+      "docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json"
+    ]
+  },
+  "sourcePathResolution": "Original byte-exact evidence is PG-canonical: artifacts:load with each files[].rawArtifact slug/rel_path. files[].path is the identity-safe source export with its own bytes/hash. Historical scratch/tmp references resolve by original basename through rawArtifact. Neither projection is a substitute for the full original proof.",
+  "losslessness": {
+    "filesOmitted": [],
+    "namespaceComparison": "The unchanged manifest contains the full population and per-namespace rows; no source or target namespace is omitted.",
+    "countMethod": "estimatedDocumentCount metadata; complete data bytes separately proven by full rsync --checksum",
+    "internalDeltas": [
+      {
+        "namespace": "config.system.sessions",
+        "field": "count",
+        "source": 4,
+        "cloud": 0
+      },
+      {
+        "namespace": "local.startup_log",
+        "field": "count",
+        "source": 106,
+        "cloud": 107
+      }
+    ],
+    "internalDeltaResolution": {
+      "config.system.sessions": "TTL deletedDocuments=4 recorded in cloud census",
+      "local.startup_log": "One destination startup entry recorded in cloud census"
+    },
+    "batchingDisposition": "Not yet graded: the reviewer must cite original complete census/rsync tooling for the no-bounded-pass/no-new-batching branch, or require the native boundary/recovery tests. This retention step introduces no data-processing implementation."
+  },
+  "method": "Verify each byte length and SHA-256 before reading the complete proof, namespace sets and records. A missing file, mismatched hash, unresolved namespace omission or unexplained delta fails the affected criterion.",
+  "canonicalClose": "Required per-item adequacy/audits, independent implementation acceptance, author verdict, item completion and plan shipment remain enforced by their own canonical lifecycle; this evidence index is not a shipment receipt.",
+  "supersededEvidence": "The two failed reboot artifacts remain in the original scratch evidence and work-item history. The retained final reboot is the successful final boot, without erasing earlier failures.",
+  "rawReadback": "All eleven canonical originals reread in full with original character lengths and matching content fingerprints; no bounded slice or omitted file."
+}

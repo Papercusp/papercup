@@ -1,0 +1,4532 @@
+[
+  {
+    "name": "admin",
+    "collections": [
+      {
+        "name": "advertiser_suggestedBidsAndExpressions",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "0020f8b7-e264-4586-b3a7-05c68d9ab041"
+        },
+        "count": 86652000,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "region": 1
+            },
+            "name": "region_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "keyword": 1
+            },
+            "name": "keyword_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_FULLUPDATELIST",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "00816284-c2d7-46f4-88a8-2bd299535c0c"
+        },
+        "count": 129,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "backmarketReport",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "01a79e51-9078-4851-b21f-372880367d4c"
+        },
+        "count": 257855,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "backmarket_id": 1
+            },
+            "name": "backmarket_id_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "product_id": 1
+            },
+            "name": "product_id_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "listing_id": 1
+            },
+            "name": "listing_id_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1
+            },
+            "name": "sku_1"
+          }
+        ]
+      },
+      {
+        "name": "sl_latestupdates",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "01bee4ec-89ff-46b2-9d2a-132b10e699af"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1
+            },
+            "name": "sku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true,
+            "unique": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "on_hand": 1
+            },
+            "name": "on_hand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "retail": 1
+            },
+            "name": "retail_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "onlinesubmissions",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "02c82436-cb59-4846-8736-b70e137591b3"
+        },
+        "count": 10,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "cartitems",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "09cc529b-077f-4e8c-89a3-86bd6efafee3"
+        },
+        "count": 235,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "system.version",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "0a4bec38-b052-49a9-b74a-c012c64e0a7d"
+        },
+        "count": 1,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "tickets",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "0b0b875e-b336-45db-9318-7a493d537a4f"
+        },
+        "count": 1291781,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "status": 1
+            },
+            "name": "status_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "amazon-reviews",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "0b693a41-4ed2-4e6a-809a-3835a375028a"
+        },
+        "count": 425319,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "delllist",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "125f6bb9-acf9-4747-9260-7667945fa2bc"
+        },
+        "count": 699240,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "received": 1
+            },
+            "name": "received_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "itemId": 1
+            },
+            "name": "itemId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "file": 1
+            },
+            "name": "file_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "row.Service Tag": 1
+            },
+            "name": "row.Service Tag_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "JunlgeScout_keywords_by_asin_query",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "129287e7-4e15-4022-8d8c-b4abbb41f16f"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Advertiser_sd-conversion",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "134d25d4-8257-4544-91a7-297d4eb6ddbc"
+        },
+        "count": 402,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "itempotency_id": 1
+            },
+            "name": "itempotency_id_1"
+          }
+        ]
+      },
+      {
+        "name": "leads",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "19bcc1dd-bb07-4c1e-8961-682df5203a69"
+        },
+        "count": 37807028,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "meta.creationDate": 1
+            },
+            "name": "meta.creationDate_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "meta.created": 1
+            },
+            "name": "meta.created_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.alert": 1
+            },
+            "name": "data.alert_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.listingSku": 1
+            },
+            "name": "data.listingSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.listingId": 1
+            },
+            "name": "data.listingId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.asin": 1
+            },
+            "name": "data.asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.compatibleAsins": 1
+            },
+            "name": "data.compatibleAsins_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.amazonGroup": 1
+            },
+            "name": "data.amazonGroup_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.skus": 1
+            },
+            "name": "data.skus_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.inheritedPrice": 1
+            },
+            "name": "data.inheritedPrice_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "type": 1
+            },
+            "name": "type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.group": 1
+            },
+            "name": "data.group_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.localGroup": 1
+            },
+            "name": "data.localGroup_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.group": 1,
+              "type": 1
+            },
+            "name": "data.group_1_type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.marketplace": 1
+            },
+            "name": "data.marketplace_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Synchronizer_generateUpdatesTwo_AVI_PROD_TRIMMEDUPDATELIST",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "1c70ab1d-516f-449e-b214-52bec041d651"
+        },
+        "count": 126,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Amazoner_Buybox_Attempts",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "1ededb88-fe5a-4632-8dde-2546e26634cc"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "tests",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "2146e4ea-11e9-47ee-8c5f-4b60aa9a32b6"
+        },
+        "count": 11,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "stater",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "21826aef-7871-470b-ae1b-591a10ea8d95"
+        },
+        "count": 7768,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1,
+              "service": 1,
+              "endpoint": 1,
+              "latest": 1
+            },
+            "name": "name_1_service_1_endpoint_1_latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "sourceFromAsinAssociations",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "278667cf-71e9-45f9-9d25-21fbc9426081"
+        },
+        "count": 9734167,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "brand": 1
+            },
+            "name": "brand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "amazonBrand": 1
+            },
+            "name": "amazonBrand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "changeTime": 1
+            },
+            "name": "changeTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "metaType": 1
+            },
+            "name": "metaType_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "isIdMatch": 1
+            },
+            "name": "isIdMatch_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "ours": 1
+            },
+            "name": "ours_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "isTransactionBooster": 1
+            },
+            "name": "isTransactionBooster_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_DataStore_setFullUpdateListByMarketplaceAndRegion_AVI_PROD_TRIMMEDUPDATELIST",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "2c857c11-17a2-4f2f-82f2-e4912b70ceb5"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "seriesdata",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "2d862a16-c0ae-48e9-899e-adf35439bc49"
+        },
+        "count": 1342,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "key": 1
+            },
+            "name": "key_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "marketplace_data",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "2e545b95-e029-4555-94b1-9a618363e21c"
+        },
+        "count": 170001,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1
+            },
+            "name": "sku_1",
+            "background": true,
+            "unique": true
+          }
+        ]
+      },
+      {
+        "name": "scans",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "2e83f147-cf49-4864-84fd-93d6b8b30a3a"
+        },
+        "count": 108145,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "date": 1
+            },
+            "name": "date_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "scan": 1
+            },
+            "name": "scan_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "swing_group_details",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "33967101-900e-4c04-b468-be6c6a0f3680"
+        },
+        "count": 764,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "swingId": 1
+            },
+            "name": "swingId_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Stater_saveAllEbayBrandMetaTypeStockAndMatchStats_stats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3398bfe5-5a01-4a66-b5c3-43b492a368f6"
+        },
+        "count": 244,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "amazon-traffic",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3570b851-d268-48ae-a4e4-57033c9f703d"
+        },
+        "count": 33374,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "dellcom_urls",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "35dccab2-41ed-40c2-b295-d14d827818a9"
+        },
+        "count": 6908,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "customers",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "37a283a5-ad4a-4c5c-a250-2955ab51ed30"
+        },
+        "count": 5,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "statshots",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3b0fc25e-4dd6-47c4-b73f-1f91eabebff1"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "reserves",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3b73eb0b-5570-4405-ad54-ee882713e420"
+        },
+        "count": 84795,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "customer": 1
+            },
+            "name": "customer_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "matchId": 1
+            },
+            "name": "matchId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "status": 1
+            },
+            "name": "status_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "amazonsellers",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3cc09e90-c27b-4653-9314-cb8c3f1d66fb"
+        },
+        "count": 58,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "asindetails",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3e4d1265-d3dd-4c40-9a06-e079d79f30db"
+        },
+        "count": 16961517,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "brand": 1
+            },
+            "name": "brand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true,
+            "unique": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "metaType": 1
+            },
+            "name": "metaType_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "changeTime": 1
+            },
+            "name": "changeTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "amazonBrand": 1
+            },
+            "name": "amazonBrand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "salesRanks.ranks": 1
+            },
+            "name": "salesRanks.ranks"
+          }
+        ]
+      },
+      {
+        "name": "Amazoner_getFeaturedOfferExpectedPriceBatch",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "3f88cf8b-079b-4b23-be99-21c6ef42759c"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "request.sku": 1
+            },
+            "name": "request.sku_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "shipments",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "44e318aa-43f5-43f1-928e-26a8147723f9"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "Stater_Synchronizer_generateUpdatesTwo_ELI_FULLUPDATELIST",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "478bb49c-86b8-4704-a076-e3c09b4d1d28"
+        },
+        "count": 3,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "custom_group_configs",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "4ea32646-8de7-42b5-8e30-d949aee61e08"
+        },
+        "count": 6923286,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "group": 1
+            },
+            "name": "group_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.family": 1
+            },
+            "name": "specs.family_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.model": 1
+            },
+            "name": "specs.model_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.series": 1
+            },
+            "name": "specs.series_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "newToRefurb",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "5c1b76c3-8c59-4371-9046-5551d101468d"
+        },
+        "count": 73151,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "newAsin": 1
+            },
+            "name": "newAsin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "refAsin": 1
+            },
+            "name": "refAsin_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Advertiser_sp-traffic",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "5c7c6d6e-d6e5-4abc-a860-0f291107eb7f"
+        },
+        "count": 1128356,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "itempotency_id": 1
+            },
+            "name": "itempotency_id_1"
+          }
+        ]
+      },
+      {
+        "name": "system.users",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "5e4a6d15-31c4-410e-9d38-366b7d0e5500"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "user": 1,
+              "db": 1
+            },
+            "name": "user_1_db_1",
+            "unique": true
+          }
+        ]
+      },
+      {
+        "name": "amazon_groupid_blacklist",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "5f51d447-c972-41e1-b232-bdb5f229eef1"
+        },
+        "count": 2879012,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "region": 1
+            },
+            "name": "region_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Synchronizer_loadUpdatesFromSources_ELI_FULLUPDATELIST",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "5f67997f-7932-488f-a5a2-d5065342d86e"
+        },
+        "count": 3,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "Amazoner_SkuBuyBoxOfferResults",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "5fe0d572-6a7b-4885-9f7c-ca16849d17bd"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "region": 1
+            },
+            "name": "region_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "dbKey": 1
+            },
+            "name": "dbKey_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_MARKETPLACESTUFF",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "61995a6c-1fe1-4586-83d9-324adbedd43d"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "advertiser_ai_placement_test",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "6265f683-a068-4ce4-aba9-5e3d6fd8009b"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "advertiser_ai_bid_test",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "6333f43d-9070-4bf4-93c4-f7aee7132795"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "configs",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "63f84ff6-c8d3-4e75-a28e-a38fe3c0d134"
+        },
+        "count": 1,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "specificSku": 1
+            },
+            "name": "specificSku_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Amazoner_Notifications_ITEM_SALES_EVENT_CHANGE",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "68312b8f-83ad-4551-8981-cde9d98274ee"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "offerids",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "6d738c93-b93c-45e1-9916-4c574187d5b0"
+        },
+        "count": 9,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "Stater_MarketplaceStuff_getTrimmedUpdateListByMarketplaceAndRegion_AVI_PROD_MARKETPLACESTUFF",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "6f5facd6-8208-435f-a265-75f8ae07afe8"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Amazoner_updateTheAmazonReportQtyPricesByRegion_stats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "70ded8ff-40c9-4ae3-9c8a-3e70a77bf10e"
+        },
+        "count": 490,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1,
+              "service": 1
+            },
+            "name": "name_1_service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "listingfeed",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "757af0fc-5ad8-433a-b758-79a1ba741e2d"
+        },
+        "count": 128,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "amazon-report-orders",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "75f39c7e-369c-46a9-9ea3-075a11d24dd3"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "amazon-orders",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "777690df-8f25-4204-ae62-c2f5a79a9017"
+        },
+        "count": 506,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "Advertiser_sp-conversion",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "78f93998-1300-4072-9b2f-37b769a7a0f6"
+        },
+        "count": 8,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "itempotency_id": 1
+            },
+            "name": "itempotency_id_1"
+          }
+        ]
+      },
+      {
+        "name": "amazonOrderStatsEnriched",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "7be84daf-7cdd-4107-bdcb-6be65c7be79d"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "date": 1
+            },
+            "name": "date_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1
+            },
+            "name": "sku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1,
+              "date": 1
+            },
+            "name": "sku_1_date_1",
+            "background": true,
+            "unique": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "dellcom_products",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "7db29db9-0437-421b-9e64-e9843fb61e50"
+        },
+        "count": 634,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "Advertiser_sp-conversion_TimeWindows",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "7e66dafd-3325-4480-bd2c-767dbcb41e6d"
+        },
+        "count": 11,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "end": 1
+            },
+            "name": "end_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "start": 1
+            },
+            "name": "start_1"
+          }
+        ]
+      },
+      {
+        "name": "Amazoner_Notifications_PRICING_HEALTH",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "7fca008b-6a24-433c-8176-6244fa08f97b"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "backmarketBlacklist",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "86406cbc-16fa-431d-b4ed-61f740f6fcef"
+        },
+        "count": 30876,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Amazoner_Notifications_DETAIL_PAGE_TRAFFIC_EVENT",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "867ab48a-a7c6-49a5-b9aa-dfa605bdc674"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "asin-offer-predictions",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "87a6997b-c11b-4b12-8ee7-5ef670aeabca"
+        },
+        "count": 98767,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "asins",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "8b9a8ab4-05df-421f-a1b2-74d6d02ec9f3"
+        },
+        "count": 64379397,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "brand": 1
+            },
+            "name": "brand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "metaType": 1
+            },
+            "name": "metaType_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "isParent": 1
+            },
+            "name": "isParent_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "errored": 1
+            },
+            "name": "errored_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "browseNode": 1
+            },
+            "name": "browseNode_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Advertiser-aggregated-traffic-by-keyword",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "8f44be83-3574-4fc8-9419-de1126eedca5"
+        },
+        "count": 50,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "includeGroup": 1
+            },
+            "name": "includeGroup_1"
+          }
+        ]
+      },
+      {
+        "name": "upc",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "909041e1-94c7-4477-8d52-ad951efae029"
+        },
+        "count": 8270427,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "condition": 1
+            },
+            "name": "condition_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "upc": 1
+            },
+            "name": "upc_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "marketplace": 1
+            },
+            "name": "marketplace_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "upc": 1,
+              "marketplace": 1
+            },
+            "name": "upc_1_marketplace_1",
+            "background": true,
+            "unique": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1,
+              "condition": 1,
+              "marketplace": 1
+            },
+            "name": "groupId_1_condition_1_marketplace_1",
+            "background": true,
+            "sparse": true
+          }
+        ]
+      },
+      {
+        "name": "inventory",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "92441c09-97fb-4cb6-9163-f55f37b1c333"
+        },
+        "count": 58009,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "stringSku": 1
+            },
+            "name": "stringSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "status": 1
+            },
+            "name": "status_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "partList.part": 1
+            },
+            "name": "partList.part_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "baseSpecificSku": 1
+            },
+            "name": "baseSpecificSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specificSku": 1
+            },
+            "name": "specificSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "generalSku": 1
+            },
+            "name": "generalSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "orderId": 1
+            },
+            "name": "orderId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "storeWolfLead.id": 1
+            },
+            "name": "storeWolfLead.id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "location": 1
+            },
+            "name": "location_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "listId": 1
+            },
+            "name": "listId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "tracking": 1
+            },
+            "name": "tracking_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "soldItems.tag": 1
+            },
+            "name": "soldItems.tag_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "items.tag": 1
+            },
+            "name": "items.tag_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "barcodeData.barcode": 1
+            },
+            "name": "barcodeData.barcode_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1
+            },
+            "name": "sku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "type": 1
+            },
+            "name": "type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "manualSkus": 1
+            },
+            "name": "manualSkus_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "items.id": 1
+            },
+            "name": "items.id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "items.tracking": 1
+            },
+            "name": "items.tracking_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "soldItems.id": 1
+            },
+            "name": "soldItems.id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "soldItems.tracking": 1
+            },
+            "name": "soldItems.tracking_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "sellOnAsinAssociations",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "933784e1-883c-43c5-9a74-afb3d2670737"
+        },
+        "count": 9734165,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "brand": 1
+            },
+            "name": "brand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "amazonBrand": 1
+            },
+            "name": "amazonBrand_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "changeTime": 1
+            },
+            "name": "changeTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "metaType": 1
+            },
+            "name": "metaType_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "isIdMatch": 1
+            },
+            "name": "isIdMatch_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "ours": 1
+            },
+            "name": "ours_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "isTransactionBooster": 1
+            },
+            "name": "isTransactionBooster_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "amazon-api-orders-byDay",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "95977f38-0bd2-4949-bcee-f5bb9ae95a08"
+        },
+        "count": 19,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "synccentric",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "9e47f893-8c1f-4306-8ba5-292fd552fa55"
+        },
+        "count": 1427,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "AnyOfferChangedB2B_Latest",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "a12b9c72-b0ff-40e2-ad5e-5e1ea287991e"
+        },
+        "count": 1003308,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "condition": 1
+            },
+            "name": "condition_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "marketplaceId": 1
+            },
+            "name": "marketplaceId_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "leads_back",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "a85e41d2-1b30-441d-aa94-61b2339bf607"
+        },
+        "count": 39114950,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "meta.creationDate": 1
+            },
+            "name": "meta.creationDate_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "meta.created": 1
+            },
+            "name": "meta.created_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.alert": 1
+            },
+            "name": "data.alert_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.listingSku": 1
+            },
+            "name": "data.listingSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.listingId": 1
+            },
+            "name": "data.listingId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.asin": 1
+            },
+            "name": "data.asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.compatibleAsins": 1
+            },
+            "name": "data.compatibleAsins_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.amazonGroup": 1
+            },
+            "name": "data.amazonGroup_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.skus": 1
+            },
+            "name": "data.skus_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.inheritedPrice": 1
+            },
+            "name": "data.inheritedPrice_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "type": 1
+            },
+            "name": "type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.group": 1
+            },
+            "name": "data.group_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.localGroup": 1
+            },
+            "name": "data.localGroup_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.group": 1,
+              "type": 1
+            },
+            "name": "data.group_1_type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "data.marketplace": 1
+            },
+            "name": "data.marketplace_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Stater_saveAllAmazonBrandMetaTypeStockAndMatchStats_stats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "aadb07eb-0c64-4f64-b4d7-59b1b3452307"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "transactionBoosterAsins",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "ada532a6-af68-48cd-9653-f09371643c98"
+        },
+        "count": 227,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "condition": 1
+            },
+            "name": "condition_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "dellsite",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "afb3effa-5856-4851-8c22-a2e6ee27b2ca"
+        },
+        "count": 2566070,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true,
+            "unique": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "series": 1
+            },
+            "name": "series_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "listSku": 1
+            },
+            "name": "listSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "parseTime": 1
+            },
+            "name": "parseTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specificSku": 1
+            },
+            "name": "specificSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "leads": 1
+            },
+            "name": "leads_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "priceId": 1
+            },
+            "name": "priceId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "generalSku": 1
+            },
+            "name": "generalSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "spytecSku": 1
+            },
+            "name": "spytecSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "conditionlessSku": 1
+            },
+            "name": "conditionlessSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "stringSku": 1
+            },
+            "name": "stringSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "price": 1
+            },
+            "name": "price_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "displayRow": 1
+            },
+            "name": "displayRow_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.family": 1
+            },
+            "name": "specs.family_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.type": 1
+            },
+            "name": "specs.type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.model": 1
+            },
+            "name": "specs.model_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "strings": 1
+            },
+            "name": "strings_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "liveleads": 1
+            },
+            "name": "liveleads_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "coupons.id": 1
+            },
+            "name": "coupons.id_1",
+            "background": true,
+            "sparse": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "consecutiveParses": 1
+            },
+            "name": "consecutiveParses_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "listItem.received": 1
+            },
+            "name": "listItem.received_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specs.condition": 1
+            },
+            "name": "specs.condition_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "listItems.received": 1
+            },
+            "name": "listItems.received_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "listItem.outletId": 1
+            },
+            "name": "listItem.outletId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "generalSku": 1,
+              "parseTime": 1
+            },
+            "name": "generalSku_1_parseTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "skuHistory.generalSku": 1
+            },
+            "name": "skuHistory.generalSku_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "AnyOfferChanged_Latest",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "b2e1913f-43d4-4653-991b-bcd5d6b2db08"
+        },
+        "count": 1174349,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "condition": 1
+            },
+            "name": "condition_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "marketplaceId": 1
+            },
+            "name": "marketplaceId_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "dellparts",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "b55eed8c-7a43-4907-b9fc-d3766ec4fead"
+        },
+        "count": 10696,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "part": 1
+            },
+            "name": "part_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "logs",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "b6ba7ee0-4597-4523-b55f-d3e7c97c2fca"
+        },
+        "count": 741323,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "type": 1
+            },
+            "name": "type_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "getCompetitivePricing_Latest",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "bd8a2a57-dbb7-41dc-b576-0b6687695953"
+        },
+        "count": 130154,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "CustomerType": 1
+            },
+            "name": "CustomerType_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "marketplaceId": 1
+            },
+            "name": "marketplaceId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "condition": 1
+            },
+            "name": "condition_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "stringHashToRealHash",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "bf0cca3f-aa32-435e-96bf-4c1df42f46c4"
+        },
+        "count": 460064,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "stringHash": 1
+            },
+            "name": "stringHash_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "realHash": 1
+            },
+            "name": "realHash_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "parserlookups",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "bf4a3f27-f1ff-4801-8cf3-570614241535"
+        },
+        "count": 8588,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "string": 1
+            },
+            "name": "string_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Amazoner_winBuyBoxesForOfferChanges_stats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "c1edbb94-743d-42c1-99f0-5fcff751510e"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "asinofferstats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "cdce4539-c0a1-47bb-b947-7ec87bc887b6"
+        },
+        "count": 35421,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "start": 1
+            },
+            "name": "start_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "end": 1
+            },
+            "name": "end_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mean": 1
+            },
+            "name": "mean_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "median": 1
+            },
+            "name": "median_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "amazonOrderStatsEnriched2",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "d0c61a5d-6d3f-4bc1-ae39-ea7b2c529e3d"
+        },
+        "count": 86814,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "dellcom_items",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "d1e26d21-613a-4b59-907e-d95771179c82"
+        },
+        "count": 95134,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "generalSku": 1
+            },
+            "name": "generalSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "strings": 1
+            },
+            "name": "strings_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "parseTime": 1
+            },
+            "name": "parseTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "generalSku": 1,
+              "parseTime": 1
+            },
+            "name": "generalSku_1_parseTime_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "groupId": 1
+            },
+            "name": "groupId_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "configurations",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "d6fec67b-f940-4025-8c2c-732a287dde0e"
+        },
+        "count": 112330,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "hash": 1
+            },
+            "name": "hash_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "specificSku": 1
+            },
+            "name": "specificSku_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "generalSku": 1
+            },
+            "name": "generalSku_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "manualSpecObjs",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "d7dc2dc3-215a-4752-90ed-4d17990b4354"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "asin_group_details_CA",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "d80a8cc6-50b5-4cbf-b688-293ec1a547e6"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "servicetagdetails",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "d8a550e8-b397-4565-a073-ddb79a72d581"
+        },
+        "count": 655,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "skulabs_locations",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "dc504659-3b64-43a2-8048-250909e64199"
+        },
+        "count": 1029,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "asinofferdetails",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "de1159b6-f2a7-4381-87de-592718a8ce15"
+        },
+        "count": 60965540,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "marketplaceId": 1
+            },
+            "name": "marketplaceId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "active": 1
+            },
+            "name": "active_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "invalid": 1
+            },
+            "name": "invalid_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1,
+              "active": 1,
+              "invalid": 1,
+              "marketplaceId": 1,
+              "time": 1
+            },
+            "name": "latest_1_active_1_invalid_1_marketplaceId_1_time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1,
+              "marketplaceId": 1,
+              "condition": 1,
+              "latest": 1
+            },
+            "name": "asin_1_marketplaceId_1_condition_1_latest_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "condition": 1
+            },
+            "name": "condition_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "CustomerType": 1
+            },
+            "name": "CustomerType_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1,
+              "latest": 1
+            },
+            "name": "asin_1_latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Advertiser_writeAmazonAdvertisingCsvs_stats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "df94fcb5-712c-4a0f-9db3-860ced9153aa"
+        },
+        "count": 17,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Advertiser_sd-conversion_TimeWindows",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "e0933583-ffe3-4604-8962-b6bd5ec24460"
+        },
+        "count": 40,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "start": 1
+            },
+            "name": "start_1"
+          },
+          {
+            "v": 2,
+            "key": {
+              "end": 1
+            },
+            "name": "end_1"
+          }
+        ]
+      },
+      {
+        "name": "websiteUpdates",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "e7d7221d-f17f-4259-ac13-52859adc640b"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku": 1
+            },
+            "name": "sku_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "api_log",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "e8ac5009-3478-4116-bb28-8d6643a25153"
+        },
+        "count": 9193549,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "host": 1
+            },
+            "name": "host_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "start": 1
+            },
+            "name": "start_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "type": 1
+            },
+            "name": "type_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "result.duration": 1
+            },
+            "name": "result.duration_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "req_id": 1
+            },
+            "name": "req_id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "hubx_group_details",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "ea7e563c-a5fa-408a-ab0e-c7f4f61cb4c1"
+        },
+        "count": 1372,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "skudata",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "ecf4b9a9-268c-43af-a5a9-cc53d2332692"
+        },
+        "count": 2079,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "skulabs_processedscans",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "ed0d4a7d-b508-4bd5-9ee1-6fe72f93fd06"
+        },
+        "count": 7072,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "Advertiser_sd-traffic",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "f018a645-6b27-49da-b3db-d34858e9e0a7"
+        },
+        "count": 403967,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "itempotency_id": 1
+            },
+            "name": "itempotency_id_1"
+          }
+        ]
+      },
+      {
+        "name": "sl_updatehistory",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "f26d4b12-7833-4dd2-a8a6-1325b6f4528c"
+        },
+        "count": 0,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "sku ": 1
+            },
+            "name": "sku _1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "id": 1
+            },
+            "name": "id_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "on_hand": 1
+            },
+            "name": "on_hand_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_TRIMMEDUPDATELIST",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "f297a0b2-e938-4aad-8240-0eecae6c31b8"
+        },
+        "count": 477,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "name": 1
+            },
+            "name": "name_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "service": 1
+            },
+            "name": "service_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "endpoint": 1
+            },
+            "name": "endpoint_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "alertState": 1
+            },
+            "name": "alertState_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "time": 1
+            },
+            "name": "time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "mode": 1
+            },
+            "name": "mode_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "latest": 1
+            },
+            "name": "latest_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "asinSpecs",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "f581d135-e1a7-450a-8b75-2bd035eba980"
+        },
+        "count": 9719556,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1,
+              "time": 1
+            },
+            "name": "asin_1_time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "asin": 1
+            },
+            "name": "asin_1",
+            "background": true
+          }
+        ]
+      },
+      {
+        "name": "push-notification-stats",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "fa00994d-2b68-4933-be74-1c0cf5d47775"
+        },
+        "count": 88850000,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      },
+      {
+        "name": "DataFetcher_ProcessingData",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "fd2621e0-dc66-4d60-b5d1-6c0c6c8e31c6"
+        },
+        "count": 1280,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "orderId": 1
+            },
+            "name": "orderId_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "orderDetails.time": 1
+            },
+            "name": "orderDetails.time_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "orderDetails.marketplace": 1
+            },
+            "name": "orderDetails.marketplace_1",
+            "background": true
+          },
+          {
+            "v": 2,
+            "key": {
+              "orderDetails.region": 1
+            },
+            "name": "orderDetails.region_1",
+            "background": true
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "config",
+    "collections": [
+      {
+        "name": "system.sessions",
+        "type": "collection",
+        "options": {},
+        "info": {
+          "readOnly": false,
+          "uuid": "b2748ac6-eed1-426a-b20d-4ab72197fc65"
+        },
+        "count": 4,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          },
+          {
+            "v": 2,
+            "key": {
+              "lastUse": 1
+            },
+            "name": "lsidTTLIndex",
+            "expireAfterSeconds": 1800
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "name": "local",
+    "collections": [
+      {
+        "name": "startup_log",
+        "type": "collection",
+        "options": {
+          "capped": true,
+          "size": 10485760
+        },
+        "info": {
+          "readOnly": false,
+          "uuid": "a759d39a-473d-4ed6-9a28-9fc98d39753c"
+        },
+        "count": 106,
+        "indexes": [
+          {
+            "v": 2,
+            "key": {
+              "_id": 1
+            },
+            "name": "_id_"
+          }
+        ]
+      }
+    ]
+  }
+]

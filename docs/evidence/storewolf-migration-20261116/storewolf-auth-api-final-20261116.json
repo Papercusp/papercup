@@ -1,0 +1,137 @@
+{
+  "schema": "storewolf-authenticated-readonly-api-v1",
+  "workItem": "WI-10000337",
+  "credentialReference": "existing config_Avi_debug.jsonc users.system token, kept in memory",
+  "endpoint": "GET /services/ServiceManager/readPollStatus?pollKey=storewolf-migration-verification",
+  "semantics": "Inspected readonly poll status path; sentinel does not create or modify a poll. Framework audit logging is retained.",
+  "before": {
+    "at": 1794840015138,
+    "results": {
+      "prod.storewolf.com": {
+        "unauthenticated": {
+          "status": 200,
+          "result": {
+            "err": "You have not authed roles"
+          }
+        },
+        "authenticated": {
+          "status": 200,
+          "result": {
+            "msg": "Poll Not Found",
+            "running": false,
+            "details": {
+              "service": "ServiceManager",
+              "endpoint": "readPollStatus",
+              "req_id": "UEA4X20J39A3VSRQ"
+            }
+          }
+        }
+      },
+      "dev.storewolf.com": {
+        "unauthenticated": {
+          "status": 200,
+          "result": {
+            "err": "You have not authed roles"
+          }
+        },
+        "authenticated": {
+          "status": 200,
+          "result": {
+            "msg": "Poll Not Found",
+            "running": false,
+            "details": {
+              "service": "ServiceManager",
+              "endpoint": "readPollStatus",
+              "req_id": "5BPHLID344RMO5IN"
+            }
+          }
+        }
+      },
+      "avi.storewolf.com": {
+        "unauthenticated": {
+          "status": 200,
+          "result": {
+            "err": "You have not authed roles"
+          }
+        },
+        "authenticated": {
+          "status": 200,
+          "result": {
+            "msg": "Poll Not Found",
+            "running": false,
+            "details": {
+              "service": "ServiceManager",
+              "endpoint": "readPollStatus",
+              "req_id": "83NTMD2YL42GFYYH"
+            }
+          }
+        }
+      }
+    }
+  },
+  "after": {
+    "at": 1794840081735,
+    "results": {
+      "prod.storewolf.com": {
+        "unauthenticated": {
+          "status": 200,
+          "result": {
+            "err": "You have not authed roles"
+          }
+        },
+        "authenticated": {
+          "status": 200,
+          "result": {
+            "msg": "Poll Not Found",
+            "running": false,
+            "details": {
+              "service": "ServiceManager",
+              "endpoint": "readPollStatus",
+              "req_id": "U1IMPCH7NNVLTRIS"
+            }
+          }
+        }
+      },
+      "dev.storewolf.com": {
+        "unauthenticated": {
+          "status": 200,
+          "result": {
+            "err": "You have not authed roles"
+          }
+        },
+        "authenticated": {
+          "status": 200,
+          "result": {
+            "msg": "Poll Not Found",
+            "running": false,
+            "details": {
+              "service": "ServiceManager",
+              "endpoint": "readPollStatus",
+              "req_id": "B4H7V794EBZJ7ZFS"
+            }
+          }
+        }
+      },
+      "avi.storewolf.com": {
+        "unauthenticated": {
+          "status": 200,
+          "result": {
+            "err": "You have not authed roles"
+          }
+        },
+        "authenticated": {
+          "status": 200,
+          "result": {
+            "msg": "Poll Not Found",
+            "running": false,
+            "details": {
+              "service": "ServiceManager",
+              "endpoint": "readPollStatus",
+              "req_id": "L94JSE22YOTDP62W"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,366 @@
+{
+  "schema": "storewolf-exclusive-cutover-v1",
+  "workItem": "WI-10000337",
+  "startedAt": 1794835994.7424173,
+  "tunnel": "6345fa92-b37d-4e60-b871-3fe8d256b16a",
+  "stage": "public-verified",
+  "preflightHealth": {
+    "8000": {
+      "ok": true,
+      "service": "storewolf-central-server",
+      "mode": "All",
+      "port": "8000",
+      "live": false,
+      "databaseConnected": true,
+      "serviceCount": 55
+    },
+    "9000": {
+      "ok": true,
+      "service": "storewolf-central-server",
+      "mode": "AllNOLIVE",
+      "port": "9000",
+      "live": false,
+      "databaseConnected": true,
+      "serviceCount": 57
+    }
+  },
+  "configurationBefore": {
+    "tunnel_id": "6345fa92-b37d-4e60-b871-3fe8d256b16a",
+    "version": 5,
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:9000",
+          "hostname": "prod.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http://localhost:9000",
+          "hostname": "dev.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http://localhost:9000",
+          "hostname": "avi.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http_status:404",
+          "originRequest": {}
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      },
+      "__configuration_flags": {
+        "no-autoupdate": "true"
+      }
+    },
+    "source": "cloudflare",
+    "created_at": "2026-09-03T12:42:46.544732Z"
+  },
+  "connectionsBefore": [
+    {
+      "id": "0aaa6c02-cd32-4a99-90a1-00e900a54771",
+      "features": [
+        "allow_remote_config",
+        "serialized_headers",
+        "support_datagram_v2",
+        "support_quic_eof",
+        "management_logs"
+      ],
+      "version": "2026.3.0",
+      "arch": "linux_amd64",
+      "conns": [
+        {
+          "colo_name": "bos01",
+          "uuid": "5b483f8d-8c41-4b72-8330-b1cf844340e5",
+          "id": "5b483f8d-8c41-4b72-8330-b1cf844340e5",
+          "is_pending_reconnect": false,
+          "origin_ip": "108.26.192.131",
+          "opened_at": "2026-11-16T06:22:57.514296Z",
+          "client_id": "0aaa6c02-cd32-4a99-90a1-00e900a54771",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ewr08",
+          "uuid": "291b1a4a-b498-40d4-b5b2-58d447320d09",
+          "id": "291b1a4a-b498-40d4-b5b2-58d447320d09",
+          "is_pending_reconnect": false,
+          "origin_ip": "108.26.192.131",
+          "opened_at": "2026-11-16T06:22:57.603429Z",
+          "client_id": "0aaa6c02-cd32-4a99-90a1-00e900a54771",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "bos03",
+          "uuid": "a2241970-71fd-4741-9256-0345bdb19d6b",
+          "id": "a2241970-71fd-4741-9256-0345bdb19d6b",
+          "is_pending_reconnect": false,
+          "origin_ip": "108.26.192.131",
+          "opened_at": "2026-11-16T06:22:57.656437Z",
+          "client_id": "0aaa6c02-cd32-4a99-90a1-00e900a54771",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ewr12",
+          "uuid": "788c1b9d-8746-420b-8acf-6a6ad345071e",
+          "id": "788c1b9d-8746-420b-8acf-6a6ad345071e",
+          "is_pending_reconnect": false,
+          "origin_ip": "108.26.192.131",
+          "opened_at": "2026-11-16T06:22:57.584420Z",
+          "client_id": "0aaa6c02-cd32-4a99-90a1-00e900a54771",
+          "client_version": "2026.3.0"
+        }
+      ],
+      "run_at": "2026-11-11T22:40:49.015074Z",
+      "ha_status": null
+    }
+  ],
+  "sourceUnitBefore": "MainPID=103711\nExecStart={ path=/home/builduser/bin/cloudflared ; argv[]=/home/builduser/bin/cloudflared tunnel --no-autoupdate --credentials-file /home/builduser/.cloudflared/6345fa92-b37d-4e60-b871-3fe8d256b16a.json run 6345fa92-b37d-4e60-b871-3fe8d256b16a ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\nActiveState=active\nFragmentPath=/home/builduser/.config/systemd/user/cloudflared-storewolf-prod.service\nUnitFileState=enabled\n",
+  "sourceStoppedAt": 1794836001.5561137,
+  "sourceUnitAfter": "MainPID=0\nActiveState=inactive\nUnitFileState=disabled\n",
+  "sourceUuidProcesses": [],
+  "connectionsAtDrainCheck": [],
+  "providerDrainedAt": 1794836002.031074,
+  "cloudStartRequestedAt": 1794836002.0318,
+  "connectionsAfter": [
+    {
+      "id": "9eb2fea4-0921-4703-93d1-ff28d8b71f8d",
+      "features": [
+        "support_datagram_v2",
+        "support_quic_eof",
+        "management_logs",
+        "allow_remote_config",
+        "serialized_headers"
+      ],
+      "version": "2026.3.0",
+      "arch": "linux_amd64",
+      "conns": [
+        {
+          "colo_name": "ord16",
+          "uuid": "762a47d2-42e4-445f-8417-45b97d7f2b3d",
+          "id": "762a47d2-42e4-445f-8417-45b97d7f2b3d",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T13:33:24.362314Z",
+          "client_id": "9eb2fea4-0921-4703-93d1-ff28d8b71f8d",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ord07",
+          "uuid": "51557c5d-e140-46e7-b18b-aa15b2aaafe4",
+          "id": "51557c5d-e140-46e7-b18b-aa15b2aaafe4",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T13:33:24.646721Z",
+          "client_id": "9eb2fea4-0921-4703-93d1-ff28d8b71f8d",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ord11",
+          "uuid": "b2a07274-db74-4039-9dca-2ce17068db11",
+          "id": "b2a07274-db74-4039-9dca-2ce17068db11",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T13:33:25.648991Z",
+          "client_id": "9eb2fea4-0921-4703-93d1-ff28d8b71f8d",
+          "client_version": "2026.3.0"
+        },
+        {
+          "colo_name": "ord16",
+          "uuid": "ab500b5b-b874-4dd3-8ee2-5c933b61056a",
+          "id": "ab500b5b-b874-4dd3-8ee2-5c933b61056a",
+          "is_pending_reconnect": false,
+          "origin_ip": "34.173.157.14",
+          "opened_at": "2026-11-16T13:33:26.558401Z",
+          "client_id": "9eb2fea4-0921-4703-93d1-ff28d8b71f8d",
+          "client_version": "2026.3.0"
+        }
+      ],
+      "run_at": "2026-11-16T13:33:24.362314Z",
+      "ha_status": null
+    }
+  ],
+  "cloudActiveAt": 1794836006.8170223,
+  "configurationAfter": {
+    "tunnel_id": "6345fa92-b37d-4e60-b871-3fe8d256b16a",
+    "version": 5,
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:9000",
+          "hostname": "prod.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http://localhost:9000",
+          "hostname": "dev.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http://localhost:9000",
+          "hostname": "avi.storewolf.com",
+          "originRequest": {
+            "noTLSVerify": true,
+            "connectTimeout": 30
+          }
+        },
+        {
+          "service": "http_status:404",
+          "originRequest": {}
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      },
+      "__configuration_flags": {
+        "no-autoupdate": "true"
+      }
+    },
+    "source": "cloudflare",
+    "created_at": "2026-09-03T12:42:46.544732Z"
+  },
+  "public": {
+    "prod.storewolf.com": {
+      "health": {
+        "status": 200,
+        "location": null,
+        "bytes": 137,
+        "loginForm": false,
+        "health": {
+          "ok": true,
+          "service": "storewolf-central-server",
+          "mode": "AllNOLIVE",
+          "port": "9000",
+          "live": false,
+          "databaseConnected": true,
+          "serviceCount": 57
+        }
+      },
+      "login": {
+        "status": 200,
+        "location": null,
+        "bytes": 938,
+        "loginForm": true
+      },
+      "unauth": {
+        "status": 403,
+        "location": null,
+        "bytes": 0,
+        "loginForm": false
+      },
+      "protected": {
+        "status": 302,
+        "location": "/m/login",
+        "bytes": 30,
+        "loginForm": false
+      },
+      "invalidLogin": {
+        "status": 401,
+        "location": null,
+        "bytes": 12,
+        "loginForm": false
+      }
+    },
+    "dev.storewolf.com": {
+      "health": {
+        "status": 200,
+        "location": null,
+        "bytes": 137,
+        "loginForm": false,
+        "health": {
+          "ok": true,
+          "service": "storewolf-central-server",
+          "mode": "AllNOLIVE",
+          "port": "9000",
+          "live": false,
+          "databaseConnected": true,
+          "serviceCount": 57
+        }
+      },
+      "login": {
+        "status": 200,
+        "location": null,
+        "bytes": 938,
+        "loginForm": true
+      },
+      "unauth": {
+        "status": 403,
+        "location": null,
+        "bytes": 0,
+        "loginForm": false
+      },
+      "protected": {
+        "status": 302,
+        "location": "/m/login",
+        "bytes": 30,
+        "loginForm": false
+      },
+      "invalidLogin": {
+        "status": 401,
+        "location": null,
+        "bytes": 12,
+        "loginForm": false
+      }
+    },
+    "avi.storewolf.com": {
+      "health": {
+        "status": 200,
+        "location": null,
+        "bytes": 137,
+        "loginForm": false,
+        "health": {
+          "ok": true,
+          "service": "storewolf-central-server",
+          "mode": "AllNOLIVE",
+          "port": "9000",
+          "live": false,
+          "databaseConnected": true,
+          "serviceCount": 57
+        }
+      },
+      "login": {
+        "status": 200,
+        "location": null,
+        "bytes": 938,
+        "loginForm": true
+      },
+      "unauth": {
+        "status": 403,
+        "location": null,
+        "bytes": 0,
+        "loginForm": false
+      },
+      "protected": {
+        "status": 302,
+        "location": "/m/login",
+        "bytes": 30,
+        "loginForm": false
+      },
+      "invalidLogin": {
+        "status": 401,
+        "location": null,
+        "bytes": 12,
+        "loginForm": false
+      }
+    }
+  },
+  "cloudUnitAfter": "MainPID=662351\nNRestarts=0\nActiveState=active\nUnitFileState=enabled\n",
+  "completedAt": 1794836010.1173024
+}

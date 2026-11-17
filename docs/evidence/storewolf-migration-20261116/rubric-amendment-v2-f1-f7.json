@@ -1,0 +1,225 @@
+{
+  "rubricRef": "acceptance-storewolf-central-server-cloud-deployment-2026-09-03",
+  "criteria": [
+    {
+      "key": "r-1",
+      "title": "Existing architecture",
+      "intent": {
+        "request": "Preserve the existing four-repository/sibling dependency layout, source delivery through the developer Git checkout, and the verified single-VM architecture with co-located MongoDB, SQLite/LMDB and shared memory. Reuse P-001–P-031 implementation; current work finishes P-027."
+      },
+      "model": "The GCE deployment preserves the D-041 developer Git checkout and full sibling dependency architecture with MongoDB, SQLite/LMDB and shared memory co-located on the existing single VM.",
+      "bar": "The GCE deployment preserves the D-041 developer Git checkout and full sibling dependency architecture with MongoDB, SQLite/LMDB and shared memory co-located on the existing single VM.",
+      "barKey": "R-1",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "deployed"
+      ],
+      "evidencePlane": "deployed",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Inspect the complete retained deployment/reboot evidence against D-041: developer Git metadata, sibling repositories, required commit objects/remotes, deployed unit cwd, data-disk mounts and Mongo configuration. Require a Git clone rather than a source-file copy and no unreachable required gitlink. Mark absent reachability evidence unknown rather than inferring it from directory existence. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-restart-final-20261116.json} (original sha256 d6ca14f727d5ec9055124005e5f100ba491cd6d577f35fdfc796396b583013ec, 14315 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json (sha256 b78aa036a3cdae8fc95dd46df2d5139fb4ba535d6d1af35270a3bd3080e3f59b, 14294 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-final-verification-20261116.json} (original sha256 8034af643a95348b4aff14b352b055eb8c76cbe19f7aa638b9e3ad9573ee7e66, 45891 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json (sha256 f4317c594309b65e36f572cc736af79d15ecbd6ed32e783283668ec285b873ed, 45885 bytes).",
+      "driftMarkers": "A copied/non-Git developer checkout, missing sibling dependency, unreachable required remote/gitlink/commit, divergent architecture or missing deployed layout proof.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-2",
+      "title": "Cold data refresh",
+      "intent": {
+        "request": "Refresh the complete source MongoDB dataset to the stopped cloud target before ingress cutover. Preserve the source and a verified cloud data-disk rollback snapshot. Stop application writers and both database processes cleanly before a physical copy; never copy a changing WiredTiger dbPath."
+      },
+      "model": "The complete source MongoDB dataset is refreshed by a cold physical copy to the stopped cloud target with cleanly stopped application writers and databases, a verified rollback snapshot and the intact source preserved.",
+      "bar": "The complete source MongoDB dataset is refreshed by a cold physical copy to the stopped cloud target with cleanly stopped application writers and databases, a verified rollback snapshot and the intact source preserved.",
+      "barKey": "R-2",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Read ordered stop/snapshot/copy receipts: application writers and both database processes cleanly stopped, cloud rollback snapshot READY before transfer begins, then physical copy/checksum completion before destination restart. Require intact source and exact retained raw transfer log/status with exit codes; a prose success summary is insufficient. Identify stop, snapshot-ready, copy-start and restart timestamps and fail missing or reversed prerequisites. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.status.json} (original sha256 1777b6c1ff1102f18198477bc40e549cbbc63c48a4be2d84604d39a13d97c19b, 715 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json (sha256 915a34b9cf66cff2720fbd8229e1ce7b7f17321c8c7189370c6cd6aa6149d393, 747 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.transfer.log} (original sha256 837e62abdee180fc9bd3d287060cb5ec84530c740326aa636c6bb4e37ad45041, 89709 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.transfer.log (sha256 837e62abdee180fc9bd3d287060cb5ec84530c740326aa636c6bb4e37ad45041, 89709 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-mongo8038-repair-20261116.json} (original sha256 95f4f076297be439a83bce03e134156a3b69a0cc0ce7d8084e437cdd9e1f2cfa, 7751 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-mongo8038-repair-20261116.json (sha256 95f4f076297be439a83bce03e134156a3b69a0cc0ce7d8084e437cdd9e1f2cfa, 7751 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-cloud-census-20261116.json} (original sha256 451dc0ea4d64b17b4193d043156b8cb5bd7b6949bff59c692e60b558955a7a94, 126806 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json (sha256 2d03601c9b639357e7871f621e484d3a579318ed5fced9d983a87d0165a972ec, 126803 bytes).",
+      "driftMarkers": "Any writer/database active during copy, missing or reversed prerequisite timestamps, unverified rollback snapshot, missing/changed raw transfer evidence, unsuccessful copy/checksum or deleted/unavailable source.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-3",
+      "title": "Lossless verification",
+      "intent": {
+        "request": "Verify file fidelity and the complete collection census after transfer. No LIMIT, top-N or prefix may decide parity: enumerate the full population, record omitted/unreadable entries explicitly, retain complete evidence and provide a cursor/resume or rerun path for any bounded pass. Acceptance requires zero unresolved omissions or mismatches. If new batching code is introduced, native tests cover N-1/N/N+1, decisive records after the boundary, consumer recovery, permutations and restart fairness."
+      },
+      "model": "The complete retained cold-copy fidelity proof establishes full-dbPath checksum equality and complete namespace-set equality with zero unresolved omissions, unreadable entries or mismatches.",
+      "bar": "The complete retained cold-copy fidelity proof establishes full-dbPath checksum equality and complete namespace-set equality with zero unresolved omissions, unreadable entries or mismatches.",
+      "barKey": "R-3",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Read the full-dbPath cold checksum exit status and complete zero-difference log, then compare every source/target namespace, type, options, UUID and ordered index specification. Read all manifest rows and explicit omission counts. Counts are estimatedDocumentCount metadata rather than exact countDocuments, and corroborate rather than replace the cold byte checksum. Enumerate config.system.sessions TTL deletion and local.startup_log startup additions with causes, without silently excluding either namespace. The grade must state the evidenced no-bounded-pass/no-new-batching branch, or cite every required native boundary/recovery test and consume every recovery handle; an unsupported conditional or truncated view cannot pass. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.status.json} (original sha256 1777b6c1ff1102f18198477bc40e549cbbc63c48a4be2d84604d39a13d97c19b, 715 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.status.json (sha256 915a34b9cf66cff2720fbd8229e1ce7b7f17321c8c7189370c6cd6aa6149d393, 747 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-data-refresh-20261116.checksum.log} (original sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855, 0 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-data-refresh-20261116.checksum.log (sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855, 0 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-source-census-20261116.json} (original sha256 aee45017126c435238e2c378a4671485beb840449539dd9bc9de4181a14ecbe5, 47705 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-source-census-20261116.json (sha256 3325cb9fbe78923534a1fa0a4768330899745df4425d739d5665c7bd8e5f5dca, 98500 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-cloud-census-20261116.json} (original sha256 451dc0ea4d64b17b4193d043156b8cb5bd7b6949bff59c692e60b558955a7a94, 126806 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-cloud-census-20261116.json (sha256 2d03601c9b639357e7871f621e484d3a579318ed5fced9d983a87d0165a972ec, 126803 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-final-verification-20261116.json} (original sha256 8034af643a95348b4aff14b352b055eb8c76cbe19f7aa638b9e3ad9573ee7e66, 45891 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json (sha256 f4317c594309b65e36f572cc736af79d15ecbd6ed32e783283668ec285b873ed, 45885 bytes).",
+      "driftMarkers": "Nonzero cold checksum differences, namespace/metadata mismatch, unreadable or unresolved omitted entry, ambiguous count method, unexplained post-start delta, absent explicit tooling/test branch, or unconsumed recovery handle.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-4",
+      "title": "Non-live runtime persistence",
+      "intent": {
+        "request": "Retain measured non-live runtime parity (live=false); expose the existing :9000 AllNOLIVE runtime persistently with its real database connection. Retain the existing /opt runtime and wolfcastle as required by the established deployment; do not add marketplace live automation."
+      },
+      "model": "The established cloud runtimes recover persistently in their required non-live modes with :9000 AllNOLIVE database-connected and the existing /opt and wolfcastle services retained.",
+      "bar": "The established cloud runtimes recover persistently in their required non-live modes with :9000 AllNOLIVE database-connected and the existing /opt and wolfcastle services retained.",
+      "barKey": "R-4",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Read retained systemd enablement/contents and actual argv plus health/readiness before and after the completed controlled reboot. Require :9000 mode AllNOLIVE, live=false, databaseConnected=true and no live flag in its start line; the /opt launcher must not append a live flag when STOREWOLF_LIVE=0. Require the established /opt and wolfcastle services to recover persistently. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-restart-final-20261116.json} (original sha256 d6ca14f727d5ec9055124005e5f100ba491cd6d577f35fdfc796396b583013ec, 14315 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json (sha256 b78aa036a3cdae8fc95dd46df2d5139fb4ba535d6d1af35270a3bd3080e3f59b, 14294 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-startup-repair-20261116.json} (original sha256 b4ef838216b4f5d17cece48bcf9f1e4d70f2933d6cede2c6d720c20d8f449191, 2470 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-startup-repair-20261116.json (sha256 b4ef838216b4f5d17cece48bcf9f1e4d70f2933d6cede2c6d720c20d8f449191, 2470 bytes).",
+      "driftMarkers": "Runtime live=true, a live flag in the non-live start line, failed database readiness, wrong required mode, or missing persistent recovery of required services.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-5",
+      "title": "Exclusive tunnel cutover",
+      "intent": {
+        "request": "Reuse remotely managed Cloudflare tunnel UUID 6345fa92-b37d-4e60-b871-3fe8d256b16a and its existing hostname routing, with credentials outside the repository. Stop and disable the local connector before enabling/starting the cloud connector; never overlap the same UUID or active transactional writers. No DNS/LB/certificate replacement is needed."
+      },
+      "model": "The existing remotely managed Cloudflare UUID and hostname routes move exclusively from the local connector to the cloud connector through a verified provider-empty interval with credentials outside repositories.",
+      "bar": "The existing remotely managed Cloudflare UUID and hostname routes move exclusively from the local connector to the cloud connector through a verified provider-empty interval with credentials outside repositories.",
+      "barKey": "R-5",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "deployed"
+      ],
+      "evidencePlane": "deployed",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Read cutover timestamps and process/unit/provider states in order: source connector stopped/disabled and exact-UUID process gone, provider connections empty, cloud connector start requested, then sole cloud origin and unchanged UUID/configuration/three hostname routes. Verify credential-file location and unit argument paths outside repositories without reading secret values. Grade the original cutover moment here; R-6 grades placement after reboot. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-cutover-20261116.json} (original sha256 2ee7fd8a1179862f2b2054812a61b9abfa89af1690d7a272fc5562af1f778fa0, 10668 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-cutover-20261116.json (sha256 718fa4da22ca0d403e4fa5ebae02b04158817f154f1ce910cdf31393b306d33b, 10656 bytes).",
+      "driftMarkers": "Missing/reversed stop-empty-start timestamps, overlapping same-UUID connectors, unexpected UUID/routing changes, credentials stored inside a repository, or missing named cutover proof.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-6",
+      "title": "Public acceptance and restart",
+      "intent": {
+        "request": "Verify actual public prod.storewolf.com, dev.storewolf.com and avi.storewolf.com routing, health/readiness, authenticated read-only API behavior and recovery after a controlled VM restart. Prove the local connector remains stopped and the cloud connector is the sole active placement."
+      },
+      "model": "All three required public hostnames preserve healthy non-live database-backed authenticated read-only access across the controlled VM reboot under sole cloud connector placement.",
+      "bar": "All three required public hostnames preserve healthy non-live database-backed authenticated read-only access across the controlled VM reboot under sole cloud connector placement.",
+      "barKey": "R-6",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "deployed"
+      ],
+      "evidencePlane": "deployed",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Read the retained final-reboot boot-ID transition and complete before/after readiness, provider and public HTTP results for every hostname. Require the authenticated readPollStatus sentinel's application response, denial of the same unauthenticated read, and no write requests. After reboot require local connector disabled/inactive, sole cloud placement and recovered systemd/database-connected live=false runtime. Review the completed reboot evidence; grading does not itself require another reboot. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-restart-final-20261116.json} (original sha256 d6ca14f727d5ec9055124005e5f100ba491cd6d577f35fdfc796396b583013ec, 14315 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-restart-final-20261116.json (sha256 b78aa036a3cdae8fc95dd46df2d5139fb4ba535d6d1af35270a3bd3080e3f59b, 14294 bytes); artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-auth-api-final-20261116.json} (original sha256 af04af41beb74379c8f0a97acbb1d25a1c74f953b1414e76e09b1b0a8005ce50, 3648 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-auth-api-final-20261116.json (sha256 af04af41beb74379c8f0a97acbb1d25a1c74f953b1414e76e09b1b0a8005ce50, 3648 bytes).",
+      "driftMarkers": "Any required hostname/health/authenticated read fails before or after reboot, an unauthenticated read is accepted, a write endpoint is exercised, or post-reboot placement/service/non-live readiness fails.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    },
+    {
+      "key": "r-7",
+      "title": "Canonical shipment",
+      "intent": {
+        "request": "Record measured shipment evidence, complete P-027 and the plan through canonical acceptance gates, and deliver a read-back-verified report. Credential rotation, re-encryption, local disk maintenance and driver modernization remain deferred exactly as D-040 specifies; do not resurrect them as shipment gates."
+      },
+      "model": "The pre-close shipment dossier provides verifiable migration evidence under the existing D-040 deferrals.",
+      "bar": "The pre-close shipment dossier provides verifiable migration evidence under the existing D-040 deferrals.",
+      "barKey": "R-7",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": [
+        "live"
+      ],
+      "evidencePlane": "live",
+      "passRatings": [
+        "pass"
+      ],
+      "barProvenance": {
+        "lifecycle": "legacy-backfilled",
+        "declaredAt": "2026-11-16T14:48:26.374Z",
+        "declaredBy": "su-79542c2a-b3a4-4683-a889-b37afe33aaf4"
+      },
+      "method": "Resolve every named shipment artifact through docs/evidence/storewolf-migration-20261116/evidence-index.json and verify byte lengths/hashes, complete omission/recovery accounting and D-040 deferral ownership. Read the published report through reports:get and match complete body hash and intended visibility to its recorded reference; require truthful separation of operational pass from pending canonical acceptance. Inspect retained logs/report for secret-value exposure. Do not require P-027's terminal receipt or a shipped plan to pass this pre-close evidence outcome: work_items:complete first requires current per-clause adequacy including R-7. Independent implementation acceptance, author verdict, P-027 completion and final plan shipment remain mandatory in their own canonical lifecycle. Retained artifact bindings: artifacts:load {slug:papercusp, rel_path:evidence/storewolf-migration-20261116/raw/storewolf-final-verification-20261116.json} (original sha256 8034af643a95348b4aff14b352b055eb8c76cbe19f7aa638b9e3ad9573ee7e66, 45891 bytes); source-safe export docs/evidence/storewolf-migration-20261116/storewolf-final-verification-20261116.json (sha256 f4317c594309b65e36f572cc736af79d15ecbd6ed32e783283668ec285b873ed, 45885 bytes).",
+      "driftMarkers": "A missing/hash-mismatched artifact or report, incomplete readback/wrong visibility, unresolved evidence omission, false canonical-shipped claim, exposed secret values, or a D-040 deferral used as a shipment gate.",
+      "check": {
+        "kind": "instrument",
+        "instrumentKey": "none"
+      }
+    }
+  ],
+  "methodRef": "acceptance-rubrics-on-every-plan-runbook",
+  "reason": "Address immutable critique thread-post:1233720 F1-F7 in one batch, preserving seven BAR keys, original intent, pass ratings and D-040/D-041/D-042. R-7 grades pre-close evidence/report readiness: work_items:complete.ts requires current per-clause adequacy before P-027 can close, so requiring its own terminal receipt in its proof is circular. All-items-terminal in this BAR would also revive D-040 blocked maintenance. Actual canonical item completion, independent implementation grade, author verdict and final shipped receipt remain mandatory lifecycle work. F5 retains original proof/log bytes without recopy/reboot. Plan146 is content revision; executionStart149 is a separate sequence.",
+  "expectedRubricRevision": 2,
+  "expectedSubjectPlanRevision": 146,
+  "idempotencyKey": "storewolf-rubric-v2-f1-f7-retained-review-20261117",
+  "dryRun": true,
+  "requestReview": {
+    "workItemId": "WI-10000337",
+    "harness": "papercusp"
+  }
+}

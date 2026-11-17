@@ -1,0 +1,92 @@
+{
+  "schema": "storewolf-mongodb-kernel-repair-v1",
+  "workItem": "WI-6554700010050280",
+  "parent": "WI-10000337",
+  "startedAt": 1794837872.930214,
+  "stage": "runtime-restored",
+  "targetVersion": "8.0.38",
+  "priorAttempt": {
+    "schema": "storewolf-mongodb-kernel-repair-v1",
+    "workItem": "WI-6554700010050280",
+    "parent": "WI-10000337",
+    "startedAt": 1794837094.0972366,
+    "stage": "writers-and-mongo-stopped",
+    "targetVersion": "8.0.38",
+    "before": {
+      "exit": 0,
+      "stdout": "7.0.0-1017-gcp\n8.0.29",
+      "stderr": ""
+    },
+    "stop": {
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "snapshotName": "storewolf-pre-mongo8038-20261116-1350",
+    "failureAt": 1794837396.741628,
+    "error": "TimeoutExpired: Command '['gcloud', 'compute', 'disks', 'snapshot', 'storewolf-data', '--snapshot-names=storewolf-pre-mongo8038-20261116-1350', '--project=active-alcove-504205-q3', '--zone=us-central1-a', '--quiet']' timed out after 300 seconds"
+  },
+  "resumedFromExistingSnapshot": true,
+  "auditRef": "WI-6554700010050280 checkpoint caed561bc2d2; snapshot/client timeout and kernel boot incompatibility preflights",
+  "before": {
+    "exit": 0,
+    "stdout": "7.0.0-1017-gcp\n8.0.29",
+    "stderr": ""
+  },
+  "stop": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "snapshotName": "storewolf-pre-mongo8038-20261116-1350",
+  "snapshot": {
+    "id": "1983878558490473602",
+    "name": "storewolf-pre-mongo8038-20261116-1350",
+    "sourceDisk": "https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/disks/storewolf-data",
+    "status": "READY"
+  },
+  "aptSimulation": {
+    "exit": 0,
+    "stdout": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following additional packages will be installed:\n  mongodb-org-database mongodb-org-database-tools-extra mongodb-org-mongos\n  mongodb-org-server mongodb-org-shell mongodb-org-tools\nThe following packages will be upgraded:\n  mongodb-org mongodb-org-database mongodb-org-database-tools-extra\n  mongodb-org-mongos mongodb-org-server mongodb-org-shell mongodb-org-tools\n7 upgraded, 0 newly installed, 0 to remove and 41 not upgraded.\nInst mongodb-org-shell [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nInst mongodb-org-server [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nInst mongodb-org-mongos [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nInst mongodb-org-database-tools-extra [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nInst mongodb-org-database [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nInst mongodb-org-tools [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nInst mongodb-org [8.0.29] (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org-shell (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org-server (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org-mongos (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org-database-tools-extra (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org-database (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org-tools (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\nConf mongodb-org (8.0.38 mongodb:noble/mongodb-org/8.0 [amd64])\n",
+    "stderr": ""
+  },
+  "aptInstall": {
+    "exit": 0,
+    "stdout": "Reading package lists...\nBuilding dependency tree...\nReading state information...\nThe following additional packages will be installed:\n  mongodb-org-database mongodb-org-database-tools-extra mongodb-org-mongos\n  mongodb-org-server mongodb-org-shell mongodb-org-tools\nThe following packages will be upgraded:\n  mongodb-org mongodb-org-database mongodb-org-database-tools-extra\n  mongodb-org-mongos mongodb-org-server mongodb-org-shell mongodb-org-tools\n7 upgraded, 0 newly installed, 0 to remove and 41 not upgraded.\nNeed to get 76.0 MB of archives.\nAfter this operation, 1309 kB of additional disk space will be used.\nGet:1 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org-shell amd64 8.0.38 [2602 B]\nGet:2 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org-server amd64 8.0.38 [43.4 MB]\nGet:3 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org-mongos amd64 8.0.38 [32.5 MB]\nGet:4 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org-database-tools-extra amd64 8.0.38 [7398 B]\nGet:5 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org-database amd64 8.0.38 [3062 B]\nGet:6 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org-tools amd64 8.0.38 [2402 B]\nGet:7 https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0/multiverse amd64 mongodb-org amd64 8.0.38 [2428 B]\nFetched 76.0 MB in 1s (61.5 MB/s)\n(Reading database ... \n(Reading database ... 5%\n(Reading database ... 10%\n(Reading database ... 15%\n(Reading database ... 20%\n(Reading database ... 25%\n(Reading database ... 30%\n(Reading database ... 35%\n(Reading database ... 40%\n(Reading database ... 45%\n(Reading database ... 50%\n(Reading database ... 55%\n(Reading database ... 60%\n(Reading database ... 65%\n(Reading database ... 70%\n(Reading database ... 75%\n(Reading database ... 80%\n(Reading database ... 85%\n(Reading database ... 90%\n(Reading database ... 95%\n(Reading database ... 100%\n(Reading database ... 123849 files and directories currently installed.)\nPreparing to unpack .../0-mongodb-org-shell_8.0.38_amd64.deb ...\nUnpacking mongodb-org-shell (8.0.38) over (8.0.29) ...\nPreparing to unpack .../1-mongodb-org-server_8.0.38_amd64.deb ...\nUnpacking mongodb-org-server (8.0.38) over (8.0.29) ...\nPreparing to unpack .../2-mongodb-org-mongos_8.0.38_amd64.deb ...\nUnpacking mongodb-org-mongos (8.0.38) over (8.0.29) ...\nPreparing to unpack .../3-mongodb-org-database-tools-extra_8.0.38_amd64.deb ...\nUnpacking mongodb-org-database-tools-extra (8.0.38) over (8.0.29) ...\nPreparing to unpack .../4-mongodb-org-database_8.0.38_amd64.deb ...\nUnpacking mongodb-org-database (8.0.38) over (8.0.29) ...\nPreparing to unpack .../5-mongodb-org-tools_8.0.38_amd64.deb ...\nUnpacking mongodb-org-tools (8.0.38) over (8.0.29) ...\nPreparing to unpack .../6-mongodb-org_8.0.38_amd64.deb ...\nUnpacking mongodb-org (8.0.38) over (8.0.29) ...\nSetting up mongodb-org-server (8.0.38) ...\nSetting up mongodb-org-shell (8.0.38) ...\nSetting up mongodb-org-mongos (8.0.38) ...\nSetting up mongodb-org-database-tools-extra (8.0.38) ...\nSetting up mongodb-org-database (8.0.38) ...\nSetting up mongodb-org-tools (8.0.38) ...\nSetting up mongodb-org (8.0.38) ...\nProcessing triggers for man-db (2.12.0-4build2) ...\n",
+    "stderr": "\nRunning kernel seems to be up-to-date.\n\nNo services need to be restarted.\n\nNo containers need to be restarted.\n\nNo user sessions are running outdated binaries.\n\nNo VM guests are running outdated hypervisor (qemu) binaries on this host.\n"
+  },
+  "mongoStart": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "mongo": {
+    "version": "8.0.38",
+    "fcv": {
+      "version": "7.0"
+    },
+    "ok": 1
+  },
+  "kernel": "7.0.0-1017-gcp",
+  "health": {
+    "8000": {
+      "ok": true,
+      "service": "storewolf-central-server",
+      "mode": "All",
+      "port": "8000",
+      "live": false,
+      "databaseConnected": true,
+      "serviceCount": 55
+    },
+    "9000": {
+      "ok": true,
+      "service": "storewolf-central-server",
+      "mode": "AllNOLIVE",
+      "port": "9000",
+      "live": false,
+      "databaseConnected": true,
+      "serviceCount": 57
+    }
+  },
+  "completedAt": 1794837911.731276
+}

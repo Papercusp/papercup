@@ -1,0 +1,1245 @@
+{
+  "schema": "storewolf-final-migration-verification-v1",
+  "workItem": "WI-10000337",
+  "plan": "storewolf-central-server-cloud-deployment-2026-09-03",
+  "executionStartRevision": 149,
+  "evidenceStatus": "operational-pass-independent-acceptance-pending",
+  "proofs": [
+    {
+      "path": ".papercusp/scratch/storewolf-source-census-20261116.json",
+      "sha256": "aee45017126c435238e2c378a4671485beb840449539dd9bc9de4181a14ecbe5",
+      "bytes": 47705
+    },
+    {
+      "path": ".papercusp/scratch/storewolf-cloud-census-20261116.json",
+      "sha256": "451dc0ea4d64b17b4193d043156b8cb5bd7b6949bff59c692e60b558955a7a94",
+      "bytes": 126806
+    },
+    {
+      "path": ".papercusp/scratch/storewolf-cutover-20261116.json",
+      "sha256": "2ee7fd8a1179862f2b2054812a61b9abfa89af1690d7a272fc5562af1f778fa0",
+      "bytes": 10668
+    },
+    {
+      "path": ".papercusp/scratch/storewolf-mongo8038-repair-20261116.json",
+      "sha256": "95f4f076297be439a83bce03e134156a3b69a0cc0ce7d8084e437cdd9e1f2cfa",
+      "bytes": 7751
+    },
+    {
+      "path": ".papercusp/scratch/storewolf-startup-repair-20261116.json",
+      "sha256": "b4ef838216b4f5d17cece48bcf9f1e4d70f2933d6cede2c6d720c20d8f449191",
+      "bytes": 2470
+    },
+    {
+      "path": ".papercusp/scratch/storewolf-restart-final-20261116.json",
+      "sha256": "d6ca14f727d5ec9055124005e5f100ba491cd6d577f35fdfc796396b583013ec",
+      "bytes": 14315
+    },
+    {
+      "path": ".papercusp/scratch/storewolf-auth-api-final-20261116.json",
+      "sha256": "af04af41beb74379c8f0a97acbb1d25a1c74f953b1414e76e09b1b0a8005ce50",
+      "bytes": 3648
+    }
+  ],
+  "data": {
+    "countMethod": "estimatedDocumentCount metadata; complete data bytes separately proven by full rsync --checksum",
+    "coldRefresh": {
+      "schema": "storewolf-cold-data-refresh-v1",
+      "startedAt": 1794831362.2941597,
+      "workItem": "WI-10000337",
+      "snapshot": "storewolf-pre-refresh-20261116-113342",
+      "source": "/mnt/data/db/",
+      "target": "builduser@34.173.157.14:/mnt/data/db/",
+      "stage": "complete",
+      "updatedAt": 1794834474.2674127,
+      "transferLog": "/tmp/storewolf-data-refresh-20261116.transfer.log",
+      "cloudStopProof": "cold-target-verified",
+      "transferExit": 0,
+      "checksumLog": "/tmp/storewolf-data-refresh-20261116.checksum.log",
+      "checksumExit": 0,
+      "differenceLogBytes": 0,
+      "completedAt": 1794834474.266468,
+      "next": "Start cloud MongoDB only, compare complete namespace census, then runtime and exclusive tunnel cutover. Source stays stopped and intact."
+    },
+    "namespacePopulation": [
+      {
+        "namespace": "admin.Advertiser-aggregated-traffic-by-keyword",
+        "sourceMetadataCount": 50,
+        "cloudMetadataCount": 50,
+        "metadataMatch": true,
+        "metadataSha256": "3857616840a7199a74342c9299b9d23f35fdc69ac44bf59dc0a4c986eb8781f8",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Advertiser_sd-conversion",
+        "sourceMetadataCount": 402,
+        "cloudMetadataCount": 402,
+        "metadataMatch": true,
+        "metadataSha256": "1220ff05d9f3ebb00d6eb7d3344e8bcd94caae89ea80a14c09d03bc44bbde013",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Advertiser_sd-conversion_TimeWindows",
+        "sourceMetadataCount": 40,
+        "cloudMetadataCount": 40,
+        "metadataMatch": true,
+        "metadataSha256": "c4cfc0eece9f06cd5c0821b4ac2c3b27a078ca6aa4643251fc2ee685f95b83c2",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Advertiser_sd-traffic",
+        "sourceMetadataCount": 403967,
+        "cloudMetadataCount": 403967,
+        "metadataMatch": true,
+        "metadataSha256": "dba0b5916667bedba82cb1f07264c14d716960b69771e442b9a9d0226ce11df2",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Advertiser_sp-conversion",
+        "sourceMetadataCount": 8,
+        "cloudMetadataCount": 8,
+        "metadataMatch": true,
+        "metadataSha256": "9a14f75590e28124e04e870ac7d6c60547e82f6529bfafccb9e2507ba777ebab",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Advertiser_sp-conversion_TimeWindows",
+        "sourceMetadataCount": 11,
+        "cloudMetadataCount": 11,
+        "metadataMatch": true,
+        "metadataSha256": "ad4f7e3b7aed4037b40d6c2744b6da070e6fb7c2dcb2f76c4566a3a78d04ef94",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Advertiser_sp-traffic",
+        "sourceMetadataCount": 1128356,
+        "cloudMetadataCount": 1128356,
+        "metadataMatch": true,
+        "metadataSha256": "997ff0bcba25fd5d6c08ae80d657b08d217a9c0672e7d516ffc9112d60a1a89b",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Amazoner_Buybox_Attempts",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "ed5420ac4439687ef3d60ba50855f040e27ef1fe28edfe46b097d3a22082f5d9",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Amazoner_Notifications_DETAIL_PAGE_TRAFFIC_EVENT",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "33c3b0e9381bccf19d1971716b2cacbb42e25d7be0882b62c8c166e6af42a6d7",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Amazoner_Notifications_ITEM_SALES_EVENT_CHANGE",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "8269cc29ae781d3037f536d2cddd9393ce5b2dfe22fd2374237fb30872322014",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Amazoner_Notifications_PRICING_HEALTH",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "d5ce265184e42ae4954a4c5917082bb3b6e40065fd88c32187d95643c1d916a8",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Amazoner_SkuBuyBoxOfferResults",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "5678d421364a1031b8a1907ce49ce3be3c536234e72a1d895eb6851375c475b3",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Amazoner_getFeaturedOfferExpectedPriceBatch",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "b7f24237c3bc30af9e59afc95bc7a12d406cb14c8733a126d76042c5723bbe0f",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.AnyOfferChangedB2B_Latest",
+        "sourceMetadataCount": 1003308,
+        "cloudMetadataCount": 1003308,
+        "metadataMatch": true,
+        "metadataSha256": "59f66bb231cb96423ba7ed2bd0f6eb1197121ecc8d7792975d5446a18f526d6a",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.AnyOfferChanged_Latest",
+        "sourceMetadataCount": 1174349,
+        "cloudMetadataCount": 1174349,
+        "metadataMatch": true,
+        "metadataSha256": "da4ccd6b7621adaa0718af108d6f6710b18aafdf8befabd54540ec3016e2b171",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.DataFetcher_ProcessingData",
+        "sourceMetadataCount": 1280,
+        "cloudMetadataCount": 1280,
+        "metadataMatch": true,
+        "metadataSha256": "303a3756fdf23ee4d32991e8f01943fd896176f8a09f8194f17962b0bb1f6560",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.JunlgeScout_keywords_by_asin_query",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "5bc6603c1f28e8391e15c9140510c594c316b0a11d354a27c64e8a876849a2ba",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Advertiser_writeAmazonAdvertisingCsvs_stats",
+        "sourceMetadataCount": 17,
+        "cloudMetadataCount": 17,
+        "metadataMatch": true,
+        "metadataSha256": "f41f41430ada1371288eceab8595144c28d2c1244a7cf5d8252f03c1695d01c7",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Amazoner_updateTheAmazonReportQtyPricesByRegion_stats",
+        "sourceMetadataCount": 490,
+        "cloudMetadataCount": 490,
+        "metadataMatch": true,
+        "metadataSha256": "2c6e807f0031c20dd82e83a9825b601d55cd76295389bfa02ee21fa06247bcee",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Amazoner_winBuyBoxesForOfferChanges_stats",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "fa2e3ab27c2ce475887c484a255896ea6fb9bf5c197ecf86fe0cb3b67596ee58",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_DataStore_setFullUpdateListByMarketplaceAndRegion_AVI_PROD_TRIMMEDUPDATELIST",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "6fbf7f4b272dfc1f446d8eeeed4020e1b152c9d25a5521c0ca9451471210170d",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_MarketplaceStuff_getTrimmedUpdateListByMarketplaceAndRegion_AVI_PROD_MARKETPLACESTUFF",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "d1c37925f909ebd9aabed4b6bf6ea37a5939596ad9a0686570fbd91d9f4a2edb",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Stater_saveAllAmazonBrandMetaTypeStockAndMatchStats_stats",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "3d38bce509b79e02f327e0013751d6a57e7da43fa8cbdba7eed8a63495fe534d",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Stater_saveAllEbayBrandMetaTypeStockAndMatchStats_stats",
+        "sourceMetadataCount": 244,
+        "cloudMetadataCount": 244,
+        "metadataMatch": true,
+        "metadataSha256": "fc5e60c61e62700d3d1789bced1e00b599d1326317d08d7f5c7de8212951a5a2",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Synchronizer_generateUpdatesTwo_AVI_PROD_TRIMMEDUPDATELIST",
+        "sourceMetadataCount": 126,
+        "cloudMetadataCount": 126,
+        "metadataMatch": true,
+        "metadataSha256": "005819201ceb808a9ede0b3da6650d42b441d27e709497f079eb14d0fd326ed4",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Synchronizer_generateUpdatesTwo_ELI_FULLUPDATELIST",
+        "sourceMetadataCount": 3,
+        "cloudMetadataCount": 3,
+        "metadataMatch": true,
+        "metadataSha256": "06c12b310be3ee8f24b4e055fbd4b8e101fee2827f03c5ff0805a60aa902083d",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_FULLUPDATELIST",
+        "sourceMetadataCount": 129,
+        "cloudMetadataCount": 129,
+        "metadataMatch": true,
+        "metadataSha256": "a4a710a8310a24b10ce4da0c481b7e5930f57cb096a5c04a4346763f5d3633e6",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_MARKETPLACESTUFF",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "a1e701a082620eca99227009771c6894dc16e34c62cf1bbeb93c29a46e280e8e",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_TRIMMEDUPDATELIST",
+        "sourceMetadataCount": 477,
+        "cloudMetadataCount": 477,
+        "metadataMatch": true,
+        "metadataSha256": "486d6ae03f8ec5299fc03c8ae5ce3cf5473bfdf50e76e7e131cf1ffb170a9bdb",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.Stater_Synchronizer_loadUpdatesFromSources_ELI_FULLUPDATELIST",
+        "sourceMetadataCount": 3,
+        "cloudMetadataCount": 3,
+        "metadataMatch": true,
+        "metadataSha256": "4292a7fbbfae37742fbe1e0258da474583ffd5c9b99f66f0ca0abbf1faf6586f",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.advertiser_ai_bid_test",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "a86ba5254022997f6a7c7fb90e74051e93d54b4f2a9e8f75beb49a47e96a6876",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.advertiser_ai_placement_test",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "59291cd95d46c4c9306c0eec70cda32388a969063449496e3c019dbe04c07ee3",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.advertiser_suggestedBidsAndExpressions",
+        "sourceMetadataCount": 86652000,
+        "cloudMetadataCount": 86652000,
+        "metadataMatch": true,
+        "metadataSha256": "daff1d27bcc0c5bae6ede73a38223614ad61e2ec586ae8f61807b72aed8d6c9e",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazon-api-orders-byDay",
+        "sourceMetadataCount": 19,
+        "cloudMetadataCount": 19,
+        "metadataMatch": true,
+        "metadataSha256": "def70296d8845b323a75eae93520b22c3ba3299dc893c6f5f94734d9529963a0",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazon-orders",
+        "sourceMetadataCount": 506,
+        "cloudMetadataCount": 506,
+        "metadataMatch": true,
+        "metadataSha256": "021e44bfe5d86a7571fa7ae557da8aa28c0147648ddd52c16888daa3551afa09",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazon-report-orders",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "2cface06fc5edadd3d1b2bf620802639403f802ddedf59bfe22f5ec8377ce33c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazon-reviews",
+        "sourceMetadataCount": 425319,
+        "cloudMetadataCount": 425319,
+        "metadataMatch": true,
+        "metadataSha256": "20a2e6d6df8e0a1bc0e0b0d93b2a93ded2e6fc12c499fbc2271b076226d00955",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazon-traffic",
+        "sourceMetadataCount": 33374,
+        "cloudMetadataCount": 33374,
+        "metadataMatch": true,
+        "metadataSha256": "637e6625816ad081c939130b8fb6f5950daf6813d17d78574a51107e4ee943c8",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazonOrderStatsEnriched",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "e6e454e3af49f0fc4348b00ffbadf10f7745d188f2fcd03561005e450580fca5",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazonOrderStatsEnriched2",
+        "sourceMetadataCount": 86814,
+        "cloudMetadataCount": 86814,
+        "metadataMatch": true,
+        "metadataSha256": "3d7cabd141f4def1adf162df3455fc20e8ecb22ce0edc3b4c461c0772501920a",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazon_groupid_blacklist",
+        "sourceMetadataCount": 2879012,
+        "cloudMetadataCount": 2879012,
+        "metadataMatch": true,
+        "metadataSha256": "b0930d79d77759daef7ff1e32a9f65fabdcc9578f25a43a121b397c706d5a2a0",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.amazonsellers",
+        "sourceMetadataCount": 58,
+        "cloudMetadataCount": 58,
+        "metadataMatch": true,
+        "metadataSha256": "5f4fa120f0891761cd9e64767fd49e1f8c640157daff70c80c0f152ee26b125b",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.api_log",
+        "sourceMetadataCount": 9193549,
+        "cloudMetadataCount": 9193549,
+        "metadataMatch": true,
+        "metadataSha256": "7cfe547b7796d111b1923ae4d4fb931680cd555fce68662dc3596546370d1b2b",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asin-offer-predictions",
+        "sourceMetadataCount": 98767,
+        "cloudMetadataCount": 98767,
+        "metadataMatch": true,
+        "metadataSha256": "b835158e47f9898f3d65dd58698c7df3d929cafd9081349d75227578eef9ffee",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asinSpecs",
+        "sourceMetadataCount": 9719556,
+        "cloudMetadataCount": 9719556,
+        "metadataMatch": true,
+        "metadataSha256": "485f21b3c8d57d2d3b4eaf4f09c117498f62e848f50788e073a5affd668f7885",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asin_group_details_CA",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "d6ff30127b99afd4bf1326ef0f7832968966e9e91d6292c669d2520cc8a3ebc2",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asindetails",
+        "sourceMetadataCount": 16961517,
+        "cloudMetadataCount": 16961517,
+        "metadataMatch": true,
+        "metadataSha256": "dd6dc30ce1407d18ac6824ba30bbf31889a6ad5988a871fedb15194002949d67",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asinofferdetails",
+        "sourceMetadataCount": 60965540,
+        "cloudMetadataCount": 60965540,
+        "metadataMatch": true,
+        "metadataSha256": "3144ae789e17ca9c41510f1607d834f0cce0be5e56245640d4d15c46a2715192",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asinofferstats",
+        "sourceMetadataCount": 35421,
+        "cloudMetadataCount": 35421,
+        "metadataMatch": true,
+        "metadataSha256": "ed38f51820f0b6e533ac9ba2a3b20e7eb0bbb7a3d723052cebac0c0bc36315cd",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.asins",
+        "sourceMetadataCount": 64379397,
+        "cloudMetadataCount": 64379397,
+        "metadataMatch": true,
+        "metadataSha256": "ef51f989b16e5d5245aa6fe778ebe63f51d4e0c8bfb56493233480953ce1bcdb",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.backmarketBlacklist",
+        "sourceMetadataCount": 30876,
+        "cloudMetadataCount": 30876,
+        "metadataMatch": true,
+        "metadataSha256": "de18bdc71888da89257dfdd29e4d80e992ffd34833cdb2649abb1a681de18c86",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.backmarketReport",
+        "sourceMetadataCount": 257855,
+        "cloudMetadataCount": 257855,
+        "metadataMatch": true,
+        "metadataSha256": "5e7092ce3ae544fb70f0b3cdc10b78a7121d5343afe886e7c7bba57756c4d740",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.cartitems",
+        "sourceMetadataCount": 235,
+        "cloudMetadataCount": 235,
+        "metadataMatch": true,
+        "metadataSha256": "25b0e004006276b735f5ef29c591bbdcbf66b29590810195f280c2ea045aca86",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.configs",
+        "sourceMetadataCount": 1,
+        "cloudMetadataCount": 1,
+        "metadataMatch": true,
+        "metadataSha256": "81fc50e12e03c16875d558fddb97a10d87e0c930988d312192d91a5b5fdd0f38",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.configurations",
+        "sourceMetadataCount": 112330,
+        "cloudMetadataCount": 112330,
+        "metadataMatch": true,
+        "metadataSha256": "0479c00b106759bc640490856036d3d7461c6d1078d88f7b2f8c192edcb67624",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.custom_group_configs",
+        "sourceMetadataCount": 6923286,
+        "cloudMetadataCount": 6923286,
+        "metadataMatch": true,
+        "metadataSha256": "946955b27128b3ccf1bf2faec557d902809cf3743075d238242d9686e354da27",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.customers",
+        "sourceMetadataCount": 5,
+        "cloudMetadataCount": 5,
+        "metadataMatch": true,
+        "metadataSha256": "96d6fb2f9e1fba772c4935d2034ac343c66bbfd9f9ecaf36878e5966eb59439d",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.dellcom_items",
+        "sourceMetadataCount": 95134,
+        "cloudMetadataCount": 95134,
+        "metadataMatch": true,
+        "metadataSha256": "e45f6ba0dae81bb9c1e843308dd0db1d3001bec7e7d113517cbfed05a20ee25e",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.dellcom_products",
+        "sourceMetadataCount": 634,
+        "cloudMetadataCount": 634,
+        "metadataMatch": true,
+        "metadataSha256": "f2c5114f1526b5ee011db3dec71f888654d161a904f96df3fbce96f4cd9de963",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.dellcom_urls",
+        "sourceMetadataCount": 6908,
+        "cloudMetadataCount": 6908,
+        "metadataMatch": true,
+        "metadataSha256": "9d8d7bccdd22d46d8b545d135a6aaeffed3c92589b21cdd5c2f67c4c5f9a0b42",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.delllist",
+        "sourceMetadataCount": 699240,
+        "cloudMetadataCount": 699240,
+        "metadataMatch": true,
+        "metadataSha256": "7161c223cc57d06b9c412df2ae05b8b93aabc4c02ee0fc0e02c304967878f01c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.dellparts",
+        "sourceMetadataCount": 10696,
+        "cloudMetadataCount": 10696,
+        "metadataMatch": true,
+        "metadataSha256": "c36fa47e6184557f6b369cec0e3603d79148d55e8345874a221c80e27b8be703",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.dellsite",
+        "sourceMetadataCount": 2566070,
+        "cloudMetadataCount": 2566070,
+        "metadataMatch": true,
+        "metadataSha256": "bb0efe569f80d7bc7b51b08d81cc743fa057512dd0227bf28a17f6bef808c70e",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.getCompetitivePricing_Latest",
+        "sourceMetadataCount": 130154,
+        "cloudMetadataCount": 130154,
+        "metadataMatch": true,
+        "metadataSha256": "d5be47e066bda46fa264e2e9882876531b930f9bb45f6959bf1dfd73ae43f712",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.hubx_group_details",
+        "sourceMetadataCount": 1372,
+        "cloudMetadataCount": 1372,
+        "metadataMatch": true,
+        "metadataSha256": "250604aa07e716b1aced3a4db4f752e5064d41d0e4ac87ef926ac6248e5f5c39",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.inventory",
+        "sourceMetadataCount": 58009,
+        "cloudMetadataCount": 58009,
+        "metadataMatch": true,
+        "metadataSha256": "39ab0469c22fd697603862a595bd024f6231a223802918f6501c97588c6c439f",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.leads",
+        "sourceMetadataCount": 37807028,
+        "cloudMetadataCount": 37807028,
+        "metadataMatch": true,
+        "metadataSha256": "9c83a8d22d0b291d6d7f2db19fad102af9c1733f4bb7b74bf45df0106ab72f2c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.leads_back",
+        "sourceMetadataCount": 39114950,
+        "cloudMetadataCount": 39114950,
+        "metadataMatch": true,
+        "metadataSha256": "002781437b26134b119a330d0fb99c31e5e428651ca49a94ec5081d1221431a0",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.listingfeed",
+        "sourceMetadataCount": 128,
+        "cloudMetadataCount": 128,
+        "metadataMatch": true,
+        "metadataSha256": "f4231ccb307c302f64745c33827b1dbf2fd4f30d561a14b9039e02936f3fa48e",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.logs",
+        "sourceMetadataCount": 741323,
+        "cloudMetadataCount": 741323,
+        "metadataMatch": true,
+        "metadataSha256": "55fddd47e9939ff7e82507fc7a75d17a51b45bfd16fe1e1f24cf1146ea7faee5",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.manualSpecObjs",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "0a9a822839bceaaa04f19cc959964239a73469ceacd107f7fa80f581289cec23",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.marketplace_data",
+        "sourceMetadataCount": 170001,
+        "cloudMetadataCount": 170001,
+        "metadataMatch": true,
+        "metadataSha256": "2d04f7ccb71fa1557d66ae8e48d2ca767a1c4aa550c3aa90e1ff3d9470172281",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.newToRefurb",
+        "sourceMetadataCount": 73151,
+        "cloudMetadataCount": 73151,
+        "metadataMatch": true,
+        "metadataSha256": "dbf64cfb9c0ce82354c6e9a13c0f3a4c39c31c52f4020add40d95f30e9a389aa",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.offerids",
+        "sourceMetadataCount": 9,
+        "cloudMetadataCount": 9,
+        "metadataMatch": true,
+        "metadataSha256": "4c427f2b6b2aaad7d04789df77635130550b062b2d8355fc9f05c00398a33e2f",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.onlinesubmissions",
+        "sourceMetadataCount": 10,
+        "cloudMetadataCount": 10,
+        "metadataMatch": true,
+        "metadataSha256": "619bf25ef6ccbbd2ad6d5ba3b40eed0d2327e16f5524703eaadb92aa8e4bc4ed",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.parserlookups",
+        "sourceMetadataCount": 8588,
+        "cloudMetadataCount": 8588,
+        "metadataMatch": true,
+        "metadataSha256": "5322abbcd38008c66227296bfdd202e0dc1e98d157cfe1b10e23205d8c787a92",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.push-notification-stats",
+        "sourceMetadataCount": 88850000,
+        "cloudMetadataCount": 88850000,
+        "metadataMatch": true,
+        "metadataSha256": "e6f2adab9fa0800017d3e6bc4cf36f616852d9e42c9ff150e6e4372f7750fb4f",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.reserves",
+        "sourceMetadataCount": 84795,
+        "cloudMetadataCount": 84795,
+        "metadataMatch": true,
+        "metadataSha256": "92ecbec76f61304ce5181f6797af86cb7b70205ac1f4d5365232f582765e882c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.scans",
+        "sourceMetadataCount": 108145,
+        "cloudMetadataCount": 108145,
+        "metadataMatch": true,
+        "metadataSha256": "c9a3362d91280253ed2fc8ef2e454b4403d5e861cb309b571e31a3ec23ee243b",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.sellOnAsinAssociations",
+        "sourceMetadataCount": 9734165,
+        "cloudMetadataCount": 9734165,
+        "metadataMatch": true,
+        "metadataSha256": "a017c3f6f2735889429e2535e555cb8b31315042d894bc6d6037d69277c3fee0",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.seriesdata",
+        "sourceMetadataCount": 1342,
+        "cloudMetadataCount": 1342,
+        "metadataMatch": true,
+        "metadataSha256": "ea663002c9fe6b34b1dc256e5ab2d1ffd293479c72ddce8a269fa39ea7674e51",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.servicetagdetails",
+        "sourceMetadataCount": 655,
+        "cloudMetadataCount": 655,
+        "metadataMatch": true,
+        "metadataSha256": "fefbdd52d3efb9908984139f0d3d827f85ffaeba575675356917689aa25c75f8",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.shipments",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "e1af18851b269e9205e35d6b7e5ed379f277e67c8d695b6ec565a0257c076f54",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.skudata",
+        "sourceMetadataCount": 2079,
+        "cloudMetadataCount": 2079,
+        "metadataMatch": true,
+        "metadataSha256": "da59fe49582bbcf8aa73a4216e782f3483ad781cbc1bd7f8204ba49aa32b963c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.skulabs_locations",
+        "sourceMetadataCount": 1029,
+        "cloudMetadataCount": 1029,
+        "metadataMatch": true,
+        "metadataSha256": "9d02d404a13ffee810291130d61e02379c4d3e25a9c1239d2f3d25026cda359a",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.skulabs_processedscans",
+        "sourceMetadataCount": 7072,
+        "cloudMetadataCount": 7072,
+        "metadataMatch": true,
+        "metadataSha256": "71cac820ba1d5c260d7155723f2ca1646e0a8df85614f3b43b09cf24ea469017",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.sl_latestupdates",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "932de83ec298ce80dea1fafa253f8288ea5d85589f0709f919ee7fa30a42785f",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.sl_updatehistory",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "8821a9212ca9144fa435216ec71f6f9ce0dc494fae6fe698d61c39438fbc0d4e",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.sourceFromAsinAssociations",
+        "sourceMetadataCount": 9734167,
+        "cloudMetadataCount": 9734167,
+        "metadataMatch": true,
+        "metadataSha256": "f84a0fd9f495ed7ad1a1e73c34730b087cb9e0ad65ee0950dfc7b1dbf5b47d3c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.stater",
+        "sourceMetadataCount": 7768,
+        "cloudMetadataCount": 7768,
+        "metadataMatch": true,
+        "metadataSha256": "a49946f8fcc01db44be478095c9ea12ad06f81a698896a430bbd2da4c31f1a9c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.statshots",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "49744132f494fbff4bc8e98c1bc8ed5855cff8fe03f86c8ca92ce48ce049a4ac",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.stringHashToRealHash",
+        "sourceMetadataCount": 460064,
+        "cloudMetadataCount": 460064,
+        "metadataMatch": true,
+        "metadataSha256": "cabf4f1997166e7b501b4bfbc7a5669d191c8b300e12fe486eeaaa5a4a889a86",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.swing_group_details",
+        "sourceMetadataCount": 764,
+        "cloudMetadataCount": 764,
+        "metadataMatch": true,
+        "metadataSha256": "b2af3de2428ecfe27920a6dc8e1001a2f167aa2c90d9bc26616812336d90ddab",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.synccentric",
+        "sourceMetadataCount": 1427,
+        "cloudMetadataCount": 1427,
+        "metadataMatch": true,
+        "metadataSha256": "bbc0e6576b313c4da9f54d322cf566d4ff77c960bfdd3f6f85f01265139c3364",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.system.users",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "b3498f608819e0dff6b9324137d789dc9af2fe189a0b23f7db22426022ccb974",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.system.version",
+        "sourceMetadataCount": 1,
+        "cloudMetadataCount": 1,
+        "metadataMatch": true,
+        "metadataSha256": "3dd202f0c7e10423af7200ff6bb8834d378b7c3f17c8a58d38b28644a7461d60",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.tests",
+        "sourceMetadataCount": 11,
+        "cloudMetadataCount": 11,
+        "metadataMatch": true,
+        "metadataSha256": "2446c336f0fcc0f26270f88d3fc581a068bdbbc574d42e84b648a1d895daf331",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.tickets",
+        "sourceMetadataCount": 1291781,
+        "cloudMetadataCount": 1291781,
+        "metadataMatch": true,
+        "metadataSha256": "5debe5ca5652d3e9eefe6370e07e4e45d6a120025a2bbce23c691964afb1ef2c",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.transactionBoosterAsins",
+        "sourceMetadataCount": 227,
+        "cloudMetadataCount": 227,
+        "metadataMatch": true,
+        "metadataSha256": "c7be5eb463e7f0d06360550820b4a8f7cb91b1431b7c453d7f07287aeb206654",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.upc",
+        "sourceMetadataCount": 8270427,
+        "cloudMetadataCount": 8270427,
+        "metadataMatch": true,
+        "metadataSha256": "6eb34f07eacece1c0871dad2b916183a94470635eac06bb113cad7f5ea8e6f6b",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "admin.websiteUpdates",
+        "sourceMetadataCount": 0,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "e4aa07200f55ef7408e17d94891b1fb5e4ef6f7ca5a35961fb5050ea9dcd9bd6",
+        "countDisposition": "match"
+      },
+      {
+        "namespace": "config.system.sessions",
+        "sourceMetadataCount": 4,
+        "cloudMetadataCount": 0,
+        "metadataMatch": true,
+        "metadataSha256": "5fd1a90327bcb978e628534e4da3a81b026fde8cba1cfe1fc2229fe57e311e4d",
+        "countDisposition": "resolved-internal-lifecycle"
+      },
+      {
+        "namespace": "local.startup_log",
+        "sourceMetadataCount": 106,
+        "cloudMetadataCount": 107,
+        "metadataMatch": true,
+        "metadataSha256": "f6b72e36a3dcfa38f14f06c7245372a83ca0f17102d3969d6885939c69b00d7a",
+        "countDisposition": "resolved-internal-lifecycle"
+      }
+    ],
+    "checked": [
+      "admin.Advertiser-aggregated-traffic-by-keyword",
+      "admin.Advertiser_sd-conversion",
+      "admin.Advertiser_sd-conversion_TimeWindows",
+      "admin.Advertiser_sd-traffic",
+      "admin.Advertiser_sp-conversion",
+      "admin.Advertiser_sp-conversion_TimeWindows",
+      "admin.Advertiser_sp-traffic",
+      "admin.Amazoner_Buybox_Attempts",
+      "admin.Amazoner_Notifications_DETAIL_PAGE_TRAFFIC_EVENT",
+      "admin.Amazoner_Notifications_ITEM_SALES_EVENT_CHANGE",
+      "admin.Amazoner_Notifications_PRICING_HEALTH",
+      "admin.Amazoner_SkuBuyBoxOfferResults",
+      "admin.Amazoner_getFeaturedOfferExpectedPriceBatch",
+      "admin.AnyOfferChangedB2B_Latest",
+      "admin.AnyOfferChanged_Latest",
+      "admin.DataFetcher_ProcessingData",
+      "admin.JunlgeScout_keywords_by_asin_query",
+      "admin.Stater_Advertiser_writeAmazonAdvertisingCsvs_stats",
+      "admin.Stater_Amazoner_updateTheAmazonReportQtyPricesByRegion_stats",
+      "admin.Stater_Amazoner_winBuyBoxesForOfferChanges_stats",
+      "admin.Stater_DataStore_setFullUpdateListByMarketplaceAndRegion_AVI_PROD_TRIMMEDUPDATELIST",
+      "admin.Stater_MarketplaceStuff_getTrimmedUpdateListByMarketplaceAndRegion_AVI_PROD_MARKETPLACESTUFF",
+      "admin.Stater_Stater_saveAllAmazonBrandMetaTypeStockAndMatchStats_stats",
+      "admin.Stater_Stater_saveAllEbayBrandMetaTypeStockAndMatchStats_stats",
+      "admin.Stater_Synchronizer_generateUpdatesTwo_AVI_PROD_TRIMMEDUPDATELIST",
+      "admin.Stater_Synchronizer_generateUpdatesTwo_ELI_FULLUPDATELIST",
+      "admin.Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_FULLUPDATELIST",
+      "admin.Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_MARKETPLACESTUFF",
+      "admin.Stater_Synchronizer_loadUpdatesFromSources_AVI_PROD_TRIMMEDUPDATELIST",
+      "admin.Stater_Synchronizer_loadUpdatesFromSources_ELI_FULLUPDATELIST",
+      "admin.advertiser_ai_bid_test",
+      "admin.advertiser_ai_placement_test",
+      "admin.advertiser_suggestedBidsAndExpressions",
+      "admin.amazon-api-orders-byDay",
+      "admin.amazon-orders",
+      "admin.amazon-report-orders",
+      "admin.amazon-reviews",
+      "admin.amazon-traffic",
+      "admin.amazonOrderStatsEnriched",
+      "admin.amazonOrderStatsEnriched2",
+      "admin.amazon_groupid_blacklist",
+      "admin.amazonsellers",
+      "admin.api_log",
+      "admin.asin-offer-predictions",
+      "admin.asinSpecs",
+      "admin.asin_group_details_CA",
+      "admin.asindetails",
+      "admin.asinofferdetails",
+      "admin.asinofferstats",
+      "admin.asins",
+      "admin.backmarketBlacklist",
+      "admin.backmarketReport",
+      "admin.cartitems",
+      "admin.configs",
+      "admin.configurations",
+      "admin.custom_group_configs",
+      "admin.customers",
+      "admin.dellcom_items",
+      "admin.dellcom_products",
+      "admin.dellcom_urls",
+      "admin.delllist",
+      "admin.dellparts",
+      "admin.dellsite",
+      "admin.getCompetitivePricing_Latest",
+      "admin.hubx_group_details",
+      "admin.inventory",
+      "admin.leads",
+      "admin.leads_back",
+      "admin.listingfeed",
+      "admin.logs",
+      "admin.manualSpecObjs",
+      "admin.marketplace_data",
+      "admin.newToRefurb",
+      "admin.offerids",
+      "admin.onlinesubmissions",
+      "admin.parserlookups",
+      "admin.push-notification-stats",
+      "admin.reserves",
+      "admin.scans",
+      "admin.sellOnAsinAssociations",
+      "admin.seriesdata",
+      "admin.servicetagdetails",
+      "admin.shipments",
+      "admin.skudata",
+      "admin.skulabs_locations",
+      "admin.skulabs_processedscans",
+      "admin.sl_latestupdates",
+      "admin.sl_updatehistory",
+      "admin.sourceFromAsinAssociations",
+      "admin.stater",
+      "admin.statshots",
+      "admin.stringHashToRealHash",
+      "admin.swing_group_details",
+      "admin.synccentric",
+      "admin.system.users",
+      "admin.system.version",
+      "admin.tests",
+      "admin.tickets",
+      "admin.transactionBoosterAsins",
+      "admin.upc",
+      "admin.websiteUpdates",
+      "config.system.sessions",
+      "local.startup_log"
+    ],
+    "notChecked": [],
+    "notApplicable": [],
+    "omitted": 0,
+    "recovery": "Complete source and cloud census artifacts retained at proof paths; no page or namespace was omitted.",
+    "internalDeltas": [
+      {
+        "namespace": "config.system.sessions",
+        "field": "count",
+        "source": 4,
+        "cloud": 0
+      },
+      {
+        "namespace": "local.startup_log",
+        "field": "count",
+        "source": 106,
+        "cloud": 107
+      }
+    ],
+    "internalDeltaResolution": {
+      "config.system.sessions": "TTL deletedDocuments=4 recorded in cloud census",
+      "local.startup_log": "One destination startup entry recorded in cloud census"
+    }
+  },
+  "snapshots": [
+    {
+      "id": "3026971650485081332",
+      "name": "storewolf-pre-refresh-20261116-113342",
+      "sourceDisk": "https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/disks/storewolf-data",
+      "status": "READY"
+    },
+    {
+      "id": "1983878558490473602",
+      "name": "storewolf-pre-mongo8038-20261116-1350",
+      "sourceDisk": "https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/disks/storewolf-data",
+      "status": "READY"
+    }
+  ],
+  "cutover": {
+    "tunnel": "6345fa92-b37d-4e60-b871-3fe8d256b16a",
+    "sourceStoppedAt": 1794836001.5561137,
+    "providerDrainedAt": 1794836002.031074,
+    "cloudStartRequestedAt": 1794836002.0318,
+    "providerConnectionsEmptyBeforeDestination": true,
+    "configurationUnchanged": true,
+    "sourceUnitAfter": "MainPID=0\nActiveState=inactive\nUnitFileState=disabled\n"
+  },
+  "restart": {
+    "completedAt": 1794840081.8163924,
+    "bootId": "d6fa9e46-5450-47fb-99fe-220495f72eab",
+    "kernel": "7.0.0-1017-gcp",
+    "mongoVersion": "8.0.38",
+    "startupScriptSha256": "e5985c8430ec748d5d4da0c2d8d2997574f4944b60223e12db340358c5083d67",
+    "googleStartup": {
+      "Result": "success",
+      "ExecMainExitTimestamp": "Mon 2026-11-16 14:41:06 UTC",
+      "ExecMainStatus": "0",
+      "ActiveState": "inactive",
+      "SubState": "dead"
+    },
+    "bootStopEvents": [],
+    "units": {
+      "mongod.service": "MainPID=688\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n",
+      "storewolf@All.service": "MainPID=708\nResult=success\nNRestarts=0\nWorkingDirectory=/opt/storewolf\nActiveState=active\nUnitFileState=enabled\n",
+      "storewolf-avi-allnolive.service": "MainPID=707\nResult=success\nNRestarts=0\nWorkingDirectory=/home/builduser/storewolf-central-server\nActiveState=active\nUnitFileState=enabled\n",
+      "wolfcastle.service": "MainPID=722\nResult=success\nNRestarts=0\nWorkingDirectory=/opt/wolfcastle\nActiveState=active\nUnitFileState=enabled\n",
+      "cloudflared-storewolf.service": "MainPID=1016\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n",
+      "nginx.service": "MainPID=807\nResult=success\nNRestarts=0\nWorkingDirectory=\nActiveState=active\nUnitFileState=enabled\n"
+    },
+    "health": {
+      "8000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "All",
+        "port": "8000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 55
+      },
+      "9000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "AllNOLIVE",
+        "port": "9000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 57
+      }
+    },
+    "mount": "/dev/sdb ext4   /mnt/data",
+    "public": {
+      "prod.storewolf.com": {
+        "health": {
+          "status": 200,
+          "bytes": 137,
+          "location": null,
+          "loginForm": false,
+          "health": {
+            "ok": true,
+            "service": "storewolf-central-server",
+            "mode": "AllNOLIVE",
+            "port": "9000",
+            "live": false,
+            "databaseConnected": true,
+            "serviceCount": 57
+          }
+        },
+        "login": {
+          "status": 200,
+          "bytes": 938,
+          "location": null,
+          "loginForm": true
+        },
+        "unauth": {
+          "status": 403,
+          "bytes": 0,
+          "location": null,
+          "loginForm": false
+        },
+        "protected": {
+          "status": 302,
+          "bytes": 30,
+          "location": "/m/login",
+          "loginForm": false
+        },
+        "invalidLogin": {
+          "status": 401,
+          "bytes": 12,
+          "location": null,
+          "loginForm": false
+        }
+      },
+      "dev.storewolf.com": {
+        "health": {
+          "status": 200,
+          "bytes": 137,
+          "location": null,
+          "loginForm": false,
+          "health": {
+            "ok": true,
+            "service": "storewolf-central-server",
+            "mode": "AllNOLIVE",
+            "port": "9000",
+            "live": false,
+            "databaseConnected": true,
+            "serviceCount": 57
+          }
+        },
+        "login": {
+          "status": 200,
+          "bytes": 938,
+          "location": null,
+          "loginForm": true
+        },
+        "unauth": {
+          "status": 403,
+          "bytes": 0,
+          "location": null,
+          "loginForm": false
+        },
+        "protected": {
+          "status": 302,
+          "bytes": 30,
+          "location": "/m/login",
+          "loginForm": false
+        },
+        "invalidLogin": {
+          "status": 401,
+          "bytes": 12,
+          "location": null,
+          "loginForm": false
+        }
+      },
+      "avi.storewolf.com": {
+        "health": {
+          "status": 200,
+          "bytes": 137,
+          "location": null,
+          "loginForm": false,
+          "health": {
+            "ok": true,
+            "service": "storewolf-central-server",
+            "mode": "AllNOLIVE",
+            "port": "9000",
+            "live": false,
+            "databaseConnected": true,
+            "serviceCount": 57
+          }
+        },
+        "login": {
+          "status": 200,
+          "bytes": 938,
+          "location": null,
+          "loginForm": true
+        },
+        "unauth": {
+          "status": 403,
+          "bytes": 0,
+          "location": null,
+          "loginForm": false
+        },
+        "protected": {
+          "status": 302,
+          "bytes": 30,
+          "location": "/m/login",
+          "loginForm": false
+        },
+        "invalidLogin": {
+          "status": 401,
+          "bytes": 12,
+          "location": null,
+          "loginForm": false
+        }
+      }
+    },
+    "sourceMongoPortClosed": true,
+    "sourceConnector": "MainPID=0\nActiveState=inactive\nUnitFileState=disabled\n"
+  },
+  "authenticatedRead": {
+    "endpoint": "GET /services/ServiceManager/readPollStatus?pollKey=storewolf-migration-verification",
+    "credentialReference": "existing config_Avi_debug.jsonc users.system token, kept in memory",
+    "phases": [
+      "before",
+      "after"
+    ],
+    "hosts": [
+      "avi.storewolf.com",
+      "dev.storewolf.com",
+      "prod.storewolf.com"
+    ],
+    "result": "passed; authenticated readonly sentinel returned Poll Not Found/running=false; unauthenticated rejected"
+  },
+  "closedBootDefects": [
+    "WI-6554700010050280",
+    "WI-6554700010050328"
+  ],
+  "ownedResidue": [
+    "WI-6554700010050332",
+    "WI-6554700010050360",
+    "WI-2143725",
+    "WI-2143726"
+  ],
+  "governingWaivers": [
+    "D-040"
+  ],
+  "report": {
+    "id": "rpt_5b926922-d9b4-4dc6-bba5-6624cebfa885",
+    "path": "/reports?sel=rpt_5b926922-d9b4-4dc6-bba5-6624cebfa885",
+    "bodySha256": "eac2b60398265547dc6ad7fae17634aff601ed8fdc3e04d3539a8bcd712548a0",
+    "readbackVerified": true
+  }
+}

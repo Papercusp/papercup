@@ -1,0 +1,77 @@
+{
+  "schema": "storewolf-startup-preserve-running-database-v1",
+  "workItem": "WI-6554700010050328",
+  "startedAt": 1794839614.6733952,
+  "stage": "focused-startup-service-verified",
+  "beforeSha256": "08c91683505e9d0e7fce6ecc2d2fdcaeda31fc6a9b19386f6bab4a63ac695243",
+  "afterSha256": "e5985c8430ec748d5d4da0c2d8d2997574f4944b60223e12db340358c5083d67",
+  "metadataFingerprintBefore": "Jr2SyMN7JI0=",
+  "syntaxCheck": "passed",
+  "publish": {
+    "exit": 0,
+    "stdout": "",
+    "stderr": "Updated [https://www.googleapis.com/compute/v1/projects/active-alcove-504205-q3/zones/us-central1-a/instances/storewolf].\n"
+  },
+  "metadataFingerprintAfter": "_fQOAtcynEk=",
+  "unrelatedMetadataPreserved": true,
+  "instanceMetadataSha256": "e5985c8430ec748d5d4da0c2d8d2997574f4944b60223e12db340358c5083d67",
+  "runtimeBeforeFocusedRun": {
+    "pids": {
+      "mongod.service": "1669",
+      "storewolf@All.service": "3946",
+      "storewolf-avi-allnolive.service": "3947",
+      "wolfcastle.service": "726"
+    },
+    "health": {
+      "8000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "All",
+        "port": "8000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 55
+      },
+      "9000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "AllNOLIVE",
+        "port": "9000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 57
+      }
+    }
+  },
+  "runtimeAfterFocusedRun": {
+    "pids": {
+      "mongod.service": "1669",
+      "storewolf@All.service": "3946",
+      "storewolf-avi-allnolive.service": "3947",
+      "wolfcastle.service": "726"
+    },
+    "health": {
+      "8000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "All",
+        "port": "8000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 55
+      },
+      "9000": {
+        "ok": true,
+        "service": "storewolf-central-server",
+        "mode": "AllNOLIVE",
+        "port": "9000",
+        "live": false,
+        "databaseConnected": true,
+        "serviceCount": 57
+      }
+    }
+  },
+  "focusedNativeServiceResult": "passed; Mongo and all app PIDs unchanged across actual Google startup service run",
+  "startupUnit": "Result=success\nExecMainExitTimestamp=Mon 2026-11-16 14:34:05 UTC\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\n",
+  "completedAt": 1794839647.6309578
+}
