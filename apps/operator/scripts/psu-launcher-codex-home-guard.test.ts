@@ -35,7 +35,9 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import * as realLauncher from './psu-launcher.mjs';
 
 const hostHome = vi.hoisted(() => ({ path: '' }));
@@ -736,7 +738,7 @@ describe('Codex managed turn enrollment', () => {
     expect(codexHomeLaunchReadiness(dir, owner)).toBeNull();
   });
 
-  it.each(['missing-provenance', 'wrong-client', 'wrong-ledger', 'missing-journal'])(
+  it.each(['wrong-client', 'wrong-ledger'])(
     'rejects a successful regeneration that loses managed enrollment: %s', async (damage) => {
       const repairLog = vi.spyOn(console, 'error').mockImplementation(() => {});
       const homesRoot = join(dir, 'carry-homes');
@@ -775,6 +777,155 @@ describe('Codex managed turn enrollment', () => {
         repairLog.mockRestore();
         vi.unstubAllEnvs();
       }
+    },
+  );
+
+  it.each(['missing-provenance', 'missing-journal', 'missing-both'])(
+    'reconciles an older same-owner writer without dropping hooks or native history: %s', async damage => {
+      const repairLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const root = join(dir, 'carry-homes');
+      const home = join(root, 'session-42');
+      mkdirSync(home, { recursive: true });
+      for (const name of ['config.toml', 'papercusp-diagnostics.json', 'AGENTS.md'])
+        writeFileSync(join(home, name), readFileSync(join(dir, name)));
+      const config = readFileSync(join(home, 'config.toml'), 'utf8');
+      writeFileSync(join(home, 'history.jsonl'), 'native history must survive\n');
+      const hooks = managedHooks(owner);
+      if (damage !== 'missing-journal') hooks.hooks.UserPromptSubmit = [];
+      if (damage !== 'missing-provenance') hooks.hooks.Stop![0].hooks.pop();
+      const custom = { hooks: [{ command: 'custom-integration --keep-this', timeout: 17 }] };
+      const document = { customSetting: 'retained', hooks: { ...hooks.hooks,
+        Stop: [...hooks.hooks.Stop!, custom] } };
+      const onFailure = vi.fn();
+      try {
+        // Every pass models the older server rewriting its own hook version.
+        // The launcher restores installed enrollment once per event, preserving
+        // unrelated registrations instead of replacing the hook document.
+        for (let pass = 0; pass < 3; pass++) {
+          expect(await ensureCodexHomeViaOperator(owner, home, 42, {
+            env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root },
+            operatorUrl: 'http://operator', token: 'fixture', onFailure,
+            fetchImpl: async () => {
+              writeFileSync(join(home, 'hooks.json'), JSON.stringify(document));
+              return { ok: true, status: 200, json: async () => ({ ok: true, repaired: true }) };
+            },
+          })).toMatchObject({ ok: true });
+          expect(codexHomeLaunchReadiness(home, owner)).toBeNull();
+          const actual = JSON.parse(readFileSync(join(home, 'hooks.json'), 'utf8'));
+          expect(actual.customSetting).toBe('retained');
+          expect(actual.hooks.Stop).toContainEqual(custom);
+          for (const [event, script] of [['UserPromptSubmit', 'userpromptsubmit-provenance.sh'], ['Stop', 'stop-turn-journal.sh']]) {
+            expect(actual.hooks[event].flatMap((g: { hooks: { command: string }[] }) => g.hooks)
+              .filter((h: { command: string }) => h.command.includes(script))).toHaveLength(1);
+          }
+          expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(config);
+          expect(readFileSync(join(home, 'history.jsonl'), 'utf8')).toBe('native history must survive\n');
+        }
+        expect(onFailure).not.toHaveBeenCalled();
+      } finally { repairLog.mockRestore(); }
+    },
+  );
+
+  it('delivers the saved carry to a fresh PTY child after reconciling an older writer', async () => {
+    const { hostThroughPty, socketPathFor, eventLogPathForOwner } = await import('./psu-pty-host.mjs');
+    const { connect } = await import('node:net');
+    const root = join(dir, 'carry-homes');
+    const home = join(root, 'session-42');
+    mkdirSync(join(home, 'sessions'), { recursive: true });
+    for (const name of ['config.toml', 'papercusp-diagnostics.json', 'AGENTS.md'])
+      writeFileSync(join(home, name), readFileSync(join(dir, name)));
+    const staleHooks = managedHooks(owner);
+    staleHooks.hooks.UserPromptSubmit = [];
+    staleHooks.hooks.Stop![0].hooks.pop();
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const transcript = join(home, 'sessions', `rollout-${nativeId}.jsonl`);
+    const carry = '⟦turn-origin:self-compaction nonce:0011223344556677⟧\nContinue the saved task';
+    const child = "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');" +
+      "process.stdout.write('SUCCESSOR-READY\\n');let b='';process.stdin.on('data',d=>{b+=d;" +
+      "if(b.includes('Continue the saved task')&&b.includes('\\r')){" +
+      `fs.appendFileSync(${JSON.stringify(transcript)},JSON.stringify({type:'response_item',timestamp:new Date().toISOString(),` +
+      `payload:{type:'message',role:'user',content:[{type:'input_text',text:${JSON.stringify(carry)}}]}})+'\\n');` +
+      `fs.appendFileSync(${JSON.stringify(transcript)},JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),` +
+      "payload:{type:'task_started',turn_id:'successor-turn'}})+'\\n');b='';process.stdout.write('CARRY-ACCEPTED\\n');}});" +
+      'setTimeout(()=>process.exit(0),12000);';
+    const env = launcher.prepareSuLaunchEnvironment(hermeticEnv({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_ADV_SESSION_ID: '42', PAPERCUSP_SID: owner, CODEX_HOME: home,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto', PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10',
+      PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '1000', PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+      PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10', PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '10',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2', PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '10',
+    }), {});
+    const signals = new EventEmitter();
+    let output = '';
+    const io = { stdout: { columns: 80, rows: 24, write: (value: unknown) => { output += String(value); }, on() {}, off() {} },
+      stdin: { isTTY: false, on() {}, off() {}, resume() {}, pause() {} } };
+    const repaired = vi.fn(async () => ensureCodexHomeViaOperator(owner, home, 42, {
+      env, operatorUrl: 'http://operator', token: 'fixture',
+      fetchImpl: async () => {
+        writeFileSync(join(home, 'hooks.json'), JSON.stringify(staleHooks));
+        return { ok: true, status: 200, json: async () => ({ ok: true, repaired: false }) };
+      },
+    }));
+    const emitCompacted = vi.fn();
+    const done = hostThroughPty({ command: process.execPath,
+      args: ['-e', "process.stdin.setRawMode(true);process.stdout.write('PREDECESSOR-READY\\n');setTimeout(()=>process.exit(0),12000);"],
+      cwd: home, ownerId: owner, env, io, bridgeTty: false, signalSource: signals,
+      ensureCodexHome: repaired, mintCarryRespawnArgs: () => ({ args: ['-e', child], nativeId }),
+      onRespawn: async () => true, emitCompacted, nativePersistenceTimeoutMs: 500, onExit() {},
+    });
+    try {
+      await vi.waitFor(() => expect(output).toContain('PREDECESSOR-READY'), { timeout: 3000 });
+      const ack = await new Promise<Record<string, unknown>>((resolveAck, reject) => {
+        const connection = connect(socketPathFor(owner), () => connection.end(JSON.stringify({
+          v: 1, mode: 'carry-respawn', ownerId: owner, deliveryId: 'compatibility-carry',
+          data: carry, systemPromptAddendum: 'Saved task checkpoint',
+        })));
+        let response = '';
+        connection.on('data', data => { response += data.toString(); });
+        connection.on('error', reject);
+        connection.on('close', () => { try { resolveAck(JSON.parse(response)); } catch (error) { reject(error); } });
+      });
+      expect(ack).toMatchObject({ ok: true, reason: 'accepted' });
+      await vi.waitFor(() => {
+        const events = readFileSync(eventLogPathForOwner(owner), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered', nativeId }));
+      }, { timeout: 7000, interval: 20 });
+      expect(repaired).toHaveBeenCalledOnce();
+      expect(output).toContain('SUCCESSOR-READY');
+      expect(readFileSync(transcript, 'utf8')).toContain('Continue the saved task');
+      expect(codexHomeLaunchReadiness(home, owner)).toBeNull();
+      expect(emitCompacted).toHaveBeenCalledOnce();
+    } finally {
+      signals.emit('SIGTERM', 'SIGTERM');
+      await done;
+    }
+  }, 15000);
+
+  it.each(['foreign-owner', 'missing-config', 'symlink-hooks'])(
+    'keeps incomplete enrollment refused when authority is unsafe: %s', async damage => {
+      const root = join(dir, 'carry-homes');
+      const home = join(root, 'session-42');
+      mkdirSync(home, { recursive: true });
+      for (const name of ['config.toml', 'papercusp-diagnostics.json', 'AGENTS.md'])
+        writeFileSync(join(home, name), readFileSync(join(dir, name)));
+      const hooks = managedHooks(damage === 'foreign-owner' ? 'another-owner' : owner);
+      hooks.hooks.UserPromptSubmit = [];
+      const bytes = JSON.stringify(hooks);
+      const path = join(home, 'hooks.json');
+      if (damage === 'missing-config') rmSync(join(home, 'config.toml'));
+      if (damage === 'symlink-hooks') {
+        writeFileSync(join(dir, 'other-hooks.json'), bytes);
+        symlinkSync(join(dir, 'other-hooks.json'), path);
+      } else writeFileSync(path, bytes);
+      const onFailure = vi.fn();
+      expect(await ensureCodexHomeViaOperator(owner, home, 42, {
+        env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root }, operatorUrl: 'http://operator', token: 'fixture', onFailure,
+        fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ ok: true }) }),
+      })).toBeNull();
+      expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+        stage: 'home-hooks', reason: 'managed-turn-enrollment-incomplete',
+      }));
+      expect(readFileSync(path, 'utf8')).toBe(bytes);
     },
   );
 
@@ -1164,6 +1315,52 @@ describe('Codex managed carry keeps the selected account route', () => {
           target: { kind: 'remote', protocol: 'http', port: 80 }, phaseTimingsMs: expect.any(Object) }) }]);
       expect(JSON.stringify(failures)).not.toMatch(/private-token|http:\/\/operator|private response/);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the authenticated isolated home root through launch preparation and later carry repair', async () => {
+    const home = join(dir, 'isolated-runtime', 'su-codex-homes', 'session-7');
+    const env = launcher.prepareSuLaunchEnvironment({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_ADV_SESSION_ID: '7', CODEX_HOME: home,
+    }, { PAPERCUSP_SU_CODEX_HOMES_DIR: '/another-runtime/homes' });
+    expect(env.PAPERCUSP_SU_CODEX_HOMES_DIR).toBe(join(dir, 'isolated-runtime', 'su-codex-homes'));
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200,
+      json: async () => ({ ok: true, codexHome: home, repaired: false }) }));
+    expect(await launcher.ensureCodexHomeViaOperator('su-isolated', home, 7, {
+      env, operatorUrl: 'http://isolated-operator', token: 'fixture', fetchImpl,
+    })).toMatchObject({ ok: true, codexHome: home });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a saved isolated session root through resume and canonical repair', async () => {
+    const home = join(dir, 'isolated-runtime', 'su-codex-homes', 'session-7');
+    const env = launcher.buildResumeEnv({
+      agent: 'codex', id: 7, coordOwnerId: 'su-isolated', codexHome: home,
+    });
+    expect(env.CODEX_HOME).toBe(home);
+    expect(env.PAPERCUSP_SU_CODEX_HOMES_DIR).toBe(join(dir, 'isolated-runtime', 'su-codex-homes'));
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200,
+      json: async () => ({ ok: true, codexHome: home, repaired: false }) }));
+    expect(await launcher.ensureCodexHomeViaOperator('su-isolated', home, 7, {
+      env, operatorUrl: 'http://isolated-operator', token: 'fixture', fetchImpl,
+    })).toMatchObject({ ok: true, codexHome: home });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('refuses an isolated carry when the explicit bootstrap root contradicts its home', () => {
+    expect(() => launcher.prepareSuLaunchEnvironment({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_ADV_SESSION_ID: '7',
+      CODEX_HOME: join(dir, 'isolated-runtime', 'session-7'),
+      PAPERCUSP_SU_CODEX_HOMES_DIR: '/different-runtime/homes',
+    }, {})).toThrow(/Codex home root/);
+  });
+
+  it('does not derive an isolated carry root from an inherited or differently keyed home', () => {
+    expect(launcher.prepareSuLaunchEnvironment({ PAPERCUSP_AGENT: 'codex' }, {
+      CODEX_HOME: '/parent/session-7', PAPERCUSP_ADV_SESSION_ID: '7',
+    }).PAPERCUSP_SU_CODEX_HOMES_DIR).toBeUndefined();
+    expect(launcher.prepareSuLaunchEnvironment({
+      PAPERCUSP_AGENT: 'codex', PAPERCUSP_ADV_SESSION_ID: '7', CODEX_HOME: '/other/session-8',
+    }, {}).PAPERCUSP_SU_CODEX_HOMES_DIR).toBeUndefined();
   });
 
   it('reports a scope refusal before issuing a request, even if the observer throws', async () => {

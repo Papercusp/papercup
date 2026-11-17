@@ -7268,8 +7268,9 @@ export function buildResumeEnv(
   session,
   { fork = false, brain = false, accountEnv = null, ownerId = null, launchedBy = null } = {},
 ) {
-  return {
+  return prepareSuLaunchEnvironment({
     ...resumeEnvFor(session, { fork, ownerId }),
+    ...(session?.agent === 'codex' && session.codexHome ? { CODEX_HOME: session.codexHome } : {}),
     // Anything launched/resumed through psu is an agent session for hook
     // purposes. Direct non-psu Claude terminals remain unmarked and keep the
     // owner-session exemption in pretooluse-bash-resource-gate.sh.
@@ -7300,7 +7301,7 @@ export function buildResumeEnv(
             : {}),
         }
       : {}),
-  };
+  }, {});
 }
 
 /** Restore the per-session OMP store a tracked launch created. Fresh OMP
@@ -15677,6 +15678,7 @@ async function launchResume(
         env.CODEX_HOME,
         session.id ?? null,
         {
+          env,
           requireGatewayProvider: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
           model: resumeModel || lastActiveModelFor(session) || null,
           headless,
