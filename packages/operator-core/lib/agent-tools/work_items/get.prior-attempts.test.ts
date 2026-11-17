@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Use the same dispatcher and registry implementations re-exported by agent-mcp.
-import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
+import { dispatchProjectedTool, lookupByMcpName, type BatchResult } from '@papercusp/tooldef';
 
 // Transitive read dependencies capture these functions at module load. Keep
 // those exports available without allowing a history read to mutate anything.
@@ -83,6 +83,21 @@ import get from './get';
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: { results: Array<Record<string, any>> } };
+const operationData = (dispatched: Awaited<ReturnType<typeof dispatchProjectedTool>>) => {
+  expect(dispatched.ok).toBe(true);
+  // Projected dispatch returns batch-v1 even for a singleton. The operation's
+  // work-item results live inside the successful batch item's output.
+  const batch = dispatched.result?.structuredContent as unknown as BatchResult;
+  expect(batch).toMatchObject({
+    ok: true,
+    counts: { ok: 1, failed: 0 },
+    results: [{ itemId: 'item-1', ok: true, status: 'completed' }],
+  });
+  expect(batch.results).toHaveLength(1);
+  const data = batch.results[0].output?.structuredContent as Out['data'] | undefined;
+  expect(data?.results).toHaveLength(1);
+  return data!;
+};
 const one = async (x: unknown) => {
   const originalInput = structuredClone(x);
   expect(parse(x)).toEqual(x);
@@ -102,12 +117,10 @@ const one = async (x: unknown) => {
     requestedFormat: 'json',
     requestedStructured: true,
   } as never, {});
-  expect(dispatched.ok).toBe(true);
   expect(x).toEqual(originalInput);
-  const data = dispatched.result?.structuredContent as Out['data'] | undefined;
-  expect(data?.results).toHaveLength(1);
+  const data = operationData(dispatched);
   Object.values(writes).forEach(write => expect(write).not.toHaveBeenCalled());
-  return data!.results[0];
+  return data.results[0];
 };
 
 const ITEM = {
@@ -178,10 +191,8 @@ describe('work_items:get — priorAttempts (the read that used to require a clai
       requestedFormat: 'json',
       requestedStructured: true,
     } as never, {});
-    expect(dispatched.ok).toBe(true);
-    const data = dispatched.result?.structuredContent as Out['data'] | undefined;
-    expect(data?.results).toHaveLength(1);
-    const r = data!.results[0];
+    const data = operationData(dispatched);
+    const r = data.results[0];
     expect(input).toEqual(originalInput);
     expect(getWorkItemDetail).toHaveBeenCalledTimes(1);
     expect(getClaimTimePriorAttemptBrief).toHaveBeenCalledTimes(1);
@@ -190,10 +201,8 @@ describe('work_items:get — priorAttempts (the read that used to require a clai
     // field cannot distinguish a failed history read from a projection loss.
     const raw = await get.handler(input as never, ctx) as Out;
     expect(raw.data.results[0].priorAttempts).toMatchObject({ fingerprint: 'fp-1' });
-    expect(r.priorAttempts, JSON.stringify({
-      rowKeys: Object.keys(r),
-      shapeNote: (data as Record<string, unknown>)._shapeNote,
-    })).toMatchObject({ fingerprint: 'fp-1' });
+    Object.values(writes).forEach(write => expect(write).not.toHaveBeenCalled());
+    expect(r.priorAttempts).toMatchObject({ fingerprint: 'fp-1' });
     // The whole point of the field: the caller learns "tried X, X was wrong"
     // from a READ. Before this, only work_items:claim carried that sentence.
     expect(r.priorAttempts.attempts[0].text).toBe('tried X; X was wrong');
