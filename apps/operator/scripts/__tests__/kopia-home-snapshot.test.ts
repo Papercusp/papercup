@@ -119,7 +119,7 @@ describe('kopia-home-snapshot bounded execution contract', () => {
     }
   });
 
-  it('bounds a stalled privileged SIGKILL and removes the PID marker after timeout', () => {
+  it('bounds a stalled privileged SIGKILL and retains the PID marker for retry', () => {
     const root = mkdtempSync(join(tmpdir(), 'kopia-home-snapshot-timeout-'));
     const stateDir = join(root, 'state');
     const procRoot = join(root, 'proc');
@@ -174,10 +174,10 @@ describe('kopia-home-snapshot bounded execution contract', () => {
       });
 
       expect(stopped.error).toBeUndefined();
-      expect(stopped.status).toBe(0);
+      expect(stopped.status).toBe(1);
       expect(readFileSync(killLog, 'utf8')).toContain('-KILL ' + exactPid);
       expect(readFileSync(join(stateDir, 'home-snapshot.log'), 'utf8')).toContain('WARN: failed to kill exact Kopia PID ' + exactPid);
-      expect(existsSync(pidFile)).toBe(false);
+      expect(readFileSync(pidFile, 'utf8')).toBe(exactPid + '\n');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -408,6 +408,52 @@ describe('kopia-home-snapshot bounded execution contract', () => {
           expect(f.killLogText()).toContain(`-KILL ${pid}`);
         }
         expect(f.killLogText()).not.toMatch(/-(TERM|KILL) 6464\b/);
+      } finally {
+        rmSync(f.root, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses startup after unknown privileged identity validation and retries the retained PID', () => {
+      const f = fixture({ leaf: 'kopia-home-snapshot.service', graceSec: '0' });
+      try {
+        rmSync(join(f.env.KOPIA_HOME_SNAPSHOT_PROC_ROOT, '6161', 'exe'));
+        writeFileSync(
+          f.env.KOPIA_HOME_SNAPSHOT_SUDO,
+          [
+            '#!/usr/bin/env bash',
+            '[ "$1" = -n ] && shift',
+            '[ "$1" = -- ] && shift',
+            'if [ "$1" = readlink ]; then exec /bin/sleep 5; fi',
+            'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
+            '',
+          ].join('\n'),
+        );
+        const run = spawnSync('bash', [REPO_SCRIPT, '--cleanup'], {
+          encoding: 'utf8', env: { ...f.env, KOPIA_SUDO_SIGNAL_TIMEOUT_SEC: '1' }, timeout: 10_000,
+        });
+        expect(run.error).toBeUndefined();
+        expect(run.status).toBe(1);
+        expect(readFileSync(f.pidFile, 'utf8')).toBe('6161\n');
+        expect(f.killLogText()).not.toMatch(/-(TERM|KILL) 6161\b/);
+        expect(f.killLogText()).toContain('-TERM 6262');
+        expect(readFileSync(join(f.stateDir, 'home-snapshot.log'), 'utf8')).toContain('unable to validate Kopia PID 6161');
+
+        // Once privilege is available, the same cleanup can resolve the saved PID.
+        writeFileSync(
+          f.env.KOPIA_HOME_SNAPSHOT_SUDO,
+          [
+            '#!/usr/bin/env bash',
+            '[ "$1" = -n ] && shift',
+            '[ "$1" = -- ] && shift',
+            'if [ "$1" = readlink ]; then printf \'%s\\n\' "$KOPIA_HOME_SNAPSHOT_BIN"; exit 0; fi',
+            'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
+            '',
+          ].join('\n'),
+        );
+        const retry = spawnSync('bash', [REPO_SCRIPT, '--cleanup'], { encoding: 'utf8', env: f.env, timeout: 10_000 });
+        expect(retry.status).toBe(0);
+        expect(f.killLogText()).toContain('-TERM 6161');
+        expect(existsSync(f.pidFile)).toBe(false);
       } finally {
         rmSync(f.root, { recursive: true, force: true });
       }
