@@ -430,8 +430,17 @@ it('observes real private-host exit before dependent cleanup and ignores diagnos
 
 it.skipIf(process.platform !== 'linux')('rejects a real native crash after dependent cleanup and retains its exit evidence', async () => {
   const root = mkdtempSync(join(tmpdir(), 'private-native-crash-')); dirs.push(root);
-  const child = spawn('bash', ['-c', 'ulimit -c 0; exec "$@"', 'private-native-crash', process.execPath, '-e',
-    "process.on('SIGTERM',()=>process.kill(process.pid,'SIGSEGV'));process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+  // Piped kernel core handlers bypass RLIMIT_CORE. Disable dumping inside
+  // the crashing process so an external collector cannot delay its fatal
+  // exit until the supervisor replaces it with SIGKILL.
+  const child = spawn('python3', ['-c', [
+    'import ctypes, json, os, signal',
+    'libc = ctypes.CDLL(None, use_errno=True)',
+    'if libc.prctl(4, 0, 0, 0, 0) != 0: raise OSError(ctypes.get_errno(), "PR_SET_DUMPABLE")',
+    'signal.signal(signal.SIGTERM, lambda *_: os.abort())',
+    'print(json.dumps({"ready": True, "dumpable": libc.prctl(3, 0, 0, 0, 0)}), flush=True)',
+    'signal.pause()',
+  ].join('\n')],
   { env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
   const closed = once(child, 'close');
   const observations: PrivateHostStopObservation[] = [];
@@ -440,19 +449,20 @@ it.skipIf(process.platform !== 'linux')('rejects a real native crash after depen
   let dependentCleaned = false;
   try {
     const [ready] = await once(child.stdout!, 'data');
-    expect(String(ready)).toBe('ready\n');
+    expect(JSON.parse(String(ready))).toEqual({ ready: true, dumpable: 0 });
     await expect(stopPrivateOperatorHost(child, async () => { dependentCleaned = true; }, 2000,
       observation => observations.push(observation)))
       .rejects.toMatchObject({
-        message: 'Private host crashed during teardown: SIGSEGV',
+        message: 'Private host crashed during teardown: SIGABRT',
         privateHostStop: {
-          phase: 'native process termination', signalCode: 'SIGSEGV',
+          phase: 'native process termination', signalCode: 'SIGABRT',
           exitObserved: true, closeObserved: true,
+          sigkillAccepted: null,
           kernelProcess: { status: 'absent' },
           observations: expect.arrayContaining([
             expect.objectContaining({ phase: 'signal', signal: 'SIGTERM', accepted: true }),
-            expect.objectContaining({ phase: 'exit', signalCode: 'SIGSEGV' }),
-            expect.objectContaining({ phase: 'failed', signalCode: 'SIGSEGV' }),
+            expect.objectContaining({ phase: 'exit', signalCode: 'SIGABRT' }),
+            expect.objectContaining({ phase: 'failed', signalCode: 'SIGABRT' }),
           ]),
         },
       });
