@@ -24,8 +24,15 @@ const stalledTest = 'packages/operator-core/lib/release/checkpoint-qualification
 const healthSource = 'packages/operator-core/lib/release/watchdog-health.ts';
 const observerSource = 'packages/operator-core/lib/release/lost-gate-run-alarm.ts';
 const lifecycleTest = 'packages/operator-core/lib/release/checkpoint-qualification-lifecycle.integration.test.ts';
+const waitingAlarmTest = 'packages/operator-core/lib/release/lost-gate-run-alarm.integration.test.ts';
 
 const runtimeCases = [
+  { title: 'resolves settled waiting-runner alarms in the observed private background runtime',
+    managedTasks: false, selectors: ['waiting qualification alarm recovery \\(real PG\\)'], additionalSources: [
+      'packages/operator-core/lib/alarm-attention.ts',
+      'packages/operator-core/lib/severe-event-broadcast.ts',
+      'packages/operator-core/lib/agent-tools/coordination/condition-state.ts',
+    ], checks: [[waitingAlarmTest, observerSource, 3]] as const },
   { title: 'retains qualification custody and reconciles terminal effects in the observed private background runtime',
     managedTasks: false, selectors, additionalSources: [],
     checks: [[custodyTest, reaperSource, 15], [terminalTest, transactionSource, 5]] as const },
