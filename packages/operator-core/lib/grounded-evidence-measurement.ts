@@ -922,7 +922,9 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     /** Source-reviewed conditional write: all selected values persist only when
      * CommandComplete affects this many rows. Zero certifies a no-op; a partial,
      * missing or invalid count leaves bytes unknown. 'zero-only' never qualifies
-     * positive counts (including unchanged upsert retries). Omit only when the reviewed
+     * positive counts (including unchanged upsert retries). An empty parameter
+     * projection is permitted ONLY with 'zero-only': server-derived values
+     * cannot qualify positive writes from Bind bytes. Omit only when the reviewed
      * writer unconditionally persists every selected value on success. */
     allOrNoneRows?: GroundedPersistedRows;
     /** node-postgres only: source review proves that existing keys leave ALL
@@ -1013,7 +1015,7 @@ export function observeGroundedStoreOperations<T extends object>(input: {
     if (!(input.postgres?.some(p => p.pool === pool) || nodeDrivers.some(p => p.pool === pool))
       || !sourceRef.trim() || !serializerSourceRef.trim()
       || !/^[a-f0-9]{64}$/.test(queryHash) || !['INSERT', 'UPDATE'].includes(command)
-      || !integer(parameterCount) || !persistedParameters.length
+      || !integer(parameterCount) || (!persistedParameters.length && allOrNoneRows !== 'zero-only')
       || new Set(persistedParameters).size !== persistedParameters.length
       || persistedParameters.some(index => !integer(index) || index >= parameterCount)
       || (allOrNoneRows !== undefined && allOrNoneRows !== 'zero-only' && (!integer(allOrNoneRows) || allOrNoneRows === 0)))

@@ -1202,6 +1202,41 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     }
   });
 
+  it('qualifies empty parameter projections only for exact zero-row writes and leaves server-derived positive writes unknown', () => {
+    const statement = 'UPDATE progress SET changed_at = now() WHERE id = $1';
+    const client = { options: {} } as unknown as postgres.Sql;
+    const registration = { pool: 'progress', sourceRef: 'source:server-clock-writer',
+      serializerSourceRef: 'source:original-Bind', command: 'UPDATE' as const,
+      queryHash: createHash('sha256').update(statement).digest('hex'),
+      parameterCount: 1, persistedParameters: [] };
+    for (const control of ['zero', 'positive', 'missing-count', 'wrong-command', 'error',
+      'missing-parameters', 'wrong-arity', 'changed-statement', 'simple'] as const) {
+      const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'recorder:server-clock',
+        attemptId: control, postgres: [{ pool: 'progress', client }],
+        serializedSqlParameters: [{ ...registration, allOrNoneRows: 'zero-only' }] });
+      try {
+        const query = { executed: true, options: { simple: control === 'simple' },
+          statement: { string: control === 'changed-statement' ? 'different' : statement },
+          parameters: control === 'missing-parameters' ? undefined : control === 'wrong-arity' ? [] : ['id'] };
+        const context = tap.run(() => client.options.onquerycontext!(query));
+        client.options.onresult!({ context, queryId: 1, query: statement, command: 'UPDATE',
+          status: control === 'error' ? 'error' : 'ok', rowCount: 999,
+          result: Object.assign([], { command: control === 'wrong-command' ? 'INSERT' : 'UPDATE',
+            count: control === 'positive' ? 1 : control === 'missing-count' ? undefined : 0 }),
+        } as postgres.QueryResultDiagnostic);
+        const census = tap.seal();
+        expect(census.complete).toBe(true);
+        expect(census.rows[0].persistedBytes, control).toBe(control === 'zero' ? 0 : null);
+      } finally { tap.restore(); }
+    }
+    for (const allOrNoneRows of [undefined, 1, 2] as const) {
+      expect(() => observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'bad', attemptId: 'bad',
+        postgres: [{ pool: 'progress', client }], serializedSqlParameters: [{ ...registration, allOrNoneRows }] }))
+        .toThrow('invalid original SQL parameter registration');
+      expect(client.options.onquerycontext).toBeUndefined();
+    }
+  });
+
   it('refuses conditional byte qualification without an exact single terminal or original serialized values', () => {
     const template = ['INSERT INTO conditional_values VALUES (', ') ON CONFLICT DO NOTHING'];
     const statement = template.join('$1'), client = { options: {} } as unknown as postgres.Sql;
