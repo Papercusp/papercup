@@ -23,8 +23,9 @@
 // `<member dir>` package key) is skipped as workspace-member: the enclosing install owns
 // that node_modules, and the member's own lockfile is never installed standalone.
 //
-// No installed dependencies: Node built-ins plus the source-only CLI entry helper,
-// so release shell scripts can run it with the operator down and before npm install.
+// Required package/runtime checks use only Node built-ins and the CLI entry helper.
+// Qualifying dev metadata under directory links additionally reads the selected
+// Node installation's npm graph; an unavailable reader keeps those paths required.
 //
 // Usage:
 //   dependency-lock-tree-audit.mjs --tree-root <dir> --lock-root <dir> --manifest <file>
@@ -36,9 +37,9 @@
 // `LOCK_TREE_DEFECT<TAB><kind><TAB><path><TAB><detail>` lines (at most MAX_DEFECTS).
 // Exit 0 = complete, 3 = defects found, 2 = misuse / unreadable input.
 
-import { lstatSync, readFileSync, readdirSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, posix, resolve } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { isCliEntry } from '../../../../packages/operator-core/lib/util/cli-entry.ts';
 
 export const MAX_DEFECTS = 50;
@@ -102,18 +103,118 @@ function defaultFs() {
   };
 }
 
+// npm's lock contains dev metadata below non-workspace directory links which
+// its reifier does not materialize. Keep the whole lock; qualify only those
+// missing dev entries against the selected npm's complete virtual graph.
+// Diff omission alone is insufficient: independently walk root/workspace dev
+// edges and every production edge, including links Diff does not descend into.
+const PHYSICAL_DEV_METADATA_PROBE = String.raw`
+const fs = require('node:fs');
+const { createRequire } = require('node:module');
+const { isDeepStrictEqual } = require('node:util');
+(async () => {
+  const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const req = createRequire(input.npmCli);
+  const Arborist = req('@npmcli/arborist');
+  const Diff = req('@npmcli/arborist/lib/diff.js');
+  const before = fs.readFileSync(input.lockPath);
+  if (!isDeepStrictEqual(JSON.parse(before), input.lock)) throw new Error('lock input mismatch');
+  const tree = await new Arborist({ path: input.base, offline: true, ignoreScripts: true }).loadVirtual();
+  const diff = Diff.calculate({ actual: new Arborist.Node({ path: input.base }), ideal: tree });
+  const diffPaths = new Set();
+  const diffs = [diff];
+  for (const item of diffs) {
+    if (item.ideal) diffPaths.add(item.ideal.location);
+    for (const node of item.unchanged) diffPaths.add(node.location);
+    diffs.push(...item.children);
+  }
+  const requiredPaths = new Set();
+  const seen = new Set();
+  const nodes = [...tree.inventory.values()].filter(node => node.isProjectRoot || node.isWorkspace);
+  for (const node of nodes) {
+    if (seen.has(node)) continue;
+    seen.add(node);
+    requiredPaths.add(node.location);
+    if (node.isLink) nodes.push(node.target);
+    for (const edge of node.edgesOut.values()) {
+      if (edge.type === 'dev' && !node.isProjectRoot && !node.isWorkspace) continue;
+      if ((!edge.to || !edge.valid) && edge.type !== 'optional' && edge.type !== 'peerOptional')
+        throw new Error('unresolved required edge ' + node.location + ':' + edge.name);
+      if (edge.to) nodes.push(edge.to);
+    }
+  }
+  const localTargets = [];
+  for (const entry of Object.values(input.lock.packages)) {
+    if (entry?.link !== true || typeof entry.resolved !== 'string') continue;
+    const node = tree.inventory.get(entry.resolved);
+    if (node && !node.isWorkspace && !node.isProjectRoot) localTargets.push(entry.resolved);
+  }
+  // An unreadable/incomplete graph never grants an exclusion.
+  for (const key of input.candidates) {
+    if (!tree.inventory.get(key)) throw new Error('virtual inventory missing ' + key);
+  }
+  if (!before.equals(fs.readFileSync(input.lockPath))) throw new Error('lock changed during projection');
+  // Project only after traversing the complete graph. Every candidate is kept;
+  // no page, prefix or output buffer limit decides membership in either set.
+  process.stdout.write(JSON.stringify({ diffPaths: input.candidates.filter(key => diffPaths.has(key)),
+    requiredPaths: input.candidates.filter(key => requiredPaths.has(key)), localTargets }));
+})().catch(error => { console.error(error.message); process.exitCode = 1; });
+`;
+
+/** Narrow a complete npm projection; a missing runtime stays mandatory even
+ * when npm's read-only Diff omits it or its lock flags also label it dev. */
+export function virtualDevMetadataPaths(lock, { diffPaths, requiredPaths, localTargets }) {
+  const diff = new Set(diffPaths), required = new Set(requiredPaths);
+  return Object.entries(lock.packages ?? {}).filter(([key, entry]) =>
+    entry?.dev === true && !diff.has(key) && !required.has(key)
+      && localTargets.some(target => key.startsWith(`${target}/node_modules/`)))
+    .map(([key]) => key);
+}
+
+function missingVirtualDevMetadata({ lock, lockDir, treeRoot, lockRoot, fs }) {
+  const targets = Object.values(lock.packages ?? {}).filter(entry => entry?.link === true
+    && typeof entry.resolved === 'string' && Object.hasOwn(lock.packages, entry.resolved))
+    .map(entry => entry.resolved);
+  const base = lockDir ? join(treeRoot, lockDir) : treeRoot;
+  const candidates = Object.entries(lock.packages ?? {}).filter(([key, entry]) => entry?.dev === true
+    && targets.some(target => key.startsWith(`${target}/node_modules/`))
+    && fs.readJson(join(base, key, 'package.json')) === null).map(([key]) => key);
+  if (!candidates.length) return { paths: [], error: null };
+  const sourceBase = lockDir ? join(lockRoot, lockDir) : lockRoot;
+  try {
+    const npmCli = realpathSync(join(dirname(process.execPath), 'npm'));
+    const shrinkwrap = join(sourceBase, 'npm-shrinkwrap.json');
+    const lockPath = fs.exists(shrinkwrap) ? shrinkwrap : join(sourceBase, 'package-lock.json');
+    const result = spawnSync(process.execPath, ['--eval', PHYSICAL_DEV_METADATA_PROBE], {
+      input: JSON.stringify({ npmCli, base: sourceBase, lockPath, lock, candidates }),
+      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000,
+    });
+    if (result.error || result.status !== 0) throw new Error(result.error?.message || result.stderr || `projection exit ${result.status}`);
+    const projection = JSON.parse(result.stdout);
+    for (const field of ['diffPaths', 'requiredPaths', 'localTargets']) {
+      if (!Array.isArray(projection[field]) || projection[field].some(path => typeof path !== 'string'))
+        throw new Error('invalid npm physical projection');
+    }
+    return { paths: virtualDevMetadataPaths(lock, projection).filter(path => candidates.includes(path)), error: null };
+  } catch (error) {
+    return { paths: [], error: String(error.message) };
+  }
+}
+
 /**
  * Audit one lockfile against the tree. `lockDir` is the lockfile's repo-relative directory
  * ('' for the root). Returns { installed, entries, defects } — installed=false means the
  * tree has no node_modules for this lockfile and nothing was checked.
  */
-export function auditLockfile({ lock, lockDir, treeRoot, fs = defaultFs() }) {
+export function auditLockfile({ lock, lockDir, treeRoot, lockRoot = treeRoot, fs = defaultFs() }) {
   const base = lockDir ? join(treeRoot, lockDir) : treeRoot;
   if (!fs.exists(join(base, 'node_modules')) && (lockDir || !Object.entries(lock?.packages ?? {})
     .some(([key, entry]) => key.startsWith('node_modules/') && entry?.optional !== true))) {
     return { installed: false, entries: 0, defects: [] };
   }
   const defects = [];
+  const virtualDevMetadata = missingVirtualDevMetadata({ lock, lockDir, treeRoot, lockRoot, fs });
+  const metadataPaths = new Set(virtualDevMetadata.paths);
   let entries = 0;
   for (const [key, raw] of Object.entries(lock?.packages ?? {})) {
     if (!key.includes('node_modules/')) continue;
@@ -127,7 +228,7 @@ export function auditLockfile({ lock, lockDir, treeRoot, fs = defaultFs() }) {
     }
     const manifest = fs.readJson(join(path, 'package.json'));
     if (manifest === null) {
-      if (entry.optional === true) continue;
+      if (entry.optional === true || metadataPaths.has(key)) continue;
       defects.push({ kind: 'missing', path: rel, detail: `locked ${entry.version ?? '?'}` });
       continue;
     }
@@ -144,7 +245,7 @@ export function auditLockfile({ lock, lockDir, treeRoot, fs = defaultFs() }) {
       if (detail !== null) defects.push({ kind: 'native-runtime-unusable', path: rel, detail });
     }
   }
-  return { installed: true, entries, defects };
+  return { installed: true, entries, defects, virtualDevMetadata };
 }
 
 function lockDirOf(rel) {
@@ -180,6 +281,7 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees = [], 
     skipped: 0,
     entries: 0,
     defects: [],
+    virtualDevMetadata: [],
     decisions: [],
   };
   const ordered = [...lockfiles].sort(
@@ -202,7 +304,7 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees = [], 
       summary.decisions.push({ rel, status: 'workspace-member', owner, entries: 0, defects: 0 });
       continue;
     }
-    const result = auditLockfile({ lock, lockDir, treeRoot, fs });
+    const result = auditLockfile({ lock, lockDir, treeRoot, lockRoot, fs });
     if (!result.installed) {
       summary.skipped += 1;
       summary.decisions.push({ rel, status: 'not-installed', entries: 0, defects: 0 });
@@ -212,6 +314,7 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees = [], 
     summary.audited += 1;
     summary.entries += result.entries;
     summary.defects.push(...result.defects);
+    summary.virtualDevMetadata.push(...result.virtualDevMetadata.paths.map(key => posix.join(lockDir, key)));
     summary.decisions.push({
       rel,
       status: 'audited',
@@ -277,6 +380,9 @@ function main(argv) {
   for (const d of summary.decisions) {
     const detail = d.status === 'workspace-member' ? `owner=${d.owner}` : `entries=${d.entries} defects=${d.defects}`;
     process.stdout.write(`LOCK_TREE_LOCKFILE\t${d.status}\t${d.rel}\t${detail}\n`);
+  }
+  for (const path of summary.virtualDevMetadata) {
+    process.stdout.write(`LOCK_TREE_METADATA\tdev-only-local-link\t${path}\tretained in input lock; not materialized by npm\n`);
   }
   for (const defect of summary.defects.slice(0, MAX_DEFECTS)) {
     process.stdout.write(`LOCK_TREE_DEFECT\t${defect.kind}\t${defect.path}\t${defect.detail}\n`);

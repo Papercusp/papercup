@@ -4,15 +4,23 @@
 // apps/operator/bin/release/dependency-lock-tree-audit.mjs and regenerate.
 /** Parse `rel<TAB>digest` manifest text into the list of lockfile paths. */
 export function lockfilesFromManifest(text: any): string[];
+/** Narrow a complete npm projection; a missing runtime stays mandatory even
+ * when npm's read-only Diff omits it or its lock flags also label it dev. */
+export function virtualDevMetadataPaths(lock: any, { diffPaths, requiredPaths, localTargets }: {
+    diffPaths: any;
+    requiredPaths: any;
+    localTargets: any;
+}): string[];
 /**
  * Audit one lockfile against the tree. `lockDir` is the lockfile's repo-relative directory
  * ('' for the root). Returns { installed, entries, defects } — installed=false means the
  * tree has no node_modules for this lockfile and nothing was checked.
  */
-export function auditLockfile({ lock, lockDir, treeRoot, fs }: {
+export function auditLockfile({ lock, lockDir, treeRoot, lockRoot, fs }: {
     lock: any;
     lockDir: any;
     treeRoot: any;
+    lockRoot?: any;
     fs?: {
         exists(path: any): boolean;
         readJson(path: any): any;
@@ -20,11 +28,23 @@ export function auditLockfile({ lock, lockDir, treeRoot, fs }: {
 }): {
     installed: boolean;
     entries: number;
+    defects: never[];
+    virtualDevMetadata?: undefined;
+} | {
+    installed: boolean;
+    entries: number;
     defects: {
         kind: string;
         path: string;
         detail: string;
     }[];
+    virtualDevMetadata: {
+        paths: string[];
+        error: null;
+    } | {
+        paths: never[];
+        error: string;
+    };
 };
 /**
  * The enclosing lockfile that declares `lockDir` as one of its workspaces, if any. A
@@ -53,6 +73,7 @@ export function auditTree({ treeRoot, lockRoot, lockfiles, installedTrees, fs }:
     skipped: number;
     entries: number;
     defects: never[];
+    virtualDevMetadata: never[];
     decisions: never[];
 };
 export const MAX_DEFECTS: 50;

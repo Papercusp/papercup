@@ -32,6 +32,7 @@ interface AuditSummary {
 interface AuditModule {
   auditTree(input: { treeRoot: string; lockRoot: string; lockfiles: string[]; installedTrees?: string[] }): AuditSummary;
   lockfilesFromManifest(text: string): string[];
+  virtualDevMetadataPaths(lock: unknown, projection: { diffPaths: string[]; requiredPaths: string[]; localTargets: string[] }): string[];
 }
 let mod: AuditModule;
 beforeAll(async () => {
@@ -80,6 +81,23 @@ function sharpRoot(): string {
 }
 
 describe('auditTree', () => {
+  it('never interprets a Diff omission as permission to omit a required runtime', () => {
+    const target = 'apps/app/kit';
+    const dev = `${target}/node_modules/types`;
+    const runtime = `${target}/node_modules/better-sqlite3`;
+    const pinned = lock({ [dev]: { version: '1.0.0', dev: true },
+      // A stale dev flag must not defeat independent runtime reachability.
+      [runtime]: { version: '12.0.0', dev: true } });
+    const bytes = JSON.stringify(pinned);
+    expect(mod.virtualDevMetadataPaths(pinned, { diffPaths: [],
+      requiredPaths: [runtime], localTargets: [target] })).toEqual([dev]);
+    expect(mod.virtualDevMetadataPaths(pinned, { diffPaths: [dev],
+      requiredPaths: [runtime], localTargets: [target] })).toEqual([]);
+    expect(mod.virtualDevMetadataPaths(pinned, { diffPaths: [],
+      requiredPaths: [runtime], localTargets: [] })).toEqual([]);
+    expect(JSON.stringify(pinned)).toBe(bytes);
+  });
+
   it('rejects a missing root install when the root lock requires packages', () => {
     const root = makeRoot();
     writeJson(join(root, 'package-lock.json'), lock({
