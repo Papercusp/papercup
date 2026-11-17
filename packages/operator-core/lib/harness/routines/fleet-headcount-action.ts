@@ -1551,7 +1551,7 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
         fleetSlug,
         workspaceId,
         leaderOwnerId: fleet.leaderOwnerId,
-        workflowId: ctx.workflowId,
+        workflowId: ctx.workflowId ?? null,
         harness: config.harness,
       });
       if (!admission.allowed) {
@@ -1910,7 +1910,7 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       fleetSlug,
       workspaceId,
       leaderOwnerId: launcherOwnerId,
-      workflowId: ctx.workflowId,
+      workflowId: ctx.workflowId ?? null,
       phase: 'final-admission',
     });
     if (!finalLeader.live) {
