@@ -1,5 +1,8 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { CODEX_MCP_STARTUP_TIMEOUT_SEC } from './mcp-proxy/budgets.mjs';
 import {
   CODEX_STARTUP_UPDATE_CHECK_OVERRIDE,
@@ -31,6 +34,18 @@ const codexUpdateMenu = [
   '\x1b[4;1H  2. Skip',
   '\x1b[5;1H  3. Skip until next version',
 ].join('');
+
+let codexHome: string;
+beforeEach(() => {
+  codexHome = mkdtempSync(join(tmpdir(), 'codex-startup-transport-'));
+  writeFileSync(join(codexHome, 'config.toml'), [
+    '[mcp_servers.papercusp-su]',
+    'url = "http://127.0.0.1:3170/mcp/su"',
+    '[mcp_servers.papercusp]',
+    'url = "http://127.0.0.1:3170/mcp/role"',
+  ].join('\n'));
+});
+afterEach(() => rmSync(codexHome, { recursive: true, force: true }));
 
 describe('managed Codex startup update dialog', () => {
   it('is enabled only for the managed Codex agent', () => {
@@ -90,7 +105,7 @@ describe('managed Codex startup update dialog', () => {
   });
 
   it('prepends the startup update-check override to the managed Codex binary only', () => {
-    const env = { PAPERCUSP_AGENT: 'codex' };
+    const env = { PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome };
     const command = '/opt/node/bin/codex';
     const argv = ['--no-daemon', '--no-alt-screen', 'resume', '01a12344-bee8-73d1-9ff7-8a27ed86b011'];
     expect(CODEX_STARTUP_UPDATE_CHECK_OVERRIDE).toBe('check_for_update_on_startup=false');
@@ -100,7 +115,7 @@ describe('managed Codex startup update dialog', () => {
     for (const bin of ['codex', 'C:\\tools\\codex.exe', '/opt/codex.cmd']) {
       expect(withManagedCodexStartupConfig({ command: bin, args: argv, env })[0]).toBe('-c');
     }
-    // Pure: the caller's argv (what park/recycle mints read) is not mutated.
+    // The caller's argv (what park/recycle mints read) is not mutated.
     expect(argv).toEqual(['--no-daemon', '--no-alt-screen', 'resume', '01a12344-bee8-73d1-9ff7-8a27ed86b011']);
 
     // Another agent, or another program under a Codex env (node -e, a shell, a
@@ -127,7 +142,7 @@ describe('managed Codex startup update dialog', () => {
   });
 
   it.each(['', 'worker'])('covers fresh, resume and carry argv for role=%s with independent overrides', role => {
-    const env = { PAPERCUSP_AGENT: 'codex', PAPERCUSP_ROLE: role };
+    const env = { PAPERCUSP_AGENT: 'codex', PAPERCUSP_ROLE: role, CODEX_HOME: codexHome };
     const server = role ? 'papercusp' : 'papercusp-su';
     const key = `mcp_servers.${server}.startup_timeout_sec`;
     for (const args of [[], ['resume', 'native-id'], ['--', 'carry prompt']]) {
@@ -142,6 +157,44 @@ describe('managed Codex startup update dialog', () => {
     }
     expect(withManagedCodexStartupConfig({ command: 'codex', args: ['--', '-c', `${key}=1`], env }))
       .toContain(`${key}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`);
+  });
+
+  it.each(['', 'worker'])('never invents an MCP transport in an incomplete home for role=%s', role => {
+    const args = ['resume', 'native-id'];
+    const env = { PAPERCUSP_AGENT: 'codex', PAPERCUSP_ROLE: role, CODEX_HOME: codexHome };
+    for (const config of ['', 'model = "fixture-model"\n', '[mcp_servers.other]\ncommand = "fixture-mcp"\n']) {
+      writeFileSync(join(codexHome, 'config.toml'), config);
+      expect(withManagedCodexStartupConfig({ command: 'codex', args, env }))
+        .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...args]);
+    }
+    unlinkSync(join(codexHome, 'config.toml'));
+    expect(withManagedCodexStartupConfig({ command: 'codex', args, env }))
+      .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...args]);
+    expect(withManagedCodexStartupConfig({ command: 'codex', args, env: { PAPERCUSP_AGENT: 'codex' } }))
+      .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...args]);
+  });
+
+  it.each(['url = "http://127.0.0.1:3170/mcp"', 'command = "fixture-mcp"'])
+    ('preserves a configured transport while setting its startup budget: %s', transport => {
+      writeFileSync(join(codexHome, 'config.toml'), `[mcp_servers.papercusp-su]\n${transport}\n`);
+      expect(withManagedCodexStartupConfig({ command: 'codex', args: [],
+        env: { PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome } }))
+        .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE,
+          '-c', `mcp_servers.papercusp-su.startup_timeout_sec=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`]);
+    });
+
+  it('preserves explicit argv transports without synthesizing a config-file server', () => {
+    writeFileSync(join(codexHome, 'config.toml'), '');
+    const args = ['-c', 'mcp_servers.papercusp-su.url="http://127.0.0.1:3170/mcp"', 'resume', 'native-id'];
+    expect(withManagedCodexStartupConfig({ command: 'codex', args,
+      env: { PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome } }))
+      .toEqual(['-c', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE, ...args]);
+  });
+
+  it('keeps malformed configuration visible instead of treating it as an absent server', () => {
+    writeFileSync(join(codexHome, 'config.toml'), '[mcp_servers.papercusp-su\n');
+    expect(() => withManagedCodexStartupConfig({ command: 'codex', args: [],
+      env: { PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome } })).toThrow();
   });
 
   it('ignores ordinary startup prose and menus missing any exact choice', () => {

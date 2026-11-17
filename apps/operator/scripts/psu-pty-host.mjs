@@ -8327,8 +8327,24 @@ export function withManagedCodexStartupConfig({ command, args, env = process.env
   const startupKey = `mcp_servers.${server}.startup_timeout_sec`;
   const defaults = new Map([
     ['check_for_update_on_startup', CODEX_STARTUP_UPDATE_CHECK_OVERRIDE],
-    [startupKey, `${startupKey}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`],
   ]);
+  // A dotted override creates the table when it is absent. A timeout-only
+  // MCP entry has neither HTTP nor stdio transport, so Codex rejects it before
+  // initialization. Home repair owns missing servers; this optional startup
+  // setting must only extend a transport that is already configured.
+  let configText = '';
+  if (env.CODEX_HOME) {
+    try {
+      configText = readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  const config = require('@iarna/toml').parse(configText);
+  const transport = config.mcp_servers?.[server];
+  if ([transport?.url, transport?.command].some(value => typeof value === 'string' && value.trim())) {
+    defaults.set(startupKey, `${startupKey}=${CODEX_MCP_STARTUP_TIMEOUT_SEC}`);
+  }
   for (let i = 0; i < list.length; i++) {
     if (list[i] === '--') break;
     const arg = String(list[i] ?? '');
