@@ -1282,9 +1282,12 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
     }
   }
 
-  // A timer alone is not new work. Save the skip and restore the finite loop
-  // schedule before returning; an unknown read or failed re-arm delivers normally.
-  const delta = await (deps.readWakeDelta ?? defaultReadWakeDelta)({
+  // An admitted monitor's work is measuring fresh external state on its cadence;
+  // that state need not produce local mail or item changes before it is measured.
+  // Ordinary work loops still skip empty timer wakes. An unknown read or failed
+  // re-arm delivers normally.
+  const isMonitorLoop = input.payloadTemplate?.mode === 'monitor';
+  const delta = isMonitorLoop ? null : await (deps.readWakeDelta ?? defaultReadWakeDelta)({
     ownerId: input.targetOwnerId, workspaceId: input.workspaceId, sql: input.sql,
   }).catch(() => null);
   if (wakeHasNoDelta(delta)) {
@@ -1313,7 +1316,6 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // loop's persisted mode is the structural signal; do not infer it from goal prose.
   const listBlockingAwaits = deps.listBlockingAwaits ?? defaultListBlockingAwaits;
   const blockingAwaits = await listBlockingAwaits(input.targetOwnerId).catch(() => []);
-  const isMonitorLoop = input.payloadTemplate?.mode === 'monitor';
   if (!isMonitorLoop && blockingAwaits.length > 0) {
     const readLastDeliveredAt = deps.readLastDeliveredAt ?? defaultReadLoopLastDeliveredAtMs;
     const lastDeliveredAtMs = await readLastDeliveredAt(input.sql ?? undefined, input.routineId).catch(() => null);

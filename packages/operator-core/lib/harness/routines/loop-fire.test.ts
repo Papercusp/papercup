@@ -974,8 +974,33 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(summary).not.toContain('GOAL-HOLDER STATE');
     });
 
-    it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {
+    it('an ordinary work loop still skips a wake with no local delta', async () => {
       const deps = mkDeps({
+        readWakeDelta: vi.fn(async () => ({
+          directedMail: false,
+          eventPayload: false,
+          ownerDirective: false,
+          heldItemChange: false,
+          dueObligation: false,
+        })),
+      });
+
+      const res = await fireLoopWake({ ...baseInput, intervalSec: 3600 }, deps);
+
+      expect(res).toMatchObject({ fired: false, reason: 'no-delta' });
+      expect(deps.wake).not.toHaveBeenCalled();
+      expect(deps.rescheduleSuppressedWake).toHaveBeenCalledTimes(1);
+    });
+
+    it('a monitor loop keeps its heartbeat with no local delta and an active blocking await', async () => {
+      const deps = mkDeps({
+        readWakeDelta: vi.fn(async () => ({
+          directedMail: false,
+          eventPayload: false,
+          ownerDirective: false,
+          heldItemChange: false,
+          dueObligation: false,
+        })),
         listBlockingAwaits: vi.fn(async () => [
           {
             eventKey: 'green-checkpoint:inconclusive:papercusp',
@@ -991,6 +1016,7 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
 
       expect(res).toMatchObject({ fired: true, woken: 1 });
       expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(deps.rescheduleSuppressedWake).not.toHaveBeenCalled();
     });
 
     it('a blocking-await READ FAILURE fails OPEN — the loop still fires (fail-soft, never wedges a loop)', async () => {
