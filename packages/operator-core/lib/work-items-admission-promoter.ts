@@ -4586,7 +4586,12 @@ function admissionReviewCustodyEligible(snapshot: AdmissionMergeSnapshot): boole
     if (active.length !== blockers.length || active.some(blocker => !exactBlocker(blocker))) return false;
   }
   if (blockers.some(blocker => !exactBlocker(blocker))) return false;
-  if (String(payload._claimHold) !== 'true') return snapshot.state !== 'blocked';
+  if (String(payload._claimHold) !== 'true') {
+    // Only the exact self-predicate establishes this review-only exception.
+    // Status and the unsatisfied event remain execution barriers.
+    return snapshot.state !== 'blocked' ||
+      blockers.length === 1 && isAdmissionReviewPredicateBlocker(snapshot, blockers[0]);
+  }
   if (snapshot.assignee || blockers.length !== 1 || !exactBlocker(blockers[0]!)) return false;
   // The creator, authenticated parker and release owner are distinct roles.
   // Do not widen the older read-only comparison exception to admit these parks.

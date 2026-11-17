@@ -684,6 +684,12 @@ describe('admission endpoint protection — terminal twins', () => {
       expect(admissionReviewSubjectEligible(reviewSubject({ admissionReviewPredicates: [descriptor, descriptor] }))).toBe(false);
     });
 
+    it.each([0, 1, 2])('permits blocked review only with exactly one self-predicate (%i)', count => {
+      expect(admissionReviewSubjectEligible(reviewSubject({ payload: {
+        externalBlockers: Array.from({ length: count }, () => eventBlocker),
+      } }))).toBe(count === 1);
+    });
+
     it.each([
       { id: '00000000-0000-4000-8000-000000000002' }, { workspace_id: 'foreign' },
       { owner_id: 'su-peer' }, { role: 'worker' }, { harness_slug: 'foreign' },
@@ -708,6 +714,8 @@ describe('admission endpoint protection — terminal twins', () => {
     ])('preserves the independent blocker %j', other => {
       const subject = reviewSubject();
       subject.payload = { ...(subject.payload as object), externalBlockers: [eventBlocker, other] };
+      expect(admissionReviewSubjectEligible(subject)).toBe(false);
+      subject.payload = { ...(subject.payload as object), externalBlockers: [other, eventBlocker] };
       expect(admissionReviewSubjectEligible(subject)).toBe(false);
     });
 

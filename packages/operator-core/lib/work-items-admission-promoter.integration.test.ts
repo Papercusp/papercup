@@ -5210,10 +5210,16 @@ describe('degraded-row dedup re-screen in the fail-open runner (WI-6554700010018
       await seedItem({ id, createdAtMs: OLD - index * 1_000, vector: null, payload: { dedupCoverage: ORIGINAL } });
       failures[id] = {
         ...stillDown,
-        diagnostics: { lexical: {
-          outcome: 'unavailable', reason: 'error', phase: 'candidate-search', elapsedMs: 17 + index,
-          error: { name: 'Error', message: `query failure for ${id}`, code: 'CONNECTION_CLOSED' },
-        } },
+        diagnostics: {
+          lexical: {
+            outcome: 'unavailable', reason: 'error', phase: 'candidate-search', elapsedMs: 17 + index,
+            error: { name: 'Error', message: `query failure for ${id}`, code: 'CONNECTION_CLOSED' },
+          },
+          semantic: {
+            outcome: 'unavailable', reason: 'budget-expired', phase: 'query-candidates',
+            elapsedMs: 2500 + index, phaseElapsedMs: 100 + index,
+          },
+        },
       };
     }
     const failed = await failOpenAt(NOW, screenWith(failures), 'fail-open-diagnostic-failure');
@@ -5755,13 +5761,13 @@ describe('reviewed admission merge under the shipping dependency lifecycle guard
 
   it('previews without writes and coalesces duplicate edges while retaining the stronger requirement', async () => {
     const proposals = await seedReviewedPlanTwinPair();
-    await seedItem({ id: 'WI-dependant', state: 'done', admission: 'admitted', payload: {} });
+    await seedItem({ id: 'WI-dependant', status: 'done', admission: 'admitted', payload: {} });
     await db.sql`INSERT INTO harness_shared.work_item_deps
       (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
       VALUES (${DEFAULT_COORD_WORKSPACE}, 'issue', 'WI-dependant', 'issue', 'WI-twin', 'blocks', 'success', 'twin-writer'),
              (${DEFAULT_COORD_WORKSPACE}, 'issue', 'WI-dependant', 'issue', 'WI-canonical', 'blocks', 'settled', 'canonical-writer')`;
     const before = await db.sql`SELECT id, blocked_ref, blocker_ref, satisfaction FROM harness_shared.work_item_deps ORDER BY id`;
-    const preview = await db.sql.begin('READ ONLY', async (tx) => previewReviewedAdmissionCleanup(tx as typeof db.sql, {
+    const preview = await db.sql.begin('READ ONLY', async (tx) => previewReviewedAdmissionCleanup(tx as unknown as typeof db.sql, {
       workspaceId: WS, harnessSlug: HARNESS, proposals,
     }));
     expect(preview.entries).toMatchObject([{ itemId: 'WI-twin', outcome: 'eligible', reasons: [] }]);
