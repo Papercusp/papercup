@@ -52,17 +52,24 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
 } {
   const e = i.host.execution;
   const generation = e ? `${i.host.pid}:${e.childGeneration}:${e.childPid}` : null;
-  const prior = i.prior;
-  const state: ExecutionRecoveryState = {
-    status: 'unknown', reason: 'native-observation-unavailable',
-    attempts: prior?.attempts ?? 0, probes: prior?.probes ?? 0,
-    nextProbeAt: i.nowMs + PROBE_INTERVAL_MS, observedAt: i.nowMs,
-    generation, lastAttemptAt: prior?.lastAttemptAt ?? null,
-  };
   const eMatchesCurrentHost = !!e && e.ownerId === i.ownerId && e.hostPid === i.host.pid
     && e.childPid === i.host.ptyPid && Number.isInteger(e.childGeneration) && Number(e.childGeneration) > 0
     && Number.isFinite(e.receivedAtMs) && Number(e.receivedAtMs) >= i.host.startedAt
+    && Number(e.receivedAtMs) <= i.nowMs
     && e.observedAt <= i.nowMs && i.nowMs - e.observedAt <= OBSERVATION_MAX_AGE_MS;
+  // A newly accepted post-fire submission has not spent its predecessor's
+  // observation budget. Otherwise the terminal guard can pause a live host
+  // between accepting its prompt and observing native startup. Acceptance is
+  // not execution proof: retain the bounded probes and the native retry count.
+  // observedAt fences this reset across repeated reads and process restarts.
+  const prior = eMatchesCurrentHost && i.prior && Number(e.receivedAtMs) > i.firedAt
+    && Number(e.receivedAtMs) > i.prior.observedAt ? null : i.prior;
+  const state: ExecutionRecoveryState = {
+    status: 'unknown', reason: 'native-observation-unavailable',
+    attempts: i.prior?.attempts ?? 0, probes: prior?.probes ?? 0,
+    nextProbeAt: i.nowMs + PROBE_INTERVAL_MS, observedAt: i.nowMs,
+    generation, lastAttemptAt: i.prior?.lastAttemptAt ?? null,
+  };
   // `firedAt` is the millisecond projection of a microsecond timestamptz. Equality is
   // ambiguous and may precede the actual fire by <1ms, so only a strictly later native
   // turn start can clear this fire's failure streak.
@@ -113,12 +120,17 @@ export function decideLoopExecutionRecovery(i: ExecutionRecoveryInput): {
       attempts: state.attempts + 1, probes: 0, lastAttemptAt: i.nowMs,
       nextProbeAt: Math.max(providerRetryAt, i.nowMs + Math.min(300_000, PROBE_INTERVAL_MS * 2 ** state.attempts)) } };
   }
-  // WI-6554700010012442: inside a spent block's backoff the answer is still 'block' (hand off).
-  // Returning 'observe' here held the loop for every 5-minute window between re-blocks.
-  if (prior && i.nowMs < prior.nextProbeAt) return { action: isSpentBlock(prior) ? 'block' : 'observe', state: prior };
-  state.probes++;
   state.reason = !fresh ? 'native-observation-unavailable' : !inferenceFresh || i.inference.active == null
     ? 'inference-observation-unavailable' : 'native-start-unverified';
+  // A spent budget still hands off during backoff, but the old reason cannot
+  // certify current execution when its host or inference observation is unknown.
+  // The terminal guard must see that uncertainty, without renewing the budget.
+  if (prior && i.nowMs < prior.nextProbeAt) return {
+    action: isSpentBlock(prior) ? 'block' : 'observe',
+    state: state.reason === 'native-start-unverified' ? prior
+      : { ...prior, reason: state.reason, observedAt: i.nowMs, generation },
+  };
+  state.probes++;
   if (state.probes >= MAX_UNKNOWN_PROBES) {
     state.status = 'blocked';
     state.nextProbeAt = i.nowMs + 300_000;

@@ -188,14 +188,33 @@ describe('expected loop execution recovery', () => {
 
   it('does not replenish an exhausted retry budget when another submission fails', () => {
     const i = fixture();
-    i.host.execution!.receivedAtMs = nowMs - 6_000;
+    i.host.execution!.receivedAtMs = nowMs - 40_000;
     i.host.execution!.lastProgressAt = nowMs - 35_000;
     i.prior = { status: 'blocked', reason: 'native-start-retry-exhausted', probes: 16, attempts: 5,
-      nextProbeAt: nowMs + 300_000, observedAt: nowMs - 40_000,
+      nextProbeAt: nowMs + 300_000, observedAt: nowMs - 50_000,
       generation: '1:1:2', lastAttemptAt: nowMs - 80_000 };
     expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block',
       state: { reason: 'native-start-retry-exhausted', attempts: 5 } });
   });
+
+  it.each(['stale-host', 'wrong-child', 'stale-inference', 'unknown-inference'])(
+    'keeps current uncertainty visible during an exhausted backoff: %s', condition => {
+      const i = fixture();
+      i.host.execution!.phase = 'unknown';
+      i.prior = { status: 'blocked', reason: 'native-start-unverified', probes: 16, attempts: 1,
+        nextProbeAt: nowMs + 300_000, observedAt: nowMs - 10_000,
+        generation: '1:1:2', lastAttemptAt: nowMs - 80_000 };
+      if (condition === 'stale-host') i.host.execution!.observedAt = nowMs - 15_001;
+      if (condition === 'wrong-child') i.host.execution!.childPid = 99;
+      if (condition === 'stale-inference') i.inference.observedAt = nowMs - 15_001;
+      if (condition === 'unknown-inference') i.inference.active = null;
+      expect(decideLoopExecutionRecovery(i)).toMatchObject({ action: 'block', state: {
+        status: 'blocked', probes: 16, attempts: 1, nextProbeAt: nowMs + 300_000,
+        reason: condition.endsWith('host') || condition === 'wrong-child'
+          ? 'native-observation-unavailable' : 'inference-observation-unavailable',
+      } });
+    },
+  );
 
   it('does not retry forever after repeated starts fail', () => {
     const i = fixture();

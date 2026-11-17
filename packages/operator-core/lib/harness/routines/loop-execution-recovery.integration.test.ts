@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { startDedicatedNativePg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
@@ -23,6 +23,10 @@ afterAll(async () => {
     else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = savedAdmin;
   }
 });
+// All fixture receipts and the injected recovery clock use nowMs. The terminal
+// guard samples Date.now itself; database setup duration must not expire those
+// same receipts before the first assertion. Staleness is varied explicitly.
+beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(nowMs); });
 afterEach(() => vi.restoreAllMocks());
 
 async function routine(id: string, active = true, parked = true) {
@@ -59,19 +63,25 @@ describe('durable recovery against isolated Postgres', () => {
       WHERE id = ${f.input.routineId}`;
     Object.assign(f.host.execution!, { phase: 'unknown', turnStartedAt: null,
       lastProgressAt: null, receivedAtMs: nowMs - 6_000 });
+    expect(Date.now() - f.host.execution!.observedAt).toBe(0);
     const autoPause = vi.fn(async () => {});
     const resetFireErrors = vi.fn(async () => 1);
     const guardInput = { sql, routineId: f.input.routineId, targetOwnerId: f.input.ownerId,
       parkedForMs: 24 * 3600_000, intervalMs: 60_000,
       stuckFireCount: comatoseStuckFiresForTermination(60_000), circuitOpen: true };
     const guardDeps = {
-      probeReachability: async () => ({ reachable: true, channel: 'psu-socket', durableWhileAlive: true,
+      probeReachability: async () => ({ reachable: true, channel: 'psu-socket' as const, durableWhileAlive: true,
         summary: 'live fixture host', awaitRepairable: false, wouldBeChannel: null }),
       recoverCurrentExecution: (input: Parameters<typeof recoverExpectedLoopExecution>[0]) =>
         recoverExpectedLoopExecution(input, { ...f.deps, resetFireErrors }),
       autoPause,
     };
     const before = await state(f.input.routineId);
+    // Expired evidence cannot inherit a terminal verdict from the old budget.
+    f.host.execution!.observedAt = nowMs - 15_001;
+    expect(await checkUnreachableTerminalGuard(guardInput, guardDeps))
+      .toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
+    f.host.execution!.observedAt = nowMs;
     expect(await checkUnreachableTerminalGuard(guardInput, guardDeps))
       .toMatchObject({ breach: false, reason: 'current-execution-recovery-unavailable' });
     expect(await state(f.input.routineId)).toEqual(before);
