@@ -283,6 +283,42 @@ function report(files: Array<Partial<{
   return JSON.stringify({ testResults: files });
 }
 
+describe('legacy Vitest runtime-layer ingestion', () => {
+  const scope = { runGroupId: 'run-original', workspaceId: 'workspace', harnessSlug: 'harness' };
+  function legacyReport(layer: unknown = 'integration') {
+    return { testResults: [{ name: '/repo/ordinary.test.ts', status: 'passed',
+      assertionResults: [{ status: 'passed', fullName: 'real assertion' }] }],
+    papercuspRuntime: { schemaVersion: 1, root: '/repo', ...scope,
+      files: [{ filePath: '/repo/ordinary.test.ts', projectRoot: '/repo', testLayer: layer }] } };
+  }
+  it.each(['unit', 'integration', 'e2e', 'llm', 'browser'])('records measured %s independently of filenames', layer => {
+    const [row] = parseVitestJsonForHarnessRows(JSON.stringify(legacyReport(layer)), ROOT, {}, scope);
+    expect(row?.execution).toMatchObject({ passed: 1, testLayer: layer });
+  });
+  it.each([undefined, null, '', 'database'])('leaves absent or invalid layer %s unknown', layer => {
+    const json = legacyReport(); json.papercuspRuntime.files[0]!.testLayer = layer;
+    const [row] = parseVitestJsonForHarnessRows(JSON.stringify(json), ROOT, {}, scope);
+    expect(row?.execution?.passed).toBe(1); expect(row?.execution).not.toHaveProperty('testLayer');
+  });
+  it.each(['runGroupId', 'workspaceId', 'harnessSlug', 'root'] as const)('rejects mismatched %s metadata', key => {
+    const json = legacyReport(); json.papercuspRuntime[key] = key === 'root' ? '/another-repo' : 'another';
+    expect(parseVitestJsonForHarnessRows(JSON.stringify(json), ROOT, {}, scope)[0]?.execution).not.toHaveProperty('testLayer');
+  });
+  it('requires parent scope and ignores an unverified layer on an ordinary JSON result', () => {
+    const json = { ...legacyReport(), testLayer: 'integration' };
+    expect(parseVitestJsonForHarnessRows(JSON.stringify(json), ROOT, {})[0]?.execution).not.toHaveProperty('testLayer');
+    delete (json as Partial<typeof json>).papercuspRuntime;
+    expect(parseVitestJsonForHarnessRows(JSON.stringify(json), ROOT, {}, scope)[0]?.execution).not.toHaveProperty('testLayer');
+  });
+  it('rejects conflicting projects and files outside the observed project', () => {
+    const json = legacyReport();
+    json.papercuspRuntime.files.push({ ...json.papercuspRuntime.files[0]!, testLayer: 'unit' });
+    expect(parseVitestJsonForHarnessRows(JSON.stringify(json), ROOT, {}, scope)[0]?.execution).not.toHaveProperty('testLayer');
+    json.papercuspRuntime.files = [{ ...json.papercuspRuntime.files[0]!, projectRoot: '/repo/other' }];
+    expect(parseVitestJsonForHarnessRows(JSON.stringify(json), ROOT, {}, scope)[0]?.execution).not.toHaveProperty('testLayer');
+  });
+});
+
 describe('distillVitestRun', () => {
   it('preserves report structure while redacting escaped diagnostic JSON and private-key text', () => {
     const credential = 'synthetic-child-credential-escaped-json';

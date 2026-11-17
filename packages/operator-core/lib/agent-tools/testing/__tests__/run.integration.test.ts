@@ -62,6 +62,7 @@ import runTool, {
   runWithTestProcessDeadline,
   waitForTestProcessClose,
   resolveAdminTestRunsReporterPath,
+  resolveVitestJsonReporterPath,
   resolveRegisteredTestFileRoot,
   selectTestFileRoot,
   shouldResolveHarnessTestRunIds,
@@ -1391,6 +1392,17 @@ describe('shouldIngestVitestLedgerInProcess', () => {
     await mkdir(packageRoot, { recursive: true });
     await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name: 'vitest', version }));
   }
+
+  it.each(['1.6.1', '2.1.9', '3.2.4'])('retains child JSON serialization and runtime metadata for Vitest %s', async version => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-legacy-json-');
+    await installVitestVersion(root, version);
+    const reporter = resolveVitestJsonReporterPath(root);
+    expect(reporter).toMatch(/legacy-vitest-json-reporter\.ts$/);
+    expect((await buildDetachedTestRunRequest({ root, files: ['packages/x/real.test.ts'] })).args)
+      .toContain(`--reporter=${reporter}`);
+    expect((await buildDetachedMixedTestRunRequest({ groups: [{ root, files: ['packages/x/real.test.ts'] }] })).args.join(' '))
+      .toContain(`--reporter=${reporter}`);
+  });
 
   it('resolves the reporter through the selected checkout package export', async () => {
     const externalRoot = await makeScratchTestCheckout('papercusp-testing-run-package-reporter-');

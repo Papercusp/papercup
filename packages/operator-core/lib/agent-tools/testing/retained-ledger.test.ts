@@ -13,7 +13,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-async function fixture(options: { childState?: 'closed' | 'pending'; passed?: number } = {}) {
+async function fixture(options: { childState?: 'closed' | 'pending'; passed?: number; runtimeLayer?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'retained-vitest-ledger-')); roots.push(root);
   vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(root, 'retained'));
   const source = join(root, 'source'); mkdirSync(source);
@@ -27,7 +27,10 @@ async function fixture(options: { childState?: 'closed' | 'pending'; passed?: nu
     workItem: input.workItemId, testNamePattern: null });
   packet.write('router.json', { code: 0, childState: 'closed', signal: null, timedOut: false, aborted: false });
   packet.write('configuration.json', captureConfigurationSnapshot({ NODE_ENV: 'test' }));
-  const report = { success: true, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
+  const report = { ...(options.runtimeLayer ? { papercuspRuntime: { schemaVersion: 1, root: source,
+    runGroupId: runId, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+    files: [{ filePath: join(source, 'subject.test.ts'), projectRoot: source, testLayer: options.runtimeLayer }] } } : {}),
+    success: true, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
     numTodoTests: 0, numTotalTests: 1, startTime: Date.now() - 100, testResults: [{ name: join(source, 'subject.test.ts'),
     status: 'passed', startTime: Date.now() - 50, endTime: Date.now(),
     assertionResults: [{ status: 'passed', fullName: 'original assertion', title: 'original assertion' }] }] };
@@ -39,6 +42,14 @@ async function fixture(options: { childState?: 'closed' | 'pending'; passed?: nu
 }
 
 describe('retained Vitest ledger recovery', () => {
+  it('recovers the child-measured layer from sealed JSON independently of the current environment', async () => {
+    const { input } = await fixture({ runtimeLayer: 'integration' });
+    vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'another-run');
+    const persist = vi.fn().mockResolvedValue([{ id: 124 }]);
+    await recoverRetainedVitestLedger(input, persist);
+    expect(persist.mock.calls[0]![0].rows[0].execution).toMatchObject({ passed: 1, testLayer: 'integration' });
+    expect(persist.mock.calls[0]![0].rows[0].execution).not.toHaveProperty('passedCaseTitles');
+  });
   it('uses verified copies and original scope, counts, start, config and dirty provenance without executing tests', async () => {
     const { input, packet, source } = await fixture();
     writeFileSync(join(packet.paths.reports, 'report.json'), '{"tampered":true}');

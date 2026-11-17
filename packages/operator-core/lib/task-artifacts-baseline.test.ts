@@ -624,6 +624,31 @@ describe('separately qualified baseline dependency repair custody', () => {
     });
   }, 60_000);
 
+  it.each(['package-lock.json', 'npm-shrinkwrap.json'])
+    ('audits an independent installed graph against its own %s', async lockfile => {
+      await installedFixture(async root => {
+        const graph = 'tools/independent', dependency = graph + '/node_modules/standalone';
+        mkdirSync(join(root, dependency), { recursive: true });
+        writeFileSync(join(root, graph, 'package.json'), '{"name":"independent","version":"1.0.0"}');
+        writeFileSync(join(root, graph, lockfile), JSON.stringify({ lockfileVersion: 3, packages: {
+          '': { name: 'independent', version: '1.0.0' },
+          'node_modules/standalone': { version: '2.0.0' },
+        } }));
+        writeFileSync(join(root, dependency, 'package.json'), '{"name":"standalone","version":"2.0.0"}');
+
+        const original = await captureBaselineInstalledTree(root);
+        expect(original.trees).toEqual(['node_modules', graph + '/node_modules']);
+        expect(original.audit).toMatchObject({ lockfiles: 2, audited: 2, defects: [] });
+        expect(original.entries).toContainEqual(expect.objectContaining({ path: dependency + '/package.json' }));
+
+        writeFileSync(join(root, dependency, 'package.json'), '{"name":"standalone","version":"3.0.0"}');
+        await expect(captureBaselineInstalledTree(root)).rejects.toThrow('baseline_installed_lock_audit');
+        writeFileSync(join(root, dependency, 'package.json'), '{"name":"standalone","version":"2.0.0"}');
+        rmSync(join(root, graph, lockfile));
+        await expect(captureBaselineInstalledTree(root)).rejects.toThrow('baseline_installed_lock_audit');
+      });
+    }, 60_000);
+
   it.each([255, 256, 257, 1025])('keeps every installed file across a %i-entry census and repeated reads', async count => {
     await installedFixture(async root => {
       // Reverse creation order must not change the complete, sorted receipt.

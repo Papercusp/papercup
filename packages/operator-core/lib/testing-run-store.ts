@@ -4160,7 +4160,7 @@ export async function reconcileHarnessTestRunRows(params: PersistHarnessTestRuns
         || details.workspaceId !== params.workspaceId || details.harnessSlug !== params.harnessSlug
         || details.passed !== expected.execution.passed || details.failed !== expected.execution.failed
         || details.skipped !== expected.execution.skipped || details.collectionFailed !== expected.execution.collectionFailed
-        || details.testLayer !== expected.execution.testLayer)
+        || (expected.execution.testLayer !== undefined && details.testLayer !== expected.execution.testLayer))
         throw new Error('retained_report_existing_result_mismatch');
     }
     return rows;
@@ -4204,7 +4204,7 @@ async function persistDetachedReportRows(
         || details.runGroupId !== params.runGroupId || details.testNamePattern !== (params.testNamePattern ?? null)
         || details.passed !== row.execution.passed || details.failed !== row.execution.failed
         || details.skipped !== row.execution.skipped || details.collectionFailed !== row.execution.collectionFailed
-        || details.testLayer !== row.execution.testLayer) {
+        || (row.execution.testLayer !== undefined && details.testLayer !== row.execution.testLayer)) {
         throw new Error('detached_report_case_parent_mismatch');
       }
       parents.push({ testRunId: String(id), cases: row.cases! });
