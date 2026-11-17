@@ -2072,6 +2072,41 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(output).toContain('copy-complete');
   });
 
+  it.each(['work-io', 'reused-tree', 'copied-tree'])('accepts advancing native-generation %s progress beyond the initial deadline', async kind => {
+    const output = await runVerifierDependencyCommand(process.execPath, ['-e', [
+      'let completed = 0;',
+      'const kind = ' + JSON.stringify(kind) + ';',
+      'const timer = setInterval(() => {',
+      '  const step = ++completed;',
+      "  const path = 'packages/fixture-' + step + '/node_modules';",
+      "  console.log(kind === 'work-io'",
+      "    ? '[dependency-generation] work progress: fixture/checksums io=' + step + 'MiB elapsed=1s'",
+      "    : kind === 'reused-tree'",
+      "      ? '[dependency-generation] reused dependency tree from v1-fixture: ' + path + ' mode=copy'",
+      "      : '[dependency-generation] copied changed dependency tree: ' + path);",
+      "  if (step === 12) { clearInterval(timer); console.log('generation-complete'); }",
+      '}, 150);',
+    ].join('\n')], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 });
+    expect(output).toContain('generation-complete');
+  });
+
+  it.each(['work-io', 'tree-forms'])('rejects unchanged native-generation %s progress', async kind => {
+    await expect(runVerifierDependencyCommand(process.execPath, ['-e', [
+      'let tick = 0;',
+      'const kind = ' + JSON.stringify(kind) + ';',
+      'setInterval(() => {',
+      '  tick++;',
+      "  console.log(kind === 'work-io'",
+      "    ? '[dependency-generation] work progress: fixture/checksums io=1MiB elapsed=' + tick + 's'",
+      '    : tick % 2',
+      "      ? '[dependency-generation] reused dependency tree from v1-fixture: packages/fixture/node_modules mode=copy'",
+      "      : '[dependency-generation] copied changed dependency tree: packages/fixture/node_modules');",
+      '}, 100);',
+    ].join('\n')], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
+  });
+
   it.each([false, true])('distinguishes copy-lock progress across acquisition retries (scoped counter=%s)', async scoped => {
     const run = runVerifierDependencyCommand(process.execPath, ['-e', `
       let tick = 0;

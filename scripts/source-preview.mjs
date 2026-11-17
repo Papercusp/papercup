@@ -1012,12 +1012,21 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
     const lines = pending.split('\n');
     pending = lines.pop().slice(-4096);
     for (const line of lines) {
-      const counter = /((?:checksum read|copy) progress:.*?) (?:written|read)=(\d+)MiB/.exec(line)
+      const counter = /((?:checksum read|copy|work) progress:.*?) (?:written|read|io)=(\d+)MiB/.exec(line)
         ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line)
         ?? /^(verifier census progress: scan=\d+:\d+) checked=(\d+)(?: |$)/.exec(line)
         ?? /^(snapshot progress:) completed=(\d+)(?: |$)/.exec(line);
       if (counter && Number(counter[2]) > (counters.get(counter[1]) ?? 0)) {
         counters.set(counter[1], Number(counter[2]));
+        watchdog.noteProgress();
+      }
+      // Native generations also finish small/reused trees without byte ticks.
+      // Count a tree only once across both native completion formats.
+      const completed = /^\[dependency-generation\] (?:reused dependency tree from [^:]+: (.+?) mode=[a-z-]+|copied changed dependency tree: (.+))$/.exec(line);
+      const tree = completed?.[1] ?? completed?.[2];
+      const key = tree ? 'generation-tree: ' + tree : null;
+      if (key && !counters.has(key)) {
+        counters.set(key, 1);
         watchdog.noteProgress();
       }
     }
