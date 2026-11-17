@@ -774,12 +774,23 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
   const nativeProof = '../lib/external-bench/current-su-native.integration.test.ts';
-  const preparationProofs = [routingProof, nativeProof, 'grading-audit-runtime-fixture.ts'];
+  const livenessProof = '../lib/system-health/liveness-alarm-current-build.e2e.test.ts';
+  const preparationProofs = [routingProof, nativeProof, livenessProof, 'grading-audit-runtime-fixture.ts'];
   for (const file of [...readdirSync(import.meta.dirname).filter(name =>
     name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), ...preparationProofs]) {
     const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
       ts.ScriptTarget.Latest, true);
+    const constants = new Map<string, number>();
+    for (const statement of source.statements) {
+      if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+      for (const declaration of statement.declarationList.declarations)
+        if (ts.isIdentifier(declaration.name) && declaration.initializer && ts.isNumericLiteral(declaration.initializer))
+          constants.set(declaration.name.text, Number(declaration.initializer.text));
+    }
+    let consumesPreparedArtifact = false;
     const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && node.expression.text === 'resolvePreparedPrivateApiBundle') consumesPreparedArtifact = true;
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
         && ['exec', 'execSync', 'execFile', 'execFileSync', 'spawn', 'spawnSync'].includes(node.expression.text)) {
         expect(node.arguments.some(argument => argument.getText(source).includes('bundle-host.sh')),
@@ -796,9 +807,12 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
             ts.isPropertyAssignment(property) && property.name.getText(source) === 'builder')?.initializer;
         expect(policy && ts.isObjectLiteralExpression(policy), `${file} needs a bounded progress policy`).toBe(true);
         if (policy && ts.isObjectLiteralExpression(policy)) {
-          const values = Object.fromEntries(policy.properties.flatMap(property =>
-            ts.isPropertyAssignment(property) && ts.isNumericLiteral(property.initializer)
-              ? [[property.name.getText(source), Number(property.initializer.text)]] : []));
+          const values = Object.fromEntries(policy.properties.flatMap(property => {
+            if (!ts.isPropertyAssignment(property)) return [];
+            const value = ts.isNumericLiteral(property.initializer) ? Number(property.initializer.text)
+              : ts.isIdentifier(property.initializer) ? constants.get(property.initializer.text) : undefined;
+            return value === undefined ? [] : [[property.name.getText(source), value]];
+          }));
           expect(values.timeoutMs, `${file} must retain the existing stall checkpoint`).toBe(240_000);
           expect(values.maxMs, `${file} must retain the existing absolute ceiling`).toBe(420_000);
           if (file === 'grading-audit-runtime-fixture.ts')
@@ -810,9 +824,11 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
       ts.forEachChild(node, visit);
     };
     visit(source);
+    if (file === 'liveness-alarm-http-fixture.ts')
+      expect(consumesPreparedArtifact, 'the liveness request worker must consume its parent-prepared API').toBe(true);
   }
-  expect(callers.sort()).toEqual([routingProof, nativeProof, nativeProof, 'blog-post-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
-    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, nativeProof, nativeProof, livenessProof, 'blog-post-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'grading-audit-runtime-fixture.ts', 'grading-audit-runtime-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 
