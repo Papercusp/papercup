@@ -130,9 +130,9 @@ describe('makeLiveStandingPrMerge suite command', () => {
 
 describe('pickNodeInstallCommand', () => {
   it('uses npm ci only with a lockfile, npm install for unlocked dependencies, else nothing', () => {
-    expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: true, dependencyCount: 0 })).toBe('npm ci');
+    expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: true, dependencyCount: 0 })).toBe('npm ci --include=dev');
     expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: false, dependencyCount: 2 }))
-      .toBe('npm install --no-audit --no-fund');
+      .toBe('npm install --include=dev --no-audit --no-fund');
     expect(pickNodeInstallCommand({ hasPackageJson: true, hasLockfile: false, dependencyCount: 0 })).toBeNull();
     expect(pickNodeInstallCommand({ hasPackageJson: false, hasLockfile: true, dependencyCount: 3 })).toBeNull();
   });
@@ -156,8 +156,8 @@ describe('nodeInstallCommandFor', () => {
 
   it('reads the lockfile and dependency fields from the checkout', async () => {
     expect(await nodeInstallCommandFor(await repo({ 'package.json': '{"devDependencies":{"x":"1"}}' })))
-      .toBe('npm install --no-audit --no-fund');
-    expect(await nodeInstallCommandFor(await repo({ 'package.json': '{}', 'package-lock.json': '{}' }))).toBe('npm ci');
+      .toBe('npm install --include=dev --no-audit --no-fund');
+    expect(await nodeInstallCommandFor(await repo({ 'package.json': '{}', 'package-lock.json': '{}' }))).toBe('npm ci --include=dev');
     expect(await nodeInstallCommandFor(await repo({ 'README.md': 'no node here' }))).toBeNull();
   });
 });

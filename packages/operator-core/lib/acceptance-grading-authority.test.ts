@@ -130,6 +130,16 @@ describe('pickAuthoritativeGrading — authority first, recency as the tie-break
     expect(pickAuthoritativeGrading([unlabelled, minimum], viaOf(viaMap({ 'su-min': 'minimum' })))).toBe(unlabelled);
   });
 
+  it('orders equal-time and submillisecond grades deterministically across permutations', () => {
+    const earlier = { ...card('su-a', '2026-08-30T01:00:00.000001Z'), issueId: 'SC-Z' };
+    const later = { ...card('su-a', '2026-08-30T01:00:00.000002Z'), issueId: 'SC-A' };
+    const tied = { ...later, issueId: 'SC-B' };
+    for (const candidates of [[earlier, later, tied], [tied, earlier, later], [later, tied, earlier]]) {
+      expect(pickAuthoritativeGrading(candidates, () => 'floor')).toBe(tied);
+      expect(pickAuthoritativeGrading(candidates.filter(c => c !== tied), () => 'floor')).toBe(later);
+    }
+  });
+
   it('a null createdBy is unattributable, therefore unlabelled, therefore not demoted', () => {
     expect(gradingViaOf(card(null, '2026-08-30T01:00:00Z'), viaMap({ 'su-min': 'minimum' }))).toBeNull();
   });

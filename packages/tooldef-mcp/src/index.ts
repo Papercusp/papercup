@@ -114,6 +114,17 @@ export async function dispatchProjectedToolToMcp(
   deps: DispatchProjectedDeps,
   metadata?: Record<string, unknown>,
 ): Promise<McpToolCallResult> {
+  // Response negotiation belongs to transport metadata, never tool arguments
+  // or an inference from singleton syntax. This lets a migrated client opt in
+  // even while its host retains the explicit operation-v0 transition default.
+  const batchResponseVersion = metadata?.['papercusp/batchResponseVersion'];
+  if (batchResponseVersion !== undefined) {
+    if (batchResponseVersion !== 'batch-v1' && batchResponseVersion !== 'operation-v0') {
+      return { isError: true, content: [{ type: 'text',
+        text: 'invalid_input: papercusp/batchResponseVersion must be batch-v1 or operation-v0' }] };
+    }
+    deps = { ...deps, batchResponseVersion };
+  }
   if (metadata?.['papercusp/execution'] !== undefined) {
     try {
       ctx = { ...ctx, toolExecution: parseToolExecutionRequest(metadata['papercusp/execution']) };

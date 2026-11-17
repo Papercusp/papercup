@@ -316,8 +316,10 @@ export function pickNodeInstallCommand(input: {
   dependencyCount: number;
 }): string | null {
   if (!input.hasPackageJson) return null;
-  if (input.hasLockfile) return 'npm ci';
-  if (input.dependencyCount > 0) return 'npm install --no-audit --no-fund';
+  // The operator runs in production mode, but this install is for the test
+  // suite. Include its development dependencies even when npm inherits omit=dev.
+  if (input.hasLockfile) return 'npm ci --include=dev';
+  if (input.dependencyCount > 0) return 'npm install --include=dev --no-audit --no-fund';
   return null;
 }
 

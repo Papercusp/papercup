@@ -2,8 +2,10 @@
  * Standalone tests for the MCP bridge primitives — import ONLY @papercusp/tooldef
  * + this package (no agent-mcp, no operator, no mcp-handler).
  */
-import { describe, expect, it, vi } from 'vitest';
-import type { ProjectedTool, UnifiedToolContext } from '@papercusp/tooldef';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { defineTool, lookupByMcpName, _resetProjectionRegistryForTests,
+  type ProjectedTool, type UnifiedToolContext, type BatchResult } from '@papercusp/tooldef';
 import {
   bearerFromExtra,
   urlFromExtra,
@@ -30,6 +32,8 @@ const tool = (over: Partial<ProjectedTool> = {}): ProjectedTool => ({
   ...over,
 });
 
+afterEach(() => _resetProjectionRegistryForTests());
+
 describe('RequestHandlerExtra extractors', () => {
   it('bearerFromExtra strips the Bearer prefix', () => {
     expect(bearerFromExtra({ requestInfo: { headers: { authorization: 'Bearer xyz' } } })).toBe('xyz');
@@ -49,6 +53,43 @@ describe('RequestHandlerExtra extractors', () => {
 });
 
 describe('dispatchProjectedToolToMcp', () => {
+  it('serves canonical singleton/array parity through tools/call metadata and preserves per-child gates', async () => {
+    const effects: string[] = [];
+    const authorize = vi.fn(async ({ input }) => (input as { value: string }).value === 'denied'
+      ? { allow: false, reason: 'fixture denial' } : { allow: true });
+    defineTool({ name: 'fix.batch', requirePrincipal: false, capability: 'test:write',
+      args: z.strictObject({ value: z.string() }), authorize,
+      handler: async args => { effects.push(args.value); return { data: args }; } });
+    const registered = lookupByMcpName('fix.batch')!;
+    const call = (args: unknown) => dispatchProjectedToolToMcp(registered, 'fix.batch', args,
+      ctx({ requestedStructured: true }), { batchResponseVersion: 'operation-v0' },
+      { 'papercusp/batchResponseVersion': 'batch-v1' });
+    const singleton = await call({ value: 'one' });
+    const marked = await call({ _batch: 1, items: [{ args: { value: 'one' } }] });
+    expect((singleton.structuredContent as BatchResult).results)
+      .toEqual((marked.structuredContent as BatchResult).results);
+    const mixed = await call({ _batch: 1, items: [
+      { itemId: 'denied', args: { value: 'denied' } },
+      { itemId: 'bad', args: { value: 7 } },
+      { itemId: 'ok', args: { value: 'last' } },
+    ] });
+    const data = mixed.structuredContent as BatchResult;
+    expect(data.counts).toEqual({ ok: 1, failed: 2 });
+    expect(data.results.map(item => [item.itemId, item.ok])).toEqual([['denied', false], ['bad', false], ['ok', true]]);
+    expect(data.results[1].error).toMatchObject({ code: 'invalid_input' });
+    expect(data.results[2].output?.structuredContent).toEqual({ value: 'last' });
+    expect(effects).toEqual(['one', 'one', 'last']);
+    expect(authorize).toHaveBeenCalledTimes(5);
+  });
+
+  it('rejects unsupported response versions before dispatch and never passes metadata into business args', async () => {
+    const handler = vi.fn(async () => ({ content: [] }));
+    const result = await dispatchProjectedToolToMcp(tool({ fn: handler }), 'fix.tool', {}, ctx(), {},
+      { 'papercusp/batchResponseVersion': 'future' });
+    expect(result.isError).toBe(true);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('consumes MCP execution metadata without modifying tool arguments', async () => {
     const handler = vi.fn(async (args, context) => ({ content: [{ type: 'text' as const,
       text: JSON.stringify({ args, request: context.toolExecution }) }] }));

@@ -5,10 +5,10 @@
  * clone the deps run in. End-to-end cases drive stepStandingPrMerge over these deps.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pr } from '../../pr-host/types';
 import { parsePollMeta } from '../../pr-host/poll-daemon';
 import type { MergeTestRecord } from './decide-merge-gate';
@@ -98,6 +98,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -460,6 +461,46 @@ describe('makeLiveStandingPrMerge over real git (P-021 auto-merge policy)', () =
 });
 
 describe('makeWorktreeSuiteRunner (real git)', () => {
+  it.each([true, false])('installs development suite dependencies under production NODE_ENV (lockfile=%s)', async (locked) => {
+    const manifest = {
+      name: 'merge-suite-fixture', version: '1.0.0',
+      devDependencies: { 'fixture-dev-only': 'file:./test-dependency' },
+    };
+    mkdirSync(join(work, 'test-dependency'));
+    writeFileSync(join(work, 'test-dependency/package.json'), JSON.stringify({
+      name: 'fixture-dev-only', version: '1.0.0', main: 'index.cjs',
+    }));
+    writeFileSync(join(work, 'test-dependency/index.cjs'), "module.exports = 'installed-for-suite';\n");
+    writeFileSync(join(work, 'package.json'), JSON.stringify(manifest));
+    if (locked) {
+      writeFileSync(join(work, 'package-lock.json'), JSON.stringify({
+        name: manifest.name, version: manifest.version, lockfileVersion: 3,
+        packages: {
+          '': manifest,
+          'node_modules/fixture-dev-only': { resolved: 'test-dependency', link: true },
+          'test-dependency': { name: 'fixture-dev-only', version: '1.0.0', dev: true },
+        },
+      }));
+    }
+    // Control: the old install succeeds while omitting the suite dependency.
+    execFileSync('npm', [locked ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund',
+      ...(!locked ? ['--package-lock=false'] : [])], {
+      cwd: work, env: { ...ENV, NODE_ENV: 'production', npm_config_omit: 'dev', npm_config_include: '' },
+    });
+    expect(existsSync(join(work, 'node_modules/fixture-dev-only/package.json'))).toBe(false);
+    rmSync(join(work, 'node_modules'), { recursive: true, force: true });
+    git(work, 'add', 'package.json', 'test-dependency', ...(locked ? ['package-lock.json'] : []));
+    git(work, 'commit', '-q', '-m', 'suite requires a local development dependency');
+    const head = git(work, 'rev-parse', 'HEAD');
+    git(deps_repo, 'fetch', '-q', work, head);
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('npm_config_omit', 'dev');
+    vi.stubEnv('npm_config_include', '');
+    const run = makeWorktreeSuiteRunner('node -e "const assert = require(\'node:assert/strict\'); assert.equal(require(\'fixture-dev-only\'), \'installed-for-suite\'); assert.equal(process.env.NODE_ENV, \'production\')"');
+    expect(await run({ repoDir: deps_repo, sha: head })).toEqual({ passed: true });
+    expect(git(deps_repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
+  }, 30_000);
+
   it('persists both failed-suite streams before cleanup and still refuses the exact merge', async () => {
     const head = makePrHead();
     const before = git(bare, 'rev-parse', 'main');
