@@ -406,7 +406,7 @@ export async function snapshotBlueprintReleaseSource(input: {
   }
   let packages: ResolvedPackageInput[];
   try {
-    packages = await resolveBlueprintPackageInputs(requests, input.resolvePackage);
+    packages = await resolveBlueprintPackageInputs(requests, input.resolvePackage, resolved.contributions);
   } catch (error) {
     throw new BlueprintLifecycleError(`blueprint ${id} package resolution failed: ${String(error)}`, 422);
   }

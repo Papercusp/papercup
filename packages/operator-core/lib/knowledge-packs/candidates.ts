@@ -595,6 +595,13 @@ export async function materializeCandidateIntoPack(
         if (bundle.kind === 'knowledge-pack' && bundle.ref === io.target.packId && bundle.version) bundle.version = version;
       }
     }
+    if (Array.isArray(raw.contributions)) {
+      for (const contribution of raw.contributions) {
+        if (contribution.inputKind === 'package' && contribution.ref === `knowledge-pack:${io.target.packId}` && contribution.version) {
+          contribution.version = version;
+        }
+      }
+    }
     delete raw.attestation;
     nextIdentitySource = stringifyYaml(raw);
   }

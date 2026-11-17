@@ -492,7 +492,7 @@ export async function installBlueprintFromCupboardCore(
       if (knowledge && !requests.some((request) => request.kind === 'knowledge-pack' && request.ref === knowledge)) {
         requests.push({ kind: 'knowledge-pack', ref: knowledge });
       }
-      const packages = await resolveBlueprintPackageInputs(requests, resolvePackage);
+      const packages = await resolveBlueprintPackageInputs(requests, resolvePackage, resolved.contributions);
       closure = { bundles: requests, inputs: [...packages, ...blueprintPackageInputs(source, packages)] };
     } catch (error) {
       throw new InstallBlueprintError(`blueprint "${id}" package resolution failed: ${error instanceof Error ? error.message : String(error)}`, 422);

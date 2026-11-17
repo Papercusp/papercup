@@ -22,6 +22,7 @@ import {
   type CompositionCompilerInput,
   type ResolvedCapabilityProviderInput,
   type ResolvedPackageInput,
+  type BlueprintContribution,
 } from '@papercusp/orchestrator/blueprint';
 import { resolveLocalRecipe } from '../cupboard/recipe-store';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from './installed-blueprints';
@@ -241,7 +242,19 @@ export function vendoredBlueprintPackageResolver(
 export async function resolveBlueprintPackageInputs(
   requests: readonly PackageRequest[],
   resolvePackage: BlueprintPackageResolver = resolveLocalBlueprintPackage,
+  contributions: readonly BlueprintContribution[] = [],
 ): Promise<ResolvedPackageInput[]> {
+  const declared = [...requests];
+  for (const contribution of contributions) {
+    if (contribution.inputKind !== 'package') continue;
+    const separator = contribution.ref.indexOf(':');
+    if (separator <= 0 || separator === contribution.ref.length - 1) {
+      throw new CompositionCompilerError('input-invalid', 'package contribution needs <packageKind>:<ref>', contribution.ref);
+    }
+    const kind = contribution.ref.slice(0, separator);
+    const ref = contribution.ref.slice(separator + 1);
+    declared.push({ kind, ref, ...(contribution.version ? { version: contribution.version } : {}) });
+  }
   const resolved = new Map<string, Promise<ResolvedPackageInput>>();
   const selected = new Map<string, ResolvedPackageInput>();
   const visit = async (request: PackageRequest, ancestors: readonly string[]): Promise<ResolvedPackageInput> => {
@@ -269,7 +282,7 @@ export async function resolveBlueprintPackageInputs(
     }, [...ancestors, key])));
     return pin;
   };
-  await Promise.all(requests.map((request) => visit(request, [])));
+  await Promise.all(declared.map((request) => visit(request, [])));
   const inputs = [...selected.values()].sort((a, b) => (a.packageKind + ':' + a.ref).localeCompare(b.packageKind + ':' + b.ref));
   validateAgentInputClosure(inputs);
   return inputs;
@@ -328,7 +341,7 @@ export async function compileBlueprintWithPackages(
           entry.kind === 'package' && entry.packageKind === 'rubric' && entry.ref === ref.ref)) continue;
     requests.push({ kind: 'rubric', ref: ref.ref, version: ref.revision });
   }
-  const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
+  const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage, blueprint.contributions);
   if (packages.some((pin) => pin.packageKind === 'recipe')) {
     // The launch-time journal refuses a malformed recipe; refuse it here first.
     const { recipeValue } = await import('./package-recipe-resources');
@@ -538,6 +551,13 @@ export async function provisionBlueprintPackages(
     for (const dependency of byKey.get(key)?.dependencies ?? []) include(dependency.packageKind + ':' + dependency.ref);
   };
   for (const bundle of bundles) include(bundle.kind + ':' + bundle.ref);
+  for (const contribution of specification.configuration.contributions ?? []) {
+    if (contribution.inputKind !== 'package') continue;
+    if (!byKey.has(contribution.ref)) {
+      throw new CompositionCompilerError('package-missing', 'declared package contribution has no resolved content', contribution.ref);
+    }
+    include(contribution.ref);
+  }
   const seedPack = resolveSeedPackKey(specification.configuration).packId;
   if (seedPack) {
     const key = 'knowledge-pack:' + seedPack;

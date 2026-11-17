@@ -56,8 +56,9 @@ describe('compileBlueprintWithPackages production composition (integration)', ()
     writeFileSync(manifestPath, JSON.stringify(manifest));
     writeFileSync(join(dir, 'listing.json'), JSON.stringify(listing));
     writeFileSync(join(dir, 'guide.md'), 'Retain the complete package directory.');
-    const identity = { id: `portable-${kind}-identity`, extends: 'base', version: '1.0.0',
-      slots: [{ slot: 'domain' }], bundles: [{ kind, ref, version: '1.0.0' }] };
+    const identity = { id: `portable-${kind}-identity`, extends: 'identity-root', version: '1.0.0',
+      slots: [{ slot: 'domain' }], contributions: [{ id: 'reactive-package', purpose: 'resource',
+        source: 'fixed', refresh: 'source-change', inputKind: 'package', ref: `${kind}:${ref}`, version: '1.0.0' }] };
     const compile = () => compileBlueprintWithPackages(identity, {
       workspaceId: 'integration-workspace', harnessSlug: 'integration-harness',
     });
@@ -93,8 +94,9 @@ describe('compileBlueprintWithPackages production composition (integration)', ()
     }));
     writeFileSync(join(recipeDir, 'listing.json'), JSON.stringify({ version: '1.0.0' }));
     const identity = {
-      id: 'integration-resource-identity', extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-      bundles: [{ kind: 'recipe', ref: recipeId, version: '1.0.0' }],
+      id: 'integration-resource-identity', extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
+      contributions: [{ id: 'recipe-package', purpose: 'resource', source: 'fixed', refresh: 'source-change',
+        inputKind: 'package', ref: `recipe:${recipeId}`, version: '1.0.0' }],
     };
     const artifact = await compileBlueprintWithPackages(identity, {
       workspaceId: 'integration-workspace', harnessSlug: 'integration-harness',

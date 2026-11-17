@@ -26,7 +26,7 @@ The source reference in every row is the named identity's `blueprint.yaml` and i
 | `su.mode-ideate/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | mode control/turn context; `mode-identity-binding.integration.test.ts` exercises this mode | C |
 | `su.mode-test/test-definition` | `mode:su.mode-test:test` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `su-composition.test.ts` | C |
 | `su.mode-test/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | `source.test.ts` catalog-wide compiler binding; host turn receipt pending | U |
-| `su.practice/su-practice-text` | `base:su.practice` | required fixed prompt, source change | SU stack prompt; `su-composition.test.ts`, `source.test.ts` | C |
+| `su.practice/su-practice-text` | `su.practice:practice` | required fixed prompt, source change | SU stack prompt; `su-composition.test.ts`, `source.test.ts` | C |
 | `su.practice/turn-start-orientation` | `turn-start-orientation:buildTurnStartOrientationBlock` | optional provider prompt, turn | `turn-start-orientation.ts`; `turn-start-orientation-delivery-proof.test.ts` | C |
 | `su.practice/coord-orientation` | `agent-tools/coordination/tools/orient:composeOrient` | optional provider setting, on demand | `orient.ts`; `orient.test.ts`, `source.test.ts` | C |
 | `su.specialist-planner/planner-specialization` | `specialist:su.planner` | required fixed prompt, source change | SU stack prompt; `su-composition.test.ts`, `su-role-addendum.test.ts` | C |

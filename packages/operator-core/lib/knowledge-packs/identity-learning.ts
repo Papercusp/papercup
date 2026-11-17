@@ -5,7 +5,6 @@ import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getMemoryBackend } from '../memory/backend';
 import { withMemoryToolTimeout } from '../memory/op-deadline';
-import { resolveSeedPackKey } from './seed-pack-key';
 
 /** Read APPLIED content, never the desired stack which may not have reached the agent. */
 export async function wornMemoryIdentityIds(ownerId: string, workspaceId: string): Promise<string[]> {
@@ -45,8 +44,8 @@ export async function resolveIdentityLearningTarget(identityId: string, requeste
   if (!source.ok || !source.sourcePath) throw new IdentityLearningRefused('identity_unavailable',
     'The identity source is unavailable: ' + JSON.stringify('error' in source ? source.error : source.errors));
   const packs = [...new Set([
-    ...((source.identity.bundles ?? []).filter((bundle) => bundle.kind === 'knowledge-pack').map((bundle) => bundle.ref)),
-    ...(resolveSeedPackKey(source.identity).packId ? [resolveSeedPackKey(source.identity).packId!] : []),
+    ...(source.identity.contributions ?? []).filter((entry) => entry.inputKind === 'package' &&
+      entry.ref.startsWith('knowledge-pack:')).map((entry) => entry.ref.slice('knowledge-pack:'.length)),
   ])];
   const packId = requestedPack ?? (packs.length === 1 ? packs[0] : undefined);
   if (!packId || !packs.includes(packId) || !/^[a-z0-9][a-z0-9-]*$/.test(packId)) {

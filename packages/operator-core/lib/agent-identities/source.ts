@@ -118,7 +118,8 @@ export function identitySelectionRevision(source: {
   identity: BlueprintSourceDocument;
   layers: readonly { id: string; contentHash: string }[];
 }): string {
-  const namedStack = source.identity.roles?.find((role) => role.id === 'su')?.stack;
+  const namedStack = Array.isArray(source.identity.extends) ? source.identity.extends
+    : source.identity.extends ? [source.identity.extends] : [];
   if (source.identity.slots?.length || !namedStack?.length) return source.contentHash;
   return createHash('sha256').update(canonicalJson({
     stack: namedStack,
@@ -126,26 +127,26 @@ export function identitySelectionRevision(source: {
   })).digest('hex');
 }
 
-/** Resolve a selected slotless library root through its authored role stack.
+/** Resolve a selected slotless library root through its portable extends list.
  * A composition marker never becomes a slot or an authority-bearing identity. */
 export async function resolveNamedIdentityCompositionSelection(id: string, repoDir?: string) {
   const selected = await getIdentitySource(id, { repoDir });
   if (!selected.ok || !selected.sourcePath) throw new Error(`named identity ${id} is unavailable`);
-  const authoredStack = selected.identity.roles?.find((role) => role.id === 'su')?.stack;
-  if (selected.identity.slots?.length || !authoredStack?.length) {
+  if (selected.identity.slots?.length || !selected.identity.extends) {
     throw new Error(`identity ${id} is not a named launch composition`);
   }
-  const stack = bindingRefs(stackBindingFromRefs(authoredStack));
   const raw = parseBlueprintSource(await readFile(selected.sourcePath, 'utf8'));
   const resolved = resolveBlueprintSource(raw, { sourcePath: selected.sourcePath,
     resolve: operatorResolveExtends({ localDirs: localDirs(repoDir) }) });
   const effective = BlueprintSourceDocumentSchema.parse(resolved.merged);
+  const stack = bindingRefs(stackBindingFromRefs(resolved.layers.flatMap((layer) =>
+    layer.slots.map((slot) => `${slot}:${layer.id}`))));
+  if (!stack.length) throw new Error(`identity ${id} is not a named launch composition`);
   const compatibility = identityLaunchCompatibility(effective, [], stack);
   if (!resolved.validation.ok || !compatibility.eligible) {
     throw new Error(`named identity ${id} cannot launch: ${compatibility.reason ?? 'invalid source'}`);
   }
-  const parentIds = new Set(Array.isArray(selected.identity.extends)
-    ? selected.identity.extends : selected.identity.extends ? [selected.identity.extends] : []);
+  const parentIds = new Set(resolved.layers.map((layer) => layer.id));
   for (const ref of stack) {
     const [slot, componentId] = ref.split(':');
     if (!slot || !componentId || !parentIds.has(componentId)) {
@@ -342,7 +343,7 @@ async function verifiedInstalledModePolicy(
     if (knowledge && !requests.some((request) => request.kind === 'knowledge-pack' && request.ref === knowledge)) {
       requests.push({ kind: 'knowledge-pack', ref: knowledge });
     }
-    const packages = await resolveBlueprintPackageInputs(requests);
+    const packages = await resolveBlueprintPackageInputs(requests, undefined, document.contributions);
     const archive = buildBlueprintReleaseArchive([...packages, ...blueprintPackageInputs(source, packages)], id);
     return archive.root.contentHash === active.contentHash && archive.package.rootHash === active.artifactContentHash
       ? { policyRef: approval.policyRef, stale: false }
@@ -716,7 +717,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   };
   const hasResources = Boolean(document.bundles?.length || document.grants?.requires?.length ||
     document.grants?.optional?.length || resolveSeedPackKey(document).packId ||
-    declarations?.some((entry) => entry.inputKind === 'capability-provider' && entry.verb !== undefined));
+    declarations?.some((entry) => entry.inputKind === 'package' || (entry.inputKind === 'capability-provider' && entry.verb !== undefined)));
   const workspaceId = input.scope.workspace;
   const harnessSlug = input.scope.harness;
   if (hasResources && (typeof workspaceId !== 'string' || !workspaceId.trim() ||
@@ -847,7 +848,8 @@ export async function compileSelectedIdentityResources(input: {
   }
   const document = BlueprintSourceDocumentSchema.parse(source.merged);
   if (!(document.bundles?.length || document.grants?.requires?.length ||
-      document.grants?.optional?.length || resolveSeedPackKey(document).packId)) return null;
+      document.grants?.optional?.length || resolveSeedPackKey(document).packId ||
+      document.contributions?.some((entry) => entry.inputKind === 'package'))) return null;
   if (!input.workspaceId.trim() || !input.harnessSlug.trim()) {
     throw new Error('identity resources need an explicit workspace and harness scope');
   }
@@ -891,7 +893,8 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
           resolve: operatorResolveExtends({ localDirs: localDirs(opts.repoDir) }) });
         const effective = BlueprintSourceDocumentSchema.parse(effectiveSource.merged);
         let launchCompatibility = identityLaunchCompatibility(effective, doc.slots,
-          doc.roles?.find((role) => role.id === 'su')?.stack);
+          doc.slots.length ? undefined : effectiveSource.layers.flatMap((layer) =>
+            layer.slots.map((slot) => `${slot}:${layer.id}`)));
         if (launchCompatibility.eligible) {
           try {
             if (doc.slots.length) {

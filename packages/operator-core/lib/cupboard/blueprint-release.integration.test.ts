@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { parse as parseYaml, stringify as toYaml } from 'yaml';
 import {
   BlueprintSchema,
+  SLOT_REGISTRY,
   compileAgentSpecification,
   replayAgentSpecification,
   snapshotPackageDirectory,
@@ -57,10 +58,10 @@ async function fixture() {
       return signWithPrivateKeyDer(keypair.privateKeyDer, Buffer.from(bytes));
     },
   };
-  const publish = (sourceDir: string, id = 'identity') => prepareBlueprintPublicRelease({
+  const publish = (sourceDir: string, id = 'identity', resolveExtends: (id: string) => string | null = () => null) => prepareBlueprintPublicRelease({
     blueprintFile: join(sourceDir, 'blueprint.yaml'),
     listingRef: id,
-    resolveExtends: () => null,
+    resolveExtends,
     resolvePackage,
     signer,
     license: 'MIT',
@@ -123,6 +124,38 @@ async function writeBlueprint(version: string, prompt: string, id = 'identity') 
 }
 
 describe('R-2 signed blueprint release lifecycle (integration)', () => {
+  it('R-13: Cupboard publish refuses a stack whose two layers claim one single-layer slot, naming the slot', async () => {
+    const f = await fixture();
+    const paths = new Map<string, string>();
+    for (const id of ['first', 'second', 'named-stack']) {
+      const dir = join(root, id);
+      await fs.mkdir(dir);
+      paths.set(id, join(dir, 'blueprint.yaml'));
+    }
+    const stackDir = join(root, 'named-stack');
+    await fs.writeFile(paths.get('named-stack')!, toYaml({
+      id: 'named-stack', version: '1.0.0', slots: [], extends: ['first', 'second'],
+    }));
+    const resolve = (id: string) => paths.get(id) ?? null;
+    const writeLayers = async (slot: string) => {
+      for (const id of ['first', 'second']) {
+        await fs.writeFile(paths.get(id)!, toYaml({ id, version: '1.0.0', slots: [{ slot }] }));
+      }
+    };
+    for (const spec of SLOT_REGISTRY.filter((slot) => slot.cardinality === 'exclusive')) {
+      await writeLayers(spec.slot);
+      await expect(f.publish(stackDir, 'named-stack', resolve))
+        .rejects.toThrow(new RegExp(`exclusive slot "${spec.slot}"`));
+      expect(f.signCalls(), `${spec.slot} reached signing`).toBe(0);
+      expect(existsSync(f.installedDir)).toBe(false);
+    }
+    await writeLayers('practice');
+    // This is the authored named-stack summary, whose slots remain empty.
+    // Successful signing is the positive control for the inherited practices.
+    expect((await f.publish(stackDir, 'named-stack', resolve)).source.slots).toEqual([]);
+    expect(f.signCalls()).toBeGreaterThan(0);
+  });
+
   it('R-1: Cupboard publish refuses every workspace runtime key in an identity', async () => {
     // Change detector at the production signed-release boundary. No network or
     // signer substitute: invalid sources must fail before the real signer runs.

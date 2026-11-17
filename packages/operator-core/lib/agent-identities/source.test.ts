@@ -35,19 +35,21 @@ describe('identity launch document preflight', () => {
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
-        id, extends: 'base', version: '1.0.0', description: 'Broken declared prompt.',
+        id, extends: 'identity-root', version: '1.0.0', description: 'Broken declared prompt.',
         slots: [{ slot: 'practice' }], contributions: [{ id: 'practice-text', purpose: 'prompt',
-          source: 'fixed', refresh: 'source-change', inputKind: 'prompt-file', ref: 'base:missing-launch-document' }],
+          source: 'fixed', refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:missing-launch-document' }],
       }));
       writeFileSync(join(identityDir, 'prompts', 'practice.md'), 'UNDECLARED FALLBACK\n');
       const validId = 'aaa-valid-fixed-practice';
       const validDir = join(root, '.papercusp', 'blueprints', validId);
       mkdirSync(validDir, { recursive: true });
       writeFileSync(join(validDir, 'blueprint.yaml'), stringifyYaml({
-        id: validId, extends: 'base', version: '1.0.0', description: 'Valid inherited fixed prompt.',
+        id: validId, extends: 'identity-root', version: '1.0.0', description: 'Valid package-local fixed prompt.',
         slots: [{ slot: 'practice' }], contributions: [{ id: 'practice-text', purpose: 'prompt',
-          source: 'fixed', refresh: 'source-change', inputKind: 'prompt-file', ref: 'base:su.practice' }],
+          source: 'fixed', refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:practice' }],
       }));
+      mkdirSync(join(validDir, 'prompts'));
+      writeFileSync(join(validDir, 'prompts', 'practice.md'), 'DECLARED PACKAGE PROMPT\n');
       const catalog = await listIdentitySources({ repoDir: root, limit: 100 });
       expect(catalog.identities.find((entry) => entry.id === id)?.launchCompatibility)
         .toMatchObject({ eligible: false, reason: expect.stringContaining('missing-launch-document') });
@@ -150,7 +152,7 @@ describe('selected identity producer output binding', () => {
         decision: 'fixed:source-change' }),
     ]));
     expect(bound.artifact.inputs).toContainEqual(expect.objectContaining({
-      kind: 'prompt-file', ref: 'base:su.practice',
+      kind: 'prompt-file', ref: 'su.practice:practice',
     }));
     await expect(bindSelectedIdentityOutputArtifact({
       identityId: 'su', sourceTier: 'builtin',
@@ -169,8 +171,9 @@ describe('selected identity producer output binding', () => {
       mkdirSync(blueprintDir, { recursive: true });
       mkdirSync(recipeDir, { recursive: true });
       writeFileSync(join(blueprintDir, 'blueprint.yaml'), stringifyYaml({
-        id, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-        bundles: [{ kind: 'recipe', ref: 'selected-recipe', version: '1.0.0' }],
+        id, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
+        contributions: [{ id: 'recipe', purpose: 'resource', source: 'fixed', refresh: 'source-change',
+          inputKind: 'package', ref: 'recipe:selected-recipe', version: '1.0.0' }],
       }));
       writeFileSync(join(recipeDir, 'recipe.json'), JSON.stringify({
         id: 'selected-recipe', title: 'Selected recipe', script: 'return 1',

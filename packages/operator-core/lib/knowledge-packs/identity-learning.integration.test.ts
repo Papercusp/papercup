@@ -34,8 +34,9 @@ describe('explicit identity learning through reviewed candidates (real migrated 
     const pack = join(dir, 'packages/knowledge-pack', PACK);
     await fs.mkdir(pack, { recursive: true });
     const identity = {
-      id, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-      bundles: [{ kind: 'knowledge-pack', ref: PACK, version: '1.0.0' }],
+      id, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
+      contributions: [{ id: 'lessons', purpose: 'resource', source: 'fixed', refresh: 'source-change',
+        inputKind: 'package', ref: `knowledge-pack:${PACK}`, version: '1.0.0' }],
     };
     await fs.writeFile(join(dir, 'blueprint.yaml'), stringify({ ...identity,
       attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },
@@ -106,7 +107,7 @@ describe('explicit identity learning through reviewed candidates (real migrated 
     expect(text).toContain(source.payload.text);
     expect(text).not.toContain('across the fleet');
     expect(parse(await fs.readFile(join(packDir, 'manifest.yaml'), 'utf8'))).toMatchObject({ version: '1.0.1', custom_field: 'preserve-me' });
-    expect(parse(await fs.readFile(join(sourceDir, 'blueprint.yaml'), 'utf8')).bundles[0].version).toBe('1.0.1');
+    expect(parse(await fs.readFile(join(sourceDir, 'blueprint.yaml'), 'utf8')).contributions[0].version).toBe('1.0.1');
     expect(await getIdentitySource(IDENTITY)).toMatchObject({ ok: true });
     const [unchanged] = await db.adminSql`SELECT payload FROM harness_shared.memory_canonical WHERE id = ${source.id}`;
     expect(unchanged.payload).toEqual(source.payload);
@@ -171,7 +172,7 @@ describe('explicit identity learning through reviewed candidates (real migrated 
       expect.objectContaining({ ok: true, packVersion: '1.0.2' }),
     ]));
     expect(parse(await fs.readFile(join(packDir, 'manifest.yaml'), 'utf8')).version).toBe('1.0.2');
-    expect(parse(await fs.readFile(join(sourceDir, 'blueprint.yaml'), 'utf8')).bundles[0].version).toBe('1.0.2');
+    expect(parse(await fs.readFile(join(sourceDir, 'blueprint.yaml'), 'utf8')).contributions[0].version).toBe('1.0.2');
     expect((await fs.readdir(packDir)).filter((file) => file.endsWith('.md'))).toHaveLength(2);
   });
 
