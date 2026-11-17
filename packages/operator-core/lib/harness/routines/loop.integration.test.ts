@@ -170,6 +170,61 @@ describe('identified dependency arm admission (real PG)', () => {
     if (mode === 'work') expect(routine.next_fire_at).not.toBe('infinity');
   });
 
+  it.each(['complete', 'exhausted'] as const)
+  ('starts productive work after a stopped %s monitor without replenishing its wait budget', async state => {
+    const first = await arm('monitor', { blockedOn: undefined, intervalSec: 300 });
+    if (state === 'complete') {
+      const { fireAwaitsForKey } = await import('../../events/await/store');
+      expect(await fireAwaitsForKey({ eventKey, payload: { qualified: true } })).toHaveLength(1);
+    } else {
+      await stop('exhausted');
+      await deactivateLoop(owner, { sql });
+    }
+    const stopped = await episode();
+    expect(stopped.state).toBe(state);
+    expect(await getLoopStatus(owner, { sql })).toMatchObject({ active: false, mode: 'monitor' });
+
+    await arm('work', { blockedOn: undefined, monitor: undefined, intervalSec: 60,
+      kickoff: 'implement independent work on the held item' });
+
+    const [productive] = await sql`SELECT active,next_fire_at::text,payload_template
+      FROM harness_shared.routines WHERE id=${first.id}`;
+    expect(productive.active).toBe(true);
+    expect(productive.next_fire_at).not.toBe('infinity');
+    expect(productive.payload_template).toMatchObject({ workItem: driver,
+      kickoff: 'implement independent work on the held item' });
+    expect(productive.payload_template.monitor).toBeUndefined();
+    expect(productive.payload_template.blockedOn).toBeUndefined();
+    expect(await episode()).toEqual(stopped);
+
+    // Productive work cannot replenish the same dependency's observation budget.
+    await arm('monitor', { blockedOn: undefined, intervalSec: 300 });
+    expect(await episode()).toMatchObject({ id: stopped.id, state,
+      remainingNoDeltaBudget: stopped.remainingNoDeltaBudget, debits: stopped.debits });
+    if (state === 'exhausted') {
+      const [reentered] = await sql`SELECT next_fire_at::text FROM harness_shared.routines WHERE id=${first.id}`;
+      expect(reentered.next_fire_at).toBe('infinity');
+    }
+  });
+
+  it.each(['work', 'monitor'] as const)
+  ('retains a declared event dependency when an inactive %s loop is retuned into work', async mode => {
+    const first = await arm(mode, { intervalSec: 300 });
+    await deactivateLoop(owner, { sql });
+    const stopped = await episode();
+    const [originalAwait] = await pending();
+
+    await arm('work', { blockedOn: undefined, monitor: undefined, intervalSec: 60 });
+
+    const [retuned] = await sql`SELECT active,reschedule_interval_sec,payload_template
+      FROM harness_shared.routines WHERE id=${first.id}`;
+    expect(retuned.active).toBe(true);
+    expect(retuned.reschedule_interval_sec).toBe(60);
+    expect(retuned.payload_template.blockedOn.event).toBe(eventKey);
+    expect(await episode()).toEqual(stopped);
+    expect((await pending()).map(row => row.id)).toEqual([originalAwait.id]);
+  });
+
   it('rolls back routine arming and the replacement continuation together on admission failure', async () => {
     const first = await arm();
     await stop('cancelled');

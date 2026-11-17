@@ -60,6 +60,7 @@ const {
   deliveryBacklogSummary,
   settleCancelledAwaitDeliveries,
   findAnnouncementsForKey,
+  findPendingAnnouncementsForTerminalClose,
   findNearMissKeys,
   AwaitGenerationMismatchError,
   listActiveAnnouncements,
@@ -296,6 +297,46 @@ function runtimeBlocker() {
 }
 
 describe('await-event store (PG)', () => {
+  it.each([19, 20, 21, 101])(
+    'terminal-close census finds an older live gate behind %i declarations without waiters',
+    async (newerCount) => {
+      await rootSql`
+        INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy, created_at)
+        VALUES ('closer', 'gate:old-live', 'announce', '2026-01-01'::timestamptz),
+               ('old-waiter', 'gate:old-live', 'wake', '2026-01-01'::timestamptz)
+      `;
+      await rootSql`
+        INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy, created_at)
+        SELECT 'closer', 'gate:new-empty:' || n, 'announce',
+               '2026-01-02'::timestamptz + n * interval '1 second'
+          FROM generate_series(1, ${newerCount}::int) n
+      `;
+
+      const pending = await findPendingAnnouncementsForTerminalClose({ ownerId: 'closer' });
+      expect(pending.map(({ announcement, liveWaiters }) => [announcement.eventKey, liveWaiters]))
+        .toEqual([['gate:old-live', 1]]);
+    },
+  );
+
+  it.each([false, true])('terminal-close census returns every live gate across the former cap (reverse order: %s)', async (reverse) => {
+    await rootSql`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy, created_at)
+      SELECT 'closer', 'gate:many:' || n, 'announce',
+             '2026-01-01'::timestamptz + (CASE WHEN ${reverse} THEN -n ELSE n END) * interval '1 second'
+        FROM generate_series(1, 105) n
+    `;
+    await rootSql`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy)
+      SELECT 'waiter', 'gate:many:' || n, 'wake' FROM generate_series(1, 105) n
+    `;
+
+    const pending = await findPendingAnnouncementsForTerminalClose({ ownerId: 'closer' });
+    expect(pending).toHaveLength(105);
+    expect(new Set(pending.map(({ announcement }) => announcement.eventKey)))
+      .toEqual(new Set(Array.from({ length: 105 }, (_, n) => `gate:many:${n + 1}`)));
+    expect(pending.every(({ liveWaiters }) => liveWaiters === 1)).toBe(true);
+  });
+
   describe('caller-owned registration transaction', () => {
     it('commits the park and bounded await together', async () => {
       const awaited = await rootSql.begin(async (tx) => {

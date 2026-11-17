@@ -4217,7 +4217,9 @@ export async function findAnnouncementsForKey(
  * explicitly bound to another lifecycle must survive unrelated work closing.
  * Discovery scope controls visibility and does not establish that binding.
  * Keep this read in the await store so the close path inspects declaration
- * and waiter rows together.
+ * and waiter rows together. This is a safety census, not a display page: every
+ * matching live gate must be returned. The bounded transaction fails closed;
+ * the close caller alone bounds its labelled, recoverable error preview.
  */
 export interface PendingAnnouncementForTerminalClose {
   announcement: AwaitRow;
@@ -4227,19 +4229,18 @@ export interface PendingAnnouncementForTerminalClose {
 export async function findPendingAnnouncementsForTerminalClose(input: {
   ownerId?: string | null;
   workItemId?: string | null;
-  limit?: number;
 }): Promise<PendingAnnouncementForTerminalClose[]> {
   const ownerId = input.ownerId?.trim() || null;
   const workItemId = input.workItemId?.trim() || null;
   if (!ownerId && !workItemId) return [];
 
-  const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 20), 100));
   const ws = eventsWs();
   const rows = await boundedOrgTxn(
     (tx) => tx`
-      SELECT a.*,
-             (
-               SELECT count(*)::int
+      SELECT a.*, waiters.live_waiters
+        FROM harness_shared.event_awaits a
+       CROSS JOIN LATERAL (
+               SELECT count(*)::int AS live_waiters
                  FROM harness_shared.event_awaits waiter
                 WHERE waiter.workspace_id = a.workspace_id
                   AND waiter.event_key = a.event_key
@@ -4247,13 +4248,13 @@ export async function findPendingAnnouncementsForTerminalClose(input: {
                   AND waiter.fired_at IS NULL
                   AND waiter.cancelled_at IS NULL
                   AND waiter.superseded_at IS NULL
-             ) AS live_waiters
-        FROM harness_shared.event_awaits a
+             ) waiters
        WHERE a.workspace_id = ${ws}
          AND a.policy = 'announce'
          AND a.fired_at IS NULL
          AND a.cancelled_at IS NULL
          AND a.superseded_at IS NULL
+         AND waiters.live_waiters > 0
          AND (
            (${ownerId !== null}::boolean AND a.subscriber_id = ${ownerId ?? ''}
              AND (a.bound_to IS NULL OR a.bound_to = 'null'::jsonb))
@@ -4263,18 +4264,15 @@ export async function findPendingAnnouncementsForTerminalClose(input: {
              OR position(${workItemId ?? ''} in coalesce(a.note, '')) > 0
            ))
          )
-       ORDER BY a.created_at DESC
-       LIMIT ${limit}
+       ORDER BY a.created_at DESC, a.id DESC
     `,
     AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
   );
 
-  return rows
-    .map((row: any) => ({
-      announcement: mapAwait(row),
-      liveWaiters: Number(row.live_waiters) || 0,
-    }))
-    .filter((entry) => entry.liveWaiters > 0);
+  return rows.map((row: any) => ({
+    announcement: mapAwait(row),
+    liveWaiters: Number(row.live_waiters) || 0,
+  }));
 }
 
 /** A key that nearly matches one being emitted/awaited — the advisory

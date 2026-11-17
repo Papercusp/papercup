@@ -550,8 +550,14 @@ async function materializeLoopRow(input: MaterializeLoopInput,
   // disappeared. Preserve its exact identity when the driving objective stays
   // the same, then take the transactional admission path before any write.
   const priorWait = readIdentifiedWaitForRoutine(existing[0]?.payload_template);
+  // An ended monitor can give way to productive work on the same item. Its
+  // observation allowance stays in the work-item history; it is not a blocker
+  // on independent work. A separately declared blockedOn still survives retunes.
+  const leavingStoppedMonitor = input.mode === 'work' && existing[0]?.active === false &&
+    existing[0]?.payload_template?.mode === 'monitor' &&
+    existing[0]?.payload_template?.blockedOn == null;
   if (!identifiedWait && input.blockedOn === undefined && input.workItem !== null && priorWait &&
-      (!workItemText || workItemText === priorWait.drivingWorkItemId)) {
+      !leavingStoppedMonitor && (!workItemText || workItemText === priorWait.drivingWorkItemId)) {
     return materializeLoop({ ...input,
       blockedOn: { reason: 'retained identified dependency', event: priorWait.eventKey } });
   }

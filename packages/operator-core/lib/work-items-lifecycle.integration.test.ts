@@ -1783,6 +1783,47 @@ describe('EI-6554700010011175 — terminal closes protect announced gates', () =
       }),
     ).resolves.toMatchObject({ state: 'done' });
   });
+
+  it('recovers every terminal-close gate through labelled preview batches and fresh reads', async () => {
+    const item = await wi.createWorkItem({
+      kind: 'bug', title: 'complete gate census', harness: 'papercup',
+      workspaceId: 'default', createdBy: 'fixture-author',
+    });
+    await db.sql`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy, created_at)
+      SELECT 'close-owner', 'gate:close-batch:' || n, 'announce',
+             '2026-01-01'::timestamptz + n * interval '1 second'
+        FROM generate_series(1, 105) n
+    `;
+    await db.sql`
+      INSERT INTO harness_shared.event_awaits (subscriber_id, event_key, policy)
+      SELECT 'batch-waiter', 'gate:close-batch:' || n, 'wake' FROM generate_series(1, 105) n
+    `;
+    const retired = new Set<string>();
+    for (let remaining = 105; remaining > 0; remaining -= 10) {
+      // Each retry starts at the real consumer with only durable database state.
+      const refusal = await wi.setWorkItemState(item.id, 'resolved', {
+        harness: 'papercup', by: 'close-owner', completionRef: 'lossless close preview regression',
+      }).then(() => null, (error: unknown) => error);
+      expect(refusal).toBeInstanceOf(Error);
+      expect((await wi.getWorkItem(item.id, 'papercup'))?.state).toBe('open');
+      const text = String(refusal);
+      if (remaining > 10) expect(text).toContain(`plus ${remaining - 10} more`);
+      else expect(text).not.toContain(' more');
+      const preview = [...text.matchAll(/(gate:close-batch:\d+) \(announcement (\d+), 1 live waiter\)/g)];
+      expect(preview).toHaveLength(Math.min(remaining, 10));
+      for (const [, key, id] of preview) {
+        expect(retired.has(key)).toBe(false);
+        await expect(retireAnnouncement({ announcementId: Number(id), subscriberId: 'close-owner' }))
+          .resolves.toMatchObject({ retired: true });
+        retired.add(key);
+      }
+    }
+    expect(retired).toEqual(new Set(Array.from({ length: 105 }, (_, n) => `gate:close-batch:${n + 1}`)));
+    await expect(wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup', by: 'close-owner', completionRef: 'lossless close preview regression',
+    })).resolves.toMatchObject({ state: 'done' });
+  });
 });
 
 afterEach(async () => {

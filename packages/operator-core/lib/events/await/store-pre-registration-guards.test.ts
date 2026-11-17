@@ -33,6 +33,9 @@ beforeEach(() => {
   h.tx.array.mockImplementation((values: unknown[]) => values);
   h.tx.mockImplementation(async (strings: TemplateStringsArray) => {
     const query = strings.join('?');
+    // These registrations have no driving work-item dependency. Do not turn
+    // the generic inserted-await stub into a phantom wait-episode custodian.
+    if (query.includes('FROM harness_shared.work_items w')) return [];
     if (query.includes('SELECT *') && query.includes('causal_generation')) return [];
     if (query.includes('causal_generation')) {
       return [{ causal_generation: 7, fired_at: null, fired_reason: null, cancelled_at: null, superseded_at: null }];
