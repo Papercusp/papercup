@@ -95,18 +95,20 @@ describe('preserving review findings through consult settlement', () => {
   function disposition(findingId: string, status: 'planned' | 'fixed' = 'planned') {
     return { findingId, status, reason: 'Existing queue repair', reference: 'plan:recovery#P-001' };
   }
-  it('records requester dispositions after reviewer settlement without reopening or waking at the exchange cap', async () => {
+  it.each(['answered', 'cant_help'] as const)('records requester dispositions after %s reviewer settlement without reopening or waking at the exchange cap', async (outcome) => {
     const { id, deps, posts, emits, reached, dispatchCalls, settlements, findingId } = await reviewed({ withSettlement: true });
     await publicTools(deps, async ({ reply, close }) => {
-      expect(await close({ conversation_id: id, outcome: 'answered', answer: 'Original accepted review' },
-        RESPONDER, 'reviewer-close')).toMatchObject({ data: { ok: true, state: 'closed_answered' } });
+      const state = outcome === 'answered' ? 'closed_answered' : 'closed_cant_help';
+      expect(await close({ conversation_id: id, outcome,
+        ...(outcome === 'answered' ? { answer: 'Original accepted review' } : { reason: 'Retain the incomplete review' }) },
+        RESPONDER, 'reviewer-close')).toMatchObject({ data: { ok: true, state } });
       await rootSql`UPDATE harness_shared.consult_state SET exchanges_used=max_exchanges WHERE conversation_id=${id}`;
       const before = await snapshot(id, posts);
       const sideEffects = structuredClone({ emits, reached, dispatchCalls, settlements });
       for (const status of ['planned', 'fixed'] as const) {
         expect(await reply({ conversation_id: id, kind: 'new_fact', body: `Finding ${status}`,
           reviewDispositions: [disposition(findingId, status)] }, REQUESTER, `resumed-requester-${status}`))
-          .toMatchObject({ data: { ok: true, state: 'closed_answered', exchanges_used: 20 } });
+          .toMatchObject({ data: { ok: true, state, exchanges_used: 20 } });
       }
       const after = await snapshot(id, posts);
       const { review: originalReview, ...originalOutcome } = before.row.outcome as Record<string, unknown>;
@@ -124,10 +126,11 @@ describe('preserving review findings through consult settlement', () => {
       expect({ emits, reached, dispatchCalls, settlements }).toEqual(sideEffects);
     });
   });
-  it('refuses unrelated, unstructured and invented-finding terminal posts before mutation', async () => {
+  it.each(['answered', 'cant_help'] as const)('refuses unrelated, unstructured and invented-finding %s terminal posts before mutation', async (outcome) => {
     const { id, deps, posts, findingId } = await reviewed({ withSettlement: true });
     expect(await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: RESPONDER,
-      outcome: 'answered', answer: 'Original review' }, deps)).toMatchObject({ ok: true });
+      outcome, ...(outcome === 'answered' ? { answer: 'Original review' } : { reason: 'Retain the incomplete review' }) }, deps))
+      .toMatchObject({ ok: true });
     const before = await snapshot(id, posts);
     await publicTools(deps, async ({ reply }) => {
       for (const owner of ['unrelated-peer', RESPONDER]) {
@@ -136,7 +139,10 @@ describe('preserving review findings through consult settlement', () => {
           .toMatchObject({ data: { error: 'consult_not_open' } });
       }
       for (const extra of [{}, { reviewDispositions: [] }, { kind: 'question', reviewDispositions: [disposition(findingId)] },
-        { reviewDispositions: [disposition(findingId)], parkResponse: { kind: 'adopt', text: 'Reopen' } }]) {
+        { reviewDispositions: [disposition(findingId)], parkResponse: { kind: 'adopt', text: 'Reopen' } },
+        { reviewDispositions: [disposition(findingId)], review },
+        { reviewDispositions: [disposition(findingId)], evidence: [{ session_id: 'review-session', turn_idx: 1 }] },
+        { reviewDispositions: [disposition(findingId)], stance: { position: 'support', reason: 'Reopen' } }]) {
         expect(await reply({ conversation_id: id, kind: 'new_fact', body: 'Unstructured', ...extra },
           REQUESTER, 'terminal-requester')).toMatchObject({ data: { error: 'consult_not_open' } });
       }

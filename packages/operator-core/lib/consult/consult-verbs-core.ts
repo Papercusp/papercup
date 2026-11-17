@@ -572,9 +572,9 @@ export async function consultReplyCore(
     ? await claimPendingRevival(sql, req.workspaceId, req.conversationId, req.authorId, now)
     : null;
   if (pendingClaim) currentRow = pendingClaim;
-  // Settlement ends deliberation, but the original requester still owns the
-  // findings' disposition ledger. This narrow append cannot reopen a review.
-  const appendsSettledReview = currentRow?.state === 'closed_answered' &&
+  // Both answer and cant-help settlement retain reviewer findings. The original
+  // requester still owns their disposition ledger; this append cannot reopen it.
+  const appendsSettledReview = (currentRow?.state === 'closed_answered' || currentRow?.state === 'closed_cant_help') &&
     req.authorId === currentRow.requester_id && req.kind === 'new_fact' &&
     Boolean(req.reviewDispositions?.length) && req.review === undefined &&
     req.evidence === undefined && req.stance === undefined && req.parkResponse === undefined;
