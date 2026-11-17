@@ -413,7 +413,10 @@ describe('kopia-home-snapshot bounded execution contract', () => {
       }
     });
 
-    it('refuses startup after unknown privileged identity validation and retries the retained PID', () => {
+    it.each([
+      { label: 'timeout', validator: 'exec /bin/sleep 5', statuses: [124, 137] },
+      { label: 'refusal', validator: 'exit 1', statuses: [1] },
+    ])('refuses startup after unknown privileged identity validation ($label) and retries the retained PID', ({ validator, statuses }) => {
       const f = fixture({ leaf: 'kopia-home-snapshot.service', graceSec: '0' });
       try {
         rmSync(join(f.env.KOPIA_HOME_SNAPSHOT_PROC_ROOT, '6161', 'exe'));
@@ -423,7 +426,7 @@ describe('kopia-home-snapshot bounded execution contract', () => {
             '#!/usr/bin/env bash',
             '[ "$1" = -n ] && shift',
             '[ "$1" = -- ] && shift',
-            'if [ "$1" = readlink ]; then exec /bin/sleep 5; fi',
+            `if [ "$1" = readlink ]; then ${validator}; fi`,
             'printf \'%s\\n\' "$*" >>"$KOPIA_TEST_KILL_LOG"',
             '',
           ].join('\n'),
@@ -433,6 +436,10 @@ describe('kopia-home-snapshot bounded execution contract', () => {
         });
         expect(run.error).toBeUndefined();
         expect(run.status).toBe(1);
+        const privilegedStatus = run.stderr.match(/pid=6161 privileged_status=(\d+)/)?.[1];
+        expect(statuses).toContain(Number(privilegedStatus));
+        // GNU readlink -f resolves a missing final path component successfully.
+        expect(run.stderr).toMatch(/unprivileged_status=0 unprivileged_seconds=\d+ privileged_seconds=\d+/);
         expect(readFileSync(f.pidFile, 'utf8')).toBe('6161\n');
         expect(f.killLogText()).not.toMatch(/-(TERM|KILL) 6161\b/);
         expect(f.killLogText()).toContain('-TERM 6262');
