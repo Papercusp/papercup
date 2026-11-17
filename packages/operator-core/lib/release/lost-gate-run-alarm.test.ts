@@ -304,6 +304,41 @@ describe('sweepLostGateRuns (P-005 / R-5)', () => {
 });
 
 describe('qualification progress in the existing lost-run sweep', () => {
+  it.each(['disk-headroom', 'dependency-generation', 'repair-in-progress'])(
+    'resolves an observer alarm after the runner settles to waiting for %s', async reason => {
+      const tx = qualification();
+      const { sql, row } = fakeRoutineRow(null, tx);
+      const resolve = vi.fn(async () => true);
+      const record = vi.fn<NonNullable<LostRunSweepDeps['recordProgressObservation']>>(async (target, sample) => {
+        const result = observeQualificationProgress(row.qualification as CheckpointQualificationTransaction, target, sample);
+        row.qualification = result.transaction;
+        return result;
+      });
+      const d = deps({ probeQualificationRunner: () => 'unknown', recordProgressObservation: record,
+        observerGeneration: 'external', observerSequence: 1, monotonicAtMs: 1000, attention: { resolve } });
+
+      await sweepLostGateRuns(sql, d);
+      expect(d.broadcast.mock.calls[0][0].body).toContain('observer telemetry is UNKNOWN');
+      expect(resolve).not.toHaveBeenCalled();
+
+      const settled = settleQualificationTransaction(row.qualification as CheckpointQualificationTransaction, {
+        attemptId: tx.attemptId, reason, nowMs: NOW + 1000,
+      });
+      expect(settled.status).toBe('updated');
+      expect(settled.transaction).toMatchObject({ phase: 'waiting', currentPhysicalRunner: null });
+      row.qualification = settled.transaction;
+
+      await sweepLostGateRuns(sql, d);
+      expect(resolve).toHaveBeenCalledWith({
+        conditionKey: 'green-checkpoint-run-progress:papercusp', summary: 'lost-gate-run-alarm recovered',
+      });
+      expect(row.qualification).toEqual(settled.transaction);
+      expect(record).toHaveBeenCalledOnce();
+      expect(d.broadcast).toHaveBeenCalledOnce();
+      expect(row.retries).toBe(0);
+    },
+  );
+
   it('observer-partition-restart: a failed probe is persisted and alarmed without a retry', async () => {
     const tx = qualification(NOW - 1000);
     tx.runId = 'run-1';
