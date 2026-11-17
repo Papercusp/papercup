@@ -273,6 +273,46 @@ describe('held lane prerequisite admission (P-010)', () => {
     } finally { start.mockRestore(); warm.mockRestore(); }
   });
 
+  it('revokes held native and MCP/LSP writes when a done prerequisite lacks current native proof', async () => {
+    await seedLane('done');
+    await db.sql`INSERT INTO harness_shared.plan_item_claims
+      (owner,workspace_id,harness_slug,plan_slug,item_id,expires_ts)
+      VALUES (${OWNER},${WS},'project','draft-feature','P-001',now()-interval '1 day')`;
+    const authority = await import('./plan-execution-authority');
+    const continuation = await import('./plan-continuation-readiness');
+    const start = vi.spyOn(authority, 'readPlanExecutionStart').mockResolvedValue([]);
+    // Preserve both production per-call checks even if plan-wide readiness is warm.
+    const warm = vi.spyOn(continuation, 'checkContinuationReadiness').mockImplementation(async (b, ws, observe, deps) => {
+      const blockers = await deps.preflight?.(b, ws, observe);
+      return blockers?.length ? blockers : deps.recheck ? deps.recheck(b, ws, observe) : [];
+    });
+    try {
+      expect(await checkPlanExecutionGuard({ ownerId: OWNER, workspaceId: WS,
+        toolName: 'lsp:apply', args: {} })).toBeNull();
+      await requireNativeFloor();
+      for (const tool of ['apply_patch', 'exec_command']) {
+        const text = await toolGuardText({ ownerId: OWNER, workspaceId: WS,
+          call: { tool, input: { cmd: 'touch implementation.ts' }, client: 'codex' } }, async () => null);
+        expect(text).toContain('native_proof_required');
+        expect(text).toContain('native-floor@1');
+      }
+      for (const name of ['capability:write', 'lsp:apply']) {
+        const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'wrote source' }] }));
+        const tool: ProjectedTool = { pluginName: 'fixture', description: 'private write',
+          inputSchema: { type: 'object' }, capabilities: [], expose: { mcp: { name } }, fn: handler } as ProjectedTool;
+        const result = await dispatchProjectedTool(tool, name, {},
+          { workspaceId: WS, isSuperuser: true, uiClientId: OWNER, signal: new AbortController().signal,
+            log: () => {}, progress: () => {}, emit: () => {} }, { kernelEnforcement: controlAnchorKernelResolver });
+        expect(JSON.stringify(result)).toContain('native_proof_required');
+        expect(handler).not.toHaveBeenCalled();
+      }
+      // A fresh serialized binding cannot replace the absent retained original.
+      expect((await checkExecutionPlanLane(JSON.parse(JSON.stringify({ ...binding,
+        source: 'plan-item-claim', sourceRef: 'draft-feature#P-001' })), WS)).join(' '))
+        .toContain('native_proof_required');
+    } finally { start.mockRestore(); warm.mockRestore(); }
+  });
+
   it.each(['before-cache', 'after-cache'] as const)('revokes a real cached positive for a resumed lane %s', async when => {
     await seedLane('done');
     await db.sql`INSERT INTO harness_shared.plan_item_claims
