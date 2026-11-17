@@ -7,6 +7,81 @@ import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
 import { BAR_CRITIQUE_POLICY, CONSULT_DEFAULT_POLICY, METHOD_REVIEW_POLICY, RUBRIC_VETTING_POLICY, methodReviewTarget } from './selection-policies';
 import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackError, GetFeedbackRequest, GetFeedbackResult } from './get-feedback-core';
 import type { QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
+import { z } from 'zod';
+import { readConsultReview } from './review-findings';
+import { runWithWorkspace } from '../workspace-als';
+
+/** Resolve a prospective method verdict from the existing consult/post ledger.
+ * A reference supplied by the runner is custody, never approval by itself. */
+export async function verifyMethodReviewAnswer(input: {
+  workspaceId: string; harnessSlug: string; subjectPlan: string;
+  fingerprint: string; reviewRef: string;
+}) {
+  return runWithWorkspace(input.workspaceId, () => verifyMethodReviewAnswerInWorkspace(input));
+}
+
+async function verifyMethodReviewAnswerInWorkspace(input: Parameters<typeof verifyMethodReviewAnswer>[0]) {
+  const fingerprint = z.string().regex(/^[a-f0-9]{64}$/).parse(input.fingerprint);
+  const postId = z.string().regex(/^thread-post:[1-9][0-9]*$/).parse(input.reviewRef).slice('thread-post:'.length);
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const rows = await getOrgPg().sql<Array<{ conversation_id: string; requester_id: string;
+    harness_slug: string; routing: unknown; outcome: unknown; dispatch_attempts: unknown;
+    author_id: string; body: string; evidence: unknown }>>`
+    SELECT c.conversation_id, c.requester_id, v.harness_slug, c.routing, c.outcome,
+           c.dispatch_attempts, p.author_id, p.body, m.evidence
+      FROM harness_shared.consult_state c
+      JOIN harness_shared.coord_conversations v
+        ON v.workspace_id = c.workspace_id AND v.id = c.conversation_id
+      JOIN harness_shared.coord_threads t
+        ON t.workspace_id = v.workspace_id AND t.parent_kind = 'conversation' AND t.parent_ref = v.id
+      JOIN harness_shared.coord_thread_posts p
+        ON p.workspace_id = t.workspace_id AND p.thread_id = t.thread_id
+      JOIN harness_shared.consult_post_meta m
+        ON m.workspace_id = p.workspace_id AND m.post_id = p.id
+       AND m.conversation_id = c.conversation_id AND m.author_id = p.author_id
+     WHERE c.workspace_id = ${input.workspaceId} AND p.id = ${postId}::bigint
+       AND p.origin = 'local' AND m.kind = 'answer'
+       AND NOT EXISTS (SELECT 1 FROM harness_shared.consult_post_meta later
+         WHERE later.workspace_id = c.workspace_id AND later.conversation_id = c.conversation_id
+           AND later.kind = 'answer' AND later.post_id > p.id)`;
+  if (rows.length !== 1) throw new Error('method_review_answer_missing_or_superseded');
+  const row = rows[0]!;
+  const routing = z.object({ policy: z.literal(METHOD_REVIEW_POLICY),
+    methodReviewRubricRef: z.string().trim().min(1) }).passthrough().parse(row.routing);
+  const grounding = z.array(z.object({ session_id: z.string().trim().min(1),
+    turn_idx: z.number().int().nonnegative() }).passthrough()).nonempty().safeParse(row.evidence);
+  if (row.harness_slug !== input.harnessSlug || !row.requester_id?.trim() || !grounding.success)
+    throw new Error('method_review_answer_scope_or_grounding_invalid');
+  const subjectRef = 'native-proof:' + fingerprint;
+  const review = readConsultReview(row.outcome);
+  const answer = review?.answers.find(answer => String(answer.postId) === postId);
+  if (!answer || answer.reviewerId !== row.author_id || answer.subjectRef !== subjectRef
+    || answer.coverage !== 'complete'
+    || review!.findings.some(finding => finding.postId === answer.postId)
+    || row.body.trimStart().split(/\r?\n/, 1)[0]?.trim() !== 'approve ' + subjectRef)
+    throw new Error('method_review_exact_complete_approval_required');
+  // Dispatch walks retain the expert -> answering-session edge. Never mistake
+  // responder_id (the source expert) for the author of the actual answer.
+  const walks = z.array(z.object({ sourceOwnerId: z.string().min(1),
+    answeringOwnerId: z.string().nullable().optional(), dispatched: z.boolean() }).passthrough())
+    .parse(row.dispatch_attempts);
+  const sources = [...new Set(walks.filter(walk => walk.dispatched
+    && walk.answeringOwnerId === row.author_id).map(walk => walk.sourceOwnerId))];
+  if (sources.length !== 1) throw new Error('method_review_dispatch_identity_unavailable');
+  const { resolveAcceptanceBarApproverScreen } = await import('../rubrics');
+  const screen = await resolveAcceptanceBarApproverScreen({ rubricId: routing.methodReviewRubricRef,
+    applierId: row.requester_id });
+  if (screen.subjectPlan !== input.subjectPlan
+    || screen.subjectScope.workspaceId !== input.workspaceId
+    || screen.subjectScope.harnessSlug !== input.harnessSlug)
+    throw new Error('method_review_subject_plan_mismatch');
+  for (const ownerId of new Set([sources[0]!, row.author_id])) {
+    const verdict = await screen.check(ownerId);
+    if (verdict.eligible !== true) throw new Error('method_review_identity_ineligible:' + verdict.reason);
+  }
+  return { reviewRef: input.reviewRef, conversationId: row.conversation_id, fingerprint,
+    sourceOwnerId: sources[0]!, answeringOwnerId: row.author_id, rubricId: screen.rubricId };
+}
 
 export interface GetFeedbackProdOptions {
     acceptedRequest?: GetFeedbackDeps['acceptedRequest'];

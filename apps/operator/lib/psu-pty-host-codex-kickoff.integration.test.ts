@@ -9,16 +9,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
-import { hostThroughPty, KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV } from '../scripts/psu-pty-host.mjs';
+import { eventLogPathForOwner, hostThroughPty, KICKOFF_PROOF_PATH_ENV, KICKOFF_PROOF_TOKEN_ENV,
+  metaPathFor, socketPathFor } from '../scripts/psu-pty-host.mjs';
 import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../../../packages/operator-core/lib/inference-gateway/codex-cli-bridge';
+import { injectIntoHostWithConfirmation } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
 
-it.each([0, 5000])('starts an idle Codex kickoff exactly once with MCP bootstrap delayed %ims', async mcpDelayMs => {
+it.each([
+  { mcpDelayMs: 0, initial429: false },
+  { mcpDelayMs: 5000, initial429: false },
+  { mcpDelayMs: 0, initial429: true },
+])('starts Codex exactly once with MCP delay $mcpDelayMs and initial429=$initial429', async ({ mcpDelayMs, initial429 }) => {
   const root = mkdtempSync(join(tmpdir(), 'codex-idle-kickoff-'));
   const codexHome = join(root, 'home');
   mkdirSync(codexHome);
   const ownerId = `test-codex-kickoff-${randomUUID()}`;
   const marker = `⟦turn-origin:fleet-kickoff nonce:${randomBytes(8).toString('hex')}⟧`;
   const kickoff = `${marker}\nRecover the existing fleet lane.\nPaper only; retain the existing signing key.\nDECISIVE_KICKOFF_TAIL`;
+  const wakeMarker = `⟦turn-origin:wake-pump nonce:${randomBytes(8).toString('hex')}⟧`;
+  const wake = `${wakeMarker}\nContinue the same conversation after temporary rate limiting.\nDECISIVE_WAKE_TAIL`;
   const proofPath = join(root, 'kickoff.json');
   writeFileSync(proofPath, '', { mode: 0o600 });
   const signals = new EventEmitter();
@@ -27,6 +35,7 @@ it.each([0, 5000])('starts an idle Codex kickoff exactly once with MCP bootstrap
   const requests: any[] = [];
   const errors: string[] = [];
   let nativeExit: number | undefined;
+  let providerRecovered = !initial429;
   const server = createServer(async (req, res) => {
     try {
       const chunks: Buffer[] = [];
@@ -46,6 +55,12 @@ it.each([0, 5000])('starts an idle Codex kickoff exactly once with MCP bootstrap
       }
       if (req.url !== '/v1/responses') { res.writeHead(200).end('{}'); return; }
       requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+      if (!providerRecovered) {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '1' });
+        res.end(JSON.stringify({ error: { type: 'rate_limit_error', code: 'rate_limit_exceeded',
+          message: 'Temporary offline fixture rate limit' } }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: 'gpt-6.1-sol',
         text: 'OFFLINE_KICKOFF_COMPLETE', inputTokens: 0, outputTokens: 0 })));
@@ -103,6 +118,58 @@ it.each([0, 5000])('starts an idle Codex kickoff exactly once with MCP bootstrap
         const row = JSON.parse(line);
         return { type: row.type, payloadType: row.payload?.type, role: row.payload?.role };
       }) });
+    if (initial429) {
+      // EI-28140760079604772: use the installed client's terminal failure,
+      // then the same host's canonical wake path. A TUI repaint or accepted
+      // socket envelope alone cannot satisfy this regression.
+      await vi.waitFor(() => {
+        const rows = transcript().split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(rows.some(row => row.type === 'event_msg' && row.payload?.error
+          && JSON.stringify(row.payload.error).includes('429')), diagnostics()).toBe(true);
+      }, { timeout: 25_000 });
+      const before = transcript().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(before, diagnostics()).toContainEqual(expect.objectContaining({
+        type: 'event_msg', payload: expect.objectContaining({
+          error: expect.objectContaining({ codex_error_info: {
+            response_too_many_failed_attempts: { http_status_code: 429 },
+          } }),
+        }),
+      }));
+      const sessionIdsBefore = before.filter(row => row.type === 'session_meta').map(row => row.payload.id);
+      expect(sessionIdsBefore, diagnostics()).toHaveLength(1);
+      providerRecovered = true;
+      const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
+      expect(await injectIntoHostWithConfirmation(socketPathFor(ownerId), {
+        mode: 'turn', ownerId, deliveryId: `retry-exhausted-${ownerId}`, data: wake,
+        requireNativeTurnStart: true, expectedHostStartedAt: meta.startedAt,
+        expectedChildGeneration: meta.execution.childGeneration,
+      })).toMatchObject({ ok: true });
+      await vi.waitFor(() => {
+        expect(nativeExit, diagnostics()).toBeUndefined();
+        expect(transcript(), diagnostics()).toContain('OFFLINE_KICKOFF_COMPLETE');
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .split('\n').filter(Boolean).map(line => JSON.parse(line));
+        expect(events, diagnostics()).toContainEqual(expect.objectContaining({
+          kind: 'native-turn-start-confirmed', deliveryId: `retry-exhausted-${ownerId}`,
+        }));
+      }, { timeout: 35_000 });
+      const after = transcript().split('\n').filter(Boolean).map(line => JSON.parse(line));
+      expect(after.filter(row => row.type === 'session_meta').map(row => row.payload.id))
+        .toEqual(sessionIdsBefore);
+      const wakes = after.filter(row => row.type === 'response_item' && row.payload?.role === 'user')
+        .flatMap(row => row.payload.content ?? [])
+        .filter(item => item.type === 'input_text' && item.text.includes(wakeMarker));
+      expect(wakes, diagnostics()).toEqual([{ type: 'input_text', text: wake }]);
+      const requestCount = requests.length;
+      // Replay the same durable delivery after its native ACK: it must not
+      // append another owner input or issue another inference request.
+      expect(await injectIntoHostWithConfirmation(socketPathFor(ownerId), {
+        mode: 'turn', ownerId, deliveryId: `retry-exhausted-${ownerId}`, data: wake,
+        requireNativeTurnStart: true, expectedHostStartedAt: meta.startedAt,
+        expectedChildGeneration: meta.execution.childGeneration,
+      })).toMatchObject({ ok: true, reason: 'delivery-already-started' });
+      expect(requests).toHaveLength(requestCount);
+    }
     await vi.waitFor(() => {
       expect(nativeExit, diagnostics()).toBeUndefined();
       expect(transcript(), diagnostics()).toContain('OFFLINE_KICKOFF_COMPLETE');

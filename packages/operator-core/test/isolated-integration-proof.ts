@@ -1017,13 +1017,36 @@ export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePath
     'packages/operator-core/lib/search/import-graph.ts',
     'packages/operator-core/test/isolated-integration-proof.ts',
     'packages/operator-core/test/private-http-workspace-preflight.ts',
+    ...(filePath === 'packages/operator-core/lib/task-artifacts-client-baseline.integration.test.ts' ? [
+      'packages/operator-core/lib/consult/get-feedback-prod.ts',
+      'packages/operator-core/lib/consult/review-findings.ts',
+      'packages/operator-core/lib/consult/selection-policies.ts',
+      'packages/operator-core/lib/rubrics.ts',
+      'packages/operator-core/lib/acceptance-author-identity.ts',
+    ] : []),
     ...sourcePaths,
   ])].sort();
 }
 
 export type NativeProofRecorder = {
+  readonly input: NativeProofRun['input'];
   observe: (kind: 'installed' | 'built' | 'runtime' | 'trace' | 'sealed' | 'readback', receiptPath: string) => Promise<void>;
 };
+
+/** Parent and private child append measured files to the same retained intent. */
+export function nativeProofRecorder(sql: Parameters<typeof executeNativeProofOnce>[0],
+  intent: NativeProofRun): NativeProofRecorder {
+  return {
+    input: structuredClone(intent.input),
+    observe: async (kind, receiptPath) => {
+      const { readNativeProofRun, appendNativeProofEvent } = await import('../lib/testing-run-store');
+      const current = await readNativeProofRun(sql, intent.runId);
+      assert.ok(current && current.fingerprint === intent.fingerprint, 'Native proof original intent changed');
+      await appendNativeProofEvent(sql, current.runId, current.fingerprint, current.events.length,
+        { kind, receiptRef: receiptPath, receiptSha256: hash(readFileSync(receiptPath)) });
+    },
+  };
+}
 
 /** Deliberately require the dedicated shared-ledger pin. Falling back to the
  * disposable product DB would allow a successor to mint another launch. */
@@ -1084,6 +1107,12 @@ export async function recordIsolatedIntegrationProof(options: IsolatedIntegratio
   const paths = isolatedIntegrationProofSourcePaths(options.filePath, options.sourcePaths);
   const sources = Object.fromEntries(paths.map(path => [path, hash(readFileSync(join(options.root, path)))]));
   assert.deepEqual(input.prerequisiteSources, sources, 'Native proof prelaunch source identity changed');
+  const { nativeProofFingerprint } = await import('../lib/testing-run-store');
+  const fingerprint = nativeProofFingerprint(input).fingerprint;
+  assert.equal(admission.reviewedFingerprint, fingerprint, 'Native proof reviewed edition changed');
+  const { verifyMethodReviewAnswer } = await import('../lib/consult/get-feedback-prod');
+  await verifyMethodReviewAnswer({ ...input.scope, subjectPlan: input.scope.planSlug,
+    fingerprint, reviewRef: admission.reviewRef });
   const { executeNativeProofOnce } = await import('../lib/testing-run-store');
   return executeNativeProofOnce(sql, input, admission, async intent => {
     options.signal?.throwIfAborted();
@@ -1094,16 +1123,7 @@ export async function recordIsolatedIntegrationProof(options: IsolatedIntegratio
 async function recordIsolatedIntegrationProofRun(options: IsolatedIntegrationProofOptions,
   nativeIntent?: NativeProofRun): Promise<string> {
   const { root, filePath } = options;
-  const nativeRecorder: NativeProofRecorder | undefined = nativeIntent ? {
-    observe: async (kind, receiptPath) => {
-      const { readNativeProofRun, appendNativeProofEvent } = await import('../lib/testing-run-store');
-      const sql = options.nativeProof!.sql;
-      const current = await readNativeProofRun(sql, nativeIntent.runId);
-      assert.ok(current && current.fingerprint === nativeIntent.fingerprint, 'Native proof original intent changed');
-      await appendNativeProofEvent(sql, current.runId, current.fingerprint, current.events.length,
-        { kind, receiptRef: receiptPath, receiptSha256: hash(readFileSync(receiptPath)) });
-    },
-  } : undefined;
+  const nativeRecorder = nativeIntent ? nativeProofRecorder(options.nativeProof!.sql, nativeIntent) : undefined;
   const paths = isolatedIntegrationProofSourcePaths(filePath, options.sourcePaths);
   let source: any;
   let lifecycle: any;

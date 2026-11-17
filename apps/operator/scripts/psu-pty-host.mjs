@@ -14086,6 +14086,9 @@ export function hostThroughPty(o) {
       let kickoffSubmittedAtMs = null;
       let kickoffCarryBinding = null;
       let kickoffBindingFailure = null;
+      const kickoffOwnerInputGeneration = ownerInputGeneration;
+      let lateBindingRecovered = false;
+      let resolveLateLaunchBinding = null;
       const injectLaunchKickoff = () => {
         const identityRefusal = continuationIdentityRefusal({
           mode: 'launch-kickoff',
@@ -14126,7 +14129,9 @@ export function hostThroughPty(o) {
         });
         kickoffCarryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
           (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
-          ? prepareCarryBinding(initialNativeId, Date.now() + kickoffBudgetMs)
+          ? prepareCarryBinding(initialNativeId, Date.now() + kickoffBudgetMs, false, (binding) => {
+              resolveLateLaunchBinding?.(binding);
+            })
           : null;
         kickoffBindingFailure = null;
         void kickoffCarryBinding?.then((binding) => {
@@ -14197,8 +14202,8 @@ export function hostThroughPty(o) {
           },
           // Read per attempt, so a replacement child is judged against the owner
           // input generation current at its own kickoff.
-          freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && !isResumeLaunch
-            ? ownerInputGeneration
+          freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' && (!isResumeLaunch || lateBindingRecovered)
+            ? (lateBindingRecovered ? kickoffOwnerInputGeneration : ownerInputGeneration)
             : null,
           // The managed kickoff's native transcript proof owns its failure
           // timeout and child kill. Do not let the generic submit verifier tear
@@ -14207,6 +14212,56 @@ export function hostThroughPty(o) {
         });
       };
       let r = await injectLaunchKickoff();
+      if (!managedKickoff && isResumeLaunch && !r.delivered && r.reason === 'successor-reanchor-unconfirmed') {
+        // The same child's durable report can acknowledge AFTER the bounded
+        // preparation returned. Keep ownership of this unsubmitted kickoff
+        // until that event, owner input, or child exit settles it. Wakes remain
+        // serialized behind launchKickoffCompletion; no second process or
+        // unbound prompt is needed to recover an accepted late receipt.
+        const target = kickoffChild;
+        const nativeId = carryBindingNativeId;
+        const rejection = () => hostCleanedUp || shuttingDown || child !== target
+          ? 'superseded'
+          : ownerInputGeneration !== kickoffOwnerInputGeneration ? 'fresh-child-owner-input' : null;
+        let binding = null;
+        if (!rejection()) {
+          binding = await new Promise((resolve) => {
+            let settled = false;
+            let exitListener;
+            const finish = (value) => {
+              if (settled) return;
+              settled = true;
+              resolveLateLaunchBinding = null;
+              stdin.off?.('data', onInput);
+              for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) signalSource.off?.(signal, onExit);
+              exitListener?.dispose();
+              resolve(value);
+            };
+            const onInput = () => { if (rejection()) finish(null); };
+            const onExit = () => finish(null);
+            resolveLateLaunchBinding = (accepted) => {
+              if (accepted.nativeId === nativeId && !rejection()) finish(accepted);
+            };
+            stdin.on('data', onInput);
+            for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) signalSource.on?.(signal, onExit);
+            exitListener = target.onExit(onExit);
+            // Confirmation may have arrived between the failed preparation
+            // and installing this waiter. Accept only the exact current child.
+            if (confirmedCarryChild === target && confirmedCarryNativeId === nativeId) {
+              finish({ ok: true, nativeId });
+            } else if (rejection()) finish(null);
+          });
+        }
+        if (binding && !rejection()) {
+          lateBindingRecovered = true;
+          appendHostEvent(ownerId, 'launch-kickoff-binding-recovery-started', { nativeId });
+          r = await injectLaunchKickoff();
+        } else {
+          const reason = rejection() ?? 'child-exited';
+          appendHostEvent(ownerId, 'launch-kickoff-binding-recovery-cancelled', { nativeId, reason });
+          r = { delivered: false, reason, attempts: r.attempts };
+        }
+      }
       while (
         !r.delivered &&
         shouldRetryLaunchKickoffOnFreshChild({

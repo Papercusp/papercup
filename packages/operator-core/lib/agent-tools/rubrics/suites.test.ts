@@ -326,7 +326,7 @@ describe('canonical suite operations and acceptance', () => {
     f.histories.set('one', [card('one', 'healthy', { createdAt: new Date(NOW - 86_400_000).toISOString() })]);
     await f.create(); expect((await f.evaluate()).verdict).toBe('unknown');
     await f.edit({ suiteRef: 'test-suite', rescoreIntervalMs: null });
-    expect((await f.read())?.rescoreIntervalMs).toBeNull();
+    expect((await f.read())?.rescoreIntervalMs).toBeUndefined();
     expect((await f.evaluate()).members[0].verdict).toBe('pass');
     expect((await f.evaluate()).verdict).toBe('pass');
   });

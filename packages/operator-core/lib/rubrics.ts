@@ -6678,6 +6678,7 @@ export async function checkAcceptanceBarApproverEligibility(input: {
 export interface AcceptanceBarApproverScreen {
   rubricId: string;
   subjectPlan: string;
+  subjectScope: { workspaceId: string; harnessSlug: string };
   check(ownerId: string): Promise<AcceptanceBarApproverEligibilityCheck>;
 }
 
@@ -6765,6 +6766,7 @@ export async function resolveAcceptanceBarApproverScreen(input: {
   return {
     rubricId: rubric.rubricId,
     subjectPlan,
+    subjectScope,
     async check(rawOwnerId: string): Promise<AcceptanceBarApproverEligibilityCheck> {
       const ownerId = rawOwnerId.trim();
       if (!ownerId) throw new Error('acceptance_bar_approver_check_invalid_identity');

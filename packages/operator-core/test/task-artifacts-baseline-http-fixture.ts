@@ -7,9 +7,15 @@ import { createServer, type Server } from 'node:http';
 import { Readable } from 'node:stream';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import postgres from 'postgres';
+// eslint-disable-next-line import/no-relative-packages -- same raw SQL contract as the org client
+import { restoreRawJsonbSerializer } from '../../../libs/papercusp/libs/db/src/raw-serializers';
 import { connectAgentMcp } from '../lib/agent-mcp-client';
 import { readProcessIdentity } from '../lib/process-identity';
 import { superuserTokenPath } from '../lib/superuser-token';
+import { appendNativeProofEvent, enterNativeProofChild, readNativeProofRun,
+  type NativeProofChildHandoff } from '../lib/testing-run-store';
+import type { NativeProofRecorder } from './isolated-integration-proof';
 import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle,
   stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
 
@@ -24,6 +30,7 @@ let host: ChildProcess | undefined;
 let client: Awaited<ReturnType<typeof connectAgentMcp>>['client'] | undefined;
 let proxy: Server | undefined;
 let activeEntry: Request | undefined;
+let productRuntimeEntered = false;
 
 function decode(result: any): any {
   assert.notEqual(result?.isError, true, JSON.stringify(result));
@@ -32,7 +39,7 @@ function decode(result: any): any {
   return text ? JSON.parse(text.text) : result?.data ?? result;
 }
 
-async function main() {
+async function main(native: NativeProofRecorder) {
   const env = process.env;
   const workspace = env.PAPERCUSP_WORKSPACE_ID!;
   const base = env.PAPERCUSP_OPERATOR_URL!;
@@ -74,6 +81,7 @@ async function main() {
   writeFileSync(join(evidenceDir, 'baseline-runtime.json'), JSON.stringify({ sourceSha, bundleSha256,
     hostIdentity, health, qualification: source.qualification, edition: source.edition,
     originalDependenciesReconstructed: false, repairedLockSha256: dependencyEdition.repairedLockSha256 }), { flag: 'wx' });
+  await native.observe('runtime', join(evidenceDir, 'baseline-runtime.json'));
   // Observe both clients at their actual HTTP boundary. A logical UUID cannot
   // stand in for JSON-RPC IDs or reveal an adapter's automatic retries.
   proxy = createServer(async (incoming, outgoing) => {
@@ -188,11 +196,39 @@ async function main() {
   await new Promise<void>((resolve, reject) => proxy!.close(error => error ? reject(error) : resolve()));
   proxy = undefined;
   await stopPrivateOperatorHost(host); host = undefined;
+  await native.observe('trace', join(evidenceDir, 'client-traces.json'));
   console.log('TASK_ARTIFACT_CLIENT_BASELINE_RECEIPT ' + JSON.stringify({ sourceSha, bundleSha256,
     hostStopped: true, completedMatrix: false, adapters: ['mcp-http', 'ptool-http'],
     traces: traces.map(({ scenario, adapter, count, outcomeSha256 }) => ({ scenario, adapter, count, outcomeSha256 })) }));
 }
-try { await main(); }
+try {
+  const handoffPath = process.argv.find(arg => arg.startsWith('--native-proof-child='))
+    ?.slice('--native-proof-child='.length);
+  assert.ok(handoffPath, 'Original durable native child handoff required before private runtime creation');
+  const handoff: NativeProofChildHandoff = JSON.parse(readFileSync(handoffPath, 'utf8'));
+  // As in native-proof-successor.mts, the child owns a raw shared-ledger pool.
+  // Do not import the Vitest proof driver into this ordinary Node process.
+  const url = process.env.PAPERCUSP_TEST_RUNS_DB_URL?.trim();
+  assert.ok(url, 'Explicit durable test-run ledger URL required');
+  const pool = postgres(url, { max: 2, connect_timeout: 5 });
+  restoreRawJsonbSerializer(pool);
+  const sql = pool as unknown as Parameters<typeof enterNativeProofChild>[0];
+  try {
+    await enterNativeProofChild(sql, handoff,
+      'packages/operator-core/test/task-artifacts-baseline-http-fixture.ts',
+      digest(readFileSync(new URL(import.meta.url))), intent => {
+        productRuntimeEntered = true;
+        return main({ input: intent.input,
+        observe: async (kind, receiptPath) => {
+          const current = await readNativeProofRun(sql, intent.runId);
+          assert.equal(current?.fingerprint, intent.fingerprint, 'Original native proof intent changed');
+          await appendNativeProofEvent(sql, intent.runId, intent.fingerprint, current!.events.length,
+            { kind, receiptRef: receiptPath, receiptSha256: digest(readFileSync(receiptPath)) });
+        },
+        });
+      });
+  } finally { await pool.end({ timeout: 5 }); }
+}
 catch (error) { console.error('TASK_ARTIFACT_CLIENT_BASELINE_FAILURE', error); process.exitCode = 1; }
 finally {
   await client?.close();
@@ -201,5 +237,5 @@ finally {
     await new Promise<void>(resolve => proxy!.close(() => resolve()));
   }
   if (host) await stopPrivateOperatorHost(host);
-  await getOrgPg().sql.end({ timeout: 1 });
+  if (productRuntimeEntered) await getOrgPg().sql.end({ timeout: 1 });
 }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolve } from 'node:path';
 import { mockResolvedOnceTyped } from '../testing/typed-mock';
+import type { ConsultReviewState } from './review-findings';
 
 type ValidateBarCritiquePlanOrigin = typeof import('./get-feedback-core').validateBarCritiquePlanOrigin;
 type BuildQueryEmbedderResolved = typeof import('../agent-tools/search/embedder').buildQueryEmbedderResolved;
@@ -80,7 +81,81 @@ vi.mock('./expert-routing-settings', async (importOriginal) => {
   return { ...actual, readConsultExpertRoutingSettings: h.readConsultExpertRoutingSettings };
 });
 
-import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd } from './get-feedback-prod';
+import { acceptFeedbackRequestProd, continueFeedbackRequestProd, getFeedbackProd, verifyMethodReviewAnswer } from './get-feedback-prod';
+
+describe('retained native method review authority', () => {
+  const fingerprint = 'a'.repeat(64);
+  const subjectRef = 'native-proof:' + fingerprint;
+  const input = { workspaceId: 'ws-method', harnessSlug: 'native', subjectPlan: 'plan-native',
+    fingerprint, reviewRef: 'thread-post:123' };
+  const receipt = () => {
+    const review: ConsultReviewState = { version: 1, answers: [{ postId: 123, reviewerId: 'answerer', subjectRef,
+      coverage: 'complete', at: '2026-11-17T00:00:00Z' }], findings: [], dispositions: [] };
+    return { conversation_id: 'consult-method', requester_id: 'applier', harness_slug: 'native',
+    routing: { policy: 'method-review', methodReviewRubricRef: 'acceptance-native' },
+    outcome: { review },
+    dispatch_attempts: [{ sourceOwnerId: 'expert', answeringOwnerId: 'answerer', dispatched: true }],
+    author_id: 'answerer', body: 'approve ' + subjectRef + '\nInspected the complete retained method.',
+    evidence: [{ session_id: 'review-transcript', turn_idx: 1 }],
+  }; };
+  const check = vi.fn(async (_ownerId: string) => ({ eligible: true, reason: 'eligible' }));
+  beforeEach(() => {
+    vi.clearAllMocks(); h.sql.mockReset().mockResolvedValue([receipt()]);
+    check.mockReset().mockResolvedValue({ eligible: true, reason: 'eligible' });
+    h.resolveAcceptanceBarApproverScreen.mockReset().mockResolvedValue({ rubricId: 'acceptance-native',
+      subjectPlan: input.subjectPlan,
+      subjectScope: { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug }, check });
+  });
+  it('binds the complete exact answer and independently screens its source and actual answerer', async () => {
+    expect(await verifyMethodReviewAnswer(input)).toMatchObject({ fingerprint, reviewRef: input.reviewRef,
+      sourceOwnerId: 'expert', answeringOwnerId: 'answerer' });
+    expect(check.mock.calls).toEqual([['expert'], ['answerer']]);
+    expect(h.resolveAcceptanceBarApproverScreen).toHaveBeenCalledWith({ rubricId: 'acceptance-native', applierId: 'applier' });
+    const query = h.sql.mock.calls[0]![0] as TemplateStringsArray;
+    expect(query.join('?')).toContain("later.kind = 'answer' AND later.post_id > p.id");
+  });
+  it.each(['absent', 'superseded', 'ambiguous'])('refuses an %s retained answer', async kind => {
+    h.sql.mockResolvedValue(kind === 'ambiguous' ? [receipt(), receipt()] : []);
+    await expect(verifyMethodReviewAnswer(input)).rejects.toThrow('method_review_answer_missing_or_superseded');
+    expect(check).not.toHaveBeenCalled();
+  });
+  it.each(['wrong-policy', 'wrong-harness', 'no-evidence', 'invalid-evidence', 'wrong-edition', 'incomplete',
+    'finding', 'wrong-author', 'prose-only', 'unstamped-dispatch', 'different-answerer'])('refuses %s', async kind => {
+    const row = receipt();
+    if (kind === 'wrong-policy') row.routing.policy = 'default';
+    if (kind === 'wrong-harness') row.harness_slug = 'elsewhere';
+    if (kind === 'no-evidence') row.evidence = [];
+    if (kind === 'invalid-evidence') row.evidence = [{ session_id: '', turn_idx: -1 }];
+    if (kind === 'wrong-edition') row.outcome.review.answers[0]!.subjectRef = 'native-proof:' + 'b'.repeat(64);
+    if (kind === 'incomplete') row.outcome.review.answers[0]!.coverage = 'incomplete';
+    if (kind === 'finding') row.outcome.review.findings = [{ key: 'gap', severity: 'major', text: 'gap', evidenceRefs: [],
+      id: 'post:123#gap', postId: 123, reviewerId: 'answerer', subjectRef }];
+    if (kind === 'wrong-author') row.author_id = 'other';
+    if (kind === 'prose-only') row.body = 'Looks fine';
+    if (kind === 'unstamped-dispatch') row.dispatch_attempts = [];
+    if (kind === 'different-answerer') row.dispatch_attempts[0]!.answeringOwnerId = 'other';
+    h.sql.mockResolvedValue([row]);
+    await expect(verifyMethodReviewAnswer(input)).rejects.toThrow();
+    expect(check).not.toHaveBeenCalled();
+  });
+  it.each(['expert', 'answerer'])('refuses an ineligible %s even if the other identity is eligible', async rejected => {
+    check.mockImplementation(async ownerId => ({ eligible: ownerId !== rejected, reason: 'related_to_plan_implementer' }));
+    await expect(verifyMethodReviewAnswer(input)).rejects.toThrow('method_review_identity_ineligible');
+  });
+  it('refuses another subject plan and unreadable canonical independence history', async () => {
+    h.resolveAcceptanceBarApproverScreen.mockResolvedValueOnce({ subjectPlan: 'another-plan', check });
+    await expect(verifyMethodReviewAnswer(input)).rejects.toThrow('method_review_subject_plan_mismatch');
+    h.resolveAcceptanceBarApproverScreen.mockRejectedValueOnce(new Error('lineage unavailable'));
+    await expect(verifyMethodReviewAnswer(input)).rejects.toThrow('lineage unavailable');
+  });
+  it.each(['workspace', 'harness'])('refuses a screen for another %s with the same plan slug', async part => {
+    h.resolveAcceptanceBarApproverScreen.mockResolvedValue({ subjectPlan: input.subjectPlan,
+      subjectScope: { workspaceId: part === 'workspace' ? 'elsewhere' : input.workspaceId,
+        harnessSlug: part === 'harness' ? 'elsewhere' : input.harnessSlug }, check });
+    await expect(verifyMethodReviewAnswer(input)).rejects.toThrow('method_review_subject_plan_mismatch');
+    expect(check).not.toHaveBeenCalled();
+  });
+});
 
 describe('getFeedbackProd expert-routing settings', () => {
   it.each([false, true])('keeps same-question accepted requests distinct in routing telemetry, failure=%s', async (fails) => {

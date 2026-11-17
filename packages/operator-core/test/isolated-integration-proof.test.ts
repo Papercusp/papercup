@@ -3,13 +3,20 @@
  * the process group mid-import, tsx's esbuild service died with it, and the phase
  * detail reported only "TransformError: The service is no longer running"). */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
+import type { Sql } from 'postgres';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedIntegrationProofSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
+import { nativeProofFingerprint, type NativeProofInput } from '../lib/testing-run-store';
 import { privateOperatorApiBuildBudget } from './private-http-workspace-preflight';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
+
+const methodAuthority = vi.hoisted(() => vi.fn());
+vi.mock('../lib/consult/get-feedback-prod', () => ({ verifyMethodReviewAnswer: methodAuthority }));
 
 describe('isolated negative preflight evidence', () => {
   const expected = 'MCP tool call requires approval, but approval policy is never';
@@ -73,6 +80,40 @@ describe('isolated negative preflight evidence', () => {
 });
 
 describe('P010 native proof allocation admission', () => {
+  it.each([false, true])('validates canonical method authority before ledger start or prepare (approved=%s)', async approved => {
+    const root = resolve(import.meta.dirname, '../../..');
+    const filePath = 'packages/operator-core/lib/task-artifacts-client-baseline.integration.test.ts';
+    const entry = 'packages/operator-core/test/task-artifacts-baseline-http-fixture.ts';
+    const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+    const input: NativeProofInput = { schemaVersion: 1,
+      scope: { workspaceId: 'ws-method', harnessSlug: 'native', planSlug: 'plan-native' },
+      original: { sourceSha: 'a'.repeat(40), fixtureSha256: digest('fixture'), captureSha256: digest('capture'),
+        sourceDigests: { original: digest('original') }, dependenciesReconstructed: false },
+      prerequisiteSources: Object.fromEntries(isolatedIntegrationProofSourcePaths(filePath, [entry])
+        .map(path => [path, digest(readFileSync(join(root, path)))])),
+      method: { sha256: digest('method'), configurationSha256: digest('config'), clientMatrix: ['mcp', 'ptool'] },
+      selectedInputs: { 'package.json': digest('manifest') },
+      plannedRepair: { lockSha256: digest('lock'), packageDeltaSha256: digest('delta'), candidateGraphSha256: digest('graph') },
+      toolchain: { npmSha256: digest('npm'), npmVersion: '11', nodeVersion: '25', nativeAbi: '141' },
+    };
+    const fingerprint = nativeProofFingerprint(input).fingerprint;
+    const admission = { reviewedFingerprint: fingerprint, reviewRef: 'thread-post:123',
+      preflightRefs: { numericFold: 'fold-proof', physicalInstall: 'install-proof', priorFailureAudit: 'audit-proof' } };
+    const begin = vi.fn<Sql['begin']>(async () => { throw new Error('ledger-start-sentinel'); });
+    const sql = Object.assign(vi.fn(async () => []), { begin });
+    const prepare = vi.fn(); const execute = vi.fn();
+    methodAuthority.mockReset();
+    if (approved) methodAuthority.mockResolvedValue({ fingerprint });
+    else methodAuthority.mockRejectedValue(new Error('canonical-method-refused'));
+    await expect(recordIsolatedIntegrationProof({ root, filePath, sourcePaths: [entry], nativeChildEntryPoint: entry,
+      nativeProof: { sql, input, admission }, prepare, execute }))
+      .rejects.toThrow(approved ? 'ledger-start-sentinel' : 'canonical-method-refused');
+    expect(methodAuthority).toHaveBeenCalledWith(expect.objectContaining({ ...input.scope,
+      subjectPlan: input.scope.planSlug, fingerprint, reviewRef: admission.reviewRef }));
+    expect(begin).toHaveBeenCalledTimes(approved ? 1 : 0);
+    expect(sql).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
+  });
   it('refuses implicit product-database fallback without entering the effect', async () => {
     const execute = vi.fn();
     await expect(withNativeProofLedger({ HARNESS_ADMIN_DATABASE_URL: 'postgresql://product-only/fixture' }, execute))

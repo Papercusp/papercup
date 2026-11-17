@@ -156,6 +156,31 @@ describe('R-2 signed blueprint release lifecycle (integration)', () => {
     expect(f.signCalls()).toBeGreaterThan(0);
   });
 
+  it('R-13: Cupboard publish refuses multi-slot layers and launch-only grants before signing', async () => {
+    const f = await fixture();
+    const dir = await writeBlueprint('1.0.0', 'portable prompt\n');
+    const file = join(dir, 'blueprint.yaml');
+    const valid = parseYaml(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+    for (const slots of [
+      [{ slot: 'domain' }, { slot: 'practice' }],
+      [{ slot: 'practice' }, { slot: 'practice' }],
+    ]) {
+      await fs.writeFile(file, toYaml({ ...valid, slots }));
+      await expect(f.publish(dir)).rejects.toThrow(/one slot/);
+    }
+    for (const slot of ['client', 'fleet-posture']) {
+      for (const grants of [{}, { requires: ['claims.record@1.0.0'] }, { optional: ['email.message@1.0.0'] }]) {
+        await fs.writeFile(file, toYaml({ ...valid, slots: [{ slot }], grants }));
+        await expect(f.publish(dir)).rejects.toThrow(new RegExp(`${slot}.*grants`));
+      }
+    }
+    expect(f.signCalls()).toBe(0);
+    expect(existsSync(f.installedDir)).toBe(false);
+    await fs.writeFile(file, toYaml(valid));
+    expect((await f.publish(dir)).source.slots).toEqual(['domain']);
+    expect(f.signCalls()).toBeGreaterThan(0);
+  });
+
   it('R-1: Cupboard publish refuses every workspace runtime key in an identity', async () => {
     // Change detector at the production signed-release boundary. No network or
     // signer substitute: invalid sources must fail before the real signer runs.
