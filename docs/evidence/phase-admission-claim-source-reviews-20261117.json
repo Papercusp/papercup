@@ -10,7 +10,11 @@
     "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
     "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
     "packages/operator-core/lib/plan-items/claim-authority.ts",
-    "packages/operator-core/lib/agent-goal-ref.ts"
+    "packages/operator-core/lib/agent-goal-ref.ts",
+    "packages/operator-core/lib/agent-state-stamp.ts",
+    "packages/operator-core/lib/agent-state-stamp-cluster.ts",
+    "apps/operator/bin/hono-host.ts",
+    "packages/operator-core/lib/cluster-fork.ts"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -24,6 +28,216 @@
     "runtimeAttestation": false
   },
   "reviews": [
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"deleteClaimLocal\",\"helper-edge\",\"f57caf6f07fa63f348af14b1ab538673b162274bddbe2ab517790fcc848baade\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "f57caf6f07fa63f348af14b1ab538673b162274bddbe2ab517790fcc848baade",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-goal-ref.ts",
+          "sha256": "adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-state-stamp.ts",
+          "sha256": "efd79ae21d9a07370ea2d4c9e601bd697bec6e8f9d34bc1ab111f86e4500d8a9"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-state-stamp-cluster.ts",
+          "sha256": "e5fc39ea1f0c463a52c94c72ccce944033f166c997bfb93bafefd1678806d543"
+        },
+        {
+          "path": "apps/operator/bin/hono-host.ts",
+          "sha256": "eea011a11c628945c87282ea4d5dd15abd01580390439e3cf23b9022a9cf7ccc"
+        },
+        {
+          "path": "packages/operator-core/lib/cluster-fork.ts",
+          "sha256": "39dc8a9baf5bcb22aac71cfafa78c0b6506a40bf709a8acdf225cb5dc601c687"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact call compares the normalized goal ref against the existing stamp Map and only then calls noteGoalClaimed(owner, null). That calls upsert with a null goal, updates the attribution Map, and invokes the installed publisher. The only production installer found is startWorkerStampPublisher: hono-host installs its process.send publisher and receiver, and its primary relay broadcasts through cluster-fork to applyReplicatedStamp, which updates only the same stamp Maps without republishing. No claim row, lease, plan status or work-item state is granted or advanced by this chain. The surrounding DELETE/takeover and every other call remain independently classified. This is inspected pinned source closure, not a current-runtime or whole-repository attestation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/agent-goal-ref.ts",
+        "source:packages/operator-core/lib/agent-state-stamp.ts",
+        "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+        "source:apps/operator/bin/hono-host.ts",
+        "source:packages/operator-core/lib/cluster-fork.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clearGoalClaimedIfMatches",
+          "reason": "Resolved this exact bound call through clearGoalClaimedIfMatches -> noteGoalClaimed(null) -> upsert -> the production cluster stamp publisher/relay -> applyReplicatedStamp. All six inspected caller, normalization, target, installer and transport sources are byte-pinned; this resolution never exempts another call or a preceding authority write.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts",
+            "source:packages/operator-core/lib/agent-goal-ref.ts",
+            "source:packages/operator-core/lib/agent-state-stamp.ts",
+            "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+            "source:apps/operator/bin/hono-host.ts",
+            "source:packages/operator-core/lib/cluster-fork.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/agent-state-stamp.ts#efd79ae21d9a07370ea2d4c9e601bd697bec6e8f9d34bc1ab111f86e4500d8a9",
+          "reason": "Resolved this exact bound call through clearGoalClaimedIfMatches -> noteGoalClaimed(null) -> upsert -> the production cluster stamp publisher/relay -> applyReplicatedStamp. All six inspected caller, normalization, target, installer and transport sources are byte-pinned; this resolution never exempts another call or a preceding authority write.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts",
+            "source:packages/operator-core/lib/agent-goal-ref.ts",
+            "source:packages/operator-core/lib/agent-state-stamp.ts",
+            "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+            "source:apps/operator/bin/hono-host.ts",
+            "source:packages/operator-core/lib/cluster-fork.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaimLocal\",\"helper-edge\",\"c2d36d86aafcfc28bcdfc465bb86818ee1a5f186c935c37021e4281c6e34110b\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "c2d36d86aafcfc28bcdfc465bb86818ee1a5f186c935c37021e4281c6e34110b",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-goal-ref.ts",
+          "sha256": "adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-state-stamp.ts",
+          "sha256": "efd79ae21d9a07370ea2d4c9e601bd697bec6e8f9d34bc1ab111f86e4500d8a9"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-state-stamp-cluster.ts",
+          "sha256": "e5fc39ea1f0c463a52c94c72ccce944033f166c997bfb93bafefd1678806d543"
+        },
+        {
+          "path": "apps/operator/bin/hono-host.ts",
+          "sha256": "eea011a11c628945c87282ea4d5dd15abd01580390439e3cf23b9022a9cf7ccc"
+        },
+        {
+          "path": "packages/operator-core/lib/cluster-fork.ts",
+          "sha256": "39dc8a9baf5bcb22aac71cfafa78c0b6506a40bf709a8acdf225cb5dc601c687"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact call compares the normalized goal ref against the existing stamp Map and only then calls noteGoalClaimed(owner, null). That calls upsert with a null goal, updates the attribution Map, and invokes the installed publisher. The only production installer found is startWorkerStampPublisher: hono-host installs its process.send publisher and receiver, and its primary relay broadcasts through cluster-fork to applyReplicatedStamp, which updates only the same stamp Maps without republishing. No claim row, lease, plan status or work-item state is granted or advanced by this chain. The surrounding DELETE/takeover and every other call remain independently classified. This is inspected pinned source closure, not a current-runtime or whole-repository attestation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/agent-goal-ref.ts",
+        "source:packages/operator-core/lib/agent-state-stamp.ts",
+        "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+        "source:apps/operator/bin/hono-host.ts",
+        "source:packages/operator-core/lib/cluster-fork.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clearGoalClaimedIfMatches",
+          "reason": "Resolved this exact bound call through clearGoalClaimedIfMatches -> noteGoalClaimed(null) -> upsert -> the production cluster stamp publisher/relay -> applyReplicatedStamp. All six inspected caller, normalization, target, installer and transport sources are byte-pinned; this resolution never exempts another call or a preceding authority write.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts",
+            "source:packages/operator-core/lib/agent-goal-ref.ts",
+            "source:packages/operator-core/lib/agent-state-stamp.ts",
+            "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+            "source:apps/operator/bin/hono-host.ts",
+            "source:packages/operator-core/lib/cluster-fork.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/agent-state-stamp.ts#efd79ae21d9a07370ea2d4c9e601bd697bec6e8f9d34bc1ab111f86e4500d8a9",
+          "reason": "Resolved this exact bound call through clearGoalClaimedIfMatches -> noteGoalClaimed(null) -> upsert -> the production cluster stamp publisher/relay -> applyReplicatedStamp. All six inspected caller, normalization, target, installer and transport sources are byte-pinned; this resolution never exempts another call or a preceding authority write.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts",
+            "source:packages/operator-core/lib/agent-goal-ref.ts",
+            "source:packages/operator-core/lib/agent-state-stamp.ts",
+            "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+            "source:apps/operator/bin/hono-host.ts",
+            "source:packages/operator-core/lib/cluster-fork.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"releaseAllClaimsForOwner\",\"helper-edge\",\"f57caf6f07fa63f348af14b1ab538673b162274bddbe2ab517790fcc848baade\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "f57caf6f07fa63f348af14b1ab538673b162274bddbe2ab517790fcc848baade",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-goal-ref.ts",
+          "sha256": "adfc26516985e4d82aa210fa141bd664d6c2ccb41bcb1a321118e79c2c6bd9f2"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-state-stamp.ts",
+          "sha256": "efd79ae21d9a07370ea2d4c9e601bd697bec6e8f9d34bc1ab111f86e4500d8a9"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-state-stamp-cluster.ts",
+          "sha256": "e5fc39ea1f0c463a52c94c72ccce944033f166c997bfb93bafefd1678806d543"
+        },
+        {
+          "path": "apps/operator/bin/hono-host.ts",
+          "sha256": "eea011a11c628945c87282ea4d5dd15abd01580390439e3cf23b9022a9cf7ccc"
+        },
+        {
+          "path": "packages/operator-core/lib/cluster-fork.ts",
+          "sha256": "39dc8a9baf5bcb22aac71cfafa78c0b6506a40bf709a8acdf225cb5dc601c687"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact call compares the normalized goal ref against the existing stamp Map and only then calls noteGoalClaimed(owner, null). That calls upsert with a null goal, updates the attribution Map, and invokes the installed publisher. The only production installer found is startWorkerStampPublisher: hono-host installs its process.send publisher and receiver, and its primary relay broadcasts through cluster-fork to applyReplicatedStamp, which updates only the same stamp Maps without republishing. No claim row, lease, plan status or work-item state is granted or advanced by this chain. The surrounding DELETE/takeover and every other call remain independently classified. This is inspected pinned source closure, not a current-runtime or whole-repository attestation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/agent-goal-ref.ts",
+        "source:packages/operator-core/lib/agent-state-stamp.ts",
+        "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+        "source:apps/operator/bin/hono-host.ts",
+        "source:packages/operator-core/lib/cluster-fork.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clearGoalClaimedIfMatches",
+          "reason": "Resolved this exact bound call through clearGoalClaimedIfMatches -> noteGoalClaimed(null) -> upsert -> the production cluster stamp publisher/relay -> applyReplicatedStamp. All six inspected caller, normalization, target, installer and transport sources are byte-pinned; this resolution never exempts another call or a preceding authority write.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts",
+            "source:packages/operator-core/lib/agent-goal-ref.ts",
+            "source:packages/operator-core/lib/agent-state-stamp.ts",
+            "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+            "source:apps/operator/bin/hono-host.ts",
+            "source:packages/operator-core/lib/cluster-fork.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/agent-state-stamp.ts#efd79ae21d9a07370ea2d4c9e601bd697bec6e8f9d34bc1ab111f86e4500d8a9",
+          "reason": "Resolved this exact bound call through clearGoalClaimedIfMatches -> noteGoalClaimed(null) -> upsert -> the production cluster stamp publisher/relay -> applyReplicatedStamp. All six inspected caller, normalization, target, installer and transport sources are byte-pinned; this resolution never exempts another call or a preceding authority write.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts",
+            "source:packages/operator-core/lib/agent-goal-ref.ts",
+            "source:packages/operator-core/lib/agent-state-stamp.ts",
+            "source:packages/operator-core/lib/agent-state-stamp-cluster.ts",
+            "source:apps/operator/bin/hono-host.ts",
+            "source:packages/operator-core/lib/cluster-fork.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"sql\",\"d172e3ec8622200d3a8a6d937c1a5948648172f32462ea3676425837ce1489c4\"]#1",
       "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",

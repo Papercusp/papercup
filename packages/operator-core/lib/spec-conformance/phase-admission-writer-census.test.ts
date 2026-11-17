@@ -262,6 +262,59 @@ describe('phase binding writer census', () => {
     }
   });
 
+  it('pins goal clear calls through the installed stamp publisher without accepting claim writes', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const claims = 'packages/operator-core/lib/plan-items/claims.ts';
+    const stamp = 'packages/operator-core/lib/agent-state-stamp.ts';
+    const publisher = 'packages/operator-core/lib/agent-state-stamp-cluster.ts';
+    const host = 'apps/operator/bin/hono-host.ts';
+    const transport = 'packages/operator-core/lib/cluster-fork.ts';
+    const inventory = inventoryPhaseWriters(sources);
+    const clears = inventory.sites.filter(site => site.path === claims && site.kind === 'helper-edge'
+      && site.callees[0] === 'clearGoalClaimedIfMatches');
+    expect(clears.map(site => site.operation).sort())
+      .toEqual(['deleteClaimLocal', 'forceTakeoverClaimLocal', 'releaseAllClaimsForOwner']);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    for (const site of clears) {
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+      expect(site.helperTarget?.path).toBe(stamp);
+      expect(report.coverage.checked).toContain(site.id);
+      for (const path of [stamp, publisher, host, transport]) {
+        expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+          path, sha256: inventory.sources.find(row => row.path === path)!.sha256,
+        });
+      }
+    }
+    for (const path of [stamp, publisher, host, transport]) {
+      const changed = inventoryPhaseWriters(sources.map(source => source.path === path
+        ? { ...source, content: source.content + '\nexport function unreviewedStampEffect(sql: any) { '
+          + 'return sql`UPDATE harness_shared.plan_item_claims SET owner=\'changed\'`; }\n' }
+        : source));
+      const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+      for (const site of clears) {
+        expect(changed.sites.some(current => current.id === site.id)).toBe(true);
+        expect(stale.coverage.checked).not.toContain(site.id);
+        expect(stale.problems.find(row => row.id === site.id)?.reasons).toContain(`stale-source-proof:${path}`);
+      }
+      const added = changed.sites.filter(site => site.path === path && site.operation === 'unreviewedStampEffect');
+      expect(added.length).toBeGreaterThan(0);
+      for (const site of added) expect(stale.coverage.residue).toContain(site.id);
+    }
+    for (const { siteId } of reviewed.pendingAdvancing) {
+      expect(report.coverage.checked).not.toContain(siteId);
+      expect(report.coverage.residue).toContain(siteId);
+    }
+  });
+
   it('retains INSERT upsert UPDATE DELETE and writable CTE statements independently', () => {
     const inventory = inventoryPhaseWriters([source(`
       async function create(tx) {
