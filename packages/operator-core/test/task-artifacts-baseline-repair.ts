@@ -122,7 +122,14 @@ export function assertBaselineToolchain(expected: NativeProofInput['toolchain'])
  * stop; a substituted receipt, manifest, tree or toolchain rejects the run. */
 export async function assertBaselineRuntimeCustody(root: string, preparedDir: string,
   intent: { input: Pick<NativeProofInput, 'toolchain'>; fingerprint: string; events: NativeProofRun['events'] },
-  helperRoot?: string) {
+  helperRoot?: string, profile: 'dependency-edition' | 'native-recovery' = 'dependency-edition') {
+  const files = {
+    'dependency-edition': { installed: 'dependency-installed.json', built: 'dependency-edition-after-build.json',
+      manifest: 'dependency-installed-tree.json', manifestHash: 'installedTreeManifestSha256' },
+    'native-recovery': { installed: 'native-recovery-installed.json', built: 'native-recovery-built.json',
+      manifest: 'native-recovery-installed-tree.json', manifestHash: 'manifestSha256' },
+  }[profile];
+  assert.ok(files, 'baseline_runtime_receipt_profile');
   const receipt = (kind: 'installed' | 'built', name: string) => {
     const events = intent.events.filter(event => event.kind === kind);
     assert.equal(events.length, 1, 'baseline_runtime_receipt_missing:' + kind);
@@ -134,12 +141,12 @@ export async function assertBaselineRuntimeCustody(root: string, preparedDir: st
     assert.equal(digest(bytes), event.receiptSha256, 'baseline_runtime_receipt_changed:' + kind);
     return JSON.parse(bytes.toString());
   };
-  const installed = receipt('installed', 'dependency-installed.json');
-  const built = receipt('built', 'dependency-edition-after-build.json');
-  const manifestPath = join(preparedDir, 'dependency-installed-tree.json');
+  const installed = receipt('installed', files.installed);
+  const built = receipt('built', files.built);
+  const manifestPath = join(preparedDir, files.manifest);
   assert.ok(lstatSync(manifestPath).isFile() && !lstatSync(manifestPath).isSymbolicLink(), 'baseline_runtime_manifest_type');
   const manifestBytes = readFileSync(manifestPath), manifestSha256 = digest(manifestBytes);
-  assert.equal(manifestSha256, installed.installedTreeManifestSha256, 'baseline_runtime_manifest_changed');
+  assert.equal(manifestSha256, installed[files.manifestHash], 'baseline_runtime_manifest_changed');
   const manifest = JSON.parse(manifestBytes.toString());
   assert.equal(manifest.sha256, installed.installedTreeSha256, 'baseline_runtime_installed_tree_identity');
   assert.equal(manifest.sha256, built.installedTreeSha256, 'baseline_runtime_built_tree_identity');

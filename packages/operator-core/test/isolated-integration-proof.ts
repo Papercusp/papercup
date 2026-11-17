@@ -1087,18 +1087,25 @@ export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePath
 
 export type NativeProofRecorder = {
   readonly input: NativeProofRun['input'];
+  readIntent: () => Promise<NativeProofRun>;
   observe: (kind: 'installed' | 'built' | 'runtime' | 'trace' | 'sealed' | 'readback', receiptPath: string) => Promise<void>;
 };
 
 /** Parent and private child append measured files to the same retained intent. */
 export function nativeProofRecorder(sql: Parameters<typeof executeNativeProofOnce>[0],
   intent: NativeProofRun): NativeProofRecorder {
+  const readIntent = async () => {
+    const { readNativeProofRun } = await import('../lib/testing-run-store');
+    const current = await readNativeProofRun(sql, intent.runId);
+    assert.ok(current && current.fingerprint === intent.fingerprint, 'Native proof original intent changed');
+    return current;
+  };
   return {
     input: structuredClone(intent.input),
+    readIntent,
     observe: async (kind, receiptPath) => {
-      const { readNativeProofRun, appendNativeProofEvent } = await import('../lib/testing-run-store');
-      const current = await readNativeProofRun(sql, intent.runId);
-      assert.ok(current && current.fingerprint === intent.fingerprint, 'Native proof original intent changed');
+      const { appendNativeProofEvent } = await import('../lib/testing-run-store');
+      const current = await readIntent();
       await appendNativeProofEvent(sql, current.runId, current.fingerprint, current.events.length,
         { kind, receiptRef: receiptPath, receiptSha256: hash(readFileSync(receiptPath)) });
     },

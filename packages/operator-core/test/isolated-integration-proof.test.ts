@@ -12,9 +12,9 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { readBaselinePacket, retainBaselinePacket } from './task-artifacts-baseline-repair';
-import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, cleanupCurrentSuNativeEgress, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST, currentSuNativeRetainedArtifacts, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedIntegrationProofSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger } from './isolated-integration-proof';
+import { assertIsolatedFileRunBudget, assertIsolatedIntegrationWorkerEnvironment, assertIsolatedPreflightRejection, cleanupCurrentSuNativeEgress, CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST, currentSuNativeRetainedArtifacts, codexManagedToolsNativeIntegrationSourcePaths, codexManagedToolsNativeProofOptions, isolatedIntegrationProofSourcePaths, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof, withNativeProofLedger, nativeProofRecorder } from './isolated-integration-proof';
 import type { ProcExec } from '../lib/external-bench/grader/swe-bench-pro';
-import { nativeProofFingerprint, type NativeProofInput } from '../lib/testing-run-store';
+import { nativeProofFingerprint, readNativeProofRun, type NativeProofInput } from '../lib/testing-run-store';
 import { privateOperatorApiBuildBudget } from './private-http-workspace-preflight';
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
@@ -209,6 +209,41 @@ describe('isolated negative preflight evidence', () => {
 });
 
 describe('P010 native proof allocation admission', () => {
+  it('reads fresh original custody events from the durable ledger and refuses a missing or substituted intent', async () => {
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const input: NativeProofInput = { schemaVersion: 1,
+      scope: { workspaceId: 'synthetic-custody', harnessSlug: 'native', planSlug: 'native-custody' },
+      original: { sourceSha: 'a'.repeat(40), fixtureSha256: digest('fixture'), captureSha256: digest('capture'),
+        sourceDigests: { original: digest('original') }, dependenciesReconstructed: false },
+      prerequisiteSources: { child: digest('child') },
+      method: { sha256: digest('method'), configurationSha256: digest('config'), clientMatrix: ['native'] },
+      selectedInputs: { 'package.json': digest('manifest') },
+      plannedRepair: { lockSha256: digest('lock'), packageDeltaSha256: digest('delta'), candidateGraphSha256: digest('graph') },
+      toolchain: { npmSha256: digest('npm'), npmVersion: '11', nodeVersion: '25', nativeAbi: '141' } };
+    const fingerprint = nativeProofFingerprint(input).fingerprint, runId = 'native-proof-' + fingerprint;
+    const envelope = { schemaVersion: 1, fingerprint, input, admission: { reviewedFingerprint: fingerprint,
+      reviewRef: 'thread-post:123', preflightRefs: { numericFold: 'fold', physicalInstall: 'install', priorFailureAudit: 'audit' } } };
+    const events = [{ kind: 'reserved', fingerprint }, { kind: 'started', fingerprint }];
+    let rows = [{ run_id: runId, native_proof_input: envelope,
+      native_proof_events: events, native_proof_child_launch: null }];
+    const sql = vi.fn(async () => rows);
+    const intent = await readNativeProofRun(sql, runId);
+    expect(intent).toBeTruthy();
+    const recorder = nativeProofRecorder(sql, intent!);
+    const installed = { kind: 'installed', fingerprint, receiptRef: '/original/installed.json', receiptSha256: digest('installed') };
+    rows[0].native_proof_events = [...events, installed];
+    expect((await recorder.readIntent()).events.at(-1)).toEqual(installed);
+    expect(intent!.events).toHaveLength(2);
+    rows = [];
+    await expect(recorder.readIntent()).rejects.toThrow('Native proof original intent changed');
+    const other = nativeProofFingerprint({ ...input, method: { ...input.method, sha256: digest('other method') } });
+    rows = [{ run_id: 'native-proof-' + other.fingerprint,
+      native_proof_input: { ...envelope, input: other.input, fingerprint: other.fingerprint,
+        admission: { ...envelope.admission, reviewedFingerprint: other.fingerprint } },
+      native_proof_events: events.map(event => ({ ...event, fingerprint: other.fingerprint })), native_proof_child_launch: null }];
+    await expect(recorder.readIntent()).rejects.toThrow('Native proof original intent changed');
+    expect(sql).toHaveBeenLastCalledWith(expect.anything(), runId);
+  });
   it.each([false, true])('validates canonical method authority before ledger start or prepare (approved=%s)', async approved => {
     const root = resolve(import.meta.dirname, '../../..');
     const filePath = 'packages/operator-core/lib/task-artifacts-client-baseline.integration.test.ts';

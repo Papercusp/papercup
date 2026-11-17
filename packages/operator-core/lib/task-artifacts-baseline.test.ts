@@ -523,15 +523,17 @@ describe('separately qualified baseline dependency repair custody', () => {
         .toThrow('baseline_reviewed_toolchain_changed');
   }, 45_000);
 
-  it('checks runtime custody against ledger-bound receipts before start and after stop', async () => {
+  it.each(['dependency-edition', 'native-recovery'] as const)(
+    'checks %s runtime custody against ledger-bound receipts before start and after stop', async profile => {
     await installedFixture(async root => {
       const prepared = join(root, 'evidence'); mkdirSync(prepared);
       const tree = await captureBaselineInstalledTree(root), manifest = JSON.stringify(tree);
-      const installed = { installedTreeSha256: tree.sha256, installedTreeManifestSha256: sha256(manifest) };
+      const installed = { installedTreeSha256: tree.sha256,
+        [profile === 'native-recovery' ? 'manifestSha256' : 'installedTreeManifestSha256']: sha256(manifest) };
       const built = { installedTreeSha256: tree.sha256 };
-      const installedPath = join(prepared, 'dependency-installed.json');
-      const builtPath = join(prepared, 'dependency-edition-after-build.json');
-      const manifestPath = join(prepared, 'dependency-installed-tree.json');
+      const installedPath = join(prepared, profile === 'native-recovery' ? 'native-recovery-installed.json' : 'dependency-installed.json');
+      const builtPath = join(prepared, profile === 'native-recovery' ? 'native-recovery-built.json' : 'dependency-edition-after-build.json');
+      const manifestPath = join(prepared, profile === 'native-recovery' ? 'native-recovery-installed-tree.json' : 'dependency-installed-tree.json');
       writeFileSync(manifestPath, manifest);
       writeFileSync(installedPath, JSON.stringify(installed)); writeFileSync(builtPath, JSON.stringify(built));
       const fingerprint = sha256('original reviewed intent');
@@ -541,38 +543,45 @@ describe('separately qualified baseline dependency repair custody', () => {
         { kind: 'built' as const, fingerprint, receiptRef: builtPath,
           receiptSha256: sha256(readFileSync(builtPath)) },
       ] };
-      const before = await assertBaselineRuntimeCustody(root, prepared, intent);
+      const custody = (value = intent) => assertBaselineRuntimeCustody(root, prepared, value, undefined, profile);
+      const before = await custody();
       expect(before).toEqual({ installedTreeSha256: tree.sha256,
         installedTreeManifestSha256: sha256(manifest), toolchain: intent.input.toolchain });
       for (const kind of ['installed', 'built'] as const) {
         const missing = structuredClone(intent); missing.events = missing.events.filter(event => event.kind !== kind);
-        await expect(assertBaselineRuntimeCustody(root, prepared, missing)).rejects.toThrow('baseline_runtime_receipt_missing:' + kind);
+        await expect(custody(missing)).rejects.toThrow('baseline_runtime_receipt_missing:' + kind);
+        const duplicate = structuredClone(intent); duplicate.events.push(duplicate.events.find(event => event.kind === kind)!);
+        await expect(custody(duplicate)).rejects.toThrow('baseline_runtime_receipt_missing:' + kind);
         const changedEdition = structuredClone(intent);
         changedEdition.events.find(event => event.kind === kind)!.fingerprint = sha256('different edition');
-        await expect(assertBaselineRuntimeCustody(root, prepared, changedEdition)).rejects.toThrow('baseline_runtime_receipt_edition:' + kind);
+        await expect(custody(changedEdition)).rejects.toThrow('baseline_runtime_receipt_edition:' + kind);
         const path = kind === 'installed' ? installedPath : builtPath, original = readFileSync(path);
         writeFileSync(path, original + '\n');
-        await expect(assertBaselineRuntimeCustody(root, prepared, intent)).rejects.toThrow('baseline_runtime_receipt_changed:' + kind);
+        await expect(custody()).rejects.toThrow('baseline_runtime_receipt_changed:' + kind);
         writeFileSync(path, original);
         const changedPath = structuredClone(intent);
         changedPath.events.find(event => event.kind === kind)!.receiptRef += '.substituted';
-        await expect(assertBaselineRuntimeCustody(root, prepared, changedPath)).rejects.toThrow('baseline_runtime_receipt_path:' + kind);
+        await expect(custody(changedPath)).rejects.toThrow('baseline_runtime_receipt_path:' + kind);
       }
       writeFileSync(manifestPath, manifest + '\n');
-      await expect(assertBaselineRuntimeCustody(root, prepared, intent)).rejects.toThrow('baseline_runtime_manifest_changed');
+      await expect(custody()).rejects.toThrow('baseline_runtime_manifest_changed');
       writeFileSync(manifestPath, manifest);
       const substituted = { ...built, installedTreeSha256: sha256('different installed tree') };
       writeFileSync(builtPath, JSON.stringify(substituted));
       const substitutedIntent = structuredClone(intent);
       substitutedIntent.events[1].receiptSha256 = sha256(readFileSync(builtPath));
-      await expect(assertBaselineRuntimeCustody(root, prepared, substitutedIntent)).rejects.toThrow('baseline_runtime_built_tree_identity');
+      await expect(custody(substitutedIntent)).rejects.toThrow('baseline_runtime_built_tree_identity');
       writeFileSync(builtPath, JSON.stringify(built));
+      for (const field of ['npmSha256', 'npmVersion', 'nodeVersion', 'nativeAbi'] as const) {
+        const changedToolchain = structuredClone(intent); changedToolchain.input.toolchain[field] = 'substituted';
+        await expect(custody(changedToolchain)).rejects.toThrow('baseline_reviewed_toolchain_changed');
+      }
       writeFileSync(join(root, 'node_modules/runtime/native.node'), 'changed while the host ran');
-      await expect(assertBaselineRuntimeCustody(root, prepared, intent)).rejects.toThrow('baseline_installed_tree_changed');
+      await expect(custody()).rejects.toThrow('baseline_installed_tree_changed');
       writeFileSync(join(root, 'node_modules/runtime/native.node'), 'original native bytes');
-      expect(await assertBaselineRuntimeCustody(root, prepared, intent)).toEqual(before);
-      rmSync(manifestPath); symlinkSync('dependency-installed.json', manifestPath);
-      await expect(assertBaselineRuntimeCustody(root, prepared, intent)).rejects.toThrow('baseline_runtime_manifest_type');
+      expect(await custody()).toEqual(before);
+      rmSync(manifestPath); symlinkSync(installedPath, manifestPath);
+      await expect(custody()).rejects.toThrow('baseline_runtime_manifest_type');
     });
   }, 60_000);
 
