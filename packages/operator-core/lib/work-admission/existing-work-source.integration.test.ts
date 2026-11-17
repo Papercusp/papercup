@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { Sql, TransactionSql } from 'postgres';
+import type { JSONValue, Sql, TransactionSql } from 'postgres';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -153,7 +153,7 @@ it('qualifies only independently committed local-change blobs for the exact PR/c
     } } };
     const publication = { workspaceId: WS, harnesses: [TARGET], repositoryRoot: root, testedSha: head,
       targetSha: target, url: 'https://github.com/acme/subject/pull/9', number: 9 };
-    const set = async (status: string, authority: string, p: object = payload) => {
+    const set = async (status: string, authority: string, p: JSONValue = payload) => {
       await sql`UPDATE harness_shared.work_items SET status = ${status}, authority = ${authority}, payload = ${sql.json(p)}
         WHERE workspace_id = ${WS} AND feature_id = ${id}`;
     };

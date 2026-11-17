@@ -246,10 +246,24 @@ export interface HandlerPhaseRollupInput {
 export interface HandlerPhaseRollup {
   tool_name: string;
   hours: number;
+  /** Every call of the tool in the window, with or without a handler-phases record. */
+  calls_total: number;
   /** Calls in the window whose metadata_json carried handlerPhases (handler-phases-v1). */
   calls_with_phases: number;
+  /** Calls in the window with no handlerPhases record; their whole duration counts in unknown_ms. */
+  calls_without_phases: number;
+  /** sum(duration_ms) over every call in the window. */
+  wall_time_ms: number | null;
+  /** sum(attributedMs): the time named phases explain. */
+  attributed_ms: number | null;
+  /** sum(elapsedMs) - sum(attributedMs): tracked time that no named phase explains. */
+  unattributed_ms: number | null;
+  /** Wall time outside any tracked elapsedMs: whole uninstrumented calls plus duration_ms - elapsedMs. */
+  unknown_ms: number | null;
   /** sum(attributedMs) / sum(elapsedMs): the share of the tool's wall time named phases explain. */
   coverage_total: number | null;
+  /** sum(attributedMs) / sum(duration_ms) over every call, uninstrumented ones included. */
+  population_coverage_total: number | null;
   /** Median per-call attributedMs / elapsedMs. */
   coverage_p50: number | null;
   /** Share of calls whose named phases cover at least 90% of their wall time. */

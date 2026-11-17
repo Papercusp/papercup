@@ -40,7 +40,7 @@ const commentWorkItem = vi.fn();
 const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 const readSuccessfulReadProofs = vi.hoisted(() => vi.fn());
 const resolveCurrentTokens = vi.hoisted(() => vi.fn());
-const repoQualifiedFilePathExists = vi.hoisted(() => vi.fn(() => false));
+const repoQualifiedFilePathExists = vi.hoisted(() => vi.fn((_path: string, _options?: { allowDirectories?: boolean }) => false));
 const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const postLearnedAtLevel = vi.hoisted(() => vi.fn());
 const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());

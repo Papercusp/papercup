@@ -143,7 +143,7 @@ describe('MCP result replay (audit P-046 / EI-68)', () => {
       return committed;
     })).toEqual(committed);
     expect(await getAmendReceipt(rubricRef, logicalKey)).toMatchObject({ state: 'committed' });
-    const terminal = { content: [{ type: 'text', text: JSON.stringify(committed) }] };
+    const terminal = { content: [{ type: 'text' as const, text: JSON.stringify(committed) }] };
     await storeMcpResult({ ownerKey: OWNER_A, idempotencyKey: outerKey, toolName: 'rubrics:amend',
       workspaceId: workspace, result: terminal });
     expect(await lookupStoredMcpResult(OWNER_A, outerKey)).toMatchObject({ content: terminal.content });

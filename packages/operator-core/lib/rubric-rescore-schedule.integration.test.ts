@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
+import type { ProposeRubricCriterion } from './rubrics';
 
 const h = vi.hoisted(() => ({ sql: null as unknown as Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -43,7 +44,7 @@ function body(result: unknown): any {
 }
 
 async function policy(maxAgeMs: number, includeErrorProbe = false) {
-  const criterion = (key: string, sql: string) => ({
+  const criterion = (key: string, sql: string): ProposeRubricCriterion => ({
     key, title: key, model: `Measure ${key}.`, method: `Run ${key}.`, driftMarkers: `A failed ${key} check.`,
     check: { kind: 'probe', maxAgeMs, probe: { kind: 'sql', sql,
       schemaRevision: continuityProbeRevision(SQL_PROBE_TOOL)!, expect: { path: '$.rows[0].value', op: 'eq', value: 1 } } },
@@ -119,7 +120,7 @@ it('grading schedule set arm and fire revalidate current persisted policy', asyn
     expect(scorecard).toMatchObject({ status: 'created', issueId: expect.any(String) });
 
     const cardRows = await h.sql`SELECT payload FROM harness_shared.work_items
-      WHERE workspace_id=${WS} AND feature_id=${scorecard.issueId}`;
+      WHERE workspace_id=${WS} AND feature_id=${scorecard.issueId ?? null}`;
     expect(cardRows).toHaveLength(1);
     const payload = cardRows[0]!.payload as Record<string, any>;
     const observation = payload.observation as { ledgerFilled?: boolean; ratings: Record<string, Record<string, any>> };

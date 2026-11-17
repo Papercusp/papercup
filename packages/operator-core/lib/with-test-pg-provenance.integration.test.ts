@@ -243,8 +243,8 @@ describe('disposable migrated clone feasibility', () => {
         });
         observe(worker);
         let stderr='';
-        worker.stdout.on('data',chunk=>{stdout+=chunk;});
-        worker.stderr.on('data',chunk=>{stderr+=chunk;});
+        worker.stdout!.on('data',chunk=>{stdout+=chunk;});
+        worker.stderr!.on('data',chunk=>{stderr+=chunk;});
         try {
           const result=await new Promise<{code:number|null;signal:NodeJS.Signals|null}>((done,fail)=>{
             worker.once('error',fail);worker.once('close',(code,signal)=>done({code,signal}));

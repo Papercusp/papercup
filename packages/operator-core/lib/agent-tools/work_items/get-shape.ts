@@ -1855,7 +1855,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier, sourceP
         : null;
     const availableRows = rows.flatMap((sourceRow, index) => {
       const shapedRow = projected[index];
-      return sourceRow.ok === true && sourceRow.availability === "available" && shapedRow
+      return sourceRow.ok === true && sourceRow.availability === "available" && isPlainRow(shapedRow)
         ? [{ sourceRow, shapedRow }]
         : [];
     });

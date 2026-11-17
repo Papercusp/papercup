@@ -1136,7 +1136,7 @@ describe('plans:start terminal guard', () => {
       const startability = vi.spyOn(startGate, 'checkPlanStartable');
       const setup = vi.spyOn(activationReadiness, 'createPlanActivationReadinessRequest').mockResolvedValue({
         collect: async () => activationReadiness.unavailableActivationReadiness(new Error('diagnostic fixture')),
-      } as never);
+      } as Awaited<ReturnType<typeof activationReadiness.createPlanActivationReadinessRequest>>);
       if (phase === 'activation') activationMocks.gate.mockRejectedValueOnce(new Error(connectionError));
       else startability.mockRejectedValueOnce(new Error(connectionError));
       let ledger: Record<string, unknown> | null | undefined;

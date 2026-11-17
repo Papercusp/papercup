@@ -6848,7 +6848,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     await listen(upstream);
     const proxy = track(createMcpProxy({
       listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream),
-      maxInFlight: 2, controlPlaneReserve: 1, log: () => {},
+      maxInFlight: 2, controlPlaneReserve: 1, retryWindowMs: 5_000, log: () => {},
     }));
     await listen(proxy);
     const held = request(port(proxy), JSON.stringify({

@@ -471,7 +471,7 @@ describe('durable parks on unprovable triggers get a re-check against the real s
   });
   async function seedPark(id: string, releaseContract: {
     condition: string; owner: string; trigger: string;
-    reachability: 'reachable' | 'blocked' | 'unreachable' | 'satisfied'; evidence: string;
+    reachability: 'reachable' | 'blocked' | 'unknown' | 'unreachable' | 'satisfied'; evidence: string;
   }, status = 'open'): Promise<void> {
     await db.sql`INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)

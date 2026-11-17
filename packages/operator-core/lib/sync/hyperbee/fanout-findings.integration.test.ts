@@ -49,7 +49,7 @@ async function findingProcess(phase: 'before-capture' | 'after-capture' | 'recov
       timeout: 45_000,
     }, (error, stdout, stderr) => {
       if (error && typeof error.code !== 'number') { reject(error); return; }
-      resolve({ exitCode: error?.code ?? 0, stdout, stderr });
+      resolve({ exitCode: error && typeof error.code === 'number' ? error.code : 0, stdout, stderr });
     });
   });
 }
@@ -166,8 +166,9 @@ describe('R-27 permanent finding reservation and independent recovery (real PG)'
     }) as unknown as typeof db.sql;
     let now = NOW;
     let passes = 0;
+    let fileFindingCalls = 0;
     const fileFinding = vi.fn<FanoutFindingFiler>(async (input) =>
-      fileFinding.mock.calls.length === 1 ? null : sink(input));
+      ++fileFindingCalls === 1 ? null : sink(input));
     const handle = {
       workspaceId: WS, harnessSlug: 'finding_cadence',
       ownLog: { keyHex: 'ab'.repeat(32) }, append: async () => {},

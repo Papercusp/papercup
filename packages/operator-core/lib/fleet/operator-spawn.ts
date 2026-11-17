@@ -908,7 +908,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   if (!role) return fail('spawn rejected: missing role');
   const knownRole = (AGENT_ROLES as readonly string[]).includes(role) || role.includes(':');
   if (!knownRole) {
-    return fail(`spawn rejected: unknown role "${role}" — known roles: ${AGENT_ROLES.join(', ')}`);
+    return fail(`spawn rejected: unknown role "${role}" — known roles: ${(AGENT_ROLES as readonly string[]).join(', ')}`);
   }
   if (role === 'worker' && !input.chunkId) {
     return fail(

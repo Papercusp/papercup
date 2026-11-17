@@ -404,9 +404,9 @@ describe('context reliability R-8: task-ranked standing facts', () => {
     const current = await assertFact({ ...base, key: 'goal.override', body: 'current goal' }, db.sql);
     const ordinary = await assertFact({ ...base, key: 'ordinary', body: 'older fallback' }, db.sql);
     await db.sql`UPDATE harness_shared.agent_facts SET updated_at = '2026-01-01T00:00:00Z'
-      WHERE id = ${ordinary.id}`;
+      WHERE id = ${ordinary.id!}`;
     if (expired) await db.sql`UPDATE harness_shared.agent_facts SET expires_at = now() - interval '1 minute'
-      WHERE id = ${current.id}`;
+      WHERE id = ${current.id!}`;
     for (const taskContext of [undefined, {}]) {
       const folded = await foldFactsWithCensus(selectors, { ...opts, taskContext }, db.sql);
       expect(folded.facts.map((row) => row.id)).toEqual([expired ? ordinary.id : current.id]);
@@ -427,7 +427,7 @@ describe('context reliability R-8: task-ranked standing facts', () => {
     await db.sql`UPDATE harness_shared.agent_facts SET updated_at = '2026-01-02T00:00:00Z'
       WHERE workspace_id = ${WS} AND scope_ref = ${scopeRef}`;
     await db.sql`UPDATE harness_shared.agent_facts SET updated_at = '2026-01-01T00:00:00Z'
-      WHERE id = ${facts[2]!.id}`;
+      WHERE id = ${facts[2]!.id!}`;
     const expected = [facts[1]!, facts[0]!, facts[2]!, facts[3]!, facts[4]!, facts[5]!].map((row) => row.id);
     const ranked = await foldFacts(selectors, { ...opts, limitPerSelector: keys.length,
       taskContext: { workItemRefs: ['WI-202'] } }, db.sql);

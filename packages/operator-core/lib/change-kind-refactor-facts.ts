@@ -164,7 +164,9 @@ function scriptKind(path: string): ts.ScriptKind {
 
 function sourceFile(path: string, text: string): ts.SourceFile | null {
   const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, scriptKind(path));
-  return file.parseDiagnostics.length === 0 ? file : null;
+  // createSourceFile populates parseDiagnostics, but the public SourceFile type omits it.
+  const parseDiagnostics = (file as ts.SourceFile & { parseDiagnostics: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics;
+  return parseDiagnostics.length === 0 ? file : null;
 }
 
 function lineOffsets(text: string): number[] {
