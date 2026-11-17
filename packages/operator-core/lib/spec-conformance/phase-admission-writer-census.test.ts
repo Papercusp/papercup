@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   assertPhaseWriterCensus, inventoryPhaseWriters, reconcilePhaseWriterCensus,
-  readPhaseWriterCensus, writePhaseWriterCensus,
-  type PhaseWriterReview, type PhaseWriterSite,
+  inventoryPhaseWriterTree, readPhaseWriterCensus, verifyPhaseWriterTreeSnapshot, writePhaseWriterCensus,
+  type PhaseWriterReview, type PhaseWriterSite, type PhaseWriterTreeManifest,
 } from './phase-admission-writer-census';
 
 const source = (content: string, path = 'packages/operator-core/lib/example.ts') => ({ path, content });
@@ -100,6 +103,74 @@ describe('phase binding writer census', () => {
     const report = reconcilePhaseWriterCensus(inventory, []);
     expect(report.ready).toBe(false);
     expect(report.coverage.notChecked).toEqual(report.coverage.population);
+  });
+
+  it('reuses source bound default namespace and barrel targets without granting an exemption', () => {
+    const inventory = inventoryPhaseWriters([
+      source('export default async function mutate(tx) { await tx`UPDATE harness_shared.work_items SET status=\'open\'`; }', 'packages/writer.ts'),
+      source('export { default as advance } from "./writer";', 'packages/barrel.ts'),
+      source('import invoke from "./writer"; export async function entry(tx) { await invoke(tx); }', 'packages/default.ts'),
+      source('import * as api from "./barrel"; export async function start(tx) { await api.advance(tx); }', 'packages/namespace.ts'),
+    ]);
+    for (const path of ['packages/default.ts', 'packages/namespace.ts']) {
+      const helper = inventory.sites.find(site => site.path === path && site.kind === 'helper-edge')!;
+      expect(helper.helperTarget).toEqual({ path: 'packages/writer.ts',
+        sha256: inventory.sources.find(source => source.path === 'packages/writer.ts')!.sha256,
+        basis: 'syntax-bound-module-target-not-runtime-closure' });
+      expect(helper.dynamicEdges).toContain(`source:packages/writer.ts#${helper.helperTarget!.sha256}`);
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(helper.id);
+    }
+  });
+
+  it('invalidates an unchanged helper review when its resolved target changes', () => {
+    const sources = [
+      source('export async function exampleWrite(tx) { await tx`UPDATE work_items SET status=\'open\'`; }', 'packages/writer.ts'),
+      source('import { exampleWrite } from "./writer"; export function entry(tx) { return exampleWrite(tx); }', 'packages/entry.ts'),
+    ];
+    const before = inventoryPhaseWriters(sources), reviews = before.sites.map(site => review(site));
+    expect(assertPhaseWriterCensus(before, reviews).ready).toBe(true);
+    const after = inventoryPhaseWriters([{ ...sources[0]!, content: sources[0]!.content + '\nconst changed = true;' }, sources[1]!]);
+    const helper = before.sites.find(site => site.path === 'packages/entry.ts')!;
+    expect(after.sites.find(site => site.id === helper.id)!.sourceSha256).toBe(helper.sourceSha256);
+    expect(reconcilePhaseWriterCensus(after, reviews).problems.find(row => row.id === helper.id)!.reasons)
+      .toContain(`stale-edge-review:source:packages/writer.ts#${helper.helperTarget!.sha256}`);
+  });
+
+  it('retains missing shadowed and ambiguous import frontiers with no invented target', () => {
+    const inventory = inventoryPhaseWriters([
+      source('export async function work(tx) { await tx`UPDATE work_items SET status=\'open\'`; }', 'packages/writer.ts'),
+      source('import missing from "./absent"; export function entry(tx) { return missing(tx); }', 'packages/missing.ts'),
+      source('import { work as target } from "./writer"; export function entry(target, tx) { return target(tx); }', 'packages/shadow.ts'),
+      source('export function work() {}', 'packages/other.ts'),
+      source('export * from "./writer"; export * from "./other";', 'packages/barrel.ts'),
+      source('import { work as ambiguous } from "./barrel"; export function entry(tx) { return ambiguous(tx); }', 'packages/ambiguous.ts'),
+    ]);
+    for (const path of ['packages/missing.ts', 'packages/shadow.ts', 'packages/ambiguous.ts']) {
+      const helper = inventory.sites.find(site => site.path === path && site.kind === 'helper-edge')!;
+      expect(helper).toBeDefined();
+      expect(helper.helperTarget).toBeUndefined();
+      expect(helper.unresolved).toContain('imported-call-target-requires-review');
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(helper.id);
+    }
+  });
+
+  it('retains the import frontier when the maintained export resolver cannot finish within its bound', () => {
+    for (const depth of [31, 32, 33]) {
+      const name = (i: number) => `chain-${String(i).padStart(3, '0')}`;
+      const sources = Array.from({ length: depth + 1 }, (_, i) => source(i === depth
+        ? 'export async function work(tx) { await tx`UPDATE work_items SET status=\'open\'`; }'
+        : `export * from "./${name(i + 1)}";`, `packages/${name(i)}.ts`));
+      sources.push(source(`import { work } from "./${name(0)}"; export function entry(tx) { return work(tx); }`, 'packages/use.ts'));
+      const inventory = inventoryPhaseWriters(sources);
+      const helper = inventory.sites.find(site => site.path === 'packages/use.ts')!;
+      expect(helper).toBeDefined();
+      if (depth === 31) expect(helper.helperTarget?.path).toBe(`packages/${name(depth)}.ts`);
+      else {
+        expect(helper.helperTarget).toBeUndefined();
+        expect(helper.unresolved).toContain('helper-symbol-export-resolution-incomplete');
+      }
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(helper.id);
+    }
   });
 
   it('retains the serialized append and its batch authority as separate source identities', () => {
@@ -245,5 +316,78 @@ describe('phase binding writer census', () => {
     expect(error?.message).toContain('first-reason-preview; complete report on error.report');
     expect(error?.report).toEqual(reconcilePhaseWriterCensus(inventory, []));
     expect(error?.report.coverage.residue.at(-1)).toBe(inventory.sites.at(-1)!.id);
+  });
+
+  it('revalidates the entire exported source and enumeration snapshot after consumer recovery', async () => {
+    for (const size of [3, 4, 5, 81]) {
+      const root = mkdtempSync(join(tmpdir(), 'phase-writer-snapshot-'));
+      try {
+        mkdirSync(join(root, 'packages'));
+        mkdirSync(join(root, 'docs'));
+        for (let i = 0; i < size; i++) writeFileSync(join(root, `packages/${i}.ts`), write);
+        writeFileSync(join(root, 'docs/excluded.md'), 'Explicitly outside the runtime roots.');
+        const inventory = inventoryPhaseWriterTree(root), lines: string[] = [];
+        await writePhaseWriterCensus(inventory, [], line => { lines.push(line); });
+        const restored: PhaseWriterTreeManifest = { scope: inventory.scope,
+          sources: [], gaps: [], excluded: [], enumeration: { scanned: [], unscanned: [] } };
+        async function* resumedBatches() {
+          // A consumer resumes at a record cursor; it still verifies the whole
+          // stream, including the final source and completion footer.
+          for (let cursor = 0; cursor < lines.length; cursor += 4) {
+            yield* lines.slice(cursor, cursor + 4);
+            await Promise.resolve();
+          }
+        }
+        await readPhaseWriterCensus(resumedBatches(), row => {
+          if (row.kind === 'source') restored.sources.push(row.value as PhaseWriterTreeManifest['sources'][number]);
+          if (row.kind === 'gap') restored.gaps.push(row.value as PhaseWriterTreeManifest['gaps'][number]);
+          if (row.kind === 'excluded') restored.excluded.push(row.value as PhaseWriterTreeManifest['excluded'][number]);
+          if (row.kind === 'scanned' || row.kind === 'unscanned') restored.enumeration[row.kind].push(row.value as string);
+        });
+        const current = verifyPhaseWriterTreeSnapshot(restored);
+        expect(current.ready).toBe(true);
+        expect(current.coverage.residue).toEqual([]);
+        const path = `packages/${size - 1}.ts`;
+        writeFileSync(join(root, path), readFileSync(join(root, path), 'utf8') + '\nconst changed = true;');
+        const stale = verifyPhaseWriterTreeSnapshot(restored);
+        expect(stale.ready).toBe(false);
+        expect(stale.differences).toEqual([expect.objectContaining({ id: `source:${path}`, reason: 'changed' })]);
+        expect(stale.coverage.notChecked).toEqual([`source:${path}`]);
+        expect(stale.coverage.residue).toEqual([`source:${path}`]);
+        expect(verifyPhaseWriterTreeSnapshot({ ...restored, sources: [...restored.sources].reverse(),
+          excluded: [...restored.excluded].reverse() }).differences).toEqual(stale.differences);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  });
+
+  it('refuses added removed excluded and unreadable sources without dropping their identities', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-enumeration-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      mkdirSync(join(root, 'docs'));
+      writeFileSync(join(root, 'packages/old.ts'), write);
+      writeFileSync(join(root, 'packages/invalid.ts'), Buffer.from([0xff]));
+      writeFileSync(join(root, 'docs/old.md'), 'Named exclusion.');
+      const snapshot = inventoryPhaseWriterTree(root);
+      expect(verifyPhaseWriterTreeSnapshot(snapshot).coverage.residue).toEqual(['gap:source:packages/invalid.ts']);
+      rmSync(join(root, 'packages/old.ts'));
+      rmSync(join(root, 'docs/old.md'));
+      writeFileSync(join(root, 'packages/new.ts'), write);
+      writeFileSync(join(root, 'docs/new.md'), 'New exclusion.');
+      const stale = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(stale.ready).toBe(false);
+      expect(stale.differences.map(row => [row.id, row.reason])).toEqual([
+        ['excluded:docs/new.md', 'added'], ['excluded:docs/old.md', 'removed'],
+        ['source:packages/new.ts', 'added'], ['source:packages/old.ts', 'removed'],
+      ]);
+      expect([...stale.coverage.checked, ...stale.coverage.notChecked, ...stale.coverage.notApplicable].sort())
+        .toEqual(stale.coverage.population);
+      expect(new Set(stale.coverage.population).size).toBe(stale.coverage.population.length);
+      expect(stale.coverage.residue).toContain('gap:source:packages/invalid.ts');
+      expect(() => verifyPhaseWriterTreeSnapshot({ ...snapshot, scope: { kind: 'supplied-sources' } }))
+        .toThrow('repository-snapshot-required');
+      expect(() => verifyPhaseWriterTreeSnapshot({ ...snapshot, sources: [...snapshot.sources, snapshot.sources[0]!] }))
+        .toThrow('duplicate-snapshot-identity');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
