@@ -8,6 +8,8 @@ import {
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
 } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
+import { resolveSourceBarTestRequirements } from '../plans/source-bar-test-requirements';
+import type { Rubric } from '../../rubrics';
 type ClassResolver = typeof import('../plans/evaluate-spec-test-adequacy').resolveEvaluatorClassRef;
 const classResolver = vi.hoisted(() => vi.fn<ClassResolver>(async () => ({ ok: true, classRef: 'plan-class-feature-ship', source: 'active-acceptance-rubric' })));
 vi.mock('../plans/evaluate-spec-test-adequacy', () => ({ resolveEvaluatorClassRef: classResolver }));
@@ -537,6 +539,56 @@ describe('item-close contribution boundary', () => {
 });
 
 describe('test-checked completion uses mechanical adequacy', () => {
+  it.each([
+    { planItemId: 'P-011', expected: true },
+    { planItemId: 'P-016', expected: false },
+  ])('checks the shared R-15 BAR against $planItemId ownership at completion', async ({ planItemId, expected }) => {
+    const deps = mechanicalDeps();
+    const constructorFile = 'packages/reconnect/constructor.test.ts';
+    const sourceBar = {
+      barKey: 'R-15', barHash: 'r15-hash', barSetHash: 'r15-set',
+      rubricSlug: 'r15-acceptance', rubricRevision: 9, evidencePlane: 'tree' as const,
+    };
+    const rubric: Rubric = {
+      rubricId: sourceBar.rubricSlug, revision: sourceBar.rubricRevision,
+      workspaceId: 'test', kind: 'acceptance', barSetHash: sourceBar.barSetHash,
+      characteristic: 'phase-proof', title: 'R-15', description: 'Report and constructor proof ownership',
+      criteria: [{
+        key: 'R-15', title: 'Phase proof', model: 'Each item proves its own files', method: 'tests', driftMarkers: '',
+        barKey: sourceBar.barKey, barHash: sourceBar.barHash, evidencePlane: sourceBar.evidencePlane,
+        check: {
+          kind: 'tests', files: [RECONNECT_TEST_PATH, constructorFile],
+          filesByPlanItem: { 'P-011': [RECONNECT_TEST_PATH], 'P-016': [constructorFile] },
+          cases: [
+            { file: RECONNECT_TEST_PATH, testName: 'acknowledged events are not replayed' },
+            { file: constructorFile, testName: 'constructs the complete edition' },
+          ],
+        },
+      }],
+      ratingScale: ['pass', 'fail', 'unknown'], methodRef: null, gradingAuthority: 'independent',
+      status: 'active', createdBy: 'test', proposedBy: 'test', ratifiedBy: 'reviewer',
+      createdAt: '2026-08-20T00:00:00.000Z', updatedAt: '2026-08-20T00:00:00.000Z',
+    };
+    deps.listClauses.mockResolvedValue([clause({ planItemId, sourceBar })]);
+    deps.resolveSourceBarTestRequirements.mockImplementation(async (pin, cache, live, owner) => {
+      cache!.set(`${sourceBar.rubricSlug}@${sourceBar.rubricRevision}`, Promise.resolve(rubric));
+      return resolveSourceBarTestRequirements(pin, cache, live, owner);
+    });
+    const workItem = { ...WORK_ITEM, sourcePlanItemIds: [planItemId], payload: {
+      plan_item: { ...WORK_ITEM.payload.plan_item, item_id: planItemId },
+    } };
+
+    const result = await specTestAdequacyCompletionGate({ workItem, attestation: ATTESTATION }, deps);
+
+    expect(result).toMatchObject({ ok: expected, applicable: true });
+    if (expected) expect(result.checked).toEqual(['SPEC-003-01@1']);
+    else {
+      expect(result).toMatchObject({ reason: expect.stringContaining(constructorFile) });
+      expect(result.checked).toEqual([]);
+    }
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
   it('keeps missing independent frozen-oracle review unknown at completion', async () => {
     const deps = mechanicalDeps();
     deps.listClauses.mockResolvedValue([clause({
