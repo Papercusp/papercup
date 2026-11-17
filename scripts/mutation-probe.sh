@@ -2717,7 +2717,26 @@ detect_runner_misuse() {
   if detect_assertion_failure_evidence "$1" >/dev/null; then
     return 0
   fi
+  local restricted
+  restricted="$(sed -nE 's/^(Error: )?(VITEST|TEST_FILE)_RESTRICTED_HOLD_REFUSED( phase=[^ ]+)? error=([a-z_]+).*/\4/p' "$1" | sort -u)"
+  if [ -n "$restricted" ]; then
+    printf '%s' "$restricted"
+    return 0
+  fi
   grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
+}
+
+# A setup failure can make Vitest also print "No test files found". Preserve
+# the measured refusal instead of prescribing an unrelated path/glob change.
+refuse_restricted_hold_failure() {
+  case "$1" in
+    restricted_hold_state_unknown|restricted_write_held)
+      die "restricted-write preflight refused ($1); no mutation assertions ran.
+      Inspect the retained guard log for the census/loader/timeout evidence.
+      Resolve that preflight without weakening its fail-closed restriction;
+      changing test collection globs cannot clear this refusal."
+      ;;
+  esac
 }
 
 # A known test runner can exit 1 before any assertion runs. Its process status
@@ -3049,6 +3068,7 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     log "the historical guard's own output shows a runner-MISUSE marker, not an assertion failure: ${HISTORICAL_MISUSE_HITS}"
     printf 'MUTATION_PROBE_RESULT mode=historical verdict=harness-error expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s runner_misuse=%s\n' \
       "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "${HISTORICAL_MISUSE_HITS// /,}"
+    refuse_restricted_hold_failure "$HISTORICAL_MISUSE_HITS"
     die "the historical guard run never reached its assertions — it failed for a RUNNER-MISUSE reason, not because the historical source was caught.
 
       Matched misuse marker(s): ${HISTORICAL_MISUSE_HITS}
@@ -4195,6 +4215,7 @@ if { [ "$TEST_RC" -eq 1 ] || [ "$TEST_RC" -eq 101 ]; } && [ -n "$MUTANT_MISUSE_H
   log "the mutant guard's own output shows a runner-MISUSE marker, not an assertion failure: ${MUTANT_MISUSE_HITS}"
   printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s runner_misuse=%s\n' \
     "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "${MUTANT_MISUSE_HITS// /,}"
+  refuse_restricted_hold_failure "$MUTANT_MISUSE_HITS"
   die "the mutant guard run never reached its assertions — it failed for a RUNNER-MISUSE reason, not because the mutation was detected.
 
       Matched misuse marker(s): ${MUTANT_MISUSE_HITS}

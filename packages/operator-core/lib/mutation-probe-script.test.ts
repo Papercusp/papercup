@@ -1519,6 +1519,21 @@ exec "$PROBE_TEST_REAL_GIT" "$@"
     expect(read()).toBe(ORIGINAL);
   });
 
+  it.each(['restricted_hold_state_unknown', 'restricted_write_held'])(
+    'preserves the explicit %s preflight refusal ahead of incidental collection output', marker => {
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/', '--test',
+        `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then echo "Error: VITEST_RESTRICTED_HOLD_REFUSED error=${marker} measured=none spawnSync node ETIMEDOUT"; echo "No test files found, exiting with code 1"; exit 1; fi; grep -q "^beta$" {}`,
+      ]);
+      expect(code).toBe(2);
+      expect(out).toContain(`runner_misuse=${marker}`);
+      expect(out).toContain('spawnSync node ETIMEDOUT');
+      expect(out).toContain('without weakening its fail-closed restriction');
+      expect(out).not.toContain('MOST COMMON CAUSE');
+      expect(out).not.toMatch(/MUTANT CAUGHT/);
+      expect(read()).toBe(ORIGINAL);
+    });
+
   // WI-10006604 — `npm run test:file` blocks on npm-install-safe's fs-mutex while a peer
   // installs; on timeout it exits 1 having run ZERO tests. That exit was scored as a catch.
   it('reports an npm-install-safe mutex timeout in the mutant phase as harness-error, never as a caught mutant', () => {
