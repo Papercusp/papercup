@@ -997,8 +997,22 @@ export function loadIdopP001RolePermissionReader(options: {
       const door = load('packages/operator-core/lib/capability-envelope/recovery-door.ts');
       const refusal = load('packages/operator-core/lib/capability-envelope/identity-refusal-contract.ts');
       const reach = load('packages/operator-core/lib/agent-identities/grant-provider-kinds.ts');
-      const envelope = select<Record<string, unknown>>('packages/operator-core/lib/capability-envelope/blueprint-envelopes.ts',
-        ['identityGrantToolFailure', 'resolveIdentityGrantEnvelope'], { ...policy, ...refusal, ...reach });
+      const envelopePath = 'packages/operator-core/lib/capability-envelope/blueprint-envelopes.ts';
+      const envelopeSource = ts.createSourceFile(envelopePath, sourceAt(envelopePath).text,
+        ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const portablePolicy: Record<string, unknown> = {};
+      // Only the selected source's imports may add replay dependencies. The
+      // original arm predates category-rules.ts and must never read it.
+      for (const statement of envelopeSource.statements) {
+        if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+        const name = statement.moduleSpecifier.text;
+        if (name === '../governance-policy/category-rules' || name === '../governance-policy/inherited-policy') {
+          Object.assign(portablePolicy, load(relative(options.root,
+            resolve(options.root, dirname(envelopePath), name)) + '.ts'));
+        }
+      }
+      const envelope = select<Record<string, unknown>>(envelopePath,
+        ['identityGrantToolFailure', 'resolveIdentityGrantEnvelope'], { ...policy, ...refusal, ...reach, ...portablePolicy });
       const identity = select<{ checkIdentityGrantKernel: typeof checkIdentityGrantKernel }>(
         'packages/operator-core/lib/capability-envelope/identity-grants-port.ts', ['checkIdentityGrantKernel'], {
           ...door, ...refusal, ...reach, ...envelope,
@@ -1276,8 +1290,8 @@ export async function loadIdopP001DispatchPermissionReader(options: {
           allowedImports.add(args.path);
           return { path: args.path, external: true };
         }
-        if (/^(zod|zod-to-json-schema|mingo|yaml)(\/|$)/.test(args.path)) {
-          const name = args.path.split('/')[0];
+        if (/^(zod|zod-to-json-schema|mingo|yaml|@toon-format\/toon)(\/|$)/.test(args.path)) {
+          const name = args.path.startsWith('@') ? args.path.split('/').slice(0, 2).join('/') : args.path.split('/')[0];
           const key = `node_modules/${name}`;
           const installed = JSON.parse(readFileSync(join(options.root, key, 'package.json'), 'utf8'));
           if (!locked[key]?.version || installed.version !== locked[key].version ||

@@ -196,7 +196,7 @@ describe('D-009 layer contributions and restrictions', () => {
   });
 
   it('restrictions from a layer with no grants subtract from every contribution in either order', () => {
-    const restriction = { id: 'restriction', slots: [{ slot: 'audience' }],
+    const restriction = { id: 'restriction', slots: [{ slot: 'collaboration-stance' }],
       floors: { tools: { deny: ['acme:send'] } } };
     for (const layers of [[restriction, mail, contacts], [mail, contacts, restriction]]) {
       expect(resolveIdentityGrantEnvelope(stack(layers)))
@@ -207,26 +207,26 @@ describe('D-009 layer contributions and restrictions', () => {
   it('an allow restriction narrows the entire stack and an empty one grants nothing', () => {
     for (const allow of [['acme:contacts'], []]) {
       expect(resolveIdentityGrantEnvelope(stack([mail, contacts, {
-        id: 'restriction', slots: [{ slot: 'audience' }], floors: { tools: { allow } },
+        id: 'restriction', slots: [{ slot: 'collaboration-stance' }], floors: { tools: { allow } },
       }]))).toMatchObject({ allowedTools: allow, failures: [] });
     }
   });
 
   it('ignores flattened maximum and restriction fields when deriving layer authority', () => {
     const input = stack([mail, contacts]);
-    input.specification = structuredClone(input.specification);
-    input.specification.configuration.ceiling = { tools: { allow: [] } };
-    input.specification.configuration.floors = { tools: { deny: ['*'] } };
+    input.specification = { ...input.specification, configuration: { ...input.specification.configuration,
+      ceiling: { tools: { allow: [] } }, floors: { tools: { deny: ['*'] } } } };
     expect(resolveIdentityGrantEnvelope(input))
       .toMatchObject({ allowedTools: ['acme:contacts', 'acme:send'], failures: [] });
   });
 
   it('fails closed when any pinned layer source document is missing', () => {
     const input = stack([mail, contacts]);
-    input.specification = structuredClone(input.specification);
-    for (const entry of input.specification.inputs) {
-      if (entry.kind === 'blueprint-layer' && entry.ref === 'mail') delete entry.document;
-    }
+    input.specification = { ...input.specification, inputs: input.specification.inputs.map(entry => {
+      if (entry.kind !== 'blueprint-layer' || entry.ref !== 'mail') return entry;
+      const { document: _document, ...withoutSource } = entry;
+      return withoutSource;
+    }) };
     expect(resolveIdentityGrantEnvelope(input))
       .toMatchObject({ allowedTools: [], failures: [{ cause: 'policy-unavailable' }] });
   });

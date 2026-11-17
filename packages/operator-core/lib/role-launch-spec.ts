@@ -597,7 +597,8 @@ async function selectedLaunchCompositionSource(
       !['id', 'extends', 'version', 'description', 'slots', 'contributions', 'mode',
         'publisher', 'attestation', 'visibility'].includes(key));
     const contributions = identity.identity.contributions ?? [];
-    if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider')) {
+    if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider') &&
+        !contributions.some((entry) => entry.inputKind === 'package')) {
       // The SU producer already rendered these contributions into promptText.
       // Keep their authored source chain in the existing immutable closure even
       // though resource assembly must not execute the turn providers again.
@@ -620,7 +621,7 @@ async function selectedLaunchCompositionSource(
       continue;
     }
     if (contributions.some((entry) =>
-      entry.source === 'fixed' && entry.inputKind !== 'prompt-file' ||
+      entry.source === 'fixed' && entry.inputKind !== 'prompt-file' && entry.inputKind !== 'package' ||
       entry.source === 'provider' && !(
         entry.purpose === 'operational' && entry.inputKind === 'setting' ||
         entry.purpose === 'prompt' && entry.inputKind === 'prompt-file'))) {
@@ -819,6 +820,7 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
   const effectiveBlueprint = composition.configuration;
   const harnessResources = (
     (effectiveBlueprint.bundles?.length ?? 0) > 0 ||
+    effectiveBlueprint.contributions?.some((entry) => entry.inputKind === 'package') ||
     (effectiveBlueprint.grants?.requires?.length ?? 0) > 0 ||
     (effectiveBlueprint.grants?.optional?.length ?? 0) > 0 ||
     Boolean(resolveSeedPackKey(effectiveBlueprint).packId)

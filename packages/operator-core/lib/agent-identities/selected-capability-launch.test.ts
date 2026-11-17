@@ -41,9 +41,9 @@ describe('selected identity capability declaration at launch', () => {
     try {
       mkdirSync(identityDir, { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
-        id: identityId, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
+        id: identityId, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
         grants: { requires: [CLASS] },
-        knobs: { aiBackend: { default: { model: 'selected-mail-model' } } },
+        ceiling: { tools: { allow: ['acme:send'] } },
       }));
       const compile = () => compileLaunchSpecificationArtifact({
         promptText: 'Mail worker.', cwd: root, workspaceId: 'workspace-a',
@@ -57,7 +57,7 @@ describe('selected identity capability declaration at launch', () => {
       expect(launch.specificationArtifact.configuration).not.toHaveProperty('fleet');
       expect(launch.specificationArtifact.configuration.roles ?? []).toEqual([]);
       expect(launch.specificationArtifact.configuration.grants?.requires).toContain(CLASS);
-      expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model).toBe('selected-mail-model');
+      expect(launch.specificationArtifact.configuration.ceiling).toEqual({ tools: { allow: ['acme:send'] } });
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'capability-provider', ref: CLASS, providerVersion: '1.0.0',
       }));

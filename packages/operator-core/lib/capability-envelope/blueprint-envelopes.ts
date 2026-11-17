@@ -16,11 +16,13 @@
  */
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadBlueprintFromFile, type ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { loadBlueprintFromFile, type BlueprintGrants, type ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import type { PotCapabilityProviderBindingRow } from '../capability-class-registry-store';
 import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
 import { matchesAny, PROTECTED_CAPABILITY_GLOBS, ROLE_ENVELOPES, type RoleEnvelope } from './policy';
 import { identityRefusalContract, type RefusalContract } from './identity-refusal-contract';
+import { GovernedRulesSchema } from '../governance-policy/category-rules';
+import { evaluateInheritedPolicy, type PolicyLayer } from '../governance-policy/inherited-policy';
 
 interface CacheEntry {
   mtimeMs: number;
@@ -156,6 +158,10 @@ export type IdentityGrantEnvelope =
  * Rebinding does not silently activate a different provider under an old pin.
  * Optional unavailable providers grant nothing; a required failure closes the
  * whole envelope. No grants declaration preserves the legacy role-envelope path.
+ * D-009: a layer contributes within its OWN maximum; floors from every layer
+ * narrow the union. Flattened configuration fields cannot identify that origin.
+ * This tool envelope judges the tools category; resource/action policy still
+ * belongs at the host boundary that resolves those request values.
  */
 export function resolveIdentityGrantEnvelope(input: {
   specification: ResolvedAgentSpecification;
@@ -170,8 +176,10 @@ export function resolveIdentityGrantEnvelope(input: {
   protectedAdditions?: readonly string[];
 }): IdentityGrantEnvelope {
   const { specification } = input;
-  const grants = specification.configuration.grants;
-  if (!grants) return { applied: false };
+  const layers = specification.inputs.filter(entry => entry.kind === 'blueprint-layer');
+  if (!specification.configuration.grants && !layers.some(layer => layer.document?.grants !== undefined)) {
+    return { applied: false };
+  }
   const failures: IdentityGrantFailure[] = [];
   const allowedTools = new Set<string>();
   const fail = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string) => {
@@ -195,9 +203,39 @@ export function resolveIdentityGrantEnvelope(input: {
     fail('policy-unavailable', null);
     return result();
   }
+  const contributions: Array<{ classes: Set<string>; maximum: PolicyLayer }> = [];
+  const restrictions: PolicyLayer[] = [];
+  const required = new Set<string>();
+  const classes = new Set<string>();
+  if (layers.length === 0) {
+    fail('policy-unavailable', null);
+    return result();
+  }
+  for (const layer of layers) {
+    // The compiler integrity check pins and validates each document. Old
+    // artifacts without source cannot prove a contribution's own maximum.
+    if (!layer.document) {
+      fail('policy-unavailable', null);
+      return result();
+    }
+    // Workspace blueprint fields retain their legacy parsing/role semantics.
+    // Portable maxima and floors are authored on identity layers only.
+    const maximum = GovernedRulesSchema.safeParse(layer.sourceKind === 'identity' ? layer.document.ceiling ?? {} : {});
+    const floor = GovernedRulesSchema.safeParse(layer.sourceKind === 'identity' ? layer.document.floors ?? {} : {});
+    if (!maximum.success || !floor.success) {
+      fail('policy-unavailable', null);
+      return result();
+    }
+    restrictions.push({ layerId: layer.ref, level: 'workspace', version: 1, rules: floor.data });
+    const grants = layer.document.grants as BlueprintGrants | undefined;
+    if (!grants) continue;
+    const ownClasses = new Set([...(grants.requires ?? []), ...(grants.optional ?? [])]);
+    for (const ref of grants.requires ?? []) required.add(ref);
+    for (const ref of ownClasses) classes.add(ref);
+    contributions.push({ classes: ownClasses,
+      maximum: { layerId: layer.ref, level: 'workspace', version: 1, rules: maximum.data } });
+  }
   const pins = specification.inputs.filter((entry) => entry.kind === 'capability-provider');
-  const required = new Set(grants.requires ?? []);
-  const classes = new Set([...required, ...(grants.optional ?? [])]);
   for (const classRef of classes) {
     const matchingPins = pins.filter((pin) => pin.ref === classRef);
     // An optional class absent at compilation cannot acquire authority later.
@@ -228,6 +266,10 @@ export function resolveIdentityGrantEnvelope(input: {
     }
     const permitted: string[] = [];
     for (const toolName of classTools) {
+      const request = { tools: [toolName] };
+      if (!contributions.some(layer => layer.classes.has(classRef) &&
+          evaluateInheritedPolicy([layer.maximum], request).allow) ||
+          !evaluateInheritedPolicy(restrictions, request).allow) continue;
       const cause = identityGrantToolFailure({ ...input, toolName });
       if (cause) fail(cause, classRef, toolName);
       else permitted.push(toolName);

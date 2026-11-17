@@ -49,10 +49,11 @@ describe('selected identity recipe reaches its existing consumer', () => {
       mkdirSync(recipeDir, { recursive: true });
       vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
       const identity = {
-        id: identityId, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-        bundles: [{ kind: 'recipe', ref: recipeId, version: '1.0.0' }],
+        id: identityId, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
         grants: { optional: ['calendar.read@1.0.0'] },
-        contributions: [{ id: 'resource-rules', purpose: 'prompt', source: 'fixed',
+        contributions: [{ id: 'selected-recipe', purpose: 'resource', source: 'fixed',
+          refresh: 'source-change', inputKind: 'package', ref: `recipe:${recipeId}`, version: '1.0.0' },
+        { id: 'resource-rules', purpose: 'prompt', source: 'fixed',
           refresh: 'source-change', inputKind: 'prompt-file', ref: 'fixed:domain' },
         { id: 'current-guidance', purpose: 'prompt', source: 'provider',
           refresh: 'launch', inputKind: 'prompt-file', ref: 'current-guidance',
@@ -145,8 +146,9 @@ describe('selected identity recipe reaches its existing consumer', () => {
       mkdirSync(rubricDir, { recursive: true });
       vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
       const identity = {
-        id: identityId, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-        bundles: [{ kind: 'rubric', ref: rubricId, version: '1.0.0' }],
+        id: identityId, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
+        contributions: [{ id: 'selected-rubric', purpose: 'resource', source: 'fixed',
+          refresh: 'source-change', inputKind: 'package', ref: `rubric:${rubricId}`, version: '1.0.0' }],
       };
       writeFileSync(join(identityDir, 'blueprint.yaml'), stringifyYaml({
         ...identity, attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' },
