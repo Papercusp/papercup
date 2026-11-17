@@ -155,7 +155,7 @@ function readCustodyCapture(
   details: Record<string, unknown> | null,
   actor: string | null,
   atMs: number,
-  subject: { id: string; workspaceId: string },
+  subject: { id: string; workspaceId: string; harnessSlug?: string | null },
 ): WorkItemCustodyCaptureEvidence {
   const problems: string[] = [];
   const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -185,7 +185,8 @@ function readCustodyCapture(
     || !nonempty(row.feature_id) || !(row.taken_by === null || nonempty(row.taken_by)))) {
     problems.push('capture endpoint identity or holder is malformed');
   }
-  if (!endpoints.some(row => row.workspace_id === subject.workspaceId && row.feature_id === subject.id)) {
+  if (!endpoints.some(row => row.workspace_id === subject.workspaceId && row.feature_id === subject.id
+    && (subject.harnessSlug == null || row.harness_slug === subject.harnessSlug))) {
     problems.push('capture endpoints do not include the requested work item');
   }
   return {
@@ -205,6 +206,8 @@ function readCustodyCapture(
 export async function getWorkItemLifecycleHistory(params: {
   id: string;
   workspaceId: string;
+  /** Canonical item harness; legacy callers without it cannot qualify the full physical identity. */
+  harnessSlug?: string | null;
   payload?: unknown;
   family?: string | null;
   limit?: number;
@@ -303,6 +306,9 @@ export async function getWorkItemLifecycleHistory(params: {
   const notRecorded = notRecordedFor(params.family);
   if (custodyCaptureObserved) {
     notRecorded.push('custody capture receipts identify a database role, not an authenticated agent; even valid receipts do not qualify independent DDL, capture or retention continuity');
+    if (params.harnessSlug == null) {
+      notRecorded.push('the requested harness was not supplied; custody receipt validation does not establish the full physical work-item identity');
+    }
   }
   if (truncated) notRecorded.push(`additional lifecycle events are omitted by the display limit of ${limit}`);
 

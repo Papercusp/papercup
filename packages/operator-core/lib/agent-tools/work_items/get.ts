@@ -1840,6 +1840,7 @@ export default defineTool({
           ? await trackWorkItemsGetEnrichment(stage, 'lifecycle', () => getWorkItemLifecycleHistory({
               id: workItem.id,
               workspaceId: activeWorkspaceId(),
+              harnessSlug: workItem.harness ?? args.harness ?? null,
               payload: (workItem as { payload?: unknown }).payload,
               family: (workItem as { family?: string | null }).family ?? null,
             })).catch(() => null)

@@ -322,6 +322,44 @@ describe('getWorkItemLifecycleHistory', () => {
       }
     });
 
+    it('rejects a receipt for the same workspace and item in another harness', async () => {
+      unsafe.mockResolvedValue([receipt()]);
+      const out = await getWorkItemLifecycleHistory({
+        id: 'WI-1', workspaceId: WS, harnessSlug: 'other-harness',
+      });
+      expect(out.events).toHaveLength(1);
+      expect(out.events[0]?.custodyCapture).toMatchObject({
+        receipt: 'invalid', actorAuthentication: 'unverified', continuity: 'unknown',
+        problems: ['capture endpoints do not include the requested work item'],
+      });
+      expect(out.coverage).toMatchObject({ invalidEntries: 1, degraded: true });
+    });
+
+    it('discloses missing harness scope without asserting a fully identified receipt', async () => {
+      unsafe.mockResolvedValue([receipt()]);
+      const out = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
+      expect(out.events[0]?.custodyCapture?.receipt).toBe('valid');
+      expect(out.coverage.notRecorded.join(' ')).toMatch(/requested harness was not supplied/);
+      expect(out.events[0]?.custodyCapture?.continuity).toBe('unknown');
+    });
+
+    it('matches a harness move on one complete endpoint rather than mixing endpoint fields', async () => {
+      const before = endpoint('WI-old', WS);
+      const after = { ...endpoint('WI-new', WS), harness_slug: 'moved-harness' };
+      unsafe.mockResolvedValue([receipt({ before, after })]);
+      for (const row of [before, after]) {
+        const out = await getWorkItemLifecycleHistory({
+          id: row.feature_id, workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
+        });
+        expect(out.events[0]?.custodyCapture?.receipt).toBe('valid');
+      }
+      const mixed = await getWorkItemLifecycleHistory({
+        id: before.feature_id, workspaceId: WS, harnessSlug: after.harness_slug,
+      });
+      expect(mixed.events[0]?.custodyCapture?.receipt).toBe('invalid');
+      expect(mixed.coverage).toMatchObject({ invalidEntries: 1, degraded: true });
+    });
+
     it('never elevates a substituted actor or caller-controlled holder to an authenticated actor', async () => {
       unsafe.mockResolvedValue([{ ...receipt(), actor: 'su-spoofed' }]);
       const out = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
