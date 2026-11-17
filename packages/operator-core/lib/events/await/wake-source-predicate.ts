@@ -150,23 +150,36 @@ export async function readWorkItemAwaitTargets(
  * Every open (un-fired, un-cancelled, un-expired) await for these subscribers, in the shape the
  * predicate reads. Joined on `subscriber_id` alone: `event_awaits` stores rows under the corpus
  * namespace, so a real-workspace filter matches nothing (see silent-halt-reconcile's candidate read).
+ * `wakeOnly` is the diagnostic reading: notify/announce rows cannot wake a session. Reuse the
+ * effective view for composed deadlines/policies and discard cancelled or already satisfied trees.
+ * A failed read rejects; callers must keep it unknown instead of treating it as an empty set.
  */
 export async function readOpenAwaitsForSubscribers(
   subscriberIds: readonly string[],
   sql?: Sql,
+  opts: { wakeOnly?: boolean } = {},
 ): Promise<WakeSourceAwait[]> {
   const ids = [...new Set(subscriberIds.filter(Boolean))];
   if (ids.length === 0) return [];
   const db = await resolveSql(sql);
-  const rows = await db<
-    Array<{
-      subscriber_id: string;
-      event_key: string;
-      expires_ts: Date | string | null;
-      timeout_behavior: string | null;
-      once: boolean | null;
-    }>
-  >`
+  type OpenAwaitRow = {
+    subscriber_id: string;
+    event_key: string;
+    expires_ts: Date | string | null;
+    timeout_behavior: string | null;
+    once: boolean | null;
+  };
+  const rows = opts.wakeOnly ? await db<OpenAwaitRow[]>`
+    SELECT subscriber_id, event_key, effective_expires_ts AS expires_ts,
+           effective_timeout_behavior AS timeout_behavior, once
+      FROM harness_shared.event_awaits_effective
+     WHERE subscriber_id = ANY(${ids}::text[])
+       AND policy = 'wake'
+       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND (effective_expires_ts IS NULL OR effective_expires_ts > now())
+       AND (root_id IS NULL OR (
+         root_cancelled_at IS NULL AND root_fired_count < root_required_count
+       ))` : await db<OpenAwaitRow[]>`
     SELECT subscriber_id, event_key, expires_ts, timeout_behavior, once
       FROM harness_shared.event_awaits
      WHERE subscriber_id = ANY(${ids}::text[])

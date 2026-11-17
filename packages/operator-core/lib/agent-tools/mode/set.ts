@@ -34,6 +34,8 @@ import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { attestModeControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import { deactivateLoopForGoal, getLoopStatus } from '../../harness/routines/loop';
+import { INBOX_WAKE_KEY_PREFIX } from '../../events/await/types';
+import { guaranteesWake, isWakeSource, readOpenAwaitsForSubscribers, readWorkItemAwaitTargets } from '../../events/await/wake-source-predicate';
 import { notifyGoalHolderHandoff } from '../../goals/holder-handoff';
 import { renderModeInstructionsFact } from './instructions-fact';
 export { renderModeInstructionsFact };
@@ -59,7 +61,7 @@ export function modeInstructionsFactKey(modeId: string): string {
  * WI-6949 — the wake-source guard, fired at the ACTION-POINT that creates the hazard.
  *
  * An autonomy mode is an AUTHORIZATION posture ("act, don't ask"); it is NOT a wake
- * source. The engine loop is. An agent that registers AUTO while an interactive owner is
+ * source. An engine loop or an event await is. An agent that registers AUTO while an interactive owner is
  * present is safe only for as long as the owner keeps replying — the moment they walk
  * away, that agent's only wake source silently disappears and the next turn it ends is
  * its last. A carry-respawn does NOT rescue it: a respawn restores CONTEXT, not a TURN.
@@ -84,12 +86,24 @@ export function wakeSourceWarning(opts: {
   axis: string;
   enabled: boolean;
   loopActive: boolean;
+  eventActive?: boolean;
+  eventGuaranteesWake?: boolean;
 }): string | null {
   if (!opts.enabled) return null;
   // The autonomy axis covers auto + cold-auto; an overlay may also IMPLY auto
   // (drain, goal). Both readings live in the registry — never re-spell the list.
   const impliesAutonomy = opts.axis === 'autonomy' || modeImpliesAutonomy(opts.modeId);
-  if (!impliesAutonomy || opts.loopActive) return null;
+  if (!impliesAutonomy || opts.loopActive || opts.eventGuaranteesWake) return null;
+  if (opts.eventActive) {
+    return (
+      `⚠ NO GUARANTEED WAKE. '${opts.modeId}' is an AUTHORIZATION posture. An active events:await ` +
+      'can wake you if its event fires, but no armed loop or bounded wake-on-timeout await guarantees ' +
+      'another turn. An unbounded await can wait forever; on_timeout:expire lapses silently. ' +
+      "If you need a deadline wake, use events:await { event, timeout_sec, on_timeout: 'wake' }. " +
+      'For ongoing work that needs recurrence, use loop:arm { intervalSec, goal, workItem }. ' +
+      'A conditional event wake does not guarantee that its producer will make progress.'
+    );
+  }
   return (
     `⚠ NO WAKE SOURCE. '${opts.modeId}' is an AUTHORIZATION posture — it does not make you run. ` +
     'The engine loop is the recurrence mechanism, and you have none armed, so an interactive owner ' +
@@ -542,21 +556,38 @@ export default defineTool({
       ? attestModeControlConsumerView({ modeId: def.id, enabled }, control)
       : null;
 
-    // WI-6949: an applied autonomy mode with no armed loop leaves the TARGET with no
-    // wake source. Read the target's loop (not the caller's) so a peer-set warns about
-    // the agent that will actually go inert. Fail-soft — a loop-read hiccup must never
-    // fail an applied mode change, so a read error simply suppresses the advisory.
+    // Read the TARGET's continuation evidence. Event existence and a guaranteed
+    // deadline are distinct: a silent-expiry await must not become owner-only, or
+    // silence the bounded-wake warning. Reuse the shared dead-await predicates.
     let wakeWarning: string | null = null;
-    if (res.ok && !res.noop && enabled) {
+    let wakeEvidence: { wakeSource: 'loop' | 'event' | 'owner-only' | 'unknown'; guaranteedWake?: boolean } | null = null;
+    if (res.ok && !res.noop && enabled && (def.axis === 'autonomy' || modeImpliesAutonomy(def.id))) {
       try {
         const loop = await getLoopStatus(target);
+        let eventActive = false;
+        let eventGuaranteesWake = false;
+        if (!loop?.active) {
+          const awaits = await readOpenAwaitsForSubscribers([target], undefined, { wakeOnly: true });
+          const targets = await readWorkItemAwaitTargets(awaits);
+          eventActive = awaits.some((a) => isWakeSource(a, targets, INBOX_WAKE_KEY_PREFIX));
+          eventGuaranteesWake = awaits.some((a) => guaranteesWake(a, targets, INBOX_WAKE_KEY_PREFIX));
+        }
+        wakeEvidence = {
+          wakeSource: loop?.active ? 'loop' : eventActive ? 'event' : 'owner-only',
+          guaranteedWake: loop?.active === true || eventGuaranteesWake,
+        };
         wakeWarning = wakeSourceWarning({
           modeId: def.id,
           axis: def.axis,
           enabled,
           loopActive: loop?.active === true,
+          eventActive,
+          eventGuaranteesWake,
         });
-      } catch { /* fail-soft */ }
+      } catch {
+        // An applied mode must survive a failed advisory read, and unknown is not none.
+        wakeEvidence = { wakeSource: 'unknown' };
+      }
     }
 
     /* ── D-002: SCOPE INSTRUCTIONS OUTLIVE THEIR DELIVERY ────────────────────
@@ -825,7 +856,8 @@ export default defineTool({
         ? { instructionsFact, instructionsFactKey: modeInstructionsFactKey(def.id) }
         : {}),
       ...(wakeOutcome ? { wake: wakeOutcome } : {}),
-      ...(wakeWarning ? { wakeSource: 'owner-only', wakeSourceWarning: wakeWarning } : {}),
+      ...(wakeEvidence ?? {}),
+      ...(wakeWarning ? { wakeSourceWarning: wakeWarning } : {}),
       ...(control ? { controlGeneration: control.generation } : {}),
       ...(controlConsumerView?.divergedFromWrite ? { controlConsumerView } : {}),
       ...(res.error ? { error: res.error } : {}),

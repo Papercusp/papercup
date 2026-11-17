@@ -17,6 +17,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@p
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const store = await import('./store');
+const { readOpenAwaitsForSubscribers } = await import('./wake-source-predicate');
 const { HOST_ACCEPTED_CANCELLED_DELIVERY_MARKER } = await import('./cancel-reasons');
 const { lastLoopFireParked } = await import('../../agent-tools/loop/next-wake');
 const { reconcileInterestEventAwaits } = await import('../../interest-auto-arm');
@@ -108,6 +109,52 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(result.totalCount).toBe(6);
     expect(result.sample).toHaveLength(5);
     expect(result.sample.every((row) => row.eventKey.startsWith('counted:'))).toBe(true);
+  });
+
+  it('reads wake policies and cardinality without counting notify, announce or inactive rows (EI-29007882674026015)', async () => {
+    const subscriberId = 'su-mode-wake-policies';
+    await store.registerAwait({ subscriberId, eventKey: 'mode:silent', timeoutSec: 60, timeoutBehavior: 'expire', once: false });
+    await store.registerAwait({ subscriberId, eventKey: 'mode:bounded', timeoutSec: 60, timeoutBehavior: 'wake' });
+    await store.registerAwait({ subscriberId, eventKey: 'mode:notify', policy: 'notify' });
+    for (const state of ['expired', 'cancelled', 'fired', 'announce']) {
+      const row = await store.registerAwait({ subscriberId, eventKey: `mode:${state}` });
+      await db.adminSql`
+        UPDATE harness_shared.event_awaits
+           SET expires_ts = CASE WHEN ${state} = 'expired' THEN now() - interval '1 minute' ELSE expires_ts END,
+               cancelled_at = CASE WHEN ${state} = 'cancelled' THEN now() ELSE NULL END,
+               fired_at = CASE WHEN ${state} = 'fired' THEN now() ELSE NULL END,
+               policy = CASE WHEN ${state} = 'announce' THEN 'announce' ELSE policy END
+         WHERE id = ${row.id}`;
+    }
+    const wakes = await readOpenAwaitsForSubscribers([subscriberId], db.adminSql, { wakeOnly: true });
+    expect(wakes.map((a) => a.eventKey).sort()).toEqual(['mode:bounded', 'mode:silent']);
+    expect(wakes.find((a) => a.eventKey === 'mode:silent')).toMatchObject({ subscriberId, timeoutBehavior: 'expire', once: false });
+    expect(wakes.find((a) => a.eventKey === 'mode:bounded')).toMatchObject({ timeoutBehavior: 'wake', once: true });
+    // The existing all-policy detector read keeps its prior contract.
+    expect((await readOpenAwaitsForSubscribers([subscriberId], db.adminSql)).some((a) => a.eventKey === 'mode:notify')).toBe(true);
+  });
+
+  it('uses a composed root deadline/policy and excludes lapsed, cancelled or satisfied trees (EI-29007882674026015)', async () => {
+    const subscriberId = 'su-mode-composed-wakes';
+    for (const state of ['wake', 'expire', 'lapsed', 'cancelled', 'satisfied']) {
+      const [root] = await db.adminSql<{ id: number }[]>`
+        INSERT INTO harness_shared.event_await_nodes
+          (workspace_id, root_id, subscriber_id, required_count, fired_count, expires_ts, timeout_behavior, cancelled_at)
+        VALUES (${DEFAULT_COORD_WORKSPACE}, 0, ${subscriberId}, 1,
+          ${state === 'satisfied' ? 1 : 0},
+          now() + ${state === 'lapsed' ? '-1 minute' : '1 hour'}::interval,
+          ${state === 'expire' ? 'expire' : 'wake'},
+          CASE WHEN ${state} = 'cancelled' THEN now() ELSE NULL END)
+        RETURNING id`;
+      await db.adminSql`UPDATE harness_shared.event_await_nodes SET root_id = id WHERE id = ${root.id}`;
+      const row = await store.registerAwait({ subscriberId, eventKey: `mode:tree:${state}`, timeoutBehavior: 'expire' });
+      await db.adminSql`UPDATE harness_shared.event_awaits SET root_id = ${root.id}, expires_ts = NULL WHERE id = ${row.id}`;
+    }
+    const wakes = await readOpenAwaitsForSubscribers([subscriberId], db.adminSql, { wakeOnly: true });
+    expect(wakes.map((a) => a.eventKey).sort()).toEqual(['mode:tree:expire', 'mode:tree:wake']);
+    expect(wakes.find((a) => a.eventKey === 'mode:tree:wake')).toMatchObject({ timeoutBehavior: 'wake', once: true });
+    expect(wakes.find((a) => a.eventKey === 'mode:tree:expire')).toMatchObject({ timeoutBehavior: 'expire' });
+    expect(wakes.every((a) => a.expiresTs != null && Date.parse(a.expiresTs) > Date.now())).toBe(true);
   });
 
   it('fires one-shot: the first fire returns the await, the second returns nothing', async () => {
