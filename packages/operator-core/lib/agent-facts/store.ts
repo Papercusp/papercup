@@ -29,6 +29,7 @@
  * ORDER BY, not this summary.
  */
 import type { Sql } from 'postgres';
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { InvalidInputError } from '@papercusp/tooldef';
@@ -2825,6 +2826,25 @@ export interface FactTaskContext {
   files?: readonly string[];
 }
 
+/** Serializable population contract, independent of the fold's ranking/budget. */
+export interface FactEligibilityContext {
+  audiences?: readonly string[] | 'all';
+  keyPrefixes?: readonly string[];
+  includeCodeNotes?: boolean;
+  dependsOnFiles?: readonly string[];
+}
+
+function normalizeFactEligibility(opts: FactEligibilityContext) {
+  const strings = (values: readonly string[] = []) => [...new Set(values.map((s) => s.trim()).filter(Boolean))].sort();
+  const keyPrefixes = strings(opts.keyPrefixes);
+  return {
+    audiences: opts.audiences === 'all' ? 'all' as const : strings(opts.audiences),
+    keyPrefixes,
+    includeCodeNotes: foldIncludesCodeNotes(keyPrefixes, opts.includeCodeNotes),
+    dependsOnFiles: strings(opts.dependsOnFiles),
+  };
+}
+
 /**
  * The FOLD read — live (unexpired, unretracted) facts for a set of selectors,
  * newest-updated first, bounded per selector. This is what brief/dossier/orient
@@ -3247,7 +3267,10 @@ function liveFactPredicate(
   keyPrefixes: readonly string[],
   audiences: readonly string[] | 'all',
   includeCodeNotes?: boolean,
+  dependsOnFiles: readonly string[] = [],
 ) {
+  const anchorCells = [...new Set(dependsOnFiles.map((path) => path.trim()).filter(Boolean)
+    .map((path) => `${FACT_FILE_ANCHOR_PREFIX}${path}`))];
   return sql`workspace_id = ${ws} AND scope = ${scope}
          AND coalesce(scope_ref,'') = ${ref}
          -- P-008 (a): CURRENT versions only. A fold that saw the superseded tail
@@ -3277,7 +3300,13 @@ function liveFactPredicate(
              : audiences.length > 0
                ? sql`(audience_scope IS NULL OR audience_scope = ANY(${audiences as string[]}))`
                : sql`audience_scope IS NULL`
-         }`;
+         }
+         AND ${anchorCells.length > 0
+           ? sql`CASE WHEN jsonb_typeof(depends_on) = 'array'
+                      THEN EXISTS (SELECT 1 FROM jsonb_array_elements(depends_on) d
+                                    WHERE d->>'cell' = ANY(${anchorCells}))
+                      ELSE false END`
+           : sql`TRUE`}`;
 }
 
 /**
@@ -3297,6 +3326,7 @@ export async function countLiveFacts(
     keyPrefixes?: readonly string[];
     /** Count code notes too — pass whatever the page read passed (facts:list: true). */
     includeCodeNotes?: boolean;
+    dependsOnFiles?: readonly string[];
   } = {},
   inject?: Sql,
 ): Promise<number> {
@@ -3312,7 +3342,7 @@ export async function countLiveFacts(
   const rows = await sql<{ n: string }[]>`
     SELECT count(*)::text AS n
       FROM harness_shared.agent_facts
-     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes)}`;
+     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes, opts.dependsOnFiles)}`;
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -3352,6 +3382,8 @@ export interface FactFoldCensus {
   truncated: boolean;
   /** Task-ranked folds reserve independent, bounded slots for retained classes. */
   retained?: { neverDrop: number; conventions: number; limitPerClass: number };
+  /** Existing-read recovery of this exact eligible population; serialize for takeover. */
+  recovery?: { tool: 'facts:list'; args: FactSelector & { eligibility: FactEligibilityContext } };
 }
 
 /**
@@ -3395,14 +3427,6 @@ export async function foldFactsWithCensus(
     opts.audiences === 'all'
       ? 'all'
       : (opts.audiences ?? []).map((a) => a.trim()).filter(Boolean);
-  const anchorCells = [
-    ...new Set(
-      (opts.dependsOnFiles ?? [])
-        .map((p) => p.trim())
-        .filter(Boolean)
-        .map((p) => `${FACT_FILE_ANCHOR_PREFIX}${p}`),
-    ),
-  ];
   const out: AgentFact[] = [];
   const census: FactFoldCensus[] = [];
   const task = opts.taskContext;
@@ -3454,15 +3478,7 @@ export async function foldFactsWithCensus(
              count(*) OVER () AS fold_total,
              ${factClass} AS fold_class, ${relevance} AS fold_relevance
         FROM harness_shared.agent_facts
-       WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes)}
-         AND ${
-           anchorCells.length > 0
-             ? sql`CASE WHEN jsonb_typeof(depends_on) = 'array'
-                        THEN EXISTS (SELECT 1 FROM jsonb_array_elements(depends_on) d
-                                      WHERE d->>'cell' = ANY(${anchorCells}))
-                        ELSE false END`
-             : sql`TRUE`
-         }
+       WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, keyPrefixes, audiences, opts.includeCodeNotes, opts.dependsOnFiles)}
       ), ranked AS (
         SELECT *, row_number() OVER (PARTITION BY fold_class ORDER BY ${order}) AS fold_rank
           FROM eligible
@@ -3480,6 +3496,10 @@ export async function foldFactsWithCensus(
       shown: rows.length,
       total,
       truncated: total > rows.length,
+      ...(total > rows.length ? { recovery: { tool: 'facts:list' as const, args: {
+        scope: sel.scope, scopeRef: sel.scope === 'workspace' ? null : ref,
+        eligibility: normalizeFactEligibility(opts),
+      } } } : {}),
       ...(task && rows.some((row) => row.fold_class > 0) ? {
         retained: {
           neverDrop: rows.filter((row) => row.fold_class === 2).length,
@@ -3699,36 +3719,42 @@ export async function listFacts(
 
 /** Explicit recovery pages use immutable identity order, so refreshing a fact
  * cannot move an unread identity behind the cursor. The opaque cursor binds the
- * workspace and selector and survives process restarts. Inserts before the cursor
+ * workspace, selector and originating eligibility and survives process restarts. Inserts before the cursor
  * are recovered by restarting the scan without a cursor; this is a live scan,
  * not a historical snapshot. No source rows are evicted or truncated. */
 export async function listFactsPage(
   sel: FactSelector,
-  opts: { workspaceId?: string; limit: number; cursor?: string } ,
+  opts: { workspaceId?: string; limit: number; cursor?: string; eligibility?: FactEligibilityContext } ,
   inject?: Sql,
 ): Promise<{ facts: AgentFact[]; nextCursor: string | null }> {
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const ref = sel.scope === 'workspace' ? '' : (sel.scopeRef ?? '').trim();
+  // Omitted = historical explicit management read. Present = exact fold population.
+  const eligibility = normalizeFactEligibility(opts.eligibility ?? { audiences: 'all', includeCodeNotes: true });
+  const binding = JSON.stringify(eligibility);
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   if (!Number.isSafeInteger(opts.limit) || opts.limit < 1) throw new InvalidInputError('facts:list — invalid page limit');
   if (sel.scope !== 'workspace' && !ref) throw new InvalidInputError('facts:list — scope reference required');
   let after: { key: string; hive: string } | undefined;
   if (opts.cursor !== undefined) {
     try {
       const value: unknown = JSON.parse(Buffer.from(opts.cursor, 'base64url').toString('utf8'));
-      if (!Array.isArray(value) || value.length !== 6 || value[0] !== 1 || value[1] !== ws ||
-          value[2] !== sel.scope || value[3] !== ref || typeof value[4] !== 'string' || typeof value[5] !== 'string') {
+      if (!Array.isArray(value) || value.length !== 8 || value[0] !== 2 || value[1] !== ws ||
+          value[2] !== sel.scope || value[3] !== ref || value[4] !== binding ||
+          typeof value[5] !== 'string' || typeof value[6] !== 'string' || value[7] !== digest(value.slice(0, 7))) {
         throw new Error('cursor selector mismatch');
       }
-      after = { key: value[4], hive: value[5] };
+      after = { key: value[5], hive: value[6] };
     } catch {
-      throw new InvalidInputError('facts:list — invalid cursor or different workspace/scope; restart without cursor');
+      throw new InvalidInputError('facts:list — invalid cursor or different workspace/scope/eligibility; restart without cursor using the original eligibility');
     }
   }
   const rows = await sql<(AgentFactRow & { source_hive: string | null })[]>`
     SELECT *, updated_at::text AS updated_at, expires_at::text AS expires_at
       FROM harness_shared.agent_facts
-     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, [], 'all', true)}
+     WHERE ${liveFactPredicate(sql, ws, sel.scope, ref, eligibility.keyPrefixes, eligibility.audiences,
+       eligibility.includeCodeNotes, eligibility.dependsOnFiles)}
        AND ${after
          ? sql`(key COLLATE "C", coalesce(source_hive, '') COLLATE "C") > (${after.key}, ${after.hive})`
          : sql`TRUE`}
@@ -3736,10 +3762,11 @@ export async function listFactsPage(
      LIMIT ${opts.limit + 1}`;
   const page = rows.slice(0, opts.limit);
   const last = page.at(-1);
+  const continuation = last ? [2, ws, sel.scope, ref, binding, last.key, last.source_hive ?? ''] : [];
   return {
     facts: page.map(rowToFact),
     nextCursor: rows.length > opts.limit && last
-      ? Buffer.from(JSON.stringify([1, ws, sel.scope, ref, last.key, last.source_hive ?? ''])).toString('base64url')
+      ? Buffer.from(JSON.stringify([...continuation, digest(continuation)])).toString('base64url')
       : null,
   };
 }
@@ -4178,7 +4205,9 @@ export function renderFactsFold(
           .map((c) => `${c.scope}${c.scopeRef ? `:${c.scopeRef}` : ''} showed ${c.shown} of ${c.total}`)
           .join('; ') +
         `. A fact's ABSENCE here is not evidence it does not exist — it may simply not be among the ` +
-        `most recently updated. Read the rest with facts:list { scope, scopeRef } (which reports its own total).`;
+        `most recently updated. Recover the same population with: ` +
+        truncated.map((c) => JSON.stringify(c.recovery ?? { tool: 'facts:list', args: { scope: c.scope, scopeRef: c.scopeRef } })).join('; ') +
+        `. Follow nextCursor until null; restart without cursor with the same eligibility to resync earlier insertions.`;
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}${note}`;
 }
 

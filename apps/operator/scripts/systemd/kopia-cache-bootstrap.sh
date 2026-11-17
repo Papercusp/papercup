@@ -261,6 +261,8 @@ kopia_proc_stat_field() {
 # already IS a Kopia snapshot reaches the exe check, and sudo resolves the link only
 # when the unprivileged readlink did not (a root-owned exe link is unreadable here,
 # WI-10002636). That call is bounded like the signals.
+# Returns 0 for a match, 1 for a known non-match, and 2 when privileged validation
+# could not establish identity. An unavailable validator is not a stale PID.
 kopia_exact_snapshot_pid() {
   local pid="$1" exe="" cmdline=""
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
@@ -269,8 +271,12 @@ kopia_exact_snapshot_pid() {
   [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]] || return 1
   exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
   if [ "$exe" != "$KOPIA_BIN" ]; then
-    exe="$(/usr/bin/timeout --kill-after=1s "$(kopia_sudo_signal_timeout)s" \
-      "$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null || true)"
+    if ! exe="$(/usr/bin/timeout --kill-after=1s "$(kopia_sudo_signal_timeout)s" \
+      "$SUDO_BIN" -n -- readlink -f -- "$PROC_ROOT/$pid/exe" 2>/dev/null)"; then
+      [ -d "$PROC_ROOT/$pid" ] || return 1
+      return 2
+    fi
+    [ -n "$exe" ] || return 2
   fi
   [ "$exe" = "$KOPIA_BIN" ]
 }
@@ -303,7 +309,13 @@ kopia_stop_flushing() {
   else
     # stat unreadable: fall back to the full exe+argv match. A zombie keeps its
     # /proc dir but no readable exe, so it fails the match: gone.
-    kopia_pid_matches "$pid" || return 0
+    local match_rc=0
+    kopia_pid_matches "$pid" || match_rc=$?
+    case "$match_rc" in
+      0) ;;
+      1) return 0 ;;
+      *) return 1 ;;
+    esac
   fi
   /usr/bin/timeout --kill-after=1s "${bound}s" "$SUDO_BIN" -n -- "$KILL_BIN" -KILL "$pid" >/dev/null 2>&1 || return 1
   return 2

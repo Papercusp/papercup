@@ -323,6 +323,12 @@ export default defineTool({
       .optional()
       .describe('Scope reference. Also accepted, folded into scopeRef before parse (scopeRef wins): scope_ref, ref (EI-7371).'),
     harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
+    eligibility: z.object({
+      audiences: z.union([z.literal('all'), z.array(z.string())]).optional(),
+      keyPrefixes: z.array(z.string()).optional(),
+      includeCodeNotes: z.boolean().optional(),
+      dependsOnFiles: z.array(z.string()).optional(),
+    }).strict().optional().describe('Originating fold population for recovery. Preserve this object across pages and restart-without-cursor resync. Omit for the broad explicit management read.'),
     limit: z
       .number()
       .int()
@@ -359,6 +365,9 @@ export default defineTool({
       ),
   })),
   async handler(args, ctx) {
+    if (args.eligibility !== undefined && (args.key !== undefined || args.versions === true)) {
+      throw new InvalidInputError('facts:list — eligibility cannot be combined with key or versions');
+    }
     if (args.cursor !== undefined && (args.key !== undefined || args.versions === true)) {
       throw new InvalidInputError('facts:list — cursor cannot be combined with key or versions');
     }
@@ -480,7 +489,9 @@ export default defineTool({
     // order across updates. A cursor binds the selector, not process-local state.
     const page = await listFactsPage(
       { scope: args.scope, scopeRef: scopeRef ?? null },
-      { limit: factsListEffectiveLimit(args.limit, args.all === true), ...(args.cursor !== undefined ? { cursor: args.cursor } : {}) },
+      { limit: factsListEffectiveLimit(args.limit, args.all === true),
+        ...(args.eligibility !== undefined ? { eligibility: args.eligibility } : {}),
+        ...(args.cursor !== undefined ? { cursor: args.cursor } : {}) },
     );
     const facts = page.facts;
     // EI-10947: flag facts whose source work-item has CLOSED — facts:list is where an
@@ -528,7 +539,7 @@ export default defineTool({
     try {
       const total = await countLiveFacts(
         { scope: args.scope, scopeRef: scopeRef ?? null },
-        { audiences: 'all', includeCodeNotes: true },
+        args.eligibility ?? { audiences: 'all', includeCodeNotes: true },
       );
       census = { total };
     } catch {
@@ -552,8 +563,12 @@ export default defineTool({
         ok: true,
         count: rows.length,
         nextCursor: page.nextCursor,
+        ...(args.eligibility !== undefined ? { eligibility: args.eligibility } : {}),
         ...(page.nextCursor !== null ? { next: { tool: 'facts:list', args: {
           scope: args.scope, ...(scopeRef ? { scopeRef } : {}), cursor: page.nextCursor,
+          ...(args.eligibility !== undefined ? { eligibility: args.eligibility } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.all === true ? { all: true } : {}),
           ...(args.full === true ? { full: true } : {}),
         } } } : {}),
         scan: 'Live identity order (key, source hive). Follow nextCursor until null; restart without cursor to recover insertions before the cursor.',

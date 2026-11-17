@@ -46,7 +46,7 @@ MemorySwapMax=0
 TimeoutStopSec=180s
 # WI-6554700010011790: reap any root Kopia a previous failed attempt left in this
 # unit's cgroup before starting a new walk (systemd only logs "Found left-over
-# process ... Ignoring"). Same exact-match cleanup as ExecStopPost; always exits 0.
+# process ... Ignoring"). Unresolved validation or stop failures refuse startup.
 ExecStartPre=%h/.config/kopia/home-snapshot.sh --cleanup
 ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode scheduled --label daily-home-vm --priority-on-contention -- %h/.config/kopia/home-snapshot.sh
 # systemd's user manager may fail to kill the root-owned sudo/Kopia child when
