@@ -1,7 +1,7 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, watch, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { constants as osConstants, tmpdir } from 'node:os';
@@ -900,6 +900,28 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
     host.removeListener('exit', onExit);
     host.removeListener('close', onClose);
   }
+}
+
+/** Reuse the disposable bearer setup for every authenticated nonnative MCP
+ * fixture, including the request-only generation check. Never borrow a live
+ * home or replace an existing credential. */
+export async function preparePrivateMcpBearer(scenario: string | undefined) {
+  if (!['private-mcp-preflight-only', 'codex-managed-tools', 'omp-managed-tools', 'security-census', 'private-completion-mcp']
+    .includes(scenario ?? '')) return;
+  const privateHome = process.env.HOME;
+  assert.ok(privateHome, 'Private MCP bearer requires its isolated HOME');
+  assert.equal(process.env.PAPERCUSP_HOME, join(privateHome, '.papercusp'),
+    'Private MCP bearer requires its isolated Papercusp home');
+  const { superuserTokenPath, readSuperuserToken, isValidSuperuserBearer } = await import('../lib/superuser-token');
+  const tokenPath = superuserTokenPath();
+  assert.equal(tokenPath, join(process.env.PAPERCUSP_HOME, 'superuser-token'));
+  mkdirSync(process.env.PAPERCUSP_HOME, { recursive: true, mode: 0o700 });
+  writeFileSync(tokenPath, randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
+  const bearer = readSuperuserToken();
+  assert.ok(isValidSuperuserBearer(bearer), 'Private MCP bearer preparation failed');
+  return { bearerPresent: bearer !== null, bearerAccepted: isValidSuperuserBearer(bearer),
+    privatePath: true, mode: statSync(tokenPath).mode & 0o777,
+    absentRejected: !isValidSuperuserBearer(null), wrongRejected: !isValidSuperuserBearer('wrong-private-bearer') };
 }
 
 /** MCP needs an attributable serving generation. Use the bundler's own source

@@ -12,7 +12,7 @@ import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration,
   buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle,
   privateOperatorApiBuildBudget, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha,
-  privatePgStartupIdentity, parsePrivateHttpScenario, readPrivateMcpServingGeneration, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
+  privatePgStartupIdentity, parsePrivateHttpScenario, preparePrivateMcpBearer, readPrivateMcpServingGeneration, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
   waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
@@ -1106,16 +1106,29 @@ it('strips unit-only controls from a private builder child without mutating its 
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const childFile = join(evidenceDir, 'descendant.pid');
+  const logFile = join(evidenceDir, 'operator-api-build.log');
+  // Observe a real descendant before expiring the unchanged 1000ms watchdog.
+  // A synchronous startup race could time out before there was a group to test.
+  vi.useFakeTimers({ toFake: [...builderClockTimers] });
+  const build = buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'source "$2"; BUNDLE_HOST_STEP_LOG="$3"; bundle_host_run_step blocked-builder bash -c \'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait\' _ "$1"',
+      '_', childFile, common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
+    timeoutMs: 1000, maxMs: 1000, pollMs: 20 });
+  const rejected = expect(build).rejects.toThrow(/ETIMEDOUT.*absolute-ceiling/);
   let descendant: number | undefined;
   try {
-    expect(() => buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
-      args: ['-c', 'source "$2"; BUNDLE_HOST_STEP_LOG="$3"; bundle_host_run_step blocked-builder bash -c \'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait\' _ "$1"',
-        '_', childFile, common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
-      timeoutMs: 1000 })).toThrow(/ETIMEDOUT/);
+    await waitForRealBuilderState(() => existsSync(childFile) && readFileSync(logFile, 'utf8').includes('CHILD_READY'));
     descendant = Number(readFileSync(childFile, 'utf8'));
-    expect(readFileSync(join(evidenceDir, 'operator-api-build.log'), 'utf8')).toContain('CHILD_READY');
+    await vi.advanceTimersByTimeAsync(1000);
+    await rejected;
+    vi.useRealTimers();
+    expect(readFileSync(logFile, 'utf8')).toContain('CHILD_READY');
     const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
-    expect(receipt).toMatchObject({ signal: 'SIGKILL', status: null, error: { code: 'ETIMEDOUT' }, groupStop: 'signaled' });
+    // The close handler makes a final idempotent stop attempt after the
+    // watchdog's SIGKILL; that last observation may already find no group.
+    expect(receipt).toMatchObject({ signal: 'SIGKILL', status: null, error: { code: 'ETIMEDOUT' },
+      groupStop: expect.stringMatching(/^(?:signaled|already-exited)$/) });
+    expect(receipt.watchdog).toMatchObject({ reason: 'absolute-ceiling', timeoutMs: 1000, maxMs: 1000 });
     expect(receipt.steps).toMatchObject({ active: 'blocked-builder', count: 1, unreadableRows: [],
       last: { step: 'blocked-builder', event: 'start', pid: expect.any(Number), at: expect.any(Number) } });
     await expect.poll(() => {
@@ -1123,6 +1136,9 @@ it('stops builder descendants on timeout and retains the original diagnostics', 
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone'; throw error; }
     }).toMatch(/^(?:gone|Z|X)$/);
   } finally {
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(1000);
+    await build.catch(() => {});
+    vi.useRealTimers();
     if (descendant) { try { process.kill(descendant, 'SIGKILL'); } catch { /* already stopped */ } }
   }
 });
@@ -1625,6 +1641,39 @@ it('carries the prepared source pin and refuses unknown or foreign private MCP g
   expect(() => assertPrivateMcpToolsListGeneration(generation, [
     { _meta: { 'papercusp/servingGeneration': `serving-generation-v1:${'b'.repeat(64)}` } },
   ])).toThrow(/unknown or foreign/);
+});
+
+it.each(['private-mcp-preflight-only', 'codex-managed-tools', 'omp-managed-tools', 'security-census',
+  'private-completion-mcp'])('provisions a private MCP bearer for %s in an empty isolated home', async scenario => {
+  const root = mkdtempSync(join(tmpdir(), 'private-mcp-bearer-')); dirs.push(root);
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('PAPERCUSP_HOME', join(root, '.papercusp'));
+  const { readSuperuserToken, isValidSuperuserBearer, superuserTokenPath } = await import('../lib/superuser-token');
+  expect(readSuperuserToken()).toBeNull();
+  expect(await preparePrivateMcpBearer(scenario)).toEqual({ bearerPresent: true, bearerAccepted: true,
+    privatePath: true, mode: 0o600, absentRejected: true, wrongRejected: true });
+  expect(superuserTokenPath()).toBe(join(root, '.papercusp', 'superuser-token'));
+  const original = readSuperuserToken();
+  expect(isValidSuperuserBearer(original)).toBe(true);
+  await expect(preparePrivateMcpBearer(scenario)).rejects.toMatchObject({ code: 'EEXIST' });
+  expect(readSuperuserToken() === original).toBe(true);
+});
+
+it('does not provision private MCP credentials for unrelated fixture scenarios', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-mcp-no-bearer-')); dirs.push(root);
+  vi.stubEnv('HOME', root);
+  vi.stubEnv('PAPERCUSP_HOME', join(root, '.papercusp'));
+  for (const scenario of [undefined, 'saved-plan-lines', 'current-su-native-setup'])
+    expect(await preparePrivateMcpBearer(scenario)).toBeUndefined();
+  expect(existsSync(join(root, '.papercusp'))).toBe(false);
+});
+
+it('refuses a foreign private MCP home before writing credentials', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'private-mcp-foreign-home-')); dirs.push(root);
+  vi.stubEnv('HOME', join(root, 'home'));
+  vi.stubEnv('PAPERCUSP_HOME', join(root, 'foreign'));
+  await expect(preparePrivateMcpBearer('codex-managed-tools')).rejects.toThrow('isolated Papercusp home');
+  expect(existsSync(join(root, 'foreign'))).toBe(false);
 });
 
 function privateMcpGenerationFixture() {

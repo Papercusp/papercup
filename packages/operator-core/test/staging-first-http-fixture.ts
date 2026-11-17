@@ -17,7 +17,7 @@ import type { ServingGeneration } from '../lib/serving-generation';
 import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, buildPrivateOperatorApiBundle,
   privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost,
   qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment,
-  parsePrivateCompletionFixtureControls, parsePrivateHttpScenario, readPrivateMcpServingGeneration,
+  parsePrivateCompletionFixtureControls, parsePrivateHttpScenario, preparePrivateMcpBearer, readPrivateMcpServingGeneration,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, resolvePreparedPrivateApiSourceSha } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   retainIsolatedWorkerProgress, withNativeProofLedger, nativeProofRecorder, type NativeProofRecorder } from './isolated-integration-proof';
@@ -226,6 +226,9 @@ async function main(native?: NativeProofRecorder) {
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
   const isSecurityCensus = e.STAGING_FIRST_HTTP_SCENARIO === 'security-census';
+  // A private MCP-only request needs the same disposable bearer as managed
+  // tool requests, before the API host or MCP client can start.
+  await preparePrivateMcpBearer(e.STAGING_FIRST_HTTP_SCENARIO);
   const requiresPrepared = isCommittedReader || isCommittedReaderObservation || isBlueprintRoute || isCurrentSuNative
     || isPrivateMcpPreflightOnly || isCodexManagedTools || isOmpManagedTools
     || isSecurityCensus || ['testing-background', 'private-completion-mcp', 'rubric-coverage'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '');
@@ -302,12 +305,6 @@ async function main(native?: NativeProofRecorder) {
     ? await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir })
     : undefined;
   disposeScenario = blueprintRoute?.dispose ?? committedReader?.dispose;
-  if (isCodexManagedTools || isOmpManagedTools || isSecurityCensus || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp') {
-    const { randomBytes } = await import('node:crypto');
-    const { superuserTokenPath } = await import('../lib/superuser-token');
-    mkdirSync(e.PAPERCUSP_HOME!, { recursive: true, mode: 0o700 });
-    writeFileSync(superuserTokenPath(), randomBytes(32).toString('base64url'), { mode: 0o600, flag: 'wx' });
-  }
   if (isCurrentSuNative || e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-home-repair')
     await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
   // Preparation changes socket/tmp settings; compare the final host environment
