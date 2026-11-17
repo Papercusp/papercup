@@ -2573,10 +2573,11 @@ export default defineTool({
         : (sourceAction ? undefined : args.feature ?? undefined),
       stack: neutralLineageRequested ? undefined : args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
-      // supplies its own override in `members[i].carry`.
+      // supplies its own override in `members[i].carry`. Ordinary successors
+      // inherit the resolved saved recipe after goal and explicit overrides.
       carry: neutralLineageRequested
         ? savedLaunchCarry ?? undefined
-        : goalLaunch.effective.carry ?? args.carry ?? undefined,
+        : goalLaunch.effective.carry ?? args.carry ?? savedLaunchCarry ?? undefined,
       launchContext: neutralLineageRequested ? undefined : persistedHeadcountProfile?.config.launchContext,
       extraArgs: neutralLineageRequested ? undefined : args.extraArgs ?? undefined,
     };
