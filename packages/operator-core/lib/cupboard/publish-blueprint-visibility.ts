@@ -14,7 +14,8 @@
  *
  * This gate makes the curation intent a MACHINE-CHECKED, in-repo marker: a
  * blueprint is publishable to the public Cupboard only when its own
- * `blueprint.yaml` declares `visibility: public`. Absent or anything else ⇒
+ * `blueprint.yaml` declares `visibility: public`. Portable identities keep the
+ * same marker in their sibling `cupboard.yaml` package metadata (R-1). Absent or anything else ⇒
  * INTERNAL — fail-closed, so nothing is published by accident and a typo
  * (`visibility: pubic`) refuses rather than leaks.
  *
@@ -43,8 +44,14 @@ export class BlueprintVisibilityError extends Error {
  * 'public' ONLY for an exact `visibility: 'public'`; absent, non-string, or any
  * other value ⇒ 'internal' (fail-closed — the safe default is never-public).
  */
-export function readBlueprintVisibility(manifest: unknown): BlueprintVisibility {
+export function readBlueprintVisibility(manifest: unknown, packageMetadata?: unknown): BlueprintVisibility {
   if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)) {
+    // An identity's portable source cannot authorize its own publication through
+    // an out-of-schema key. Curation stays explicit, external and fail-closed.
+    if (Object.hasOwn(manifest, 'slots')) {
+      if (!packageMetadata || typeof packageMetadata !== 'object' || Array.isArray(packageMetadata)) return 'internal';
+      return (packageMetadata as Record<string, unknown>).visibility === 'public' ? 'public' : 'internal';
+    }
     if ((manifest as Record<string, unknown>).visibility === 'public') return 'public';
   }
   return 'internal';
@@ -57,11 +64,13 @@ export function readBlueprintVisibility(manifest: unknown): BlueprintVisibility 
  * (infra / coordination-study arm / learning loop / benchmark) onto the public
  * listing. Returns the resolved visibility ('public') on success.
  */
-export function assertBlueprintVisibilityPublishable(id: string, manifest: unknown): BlueprintVisibility {
-  const visibility = readBlueprintVisibility(manifest);
+export function assertBlueprintVisibilityPublishable(id: string, manifest: unknown, packageMetadata?: unknown): BlueprintVisibility {
+  const visibility = readBlueprintVisibility(manifest, packageMetadata);
   if (visibility !== 'public') {
     throw new BlueprintVisibilityError(
-      `blueprint "${id}" is not marked \`visibility: public\` in its blueprint.yaml — ` +
+      `blueprint "${id}" is not marked \`visibility: public\` in its ${
+        manifest && typeof manifest === 'object' && Object.hasOwn(manifest, 'slots') ? 'cupboard.yaml' : 'blueprint.yaml'
+      } — ` +
         `publishing to the public Cupboard requires an explicit public marker ` +
         `(an internal or unmarked blueprint is never auto-published)`,
       422,

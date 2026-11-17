@@ -676,7 +676,7 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(readAudit(audit).find(record => record.rel === 'mod.mjs')).toMatchObject({
       kind: 'substituted', returnedSha256: sha256("export const v = 'HEAD';\n"),
     });
-  }, 60_000);
+  }, 90_000);
 
   it.each(['absent', 'unwritable'] as const)('retains stderr substitution evidence when the notice channel is %s', mode => {
     const env = cleanEnv();

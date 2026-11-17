@@ -1138,7 +1138,7 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(second.hasMore).toBe(false);
   });
 
-  it.each([49, 50, 51, 151])('R2 native history resumes %i rows at exact microsecond positions after restart', async count => {
+  it.each([49, 50, 51, 151])('R2 native history resumes %i rows at stored timestamp/id positions after restart', async count => {
     const rubricRef = `test-r2-precision-${count}`;
     await proposeRubric({ rubricId: rubricRef, characteristic: 'hive-coordination',
       title: `R2 precision ${count}`, criteria: CRITERIA, status: 'active', by: 'su-test' });
@@ -1146,13 +1146,20 @@ describe('listScorecards (P-013) — real PG', () => {
     for (let i = 0; i < count; i++) {
       ids.push(await fileScorecard(db, {
         id: `r2-precision-${count}-${i}`, rubricRef,
-        createdAt: `2026-11-01T00:00:00.${String(100001 + Math.floor(i / 2)).padStart(6, '0')}Z`,
+        // engineer_issues projects work_items.created_ts, an epoch-millisecond
+        // integer. Equal-time siblings must still resume by their complete id.
+        createdAt: `2026-11-01T00:00:00.${String(100 + Math.floor(i / 2)).padStart(3, '0')}Z`,
         ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: `retained row ${i}` } },
       }));
     }
-    const expected = await db.adminSql<Array<{ issue_id: string }>>`
-      SELECT issue_id FROM harness_shared.engineer_issues WHERE issue_id=ANY(${ids}::text[])
+    const expected = await db.adminSql<Array<{ issue_id: string; precise_at: string }>>`
+      SELECT issue_id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS precise_at
+      FROM harness_shared.engineer_issues WHERE issue_id=ANY(${ids}::text[])
       ORDER BY created_at DESC, issue_id DESC`;
+    // Preflight the actual database population before blaming page recovery.
+    expect(expected).toHaveLength(count);
+    expect(expected[expected.length - 1]!.precise_at).toBe('2026-11-01T00:00:00.100Z');
+    expect(new Set(expected.map(row => row.precise_at)).size).toBe(Math.ceil(count / 2));
     const readAll = async () => {
       const seen: string[] = [];
       let before: { createdAt: string; issueId: string } | undefined;
@@ -1161,7 +1168,8 @@ describe('listScorecards (P-013) — real PG', () => {
           ...(before ? { before } : {}) });
         seen.push(...page.rows.map(row => row.issueId));
         if (!page.hasMore) { expect(page.nextCursor).toBeNull(); break; }
-        expect(page.nextCursor?.createdAt).toMatch(/\.\d{6}Z$/);
+        expect(page.nextCursor).toEqual({ createdAt: expected[seen.length - 1]!.precise_at,
+          issueId: expected[seen.length - 1]!.issue_id });
         // Persist and reconstruct only the native continuation, as a restarted consumer does.
         before = JSON.parse(JSON.stringify(page.nextCursor));
         expect(new Set(seen).size).toBe(seen.length);

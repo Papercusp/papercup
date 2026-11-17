@@ -202,10 +202,11 @@ describe('readGraderSelectionVia — the durable read', () => {
     expect(seen[0]).not.toContain('closed_at');
   });
 
-  it('bounds the lookback rather than scanning every round a rubric ever had', async () => {
+  it('bounds each provenance page and orders ties by durable identity', async () => {
     const seen = sqlSpy([]);
     await readGraderSelectionVia('ws', 'ar-plan');
     expect(seen[0]).toContain('LIMIT');
+    expect(seen[0]).toContain('ORDER BY created_at DESC, conversation_id DESC');
     expect(GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS).toBeGreaterThan(1);
   });
 

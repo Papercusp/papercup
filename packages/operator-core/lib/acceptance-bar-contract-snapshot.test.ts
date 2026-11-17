@@ -442,6 +442,33 @@ describe('R2 per-requirement grade selection', () => {
         expect(result.bounded.scorecards).toMatchObject({ rowsRead: count, truncated: false });
       } finally { spy.mockRestore(); }
     });
+
+  it.each(['missing', 'repeated', 'source-fault'])(
+    'refuses a prefix when grade-history continuation is %s', async scenario => {
+      const source = fixture(1);
+      const pass = graded(source, 'r-1', { issueId: 'PREFIX-PASS' });
+      let reads = 0;
+      const spy = vi.spyOn(scorecardsModule, 'listScorecardPage').mockImplementation(async () => {
+        reads++;
+        if (scenario === 'source-fault' && reads > 1) throw new Error('next history page unavailable');
+        return { rows: [pass], hasMore: true,
+          nextCursor: scenario === 'missing' ? null : { createdAt: pass.createdAt, issueId: pass.issueId } };
+      });
+      try {
+        const result = await readAcceptanceBarContractSnapshot('plan-a', {
+          readPlans: async () => source.planRows, readRubrics: async () => source.rubrics,
+          readPlanItems: async () => source.planItems, readClauses: async () => source.clauses,
+          readWorkContracts: async () => source.workContracts, readEvidence: async () => source.evidence,
+          readLineage: async () => source.lineage, readVettingScorecards: async () => source.vettingScorecards,
+          readParties: async () => source.partyByIdentity, readGraderSelectionVia: async () => source.graderSelectionVia,
+        });
+        expect(result.completeness.problems).toEqual(expect.arrayContaining([
+          expect.objectContaining({ code: 'bar_snapshot_source_unavailable', source: 'grading' }),
+        ]));
+        expect(result.bars[0]!.grading.state).not.toBe('pass');
+        expect(reads).toBe(scenario === 'missing' ? 1 : 2);
+      } finally { spy.mockRestore(); }
+    });
 });
 
 function currentRegisteredTestEvidence(

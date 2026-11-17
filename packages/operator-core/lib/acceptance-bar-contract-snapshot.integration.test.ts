@@ -148,9 +148,10 @@ afterAll(async () => {
 }, 30_000);
 
 describe('acceptance BAR contract snapshot — real Postgres reuse preflight', () => {
-  it.each([49, 50, 51, 151].flatMap(count => ['healthy', 'broken'].map(rating => ({ count, rating }))))(
-    'R2 native default consumer exhausts $count cards before selecting the older $rating grade', async ({ count, rating }) => {
-      const slug = `r2-native-history-${count}-${rating}`;
+  it.each([49, 50, 51, 151].flatMap(count => ['healthy', 'broken'].flatMap(rating =>
+    ['legacy', 'keyed'].flatMap(kind => ['forward', 'reverse'].map(order => ({ count, rating, kind, order }))))))(
+    'R2 native default consumer exhausts $count cards before selecting the older $rating $kind grade ($order)', async ({ count, rating, kind, order }) => {
+      const slug = `r2-native-history-${count}-${rating}-${kind}-${order}`;
       const content = planContent.replaceAll(PLAN, slug);
       await db.adminSql`INSERT INTO harness_shared.harness_plans
         (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,
@@ -181,7 +182,7 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
           sourceHive: HARNESS,
           ratings: { [criterion.key]: { rating: i === 0 ? rating : 'broken', evidence: `native row ${i}` } },
           // Both historical and grade-key cards share the same native pages.
-          ...(i % 2 === 0 && count % 2 === 0 ? { criterionGrades: { [criterion.key]: grade } } : {}),
+          ...((i % 2 === 0) === (kind === 'keyed') ? { criterionGrades: { [criterion.key]: grade } } : {}),
           ...(i > 0 && i % 3 === 0 ? { retracted: { reason: 'fixture exclusion', at: OBSERVED_AT, by: 'su-author' } } : {}),
         } },
       }));
@@ -189,7 +190,8 @@ describe('acceptance BAR contract snapshot — real Postgres reuse preflight', (
         (workspace_id,issue_id,kind,scope,title,body,severity,source,state,payload,created_by,signal_origin,created_at,updated_at)
         SELECT ${WORKSPACE},r.issue_id,'change','harness:papercusp',r.issue_id,'','minor','test','done',
           r.payload,r.created_by,'organic','2026-11-01T00:00:00.100001Z'::timestamptz,now()
-        FROM jsonb_to_recordset(${JSON.stringify(cards)}::jsonb) AS r(issue_id text,payload jsonb,created_by text)`;
+        FROM jsonb_to_recordset(${JSON.stringify(order === 'reverse' ? [...cards].reverse() : cards)}::jsonb)
+          AS r(issue_id text,payload jsonb,created_by text)`;
       for (let restart = 0; restart < 2; restart++) {
         // No injected scorecard array or reader: this follows the production
         // snapshot -> listScorecardPage -> real PG keyset to verified exhaustion.

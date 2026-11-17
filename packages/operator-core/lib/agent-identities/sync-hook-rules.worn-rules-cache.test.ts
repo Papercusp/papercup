@@ -18,15 +18,16 @@ const { appliedRows, readGateSelectedLaunchSpecMock, appliedIdentityArtifactMock
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({
+  getOrgPg: () => {
     // One query: the applied revision and its harness scope from session_briefs.
-    sql: Object.assign(
+    const sql = Object.assign(
       async (_strings: TemplateStringsArray, ownerId: string) =>
         appliedRows.has(ownerId) ? [appliedRows.get(ownerId)!] : [],
       // Transaction-capable like the production org client (WI-40234); unused on this path.
       { begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(undefined) },
-    ),
-  }),
+    );
+    return { sql: Object.assign(sql, { reserve: async () => Object.assign(sql, { release: vi.fn() }) }) };
+  },
 }));
 vi.mock('../agent-tools/coordination/control-anchor', () => ({
   readGateSelectedLaunchSpec: readGateSelectedLaunchSpecMock,
@@ -71,8 +72,18 @@ describe('authoritative identity read timing', () => {
     await readAppliedWornRules(owner, 'ws');
 
     expect(local).toHaveBeenCalledTimes(2);
-    expect(local).toHaveBeenNthCalledWith(1, owner, 'ws', 'ops');
-    expect(local).toHaveBeenNthCalledWith(2, owner, 'ws', 'changed-scope');
+    expect(local).toHaveBeenNthCalledWith(1, owner, 'ws', 'ops', undefined);
+    expect(local).toHaveBeenNthCalledWith(2, owner, 'ws', 'changed-scope', undefined);
+  });
+
+  it('passes the same native lifetime to the local authoritative reader', async () => {
+    const owner = 'owner-local-budget';
+    applied(owner);
+    const local = vi.fn(async () => ({ rules: [], unreadable: [] }));
+    setLocalSyncRulesReader(local);
+    const budget = { signal: new AbortController().signal, deadlineAtMs: performance.now() + 1_000 };
+    await readAppliedWornRules(owner, 'ws', undefined, budget);
+    expect(local).toHaveBeenCalledExactlyOnceWith(owner, 'ws', 'ops', budget);
   });
 
   it('attributes revision, artifact and local reads while preserving revision freshness and caching', async () => {

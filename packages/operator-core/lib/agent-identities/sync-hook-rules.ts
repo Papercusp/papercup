@@ -450,7 +450,8 @@ export async function turnStartSyncRuleRequests(input: {
  * applied (the session wears no identity); throws when a revision is applied
  * but its artifact cannot be resolved from the gate-selected launch record.
  */
-let localSyncReader: ((ownerId: string, workspaceId: string, harnessSlug: string | null) => Promise<WornSyncRules>) | null = null;
+let localSyncReader: ((ownerId: string, workspaceId: string, harnessSlug: string | null,
+  budget?: IdentityRuleReadBudget) => Promise<WornSyncRules>) | null = null;
 export function setLocalSyncRulesReader(reader: typeof localSyncReader): void { localSyncReader = reader; }
 
 export type IdentityRuleReadTimingObserver = (timing: {
@@ -509,7 +510,7 @@ export async function readAppliedWornRules(ownerId: string, workspaceId: string,
   assertIdentityReadCurrent(budget);
   const readLocal = localSyncReader;
   const local = await measureIdentityRead('local_rules', observeTiming,
-    () => readLocal(ownerId, workspaceId, applied.harnessSlug));
+    () => readLocal(ownerId, workspaceId, applied.harnessSlug, budget));
   assertIdentityReadCurrent(budget);
   return local.rules.length || local.unreadable.length
     ? { rules: [...applied.sync.rules, ...local.rules], unreadable: [...applied.sync.unreadable, ...local.unreadable] }

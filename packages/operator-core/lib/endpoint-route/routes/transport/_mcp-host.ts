@@ -693,16 +693,19 @@ function adaptDeltaResponse(result: McpCallResult): DeltaResponse {
   return { mode: 'full', cursor, rows: resultRows(result), itemKeyField };
 }
 
-async function maybeRunWithDeltaProxy(input: {
+export async function maybeRunWithDeltaProxy(input: {
   sessionKey: string;
   toolName: string;
   args: unknown;
   requestedFormat: string | undefined;
+  batchResponseVersion?: UnifiedToolContext['requestedBatchResponseVersion'];
   explicitDelta: boolean;
   itemKeyField: string | undefined;
   runRaw: (requestedDelta: string | undefined, overrideDelta?: boolean) => Promise<McpCallResult>;
 }): Promise<McpCallResult> {
-  if (input.explicitDelta || !input.itemKeyField) return input.runRaw(undefined, false);
+  // The proxy reconstructs singleton rows; canonical batches retain child deltas.
+  if (input.batchResponseVersion === 'batch-v1' || input.explicitDelta || !input.itemKeyField)
+    return input.runRaw(undefined, false);
   const viewKey = `${input.toolName}:${input.requestedFormat ?? ''}:${stableJson(input.args ?? null)}`;
   const session = deltaProxySession(input.sessionKey);
   // A mutable box, not a bare `let` — `last` is reassigned inside the nested
@@ -2970,6 +2973,7 @@ async function buildMcpToolContext(
   signal?: AbortSignal,
   /** Host-only marker: nested targets of a relayed wrapper stay on this owner. */
   nativeOwnerAddress?: SuNativeToolAddress,
+  requestedBatchResponseVersion?: UnifiedToolContext['requestedBatchResponseVersion'],
 ): Promise<UnifiedToolContext> {
   // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
@@ -3211,6 +3215,7 @@ async function buildMcpToolContext(
         toolName: canonicalName, args: dispatchToolArgs, spawn: spawnCtx,
         requestedFormat: baseCtx.requestedFormat, requestedStructured: baseCtx.requestedStructured,
         requestedDelta: baseCtx.requestedDelta, idempotencyKey: baseCtx.idempotencyKey,
+        requestedBatchResponseVersion: baseCtx.requestedBatchResponseVersion,
         ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
         fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
         sourceProjection: projectionSpec, indirect: true,
@@ -3317,6 +3322,7 @@ async function buildMcpToolContext(
     requestedFormat,
     requestedStructured,
     requestedDelta,
+    requestedBatchResponseVersion,
     idempotencyKey,
     requestOrigin: spawn.requestOrigin,
     log: (msg) => {
@@ -4011,6 +4017,7 @@ interface NativeMcpTargetRequest {
   requestedFormat?: string;
   requestedStructured?: boolean;
   requestedDelta?: string;
+  requestedBatchResponseVersion?: UnifiedToolContext['requestedBatchResponseVersion'];
   idempotencyKey?: string;
   progressToken?: string | number;
   fullSource: boolean;
@@ -4166,6 +4173,8 @@ export async function dispatchNativeMcpTargetOnOwner(
       (request.args !== undefined && (!request.args || typeof request.args !== 'object' || Array.isArray(request.args))) ||
       (request.requestedFormat !== undefined && typeof request.requestedFormat !== 'string') ||
       (request.requestedDelta !== undefined && typeof request.requestedDelta !== 'string') ||
+      (request.requestedBatchResponseVersion !== undefined && request.requestedBatchResponseVersion !== 'batch-v1' &&
+        request.requestedBatchResponseVersion !== 'operation-v0') ||
       (request.requestedStructured !== undefined && typeof request.requestedStructured !== 'boolean') ||
       (request.progressToken !== undefined && typeof request.progressToken !== 'string' &&
         (typeof request.progressToken !== 'number' || !Number.isFinite(request.progressToken))) ||
@@ -4193,7 +4202,7 @@ export async function dispatchNativeMcpTargetOnOwner(
     : undefined;
   const base = await buildMcpToolContext(ownerRequest.spawn, ownerRequest.progressToken, sendNotification, target.pluginName,
     ownerRequest.requestedFormat, ownerRequest.requestedStructured, ownerRequest.requestedDelta, ownerRequest.idempotencyKey,
-    undefined, address);
+    undefined, address, ownerRequest.requestedBatchResponseVersion);
   base.toolExecution = toolExecution;
   base.executionDeadlineAtMs = request.executionDeadlineAtMs;
   base.transportResponseDeadlineAtMs = request.transportResponseDeadlineAtMs;
@@ -4386,6 +4395,7 @@ export function registerMcpHost(server: McpServer): void {
             /** Compatibility alias used by clients that already expose a turn id. */
             turnId?: string | number;
             'papercusp/execution'?: ToolExecutionRequest;
+            'papercusp/batchResponseVersion'?: 'batch-v1' | 'operation-v0';
           };
         };
       },
@@ -4544,6 +4554,11 @@ export function registerMcpHost(server: McpServer): void {
       // connection-level `?format=` on the MCP URL (how a client declares
       // compact/json once at setup). Absent ⇒ the transport default (compact).
       const requestedFormat = req.params._meta?.format ?? urlFromExtra(extra)?.searchParams.get('format') ?? undefined;
+      const requestedBatchResponseVersion = req.params._meta?.['papercusp/batchResponseVersion'];
+      if (requestedBatchResponseVersion !== undefined && requestedBatchResponseVersion !== 'batch-v1' &&
+        requestedBatchResponseVersion !== 'operation-v0') return { isError: true,
+        content: [{ type: 'text', text: 'invalid_input: papercusp/batchResponseVersion must be batch-v1 or operation-v0' }] };
+      const batchResponseVersion = requestedBatchResponseVersion ?? PROJECTED_DEPS.batchResponseVersion ?? 'batch-v1';
       const requestedStructured =
         (req.params._meta as { structured?: boolean } | undefined)?.structured === true ||
         urlFromExtra(extra)?.searchParams.get('structured') === '1';
@@ -5248,6 +5263,8 @@ export function registerMcpHost(server: McpServer): void {
           requestedDelta,
           idempotencyKey ?? undefined,
           (extra as { signal?: AbortSignal } | undefined)?.signal,
+          undefined,
+          requestedBatchResponseVersion,
         ));
         // Cancellation may arrive during asynchronous context construction.
         // Do not dispatch a new mutation after that already-aborted request.
@@ -5364,7 +5381,10 @@ export function registerMcpHost(server: McpServer): void {
               const storedResult = normalizeStructuredReplayResult(
                 (replaySourceResult ?? storedClientResult) as StoredMcpResult,
                 requestedStructured,
+                batchResponseVersion,
               );
+              if (storedResult._meta?.replayResponseVersionMismatch)
+                return withMcpDiagnosticWarnings(storedResult as McpCallResult, dispatchSpawnCtx);
               const hasReplaySource = storedReplaySource !== undefined;
               const projectedReplayResult = hasReplaySource
                 ? applyResultProjection(storedResult, projectionSpec, { toolName, effect: effectiveCallEffect })
@@ -5627,6 +5647,7 @@ export function registerMcpHost(server: McpServer): void {
                 args: dispatchArgs,
                 requestedFormat,
                 explicitDelta,
+                batchResponseVersion,
                 itemKeyField: projected.delta?.itemKeyField,
                 runRaw: async (autoRequestedDelta, overrideDelta = true) => {
                   const progressBridge = nativeMcpProgressBridge(progressToken, sendNotification);
@@ -5650,6 +5671,7 @@ export function registerMcpHost(server: McpServer): void {
                     return runNativeMcpTargetOnOwner({
                       toolName: projected.expose.mcp!.name, args: dispatchArgs, spawn: dispatchSpawnCtx, requestedFormat,
                       requestedStructured, requestedDelta: materializationCtx.requestedDelta,
+                      requestedBatchResponseVersion: materializationCtx.requestedBatchResponseVersion,
                       idempotencyKey: idempotencyKey ?? undefined, fullSource: projectionNeedsFullSource,
                       structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
                       indirect: false,
@@ -6393,8 +6415,9 @@ export function registerMcpHost(server: McpServer): void {
                 idempotencyKey,
                 toolName,
                 workspaceId: dispatchSpawnCtx.workspaceId,
-                result: result as StoredMcpResult,
-                replaySource: raced.replaySourceResult as StoredMcpResult | null,
+                result: { ...result, _meta: { ...result._meta, batchResponseVersion } } as StoredMcpResult,
+                replaySource: raced.replaySourceResult ? { ...raced.replaySourceResult,
+                  _meta: { ...raced.replaySourceResult._meta, batchResponseVersion } } as StoredMcpResult : null,
               });
             })
             .catch((err: unknown) => {

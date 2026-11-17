@@ -115,7 +115,7 @@
  * never from a hand-run grep. Fix a file, drop its line.
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
@@ -125,6 +125,7 @@ import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { connectExecutedMapPg } from './lib/executed-source-map.mjs';
 import { EXIT_NOT_CHECKED } from './lib/not-checked.mjs';
 import { parseExplicitFiles } from './lib/tsc-baseline-gate.mjs';
+import { listFilesIncludingUntracked } from './lib/tracked-files.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -605,20 +606,15 @@ export function findChildIdleWindowBudgets(text, fileName = 'fixture.test.ts') {
   return found;
 }
 
-function walkTestFiles(dir, out) {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
+/** Keep Git's ignored build copies out without losing new source or submodules. */
+export function listTimingTestFiles(repoRoot = REPO_ROOT) {
+  const scan = listFilesIncludingUntracked(repoRoot);
+  if (scan.unscannedPresent.length > 0) {
+    throw new Error(`Timing-budget scan could not enumerate present submodules: ${scan.unscannedPresent.join(', ')}`);
   }
-  for (const e of entries) {
-    if (e.name === 'node_modules' || e.name === '.git' || e.name === 'dist') continue;
-    const p = join(dir, e.name);
-    if (e.isDirectory()) walkTestFiles(p, out);
-    else if (e.isFile() && p.endsWith('.test.ts')) out.push(p);
-  }
-  return out;
+  return scan.files
+    .filter((rel) => rel.endsWith('.test.ts') && SCAN_ROOTS.some((root) => rel.startsWith(`${root}/`)))
+    .map((rel) => join(repoRoot, rel));
 }
 
 function nestedInversionKey(rel, inversion) {
@@ -633,14 +629,7 @@ function nestedInversionKey(rel, inversion) {
 
 /** The three TEXTUAL classes (tight literal, child/parent inversion, idle window). Returns the exit code. */
 function runTextualClasses(listMode) {
-  const files = [];
-  for (const root of SCAN_ROOTS) {
-    try {
-      if (statSync(join(REPO_ROOT, root)).isDirectory()) walkTestFiles(join(REPO_ROOT, root), files);
-    } catch {
-      /* root absent — skip */
-    }
-  }
+  const files = listTimingTestFiles();
 
   const offenders = [];
   const measured = [];

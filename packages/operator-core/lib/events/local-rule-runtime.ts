@@ -6,7 +6,7 @@ import { listLocalRules, localRuleSource, type LocalAuthoredRule } from './local
 import { registerStandaloneReactionRule } from './standalone-rules';
 import { listReactionRules, registerReactionRule, unregisterReactionRule, matchReactions } from './registry';
 import { executeIdentityReaction, type IdentityReactionPayload } from './identity-reaction';
-import { setLocalSyncRulesReader, type WornSyncRules } from '../agent-identities/sync-hook-rules';
+import { setLocalSyncRulesReader, type IdentityRuleReadBudget, type WornSyncRules } from '../agent-identities/sync-hook-rules';
 import { keyMatchesPattern } from './await/pattern';
 import { setLocalRuleMatcher } from './engine';
 import type { ReactionCause, ToolInvocationEvent } from './types';
@@ -82,13 +82,29 @@ export async function matchLocalRules(event: ToolInvocationEvent): Promise<Match
 
 /** Called only in an operator host. Each trigger reloads authoritative enabled rows,
  * including after a restart; no process cache can keep an edited rule enabled. */
-export async function readLocalSyncRules(ownerId: string, workspaceId: string, harnessSlug: string | null): Promise<WornSyncRules> {
+export async function readLocalSyncRules(ownerId: string, workspaceId: string, harnessSlug: string | null,
+  budget?: IdentityRuleReadBudget): Promise<WornSyncRules> {
   if (!harnessSlug) return { rules: [], unreadable: [] };
+  const remaining = () => {
+    if (!budget) return undefined;
+    budget.signal.throwIfAborted();
+    const ms = Math.ceil(budget.deadlineAtMs - performance.now());
+    if (ms <= 0) throw new Error('identity rule read budget expired');
+    return ms;
+  };
+  remaining();
   const { resolvePotSlugsForHarnesses } = await import('../memory/hive-scope');
+  remaining();
   const potSlug = (await resolvePotSlugsForHarnesses(workspaceId, [harnessSlug]))[0];
+  const acquireTimeoutMs = remaining();
   if (!potSlug) return { rules: [], unreadable: [] };
-  const rows = await withWorkspace(workspaceId, tx =>
-    listLocalRules({ workspaceId, potSlug }, { includeWorkspace: true, enabledOnly: true }, tx));
+  const rows = await withWorkspace(workspaceId, tx => {
+    // A queued BEGIN can complete after the guard has ended. Roll back before
+    // reading rules, and never retry an acquisition beyond this call's budget.
+    remaining();
+    return listLocalRules({ workspaceId, potSlug }, { includeWorkspace: true, enabledOnly: true }, tx);
+  }, budget ? { acquireTimeoutMs, acquireRetries: 0, statementTimeoutMs: acquireTimeoutMs } : undefined);
+  remaining();
   return { rules: rows.flatMap(row => row.authorId === ownerId && row.definition.delivery === 'sync'
     ? [{ identityId: localRuleRegistrationId(row), pinRef: localRuleRegistrationId(row), rule: row.definition }] : []), unreadable: [] };
 }

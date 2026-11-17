@@ -29,8 +29,9 @@
 import { readFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { parseBlueprintSourceDocument } from '@papercusp/orchestrator/blueprint';
 import { defineTool } from '@papercusp/agent-mcp';
 import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { publishListingToCupboard } from '../../cupboard/publish-listing';
@@ -96,16 +97,28 @@ export default defineTool({
 
     // Public-visibility gate (cupboard-full-dogfood P-002 durable guardrail): the
     // public Cupboard listing is irreversible, so a blueprint is publishable only
-    // when its own blueprint.yaml explicitly declares `visibility: public`. Absent
+    // when its own blueprint.yaml (or an identity's sibling cupboard.yaml)
+    // explicitly declares `visibility: public`. Absent
     // / anything else ⇒ internal ⇒ refuse (422) — nothing leaks by default. Fires
     // BEFORE the GitHub resolution so an internal blueprint fails fast (no network).
     try {
-      assertBlueprintVisibilityPublishable(id, manifest);
+      const source = parseBlueprintSourceDocument(manifest);
+      let packageMetadata: unknown;
+      if (source.kind === 'identity') {
+        try {
+          packageMetadata = parseYaml(readFileSync(join(dirname(file), 'cupboard.yaml'), 'utf8'));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw new BlueprintVisibilityError(`identity "${id}" cupboard.yaml failed to parse: ${String(error)}`, 422);
+          }
+        }
+      }
+      assertBlueprintVisibilityPublishable(id, manifest, packageMetadata);
     } catch (e) {
       if (e instanceof BlueprintVisibilityError) {
         return Response.json({ ok: false, error: e.message }, { status: e.status });
       }
-      throw e;
+      return Response.json({ ok: false, error: `blueprint "${id}" source failed to parse: ${String(e)}` }, { status: 422 });
     }
 
     const listingRef = typeof body.listing_ref === 'string' && body.listing_ref.trim() ? body.listing_ref.trim() : id;

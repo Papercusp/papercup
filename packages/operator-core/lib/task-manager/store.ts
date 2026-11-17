@@ -646,8 +646,11 @@ async function deliverTaskTerminalEvent(
   }
 }
 
-/** Bounded restart recovery, called by the existing task reconciler. Delivery is
- * at least once if the process dies after emitting but before acknowledging it.
+/** Bounded restart recovery, called again by the existing task reconciler. The
+ * result counts deliveries in this pass, not the complete pending population.
+ * Omitted and failed rows retain their pending intent; the persisted attempt
+ * order puts them back in the queue across ticks and process restarts. Delivery
+ * is at least once if the process dies after emitting but before acknowledging.
  * Legacy terminal rows with no latch are included so existing lost exits recover. */
 export async function recoverPendingTaskTerminalEvents(
   workspaceId?: string | null,
@@ -670,11 +673,27 @@ export async function recoverPendingTaskTerminalEvents(
               AND f.event_key = 'task:terminal:' || t.task_id
          )
        ))
-     ORDER BY t.ended_at, t.task_id
+     ORDER BY COALESCE(
+                CASE WHEN jsonb_typeof(t.detail -> 'terminalEventRecoveryAttemptedAtMs') = 'number'
+                     THEN (t.detail ->> 'terminalEventRecoveryAttemptedAtMs')::numeric END,
+                EXTRACT(EPOCH FROM t.ended_at) * 1000
+              ), t.ended_at, t.task_id
      LIMIT 100
   `;
   let delivered = 0;
   for (const row of rows) {
+    // Persist before emit: a failed delivery, or a process dying in the emitter,
+    // must not pin the oldest full page ahead of every unattempted terminal row.
+    // Reuse the outbox detail bag and leave the pending marker/tuple untouched.
+    await sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = detail || jsonb_build_object(
+               'terminalEventRecoveryAttemptedAtMs', EXTRACT(EPOCH FROM clock_timestamp()) * 1000
+             )
+       WHERE task_id = ${row.task_id} AND workspace_id = ${row.workspace_id}
+         AND ended_at IS NOT NULL
+         AND detail -> 'terminalEventPending' IS DISTINCT FROM 'false'::jsonb
+    `;
     if (await deliverTaskTerminalEvent({
       taskId: row.task_id, workspaceId: row.workspace_id, harnessSlug: row.harness_slug,
       taskClass: row.class, launchedBy: row.launched_by, state: row.state,

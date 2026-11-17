@@ -894,6 +894,33 @@ describe('get_next — DEFAULT_CLAIM_SPEC reproduces current ordering (D-003)', 
 //    exiting the moment its exact-kind tier reads empty.
 // ────────────────────────────────────────────────────────────────────────────
 describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue fallthrough (tier 3)', () => {
+  it('claims the exact canonical-only adopted issue through plan and plan-item filters', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-canonical-unrelated', { createdTs: 1 });
+    await seedIssue('EI-canonical-adopted', { createdTs: 100 });
+    await db.sql`UPDATE harness_shared.work_items
+      SET plan_slug = 'canonical-adopted-plan', plan_line_id = 'P-001'
+            WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'EI-canonical-adopted'`;
+    const s = spec({
+      specVersion: '1.0', specId: 'canonical-adopted-issue', revision: 1,
+      states: ['open'],
+      view: { filter: { all: [
+        { field: 'kind', op: '=', value: 'bug' },
+        { field: 'plan', op: '=', value: 'canonical-adopted-plan' },
+        { field: 'plan_item', op: 'in', value: ['P-001'] },
+      ] } },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+    });
+    const claimed = await getNextWorkItem(s, BEE, { harness: H });
+    expect(claimed?.workItem).toMatchObject({ id: 'EI-canonical-adopted', family: 'issue', assignee: BEE.assignee });
+    const rows = await db.sql`SELECT feature_id, taken_by FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'EI-canonical-adopted', taken_by: BEE.assignee },
+      { feature_id: 'EI-canonical-unrelated', taken_by: null },
+    ]);
+  });
+
   afterAll(() => {
     setFlagOverridesForTest(null); // never leak an override past this describe block
   });

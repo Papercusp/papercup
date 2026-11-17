@@ -76,6 +76,21 @@ export interface McpPreDispatchPhaseTimingsMs extends Record<McpPreDispatchPhase
 
 export type McpSessionBaselineObservation = 'recorded' | 'unavailable' | 'missing' | 'current' | 'stale';
 
+/** Query handle-to-build and build-to-terminal times are separate observations;
+ * neither is a measurement of server CPU or pure connection acquisition. */
+export interface McpHttpDatabaseTimings {
+  status: 'observed' | 'unavailable';
+  coverage?: 'retained-completed-results-only';
+  omittedRetained?: number;
+  queries?: Array<{
+    pool: string;
+    queryId: number;
+    preBuildMs: number | null;
+    elapsedMs: number | null;
+    status: 'ok' | 'error';
+  }>;
+}
+
 export interface McpRequestTraceEvent {
   traceId: string;
   toolName: string;
@@ -87,6 +102,7 @@ export interface McpRequestTraceEvent {
   httpHandlerPhase?: McpHttpHandlerPhase;
   /** Bounded server subphases; a pending phase is a timing clue, not causal proof. */
   httpHandlerPhases?: HandlerPhasesMetadata | null;
+  httpHandlerDatabase?: McpHttpDatabaseTimings;
   outcome?: 'success' | 'tool_error' | 'rejected';
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
@@ -318,8 +334,14 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
   pendingAfterMs = 5_000,
   phases?: PhaseTracker,
   onPending?: () => void | Promise<unknown>,
+  readDatabaseTimings?: () => McpHttpDatabaseTimings,
 ): Promise<T> {
   const startedAt = Date.now();
+  const databaseEvidence = (): Pick<McpRequestTraceEvent, 'httpHandlerDatabase'> => {
+    if (!readDatabaseTimings) return {};
+    try { return { httpHandlerDatabase: readDatabaseTimings() }; }
+    catch { return { httpHandlerDatabase: { status: 'unavailable' } }; }
+  };
   let pending = false;
   const timer = setTimeout(() => {
     pending = true;
@@ -330,6 +352,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
       httpHandlerPhase: phase,
       elapsedMs: Math.max(0, Date.now() - startedAt),
       ...(phases ? { httpHandlerPhases: phases.toMetadata() } : {}),
+      ...databaseEvidence(),
     });
     // Start a bounded observer while the wait exists, without joining it to
     // the request or allowing its failure to replace an authority verdict.
@@ -357,6 +380,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
         elapsedMs: Math.max(0, Date.now() - startedAt),
         outcome,
         ...(phases ? { httpHandlerPhases: phases.toMetadata() } : {}),
+        ...databaseEvidence(),
       });
     }
   }

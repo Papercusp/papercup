@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
-import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, recordMcpPreflightFailure, runNativeMcpTargetOnOwner,
+import { defineTool, registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
+import { z } from 'zod';
+import { dispatchNativeMcpTargetOnOwner, maybeRunWithDeltaProxy, normalizeNativeMcpOwnerSpawn, recordMcpPreflightFailure, runNativeMcpTargetOnOwner,
   retainNativeRequestPrincipalForDispatch, type BuiltSpawnContext } from './_mcp-host';
 import { nativeInstalledPerUseTurns } from '../../../agent-tools/per-use-chokepoint';
 import type { SuNativeToolAddress } from '../../../su-session-owner-routing';
-const telemetry = vi.hoisted(() => ({ recordInvocation: vi.fn() }));
+const telemetry = vi.hoisted(() => ({ recordInvocation: vi.fn(), batchResponseVersion: 'operation-v0' as const }));
 const nativeOwnerRouting = vi.hoisted(() => ({ run: vi.fn() }));
 const servingGeneration = vi.hoisted(() => ({ read: vi.fn() }));
 vi.mock('../../../su-session-owner-routing', async importOriginal => ({
@@ -63,6 +64,35 @@ beforeEach(() => {
 });
 
 describe('D-063 owner rebuild of native MCP targets', () => {
+  it('preserves child delta outcomes without applying the singleton row reconstruction proxy', async () => {
+    const canonical = { content: [{ type: 'text' as const, text: '{"results":[{"itemId":"a"}]}' }],
+      structuredContent: { results: [{ itemId: 'a', output: { _meta: { delta: { mode: 'not_modified', cursor: 'child' } } } }] } };
+    const runRaw = vi.fn(async () => canonical);
+    const out = await maybeRunWithDeltaProxy({ sessionKey: 'batch-version-fixture', toolName: 'native-fixture:run',
+      args: { value: 7 }, requestedFormat: 'json', batchResponseVersion: 'batch-v1',
+      explicitDelta: false, itemKeyField: 'id', runRaw });
+    expect(out).toBe(canonical);
+    expect(runRaw).toHaveBeenCalledExactlyOnceWith(undefined, false);
+  });
+  it('preserves canonical response negotiation through serialized owner reconstruction', async () => {
+    const handler = vi.fn(async (args: { value: number }) => ({ data: args }));
+    defineTool({ name: 'native-batch-fixture:operation', requirePrincipal: false, capability: 'test:read',
+      args: z.strictObject({ value: z.number() }), handler });
+    const r = { ...request(), toolName: 'native-batch-fixture:operation', sourceProjection: undefined,
+      requestedBatchResponseVersion: 'batch-v1',
+      args: { _batch: 1, items: [{ args: { value: 1 } }, { args: { value: 2 } }] } };
+    const out = await dispatchNativeMcpTargetOnOwner(JSON.parse(JSON.stringify(r)), address);
+    expect(out.structuredContent).toMatchObject({ counts: { ok: 2, failed: 0 }, results: [
+      { output: { structuredContent: { value: 1 } } }, { output: { structuredContent: { value: 2 } } },
+    ] });
+    expect(handler).toHaveBeenCalledTimes(2);
+    const legacy = await dispatchNativeMcpTargetOnOwner({ ...r, requestedBatchResponseVersion: 'operation-v0' }, address);
+    expect(legacy.isError).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(2);
+    await expect(dispatchNativeMcpTargetOnOwner({ ...r, requestedBatchResponseVersion: 'future' }, address))
+      .rejects.toThrow('native_tool_owner_invalid_request');
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
   it('preserves original execution metadata and absolute deadlines across the owner relay', async () => {
     const deadline = Date.now() + 20000;
     const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {

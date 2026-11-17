@@ -20,11 +20,51 @@
  * within a week, which is a worse outcome than the gap it was built to close.
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: tsc reports TS7016 at the module-SPECIFIER line, so on a multi-line import the @ts-ignore lands on `import {` and suppresses nothing.
 import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE, SPAWN_SYNC_EXPLICIT_BASELINE, findChildIdleWindowBudgets, IDLE_WINDOW_FLOOR_MS, IDLE_WINDOW_KEY_RE, SPAWNS_CHILD_RE, IDLE_WINDOW_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
 // @ts-ignore — same untyped module as above; one line for the same TS7016 reason.
 import { classifyFileDuration, durationSubjects, FILE_DURATION_BUDGET_MS, FILE_GROWTH_RATIO, FILE_GROWTH_FLOOR_MS, FILE_DURATION_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
+// @ts-ignore — same untyped guard module; exercise its actual file enumeration.
+import { listTimingTestFiles } from '../../../scripts/check-test-timing-budgets.mjs';
+
+describe('timing guard source population (EI-29007747835958492)', () => {
+  it('keeps new source and submodule tests while excluding ignored verification copies', () => {
+    const root = mkdtempSync(join(tmpdir(), 'timing-source-population-'));
+    const put = (rel: string, content: string) => {
+      const path = join(root, rel);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, content);
+    };
+    try {
+      execFileSync('git', ['init', '--quiet', root]);
+      put('.gitignore', 'apps/operator/dist-verify/\nnode_modules/\n');
+      put('.gitmodules', '[submodule "libs/embedded"]\npath = libs/embedded\nurl = ./embedded\n');
+      put('packages/core/new.test.ts', 'expect(Date.now() - started).toBeLessThan(80);');
+      put('apps/operator/source.test.ts', 'export {};');
+      put('scripts/outside.test.ts', 'export {};');
+      put('apps/operator/dist-verify/copied/packages/core/new.test.ts', 'expect(Date.now() - started).toBeLessThan(80);');
+      put('node_modules/copied.test.ts', 'export {};');
+      mkdirSync(join(root, 'libs/embedded'), { recursive: true });
+      execFileSync('git', ['init', '--quiet', join(root, 'libs/embedded')]);
+      put('libs/embedded/new.test.ts', 'export {};');
+
+      const files = listTimingTestFiles(root).map((path: string) => relative(root, path)).sort();
+      expect(files).toEqual([
+        'apps/operator/source.test.ts',
+        'libs/embedded/new.test.ts',
+        'packages/core/new.test.ts',
+      ]);
+      expect(hasTightLiteralBudget('expect(Date.now() - started).toBeLessThan(80);')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () => {
   it('FLAGS a tight literal budget on a direct elapsed assertion', () => {

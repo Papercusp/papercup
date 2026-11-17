@@ -2961,7 +2961,7 @@ const DUPLICATE_CANDIDATE_MAX_LIMIT = 5000;
 /**
  * Candidate-complete lexical prescreen for create-time duplicate detection. The scorer rounds
  * Jaccard to two decimals before applying DUP_THRESHOLD, so any surfaced row shares at least
- * ceil((threshold - .01) * queryTokenCount) tokens. Select the longest indexable query terms
+ * ceil((threshold - .01) * queryTokenCount) tokens. Select rare indexable query terms
  * from the existing _search GIN index and require enough seed hits after accounting for every
  * query token omitted from that seed set. This is a recall bound, not a ranked top-K. If
  * stopwords, an oversized query or the explicit candidate cap prevents a complete census, the
@@ -2983,11 +2983,28 @@ export async function searchWorkItemDuplicateCandidates(
   const maxCandidates = Math.max(1, Math.min(DUPLICATE_CANDIDATE_MAX_LIMIT, requestedLimit));
   const minimumOverlap = Math.ceil((DUP_THRESHOLD - 0.01) * tokens.length);
   const { sql } = getOrgPg();
+  // Statistics affect ordering only: ANY seed subset of this size preserves the overlap
+  // proof below. Missing/stale statistics cannot hide a duplicate. Reuse ANALYZE's existing
+  // tsvector frequencies rather than counting the corpus for every token on the hot path.
+  // A token can stem to several lexemes (AND semantics), whose minimum frequency is an
+  // upper bound on its frequency. An unlisted lexeme is treated as rare; absent statistics
+  // retain the previous length/lexical order.
   const indexableTokens = await sql<{ token: string }[]>`
+    WITH statistics AS MATERIALIZED (
+      SELECT most_common_elems::text::text[] AS lexemes, most_common_elem_freqs AS frequencies
+        FROM pg_stats
+       WHERE schemaname = 'harness_shared' AND tablename = 'work_items'
+         AND attname = '_search' AND NOT inherited
+    )
     SELECT input.token
       FROM unnest(${tokens}::text[]) AS input(token)
+      LEFT JOIN statistics ON true
+      CROSS JOIN LATERAL (
+        SELECT min(COALESCE(statistics.frequencies[array_position(statistics.lexemes, lexeme)], 0)) AS frequency
+          FROM unnest(tsvector_to_array(to_tsvector('english', input.token))) AS lexeme
+      ) rarity
      WHERE numnode(plainto_tsquery('english', input.token)) > 0
-  ORDER BY length(input.token) DESC, input.token`;
+  ORDER BY rarity.frequency ASC NULLS FIRST, length(input.token) DESC, input.token`;
   const seedCount = Math.min(indexableTokens.length, Math.ceil(indexableTokens.length * 0.8));
   const seedTokens = indexableTokens.slice(0, seedCount).map(({ token }) => token);
   const requiredSeedMatches = minimumOverlap - (tokens.length - seedTokens.length);
@@ -2996,7 +3013,7 @@ export async function searchWorkItemDuplicateCandidates(
 
   if (requiredSeedMatches > seedTokens.length) return { complete: true, items: [] };
   // EI-28715095781460073: pigeonhole prefilter. A row matching >= k of n seed terms must
-  // match >= 1 of ANY n-k+1 of them, so OR-ing only the n-k+1 longest terms is exactly
+  // match >= 1 of ANY n-k+1 of them, so OR-ing only the n-k+1 rarest terms is exactly
   // complete while shrinking the bitmap candidate set the per-row count has to visit.
   const prefilterTokens = seedTokens.slice(0, seedTokens.length - requiredSeedMatches + 1);
   const seedQuery = prefilterTokens.join(' | ');
@@ -3021,11 +3038,12 @@ export async function searchWorkItemDuplicateCandidates(
       SELECT plainto_tsquery('english', seed_term.token) AS q
         FROM unnest(${seedTokens}::text[]) AS seed_term(token)
     ),
-    candidates AS MATERIALIZED (
+    -- Both families share one indexed search and one overlap count per eligible row.
+    -- Repeating the scan in each UNION branch detoasted and filtered the same broad
+    -- GIN result twice, even when almost all of those rows were terminal/observations.
+    matches AS MATERIALIZED (
       SELECT wi.feature_id AS id, wi.title, wi.summary, wi.status AS state,
-             CASE WHEN wi.harness_slug IS NULL OR wi.harness_slug = ''
-                        OR wi.harness_slug LIKE 'operator:%'
-                  THEN NULL ELSE wi.harness_slug END AS harness
+             wi.workspace_id, wi.harness_slug, wi.item_kind, wi.nature
         FROM harness_shared.work_items wi
         CROSS JOIN seed
         CROSS JOIN LATERAL (SELECT wi._search || ''::tsvector AS v OFFSET 0) row_vec
@@ -3034,32 +3052,32 @@ export async function searchWorkItemDuplicateCandidates(
             FROM seed_terms
            WHERE row_vec.v @@ seed_terms.q
         ) seed_matches
-       WHERE wi.workspace_id = ${issueWorkspace}
-         AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
+       WHERE (
+           (wi.workspace_id = ${issueWorkspace}
+             AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}))
+           OR (wi.workspace_id = ${featureWorkspace}
+             AND ${featureFamilyKindClause(sql, featureWorkspace)}
+             AND ${natureWhereSql(sql, undefined, undefined)})
+         )
          AND wi.lane IS DISTINCT FROM 'observation'
          AND NOT (wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          AND wi._search @@ seed.query
          AND seed_matches.matched >= ${requiredSeedMatches}
+    ),
+    candidates AS MATERIALIZED (
+      SELECT id, title, summary, state,
+             CASE WHEN harness_slug IS NULL OR harness_slug = ''
+                        OR harness_slug LIKE 'operator:%'
+                  THEN NULL ELSE harness_slug END AS harness
+        FROM matches
+       WHERE workspace_id = ${issueWorkspace}
+         AND item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)})
       UNION ALL
-      SELECT w.feature_id AS id, w.title, w.summary, w.status AS state, w.harness_slug AS harness
-        -- The compatibility view intentionally omits the generated "lane" column;
-        -- observationLaneExclusionSql reads that stored column, so query the canonical
-        -- work_items relation for feature-family rows as well.
-        FROM harness_shared.work_items w
-        CROSS JOIN seed
-        CROSS JOIN LATERAL (SELECT w._search || ''::tsvector AS v OFFSET 0) row_vec
-        CROSS JOIN LATERAL (
-          SELECT count(*)::integer AS matched
-            FROM seed_terms
-           WHERE row_vec.v @@ seed_terms.q
-        ) seed_matches
-       WHERE w.workspace_id = ${featureWorkspace}
+      SELECT id, title, summary, state, harness_slug AS harness
+        FROM matches
+       WHERE workspace_id = ${featureWorkspace}
          AND ${featureFamilyKindClause(sql, featureWorkspace)}
          AND ${natureWhereSql(sql, undefined, undefined)}
-         AND ${observationLaneExclusionSql(sql, 'w.payload')}
-         AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
-         AND w._search @@ seed.query
-         AND seed_matches.matched >= ${requiredSeedMatches}
     )
     SELECT id, title, summary, state, harness
       FROM candidates

@@ -152,6 +152,118 @@ describe('host-wide task reconciliation across workspace partitions', () => {
   });
 });
 
+describe('terminal-event recovery retry fairness', () => {
+  async function insertPending(count: number, reverse = false) {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, confined, state, ended_at, detail
+      )
+      SELECT 'fair-terminal-' || n, ${WS}, 'fair-terminal-' || n,
+             'bash-job', 'pending terminal', '[]'::jsonb, 'test', true, 'exited',
+             now() - interval '1 day' + n * interval '1 second',
+             CASE WHEN n % 2 = 0 THEN '{}'::jsonb
+                  ELSE '{"terminalEventPending":true}'::jsonb END
+        FROM generate_series(0, ${count - 1}) n
+       ORDER BY CASE WHEN ${reverse} THEN -n ELSE n END
+    `;
+  }
+
+  it.each([99, 100, 101])('keeps the complete backlog and reaches a successful tail with %i rows', async (count) => {
+    await insertPending(count);
+    const tail = `fair-terminal-${count - 1}`;
+    const emit = vi.fn(async (event: { taskId: string }) => event.taskId === tail);
+
+    expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, emit)).toBe(count <= 100 ? 1 : 0);
+    expect(emit).toHaveBeenCalledTimes(Math.min(count, 100));
+    if (count > 100) {
+      expect(emit.mock.calls.some(([event]) => event.taskId === tail)).toBe(false);
+      // The next production recovery pass must reach the omitted row, even
+      // though the complete first page is still failing and remains pending.
+      expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, emit)).toBe(1);
+    }
+    expect(emit.mock.calls.filter(([event]) => event.taskId === tail)).toHaveLength(1);
+    expect(await db.sql`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE detail -> 'terminalEventPending' IS DISTINCT FROM 'false'::jsonb)::int AS pending
+        FROM harness_shared.task_ledger
+    `).toEqual([{ total: count, pending: count - 1 }]);
+
+    let recovered = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      recovered += await store.recoverPendingTaskTerminalEvents(WS, db.sql, async () => true);
+    }
+    expect(recovered).toBe(count - 1);
+    expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, async () => true)).toBe(0);
+  });
+
+  it.each([false, true])('makes durable progress across many failed pages and a module restart (reverse=%s)', async (reverse) => {
+    await insertPending(305, reverse);
+    const seen = new Set<string>();
+    const fail = async (event: { taskId: string }) => { seen.add(event.taskId); return false; };
+    expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, fail)).toBe(0);
+    expect(seen.size).toBe(100);
+    // Re-import the store so no process-local recovery cursor can supply the
+    // next page. Only the persisted task ledger survives this restart.
+    vi.resetModules();
+    const restarted = await import('./store');
+    for (let pass = 0; pass < 3; pass++) {
+      expect(await restarted.recoverPendingTaskTerminalEvents(WS, db.sql, fail)).toBe(0);
+    }
+    expect(seen.size).toBe(305);
+    expect(await db.sql`
+      SELECT count(*)::int AS total,
+             count(*) FILTER (WHERE detail -> 'terminalEventPending' = 'false'::jsonb)::int AS acknowledged,
+             count(*) FILTER (WHERE jsonb_typeof(detail -> 'terminalEventRecoveryAttemptedAtMs') = 'number')::int AS attempted
+        FROM harness_shared.task_ledger
+    `).toEqual([{ total: 305, acknowledged: 0, attempted: 305 }]);
+
+    const delivered: string[] = [];
+    for (let pass = 0; pass < 4; pass++) {
+      await restarted.recoverPendingTaskTerminalEvents(WS, db.sql, async (event) => {
+        delivered.push(event.taskId);
+        return true;
+      });
+    }
+    expect(delivered).toHaveLength(305);
+    expect(new Set(delivered)).toEqual(seen);
+    expect(await restarted.recoverPendingTaskTerminalEvents(WS, db.sql, fail)).toBe(0);
+  });
+
+  it('persists retry order before a throwing emitter and still reaches the next page', async () => {
+    await insertPending(101);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const persistedAttemptTypes: unknown[] = [];
+    try {
+      expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, async (event) => {
+        const [row] = await db.sql`
+          SELECT jsonb_typeof(detail -> 'terminalEventRecoveryAttemptedAtMs') AS attempt_type
+            FROM harness_shared.task_ledger WHERE task_id = ${event.taskId}
+        `;
+        persistedAttemptTypes.push(row?.attempt_type);
+        throw new Error('terminal bridge unavailable');
+      })).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(100);
+      expect(persistedAttemptTypes).toEqual(Array(100).fill('number'));
+    } finally {
+      warn.mockRestore();
+    }
+    const emit = vi.fn(async (event: { taskId: string }) => event.taskId === 'fair-terminal-100');
+    expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, emit)).toBe(1);
+    expect(emit).toHaveBeenNthCalledWith(1, expect.objectContaining({ taskId: 'fair-terminal-100' }));
+  });
+
+  it('treats malformed optional attempt metadata as an unattempted row', async () => {
+    await insertPending(3);
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = detail || '{"terminalEventRecoveryAttemptedAtMs":"not-a-clock"}'::jsonb
+       WHERE task_id = 'fair-terminal-0'
+    `;
+    expect(await store.recoverPendingTaskTerminalEvents(WS, db.sql, async () => true)).toBe(3);
+  });
+});
+
 describe('dispatch correlation real SQL recovery', () => {
   async function insertDispatchTask(taskId: string, workspaceId: string, dispatchCallId: string | null, ageMinutes: number) {
     await db.sql`

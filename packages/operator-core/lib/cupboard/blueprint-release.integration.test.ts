@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse as parseYaml, stringify as toYaml } from 'yaml';
 import {
+  BlueprintSchema,
   compileAgentSpecification,
   replayAgentSpecification,
   snapshotPackageDirectory,
@@ -45,11 +47,15 @@ async function fixture() {
     dir: recipeDir,
     value: JSON.parse(await fs.readFile(join(recipeDir, 'recipe.json'), 'utf8')),
   });
+  let signCalls = 0;
   const signer = {
     githubUserId: 42,
     githubLogin: 'publisher',
     devicePubkey: keypair.pubkeyBase64,
-    sign: async (bytes: Uint8Array) => signWithPrivateKeyDer(keypair.privateKeyDer, Buffer.from(bytes)),
+    sign: async (bytes: Uint8Array) => {
+      signCalls += 1;
+      return signWithPrivateKeyDer(keypair.privateKeyDer, Buffer.from(bytes));
+    },
   };
   const publish = (sourceDir: string, id = 'identity') => prepareBlueprintPublicRelease({
     blueprintFile: join(sourceDir, 'blueprint.yaml'),
@@ -99,17 +105,16 @@ async function fixture() {
       cupboardReachable: true,
     }),
   } satisfies InstallBlueprintCoreDeps);
-  return { installedDir, publish, install, keypair };
+  return { installedDir, publish, install, keypair, signCalls: () => signCalls };
 }
 
-async function writeBlueprint(version: string, prompt: string, maxCostUsd: number, id = 'identity') {
+async function writeBlueprint(version: string, prompt: string, id = 'identity') {
   const sourceDir = join(root, `${id}-${version}`);
   const yaml = [
     `id: ${id}`,
     `version: ${version}`,
     'slots: [{ slot: domain }]',
-    `knobs: { maxCostUsd: ${maxCostUsd} }`,
-    'bundles: [{ kind: recipe, ref: identity-recipe, version: 1.0.0 }]',
+    'contributions: [{ id: identity-recipe, purpose: resource, source: fixed, refresh: source-change, inputKind: package, ref: "recipe:identity-recipe" }]',
   ].join('\n') + '\n';
   await fs.mkdir(join(sourceDir, 'prompts'), { recursive: true });
   await fs.writeFile(join(sourceDir, 'blueprint.yaml'), yaml);
@@ -118,9 +123,46 @@ async function writeBlueprint(version: string, prompt: string, maxCostUsd: numbe
 }
 
 describe('R-2 signed blueprint release lifecycle (integration)', () => {
+  it('R-1: Cupboard publish refuses every workspace runtime key in an identity', async () => {
+    // Change detector at the production signed-release boundary. No network or
+    // signer substitute: invalid sources must fail before the real signer runs.
+    const f = await fixture();
+    const dir = await writeBlueprint('1.0.0', 'portable prompt\n');
+    const file = join(dir, 'blueprint.yaml');
+    const valid = parseYaml(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+    const workspace = BlueprintSchema.parse({ id: 'runtime', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } });
+    const portable = new Set(['id', 'extends', 'version', 'description', 'slots', 'contributions',
+      'asks', 'grants', 'ceiling', 'floors', 'lexicon', 'mode', 'publisher', 'attestation']);
+    for (const key of Object.keys(BlueprintSchema.shape).filter((key) => !portable.has(key))) {
+      const value = key === 'dispatch' ? { costCapUsd: 1 } : (workspace as Record<string, unknown>)[key] ?? null;
+      await fs.writeFile(file, toYaml({ ...valid, [key]: value }));
+      await expect(f.publish(dir)).rejects.toThrow(new RegExp(`Unrecognized key.*${key}`));
+      expect(f.signCalls(), `${key} reached the release signer`).toBe(0);
+      expect(existsSync(f.installedDir)).toBe(false);
+    }
+    await fs.writeFile(file, toYaml(valid));
+    expect((await f.publish(dir)).source.slots).toEqual(['domain']);
+    expect(f.signCalls()).toBeGreaterThan(0);
+  });
+
+  it('R-1: Cupboard publish refuses an unknown identity key, naming the key', async () => {
+    // Preservation/positive controls: unknown-key refusal and real valid signing.
+    const f = await fixture();
+    const dir = await writeBlueprint('1.0.0', 'portable prompt\n');
+    const file = join(dir, 'blueprint.yaml');
+    const valid = parseYaml(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+    await fs.writeFile(file, toYaml({ ...valid, syntheticUnknownPolicy: true }));
+    await expect(f.publish(dir)).rejects.toThrow(/Unrecognized key.*syntheticUnknownPolicy/);
+    expect(f.signCalls()).toBe(0);
+    expect(existsSync(f.installedDir)).toBe(false);
+    await fs.writeFile(file, toYaml(valid));
+    expect((await f.publish(dir)).source.slots).toEqual(['domain']);
+    expect(f.signCalls()).toBeGreaterThan(0);
+  });
+
   it('publishes and installs signed closure bytes, preserving a compiled pin through no-op, update, rollback and uninstall', async () => {
     const { installedDir, publish, install } = await fixture();
-    const sourceDir = await writeBlueprint('1.0.0', 'sell potatoes\n', 2);
+    const sourceDir = await writeBlueprint('1.0.0', 'sell potatoes\n');
     const published = await publish(sourceDir);
     const first = await install(sourceDir, published.manifest.release);
     expect(first.operation).toBe('install');
@@ -137,7 +179,7 @@ describe('R-2 signed blueprint release lifecycle (integration)', () => {
     const saved = JSON.stringify(specification);
     expect((await install(sourceDir, published.manifest.release)).operation).toBe('no-op');
 
-    // Nothing but the prompt changes: no version/knob bump can explain this diff.
+    // Nothing but the prompt changes: no version bump can explain this diff.
     await fs.writeFile(join(sourceDir, 'prompts/persona.md'), 'sell excellent potatoes\n');
     const changed = await publish(sourceDir);
     expect(changed.manifest.rootHash).not.toBe(published.manifest.rootHash);
@@ -174,7 +216,7 @@ describe('R-2 signed blueprint release lifecycle (integration)', () => {
 
   it('refuses altered signatures, authentic wrong pins and tampered prompt bytes before replacing installed content', async () => {
     const { installedDir, publish, install, keypair } = await fixture();
-    const sourceDir = await writeBlueprint('1.0.0', 'original prompt\n', 2);
+    const sourceDir = await writeBlueprint('1.0.0', 'original prompt\n');
     const published = await publish(sourceDir);
     const manifest = published.manifest.release;
     const first = await install(sourceDir, manifest);
@@ -194,8 +236,8 @@ describe('R-2 signed blueprint release lifecycle (integration)', () => {
 
   it('keeps installed alternatives inactive and refuses conflicting activation and exact pins in both orders', async () => {
     const { installedDir, publish, install } = await fixture();
-    const a = await writeBlueprint('1.0.0', 'first persona\n', 2);
-    const b = await writeBlueprint('1.0.0', 'second persona\n', 3, 'alternative');
+    const a = await writeBlueprint('1.0.0', 'first persona\n');
+    const b = await writeBlueprint('1.0.0', 'second persona\n', 'alternative');
     const publishedA = await publish(a);
     const publishedB = await publish(b, 'alternative');
     const first = await install(a, publishedA.manifest.release);

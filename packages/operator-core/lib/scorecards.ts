@@ -4856,7 +4856,7 @@ async function listScorecardsAtLimit(
        AND ${filter.since ? tx`scorecard.created_at >= ${filter.since}` : tx`TRUE`}
        AND ${
          before
-           ? tx`(scorecard.created_at, scorecard.issue_id) < (${before.createdAt}::timestamptz, ${before.issueId}::text)`
+           ? tx`(scorecard.created_at, scorecard.issue_id) < (${before.createdAt}::text::timestamptz, ${before.issueId}::text)`
            : tx`TRUE`
        }
        AND ${filter.includeSynthesized ? tx`TRUE` : tx`scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}

@@ -52,6 +52,7 @@ import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure
   verifyTestingCoreInputs, verifyTestingCoreReceipt } from './lib/testing-core-witness.mjs';
 import { assertCommittedWorkspaceLockMatches, committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { assertRootLockManifestMatches } from './npm-install-safe.mjs';
+import { expandWorkspaces } from './assert-workspace-links.mjs';
 import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import { PRIVATE_TEST_PG_RELEASE_TOKEN_ENV, requestPrivateTestPgRelease } from './lib/with-test-pg-cleanup.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
@@ -3525,9 +3526,18 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
       if (!/^\s*--ensure-ref\)/m.test(generationHelperSource) ||
           !/^\s*--verifier-source\)/m.test(generationHelperSource))
         throw new PreviewError('selected source does not support exact verifier dependency generations', 2);
+      // Match the existing native closure to the frozen root's declared
+      // workspaces. Excluded apps retain their source proof without their
+      // independent installations becoming native dependency requirements.
+      // Historical fixtures without a workspace declaration keep full scope.
+      const rootManifest = JSON.parse(await fs.readFile(join(root, 'package.json'), 'utf8'));
+      const workspaceArgs = Array.isArray(rootManifest.workspaces)
+        ? [...new Set([...expandWorkspaces(rootManifest.workspaces, root), 'papercusp-desktop'])]
+          .sort().flatMap(dir => ['--workspace-dir', dir])
+        : [];
       await runPhase('deps.generation.ensure', () =>
         runVerifierDependencyCommand('bash', [generationHelper, '--integration', donor,
-          '--ensure-ref', receipt.sourceCommit, '--verifier-source', root], {
+          '--ensure-ref', receipt.sourceCommit, '--verifier-source', root, ...workspaceArgs], {
           cwd: root, env: verifierDependencyEnv(sourceEnv), cutoffEpochMs: budget.childCutoffEpochMs,
           signal: cancellation.signal, now: clock.now, resourceInventory }));
       await runPhase('deps.preflight', () => {

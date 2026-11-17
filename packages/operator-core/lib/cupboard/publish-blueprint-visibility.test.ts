@@ -15,6 +15,18 @@ import {
 } from './publish-blueprint-visibility';
 
 describe('readBlueprintVisibility', () => {
+  it('reads identity curation only from separate package metadata and keeps missing or malformed markers internal', () => {
+    const identity = { id: 'portable', slots: [] };
+    expect(readBlueprintVisibility(identity, { visibility: 'public' })).toBe('public');
+    expect(assertBlueprintVisibilityPublishable('portable', identity, { visibility: 'public' })).toBe('public');
+    for (const metadata of [undefined, null, 'public', [], {}, { visibility: 'Public' }, { visibility: true }]) {
+      expect(readBlueprintVisibility(identity, metadata)).toBe('internal');
+      expect(() => assertBlueprintVisibilityPublishable('portable', identity, metadata)).toThrow(/cupboard.yaml/);
+    }
+    expect(readBlueprintVisibility({ ...identity, visibility: 'public' })).toBe('internal');
+    expect(readBlueprintVisibility({ id: 'workspace' }, { visibility: 'public' })).toBe('internal');
+  });
+
   it("returns 'public' only for an exact visibility: 'public'", () => {
     expect(readBlueprintVisibility({ visibility: 'public' })).toBe('public');
   });

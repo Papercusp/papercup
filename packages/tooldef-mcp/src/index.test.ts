@@ -90,6 +90,24 @@ describe('dispatchProjectedToolToMcp', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it('inherits response versions through reconstructed context and explicit metadata overrides it', async () => {
+    const handler = vi.fn(async (args: { value: string }) => ({ data: args }));
+    defineTool({ name: 'fix.batch-context', requirePrincipal: false, capability: 'test:read',
+      args: z.strictObject({ value: z.string() }), handler });
+    const registered = lookupByMcpName('fix.batch-context')!;
+    const input = { _batch: 1, items: [{ args: { value: 'one' } }, { args: { value: 'two' } }] };
+    const out = await dispatchProjectedToolToMcp(registered, 'fix.batch-context', input,
+      ctx({ requestedStructured: true, requestedBatchResponseVersion: 'batch-v1' }),
+      { batchResponseVersion: 'operation-v0' });
+    expect((out.structuredContent as BatchResult).counts).toEqual({ ok: 2, failed: 0 });
+    expect(handler.mock.calls.map(([args]) => args)).toEqual([{ value: 'one' }, { value: 'two' }]);
+    const refused = await dispatchProjectedToolToMcp(registered, 'fix.batch-context', input,
+      ctx({ requestedBatchResponseVersion: 'batch-v1' }), {},
+      { 'papercusp/batchResponseVersion': 'operation-v0' });
+    expect(refused.isError).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
   it('consumes MCP execution metadata without modifying tool arguments', async () => {
     const handler = vi.fn(async (args, context) => ({ content: [{ type: 'text' as const,
       text: JSON.stringify({ args, request: context.toolExecution }) }] }));
