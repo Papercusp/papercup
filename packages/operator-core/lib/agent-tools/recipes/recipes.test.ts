@@ -13,6 +13,7 @@
  * so the test pins the role-scoping decision, not the orchestration internals.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import Ajv2020 from 'ajv/dist/2020';
 import { listAllProjectedTools, roleScopedToolNames } from '@papercusp/agent-mcp';
 import {
   deriveRecipeAuthority,
@@ -1423,20 +1424,15 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       requiresContext: true,
       runnable: true,
     };
-    const schema = findTool('recipes:run').inputSchema as {
-      properties?: { authority?: { anyOf?: Array<{ properties?: Record<string, unknown> }> } };
-    };
-    expect(schema.properties?.authority?.anyOf).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          properties: expect.objectContaining({
-            refs: expect.any(Object),
-            requiresContext: expect.any(Object),
-            runnable: expect.any(Object),
-          }),
-        }),
-      ]),
-    );
+    // Validate the published contract: schema compaction can move the union behind a $ref.
+    const validate = new Ajv2020({ strict: false, allErrors: true })
+      .compile(findTool('recipes:run').inputSchema);
+    const invocation = { id: 'metadata-bound', authority: metadata };
+    expect(validate(invocation), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate({ ...invocation, authority: { ...metadata, version: 2 } })).toBe(false);
+    expect(validate({ ...invocation, authority: {
+      version: 1, revision: metadata.revision, refs: metadata.refs, requiresContext: true,
+    } })).toBe(false);
 
     const accepted = await findTool('recipes:run').fn({ id: 'metadata-bound', authority: metadata }, mkCtx('worker'));
     const acceptedBody = JSON.parse((accepted as { content: { text: string }[] }).content[0].text);
