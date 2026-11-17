@@ -1,0 +1,1286 @@
+{
+  "schemaVersion": 1,
+  "basis": "partial-source-review-not-full-census-or-runtime-acceptance",
+  "workItem": "WI-6554700010050108",
+  "reviewedSourcePaths": [
+    "packages/operator-core/lib/plan-items/claims.ts",
+    "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+    "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+    "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+    "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+    "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql"
+  ],
+  "catalogObservation": {
+    "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
+    "callRefs": [
+      "5ijook-5bu",
+      "5ijook-5bv"
+    ],
+    "notifierSourceSha256": "0244970a6e5da6f7ce553def5ed59ae459819f21341387418a574d32e91d6683",
+    "matchesMaintainedMigration": true,
+    "clockSchema": "pg_catalog",
+    "runtimeAttestation": false
+  },
+  "reviews": [
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"sql\",\"d172e3ec8622200d3a8a6d937c1a5948648172f32462ea3676425837ce1489c4\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "d172e3ec8622200d3a8a6d937c1a5948648172f32462ea3676425837ce1489c4",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The complete SELECT FOR UPDATE reads and locks the exact claim row. It does not insert, replace its holder, renew its lease or change a lifecycle status. Its following renewal is a separate advancing site and remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "opts.workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal"
+          ]
+        },
+        {
+          "edge": "opts.harnessSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal"
+          ]
+        },
+        {
+          "edge": "opts.planSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal"
+          ]
+        },
+        {
+          "edge": "opts.itemId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal"
+          ]
+        },
+        {
+          "edge": "sql-function-call-requires-reachability-review",
+          "reason": "The complete SELECT has only clock_timestamp() calls and no writable CTE or other call. Current pg_catalog resolution is recorded separately; no later caller is exempted.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        },
+        {
+          "edge": "clock_timestamp",
+          "reason": "This inspected SELECT uses the zero-argument database clock only to compute expired. The recorded current catalog resolves it to pg_catalog; this source review does not attest future runtime catalog state.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"deleteClaimLocal\",\"sql\",\"ef250b4eb3bb7db213423c0764bbdbb251014f19cbc2e6ccf5b9290eac829cfc\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "ef250b4eb3bb7db213423c0764bbdbb251014f19cbc2e6ccf5b9290eac829cfc",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "safe-retreat",
+      "reason": "The DELETE releases only the exact workspace/harness/plan/item/claim_id/owner tuple. Both voluntary and checked force-release receivers reach this same CAS deletion. It neither reassigns nor renews the claim; the attached DELETE trigger only publishes a fleet notification. Existing release and force policies still apply.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal"
+          ]
+        },
+        {
+          "edge": "harnessSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal"
+          ]
+        },
+        {
+          "edge": "planSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal"
+          ]
+        },
+        {
+          "edge": "itemId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal"
+          ]
+        },
+        {
+          "edge": "claimId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal"
+          ]
+        },
+        {
+          "edge": "owner",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#deleteClaimLocal"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"getClaim\",\"sql\",\"04b1bb3639a29e7e50ddccb43db23f06b7b2cde626b231f5fc727410d09bfa61\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "04b1bb3639a29e7e50ddccb43db23f06b7b2cde626b231f5fc727410d09bfa61",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The complete SELECT returns the exact subject claim and a clock-derived expired field. It has no writable CTE, mutation, row replacement or lease extension. Returned state does not authorize a later advancing writer.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#getClaim"
+          ]
+        },
+        {
+          "edge": "harnessSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#getClaim"
+          ]
+        },
+        {
+          "edge": "planSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#getClaim"
+          ]
+        },
+        {
+          "edge": "itemId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#getClaim"
+          ]
+        },
+        {
+          "edge": "sql-function-call-requires-reachability-review",
+          "reason": "The complete SELECT has only clock_timestamp() calls and no writable CTE or other call. Current pg_catalog resolution is recorded separately; no later caller is exempted.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#getClaim",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        },
+        {
+          "edge": "clock_timestamp",
+          "reason": "This inspected SELECT uses the zero-argument database clock only to compute expired. The recorded current catalog resolves it to pg_catalog; this source review does not attest future runtime catalog state.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#getClaim",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"listClaimsForOwner\",\"sql\",\"8bce8d64d6e3b576a48255183c830f8bdbbedb12d3fe17069300ff42b4323040\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "8bce8d64d6e3b576a48255183c830f8bdbbedb12d3fe17069300ff42b4323040",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The complete SELECT reads this owner in the exact workspace. The caller-supplied LIMIT is validated as an integer from 1 through 201 and is a bound parameter; no source identity or mutation is inferred from this bounded view. Consumer completeness is outside this classification.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForOwner"
+          ]
+        },
+        {
+          "edge": "owner",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForOwner"
+          ]
+        },
+        {
+          "edge": "limit",
+          "reason": "The surrounding function rejects noninteger limits and values outside 1..201 before this bound SQL value. This classification makes no completeness claim about the returned view.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForOwner"
+          ]
+        },
+        {
+          "edge": "sql-function-call-requires-reachability-review",
+          "reason": "The complete SELECT has only clock_timestamp() calls and no writable CTE or other call. Current pg_catalog resolution is recorded separately; no later caller is exempted.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForOwner",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        },
+        {
+          "edge": "clock_timestamp",
+          "reason": "This inspected SELECT uses the zero-argument database clock only to compute expired. The recorded current catalog resolves it to pg_catalog; this source review does not attest future runtime catalog state.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForOwner",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"listClaimsForPlan\",\"sql\",\"ed8a1928c64bb512b264860963065939c38c0a9a425f3765d66c740f14cee534\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "ed8a1928c64bb512b264860963065939c38c0a9a425f3765d66c740f14cee534",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The complete SELECT reads every claim in the exact workspace/harness/plan and computes expired. It does not mutate a holder, lifecycle status or expiry. Its callers still require their own classification.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForPlan"
+          ]
+        },
+        {
+          "edge": "harnessSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForPlan"
+          ]
+        },
+        {
+          "edge": "planSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForPlan"
+          ]
+        },
+        {
+          "edge": "sql-function-call-requires-reachability-review",
+          "reason": "The complete SELECT has only clock_timestamp() calls and no writable CTE or other call. Current pg_catalog resolution is recorded separately; no later caller is exempted.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForPlan",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        },
+        {
+          "edge": "clock_timestamp",
+          "reason": "This inspected SELECT uses the zero-argument database clock only to compute expired. The recorded current catalog resolves it to pg_catalog; this source review does not attest future runtime catalog state.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#listClaimsForPlan",
+            "native-call:dev:pg_query:5ijook-5bu"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"releaseAllClaimsForOwner\",\"sql\",\"41492b23ef72ff44d94377eb37e50941d83182e3c3b77d168502712f520f3d22\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "41492b23ef72ff44d94377eb37e50941d83182e3c3b77d168502712f520f3d22",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "safe-retreat",
+      "reason": "The DELETE releases the named owner claims in the exact workspace. RETURNING supplies deleted identities for cleared local goal display and notification. It grants no successor claim, advances no lifecycle status, and the attached trigger only notifies.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#releaseAllClaimsForOwner"
+          ]
+        },
+        {
+          "edge": "owner",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#releaseAllClaimsForOwner"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"sweepLapsedClaims\",\"sql\",\"a75a0ea81767c067e928da85b63d32a7e431bf7fca298b0175fd4031cd860d58\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "a75a0ea81767c067e928da85b63d32a7e431bf7fca298b0175fd4031cd860d58",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "safe-retreat",
+      "reason": "The complete DELETE removes only claims already expired at the database clock whose holder has no activity in the configured grace interval. Workspace is bound; optional harness filtering composes one of two inspected SQL fragments. It grants no successor and retains the active-holder protection. The full tagged template was inspected despite the SQL parser frontier.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "workspaceId",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        },
+        {
+          "edge": "harnessSlug ? sql`harness_slug = ${harnessSlug}` : sql`TRUE`",
+          "reason": "This exact conditional selects only the two separately identified equality/TRUE fragments in this DELETE. It cannot choose a new statement or mutation target.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        },
+        {
+          "edge": "CLAIM_LAPSE_ACTIVITY_GRACE_SEC",
+          "reason": "The module computes a finite numeric grace interval with its documented default and ceiling; it is used only as a parameter to make_interval in the DELETE active-holder predicate.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        },
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Inspected the complete exact DELETE and its two nested predicate fragments, including named make_interval(secs => ...) syntax unsupported by the maintained parser. This records manual source proof rather than silently discarding the parser frontier.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"sweepLapsedClaims\",\"sql\",\"533b74cda950777a4aa85d2e4a31cbec740533c90d33ed651378f9806a9547ed\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "533b74cda950777a4aa85d2e4a31cbec740533c90d33ed651378f9806a9547ed",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This nested SQL fragment is only the harness equality predicate of the separately reviewed expiry DELETE. The harness value is parameterized and cannot choose a relation, column, statement or helper. It is not an independent executable mutation.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "harnessSlug",
+          "reason": "This exact expression supplies a bound value in the inspected fixed SQL predicate; it cannot change relation, columns or SQL text. The full surrounding statement and its authority effect are classified separately.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        },
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Inspected the complete exact DELETE and its two nested predicate fragments, including named make_interval(secs => ...) syntax unsupported by the maintained parser. This records manual source proof rather than silently discarding the parser frontier.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"sweepLapsedClaims\",\"sql\",\"3a4af5ce5d89b3b89c99f77acbc91ab1e01474463bf00c30b23eb0e13db72f68\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "3a4af5ce5d89b3b89c99f77acbc91ab1e01474463bf00c30b23eb0e13db72f68",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This exact nested SQL fragment is the literal TRUE alternative in the separately reviewed expiry DELETE predicate. It is not an independent statement and cannot grant or renew execution.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Inspected the complete exact DELETE and its two nested predicate fragments, including named make_interval(secs => ...) syntax unsupported by the maintained parser. This records manual source proof rather than silently discarding the parser frontier.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#sweepLapsedClaims"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"heartbeatClaimLocal\",\"sql\",\"57b56e20bfae5dcce09763ddc88bca7f161d2e12c19b032cf3400a68951d3743\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "57b56e20bfae5dcce09763ddc88bca7f161d2e12c19b032cf3400a68951d3743",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This first exact occurrence is only the existing ttl_sec column expression in the advancing heartbeat UPDATE. It has no mutation on its own. The complete parent heartbeat UPDATE remains unreviewed and requires continuation admission.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Inspected the complete exact ttl_sec expression inside the separately unreviewed advancing heartbeat UPDATE. The parser failure is a context-free fragment, not proof of a safe parent mutation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#heartbeatClaimLocal"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"heartbeatClaimLocal\",\"sql\",\"57b56e20bfae5dcce09763ddc88bca7f161d2e12c19b032cf3400a68951d3743\"]#2",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "57b56e20bfae5dcce09763ddc88bca7f161d2e12c19b032cf3400a68951d3743",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        },
+        {
+          "path": "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+          "sha256": "d80cb411e534ff1d425d6489408b61c1d7c9e39e2bae056116e3715a272170b1"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+          "sha256": "bfad94ef62810af1d37ef27f43b5fc953dddb946f327b0e42c9615044621bc79"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "This second exact occurrence is only the existing ttl_sec column expression supplied to make_interval in the advancing heartbeat UPDATE. It is retained separately from the first occurrence. The complete parent UPDATE remains unreviewed and requires continuation admission.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts",
+        "source:packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
+        "source:packages/operator-core/lib/agent-tools/plan-items/index.ts",
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108",
+        "native-call:dev:pg_query:5ijook-5bu",
+        "native-call:capability:bash:5ijook-5bv"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Inspected the complete exact ttl_sec expression inside the separately unreviewed advancing heartbeat UPDATE. The parser failure is a context-free fragment, not proof of a safe parent mutation.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#heartbeatClaimLocal"
+          ]
+        }
+      ]
+    }
+    ,
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"171f52faa7c9e981a5349a271eb2f68e84a6c4a3fc555456f4328571afa76b88\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "171f52faa7c9e981a5349a271eb2f68e84a6c4a3fc555456f4328571afa76b88",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local synthMissing body constructs a conflict result with an all-zero claim id, owner unknown, ttlSec zero and expired true, plus current display timestamps. Its inspected callers return it only as ok:false after failing to obtain a claim. It inserts no row and grants or renews no authority; all acquisition/takeover SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#synthMissing",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "synthMissing",
+          "reason": "The complete inspected lexical binding resolves this call to local synthMissing in the pinned file; The exact local synthMissing body constructs a conflict result with an all-zero claim id, owner unknown, ttlSec zero and expired true, plus current display timestamps. Its inspected callers return it only as ok:false after failing to obtain a claim. It inserts no row and grants or renews no authority; all acquisition/takeover SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#synthMissing"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#synthMissing"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"3a5d0da84bc93c55d384bea5e7a7fd29c71f3153ff9c67cb38f50f8a586148f7\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "3a5d0da84bc93c55d384bea5e7a7fd29c71f3153ff9c67cb38f50f8a586148f7",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "claimFromDb",
+          "reason": "The complete inspected lexical binding resolves this call to local claimFromDb in the pinned file; The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"4ac9e4c2eae01500467e5ad9d06032f7179c2a88dda9cee37e1991093f371818\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "4ac9e4c2eae01500467e5ad9d06032f7179c2a88dda9cee37e1991093f371818",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clampTtl",
+          "reason": "The complete inspected lexical binding resolves this call to local clampTtl in the pinned file; The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"6115f3a551e25dc5ada5f16d44ed6cd3d4d6f5378f2632031321aea8032fd568\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "6115f3a551e25dc5ada5f16d44ed6cd3d4d6f5378f2632031321aea8032fd568",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "claimFromDb",
+          "reason": "The complete inspected lexical binding resolves this call to local claimFromDb in the pinned file; The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"ae3552410722aa13e8ab3772b0c3aa94e1eeb7071b79e482c7a175edcd78f4e4\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "ae3552410722aa13e8ab3772b0c3aa94e1eeb7071b79e482c7a175edcd78f4e4",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "claimFromDb",
+          "reason": "The complete inspected lexical binding resolves this call to local claimFromDb in the pinned file; The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"helper-edge\",\"bf96c14989d4d0cae7c33a0b004f863d58a821f2935ed6cf2d3e5bec1ba64388\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "bf96c14989d4d0cae7c33a0b004f863d58a821f2935ed6cf2d3e5bec1ba64388",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb",
+        "source:packages/operator-core/lib/plan-items/claims.ts#acquireClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "claimFromDb",
+          "reason": "The complete inspected lexical binding resolves this call to local claimFromDb in the pinned file; The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"extendOwnerClaimsForAwait\",\"helper-edge\",\"499f5249ad5210ac02117bec18f41996a5f17fae1aaa9db61aba7c3e1857979c\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "499f5249ad5210ac02117bec18f41996a5f17fae1aaa9db61aba7c3e1857979c",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl",
+        "source:packages/operator-core/lib/plan-items/claims.ts#extendOwnerClaimsForAwait",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clampTtl",
+          "reason": "The complete inspected lexical binding resolves this call to local clampTtl in the pinned file; The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaimLocal\",\"helper-edge\",\"008d72d35bbbb1e1a307d5973d50a2b3aa2215c6493154692bb77de5a09981d7\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "008d72d35bbbb1e1a307d5973d50a2b3aa2215c6493154692bb77de5a09981d7",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl",
+        "source:packages/operator-core/lib/plan-items/claims.ts#forceTakeoverClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clampTtl",
+          "reason": "The complete inspected lexical binding resolves this call to local clampTtl in the pinned file; The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaimLocal\",\"helper-edge\",\"51bbc2e0b68c2cfc781080d591a453c722520d2e38aacd53086a9aac689302dc\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "51bbc2e0b68c2cfc781080d591a453c722520d2e38aacd53086a9aac689302dc",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local synthMissing body constructs a conflict result with an all-zero claim id, owner unknown, ttlSec zero and expired true, plus current display timestamps. Its inspected callers return it only as ok:false after failing to obtain a claim. It inserts no row and grants or renews no authority; all acquisition/takeover SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#synthMissing",
+        "source:packages/operator-core/lib/plan-items/claims.ts#forceTakeoverClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "synthMissing",
+          "reason": "The complete inspected lexical binding resolves this call to local synthMissing in the pinned file; The exact local synthMissing body constructs a conflict result with an all-zero claim id, owner unknown, ttlSec zero and expired true, plus current display timestamps. Its inspected callers return it only as ok:false after failing to obtain a claim. It inserts no row and grants or renews no authority; all acquisition/takeover SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#synthMissing"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#synthMissing"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaimLocal\",\"helper-edge\",\"6115f3a551e25dc5ada5f16d44ed6cd3d4d6f5378f2632031321aea8032fd568\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "6115f3a551e25dc5ada5f16d44ed6cd3d4d6f5378f2632031321aea8032fd568",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb",
+        "source:packages/operator-core/lib/plan-items/claims.ts#forceTakeoverClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "claimFromDb",
+          "reason": "The complete inspected lexical binding resolves this call to local claimFromDb in the pinned file; The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"getClaim\",\"helper-edge\",\"6115f3a551e25dc5ada5f16d44ed6cd3d4d6f5378f2632031321aea8032fd568\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "6115f3a551e25dc5ada5f16d44ed6cd3d4d6f5378f2632031321aea8032fd568",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb",
+        "source:packages/operator-core/lib/plan-items/claims.ts#getClaim",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "claimFromDb",
+          "reason": "The complete inspected lexical binding resolves this call to local claimFromDb in the pinned file; The exact local claimFromDb body constructs a new result object from the returned database row with Number/Boolean coercion. This exact call receives the inspected SQL result row and performs no persistence, authority assignment or lease renewal. The preceding claim mutation, where present, remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#claimFromDb"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"heartbeatClaimLocal\",\"helper-edge\",\"9f6c69451e12fd87e9b1b3827a3de0850d4f05a4248593c86cbcd7ab05244c11\"]#1",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "9f6c69451e12fd87e9b1b3827a3de0850d4f05a4248593c86cbcd7ab05244c11",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl",
+        "source:packages/operator-core/lib/plan-items/claims.ts#heartbeatClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clampTtl",
+          "reason": "The complete inspected lexical binding resolves this call to local clampTtl in the pinned file; The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"heartbeatClaimLocal\",\"helper-edge\",\"9f6c69451e12fd87e9b1b3827a3de0850d4f05a4248593c86cbcd7ab05244c11\"]#2",
+      "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+      "statementSha256": "9f6c69451e12fd87e9b1b3827a3de0850d4f05a4248593c86cbcd7ab05244c11",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/plan-items/claims.ts",
+          "sha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl",
+        "source:packages/operator-core/lib/plan-items/claims.ts#heartbeatClaimLocal",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "clampTtl",
+          "reason": "The complete inspected lexical binding resolves this call to local clampTtl in the pinned file; The exact local clampTtl body only validates a scalar with Number.isFinite and computes Math.min(Math.floor(n), MAX_TTL_SEC), using the maintained default for invalid input. It performs no persistence, callback, routing or mutation. This exact argument expression is scalar/property access only; the surrounding acquisition, takeover, heartbeat or await-extension SQL remains separately unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/plan-items/claims.ts#2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",
+          "reason": "The syntax-bound target is the same exact pinned claims.ts file containing the fully inspected local function and its callers. This target proof supplies source identity only.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/plan-items/claims.ts#clampTtl"
+          ]
+        }
+      ]
+    }
+  ],
+  "pendingAdvancing": [
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"sql\",\"3ce25ba62c4382823cf305c3eb650675ecca4082637b11de3aed70cfcbc23e44\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"sql\",\"e880fe32551c85f70493f0cd59c7d90607e0d954daf31ae8da91dc17411c1758\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"sql\",\"fb3f080367b2530f94c3489c889eb016bb381ef182c7a7d31b583eb345f504e0\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"extendOwnerClaimsForAwait::<callback>\",\"sql\",\"010245c92b9f30d873877cdc78617c1da23a7c12ebe5f1fcb9af09fe968054db\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"forceTakeoverClaimLocal\",\"sql\",\"4530d42f67471c99991b14927215db44504c897554270abdbb84f30e411ee099\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"heartbeatClaimLocal\",\"sql\",\"3c387f0df98e0c1f65a2136011d8b885b67386c9a40637d87b16043b1b7f0457\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"renewOwnerActivityClaims\",\"sql\",\"c0a8154299693aa2ee253664f2cda5d4fab9d1d9500913324e951434fa8cf233\"]#1",
+      "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    }
+  ]
+}

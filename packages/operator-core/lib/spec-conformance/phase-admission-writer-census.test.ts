@@ -23,6 +23,101 @@ function review(site: PhaseWriterSite, disposition: PhaseWriterReview['dispositi
 const write = 'async function exampleWrite(tx) { await tx`UPDATE harness_shared.work_items SET status=${status} WHERE feature_id=${id}`; }';
 
 describe('phase binding writer census', () => {
+
+  it('retains canonical claim read and release reviews without accepting advancing writes', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        basis: string;
+        reviewedSourcePaths: string[];
+        reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    expect(reviewed.basis).toBe('partial-source-review-not-full-census-or-runtime-acceptance');
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const inventory = inventoryPhaseWriters(sources);
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const accepted = reviewed.reviews.map(row => row.siteId).sort();
+    expect(report.ready).toBe(false);
+    expect([...report.coverage.checked].sort()).toEqual(accepted);
+    expect(report.coverage.notApplicable).toEqual([]);
+    const unreviewed = inventory.sites.filter(site => !accepted.includes(site.id)).map(site => site.id);
+    expect([...report.coverage.notChecked].sort()).toEqual([...unreviewed].sort());
+    expect([...report.coverage.residue].sort()).toEqual([...unreviewed].sort());
+    for (const { siteId } of reviewed.pendingAdvancing) {
+      expect(report.problems).toContainEqual({ id: siteId, reasons: ['unclassified-writer'] });
+    }
+    expect(reviewed.pendingAdvancing.length).toBeGreaterThan(0);
+
+    // A new source snapshot cannot silently re-approve the notifier dependency,
+    // even though none of these exact claim statements changed.
+    const dependency = 'libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql';
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === dependency
+      ? { ...source, content: source.content + '\n-- changed notifier source\n' } : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    for (const { siteId: id, sourceProofs } of reviewed.reviews) {
+      if (!sourceProofs.some(proof => proof.path === dependency)) {
+        expect(stale.coverage.checked).toContain(id);
+        continue;
+      }
+      expect(stale.problems).toContainEqual({ id, reasons: [`stale-source-proof:${dependency}`] });
+      expect(stale.coverage.notChecked).toContain(id);
+      expect(stale.coverage.residue).toContain(id);
+    }
+    expect([...stale.coverage.checked].sort()).toEqual(reviewed.reviews
+      .filter(row => !row.sourceProofs.some(proof => proof.path === dependency))
+      .map(row => row.siteId).sort());
+  });
+
+  it('binds pure claim helper reviews to their exact source without exempting same named writers', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+      };
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const claims = 'packages/operator-core/lib/plan-items/claims.ts';
+    const inventory = inventoryPhaseWriters(sources);
+    const helpers = inventory.sites.filter(site => site.path === claims && site.kind === 'helper-edge'
+      && ['clampTtl', 'claimFromDb', 'synthMissing'].includes(site.callees[0] ?? ''));
+    expect(helpers.length).toBeGreaterThan(0);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    for (const helper of helpers) {
+      expect(byId.get(helper.id)).toMatchObject({ disposition: 'metadata-only',
+        sourceProofs: [{ path: claims, sha256: helper.sourceSha256 }] });
+    }
+
+    // Changing a helper body leaves its callers' statement identities intact.
+    // The required full-file source pin must still invalidate every call review.
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === claims
+      ? { ...source, content: source.content.replace('function clampTtl(n: number): number {',
+        'function clampTtl(n: number): number { acquireClaimLocal({} as AcquireOpts);') }
+      : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    for (const helper of helpers) {
+      expect(changed.sites.some(site => site.id === helper.id)).toBe(true);
+      expect(stale.coverage.checked).not.toContain(helper.id);
+      expect(stale.problems.find(row => row.id === helper.id)?.reasons)
+        .toContain(`stale-source-proof:${claims}`);
+    }
+
+    // A same-spelled helper in another module cannot inherit the exemption.
+    const shadow = source('async function clampTtl(sql) { await sql`UPDATE harness_shared.plan_item_claims SET owner=\'changed\'`; }\n'
+      + 'async function caller(sql) { await clampTtl(sql); }', 'packages/unreviewed-claim-helper.ts');
+    const added = inventoryPhaseWriters([...sources, shadow]);
+    const report = reconcilePhaseWriterCensus(added, reviewed.reviews);
+    const candidates = added.sites.filter(site => site.path === shadow.path);
+    expect(candidates.some(site => site.kind === 'sql')).toBe(true);
+    expect(candidates.some(site => site.kind === 'helper-edge' && site.operation === 'caller')).toBe(true);
+    for (const candidate of candidates) {
+      expect(report.coverage.notChecked).toContain(candidate.id);
+      expect(report.coverage.residue).toContain(candidate.id);
+    }
+  });
   it('retains INSERT upsert UPDATE DELETE and writable CTE statements independently', () => {
     const inventory = inventoryPhaseWriters([source(`
       async function create(tx) {
