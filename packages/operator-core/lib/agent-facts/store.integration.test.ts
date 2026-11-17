@@ -18,6 +18,8 @@
  * outbox dependency chain in; the wire SHAPE is asserted via to_jsonb directly).
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import { createDedicatedOrgPg } from '@papercusp/db-org';
 import { evaluateDependencyStaleness, observationKey } from '../agent-tools/facts/dependency-staleness';
@@ -89,7 +91,9 @@ vi.mock('./store', async (importOriginal) => {
       actual.listFactsPage(sel, { workspaceId: WS, ...opts }, sql ?? recoverySql ?? db.sql),
     countLiveFacts: (sel: Parameters<typeof actual.countLiveFacts>[0], opts: Parameters<typeof actual.countLiveFacts>[1], sql?: FreshPgDb['sql']) =>
       actual.countLiveFacts(sel, { workspaceId: WS, ...opts }, sql ?? recoverySql ?? db.sql),
-    listFactEvictionDisclosures: async () => [],
+    listFactEvictionDisclosures: (selectors: Parameters<typeof actual.listFactEvictionDisclosures>[0],
+      opts: Parameters<typeof actual.listFactEvictionDisclosures>[1] = {}, sql?: FreshPgDb['sql']) =>
+      actual.listFactEvictionDisclosures(selectors, { workspaceId: WS, ...opts }, sql ?? recoverySql ?? db.sql),
   };
 });
 vi.mock('../agent-tools/facts/stale-source', () => ({ markStaleSourceFacts: async (facts: unknown[]) => facts }));
@@ -592,6 +596,28 @@ describe('P010 scoped recovery through the maintained facts:list consumer', () =
     const parsed = factsListTool.args.parse(args);
     return (await factsListTool.handler(parsed, ctx) as { data: Record<string, unknown> }).data;
   }
+  async function resumeInFreshProcess(next: { args: Record<string, unknown> }) {
+    return await new Promise<Array<{ total: number; facts: Array<{ id: number }> }>>((resolve, reject) => {
+      const child = fork(fileURLToPath(new URL('../../test/facts-recovery-successor.mts', import.meta.url)), [], {
+        execArgv: ['--import', 'tsx/esm'],
+        env: { ...process.env, HARNESS_DATABASE_URL: db.url, HARNESS_ADMIN_DATABASE_URL: db.url,
+          PAPERCUSP_WORKSPACE_ID: WS, PAPERCUSP_PGBOUNCER: '0', PAPERCUSP_SKIP_PG_DISCOVERY: '1' },
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], timeout: 60_000,
+      });
+      let diagnostics = '';
+      child.stdout?.on('data', (chunk) => { diagnostics += chunk; });
+      child.stderr?.on('data', (chunk) => { diagnostics += chunk; });
+      let result: { pid: number; pages: Array<{ total: number; facts: Array<{ id: number }> }> } | undefined;
+      child.on('message', (message) => { result = message as typeof result; });
+      child.on('error', reject);
+      child.on('exit', (code, signal) => {
+        if (code !== 0 || !result || result.pid === process.pid) {
+          reject(new Error(`Fresh facts consumer failed (${code ?? signal}): ${diagnostics}`));
+        } else resolve(result.pages);
+      });
+      child.send(next);
+    });
+  }
   it.each([N - 1, N, N + 1, N * 3 + 1])('recovers %i identities per class after fresh driver/consumer restart, with decoys and resync', async (count) => {
     const expected = ['keep:', 'guard-rail:', 'keep:convention:'].flatMap((prefix) =>
       Array.from({ length: count }, (_, i) => `${prefix}${String(i).padStart(3, '0')}`));
@@ -629,12 +655,9 @@ describe('P010 scoped recovery through the maintained facts:list consumer', () =
       // An earlier new identity is outside continuation, and explicitly recovered by resync.
       await assertFact({ ...base, key: 'guard-rail:!earlier', body: 'earlier insertion', dependsOn: anchors }, db.sql);
       const recovered = [...firstIds];
-      let next: { args: Record<string, unknown> } | undefined = JSON.parse(saved);
-      while (next) {
-        const data = await read(next.args);
+      for (const data of await resumeInFreshProcess(JSON.parse(saved))) {
         expect(data.total).toBe(expected.length + 1);
         recovered.push(...(data.facts as Array<{ id: number }>).map((f) => f.id));
-        next = data.next as typeof next;
       }
       const current = await foldFacts([selector], { workspaceId: WS, ...eligibility,
         limitPerSelector: count + 1 }, db.sql);

@@ -349,7 +349,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        `Widen one page to ${FACTS_LIST_ALL_LIMIT} rows. This is a page bound, not a census; follow nextCursor until null. Orthogonal to full:true.`,
+        `Widen one page to ${FACTS_LIST_ALL_LIMIT} rows, not a guarantee of completeness. Check truncatedByLimit/total and follow nextCursor until null. Orthogonal to full:true.`,
       ),
     cursor: z.string().optional().describe('Opaque nextCursor from a previous page of this scope. Omit to restart a live identity-ordered scan.'),
     key: z
