@@ -386,6 +386,22 @@ describe('atomic blocker decision lifecycle', () => {
       expect(await bindingSnapshot(f.item.id)).toEqual(before);
     } finally { await db.sql.unsafe('DROP TRIGGER reject_correction ON harness_shared.work_items'); }
   });
+  it('binding correction rolls back both records after a host persistence failure', async () => {
+    const f = await correctionSetup();
+    const before = await bindingSnapshot(f.item.id);
+    const spy = vi.spyOn(blockerPersistence, 'applyBlockerDecisionMutation').mockImplementationOnce(async () => {
+      throw new Error('injected host persistence failure');
+    });
+    try {
+      const outcomes = await Promise.allSettled([correctBinding(f)]);
+      // Check the actual half-commit before checking the error, so the mutation
+      // probe distinguishes atomic rollback from a swallowed host-side error.
+      expect(await bindingSnapshot(f.item.id)).toEqual(before);
+      expect(outcomes[0]).toMatchObject({ status: 'rejected', reason: expect.objectContaining({
+        message: 'injected host persistence failure',
+      }) });
+    } finally { spy.mockRestore(); }
+  });
   it('binding correction re-establishes admission on serialization retry', async () => {
     const f = await correctionSetup();
     const original = dependencyStore.withWorkItemDependencyAdmissionTransaction;
