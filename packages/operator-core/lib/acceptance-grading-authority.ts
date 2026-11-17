@@ -83,12 +83,8 @@ export function graderSelectionVia(routingSnapshots: readonly unknown[]): Map<st
   return byOwner;
 }
 
-/** How many grading cascade rows one rubric's authority read looks back over.
- * A rubric accumulates one row per grading round (open → graded → closed →
- * re-grade after a reject). Bounded because the map is only ever consulted for
- * authors of cards that are already in hand; a grader from an eighth-round-ago
- * cascade whose card still stands is a shape nothing else in the gate survives
- * either. */
+/** Rows per provenance page (the historical export name is retained).
+ * This bounds one database read, never the grading rounds that count. */
 export const GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS = 8;
 
 /**
@@ -115,16 +111,29 @@ export async function readGraderSelectionVia(
 ): Promise<Map<string, SelectionVia>> {
   try {
     const { sql } = getOrgPg();
-    const rows = (await sql`
-      SELECT routing
+    const byOwner = new Map<string, SelectionVia>();
+    let before: { createdAt: string; conversationId: string } | undefined;
+    for (;;) {
+      const rows = (await sql`
+      SELECT routing, conversation_id,
+             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_cursor
         FROM harness_shared.consult_state
        WHERE workspace_id = ${workspaceId}
          AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
          AND routing -> 'cascade' ->> 'rubricId' = ${rubricId}
-       ORDER BY created_at DESC
+         AND (${before?.createdAt ?? null}::text::timestamptz IS NULL
+              OR (created_at, conversation_id) < (${before?.createdAt ?? null}::text::timestamptz, ${before?.conversationId ?? null}))
+       ORDER BY created_at DESC, conversation_id DESC
        LIMIT ${GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS}
-    `) as unknown as Array<{ routing: unknown }>;
-    return graderSelectionVia((rows ?? []).map((r) => r?.routing));
+      `) as unknown as Array<{ routing: unknown; conversation_id: string; created_at_cursor: string }>;
+      for (const [owner, via] of graderSelectionVia((rows ?? []).map(row => row?.routing))) {
+        const previous = byOwner.get(owner);
+        if (previous == null || outranks(via, previous)) byOwner.set(owner, via);
+      }
+      if (!rows || rows.length < GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS) return byOwner;
+      const tail = rows[rows.length - 1]!;
+      before = { createdAt: tail.created_at_cursor, conversationId: tail.conversation_id };
+    }
   } catch {
     return new Map();
   }
@@ -134,6 +143,7 @@ export async function readGraderSelectionVia(
 export interface RankableGrading {
   createdBy?: string | null;
   createdAt: string;
+  issueId?: string;
 }
 
 /**
@@ -156,7 +166,19 @@ export function compareGradingAuthority<T extends RankableGrading>(
     const vb = viaOf(b) ?? 'floor';
     if (outranks(va, vb)) return -1;
     if (outranks(vb, va)) return 1;
-    return Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    const millis = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+    if (millis) return millis;
+    // Date.parse discards PG's submillisecond precision. Compare the remaining
+    // fractional digits before the stable scorecard-id tie break.
+    const submillis = (at: string): number => {
+      const fraction = /\.(\d+)(?:Z|[+-]\d\d(?::?\d\d)?)$/.exec(at)?.[1] ?? '';
+      return Number(fraction.padEnd(9, '0').slice(3, 9));
+    };
+    const fraction = submillis(b.createdAt) - submillis(a.createdAt);
+    if (fraction) return fraction;
+    const ai = a.issueId ?? '';
+    const bi = b.issueId ?? '';
+    return ai === bi ? 0 : ai < bi ? 1 : -1;
   };
 }
 

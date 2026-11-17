@@ -76,7 +76,7 @@ const gradingRouting = (
 });
 
 let seq = 0;
-/** Insert one consult_state row. `createdAt` drives the LIMIT-8 recency window. */
+/** Insert one consult_state row. Time/id ties exercise provenance pagination. */
 async function insertCascade(opts: {
   routing: unknown;
   workspaceId?: string;
@@ -93,13 +93,13 @@ async function insertCascade(opts: {
       ${'su-requester'},
       ${'closed_answered'},
       ${rootSql.json(opts.routing as never)},
-      ${opts.createdAt ?? '2026-08-30T12:00:00Z'},
+      ${opts.createdAt ?? '2026-08-30T12:00:00Z'}::text::timestamptz,
       ${opts.closedAt ?? null}
     )`;
   return conversationId;
 }
 
-/** Every test owns the table; wiping between cases keeps the recency window honest. */
+/** Every test owns the table; wiping between cases isolates provenance. */
 async function truncate(): Promise<void> {
   await rootSql`DELETE FROM harness_shared.consult_state`;
 }
@@ -221,29 +221,30 @@ describe('readGraderSelectionVia against real Postgres — the live grading casc
     expect((await readGraderSelectionVia(WS, RUBRIC)).get('su-grader-1')).toBe('floor');
   });
 
-  it('bounds the lookback to the newest rounds — an older round beyond the window is not read', async () => {
-    // The LIMIT exists so a rubric with a long cascade history does not scan every
-    // round it ever had. Asserted against real ORDER BY created_at DESC rather
-    // than a fake tag that ignores the clause entirely.
-    await truncate();
-    const rounds = GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS + 2;
-    for (let i = 0; i < rounds; i += 1) {
-      // i=0 is the OLDEST; the newest LOOKBACK rows are the ones that must survive.
-      const hour = String(i).padStart(2, '0');
-      await insertCascade({
-        routing: gradingRouting([{ ownerId: `su-round-${i}`, via: 'floor' }]),
-        createdAt: `2026-08-30T${hour}:00:00Z`,
-      });
-    }
-
-    const via = await readGraderSelectionVia(WS, RUBRIC);
-
-    expect(via.size).toBe(GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS);
-    // The newest round is in; the two oldest fell outside the window.
-    expect(via.has(`su-round-${rounds - 1}`)).toBe(true);
-    expect(via.has('su-round-0')).toBe(false);
-    expect(via.has('su-round-1')).toBe(false);
-  });
+  it.each([GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS - 1, GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS,
+    GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS + 1, GRADING_CASCADE_AUTHORITY_LOOKBACK_ROWS * 8 + 1])(
+    'recovers all %i rounds and older decisive provenance across pages, ties, permutations and restarts', async rounds => {
+      const order = Array.from({ length: rounds }, (_, i) => i);
+      for (const permutation of [order, [...order].reverse(), [...order.slice(3), ...order.slice(0, 3)]]) {
+        await truncate();
+        for (const i of permutation) {
+          await insertCascade({
+            routing: gradingRouting([
+              { ownerId: `su-round-${i}`, via: i === 0 ? 'minimum' : 'floor' },
+              { ownerId: 'su-requalified', via: i === 0 ? 'floor' : 'minimum' },
+            ]),
+            createdAt: `2026-08-30T12:00:00.${String(100001 + Math.floor(i / 2)).padStart(6, '0')}Z`,
+          });
+        }
+        // A fresh call reconstructs the complete map without any process-local cursor.
+        for (let restart = 0; restart < 2; restart++) {
+          const via = await readGraderSelectionVia(WS, RUBRIC);
+          expect(via.size).toBe(rounds + 1);
+          for (const i of order) expect(via.get(`su-round-${i}`)).toBe(i === 0 ? 'minimum' : 'floor');
+          expect(via.get('su-requalified')).toBe('floor');
+        }
+      }
+    });
 
   it('ignores a malformed selection entry without discarding its well-formed siblings', async () => {
     // Real rows are written by code that can change. A row carrying an

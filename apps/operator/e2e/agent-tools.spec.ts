@@ -71,6 +71,46 @@ test.describe('agent-tools catch-all routing', () => {
     expect(parsed.flags).toBeDefined();
   });
 
+  test('config:list-overrides preserves availability and scoped recovery through HTTP', async ({ request }) => {
+    const concern = 'rate-limit-config';
+    const read = async (args: { concern: string }) => {
+      const response = await request.post(`${baseURL}/api/agent-tools/config/list-overrides`, {
+        data: args,
+      });
+      expect(response.status()).toBe(200);
+      const envelope = await response.json();
+      return JSON.parse(envelope.content[0].text);
+    };
+    const inventory = await read({ concern });
+    expect(inventory.concernCount).toBe(1);
+    expect(inventory.concerns).toHaveLength(1);
+    const observed = inventory.concerns[0];
+    expect(observed.concern).toBe(concern);
+    expect(['measured', 'unavailable']).toContain(observed.status);
+    expect(['measured', 'unavailable', 'not-configured']).toContain(observed.auditStatus);
+    if (observed.status === 'unavailable') {
+      expect(inventory).toMatchObject({ complete: false, totalOverrides: null,
+        measuredOverrides: 0, unmeasuredConcerns: [concern] });
+      expect(observed).toMatchObject({ overrides: null, overrideCount: null });
+    } else {
+      expect(Array.isArray(observed.overrides)).toBe(true);
+      expect(observed.overrideCount).toBe(observed.overrides.length);
+      expect(inventory).toMatchObject({ complete: true, unmeasuredConcerns: [],
+        totalOverrides: observed.overrideCount, measuredOverrides: observed.overrideCount });
+    }
+    expect(inventory.auditComplete).toBe(observed.auditStatus !== 'unavailable');
+    if (observed.status === 'unavailable' || observed.auditStatus === 'unavailable') {
+      expect(observed.recheck).toEqual({ tool: 'config:list-overrides', args: { concern } });
+      const recovered = await read(observed.recheck.args);
+      expect(recovered.concernCount).toBe(1);
+      expect(recovered.concerns).toHaveLength(1);
+      expect(recovered.concerns[0].concern).toBe(concern);
+      expect(['measured', 'unavailable']).toContain(recovered.concerns[0].status);
+    } else {
+      expect(observed.recheck).toBeNull();
+    }
+  });
+
   test('docs:search rejects missing query with invalid_input', async ({ request }) => {
     const res = await request.post(`${baseURL}/api/agent-tools/docs/search`, {
       data: {},
