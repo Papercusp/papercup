@@ -45,7 +45,8 @@ const call = async (extra: Record<string, unknown> = {}) => {
   const result = await tool.handler({ slug: 'cache-retention-repair-v2', title: 'Cache retention repair',
     content: '## Phase 1\n\n- **P-001** `todo` Repair retention\n', ...extra } as never,
   { metadata: vi.fn() } as never);
-  return JSON.parse(result.content.find(item => item.type === 'text')!.text);
+  if (!('content' in result)) throw new Error('plans:new returned a ToolResponse; this test reads a ToolResult');
+  return JSON.parse(String(result.content.find(item => item.type === 'text')!.text));
 };
 
 beforeEach(() => { vi.clearAllMocks(); state.persisted = null; });
