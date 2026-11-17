@@ -751,10 +751,35 @@ describe('identity hook ports through the real CLI (P-011)', () => {
     expect(JSON.parse(res.stdout).hookSpecificOutput).toEqual({
       hookEventName: 'PreToolUse',
       permissionDecision: 'deny',
-      permissionDecisionReason: 'Refused by identity safe-coder rule no-rm: no recursive deletes',
+      permissionDecisionReason: 'Refused by identity safe-coder rule no-rm: no recursive deletes' +
+        `\nGuard diagnostic: requestId=${op.received[0].body.guardRequestId}.`,
     });
     expect(op.received[0].url).toContain('tool-guard');
     expect(op.received[0].body).toMatchObject({ tool: 'Bash', input: { command: 'rm -rf /' }, client: 'claude' });
+  });
+
+  it.each([
+    { client: 'claude', adapter: claude, nativeEvent: 'PreToolUse', correlated: false },
+    { client: 'claude', adapter: claude, nativeEvent: 'PreToolUse', correlated: true },
+    { client: 'codex', adapter: codex, nativeEvent: 'pre-tool-use', correlated: false },
+    { client: 'codex', adapter: codex, nativeEvent: 'pre-tool-use', correlated: true },
+  ])('pre-tool: preserves exact request correlation for $client (server-correlated=$correlated)', async ({ adapter, nativeEvent, correlated }) => {
+    const { runInjection } = await import('../core.mjs');
+    const reason = 'tool_authority_unavailable: identity read exceeded its budget';
+    let requestId = '';
+    const fetchImpl = (async (_url, init) => {
+      requestId = JSON.parse(String(init?.body)).guardRequestId;
+      return new Response(JSON.stringify({ text: reason +
+        (correlated ? `\nGuard diagnostic: requestId=${requestId}.` : '') }), { status: 200 });
+    }) as typeof fetch;
+    const result = await runInjection({ adapter, nativeEvent,
+      event: { tool_name: 'Bash', tool_input: { command: 'rm -rf /' } },
+      env: hookEnv({ PAPERCUSP_SID: 'sid-guard-correlated' }), fetchImpl });
+    expect(requestId).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+    expect(JSON.parse(result!).hookSpecificOutput).toEqual({
+      hookEventName: 'PreToolUse', permissionDecision: 'deny',
+      permissionDecisionReason: `${reason}\nGuard diagnostic: requestId=${requestId}.`,
+    });
   });
 
   it('pre-tool: no verdict emits NOTHING, so the client permission flow decides', async () => {
@@ -946,7 +971,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       fetchImpl: (async () => new Response(JSON.stringify({ text: 'Explicit authority denial' }), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       })) as typeof fetch });
-    expect(JSON.parse(denied!).hookSpecificOutput.permissionDecisionReason).toBe('Explicit authority denial');
+    expect(JSON.parse(denied!).hookSpecificOutput.permissionDecisionReason)
+      .toMatch(/^Explicit authority denial\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/);
   });
 
   it('pre-tool: unavailable authority permits typed plan edits on local staging but refuses arbitrary destinations and shell execution', async () => {
@@ -1035,7 +1061,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       const targetRefusal = await runInjection({ adapter, nativeEvent,
         event: { tool_name: 'exec_command', tool_input: { cmd: safe[3] } }, env: hookEnv(env), fetchImpl: explicitRefusal });
       expect(JSON.parse(targetRefusal!).hookSpecificOutput).toMatchObject({
-        permissionDecision: 'deny', permissionDecisionReason: 'Target plan repair refusal',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringMatching(/^Target plan repair refusal\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/),
       });
 
       for (const cmd of unsafe) {
@@ -1110,7 +1137,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
           status: 200, headers: { 'Content-Type': 'application/json' },
         })) as typeof fetch });
       expect(JSON.parse(refusal!).hookSpecificOutput, evaluate).toMatchObject({
-        permissionDecision: 'deny', permissionDecisionReason: 'Explicit operator refusal',
+        permissionDecision: 'deny',
+        permissionDecisionReason: expect.stringMatching(/^Explicit operator refusal\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/),
       });
       for (const cmd of unsafe) {
         const output = await runInjection({ adapter, nativeEvent,
@@ -1182,7 +1210,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
             status: 200, headers: { 'Content-Type': 'application/json' },
           })) as typeof fetch });
         expect(JSON.parse(refusal!).hookSpecificOutput, cmd).toMatchObject({
-          permissionDecision: 'deny', permissionDecisionReason: 'Explicit operator refusal',
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringMatching(/^Explicit operator refusal\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/),
         });
       }
       for (const cmd of unsafe) {
@@ -1269,7 +1298,8 @@ describe('identity hook ports through the real CLI (P-011)', () => {
             status: 200, headers: { 'Content-Type': 'application/json' },
           })) as typeof fetch });
         expect(JSON.parse(refusal!).hookSpecificOutput, cmd).toMatchObject({
-          permissionDecision: 'deny', permissionDecisionReason: 'Explicit operator refusal',
+          permissionDecision: 'deny',
+          permissionDecisionReason: expect.stringMatching(/^Explicit operator refusal\nGuard diagnostic: requestId=[a-f0-9-]{36}\.$/),
         });
       }
       for (const cmd of unsafe) {

@@ -1494,8 +1494,13 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     }
     if (!response && post?.stage !== 'response-received' && unavailableMutationGuard)
       return done('guard-unavailable-deny', unavailableMutationGuard(), { port });
-    const safeText = fenceControlTransition(response?.text ?? null, owner);
+    let safeText = fenceControlTransition(response?.text ?? null, owner);
     if (!safeText) return done(response?.text ? 'fenced-empty' : 'no-text', null, { port });
+    // Preserve the client's correlation id when an older operator omits it.
+    // Empty verdicts above still emit nothing; existing matching ids stay intact.
+    if (port === 'pre-tool' && post?.guardRequestId &&
+        !safeText.includes(`requestId=${post.guardRequestId}`))
+      safeText += `\nGuard diagnostic: requestId=${post.guardRequestId}.`;
 
     const payload = adapter.render(port, safeText, event);
     if (typeof payload !== 'string' || payload.length === 0) return done('render-empty', null, { port });
