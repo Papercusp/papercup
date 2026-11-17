@@ -1,12 +1,8 @@
 id: provider-domain
-extends: base
+extends: identity-root
 version: 1.0.0
 slots:
   - slot: domain
-knobs:
-  aiBackend:
-    default:
-      model: selected-provider-model
 contributions:
   - id: current-brief
     purpose: operational

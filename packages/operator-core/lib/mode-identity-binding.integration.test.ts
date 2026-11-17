@@ -134,7 +134,7 @@ describe('installed identity pin and current SU mode source', () => {
       const install = async (version: string, marker: string) => {
         const sourceDir = join(root, `source-${version}`);
         mkdirSync(join(sourceDir, 'prompts'), { recursive: true });
-        const raw = { id, extends: 'base', version, slots: [{ slot: 'domain' }] };
+        const raw = { id, extends: 'identity-root', version, slots: [{ slot: 'domain' }] };
         writeFileSync(join(sourceDir, 'blueprint.yaml'), stringify({
           ...raw, attestation: { contentHash: layerContentHash(raw), signedBy: 'test-publisher' },
         }));

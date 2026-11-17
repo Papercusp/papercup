@@ -260,7 +260,7 @@ export async function previewNamedIdentityComposition(input: {
   }
   const source = { id: input.id, extends: components.map((entry) => entry.id),
     version: '1.0.0', description: input.description?.trim() || `Named composition ${input.id}`,
-    slots: [] as [], roles: [{ id: 'su', stack: components.map((entry) => entry.ref) }] };
+    slots: [] as [] };
   const inspected = inspectIdentitySource(source, { repoDir: input.repoDir });
   if (!inspected.ok) {
     const details = 'errors' in inspected && Array.isArray(inspected.errors)
@@ -276,7 +276,7 @@ export async function previewNamedIdentityComposition(input: {
       layers: resolved.layers.map((layer) => ({ id: layer.id, revision: layer.contentHash })),
       bundles: configuration.bundles ?? [], grants: configuration.grants ?? null,
       knobs: configuration.knobs ?? null, contributions: configuration.contributions ?? [],
-      launchCompatibility: identityLaunchCompatibility(configuration, source.slots),
+      launchCompatibility: identityLaunchCompatibility(configuration, source.slots, components.map(entry => entry.ref)),
     } };
 }
 

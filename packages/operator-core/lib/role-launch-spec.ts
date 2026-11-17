@@ -450,7 +450,7 @@ async function launchCompositionSource(input: Pick<LaunchArtifactInput, 'cwd' | 
   compositionSource: 'blueprint' | 'compatibility';
 }> {
   const sourcePath = path.join(input.cwd, '.papercusp', 'blueprint.yaml');
-  if (input.harnessSlug && fsSync.existsSync(sourcePath)) {
+  if (fsSync.existsSync(sourcePath)) {
     const [{ loadBlueprintFromFile }, { operatorResolveExtends }] = await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('./blueprint/installed-blueprints'),
@@ -598,7 +598,11 @@ async function selectedLaunchCompositionSource(
         'publisher', 'attestation', 'visibility'].includes(key));
     const contributions = identity.identity.contributions ?? [];
     if (configurationKeys.length === 0 && contributions.some((entry) => entry.source === 'provider') &&
-        !contributions.some((entry) => entry.inputKind === 'package')) {
+        !contributions.some((entry) => entry.inputKind === 'package') &&
+        !producerBindings.some((binding) => binding.identityId === layer.id) &&
+        (impliedRefs.has(`${layer.slot}:${layer.id}`) || identity.identity.mode !== undefined ||
+          contributions.filter((entry) => entry.source === 'provider')
+          .every((entry) => entry.purpose === 'prompt' && entry.inputKind === 'prompt-file'))) {
       // The SU producer already rendered these contributions into promptText.
       // Keep their authored source chain in the existing immutable closure even
       // though resource assembly must not execute the turn providers again.
@@ -741,7 +745,11 @@ async function selectedLaunchCompositionSource(
           mode: 'peer-assembly', childSources: [layer.id],
         });
       }
-      const validated = resolveBlueprint(effective);
+      // Slots identify authored identity documents. This synthesized root is
+      // the surviving runnable workspace; the actual slot holders remain on
+      // the original pinned layers below, never re-authored as a workspace.
+      const { slots: _identitySlots, ...workspaceSource } = effective;
+      const validated = resolveBlueprint(workspaceSource);
       return { ...validated, layers };
     })();
   if (!resolved.validation.ok) {

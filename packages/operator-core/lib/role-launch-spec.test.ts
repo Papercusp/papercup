@@ -84,6 +84,20 @@ vi.mock('./papercusp-root', async (importOriginal) => ({
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+
+// P012: model/account defaults belong to the workspace, while selected
+// identities supply portable policy, prompts and resource contributions.
+function writeFixtureWorkspaceModel(dir: string, model: string, roleModels: Record<string, string> = {}) {
+  mkdirSync(join(dir, '.papercusp'), { recursive: true });
+  writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), JSON.stringify({
+    id: 'fixture-workspace', extends: 'base', kind: 'pot', version: '1.0.0',
+    workItem: { kind: 'feature', idPrefix: 'WI' },
+    spine: { decider: 'worker', claimModel: 'self-claim-priority', default: { to: 'idle' } },
+    roles: ['worker', 'su', 'judge'].map(id => ({ id, description: `Fixture ${id}` })),
+    knobs: { aiBackend: { default: { model },
+      roles: Object.fromEntries(Object.entries(roleModels).map(([id, value]) => [id, { model: value }])) } },
+  }));
+}
 import { importGraph } from './search/import-graph';
 import {
   buildRoleLaunchSpec,
@@ -439,18 +453,19 @@ describe('buildRoleLaunchSpec', () => {
       join(identityDir, 'blueprint.yaml'),
       [
         'id: fixture-domain',
+        'extends: identity-root',
         'version: 1.0.0',
         'description: Fixture domain identity.',
         'slots:',
         '  - slot: domain',
-        'bundles:',
-        '  - kind: recipe',
-        '    ref: launch-recipe',
+        'contributions:',
+        '  - id: launch-recipe',
+        '    purpose: resource',
+        '    source: fixed',
+        '    refresh: source-change',
+        '    inputKind: package',
+        '    ref: recipe:launch-recipe',
         '    version: 1.0.0',
-        'knobs:',
-        '  aiBackend:',
-        '    default:',
-        '      model: selected-domain-model',
         '',
       ].join('\n'),
     );
@@ -463,6 +478,7 @@ describe('buildRoleLaunchSpec', () => {
         'kind: pot',
         'version: 1.0.0',
         'description: Runnable fixture pot.',
+        'knobs: { aiBackend: { default: { model: selected-domain-model } } }',
         'workItem:',
         '  kind: feature',
         '  idPrefix: WI',
@@ -537,18 +553,19 @@ describe('buildRoleLaunchSpec', () => {
       mkdirSync(join(blueprintDir, 'first-domain'), { recursive: true });
       mkdirSync(join(blueprintDir, 'second-domain'), { recursive: true });
       writeFileSync(join(blueprintDir, 'first-domain', 'blueprint.yaml'), [
-        'id: first-domain', 'extends: base', 'version: 1.0.0',
+        'id: first-domain', 'extends: identity-root', 'version: 1.0.0',
         'slots:', '  - slot: domain',
-        'knobs:', '  aiBackend:', '    default:', '      model: original-model', '',
+        'description: Original domain.', '',
       ].join('\n'));
       writeFileSync(join(blueprintDir, 'second-domain', 'blueprint.yaml'), [
-        'id: second-domain', 'extends: base', 'version: 1.0.0',
+        'id: second-domain', 'extends: identity-root', 'version: 1.0.0',
         'slots:', '  - slot: domain',
-        'knobs:', '  aiBackend:', '    default:', '      model: selected-model', '',
+        'description: Selected domain.', '',
       ].join('\n'));
       mkdirSync(join(dir, '.papercusp'), { recursive: true });
       writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), [
         'id: fixture-pot', 'extends: first-domain', 'kind: pot', 'version: 1.0.0',
+        'knobs: { aiBackend: { default: { model: selected-model } } }',
         'workItem:', '  kind: feature', '  idPrefix: WI',
         'spine:', '  decider: su', '  claimModel: self-claim-priority',
         '  default: { to: idle }',
@@ -597,6 +614,10 @@ describe('buildRoleLaunchSpec', () => {
     });
     const workspaceDir = mkdtempSync(join(tmpdir(), 'su-implied-workspace-'));
     const potDir = mkdtempSync(join(tmpdir(), 'su-implied-pot-'));
+    const priorHome = process.env.PAPERCUSP_HOME;
+    // Exercise the current builtin population independently of this host's
+    // installed packages; the installed legacy transition has its own suite.
+    process.env.PAPERCUSP_HOME = join(workspaceDir, 'state');
     try {
       const workspaceLevel = await compileLaunchSpecificationArtifact({
         promptText: 'SU KERNEL', cwd: workspaceDir, workspaceId: 'fixture-workspace',
@@ -622,7 +643,7 @@ describe('buildRoleLaunchSpec', () => {
       for (const id of ['pot-domain', 'chosen-domain']) {
         mkdirSync(join(blueprintDir, id), { recursive: true });
         writeFileSync(join(blueprintDir, id, 'blueprint.yaml'), [
-          `id: ${id}`, 'extends: base', 'version: 1.0.0', 'slots:', '  - slot: domain', '',
+          `id: ${id}`, 'extends: identity-root', 'version: 1.0.0', 'slots:', '  - slot: domain', '',
         ].join('\n'));
       }
       writeFileSync(join(potDir, '.papercusp', 'blueprint.yaml'), [
@@ -653,6 +674,8 @@ describe('buildRoleLaunchSpec', () => {
     } finally {
       rmSync(workspaceDir, { recursive: true, force: true });
       rmSync(potDir, { recursive: true, force: true });
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
     }
   });
 
@@ -664,10 +687,9 @@ describe('buildRoleLaunchSpec', () => {
     const { layerContentHash } = await import('@papercusp/orchestrator/blueprint');
     const dir = mkdtempSync(join(tmpdir(), 'role-launch-attested-replacement-'));
     const blueprintDir = join(dir, '.papercusp', 'blueprints');
-    const writeAttested = (id: string, model: string) => {
+    const writeAttested = (id: string) => {
       const layer = {
-        id, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
-        knobs: { aiBackend: { default: { model } } },
+        id, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
       };
       mkdirSync(join(blueprintDir, id, 'prompts'), { recursive: true });
       writeFileSync(join(blueprintDir, id, 'blueprint.yaml'), JSON.stringify({
@@ -677,10 +699,11 @@ describe('buildRoleLaunchSpec', () => {
       return layerContentHash(layer);
     };
     try {
-      writeAttested('first-attested-domain', 'original-model');
-      const selectedHash = writeAttested('second-attested-domain', 'selected-model');
+      writeAttested('first-attested-domain');
+      const selectedHash = writeAttested('second-attested-domain');
       writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), [
         'id: fixture-pot', 'extends: first-attested-domain', 'kind: pot', 'version: 1.0.0',
+        'knobs: { aiBackend: { default: { model: selected-model } } }',
         'workItem:', '  kind: feature', '  idPrefix: WI',
         'spine:', '  decider: su', '  claimModel: self-claim-priority',
         '  default: { to: idle }',
@@ -728,7 +751,7 @@ describe('buildRoleLaunchSpec', () => {
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
-        'id: plain-domain', 'extends: base', 'version: 1.0.0',
+        'id: plain-domain', 'extends: identity-root', 'version: 1.0.0',
         'slots:', '  - slot: domain', 'grants: {}', '',
       ].join('\n'));
       writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'PLAIN DOMAIN\n');
@@ -829,7 +852,7 @@ describe('buildRoleLaunchSpec', () => {
       const otherDir = join(dir, '.papercusp', 'blueprints', 'other-domain');
       mkdirSync(join(otherDir, 'prompts'), { recursive: true });
       writeFileSync(join(otherDir, 'blueprint.yaml'), [
-        'id: other-domain', 'extends: base', 'version: 1.0.0',
+        'id: other-domain', 'extends: identity-root', 'version: 1.0.0',
         'slots:', '  - slot: domain', 'grants: {}', '',
       ].join('\n'));
       writeFileSync(join(otherDir, 'prompts', 'domain.md'), 'OTHER DOMAIN\n');
@@ -895,7 +918,7 @@ describe('buildRoleLaunchSpec', () => {
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
-        'id: judge-lens', 'extends: base', 'version: 1.0.0',
+        'id: judge-lens', 'extends: identity-root', 'version: 1.0.0',
         'slots:', '  - slot: domain', 'grants: {}', '',
       ].join('\n'));
       writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'JUDGE LENS LAYER\n');
@@ -929,9 +952,8 @@ describe('buildRoleLaunchSpec', () => {
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
-        'id: mixed-domain', 'extends: base', 'version: 1.0.0',
+        'id: mixed-domain', 'extends: identity-root', 'version: 1.0.0',
         'slots:', '  - slot: domain',
-        'knobs:', '  aiBackend:', '    default:', '      model: mixed-model',
         'contributions:',
         '  - id: mixed-rules',
         '    purpose: prompt',
@@ -941,6 +963,7 @@ describe('buildRoleLaunchSpec', () => {
         '    ref: fixed:domain', '',
       ].join('\n'));
       writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'MIXED DOMAIN RULES\n');
+      writeFixtureWorkspaceModel(dir, 'mixed-model');
       const launch = await compileLaunchSpecificationArtifact({
         promptText: 'ROLE KERNEL', cwd: dir, workspaceId: 'workspace-a',
         harnessSlug: 'harness-a', role: 'worker', stack: ['domain:mixed-domain'],
@@ -977,12 +1000,12 @@ describe('buildRoleLaunchSpec', () => {
         const componentDir = join(dir, '.papercusp', 'blueprints', id!);
         mkdirSync(join(componentDir, 'prompts'), { recursive: true });
         writeFileSync(join(componentDir, 'blueprint.yaml'),
-          `id: ${id}\nextends: base\nversion: 1.0.0\nslots:\n  - slot: ${slot}\n` +
-          (slot === 'domain' ? 'knobs:\n  aiBackend:\n    default: { model: named-default }\n    roles:\n      su: { model: named-su }\n' : ''));
+          `id: ${id}\nextends: identity-root\nversion: 1.0.0\nslots:\n  - slot: ${slot}\n`);
         writeFileSync(join(componentDir, 'prompts', `${slot}.md`), `${prompt}\n`);
       }
       const selection = { id: 'named-review', repoDir: dir,
         componentRefs: ['domain:named-domain', 'practice:named-practice'] };
+      writeFixtureWorkspaceModel(dir, 'named-default', { su: 'named-su' });
       await previewNamedIdentityComposition(selection);
       await saveNamedIdentityComposition(selection);
       expect(await resolveLaunchIdentityModelDefault({ cwd: dir, role: 'su',
@@ -1006,6 +1029,9 @@ describe('buildRoleLaunchSpec', () => {
         promptText: 'ROLE KERNEL', cwd: dir, role: 'su', stack: selection.componentRefs,
         compositionRootId: selection.id, state: { schemaVersion: 1 }, renderStack: true,
       });
+      expect(launch.compositionSource).toBe('blueprint');
+      expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.roles?.su?.model)
+        .toBe('named-su');
       expect(launch.promptText).toContain('NAMED DOMAIN RULES');
       expect(launch.promptText).toContain('NAMED PRACTICE RULES');
       const selected = await resolveNamedIdentityCompositionSelection(selection.id, dir);
@@ -1026,7 +1052,7 @@ describe('buildRoleLaunchSpec', () => {
         compositionRootId: selection.id, state: { schemaVersion: 1 }, renderStack: true,
       })).rejects.toThrow(/stack changed/);
       writeFileSync(join(dir, '.papercusp', 'blueprints', 'named-domain', 'blueprint.yaml'),
-        'id: named-domain\nextends: base\nversion: 1.0.1\nslots:\n  - slot: domain\n');
+        'id: named-domain\nextends: identity-root\nversion: 1.0.1\nslots:\n  - slot: domain\n');
       await expect(resolvePinnedIdentityLaunchSelection({
         ref: `composition:${selection.id}`, sourceRevision: selected.sourceRevision,
         repoDir: dir, stack: selection.componentRefs,
@@ -1049,7 +1075,7 @@ describe('buildRoleLaunchSpec', () => {
       const componentDir = join(home, '.papercusp', 'blueprints', 'state-domain');
       mkdirSync(join(componentDir, 'prompts'), { recursive: true });
       writeFileSync(join(componentDir, 'blueprint.yaml'),
-        'id: state-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
+        'id: state-domain\nextends: identity-root\nversion: 1.0.0\nslots:\n  - slot: domain\n');
       writeFileSync(join(componentDir, 'prompts', 'domain.md'), 'STATE LIBRARY DOMAIN\n');
       await saveNamedIdentityComposition({ id: 'state-named', repoDir: home,
         componentRefs: ['domain:state-domain'] });
@@ -1116,8 +1142,6 @@ describe('buildRoleLaunchSpec', () => {
       const launch = await compileLaunchSpecificationArtifact({ ...input,
         producerBindings: [{ identityId: id, artifact: bound.artifact }],
       });
-      expect(launch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model)
-        .toBe('selected-provider-model');
       expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
         kind: 'setting', ref: 'current-brief', value: [{ mode: 'research' }],
         producerRef: 'papercusp.mode-state@1',
@@ -1179,7 +1203,16 @@ describe('buildRoleLaunchSpec', () => {
       expect(withoutGuidance.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
         path: 'contribution.current-guidance', decision: 'omitted:not-requested',
       }));
-      writeFileSync(file, source.replace('selected-provider-model', 'changed-provider-model'));
+      // The same portable identity also composes with workspace-owned model
+      // defaults. Keep the generic no-work-item assertions above and check
+      // the model contract on the real workspace variant separately.
+      writeFixtureWorkspaceModel(dir, 'selected-provider-model');
+      const workspaceLaunch = await compileLaunchSpecificationArtifact({ ...input,
+        producerBindings: [{ identityId: id, artifact: bound.artifact }],
+      });
+      expect(workspaceLaunch.specificationArtifact.configuration.knobs?.aiBackend?.default?.model)
+        .toBe('selected-provider-model');
+      writeFileSync(file, source + '\ndescription: Changed provider identity.\n');
       await expect(compileLaunchSpecificationArtifact({ ...input,
         producerBindings: [{ identityId: id, artifact: bound.artifact }],
       })).rejects.toThrow(/source revision changed|does not match selected source/);
@@ -1912,7 +1945,7 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
-        `id: ${id}`, 'extends: base', 'version: 1.0.0',
+        `id: ${id}`, 'extends: identity-root', 'version: 1.0.0',
         'description: Generic selected domain.', 'slots:', '  - slot: domain', '',
       ].join('\n'));
       writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'GENERIC SELECTED DOMAIN\n');
@@ -1958,7 +1991,7 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     try {
       mkdirSync(parentDir, { recursive: true });
       mkdirSync(identityDir, { recursive: true });
-      const parent = 'id: provider-parent\nextends: base\nversion: 1.0.0\n';
+      const parent = 'id: provider-parent\nextends: identity-root\nversion: 1.0.0\nslots: []\n';
       writeFileSync(join(parentDir, 'blueprint.yaml'), parent);
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
         'id: provider-practice', 'extends: provider-parent', 'version: 1.0.0',
@@ -2010,7 +2043,7 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
       mkdirSync(join(parentDir, 'prompts'), { recursive: true });
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(parentDir, 'blueprint.yaml'), [
-        'id: fixed-parent', 'extends: base', 'version: 1.0.0', 'description: Shared prompt parent.', '',
+        'id: fixed-parent', 'extends: identity-root', 'version: 1.0.0', 'slots: []', 'description: Shared prompt parent.', '',
       ].join('\n'));
       writeFileSync(join(parentDir, 'prompts', 'shared.md'), 'DECLARED PARENT PRACTICE\n');
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
@@ -2038,7 +2071,7 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
       writeFileSync(join(identityDir, 'blueprint.yaml'), [
-        'id: su.practice', 'extends: base', 'version: 1.0.0',
+        'id: su.practice', 'extends: identity-root', 'version: 1.0.0',
         'description: Selected local SU practice.', 'slots:', '  - slot: practice', '',
       ].join('\n'));
       writeFileSync(join(identityDir, 'prompts', 'practice.md'), 'SELECTED LOCAL PRACTICE\n');
