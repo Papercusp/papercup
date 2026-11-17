@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyCallOrigin } from '../../../../../../packages/operator-core/lib/telemetry-call-origin';
@@ -202,6 +202,72 @@ describe('managed Codex PreCompact bridge', () => {
     });
     expect(capturedUrl).toBe(`${env.PAPERCUSP_MCP_URL}&origin=hook`);
     expect(capturedRequest?.headers).toHaveProperty('Authorization', 'Bearer secret-token');
+  });
+
+  it.each([
+    { name: 'host default', paths: {}, token: 'host-token' },
+    { name: 'workspace home', paths: { PAPERCUSP_HOME: '.papercusp-workspaces/ws/.papercusp' }, token: 'host-token' },
+    { name: 'isolated operator', paths: { PAPERCUSP_HOME: 'isolated' }, token: 'isolated-token' },
+    { name: 'operator home overrides workspace', paths: { PAPERCUSP_HOME: '.papercusp-workspaces/ws/.papercusp', PAPERCUSP_OPERATOR_HOME: 'operator' }, token: 'operator-token' },
+    { name: 'MCP token pin overrides workspace', paths: { PAPERCUSP_HOME: '.papercusp-workspaces/ws/.papercusp', PAPERCUSP_MCP_TOKEN_FILE: 'mcp-token' }, token: 'mcp-token' },
+    { name: 'legacy hook pin overrides workspace', paths: { PAPERCUSP_HOME: '.papercusp-workspaces/ws/.papercusp', PAPERCUSP_SUPERUSER_TOKEN_PATH: 'hook-token' }, token: 'hook-token' },
+    { name: 'existing hook pin retains precedence', paths: { PAPERCUSP_SUPERUSER_TOKEN_PATH: 'hook-token', PAPERCUSP_MCP_TOKEN_FILE: 'mcp-token' }, token: 'hook-token' },
+    { name: 'missing explicit token stays isolated', paths: { PAPERCUSP_MCP_TOKEN_FILE: 'missing-token' }, token: null },
+    { name: 'missing hook token stays isolated', paths: { PAPERCUSP_SUPERUSER_TOKEN_PATH: 'missing-token' }, token: null },
+    { name: 'missing isolated token stays isolated', paths: { PAPERCUSP_HOME: 'missing-operator' }, token: null },
+    { name: 'missing operator pin stays isolated', paths: { PAPERCUSP_OPERATOR_HOME: 'missing-operator' }, token: null },
+  ])('reads real credential files for $name', async ({ paths, token }) => {
+    const home = mkdtempSync(join(tmpdir(), 'precompact-credentials-'));
+    try {
+      const fixtures = {
+        '.papercusp/superuser-token': 'host-token',
+        '.papercusp-workspaces/ws/.papercusp/superuser-token': 'wrong-workspace-token',
+        'isolated/superuser-token': 'isolated-token',
+        'operator/.papercusp/superuser-token': 'operator-token',
+        'mcp-token': 'mcp-token',
+        'hook-token': 'hook-token',
+      };
+      for (const [relative, value] of Object.entries(fixtures)) {
+        const path = join(home, relative);
+        mkdirSync(join(path, '..'), { recursive: true });
+        writeFileSync(path, `${value}\n`, { mode: 0o600 });
+      }
+      vi.stubEnv('HOME', home);
+      const env = {
+        ...ENV,
+        PAPERCUSP_MCP_URL: 'http://127.0.0.1:3070/api/mcp?superuser=1&workspace=ws&client=su-1',
+        PAPERCUSP_MCP_AUTH: 'superuser-token',
+        ...Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, join(home, value)])),
+      };
+      const fetchImpl = vi.fn(async (_url: RequestInfo | URL, request?: RequestInit) => {
+        expect(request?.headers).toHaveProperty('Authorization', `Bearer ${token}`);
+        return new Response(rpc({ ok: true, requested: true, respawn: 'queued' }));
+      });
+      const decision = await runManagedPreCompact(PAYLOAD, { env, fetchImpl });
+
+      expect(decision.continue).toBe(false);
+      if (token === null) {
+        expect(fetchImpl).not.toHaveBeenCalled();
+        expect(decision.systemMessage).toContain('superuser token is missing or unreadable');
+      } else {
+        expect(fetchImpl).toHaveBeenCalledOnce();
+        expect(decision.systemMessage).toContain('QUEUED');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps native compaction stopped when the operator rejects a bearer', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      result: { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }] },
+    })));
+    const decision = await runManagedPreCompact(PAYLOAD, { env: ENV, fetchImpl });
+    expect(decision.continue).toBe(false);
+    expect(decision.systemMessage).toContain('request_rejected: superuser_invalid_bearer');
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it('parses SSE and preserves an explicit flush refusal while still vetoing native compaction', async () => {

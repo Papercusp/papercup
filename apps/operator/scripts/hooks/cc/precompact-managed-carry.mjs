@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from './pc_home.mjs';
+import { papercuspHome } from './pc_home.mjs';
 /**
  * Managed Codex PreCompact bridge.
  *
@@ -38,6 +38,7 @@ import { papercuspPath } from './pc_home.mjs';
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { nestedCliCached } from './pc_nested_cli.mjs';
 
@@ -283,8 +284,22 @@ export function hostlessWakeResumeDecision(deliveryId) {
 
 function readSuperuserToken(env) {
   if (env.PAPERCUSP_MCP_AUTH !== 'superuser-token') return '';
-  const path = env.PAPERCUSP_SUPERUSER_TOKEN_PATH ||
-    papercuspPath('superuser-token');
+  // Match ptool's operator/workspace distinction. A managed session's
+  // PAPERCUSP_HOME names workspace state, while the shared MCP operator
+  // authenticates against its host token. Isolated operator homes and explicit
+  // token pins remain authoritative; never retry them with another credential.
+  // Hooks are installed standalone, so use the shipped home helper rather than
+  // importing the source-only CLI or operator-core token reader.
+  const explicit = String(env.PAPERCUSP_SUPERUSER_TOKEN_PATH ?? '').trim() ||
+    String(env.PAPERCUSP_MCP_TOKEN_FILE ?? '').trim();
+  const operatorHome = String(env.PAPERCUSP_OPERATOR_HOME ?? '').trim();
+  const scopedHome = String(env.PAPERCUSP_HOME ?? '').trim();
+  const workspaceScoped = /(?:^|[\\/])\.papercusp-workspaces[\\/][^\\/]+(?:[\\/]|$)/.test(scopedHome);
+  const home = homedir();
+  const tokenHome = operatorHome
+    ? join(operatorHome, '.papercusp')
+    : workspaceScoped ? join(home, '.papercusp') : papercuspHome(env, home);
+  const path = explicit || join(tokenHome, 'superuser-token');
   try {
     return readFileSync(path, 'utf8').trim();
   } catch {
