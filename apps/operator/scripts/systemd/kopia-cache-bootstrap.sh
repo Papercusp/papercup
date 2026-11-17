@@ -268,7 +268,8 @@ kopia_exact_snapshot_pid() {
   local direct_rc=0 privileged_rc=0 started=0 direct_seconds=0 privileged_seconds=0
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   [ "$pid" -gt 1 ] 2>/dev/null || return 1
-  cmdline="$(tr '\0' ' ' <"$PROC_ROOT/$pid/cmdline" 2>/dev/null || true)"
+  # Redirect stderr before opening /proc: a process may exit after enumeration.
+  cmdline="$(tr '\0' ' ' 2>/dev/null <"$PROC_ROOT/$pid/cmdline" || true)"
   [[ "$cmdline" == "$KOPIA_BIN snapshot create "* ]] || return 1
   started=$SECONDS
   exe="$(readlink -f "$PROC_ROOT/$pid/exe" 2>/dev/null)" || direct_rc=$?
