@@ -80,7 +80,7 @@ describe('failure diagnostics', () => {
       const observed = vi.fn();
       const deps = okDeps([]);
       const resolved = await deps.resolveEmbedder();
-      if (!('embed' in resolved)) throw new Error('expected enabled fixture');
+      if (!resolved || !('embed' in resolved)) throw new Error('expected enabled fixture');
       deps.resolveEmbedder = async () => ({ ...resolved, embed: () => new Promise((resolve) => {
         setTimeout(() => resolve(new Array(PROSE_VECTOR_DIMS).fill(0.1)), embeddingMs);
       }) });
