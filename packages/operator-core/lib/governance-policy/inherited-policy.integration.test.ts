@@ -27,6 +27,7 @@ import {
   type UpsertLayerInput,
 } from './store';
 import { evaluateInheritedPolicy } from './inherited-policy';
+import { contractChange } from './effective-authority-test-fixtures';
 import {
   assessPermissionChange, evaluateEffectivePermission, revalidateEffectivePermission, resourcePermissionValue,
   type AuthorityPolicy, type AuthoritySnapshot, type PermissionRequest,
@@ -183,11 +184,7 @@ describe('P-024 shared evaluator with the versioned governance store', () => {
     await seedTree();
     const before = await sharedSnapshot();
     const expected = evaluateEffectivePermission(before, protectedRequest).revisions;
-    const proof = { populationRevision: 'permissions:1', complete: true,
-      population: ['read', 'write'], allowed: ['read', 'write'] };
-    const change = { current: before, request: protectedRequest, expected,
-      before: proof, after: { ...proof, allowed: ['read'] },
-      fixedFloors: [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: proof }] };
+    const change = { ...contractChange(before, protectedRequest), expected };
     expect(assessPermissionChange(change).code).toBe('allowed-without-approval');
     await narrowStoredAuthority('dept-eng');
     expect(assessPermissionChange({ ...change, current: await sharedSnapshot() })).toMatchObject({

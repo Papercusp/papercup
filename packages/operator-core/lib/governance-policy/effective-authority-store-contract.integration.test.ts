@@ -4,9 +4,10 @@ import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { loadChainForWorkspace, upsertLayer } from './store';
+import { contractCensus, contractChange, contractProof } from './effective-authority-test-fixtures';
 import {
   assessPermissionChange, evaluateEffectivePermission, revalidateEffectivePermission,
-  type AuthorityPolicy, type AuthoritySnapshot, type PermissionPopulationProof, type PermissionRequest,
+  type AuthorityPolicy, type AuthoritySnapshot, type PermissionRequest,
 } from './effective-authority';
 
 // Contract fixtures only. P-002 owns approval application; P-005 owns production
@@ -15,10 +16,6 @@ let sql: postgres.Sql;
 const request: PermissionRequest = {
   tool: 'store:write', action: 'record:write',
   resource: { kind: 'store', operation: 'write', target: 'contract-record' },
-};
-const proof: PermissionPopulationProof = {
-  populationRevision: 'permissions:1', complete: true,
-  population: ['read', 'write'], allowed: ['read', 'write'],
 };
 
 beforeAll(async () => {
@@ -147,15 +144,14 @@ describe('P-024 conservative change with stored authority', () => {
     { kind: 'narrowing', level: 'workspace', layerId: 'workspace', parentLayerId: 'dept' },
     { kind: 'neutral', level: 'workspace', layerId: 'workspace', parentLayerId: 'dept' },
   ] as const)('a proved $kind change cannot bypass stored $level edit authority', async ({ kind, level, layerId, parentLayerId }) => {
-    const after = kind === 'narrowing' ? { ...proof, allowed: ['read'] } : proof;
-    const fixedFloors = [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: proof }];
     const apply = () => sql.begin(async tx => {
       const current = await snapshot(tx as unknown as postgres.Sql);
       // Pin the current revision even when it denies the edit. This isolates
       // ordinary authorization from the separate stale-before-image guard.
       const edit = evaluateEffectivePermission(current, request);
-      const result = assessPermissionChange({ current, request, expected: edit.revisions,
-        before: proof, after, fixedFloors });
+      const input = contractChange(current, request);
+      const result = assessPermissionChange({ ...input, expected: edit.revisions,
+        after: kind === 'narrowing' ? input.after : input.before });
       if (result.canApplyWithoutApproval) await tx`INSERT INTO harness_shared.idop_contract_effects VALUES (${request.resource.target})`;
       return result;
     });
@@ -185,11 +181,13 @@ describe('P-024 conservative change with stored authority', () => {
       const current = await snapshot();
       const initial = evaluateEffectivePermission(current, request);
       expect(initial.allowed).toBe(true);
-      const before = kind === 'widening' ? { ...proof, allowed: ['read'] }
+      const input = contractChange(current, request);
+      const proof = input.before;
+      const before = kind === 'widening' ? input.after
         : kind === 'unknown' ? { ...proof, complete: false } : proof;
-      const after = kind === 'narrowing' ? { ...proof, allowed: ['read'] } : proof;
+      const after = kind === 'narrowing' ? input.after : proof;
       const assessment = await sql.begin(async tx => {
-        const result = assessPermissionChange({ current: await snapshot(tx as unknown as postgres.Sql), request,
+        const result = assessPermissionChange({ ...input, current: await snapshot(tx as unknown as postgres.Sql), request,
           expected: initial.revisions, before, after,
           fixedFloors: [{ authority: { kind: 'platform', id: 'platform', revision: 'platform:1' }, permissions: proof }] });
         if (result.canApplyWithoutApproval) await tx`INSERT INTO harness_shared.idop_contract_effects VALUES (${request.resource.target})`;
@@ -205,13 +203,12 @@ describe('P-024 conservative change with stored authority', () => {
   it('a stored revision change refuses a replayed before-image even when the current edit is allowed', async () => {
     const before = await snapshot();
     const initial = evaluateEffectivePermission(before, request);
+    const input = contractChange(before, request);
     expect(initial.allowed).toBe(true);
     await editDepartment({});
     const current = await snapshot();
     expect(evaluateEffectivePermission(current, request).allowed).toBe(true);
-    const assessment = assessPermissionChange({ current, request, expected: initial.revisions,
-      before: proof, after: { ...proof, allowed: ['read'] },
-      fixedFloors: [{ authority: { kind: 'platform', id: 'platform', revision: 'platform:1' }, permissions: proof }] });
+    const assessment = assessPermissionChange({ ...input, current, expected: initial.revisions });
     expect(assessment).toMatchObject({ canApplyWithoutApproval: false, code: 'stale-before-state' });
     expect(await effects()).toEqual([]);
   });
@@ -221,11 +218,14 @@ describe('P-024 conservative change with stored authority', () => {
       const current = await snapshot();
       const initial = evaluateEffectivePermission(current, request);
       expect(initial.allowed).toBe(true);
+      const change = contractChange(current, request);
+      const proof = change.before;
       for (const kind of ['widening', 'unknown'] as const) {
         const assessment = await sql.begin(async tx => {
           const input = {
+            ...change,
             current: await snapshot(tx as unknown as postgres.Sql), request, expected: initial.revisions,
-            before: kind === 'widening' ? { ...proof, allowed: ['read'] } : { ...proof, complete: false },
+            before: kind === 'widening' ? change.after : { ...proof, complete: false },
             after: proof,
             fixedFloors: [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: proof }],
             // P-002 must load authentic receipts. The pure contract accepts no
@@ -251,9 +251,14 @@ describe('P-024 conservative change with stored authority', () => {
     expect(first.policies.find(policy => policy.id === 'dept')).toEqual(second.policies.find(policy => policy.id === 'dept'));
     expect(evaluateEffectivePermission(second, request).allowed).toBe(true);
     const initial = evaluateEffectivePermission(first, request);
-    const complete = { ...proof, population: ['workspace/read', 'other-workspace/read'], allowed: ['workspace/read', 'other-workspace/read'] };
-    const input = { current: first, request, expected: initial.revisions, before: complete,
-      after: { ...complete, allowed: ['workspace/read'] },
+    const census = contractCensus(first, request);
+    census.scopes = [first, second].map((current, index) => ({ ...census.scopes[0],
+      stackId: `stack:${index}`, workspaceId: index === 0 ? 'workspace' : 'other-workspace',
+      owners: current.policies.map(({ kind, id, revision }) => ({ authority: { kind, id, revision }, ownerId: `owner:${kind}:${id}` })),
+    }));
+    const complete = contractProof(census, ['read', 'write']);
+    const input = { current: first, request, census, expected: initial.revisions, before: complete,
+      after: contractProof(census, ['read']),
       fixedFloors: [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: complete }] };
     expect(assessPermissionChange(input)).toMatchObject({ canApplyWithoutApproval: true, comparison: { kind: 'narrowing' } });
     for (const omitted of ['before', 'after'] as const) {
@@ -263,8 +268,8 @@ describe('P-024 conservative change with stored authority', () => {
         if (assessment.canApplyWithoutApproval) await tx`INSERT INTO harness_shared.idop_contract_effects VALUES (${request.resource.target})`;
         return assessment;
       });
-      expect(result).toMatchObject({ canApplyWithoutApproval: false, requiresOwnerApproval: omitted === 'before',
-        comparison: { kind: 'unknown' }, code: omitted === 'before' ? 'approval-required' : 'floor-unavailable' });
+      expect(result).toMatchObject({ canApplyWithoutApproval: false, requiresOwnerApproval: false,
+        comparison: { kind: 'unknown' }, code: 'census-unavailable' });
     }
     expect(await effects()).toEqual([]);
   });
@@ -272,8 +277,8 @@ describe('P-024 conservative change with stored authority', () => {
   it('a prior successful narrowing assessment cannot authorize a different widening', async () => {
     const current = await snapshot();
     const initial = evaluateEffectivePermission(current, request);
-    const input = { current, request, expected: initial.revisions, before: proof, after: { ...proof, allowed: ['read'] },
-      fixedFloors: [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' }, permissions: proof }] };
+    const input = { ...contractChange(current, request), expected: initial.revisions };
+    const proof = input.before;
     const prior = assessPermissionChange(input);
     expect(prior.canApplyWithoutApproval).toBe(true);
     const replay = await sql.begin(async tx => {
@@ -286,4 +291,51 @@ describe('P-024 conservative change with stored authority', () => {
       comparison: { kind: 'widening' }, code: 'approval-required' });
     expect(await effects()).toEqual([]);
   });
+
+  it.each(['workspace', 'owner', 'floor'] as const)(
+    'coherent %s omission cannot change persisted state despite known-owner approval claims', async omitted => {
+      await upsertLayer({ layerId: 'other-workspace', level: 'workspace', scopeRef: 'other-workspace', parentLayerId: 'dept',
+        rules: {}, actor: 'contract-test', reason: 'complete affected census fixture' }, sql);
+      await sql.begin(async tx => {
+        const db = tx as unknown as postgres.Sql;
+        const current = await snapshot(db);
+        const census = contractCensus(current, request);
+        // Independent enumeration from stored workspace rows, never from proofs.
+        const rows = await tx<{ scope_ref: string }[]>`SELECT scope_ref FROM harness_shared.governance_policy_layers
+          WHERE level = 'workspace' AND parent_layer_id = 'dept' ORDER BY scope_ref`;
+        expect(rows.map(row => row.scope_ref)).toEqual(['other-workspace', 'workspace']);
+        census.scopes = await Promise.all(rows.map(async row => {
+          const affected = await snapshot(db, row.scope_ref);
+          return { ...census.scopes[0], stackId: `stack:${row.scope_ref}`, workspaceId: row.scope_ref,
+            owners: affected.policies.map(({ kind, id, revision }) => ({ authority: { kind, id, revision }, ownerId: `owner:${kind}:${id}` })) };
+        }));
+        const input = { ...contractChange(current, request), census,
+          before: contractProof(census, ['read', 'write']), after: contractProof(census, ['read']),
+          fixedFloors: [{ authority: { kind: 'platform' as const, id: 'platform', revision: 'platform:1' },
+            permissions: contractProof(census, ['read', 'write']) }] };
+        const allowed = assessPermissionChange(input);
+        expect(allowed.canApplyWithoutApproval).toBe(true);
+        if (allowed.canApplyWithoutApproval) await tx`INSERT INTO harness_shared.idop_contract_effects VALUES (${request.resource.target})`;
+        const preserved = await tx`SELECT target FROM harness_shared.idop_contract_effects`;
+        const partial = structuredClone(census);
+        if (omitted === 'owner') partial.scopes = partial.scopes.map(scope => ({ ...scope,
+          owners: scope.owners.filter(owner => owner.authority.kind !== 'workspace') }));
+        else partial.scopes = partial.scopes.filter(scope => scope.workspaceId === 'workspace');
+        const partialProof = contractProof(partial, ['read', 'write']);
+        const assessment = assessPermissionChange({ ...input,
+          ...(omitted === 'floor' ? {} : { before: partialProof, after: contractProof(partial, ['read']) }),
+          fixedFloors: [{ ...input.fixedFloors[0], permissions: partialProof }],
+          ...{ approvals: partial.scopes.flatMap(scope => scope.owners.map(owner => ({ owner: owner.ownerId, approved: true }))) },
+        });
+        expect(assessment).toMatchObject({ canApplyWithoutApproval: false, requiresOwnerApproval: false,
+          code: omitted === 'floor' ? 'floor-unavailable' : 'census-unavailable' });
+        if (assessment.canApplyWithoutApproval) await tx`INSERT INTO harness_shared.idop_contract_effects VALUES (${request.resource.target})`;
+        // Read inside this transaction so its own authorized control is visible.
+        expect(await tx`SELECT target FROM harness_shared.idop_contract_effects`).toEqual(preserved);
+        expect(preserved).toEqual([{ target: request.resource.target }]);
+        expect(await snapshot(db)).toEqual(current);
+      });
+      expect(await effects()).toEqual([{ target: request.resource.target }]);
+    },
+  );
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { contractCensus, contractProof } from './effective-authority-test-fixtures';
 import {
   AUTHORITY_KINDS, assessPermissionChange, authorityRevisionIsCurrent, comparePermissionPopulations,
   evaluateEffectivePermission, revalidateEffectivePermission, resourcePermissionValue,
@@ -281,16 +282,21 @@ describe('permission-change proof (D-024)', () => {
     expect(comparePermissionPopulations(malformed, proof(['read']))).toMatchObject({ kind: 'unknown' });
     expect(comparePermissionPopulations(proof(['read', 'send']), malformed)).toMatchObject({ kind: 'unknown' });
   });
+  it.each([null, {}, 'read', 1])('a nonarray population %j refuses without throwing', population => {
+    const malformed = { ...proof(['read']), population } as unknown as PermissionPopulationProof;
+    expect(comparePermissionPopulations(malformed, proof(['read']))).toMatchObject({ kind: 'unknown' });
+    expect(comparePermissionPopulations(proof(['read']), malformed)).toMatchObject({ kind: 'unknown' });
+  });
 });
 
 describe('permission-change authorization contract (P-024)', () => {
-  const proof = (allowed: string[]): PermissionPopulationProof => ({
-    populationRevision: 'manifest:1', complete: true, population: ['read', 'send'], allowed,
-  });
+  const census = contractCensus(fixture(), request);
+  census.scopes[0].permissions = ['read', 'send'];
+  const proof = (allowed: string[]): PermissionPopulationProof => contractProof(census, allowed);
   function change(): PermissionChangeInput {
     const current = fixture();
     return {
-      current, request,
+      current, request, census,
       expected: evaluateEffectivePermission(current, request).revisions,
       before: proof(['read', 'send']), after: proof(['read']),
       fixedFloors: [{ authority: { kind: 'platform', id: 'platform', revision: 'platform:1' },
@@ -337,6 +343,7 @@ describe('permission-change authorization contract (P-024)', () => {
     input.current.policies = [...input.current.policies, extra];
     input.current.required = [...input.current.required, { kind: 'platform', id: 'extra-floor' }];
     input.expected = evaluateEffectivePermission(input.current, request).revisions;
+    input.census = { ...census, revisions: input.expected! };
     expect(assessPermissionChange(input).code).toBe('floor-unavailable');
     input.fixedFloors = [input.fixedFloors[0], input.fixedFloors[0]];
     expect(assessPermissionChange(input).code).toBe('floor-unavailable');
@@ -365,5 +372,18 @@ describe('permission-change authorization contract (P-024)', () => {
         canApplyWithoutApproval: false, requiresOwnerApproval: false, code: 'stale-before-state',
       });
     }
+  });
+
+  it('coherently stale census owners cannot override the current authority vector', () => {
+    const input = change();
+    input.census = structuredClone(input.census);
+    input.census.scopes = input.census.scopes.map(scope => ({ ...scope, owners: scope.owners.map(owner => ({
+      ...owner, authority: { ...owner.authority, revision: 'stale:1' },
+    })) }));
+    input.before = contractProof(input.census, ['read', 'send']);
+    input.after = contractProof(input.census, ['read']);
+    input.fixedFloors = [{ ...input.fixedFloors[0], permissions: input.before }];
+    expect(assessPermissionChange(input)).toMatchObject({ canApplyWithoutApproval: false,
+      requiresOwnerApproval: false, code: 'census-stale' });
   });
 });

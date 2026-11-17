@@ -84,6 +84,9 @@ const keyOf = (ref: AuthorityRef) => JSON.stringify([ref.kind, ref.id]);
 const validText = (value: unknown): value is string =>
   typeof value === 'string' && !!value.trim() && value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value);
 const unique = (values: readonly string[]) => new Set(values).size === values.length;
+const resourceKinds: ScopedResource['kind'][] = ['network', 'filesystem', 'store', 'account', 'recipient', 'processing'];
+const validResource = (resource: ScopedResource) => !!resource && resourceKinds.includes(resource.kind) &&
+  validText(resource.operation) && validText(resource.target);
 
 /** An unambiguous resource selector using the same policy pattern engine. */
 export function resourcePermissionValue(resource: ScopedResource): string {
@@ -142,9 +145,7 @@ export function evaluateEffectivePermission(
   request: PermissionRequest,
   now: Date = new Date(),
 ): EffectivePermissionDecision {
-  const resourceKinds: ScopedResource['kind'][] = ['network', 'filesystem', 'store', 'account', 'recipient', 'processing'];
-  if (!request || !validText(request.tool) || !validText(request.action) || !request.resource ||
-      !resourceKinds.includes(request.resource.kind) || !validText(request.resource.operation) || !validText(request.resource.target)) {
+  if (!request || !validText(request.tool) || !validText(request.action) || !validResource(request.resource)) {
     return { allowed: false, code: 'invalid-request', request: null, revisions: null, trace: [] };
   }
   if (request.constraints !== undefined && (!request.constraints || typeof request.constraints !== 'object' ||
@@ -251,16 +252,98 @@ export function comparePermissionPopulations(
 ): PermissionChangeComparison {
   const unknown = (reason: string): PermissionChangeComparison => ({ kind: 'unknown', added: [], removed: [], reason });
   for (const proof of [before, after]) {
+    const population = new Set(Array.isArray(proof?.population) ? proof.population : []);
     if (!proof || !Array.isArray(proof.population) || !Array.isArray(proof.allowed) ||
         proof.complete !== true || !validText(proof.populationRevision) || proof.population.length === 0 ||
         proof.population.some(atom => !validText(atom)) || !unique(proof.population) || !unique(proof.allowed) ||
-        proof.allowed.some(atom => !proof.population.includes(atom))) return unknown('incomplete or invalid authority population');
+        proof.allowed.some(atom => !population.has(atom))) return unknown('incomplete or invalid authority population');
   }
+  const beforePopulation = new Set(before.population);
   if (before.populationRevision !== after.populationRevision || before.population.length !== after.population.length ||
-      before.population.some(atom => !after.population.includes(atom))) return unknown('incomparable authority populations');
-  const added = after.allowed.filter(atom => !before.allowed.includes(atom)).sort();
-  const removed = before.allowed.filter(atom => !after.allowed.includes(atom)).sort();
+      after.population.some(atom => !beforePopulation.has(atom))) return unknown('incomparable authority populations');
+  const beforeAllowed = new Set(before.allowed);
+  const afterAllowed = new Set(after.allowed);
+  const added = after.allowed.filter(atom => !beforeAllowed.has(atom)).sort();
+  const removed = before.allowed.filter(atom => !afterAllowed.has(atom)).sort();
   return { kind: added.length ? 'widening' : removed.length ? 'narrowing' : 'neutral', added, removed };
+}
+
+export interface PermissionChangeOwner {
+  authority: AuthorityRevision;
+  ownerId: string;
+}
+export interface PermissionChangeScope {
+  stackId: string;
+  workspaceId: string;
+  resource: ScopedResource;
+  /** Every affected authority owner, including owners unknown to the editor. */
+  owners: readonly PermissionChangeOwner[];
+  /** Complete finite action/argument domain for this resolved resource. */
+  permissions: readonly string[];
+}
+export interface PermissionChangeCensus {
+  /** Host-store snapshot revision covering ALL affected scopes and owners. */
+  revision: string;
+  complete: boolean;
+  /** Bind the enumeration to the actual edit and its before-image. */
+  request: PermissionRequest;
+  revisions: AuthorityRevisionVector;
+  scopes: readonly PermissionChangeScope[];
+}
+
+/** Lossless tuple identity; opaque group names cannot stand in for coverage. */
+export function permissionPopulationValue(
+  scope: Pick<PermissionChangeScope, 'stackId' | 'workspaceId' | 'resource'>,
+  owner: PermissionChangeOwner,
+  permission: string,
+): string {
+  return JSON.stringify([scope.stackId, scope.workspaceId, scope.resource.kind,
+    scope.resource.operation, scope.resource.target, owner.authority.kind,
+    owner.authority.id, owner.authority.revision, owner.ownerId, permission]);
+}
+
+function censusPopulation(census: PermissionChangeCensus): { population: string[]; reason?: string } {
+  const invalid = (reason: string) => ({ population: [], reason });
+  if (!census || census.complete !== true || !validText(census.revision) ||
+      !Array.isArray(census.scopes) || !census.scopes.length) return invalid('complete affected census is unavailable');
+  const scopes = new Set<string>();
+  const authorityPins = new Map<string, string>();
+  const population: string[] = [];
+  for (const scope of census.scopes) {
+    if (!scope || !validText(scope.stackId) || !validText(scope.workspaceId) || !validResource(scope.resource) ||
+        !Array.isArray(scope.owners) || !scope.owners.length || !Array.isArray(scope.permissions) ||
+        !scope.permissions.length || scope.permissions.some((permission: unknown) => !validText(permission)) ||
+        !unique(scope.permissions)) return invalid('invalid or ownerless affected scope');
+    const scopeKey = JSON.stringify([scope.stackId, scope.workspaceId, resourcePermissionValue(scope.resource)]);
+    if (scopes.has(scopeKey)) return invalid(`duplicate affected scope ${scopeKey}`);
+    scopes.add(scopeKey);
+    const authorities = new Set<string>();
+    for (const owner of scope.owners) {
+      const authority = owner?.authority;
+      if (!authority || !AUTHORITY_KINDS.includes(authority.kind) || !validText(authority.id) ||
+          !validText(authority.revision) || !validText(owner.ownerId)) return invalid(`invalid authority owner in ${scopeKey}`);
+      const key = keyOf(authority);
+      if (authorities.has(key)) return invalid(`duplicate or conflicting authority owner ${key} in ${scopeKey}`);
+      authorities.add(key);
+      const pin = JSON.stringify([authority.revision, owner.ownerId]);
+      if (authorityPins.has(key) && authorityPins.get(key) !== pin) return invalid(`conflicting affected authority pin ${key}`);
+      authorityPins.set(key, pin);
+      for (const permission of scope.permissions) population.push(permissionPopulationValue(scope, owner, permission));
+    }
+  }
+  return { population: population.sort() };
+}
+
+function censusCoverageProblem(proof: PermissionPopulationProof, census: PermissionChangeCensus, population: readonly string[]): string | null {
+  if (!proof || proof.populationRevision !== census.revision || !Array.isArray(proof.population) ||
+      !unique(proof.population)) return 'proof does not pin the complete census revision';
+  const actual = new Set(proof.population);
+  // First discrepancy only; do not imply that a bounded diagnostic is a census.
+  const missing = population.find(atom => !actual.has(atom));
+  if (missing) return `first missing affected permission ${missing}`;
+  const required = new Set(population);
+  const extra = [...actual].sort().find(atom => !required.has(atom));
+  return extra ? `first extraneous affected permission ${extra}` : null;
 }
 
 export interface PermissionChangeInput {
@@ -269,6 +352,8 @@ export interface PermissionChangeInput {
   request: PermissionRequest;
   /** Pinned when the before-image was measured; recheck at the write boundary. */
   expected: AuthorityRevisionVector | null | undefined;
+  /** Independent canonical enumeration, never reconstructed from the proofs. */
+  census: PermissionChangeCensus;
   before: PermissionPopulationProof;
   after: PermissionPopulationProof;
   /** Complete finite proofs for EVERY current platform floor, not a caller's simulation. */
@@ -278,9 +363,10 @@ export interface PermissionChangeAssessment {
   canApplyWithoutApproval: boolean;
   requiresOwnerApproval: boolean;
   code: 'allowed-without-approval' | 'edit-denied' | 'stale-before-state' |
-    'floor-unavailable' | 'floor-denied' | 'approval-required';
+    'census-unavailable' | 'census-stale' | 'floor-unavailable' | 'floor-denied' | 'approval-required';
   edit: EffectivePermissionDecision;
   comparison: PermissionChangeComparison;
+  reason?: string;
 }
 
 /**
@@ -288,22 +374,46 @@ export interface PermissionChangeAssessment {
  * Widening/unknown changes remain refused here: P-002 must route them through
  * the existing sensitive-action approval seat and recheck exact owner receipts.
  * This pure assessment neither accepts approval claims nor performs a write;
- * its host must bind the population proofs to these revisions and hold the
- * transaction/lease through its protected effect.
+ * its host must enumerate the entire affected census from canonical stores,
+ * including every shared stack/resource and owner, then pin that revision and
+ * hold the transaction/lease through its protected effect. This function checks
+ * exact proof coverage; it cannot discover an omitted canonical-store record.
  */
 export function assessPermissionChange(input: PermissionChangeInput, now: Date = new Date()): PermissionChangeAssessment {
   const comparison = comparePermissionPopulations(input.before, input.after);
   const edit = revalidateEffectivePermission(input.current, input.request, input.expected, now);
-  const refuse = (code: PermissionChangeAssessment['code']): PermissionChangeAssessment => ({
+  const refuse = (code: PermissionChangeAssessment['code'], reason?: string): PermissionChangeAssessment => ({
     canApplyWithoutApproval: false, requiresOwnerApproval: code === 'approval-required', code, edit, comparison,
+    ...(reason ? { reason } : {}),
   });
   if (!edit.allowed) return refuse(edit.code === 'authority-stale' ? 'stale-before-state' : 'edit-denied');
+  const census = censusPopulation(input.census);
+  if (census.reason) return refuse('census-unavailable', census.reason);
+  if (!authorityRevisionIsCurrent(input.census.revisions, input.current) ||
+      JSON.stringify(evaluateEffectivePermission(input.current, input.census.request, now).request) !== JSON.stringify(edit.request)) {
+    return refuse('census-stale', 'census edit request or before-image differs from the current edit');
+  }
+  const currentRevisions = new Map(input.current.policies.map(policy => [keyOf(policy), policy.revision]));
+  for (const scope of input.census.scopes) {
+    for (const { authority } of scope.owners) {
+      const current = currentRevisions.get(keyOf(authority));
+      if (current !== undefined && current !== authority.revision) {
+        return refuse('census-stale', `affected authority differs from the current revision ${keyOf(authority)}`);
+      }
+    }
+  }
+  for (const proof of [input.before, input.after]) {
+    const problem = censusCoverageProblem(proof, input.census, census.population);
+    if (problem) return refuse('census-unavailable', problem);
+  }
   const floors = input.current.policies.filter(policy => policy.kind === 'platform');
   if (!Array.isArray(input.fixedFloors) || input.fixedFloors.length !== floors.length ||
       input.fixedFloors.some(proof => !proof?.authority || !floors.some(floor =>
         keyOf(floor) === keyOf(proof.authority) && floor.revision === proof.authority.revision)) ||
       !unique(input.fixedFloors.map(proof => keyOf(proof.authority)))) return refuse('floor-unavailable');
   for (const floor of input.fixedFloors) {
+    const problem = censusCoverageProblem(floor.permissions, input.census, census.population);
+    if (problem) return refuse('floor-unavailable', problem);
     const withinFloor = comparePermissionPopulations(floor.permissions, input.after);
     if (withinFloor.kind === 'unknown') return refuse('floor-unavailable');
     if (withinFloor.kind === 'widening') return refuse('floor-denied');
