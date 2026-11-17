@@ -159,7 +159,10 @@ describe('disposable migrated clone feasibility', () => {
       import postgres from 'postgres';
       import { performance } from 'node:perf_hooks';
       import { createHash } from 'node:crypto';
-      import { validateRecoveryLimits } from './apps/operator/lib/release/recovery-limits.ts';
+      // The operator package is CommonJS; this ESM child consumes its default
+      // namespace rather than relying on synthetic named exports from tsx.
+      import recoveryLimits from './apps/operator/lib/release/recovery-limits.ts';
+      const { validateRecoveryLimits } = recoveryLimits;
       const observedAt = new Date().toISOString();
       const probeStartedAtMs = Date.now();
       const commandTimeoutMs = 180_000;
