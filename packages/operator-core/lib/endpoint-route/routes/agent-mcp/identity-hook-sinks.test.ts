@@ -174,6 +174,43 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
     expect(text).toMatch(/^Refused by identity safe-coder rule no-rm: tool input exceeds/);
   });
 
+  it('bounds a stalled identity read, aborts its queue budget, and requires fresh authority on retry', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolve!: (value: WornSyncRules | null) => void;
+      const read = vi.fn((_owner: string, _workspace: string, _observe: unknown,
+        _budget?: { signal: AbortSignal; deadlineAtMs: number }) =>
+        new Promise<WornSyncRules | null>(done => { resolve = done; }));
+      let settled = false;
+      const pending = toolGuardText(input('touch fixture'), read).then(text => { settled = true; return text; });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toBe(true);
+      expect(await pending).toMatch(/^tool_authority_unavailable:/);
+      expect(read.mock.calls[0]![3]!.signal.aborted).toBe(true);
+      resolve(null);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toMatch(/^tool_authority_unavailable:/);
+      expect(await toolGuardText(input('touch fixture'), async () => null)).toBe('');
+      expect(planExecutionGuard).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('ends speculative identity work when the independent plan check refuses', async () => {
+    let identitySignal: AbortSignal | undefined;
+    planExecutionGuard.mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve({
+      code: 'plan_execution_not_ready', reason: 'plan not started',
+    }), 5)));
+    const read = vi.fn((_owner: string, _workspace: string, _observe: unknown,
+      budget?: { signal: AbortSignal; deadlineAtMs: number }) => {
+      identitySignal = budget?.signal;
+      return new Promise<WornSyncRules>(() => {});
+    });
+    expect(await toolGuardText(input('touch fixture'), read)).toBe('plan_execution_not_ready: plan not started');
+    expect(identitySignal?.aborted).toBe(true);
+  });
+
   it('overlaps independent authority reads within the native guard wall and retains identity denial', async () => {
     vi.useFakeTimers();
     try {
@@ -537,7 +574,8 @@ describe('POST /agent-mcp/tool-guard', () => {
   it("refuses from the wearer's worn rules, in the resolved workspace", async () => {
     readAppliedWornRulesMock.mockResolvedValue(noRmRules());
     const out = await post('/agent-mcp/tool-guard', { owner: 'o', workspace: '*', tool: 'Bash', input: { command: 'rm -rf /' } });
-    expect(readAppliedWornRulesMock).toHaveBeenCalledWith('o', 'ws-active', expect.any(Function));
+    expect(readAppliedWornRulesMock).toHaveBeenCalledWith('o', 'ws-active', expect.any(Function),
+      { signal: expect.any(AbortSignal), deadlineAtMs: expect.any(Number) });
     expect(out.text).toBe('Refused by identity safe-coder rule no-rm: no recursive deletes');
   });
 

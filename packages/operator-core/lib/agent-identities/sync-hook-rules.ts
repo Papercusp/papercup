@@ -27,7 +27,8 @@
  * proceeds.
  */
 import { randomUUID } from 'node:crypto';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { HookContextSink, ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
@@ -456,6 +457,40 @@ export type IdentityRuleReadTimingObserver = (timing: {
   stage: 'applied_revision' | 'applied_artifact' | 'local_rules'; durationMs: number;
 }) => void;
 
+/** The native call owns this budget; no result from an expired read authorizes a call. */
+export interface IdentityRuleReadBudget {
+  readonly signal: AbortSignal;
+  readonly deadlineAtMs: number;
+}
+
+function assertIdentityReadCurrent(budget?: IdentityRuleReadBudget): void {
+  budget?.signal.throwIfAborted();
+  if (budget && performance.now() >= budget.deadlineAtMs) throw new Error('identity rule read budget expired');
+}
+
+/**
+ * A queued reservation can arrive after its caller has gone away. Release it
+ * without executing SQL in that case. Canceling a pipelined query directly can
+ * instead cancel a different request on the shared connection (postgres.js).
+ */
+async function identityRuleQuery<T>(read: (sql: Sql) => Promise<T>, budget?: IdentityRuleReadBudget): Promise<T> {
+  assertIdentityReadCurrent(budget);
+  const org = getOrgPg();
+  if (!budget) return read(org.sql);
+  const result = await withAcquisitionDeadline(async ({ disarm, expired }) => {
+    const reserved = await org.sql.reserve();
+    try {
+      if (expired()) throw new Error('identity rule read acquisition expired');
+      assertIdentityReadCurrent(budget);
+      disarm();
+      return await read(reserved);
+    } finally { reserved.release(); }
+  }, { label: 'native-identity-rule-read', pool: org.poolLabel, signal: budget.signal,
+    ms: Math.max(1, Math.ceil(budget.deadlineAtMs - performance.now())) });
+  assertIdentityReadCurrent(budget);
+  return result;
+}
+
 /** Observe the authoritative read itself, including rejection; diagnostics never vote. */
 async function measureIdentityRead<T>(stage: Parameters<IdentityRuleReadTimingObserver>[0]['stage'],
   observe: IdentityRuleReadTimingObserver | undefined, read: () => Promise<T>): Promise<T> {
@@ -467,13 +502,15 @@ async function measureIdentityRead<T>(stage: Parameters<IdentityRuleReadTimingOb
 }
 
 export async function readAppliedWornRules(ownerId: string, workspaceId: string,
-  observeTiming?: IdentityRuleReadTimingObserver): Promise<WornSyncRules | null> {
-  const applied = await readAppliedIdentityRules(ownerId, workspaceId, observeTiming);
+  observeTiming?: IdentityRuleReadTimingObserver, budget?: IdentityRuleReadBudget): Promise<WornSyncRules | null> {
+  const applied = await readAppliedIdentityRules(ownerId, workspaceId, observeTiming, budget);
   if (!applied) return null;
   if (!localSyncReader) return applied.sync;
+  assertIdentityReadCurrent(budget);
   const readLocal = localSyncReader;
   const local = await measureIdentityRead('local_rules', observeTiming,
     () => readLocal(ownerId, workspaceId, applied.harnessSlug));
+  assertIdentityReadCurrent(budget);
   return local.rules.length || local.unreadable.length
     ? { rules: [...applied.sync.rules, ...local.rules], unreadable: [...applied.sync.unreadable, ...local.unreadable] }
     : applied.sync;
@@ -521,28 +558,30 @@ export function wearsPapercuspEngineer(identity: Pick<AppliedIdentityRules, 'pac
 export async function readAppliedIdentityRules(
   ownerId: string, workspaceId: string,
   observeTiming?: IdentityRuleReadTimingObserver,
+  budget?: IdentityRuleReadBudget,
 ): Promise<(AppliedIdentityRules & { readonly harnessSlug: string | null }) | null> {
-  const sql = getOrgPg().sql;
-  const rows = await measureIdentityRead('applied_revision', observeTiming, async () => sql<{
+  const rows = await measureIdentityRead('applied_revision', observeTiming, () => identityRuleQuery(async sql => sql<{
     applied: unknown; harness: string | null;
   }[]>`
     SELECT control_state->'activation'->'applied' AS applied,
            control_state->'scope'->>'harness' AS harness
       FROM harness_shared.session_briefs
      WHERE owner_id = ${ownerId} AND workspace_id = ${workspaceId}
-     LIMIT 1`);
+     LIMIT 1`, budget));
   const applied = rows[0]?.applied as { specificationRevision?: unknown; stateRevision?: unknown } | null | undefined;
   if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return null;
   const revision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
   const identity = await measureIdentityRead('applied_artifact', observeTiming,
-    () => appliedIdentityRulesAt(ownerId, workspaceId, revision));
+    () => appliedIdentityRulesAt(ownerId, workspaceId, revision, budget));
   return { ...identity, harnessSlug: rows[0]?.harness || null };
 }
 
 /** The rules at one applied revision pair the caller already read; throws when unreadable. */
 export async function appliedIdentityRulesAt(
   ownerId: string, workspaceId: string, revision: AppliedIdentityRules['applied'],
+  budget?: IdentityRuleReadBudget,
 ): Promise<AppliedIdentityRules> {
+  assertIdentityReadCurrent(budget);
   const cacheKey = [workspaceId, ownerId, revision.specificationRevision, revision.stateRevision].join('\u0000');
   const cached = wornRulesCache.byRevision.get(cacheKey);
   if (cached && 'rules' in cached) return cached.rules;
@@ -553,7 +592,7 @@ export async function appliedIdentityRulesAt(
   ]);
   // Narrowed to this pair's receipt (WI-10004801): the selection below reads nothing else.
   const artifact = appliedOrCurrentIdentityArtifact(
-    await readGateSelectedLaunchSpec(getOrgPg().sql, ownerId, workspaceId, [revision]), revision);
+    await identityRuleQuery(sql => readGateSelectedLaunchSpec(sql, ownerId, workspaceId, [revision]), budget), revision);
   if (!artifact) {
     rememberWornRules(cacheKey, { unreadableUntil: Date.now() + WORN_RULES_UNREADABLE_TTL_MS });
     throw new Error('applied identity artifact unreadable');

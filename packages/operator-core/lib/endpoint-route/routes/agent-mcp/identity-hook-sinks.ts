@@ -43,6 +43,7 @@ import {
   type GuardVerdict,
   type HookTurnStore,
   type IdentityRuleReadTimingObserver,
+  type IdentityRuleReadBudget,
   type PendingToolCall,
   type WornSyncRules,
 } from '../../../agent-identities/sync-hook-rules';
@@ -176,7 +177,8 @@ function recordToolGuardAcquisitionTimings(snapshot: PgAcquireTimingSnapshot | n
  */
 export async function toolGuardText(
   input: { ownerId: string; workspaceId: string; call: PendingToolCall },
-  readWornRules: (ownerId: string, workspaceId: string, observeTiming?: IdentityRuleReadTimingObserver) => Promise<WornSyncRules | null> = readAppliedWornRules,
+  readWornRules: (ownerId: string, workspaceId: string, observeTiming?: IdentityRuleReadTimingObserver,
+    budget?: IdentityRuleReadBudget) => Promise<WornSyncRules | null> = readAppliedWornRules,
   recordTiming?: (phase: 'plan' | 'identity', durationMs: number) => void,
   observePlanTiming?: PlanExecutionTimingObserver,
   observeIdentityTiming?: IdentityRuleReadTimingObserver,
@@ -185,6 +187,9 @@ export async function toolGuardText(
   // latencies against the native hook's fixed wall. Keep plan refusal first,
   // without making it wait for a stalled identity read or caching either vote.
   const readinessDeadlineAtMs = performance.now() + NATIVE_PLAN_READINESS_BUDGET_MS;
+  const identityController = new AbortController();
+  const identityBudget = { signal: identityController.signal, deadlineAtMs: readinessDeadlineAtMs };
+  const identityUnavailable = 'tool_authority_unavailable: Native identity authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.';
   let planRefused = false;
   const plan = (async () => {
     const startedAt = performance.now();
@@ -223,14 +228,29 @@ export async function toolGuardText(
     const startedAt = performance.now();
     try {
       return guardRefusalText(await evaluateToolGuard(input.call,
-        () => readWornRules(input.ownerId, input.workspaceId, observeIdentityTiming)));
+        () => readWornRules(input.ownerId, input.workspaceId, observeIdentityTiming, identityBudget)));
     } finally { recordTiming?.('identity', performance.now() - startedAt); }
   })]);
-  const refused = await plan;
-  if (refused) return `${refused.code}: ${refused.reason}`;
-  const [identity] = await identityRead;
-  if (identity.status === 'rejected') throw identity.reason;
-  return identity.value;
+  try {
+    const refused = await plan;
+    if (refused) return `${refused.code}: ${refused.reason}`;
+    const remainingMs = readinessDeadlineAtMs - performance.now();
+    if (remainingMs <= 0) return identityUnavailable;
+    const bounded = await withBoundedTimeout(identityRead, {
+      timeoutMs: Math.ceil(remainingMs), warn: false, label: 'native-identity-authority',
+      fallback: [{ status: 'fulfilled', value: identityUnavailable }] as Awaited<typeof identityRead>,
+    });
+    // An acquisition deadline can reject just before this timer runs. Its
+    // unreadable-artifact fallback must never turn expiration into permission.
+    if (performance.now() >= readinessDeadlineAtMs) return identityUnavailable;
+    const [identity] = bounded.value;
+    if (identity.status === 'rejected') throw identity.reason;
+    return identity.value;
+  } finally {
+    // Also ends speculative work after a plan refusal, without canceling another
+    // request's active SQL or keeping a late reservation after this verdict.
+    identityController.abort(new Error('native authority operation ended'));
+  }
 }
 
 /**

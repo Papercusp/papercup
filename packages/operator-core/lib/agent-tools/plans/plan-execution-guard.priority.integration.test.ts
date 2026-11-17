@@ -5,6 +5,7 @@ import { _resetForTests, getOrgPg, withPriorityOrgPg } from '@papercusp/db-org';
 import { pgResultDiagnosticSnapshot } from '@papercusp/db-org/acquire-registry';
 import { specFor } from '../../../../../apps/operator/scripts/hooks/inject/ports.mjs';
 import { checkPlanExecutionGuard } from './plan-execution-guard';
+import { readAppliedIdentityRules } from '../../agent-identities/sync-hook-rules';
 import { orgTemplateKey, provisionOrgTemplate } from '../../../test/_org-test-db';
 
 let db: MigratedTestDb;
@@ -38,6 +39,40 @@ afterAll(async () => {
 });
 
 describe('native plan authority read queue reproduction (EI-27691198286861651)', () => {
+  it('expires an abandoned identity read before SQL and returns late reservations to the pool', async () => {
+    await withPriorityOrgPg(async () => {
+      const priority = getOrgPg().sql;
+      const held = await Promise.all(Array.from({ length: priority.options.max }, () => priority.reserve()));
+      const recordedBefore = pgResultDiagnosticSnapshot('org-admin-priority').totalRecorded;
+      const controller = new AbortController();
+      let settled = false;
+      const read = readAppliedIdentityRules('abandoned-identity-fixture', 'private-fixture', undefined, {
+        signal: controller.signal, deadlineAtMs: performance.now() + 10_000,
+      }).then(value => { settled = true; return { value, error: null }; },
+        error => { settled = true; return { value: null, error }; });
+      try {
+        // Let the real client enqueue acquisition, then end the requesting operation.
+        await delay(20);
+        expect(settled).toBe(false);
+        controller.abort(new Error('fixture operation ended'));
+        await delay(20);
+        expect(settled).toBe(true);
+      } finally {
+        for (const connection of held) connection.release();
+        await read;
+      }
+      expect((await read).error).toMatchObject({ message: 'fixture operation ended' });
+      // Reacquiring the complete pool is a consumer-level recovery check: no late
+      // reservation may leak, and the abandoned read must never become a query.
+      const recovered = await Promise.all(Array.from({ length: priority.options.max }, () => priority.reserve()));
+      try {
+        const snapshot = pgResultDiagnosticSnapshot('org-admin-priority');
+        expect(snapshot.totalRecorded - recordedBefore).toBe(0);
+      } finally { for (const connection of recovered) connection.release(); }
+      expect((await priority`SELECT 42::int AS value`)[0].value).toBe(42);
+    });
+  }, 15_000);
+
   it('can miss the native wall in the priority client queue while an ordinary read succeeds', async () => {
     const ordinary = getOrgPg().sql;
     const preTool = specFor('pre-tool');
