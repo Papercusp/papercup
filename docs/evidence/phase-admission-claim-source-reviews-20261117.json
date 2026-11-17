@@ -1760,6 +1760,111 @@
           ]
         }
       ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/141-plan-item-claims.sql\",\"<sql-module>\",\"sql\",\"454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e\"]#1",
+      "sourceSha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e",
+      "statementSha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the complete migration: CREATE TABLE defines an empty claim relation, constraints, defaults, indexes and role grants. No INSERT, UPDATE, DELETE, writable CTE or row is created or renewed. Defaults only run under a later explicit INSERT, whose exact writer remains separately unresolved. This is schema/permission setup, not permission to execute a migration or bypass any security/system hold.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "The full exact migration was manually inspected because the SQL parser does not accept psql directives/PLpgSQL; no parser failure is an exclusion. Inspected the complete migration: CREATE TABLE defines an empty claim relation, constraints, defaults, indexes and role grants. No INSERT, UPDATE, DELETE, writable CTE or row is created or renewed. Defaults only run under a later explicit INSERT, whose exact writer remains separately unresolved. This is schema/permission setup, not permission to execute a migration or bypass any security/system hold.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql\",\"<sql-module>\",\"sql\",\"be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d\"]#1",
+      "sourceSha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d",
+      "statementSha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the complete migration: indexes and the fleet_assignment UNION view read claims/assignments/work-items/presence; grants expose that read. notify_fleet_assignment branches on the old/new trigger record, builds a notification payload, calls pg_notify and returns that record. Every installed trigger is AFTER the external write; its WHEN expressions only filter notifications. It never writes a claim, holder, lease or lifecycle status. This exact source review neither exempts the triggering writes nor attests a future live catalog.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "The full exact migration was manually inspected because the SQL parser does not accept psql directives/PLpgSQL; no parser failure is an exclusion. Inspected the complete migration: indexes and the fleet_assignment UNION view read claims/assignments/work-items/presence; grants expose that read. notify_fleet_assignment branches on the old/new trigger record, builds a notification payload, calls pg_notify and returns that record. Every installed trigger is AFTER the external write; its WHEN expressions only filter notifications. It never writes a claim, holder, lease or lifecycle status. This exact source review neither exempts the triggering writes nor attests a future live catalog.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql\",\"<sql-module>\",\"sql\",\"003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf\"]#1",
+      "sourceSha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf",
+      "statementSha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
+          "sha256": "454ff385a7a1fbab006119cfef93caa5889dbc33c2abe87f7a561f3f7ef66e9e"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
+          "sha256": "be8cdfc5ec764e1bf5c3da2fcc6db7186fdfcd96ca186769025b3dd52ee8402d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+          "sha256": "003f4b0d2f6ebc855164e857ed948b8e03bace5118631b1e1f8b084b5089e1cf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the complete replacement notifier and both AFTER work_items trigger declarations. The function selects the OLD/NEW record, maps its source/agent fields, performs pg_notify and returns that same record. The two triggers notify on a taken_by INSERT/change after the separate writer; they perform no claim, lease or lifecycle mutation. Recorded catalog/body comparison establishes only the prior observed notifier match, not permission to execute DDL or current runtime acceptance.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "The full exact migration was manually inspected because the SQL parser does not accept psql directives/PLpgSQL; no parser failure is an exclusion. Inspected the complete replacement notifier and both AFTER work_items trigger declarations. The function selects the OLD/NEW record, maps its source/agent fields, performs pg_notify and returns that same record. The two triggers notify on a taken_by INSERT/change after the separate writer; they perform no claim, lease or lifecycle mutation. Recorded catalog/body comparison establishes only the prior observed notifier match, not permission to execute DDL or current runtime acceptance.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
     }
   ],
   "pendingAdvancing": [

@@ -285,12 +285,14 @@ describe('cross-client native recovery handshake', () => {
       expect(await injectIntoHostWithConfirmation(f.sock, f.message)).toMatchObject({ ok: true, reason: 'accepted' });
       await until(() => f.output().includes('NATIVE_STARTED'));
       let confirmed = false;
+      const confirmations: unknown[] = [];
       for (let n = 0; n < 20 && !confirmed; n++) {
         const result = await injectIntoHostWithConfirmation(f.sock, f.message);
+        confirmations.push(result);
         confirmed = result.reason === 'duplicate-delivery-id';
         if (!confirmed) await delay(30);
       }
-      expect(confirmed).toBe(true);
+      expect(confirmed, JSON.stringify({ agent, confirmations, output: f.output() })).toBe(true);
       expect(f.output().match(/SUBMIT:/g)).toHaveLength(1);
     } finally { await f.close(); }
   }, 25_000);

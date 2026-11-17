@@ -99,7 +99,7 @@ describe('papercusp database-backup progress watchdog', () => {
 
   it('lets archive growth extend the floor but never the absolute ceiling', () => {
     const body = functionBody('run_bounded_watched');
-    expect(body).toContain('measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)');
+    expect(body).toContain('measurement_output=$(timeout --kill-after=1s 4s sudo -n -u postgres du -sb "$progress_path" 2>&1)');
     expect(body).not.toContain('current_bytes=$(du -sb "$progress_path"');
     expect(body).not.toContain('current_bytes=${current_bytes:-0}');
     expect(body).toContain('[ "$current_bytes" -gt "$last_bytes" ]');
@@ -286,6 +286,88 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       expect(lines[1]).toContain('probe_detail=database unavailable');
       expect(lines[2]).toContain('snapshot_source=unavailable snapshot_elapsed=unknown snapshot=[]');
       expect(lines[2]).not.toContain('"pid":42');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['success', 'failure-with-output', 'malformed', 'hang', 'hang-ignore-term'])('fails closed on an unavailable space measurement: %s', (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-space-deadline-'));
+    try {
+      const df = join(root, 'df');
+      writeFileSync(df, [
+        '#!/bin/bash',
+        'printf "Avail\\n"',
+        '[ "$MEASURE_MODE" != malformed ] || { printf "not-a-number\\n"; exit 0; }',
+        'printf "2097152\\n"',
+        '[ "$MEASURE_MODE" != failure-with-output ] || exit 1',
+        '[ "$MEASURE_MODE" != hang-ignore-term ] || trap "" TERM',
+        '[[ "$MEASURE_MODE" != hang* ]] || exec /bin/sleep 30',
+      ].join('\n'));
+      chmodSync(df, 0o755);
+      const run = spawnSync('timeout', ['--kill-after=1s', '2s', 'bash', '-c', [
+        'set -uo pipefail',
+        'PGOUT=/fixture/backup-volume',
+        'timeout() {',
+        '  [ "$1" = --kill-after=1s ] && [ "$2" = 4s ] || return 98',
+        '  shift 2',
+        '  command timeout --kill-after=0.1s 0.1s "$@"',
+        '}',
+        functionBody('fs_avail_gb'),
+        'fs_avail_gb',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 4_000,
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, MEASURE_MODE: mode },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout.trim()).toBe(mode === 'success' ? '2' : '0');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['hang', 'hang-ignore-term'])('terminates its producer when the archive-size observer %s', (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-size-deadline-'));
+    try {
+      const sudo = join(root, 'sudo');
+      const progress = join(root, 'archive.tmp');
+      writeFileSync(progress, 'x');
+      writeFileSync(sudo, [
+        '#!/bin/bash',
+        '[ "$*" = "-n -u postgres du -sb $PROGRESS_PATH" ] || exit 97',
+        '[ "$MEASURE_MODE" != hang-ignore-term ] || trap "" TERM',
+        'exec /bin/sleep 30',
+      ].join('\n'));
+      chmodSync(sudo, 0o755);
+      const run = spawnSync('timeout', ['--kill-after=1s', '2s', 'bash', '-c', [
+        'set -uo pipefail',
+        'PC_BACKUP_WATCH_SEC=0.01',
+        'PC_BACKUP_MIN_FREE_GB=1',
+        'PROGRESS_STALE_SEC=1',
+        'KILL_GRACE_SEC=0',
+        'fs_avail_gb() { echo 999; }',
+        'log() { printf "%s\\n" "$*" >&2; }',
+        'reap_own_stragglers() { :; }',
+        'timeout() {',
+        '  [ "$1" = --kill-after=1s ] && [ "$2" = 4s ] || return 98',
+        '  shift 2',
+        '  command timeout --kill-after=0.1s 0.1s "$@"',
+        '}',
+        watchdogSource(),
+        'run_bounded_watched 1 8 "$PROGRESS_PATH" /bin/sleep 30',
+        'rc=$?',
+        'printf "watchdog returned:%s\\n" "$rc"',
+        'test "$rc" -ne 0',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 4_000,
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PROGRESS_PATH: progress, MEASURE_MODE: mode },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('watchdog returned:');
+      expect(run.stderr).toContain('unable to measure archive progress');
+      expect(run.stderr).toContain(mode === 'hang' ? 'du_status=124' : 'du_status=137');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -269,8 +269,7 @@ async function privateMcpPreflightOnlyScenario(context: TestContext) {
       'packages/operator-core/test/isolated-integration-proof.ts',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'packages/operator-core/lib/serving-generation.ts', 'packages/operator-core/lib/superuser-token.ts'],
-    retainedArtifacts: currentSuNativeRetainedArtifacts(false)
-      .filter(path => path !== 'phases/prepare/native-egress-preflight.json'),
+    retainedArtifacts: currentSuNativeRetainedArtifacts(false, { nativeEgress: false }),
     prepare: async evidenceDir => {
       // testing:run doesn't inherit shell-local test harness selectors. Pass
       // this test's exact harness to both source qualification and the builder.

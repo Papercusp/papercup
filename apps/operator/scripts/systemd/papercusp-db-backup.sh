@@ -222,9 +222,12 @@ PC_BACKUP_WATCH_SEC="${PC_BACKUP_WATCH_SEC:-15}"        # mid-flight free-space 
 # ITS OWN filesystem — a guard that measures the wrong volume is worse than no
 # guard, because it reports headroom that does not exist where we are writing.
 fs_avail_gb() {
-  local kb
-  kb=$(df --output=avail -k "$PGOUT" 2>/dev/null | tail -1 | tr -d '[:space:]')
-  [ -n "$kb" ] || { echo 0; return; }   # unreadable df ⇒ report 0 ⇒ fail closed
+  local kb measurement
+  if ! measurement=$(timeout --kill-after=1s 4s df --output=avail -k "$PGOUT" 2>/dev/null); then
+    echo 0; return   # failed/timed-out df ⇒ report 0 ⇒ fail closed
+  fi
+  kb=$(printf '%s\n' "$measurement" | tail -1 | tr -d '[:space:]')
+  [[ "$kb" =~ ^[0-9]+$ ]] || { echo 0; return; }
   echo $(( kb / 1048576 ))
 }
 
@@ -366,7 +369,9 @@ log "headroom ok: ${PC_FREE_GB} GiB free (floor ${PC_BACKUP_MIN_FREE_GB} GiB)"
 # Never reprioritize the PostgreSQL service or other clients.
 prioritize_backup_backends() {
   local pids pid
-  if ! pids=$($PSQL "SET statement_timeout = '3s';
+  # A server statement timeout cannot bound sudo/PAM or client startup. Keep
+  # every observer below a wall deadline so the watchdog can resume its checks.
+  if ! pids=$(timeout --kill-after=1s 4s $PSQL "SET statement_timeout = '3s';
       SELECT pid FROM pg_stat_activity
        WHERE pid <> pg_backend_pid()
          AND (application_name = '$HOST_BACKUP_APPLICATION_NAME'
@@ -379,8 +384,8 @@ prioritize_backup_backends() {
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
     # A backend can finish between the query and the syscall. Its disappearance
     # must not fail an otherwise valid archive. Run as postgres, not root.
-    sudo -n -u postgres renice -n 19 -p "$pid" >/dev/null 2>&1 || true
-    sudo -n -u postgres ionice -c 2 -n 7 -p "$pid" >/dev/null 2>&1 || true
+    timeout --kill-after=1s 4s sudo -n -u postgres renice -n 19 -p "$pid" >/dev/null 2>&1 || true
+    timeout --kill-after=1s 4s sudo -n -u postgres ionice -c 2 -n 7 -p "$pid" >/dev/null 2>&1 || true
   done <<< "$pids"
 }
 
@@ -490,7 +495,7 @@ run_bounded_watched() {
         current_bytes=0
       else
         progress_path_seen=1
-        measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)
+        measurement_output=$(timeout --kill-after=1s 4s sudo -n -u postgres du -sb "$progress_path" 2>&1)
         measurement_rc=$?
         current_bytes=${measurement_output%%$'\t'*}
         if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then

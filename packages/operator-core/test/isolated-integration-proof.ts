@@ -239,12 +239,16 @@ export const CURRENT_SU_RECOVERY_ALLOCATION_ARTIFACTS = [
   'phases/execute/recovery-fact-artifact-proof.json',
 ] as const;
 
-export function currentSuNativeRetainedArtifacts(managedCarry: boolean): string[] {
+export function currentSuNativeRetainedArtifacts(managedCarry: boolean,
+  options: { nativeEgress?: boolean } = {}): string[] {
   return [
     'phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
-    'phases/prepare/native-egress-preflight.json',
-    'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST,
-    'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_CLEANUP_RECEIPT,
+    // The MCP-only probe allocates no native egress and cannot produce its receipts.
+    ...(options.nativeEgress !== false ? [
+      'phases/prepare/native-egress-preflight.json',
+      'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_RUN_ID_MANIFEST,
+      'phases/execute/' + CURRENT_SU_NATIVE_EGRESS_CLEANUP_RECEIPT,
+    ] : []),
     'phases/execute/private-mcp-preflight.json',
     ...(managedCarry ? ['phases/execute/native-model-requests.json'] : []),
     'phases/prepare/bundle-restricted-hold-inputs.json',
