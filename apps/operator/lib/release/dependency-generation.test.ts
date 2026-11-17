@@ -40,6 +40,49 @@ const SCRIPT =
 
 const roots: string[] = [];
 
+describe('dependency phase resource evidence', () => {
+  it.skipIf(process.platform !== 'linux')('records real waited-child CPU and process I/O without tracing descendants', () => {
+    const root = mkdtempSync(join(tmpdir(), 'generation-phase-resources-')); roots.push(root);
+    const result = spawnSync('bash', ['-c', `
+set -euo pipefail
+source "$SCRIPT"
+started="$(dependency_generation_now_ms)"
+dependency_generation_emit_phase before "$started" ok
+bash -c 'for ((i=0; i<200000; i++)); do :; done'
+printf '%04096d' 0 > "$RESOURCE_FILE"
+dependency_generation_emit_phase after "$started" failed reason=fixture
+`], { encoding: 'utf8', env: { ...process.env, SCRIPT, RESOURCE_FILE: join(root, 'written') } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    const phases = result.stderr.split('\n').filter(line => line.includes('PHASE schema=1'))
+      .map(line => Object.fromEntries([...line.matchAll(/([a-z_]+)=([^ ]+)/g)].map(match => [match[1], match[2]])));
+    expect(phases).toHaveLength(2);
+    const [before, after] = phases;
+    expect(before).toMatchObject({ phase: 'before', outcome: 'ok', resource_cpu: 'measured', resource_io: 'measured' });
+    expect(after).toMatchObject({ phase: 'after', outcome: 'failed', reason: 'fixture',
+      resource_pid: before.resource_pid, resource_cpu: 'measured', resource_io: 'measured' });
+    expect(Number(after.child_user_ticks) + Number(after.child_system_ticks))
+      .toBeGreaterThan(Number(before.child_user_ticks) + Number(before.child_system_ticks));
+    expect(Number(after.write_chars)).toBeGreaterThanOrEqual(Number(before.write_chars) + 4096);
+    expect(Number(after.duration_ms)).toBeGreaterThanOrEqual(Number(before.duration_ms));
+    expect(statSync(join(root, 'written')).size).toBe(4096);
+  });
+
+  it('keeps unavailable counters explicit and preserves phase failures under strict bash', () => {
+    const result = spawnSync('bash', ['-c', `
+set -euo pipefail
+source "$SCRIPT"
+dependency_generation_resource_counters 999999999
+printf '\\n'
+dependency_generation_resource_counters() { return 1; }
+dependency_generation_emit_phase probe "$(dependency_generation_now_ms)" failed reason=fixture
+`], { encoding: 'utf8', env: { ...process.env, SCRIPT } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('resource_pid=999999999 resource_cpu=unknown resource_io=unknown');
+    expect(result.stderr).toMatch(/PHASE schema=1 phase=probe outcome=failed duration_ms=\d+ resource_cpu=unknown resource_io=unknown reason=fixture/);
+  });
+});
+
 describe('disposable committed-reader generation stores', () => {
   function reader(managed = true) {
     const fixture = mkdtempSync(join(tmpdir(), 'generation-store-lifetime-'));
@@ -2765,6 +2808,7 @@ exec /bin/cp "$@"
 
   it('P-007: keeps root-lock private installs outside the declared workspace registry', () => {
     const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
     writeFileSync(join(integration, 'package.json'), JSON.stringify({
       name: 'fixture', private: true, workspaces: ['packages/*'],
     }));
@@ -2773,19 +2817,22 @@ exec /bin/cp "$@"
     lockFixturePackage(integration, privateTree);
     writeFileSync(join(integration, privateTree, 'index.js'), 'root-private-v1\n');
 
-    const result = publish(integration, {}, undefined, ['packages/a']);
+    const result = publish(integration, {}, generationRoot, ['packages/a']);
     expect(result.status, result.stderr).toBe(0);
-    const generation = publishedPath(result.stdout);
+    const generation = join(generationRoot, publishedIdentity(result.stdout));
+    expect(publishedPath(result.stdout)).toBe(generation);
     expect(readFileSync(join(generation, 'tree', privateTree, 'index.js'), 'utf8'))
       .toBe('root-private-v1\n');
     expect(existsSync(join(generation, 'tree/packages/a/node_modules/local'))).toBe(true);
     expect(existsSync(join(generation, 'tree/packages/b/node_modules'))).toBe(false);
 
     writeFileSync(join(integration, privateTree, 'index.js'), 'root-private-v2\n');
-    const changed = publish(integration, {}, undefined, ['packages/a']);
+    const changed = publish(integration, {}, generationRoot, ['packages/a']);
     expect(changed.status, changed.stderr).toBe(0);
     expect(publishedIdentity(changed.stdout)).not.toBe(publishedIdentity(result.stdout));
-    expect(readFileSync(join(publishedPath(changed.stdout), 'tree', privateTree, 'index.js'), 'utf8'))
+    const changedGeneration = join(generationRoot, publishedIdentity(changed.stdout));
+    expect(publishedPath(changed.stdout)).toBe(changedGeneration);
+    expect(readFileSync(join(changedGeneration, 'tree', privateTree, 'index.js'), 'utf8'))
       .toBe('root-private-v2\n');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
