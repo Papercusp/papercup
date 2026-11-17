@@ -86,6 +86,31 @@ describe('phase binding writer census', () => {
     expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toHaveLength(4);
   });
 
+  it('retains aliased callbacks computed dispatch and returned helpers as unresolved candidates', () => {
+    const inventory = inventoryPhaseWriters([
+      source(write),
+      source("import { exampleWrite as imported } from './example'; const first = imported; let second; second = first; async function outer(tx) { await second(tx); await invoke(second); }", 'packages/aliases.ts'),
+      source('async function dispatch(db, method, statement, callback) { await db[method](statement); await getWriter()(statement); await callback(statement); }', 'packages/computed.ts'),
+    ]);
+    const aliases = inventory.sites.filter(site => site.path === 'packages/aliases.ts' && site.kind === 'helper-edge');
+    expect(aliases.map(site => site.statement)).toEqual(['second(tx)', 'invoke(second)']);
+    const indirect = inventory.sites.filter(site => site.path === 'packages/computed.ts'
+      && site.unresolved.includes('indirect-call-target-requires-review'));
+    expect(indirect.map(site => site.statement).sort()).toEqual(['callback(statement)', 'db[method](statement)', 'getWriter()(statement)']);
+    const report = reconcilePhaseWriterCensus(inventory, []);
+    expect(report.ready).toBe(false);
+    expect(report.coverage.notChecked).toEqual(report.coverage.population);
+  });
+
+  it('retains the serialized append and its batch authority as separate source identities', () => {
+    const inventory = inventoryPhaseWriters([source('async function claim(log, ops) { await log.withAppendsHeld(async held => { await held.appendBatch(ops); }); }', 'libs/claims.ts')]);
+    const appends = inventory.sites.filter(site => site.kind === 'authority-append');
+    expect(appends).toHaveLength(2);
+    expect(appends.some(site => site.statement === 'held.appendBatch(ops)')).toBe(true);
+    expect(new Set(appends.map(site => site.id)).size).toBe(2);
+    expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
+  });
+
   it('keeps complete identities and the decisive writer beyond former lookahead boundaries', () => {
     for (const padding of [1199, 1200, 1201, 10000]) {
       const statement = `UPDATE harness_shared.harness_plans SET ${' '.repeat(padding)}content='new',content_hash='hash' WHERE plan_slug='p'`;

@@ -136,7 +136,8 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const sourceHashes = new Map(input.map(source => [source.path, digest(source.content)]));
   const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; statement: string;
-    line: number; importedName?: string }> = [];
+    line: number; importedName?: string; argumentNames: string[] }> = [];
+  const aliases: Array<{ name: string; target: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
     kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
       'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees'>> = {}) => {
@@ -196,7 +197,24 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       };
       const bindings = new Map(unit.sites.filter(site => site.kind === 'call')
         .map(site => [site.node, site.binding]));
+      const targetName = (node: ts.Node | undefined): string | undefined => {
+        if (!node) return;
+        if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node)
+          || ts.isNonNullExpression(node) || ts.isTypeAssertionExpression(node)) return targetName(node.expression);
+        if (ts.isIdentifier(node)) return node.text;
+        if (ts.isPropertyAccessExpression(node)) return node.name.text;
+      };
       const visit = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+          const target = targetName(node.initializer);
+          if (target) aliases.push({ name: node.name.text, target });
+        } else if (ts.isImportSpecifier(node) && !node.isTypeOnly) {
+          aliases.push({ name: node.name.text, target: (node.propertyName ?? node.name).text });
+        } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          && ts.isIdentifier(node.left)) {
+          const target = targetName(node.right);
+          if (target) aliases.push({ name: node.left.text, target });
+        }
         if (ts.isTaggedTemplateExpression(node)) {
           const text = literal(node.template);
           if (text) inspectSql(node, text.sql, text.edges);
@@ -204,7 +222,19 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const callee = node.expression.getText(unit.ast);
           calls.push({ path: source.path, operation: operation(node), callee,
             statement: node.getText(unit.ast), line: unit.span(node).line,
+            argumentNames: node.arguments.map(targetName).filter((name): name is string => name !== undefined),
             ...(bindings.get(node)?.imported ? { importedName: bindings.get(node)!.imported } : {}) });
+          let parameterCall = false;
+          if (ts.isIdentifier(node.expression)) {
+            for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+              if (ts.isFunctionLike(parent) && parent.parameters.some(parameter =>
+                ts.isIdentifier(parameter.name) && parameter.name.text === callee)) parameterCall = true;
+            }
+          }
+          if (parameterCall || ts.isElementAccessExpression(node.expression) || ts.isCallExpression(node.expression)) {
+            add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
+              'unresolved', { dynamicEdges: [callee], unresolved: ['indirect-call-target-requires-review'] });
+          }
           if (sqlMethod.test(callee)) {
             const text = node.arguments[0] && literal(node.arguments[0]);
             if (text) inspectSql(node, text.sql, text.edges);
@@ -212,7 +242,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
               'unresolved', { dynamicEdges: [node.arguments[0]?.getText(unit.ast) ?? '<missing-query>'],
                 unresolved: ['dynamic-sql-target-unresolved'] });
           }
-          if (/\.withAppendsHeld$/.test(callee)
+          if (/\.(?:withAppendsHeld|appendBatch)$/.test(callee)
             || /\.append$/.test(callee) && /feature.claim|plan.item|work.item/i.test(source.content)) {
             add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
               'authority-append', { dynamicEdges: node.arguments.map(arg => arg.getText(unit.ast)) });
@@ -253,10 +283,15 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   let changed = true;
   while (changed) {
     changed = false;
+    // Aliases supply candidates, never binding proof. Retain every assignment
+    // and ambiguous name rather than choosing a convenient lexical scope.
+    for (const alias of aliases) if (writers.has(alias.target) && !writers.has(alias.name)) {
+      writers.add(alias.name); changed = true;
+    }
     for (const call of calls) {
       const name = call.importedName ?? call.callee.split('.').at(-1)!;
       const key = JSON.stringify([call.path, call.operation, call.statement, call.line]);
-      if (!writers.has(name) || added.has(key)) continue;
+      if ((!writers.has(name) && !call.argumentNames.some(argument => writers.has(argument))) || added.has(key)) continue;
       added.add(key);
       const source = byPath.get(call.path)!;
       add(source, call.operation, call.statement, call.line, 'helper-edge', {
