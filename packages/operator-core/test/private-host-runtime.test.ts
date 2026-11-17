@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as realDelay } from 'node:timers/promises';
 import { afterEach, expect, it, vi } from 'vitest';
 import { runHarness } from '@papercusp/verification-harness';
 import * as ts from 'typescript';
@@ -21,6 +22,43 @@ import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
+const builderClockTimers = ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] as const;
+
+async function waitForRealBuilderState(ready: () => boolean) {
+  const deadline = performance.now() + 5000;
+  while (!ready()) {
+    if (performance.now() >= deadline) throw new Error('Real builder did not reach its required test state');
+    await realDelay(10);
+  }
+}
+
+// The child writes real paired journal entries, then waits for the test to
+// advance the watchdog clock before starting the next distinct step.
+const progressingRealBuilder = 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; '
+  + 'for step in a b c d e; do bundle_host_run_step "$step" true; touch "$4.$step.ready"; '
+  + 'while ! test -f "$4.$step.release"; do sleep .01; done; done; echo bundle > "$3"';
+
+async function advanceRealBuilderSteps<T>(directory: string, build: Promise<T>): Promise<T> {
+  let settled = false;
+  const outcome = build.then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+  try {
+    for (const step of ['a', 'b', 'c', 'd', 'e']) {
+      await waitForRealBuilderState(() => existsSync(join(directory, `progress-step.${step}.ready`)));
+      await vi.advanceTimersByTimeAsync(600);
+      writeFileSync(join(directory, `progress-step.${step}.release`), '');
+    }
+    await waitForRealBuilderState(() => settled);
+    const result = await outcome;
+    if ('error' in result) throw result.error;
+    return result.value;
+  } finally {
+    // A failed readiness assertion still drives the unchanged absolute ceiling
+    // so the real process group is retired before this test restores time.
+    await vi.advanceTimersByTimeAsync(6000);
+    await outcome;
+    vi.useRealTimers();
+  }
+}
 function cleanupPrivateHostTestDirectories(directories: string[], failed: boolean) {
   if (failed) {
     process.stderr.write(`[private-host-runtime] retained failure evidence: ${JSON.stringify(directories)}\n`);
@@ -1223,9 +1261,12 @@ it.each(['advancing', 'repeated', 'regressed', 'changed-total', 'unpaired', 'end
 it('allows a progressing real build beyond its checkpoint and retains its bounded success', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
-  const result = await buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
-    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .5; done; echo bundle > "$3"',
-      '_', common, journal, join(evidenceDir, 'hono-host.mjs')], timeoutMs: 2000, maxMs: 6000, pollMs: 20 });
+  vi.useFakeTimers({ toFake: [...builderClockTimers] });
+  const result = await advanceRealBuilderSteps(evidenceDir,
+    buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+      args: ['-c', progressingRealBuilder, '_', common, journal,
+        join(evidenceDir, 'hono-host.mjs'), join(evidenceDir, 'progress-step')],
+      timeoutMs: 2000, maxMs: 6000, pollMs: 20 }));
   expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt).toMatchObject({ status: 0, signal: null, progress: { extensions: expect.any(Number) } });
@@ -1237,11 +1278,13 @@ it('allows a progressing real build beyond its checkpoint and retains its bounde
 it('prepares the real bundle receipt after progress renews the build checkpoint', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-prepared-builder-')); dirs.push(evidenceDir);
   const bundle = join(evidenceDir, 'hono-host.mjs');
-  const result = await preparePrivateOperatorApiBundle(evidenceDir, evidenceDir, { builder: {
-    command: 'bash', args: ['-c',
-      'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .5; done; echo bundle > "$3"',
-      '_', common, `${bundle}.build-steps.jsonl`, bundle], timeoutMs: 2000, maxMs: 6000, pollMs: 20,
-  } });
+  vi.useFakeTimers({ toFake: [...builderClockTimers] });
+  const result = await advanceRealBuilderSteps(evidenceDir,
+    preparePrivateOperatorApiBundle(evidenceDir, evidenceDir, { builder: {
+      command: 'bash', args: ['-c', progressingRealBuilder, '_', common,
+        `${bundle}.build-steps.jsonl`, bundle, join(evidenceDir, 'progress-step')],
+      timeoutMs: 2000, maxMs: 6000, pollMs: 20,
+    } }));
   const retained = readFileSync(join(evidenceDir, 'operator-api-preflight.json'));
   expect(JSON.parse(String(retained))).toEqual({ path: bundle, sha256: result.sha256 });
   expect(result.receiptSha256).toBe(createHash('sha256').update(retained).digest('hex'));
@@ -1253,6 +1296,8 @@ it('prepares the real bundle receipt after progress renews the build checkpoint'
 });
 
 it('rebuilds relocated source with a fresh journal while preserving the first build evidence', async () => {
+  // This case judges archive custody, not the OS scheduler's startup latency.
+  vi.useFakeTimers({ toFake: [...builderClockTimers] });
   const directory = mkdtempSync(join(tmpdir(), 'private-relocated-build-')); dirs.push(directory);
   const source = join(directory, 'source');
   let output = join(source, 'dist-host');
@@ -1283,6 +1328,7 @@ it('rebuilds relocated source with a fresh journal while preserving the first bu
 });
 
 it('reports only distinct completed build steps to the enclosing watchdog', async () => {
+  vi.useFakeTimers({ toFake: [...builderClockTimers] });
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-progress-')); dirs.push(evidenceDir);
   const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
   const completed: Array<{ step: string; completedSteps: number }> = [];
@@ -1319,9 +1365,24 @@ it.each(['logs', 'repeated-step', 'repeated-step-new-pid', 'incomplete-step'])('
     : noise === 'repeated-step' ? 'bundle_host_run_step same true'
     : noise === 'repeated-step-new-pid' ? '(bundle_host_run_step same true)'
     : 'printf \'{"at":\' >> "$BUNDLE_HOST_STEP_LOG"';
-  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+  vi.useFakeTimers({ toFake: [...builderClockTimers] });
+  const build = buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
     args: ['-c', `source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step same true; while true; do ${command}; sleep .08; done`,
-      '_', common, journal], timeoutMs: 600, maxMs: 2400, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*progress-stalled/);
+      '_', common, journal], timeoutMs: 600, maxMs: 2400, pollMs: 20 });
+  const rejected = expect(build).rejects.toThrow(/ETIMEDOUT.*progress-stalled/);
+  try {
+    await waitForRealBuilderState(() => existsSync(journal) && readFileSync(journal, 'utf8')
+      .split('\n').some(line => {
+        try { const row = JSON.parse(line); return row.event === 'end' && row.step === 'same' && row.status === 0; }
+        catch { return false; }
+      }));
+    await vi.advanceTimersByTimeAsync(1200);
+    await rejected;
+  } finally {
+    await vi.advanceTimersByTimeAsync(2400);
+    await build.catch(() => {});
+    vi.useRealTimers();
+  }
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt).toMatchObject({ error: { code: 'ETIMEDOUT' }, watchdog: { completedSteps: 1, reason: 'progress-stalled' } });
   expect(receipt.elapsedMs).toBeLessThan(2400);
@@ -1331,7 +1392,6 @@ it('stops the entire async builder group when no completed progress exists', asy
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const childFile = join(evidenceDir, 'descendant.pid');
   const logFile = join(evidenceDir, 'operator-api-build.log');
-  const { setTimeout: realDelay } = await import('node:timers/promises');
   // Hold the watchdog clock until the real descendant is ready. A 600ms
   // startup assumption can kill the shell before it creates any descendant,
   // leaving this process-group guard unexercised.
@@ -1342,14 +1402,7 @@ it('stops the entire async builder group when no completed progress exists', asy
     timeoutMs: 600, maxMs: 2400, pollMs: 20 });
   const rejected = expect(build).rejects.toThrow(/ETIMEDOUT.*progress-unknown/);
   try {
-    const readyDeadline = performance.now() + 5000;
-    while (!existsSync(childFile) || !readFileSync(logFile, 'utf8').includes('CHILD_READY')) {
-      assertReady: {
-        if (performance.now() < readyDeadline) break assertReady;
-        throw new Error('Real builder descendant did not become ready before watchdog exercise');
-      }
-      await realDelay(10);
-    }
+    await waitForRealBuilderState(() => existsSync(childFile) && readFileSync(logFile, 'utf8').includes('CHILD_READY'));
     await vi.advanceTimersByTimeAsync(600);
     await rejected;
   } finally {
