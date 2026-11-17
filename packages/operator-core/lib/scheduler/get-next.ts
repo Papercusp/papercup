@@ -479,14 +479,26 @@ function isLeaf(node: FilterNode): node is FilterLeaf {
  * arise from a validated-coherent spec (the validator already enforces op/value
  * coherence) and still produces well-typed SQL.
  */
-function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
+function filterColumn(sql: OrgSql, field: string, canonicalPlanColumns: boolean): SqlFragment {
+  const legacy = FIELD_MAP[field]!.col(sql);
+  if (!canonicalPlanColumns || (field !== 'plan' && field !== 'plan_item')) return legacy;
+  // Adopted rows can carry only the canonical association. Keep legacy/run
+  // grouping first, and require the complete pair before using this fallback.
+  // Compatibility views omit these columns, so only base-table readers opt in.
+  const canonical = field === 'plan' ? sql`plan_slug` : sql`ARRAY[plan_line_id]`;
+  return sql`COALESCE(${legacy}, CASE
+    WHEN NULLIF(plan_slug, '') IS NOT NULL AND NULLIF(plan_line_id, '') IS NOT NULL
+    THEN ${canonical} END)`;
+}
+
+function compileLeaf(sql: OrgSql, leaf: FilterLeaf, canonicalPlanColumns = false) {
   const fm = FIELD_MAP[leaf.field];
   if (!fm) {
     // Unreachable for a validated spec (the validator's field allow-list == FIELD_MAP
     // keys). Throw rather than silently emit TRUE — a missing mapping is a CODE bug.
     throw new Error(`get_next: no column mapping for filter field "${leaf.field}"`);
   }
-  const col = fm.col(sql);
+  const col = filterColumn(sql, leaf.field, canonicalPlanColumns);
   const v = leaf.value;
 
   switch (fm.kind) {
@@ -882,10 +894,14 @@ function negativeIdExclusions(filter: FilterNode | undefined): string[] {
  * `all` ⇒ AND, `any` ⇒ OR, `not` ⇒ NOT; a leaf ⇒ {@link compileLeaf}. An undefined
  * filter ⇒ `TRUE` (the empty view — every floor-eligible item).
  */
-export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
+export function compileFilter(
+  sql: OrgSql,
+  filter: FilterNode | undefined,
+  options: { canonicalPlanColumns?: boolean } = {},
+) {
   if (!filter) return sql`TRUE`;
   function walk(node: FilterNode): SqlFragment {
-    if (isLeaf(node)) return compileLeaf(sql, node);
+    if (isLeaf(node)) return compileLeaf(sql, node, options.canonicalPlanColumns);
     if ('all' in node) {
       const parts = node.all.map(walk);
       return parts.reduce((acc, p) => sql`${acc} AND ${p}`);
@@ -911,7 +927,7 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
         emitted.add(child.field);
         const literals = [...new Set(group.map(leaf => escapePgRegexLiteral(String(leaf.value))))];
         const pattern = `(^|[^A-Za-z0-9])(${literals.join('|')})([^A-Za-z0-9]|$)`;
-        const col = FIELD_MAP[child.field]!.col(sql);
+        const col = filterColumn(sql, child.field, options.canonicalPlanColumns === true);
         // Like the individual leaves, NULL remains NULL until the enclosing
         // `not` applies its existing COALESCE-before-negation semantics.
         return [sql`${col}::text ~* ${pattern}`];
@@ -1330,6 +1346,8 @@ export function issueClaimCandidateSubquery(
           wi.last_released_at,
           wi.source_plan_slug,
           wi.source_plan_item_ids,
+          wi.plan_slug,
+          wi.plan_line_id,
           wi.feature_order,
           wi.origin,
           wi.payload,
@@ -1452,6 +1470,8 @@ export function issueClaimCandidateSubquery(
           wi.duplicate_of,
           wi.source_plan_slug,
           wi.source_plan_item_ids,
+          wi.plan_slug,
+          wi.plan_line_id,
           wi.feature_order,
           wi.origin,
           ${claimabilitySnapshotPayload} AS payload,
@@ -1620,7 +1640,7 @@ async function aggregateIssueClaimExclusionsOn(
   const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
-  const compiled = compileFilter(sql, filter);
+  const compiled = compileFilter(sql, filter, { canonicalPlanColumns: true });
   const cooldown = releaseCooldownSec();
   const sub = issueClaimCandidateSubquery(sql, {
     compiled,
@@ -1884,7 +1904,7 @@ export async function sampleIssueClaimExclusions(
   const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
-  const compiled = compileFilter(sql, filter);
+  const compiled = compileFilter(sql, filter, { canonicalPlanColumns: true });
   const cooldown = releaseCooldownSec();
   const sub = issueClaimCandidateSubquery(sql, {
     compiled,
@@ -2091,7 +2111,7 @@ export async function listIssueClaimableRows(
   const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
-  const compiled = compileFilter(sql, filter);
+  const compiled = compileFilter(sql, filter, { canonicalPlanColumns: true });
   const cooldown = releaseCooldownSec();
   const cap = Math.max(1, Math.min(Math.floor(limit) || 1, 200));
   // Reuse the resolver's OWN rank compiler so the diagnostic order == the claim order.
@@ -2282,7 +2302,7 @@ export async function aggregateAdmittedComposition(
   const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const sub = issueClaimCandidateSubquery(sql, {
-    compiled: compileFilter(sql, filter),
+    compiled: compileFilter(sql, filter, { canonicalPlanColumns: true }),
     assignee: opts.assignee ?? '',
     cooldown: releaseCooldownSec(),
     harness: opts.harness,
@@ -2480,7 +2500,7 @@ export async function readIssueClaimability(
     const issueWs = resolveIssuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
     const assignee = opts.assignee ?? '';
-    const compiled = compileFilter(client, filter);
+    const compiled = compileFilter(client, filter, { canonicalPlanColumns: true });
     // WI-525554: push the OBSERVATION-LANE floor into the materialization's base WHERE, not just
     // decorate it as `ok_observation`. Measured 2026-08-28 on the live papercusp population:
     // 66,645 of 71,266 candidate rows (93.5%) are lane='observation' and can never be claimable,
@@ -2734,8 +2754,8 @@ export async function readClaimSpecDelta(
     // `proposed_match` projection, so the preview reports 0 newly admitted even though
     // scheduler:set_claim_spec's whole-pool preview sees and admits them (EI-20414245235902773).
     const candidateFilter = claimSpecDeltaCandidateFilter(current.filter, proposed.filter);
-    const currentMatch = compileFilter(client, current.filter);
-    const candidateMatch = compileFilter(client, candidateFilter);
+    const currentMatch = compileFilter(client, current.filter, { canonicalPlanColumns: true });
+    const candidateMatch = compileFilter(client, candidateFilter, { canonicalPlanColumns: true });
     const sub = issueClaimCandidateSubquery(client, {
       // Keep the subquery's spec_match tied to the stored side. candidateMatch below only
       // bounds which rows enter the snapshot; conflating the two would make currentClaimable
@@ -2752,7 +2772,7 @@ export async function readClaimSpecDelta(
       operatorScopeSlug,
       rigAvailable: opts.rigAvailable,
     });
-    const proposedMatch = compileFilter(client, proposed.filter);
+    const proposedMatch = compileFilter(client, proposed.filter, { canonicalPlanColumns: true });
     const explainDependencyUnlock =
       specUsesRankTerm(current.spec ?? DEFAULT_CLAIM_SPEC, 'dependency_unlock_score') ||
       specUsesRankTerm(proposed.spec ?? DEFAULT_CLAIM_SPEC, 'dependency_unlock_score');
@@ -3292,7 +3312,7 @@ export async function getNextWorkItem(
   const excludeIds = negativeIdExclusions(spec.view.filter);
   const specFilterSql = compileFilter(sql, opts.fleetSlug
     ? spec.view.filter
-    : stripFeatureOnlyKindLeaves(spec.view.filter));
+    : stripFeatureOnlyKindLeaves(spec.view.filter), { canonicalPlanColumns: true });
   const specOrderSql = compileRank(sql, spec, bee);
   const featurePriorityFilterSql = sql`${compileFilter(sql, widened)} AND
     ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {

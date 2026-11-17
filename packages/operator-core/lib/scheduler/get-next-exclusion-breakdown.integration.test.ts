@@ -113,6 +113,67 @@ beforeEach(async () => {
 });
 
 describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket for a broad (no-named-ids) spec', () => {
+  it('admits a canonical-only adopted plan item through direct and snapshot claim filters', async () => {
+    await seedIssue('WI-CANONICAL-PLAN', null);
+    await seedIssue('WI-CANONICAL-OTHER', null);
+    await seedIssue('WI-CANONICAL-PARTIAL', null);
+    await db.sql`UPDATE harness_shared.work_items
+      SET plan_slug = 'adopted-plan',
+          plan_line_id = CASE feature_id
+            WHEN 'WI-CANONICAL-PLAN' THEN 'P-001'
+            WHEN 'WI-CANONICAL-OTHER' THEN 'P-002'
+            ELSE NULL END
+      WHERE workspace_id = ${WS} AND harness_slug = ${H}`;
+    const filter: FilterNode = { all: [
+      { field: 'plan', op: '=', value: 'adopted-plan' },
+      { field: 'plan_item', op: 'in', value: ['P-001'] },
+    ] };
+
+    const direct = await aggregateIssueClaimExclusions(filter, { harness: H });
+    const rows = await listIssueClaimableRows(filter, { harness: H }, 10);
+    const snapshot = await readIssueClaimability(filter, { harness: H }, { limit: 10 });
+
+    expect(direct.matchedByFilter).toBe(1);
+    expect(direct.claimable).toBe(1);
+    expect(rows.map(row => row.id)).toEqual(['WI-CANONICAL-PLAN']);
+    expect(snapshot.breakdown.matchedByFilter).toBe(1);
+    expect(snapshot.breakdown.claimable).toBe(1);
+    expect(snapshot.rows.map(row => row.id)).toEqual(['WI-CANONICAL-PLAN']);
+  });
+
+  it('preserves stable template columns ahead of canonical run-instance associations', async () => {
+    await seedIssue('WI-CANONICAL-RUN', { plan_run: { templateSlug: 'template-plan', instancePlanSlug: 'run-plan' } });
+    await db.sql`UPDATE harness_shared.work_items
+      SET plan_slug = 'run-plan', plan_line_id = 'P-001',
+          source_plan_slug = 'template-plan', source_plan_item_ids = ARRAY['P-009']
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'WI-CANONICAL-RUN'`;
+    const filter: FilterNode = { all: [
+      { field: 'plan', op: '=', value: 'template-plan' },
+      { field: 'plan_item', op: 'in', value: ['P-009'] },
+    ] };
+    expect((await aggregateIssueClaimExclusions(filter, { harness: H })).matchedByFilter).toBe(1);
+    expect((await aggregateIssueClaimExclusions(
+      { field: 'plan', op: '=', value: 'run-plan' }, { harness: H },
+    )).matchedByFilter).toBe(0);
+  });
+
+  it.each([
+    ['plan only', 'adopted-plan', null],
+    ['item only', null, 'P-001'],
+    ['empty plan', '', 'P-001'],
+    ['empty item', 'adopted-plan', ''],
+  ])('refuses incomplete canonical plan provenance: %s', async (_label, plan, item) => {
+    await seedIssue('WI-CANONICAL-INVALID', null);
+    await db.sql`UPDATE harness_shared.work_items SET plan_slug = ${plan}, plan_line_id = ${item}
+      WHERE workspace_id = ${WS} AND harness_slug = ${H} AND feature_id = 'WI-CANONICAL-INVALID'`;
+    expect((await aggregateIssueClaimExclusions(
+      { field: 'plan', op: '=', value: 'adopted-plan' }, { harness: H },
+    )).matchedByFilter).toBe(0);
+    expect((await aggregateIssueClaimExclusions(
+      { field: 'plan_item', op: 'in', value: ['P-001'] }, { harness: H },
+    )).matchedByFilter).toBe(0);
+  });
+
   it('excludes queued and held admission recovery from survivors and reports their count and sample', async () => {
     await seedIssue('WI-9431', { _admissionRecovery: { state: 'queued' } });
     await seedIssue('WI-9432', { _admissionRecovery: { state: 'held' } });
