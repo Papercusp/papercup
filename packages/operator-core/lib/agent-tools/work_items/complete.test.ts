@@ -81,6 +81,13 @@ const conformanceClosure = vi.hoisted(() => ({
     refusal: null,
   })),
 }));
+const nativeClearance = vi.hoisted(() => ({
+  read: vi.fn<typeof import('../../native-proof-clearance').workItemNativeProofClearance>(),
+}));
+vi.mock('../../native-proof-clearance', async original => ({
+  ...(await original<typeof import('../../native-proof-clearance')>()),
+  workItemNativeProofClearance: (...args: Parameters<typeof nativeClearance.read>) => nativeClearance.read(...args),
+}));
 vi.mock('../../spec-conformance/closure-guard', () => ({
   conformanceClosureAssessment: (...args: unknown[]) => conformanceClosure.read(...args),
 }));
@@ -475,6 +482,7 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  nativeClearance.read.mockReset().mockResolvedValue(null);
   blockerPreflight.read.mockReset().mockResolvedValue({ ok: true, ordinary: true });
   directiveRecovery.closureError.mockReset().mockResolvedValue(null);
   contentIdentityPreview.stamp.mockReset();
@@ -1952,6 +1960,28 @@ describe('work_items:complete (keyed-array)', () => {
     await one({ id: 'F-12', completion: { summary: 'shipped' } });
     expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
     expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain('checkpointChecksCarried');
+  });
+
+  it.each([false, true])('refuses missing native clearance before a completion write (preview=%s)', async validateOnly => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-010'] };
+    getWorkItem.mockResolvedValue(linked);
+    nativeClearance.read.mockResolvedValue({ code: 'native_proof_required', error: 'Current ordered native proof is required.' });
+    const r = await one({ id: 'F-12', state: 'passed', validateOnly, completion: { summary: 'shipped', tests: 'pass' } });
+    expect(r.ok).toBe(false);
+    expect(JSON.stringify(r)).toContain('native_proof_required');
+    expect(nativeClearance.read).toHaveBeenCalledWith(linked, expect.any(String));
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+  });
+
+  it('accepts a linked completion only after its current native clearance', async () => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-010'] };
+    getWorkItem.mockResolvedValue(linked);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'qualified', tests: 'pass' } });
+    expect(r.ok).toBe(true);
+    expect(nativeClearance.read).toHaveBeenCalledWith(linked, expect.any(String));
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledOnce();
   });
 
   it('forwards linked requirements to conformance preflight and persists the declarations', async () => {

@@ -594,7 +594,11 @@ export async function checkExecutionPlanLane(binding: ExecutionPlanBinding, work
     if (!binding.harnessSlug) return ['plan_item_lane_unavailable'];
     const block = await planItemLaneBlockReason({ harness: binding.harnessSlug, payload: null,
       sourcePlanSlug: binding.planSlug, sourcePlanItemIds: itemIds }, { requireCompleteEvidence: true, workspaceId });
-    return block ? ['plan_item_lane_blocked:' + block.reason] : [];
+    if (block) return ['plan_item_lane_blocked:' + block.reason];
+    const { requiredPrerequisiteNativeProofClearance } = await import('../../native-proof-clearance');
+    const native = await requiredPrerequisiteNativeProofClearance({ workspaceId, harnessSlug: binding.harnessSlug,
+      planSlug: binding.planSlug, planItemIds: itemIds });
+    return native ? [native.code + ':' + native.error] : [];
   });
 }
 

@@ -4899,6 +4899,11 @@ export async function setWorkItemState(
       );
     }
   }
+  if (!opts.skipCompletionGate && ['done', 'passed', 'resolved'].includes(state)) {
+    const { workItemNativeProofClearance } = await import('./native-proof-clearance');
+    const refusal = await workItemNativeProofClearance(wi, activeWorkspaceId());
+    if (refusal) throw new Error(`${refusal.code}: ${refusal.error}`);
+  }
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
     const refusal = await workItemPlanLaneTransitionRefusal(wi, state);
     if (refusal) throw new Error(refusal);

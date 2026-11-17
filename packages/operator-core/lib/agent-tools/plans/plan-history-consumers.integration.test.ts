@@ -583,10 +583,11 @@ describe('GEC insert-or-noop original byte recorder', () => {
 describe('GEC.N1-N8 persisted slice regression and cost', () => {
   const runFrozenHistory = async (branchPreflight: boolean, journeyPreflight = false,
     journeyControl: false | 'J1' | 'J2' | 'J3' = false,
-    observedTransportControl: false | 'J2' | 'J3' = false) => {
+    observedTransportControl: false | 'J2' | 'J3' = false,
+    authoring: false | 'control' | 'provider' = false, qualifyAuthoringSql = false) => {
     const readerPreflight = branchPreflight || journeyPreflight;
-    const syntheticTransport = Boolean(journeyControl || observedTransportControl);
-    const phase = branchPreflight ? 'reader-branches' : journeyPreflight ? 'j1-readers'
+    const syntheticTransport = Boolean(journeyControl || observedTransportControl || authoring === 'control');
+    const phase = authoring ? `authoring-${authoring}${qualifyAuthoringSql ? '-sql' : ''}` : branchPreflight ? 'reader-branches' : journeyPreflight ? 'j1-readers'
       : observedTransportControl ? `${observedTransportControl.toLowerCase()}-observed-transport-control`
         : journeyControl ? `${journeyControl.toLowerCase()}-transport-control` : 'full';
     const artifactRoot = process.env.PAPERCUSP_TEST_ARTIFACT_DIR;
@@ -664,12 +665,15 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       'libs/generic/tooldef/src/tool-projection.ts',
       'libs/generic/tooldef/src/dispatch-projected.ts',
       'libs/generic/tooldef/src/authz.ts',
+      ...(authoring ? ['packages/operator-core/lib/agent-tools/work_items/checkpoint.ts',
+        'packages/operator-core/lib/work-item-checkpoint.ts'] : []),
     ];
     const [{ listAllProjectedTools, toJsonSchema }, { acceptanceRubricCriterionSchema }, { WorkItemDefinitionSchema }] = await Promise.all([
       import('@papercusp/tooldef'), import('./rubric-template'), import('../../work-item-definition'),
       import('../gitnexus/query'),
     ]);
-    const contractNames = ['graph:query', 'plans:get', 'work_items:get'];
+    if (authoring) await import('../work_items/checkpoint');
+    const contractNames = ['graph:query', 'plans:get', 'work_items:get', ...(authoring ? ['work_items:checkpoint'] : [])];
     const readContracts = async (sourceFingerprint: string, sourceRef: string): Promise<GroundedSchemaSnapshot> => {
       const projected = listAllProjectedTools();
       const rows = contractNames.map(id => {
@@ -1259,6 +1263,35 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       return (path.includes('fallback-observations') ? ['fixture-admin', 'org-admin'] : ['org-admin'])
         .map(pool => ({ ...registration, pool }));
     }))).flat();
+    const authoringWrites: NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serializedSqlParameters']>[number][] = [];
+    if (qualifyAuthoringSql) {
+      expect(authoring).not.toBe(false);
+      const carrySource = await readFile(new URL('../../carry-note.ts', import.meta.url), 'utf8');
+      const insertStart = carrySource.indexOf('INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts, deps,');
+      expect(insertStart).toBeGreaterThan(0);
+      const template = carrySource.slice(carrySource.lastIndexOf('await tx`', insertStart) + 'await tx`'.length,
+        carrySource.indexOf('`;', insertStart));
+      expect([...template.matchAll(/\$\{([^}]*)\}/g)].map(match => match[1])).toEqual([
+        'ws', 'scope', 'noteCol', 'JSON.stringify(journal)', 'now',
+        'depsCol === null ? null : JSON.stringify(depsCol)', 'now',
+      ]);
+      let parameter = 0;
+      const queryHash = digest(template.replace(/\$\{[^}]*\}/g, () => `$${++parameter}`));
+      expect(queryHash).toBe('78036d08034212ebb07ff93b6597db941de7197b8f49f9e78b8436f9ae6aec3a');
+      authoringWrites.push({ pool: 'org-admin', sourceRef: `source:carry-note.ts@${digest(carrySource)}#setCarryNoteWithPrior`,
+        serializerSourceRef, queryHash, command: 'INSERT', parameterCount: 7,
+        persistedParameters: [0, 1, 2, 3, 4, 5, 6], allOrNoneRows: 1 });
+      // These writers set only server clocks. Their WHERE parameters are NOT
+      // persisted values. Empty projection + zero-only certifies only a no-op;
+      // a positive update remains unknown, even with complete Bind capture.
+      for (const [queryHash, parameterCount, path] of [
+        ['97a4edbc3b751961eff38e7aa506ed4036a19821896b0e64fbeb8290660793f0', 4, '../../work-item-checkpoint.ts'],
+        ['78b318ac2c1bda1eed35856a4dd07c095cb7ec3df20d226bc8f00d6a320ceb75', 2, '../../issues-engineer.ts'],
+        ['99d54aa419440a81cce5938f4e860b11436c48afbdf0541a6b3a39f504c34075', 2, '../../work-items.ts'],
+      ] as const) authoringWrites.push({ pool: 'org-admin', queryHash, parameterCount, command: 'UPDATE',
+        serializerSourceRef, sourceRef: `source:${path}@${digest(await readFile(new URL(path, import.meta.url)))}`,
+        persistedParameters: [], allOrNoneRows: 'zero-only' });
+    }
     const sqlStatements: Array<{ query: string; command: string | null; status: string }> = [];
     // Finite source review of the original retained run-nggCRB statements.
     // These hashes were frozen BEFORE this execution; never enroll a statement
@@ -1379,6 +1412,11 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       ['fc7e02420faf5ec2246d9abab128c984e3715a19f59aa1ee1171eab346b8ed16', 'read', 'SELECT', 'ok', '../../search/lexical/rank.ts'],
       ['7a7b0337215c2fa82835309ad332095101103d8787b1ba3c7a256675bed5a62d', 'read', 'SELECT', 'ok', '../../consult/relevance-router.ts'],
       ['06a83de3a36b21a8331e46d4c3ed0ed548655a23cc3f56a3800ee9edea0f2e03', 'control', 'SELECT', 'ok', '../../endpoint-route/telemetry.ts'],
+      ...(qualifyAuthoringSql ? ([
+        ['aa42d05613fd87cd1abd5e7440ef5a7bc08c96ab7c27e326de2808dde4c1dac8', 'read', 'SELECT', 'ok', '../../carry-note.ts'],
+        ['96ba1114f0b4314fcd9cb33b1b68a59666b9ae538df4c26e72648db9dc2f7152', 'read', 'SELECT', 'ok', '../../carry-note.ts'],
+        ['0a4ff8f584c125a852f54c9acfacd0413aa906562b06e0068a88b1909fc0dca7', 'read', 'SELECT', 'ok', '../../personal-vault/sealed-contents.ts'],
+      ] as const) : []),
     ] as const).map(async ([queryHash, kind, command, status, path]) => ({ queryHash, kind, command, status,
       sourceRef: `source:${fileURLToPath(new URL(path, import.meta.url))}@${digest(await readFile(new URL(path, import.meta.url)))}` })));
     if (!readerPreflight) {
@@ -1682,7 +1720,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     // Explicitly selected model measurement, using the maintained SuTarget
     // transport and the same real PG/public reader. Ordinary integration runs
     // remain provider-free, like the existing bug-triage model fixture.
-    if (readerPreflight || syntheticTransport || ['1', 'preflight'].includes(process.env.PAPERCUSP_TEST_GEC_MODEL ?? '')) {
+    if (authoring || readerPreflight || syntheticTransport || ['1', 'preflight'].includes(process.env.PAPERCUSP_TEST_GEC_MODEL ?? '')) {
       const preflight = readerPreflight || process.env.PAPERCUSP_TEST_GEC_MODEL === 'preflight';
       if (!preflight) {
         expect(actualConsumerStorageQualified,
@@ -1700,6 +1738,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         && (process.env.PAPERCUSP_TEST_GEC_MODEL_CASES ?? '').split(',').includes('J2'));
       if (includesAuthorityRequest) await import('../../coord-ops/agent-tools');
       const catalogNames = ['graph:query', 'plans:get', 'work_items:get',
+        ...(authoring ? ['work_items:checkpoint'] : []),
         ...(includesAuthorityRequest ? ['coord:ask-owner'] : []),
         ...(!preflight ? ['release:deploy', 'testing:run', 'work_items:complete'] : [])];
       const catalog = buildCatalog(catalogNames.map(name => {
@@ -1726,11 +1765,12 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         '../../../test/_durable-orchestration-crash-harness.ts', '../../../test/_durable-orchestration-crash-child.ts',
         '../../../test/_durable-orchestration-capture.ts',
         '../../dbos/durable-orchestration-workflow.ts',
+        ...(authoring ? ['../work_items/checkpoint.ts', '../../work-item-checkpoint.ts'] : []),
       ].map(async path => ({ path, sha256: digest(await readFile(new URL(path, import.meta.url))) })));
       const modelSourceFingerprint = digest(canonicalJson(modelSourceHashes));
       // Select new resume captures without rerunning historical Q1 evidence.
       // With no selector, preserve the ordinary opt-in question-only run.
-      const modelCases = branchPreflight ? ['Q2'] : journeyControl ? [journeyControl] : journeyPreflight ? ['J1']
+      const modelCases = authoring ? ['C2'] : branchPreflight ? ['Q2'] : journeyControl ? [journeyControl] : journeyPreflight ? ['J1']
         : observedTransportControl ? [observedTransportControl] : (process.env.PAPERCUSP_TEST_GEC_MODEL_CASES ?? 'J1').split(',');
       if (!preflight && !syntheticTransport && modelCases.some(id => id === 'Q2' || id === 'J3')) {
         requirePositiveFixture(fixtureProofQualification);
@@ -1797,7 +1837,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       for (const iteration of [1, 2, 3]) {
         resetOperatorCacheForTests();
         resetCachedReadStatsForTests();
-        const mutationTag = observedTransportControl ? '-observed-transport-control' : journeyControl ? '-transport-control'
+        const mutationTag = authoring ? `-authoring-${authoring}` : observedTransportControl ? '-observed-transport-control' : journeyControl ? '-transport-control'
           : caseId === 'Q2' ? `-${shipmentMutation.replace(/[^a-z0-9]+/gi, '-')}` : '';
         const recorderRef = artifactDirectory ? join(artifactDirectory, `gec-b-model-${caseId}${mutationTag}-pre${iteration}.json`)
           : `isolated-pg:${workspace}/gec-b-model-${caseId}${mutationTag}-pre${iteration}`;
@@ -1808,7 +1848,8 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           testFingerprint: testHash, runtimeFingerprint: digest(canonicalJson({ node: process.versions.node,
             class: syntheticTransport ? 'scripted-transport-current-source-isolated-pg' : 'real-model-current-source-isolated-pg' })),
           configFingerprint: digest(canonicalJson({ model, catalog: catalogSnapshot, stage: caseId,
-            cacheEnabled, journeyControl, observedTransportControl, shipmentMutation: caseId === 'Q2' ? shipmentMutation : null,
+            cacheEnabled, journeyControl, observedTransportControl, authoring,
+            shipmentMutation: caseId === 'Q2' ? shipmentMutation : null,
             scope: 'current-source private-PG; not serving-runtime acceptance' })),
         };
         const providerTapes: Array<{ id: string; provider: string; raw: string; sha256: string; ref: string;
@@ -1816,16 +1857,16 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         const routes: Array<{ status: number; account: string | null }> = [];
         let providerControlFetch: typeof fetch | undefined;
         const observed = observeGroundedModelFetch({ scope: measurementScope, sourceRef: recorderRef,
-          attemptId: `${caseId}-pre${iteration}`, provider: 'codex', purpose: 'model',
-          purposeRef: 'current-source:SuTarget.sendViaCodex',
+          attemptId: `${caseId}-pre${iteration}`, provider: 'codex', purpose: authoring ? 'authoring' : 'model',
+          purposeRef: authoring ? 'supplemental-writing-task:SuTarget.sendViaCodex' : 'current-source:SuTarget.sendViaCodex',
           fetchImpl: async (request, options) => {
             const headers = new Headers(options?.headers);
             headers.set('x-papercusp-owner', measurementScope.ownerId);
             // The maintained regression enters the observed transport with
             // deterministic provider frames. It cannot reach the network or
             // qualify model measurements, even if the observer drains fully.
-            if (observedTransportControl) expect(providerControlFetch).toBeDefined();
-            const response = await (observedTransportControl ? providerControlFetch! : fetch)(request, { ...options, headers });
+            if (observedTransportControl || authoring === 'control') expect(providerControlFetch).toBeDefined();
+            const response = await (observedTransportControl || authoring === 'control' ? providerControlFetch! : fetch)(request, { ...options, headers });
             routes.push({ status: response.status, account: response.headers.get('x-papercusp-routed-account') });
             return response;
           },
@@ -1844,7 +1885,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           sourceRef: `${recorderRef}#physical-sql`, attemptId: `${caseId}-pre${iteration}`,
           postgres: [{ pool: 'fixture-admin', client: admin }, { pool: 'org-admin', client: getOrgPg().sql },
             { pool: 'org-app', client: getOrgPgApp().sql }],
-          serializedSqlWrites: [cacheWriteRegistration], serializedSqlParameters: observationWrites, nonPersistingSql,
+          serializedSqlWrites: [cacheWriteRegistration], serializedSqlParameters: [...observationWrites, ...authoringWrites], nonPersistingSql,
           isReadOnlySql: row => {
             modelStatements.push({ query: row.query, command: row.command, status: row.status });
             return false;
@@ -1862,6 +1903,15 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           workspaceId: workspace, harnessSlug: h, metadata: vi.fn(), log: vi.fn(), progress: vi.fn() };
         const fixtureRead = async (tool: string, args: unknown): Promise<unknown> => {
           try {
+            if (tool === 'work_items:checkpoint' && authoring) {
+              const checkpoint = (await import('../work_items/checkpoint')).default;
+              const parsed = checkpoint.args.parse(args);
+              // Only disposable records in this invocation's private fixture may
+              // be authored. The foreign dispatch remains in the original census.
+              if (parsed.harness !== h || ![item, unrelated].includes(parsed.id ?? '') || parsed.items?.length)
+                return { ok: false, error: 'authoring fixture rejects foreign record scope' };
+              return checkpoint.handler(parsed as never, readerContext as never);
+            }
             if (tool === 'release:deploy') return { ok: false, error: 'This action is unavailable in this execution context.' };
             if (tool === 'testing:run') {
               const testingTool = (await import('../testing/run')).default;
@@ -2393,7 +2443,8 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         const dispatch = observeGroundedToolDispatch({ scope: measurementScope, sourceRef: recorderRef,
           attemptId: `${caseId}-pre${iteration}`, boundary: 'consumer', originRef: 'current-source:SuTarget.dispatchOverride',
           registrations: Object.fromEntries(catalogNames.map(name => [name, {
-            purpose: ['graph:query', 'plans:get', 'work_items:get'].includes(name) ? 'retrieval' as const : 'other' as const,
+            purpose: name === 'work_items:checkpoint' ? 'authoring' as const
+              : ['graph:query', 'plans:get', 'work_items:get'].includes(name) ? 'retrieval' as const : 'other' as const,
             purposeRef: `registered-fixture-dispatch:${name}` }])),
           dispatch: async (tool, args) => {
             resumeDispatches.push({ tool, args: structuredClone(args), blocked: tool === 'release:deploy' });
@@ -2430,6 +2481,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           for (const stageId of stageIds) {
             const stageStart = performance.now(), dispatchStart = resumeDispatches.length;
             ({ freshContext, question } = await modelStoreTap.run(() => readCurrentContext(stageId)));
+            if (authoring) question = `Supplemental writing task, separate from the frozen resume oracle. Save a checkpoint on each of ${item} and ${unrelated} in harness ${h}. Use the note "Measured writing-path fixture iteration ${iteration}". These are disposable fixture records. Do not complete any item.`;
             let controlRound = 0;
             // Exercise the production transport/dispatch seams without a
             // provider. Scripted output is never admitted as model usage or
@@ -2442,16 +2494,23 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                   ? iteration === 2 ? { name: 'release__deploy', args: { op: 'status' } }
                     : { name: 'plans__get', args: { slug: p, harness: h, heading: 'History' } }
                   : { name: 'work_items__get', args: { id: iteration === 3 ? item : unrelated, harness: h } };
-              const output = controlRound++ === 0
+              const output = authoring && controlRound++ === 0
+                ? [item, unrelated, 'foreign-authoring-control'].map((id, index) => ({ type: 'function_call',
+                  id: `fc-author-${index}`, call_id: `call-author-${index}`, name: 'work_items__checkpoint',
+                  arguments: JSON.stringify({ id, harness: h,
+                    checkpoint: `Measured writing-path fixture iteration ${iteration}`, confirmShrink: true }) }))
+                : !authoring && controlRound++ === 0
                 ? [{ type: 'function_call', id: `fc-${stageId}`, call_id: `call-${stageId}`,
                   name: call.name, arguments: JSON.stringify(call.args) }]
                 : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: canonicalJson({
                   decision: seed.proof.recordedDecision, implementation: seed.proof.implementationAnchor,
                   proof: `test-run:${proofRun.id}`, evidenceRefs: [],
                 }) }] }];
-              return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { output } })}\n\ndata: [DONE]\n\n`,
+              return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+                output, ...(authoring ? { usage: { input_tokens: 120, output_tokens: 17 } } : {}) } })}\n\ndata: [DONE]\n\n`,
                 { headers: { 'content-type': 'text/event-stream' } });
             };
+            if (authoring === 'control') providerControlFetch = controlFetch;
             const session = await new SuTarget({ catalog, codexFetch: journeyControl ? controlFetch : observed.fetch,
               loadSystemPrompt: () => 'Answer engineering questions using current scoped evidence. Current canonical context outranks an older carry note. Read before making evidence claims. Keep missing proof explicit.',
             }).open({ runId: `${measurementScope.runId}:${stageId}`, sutModel: model,
@@ -2481,14 +2540,83 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         const input = { scope: measurementScope,
           boundary: { scope: measurementScope, sourceRef: recorderRef, admittedAt, settledAt: new Date().toISOString(),
             monotonicStartMs, monotonicEndMs: performance.now(), drained: true },
-          models: journeyControl ? undefined : observed.seal(), invocations: dispatch.seal(),
+          models: journeyControl || authoring === 'control' ? undefined : observed.seal(), invocations: dispatch.seal(),
           storage: modelStoreTap.seal(),
           durable: durable.seal(), contracts: contractCapture.census };
         const measured = measureGroundedEvidence(input);
-        const ids = journeyControl ? [] : await recordRubricCheckResults(measured.ledgerResults,
+        const ids = journeyControl || authoring === 'control' ? [] : await recordRubricCheckResults(measured.ledgerResults,
           { workspaceId: workspace, harnessSlug: h, runGroupId: measurementScope.runId }, admin);
         const ledgerRows = await admin`SELECT id,status,execution_details FROM harness_shared.test_runs
           WHERE workspace_id=${workspace} AND id=ANY(${ids}) ORDER BY id`;
+        if (authoring) {
+          const observedModels = observed.seal();
+          const controlProjection = authoring === 'control'
+            ? measureGroundedEvidence({ ...input, models: observedModels }) : null;
+          const stored = await admin`SELECT scope,note FROM harness_shared.carry_notes
+            WHERE workspace_id=${workspace}
+              AND scope=ANY(${[workItemCheckpointScope(h, item), workItemCheckpointScope(h, unrelated)]}) ORDER BY scope`;
+          const tape = canonicalJson({ kind: 'supplemental-typed-record-authoring-capture',
+            acceptance: 'unmeasured', frozenJourneyObservation: false, authoring, qualifyAuthoringSql, authoringWrites,
+            limitation: 'Selected private-PG writing boundary only. Counts serialized persisted values, excluding tuple/index/WAL overhead; positive server-clock updates remain unknown. Scripted usage is a recorder control only.',
+            fixtureRef: retained, runtimeClosure, catalog: catalogSnapshot, modelSourceHashes,
+            question, stages, resumeDispatches, providerTapes, observedModels, routes, sendFailure,
+            contractsBefore, contractsAfter, contractCapture, modelStatements, input, measured,
+            controlProjection, stored, ledgerRows });
+          const saved = await saveImmutableTextArtifact(h, tape);
+          expect(await loadImmutableTextArtifact(h, saved.sha256)).toBe(tape);
+          if (artifactDirectory) await writeFile(recorderRef, tape);
+          captureAssertions.push(() => {
+            expect(sendFailure).toBeNull();
+            expect(input.invocations.complete).toBe(true);
+            expect(observedModels.complete).toBe(true);
+            expect(contractCapture.gaps).toEqual([]);
+            expect(stored).toHaveLength(2);
+            for (const row of stored) expect(row.note).toContain(`Measured writing-path fixture iteration ${iteration}`);
+            expect(measured.values.agentAuthoringCalls).toBeGreaterThanOrEqual(2);
+            if (qualifyAuthoringSql) {
+              expect(input.storage.complete).toBe(true);
+              const noteWrites = input.storage.rows.filter(row => row.sql?.queryHash === authoringWrites[0]?.queryHash);
+              expect(noteWrites).toHaveLength(2);
+              for (const row of noteWrites) {
+                expect(row.persistedBytes).toBeGreaterThan(0);
+                expect(row.sql?.serializedParameters?.values).toHaveLength(7);
+                expect(row.sql?.rowOutcome).toEqual({ allOrNoneRows: 1, affectedRows: 1 });
+              }
+              const clocks = input.storage.rows.filter(row => authoringWrites.slice(1).some(write => write.queryHash === row.sql?.queryHash));
+              expect(clocks).toHaveLength(6);
+              for (const row of clocks) expect(row).toMatchObject({ persistedBytes: 0,
+                sql: { rowOutcome: { allOrNoneRows: 'zero-only', affectedRows: 0 } } });
+              expect(measured.values.storageBytes).toBeGreaterThan(0);
+              const unqualified = structuredClone(input);
+              delete unqualified.storage.rows.find(row => row.sql?.queryHash === authoringWrites[0]?.queryHash)!.sql!.serializedParameters;
+              unqualified.storage.rows.find(row => row.sql?.queryHash === authoringWrites[0]?.queryHash)!.persistedBytes = null;
+              expect(measureGroundedEvidence(unqualified).values.storageBytes).toBeNull();
+            } else expect(measured.values.storageBytes).toBeNull();
+            if (authoring === 'control') {
+              expect(controlRequests).toHaveLength(2);
+              expect(resumeDispatches.map(row => row.tool)).toEqual(Array(3).fill('work_items:checkpoint'));
+              expect(measured.values.modelCalls).toBeNull();
+              expect(controlProjection?.values).toMatchObject({ modelCalls: 2, agentAuthoringCalls: 3,
+                agentAuthoringInputTokens: 240, agentAuthoringOutputTokens: 34 });
+              const missing = structuredClone({ ...input, models: observedModels });
+              missing.models.rows[0]!.usageRef = null;
+              expect(measureGroundedEvidence(missing).values.agentAuthoringInputTokens).toBeNull();
+              const foreign = structuredClone({ ...input, models: observedModels });
+              foreign.models.scope.runId += '-foreign';
+              expect(measureGroundedEvidence(foreign).values.agentAuthoringInputTokens).toBeNull();
+              expect(measureGroundedEvidence({ ...input, invocations: undefined }).values.agentAuthoringCalls).toBeNull();
+              const noWrites = { ...input, models: observedModels,
+                invocations: { ...input.invocations, ids: [], rows: [] } };
+              expect(measureGroundedEvidence(noWrites).values).toMatchObject({ agentAuthoringCalls: 0,
+                agentAuthoringInputTokens: 240 });
+              expect(ledgerRows).toEqual([]);
+            } else {
+              expect(measured.values.agentAuthoringInputTokens).toBeGreaterThan(0);
+              expect(measured.values.agentAuthoringOutputTokens).toBeGreaterThan(0);
+            }
+          });
+          continue;
+        }
         const expected = materialized.manifest.cases.find(candidate => candidate.id === caseId)?.expected;
         const nextDispatch = resumeDispatches[0] ?? null;
         // The question oracle reads the final machine record, independently of
@@ -2589,9 +2717,12 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
               const body = controlRequests[index].body as { input: Array<{ role?: string; type?: string }> };
               expect(body.input.some(entry => entry.role === 'assistant' || entry.type === 'function_call_output')).toBe(false);
             }
-            expect(journeyOracles?.map(oracle => oracle.passed)).toEqual([false, iteration !== 2, iteration !== 3]);
-            expect(journeyOracles?.[0]).toMatchObject({ answerMatchesExpected: true, proofQualified: false });
-            expect(journey?.passed).toBe(false);
+            // The completed positive fixture now has a case and execution
+            // receipt. Its synthetic Q1 qualifies within this private control;
+            // scripted transport still supplies no model/acceptance evidence.
+            expect(journeyOracles?.map(oracle => oracle.passed)).toEqual([true, iteration !== 2, iteration !== 3]);
+            expect(journeyOracles?.[0]).toMatchObject({ answerMatchesExpected: true, proofQualified: true });
+            expect(journey?.passed).toBe(iteration === 1);
             expect(providerTapes).toEqual([]);
             expect(routes).toEqual([]);
             expect(measured.values.modelCalls).toBeNull();
@@ -2638,6 +2769,15 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
   it('GEC.J1 composed reader preflight', () => runFrozenHistory(false, true), 90_000);
 
   it('GEC.J1 composed SuTarget transport control', () => runFrozenHistory(false, false, 'J1'), 90_000);
+
+  it('GEC.R8 typed-record authoring transport control',
+    () => runFrozenHistory(false, false, false, false, 'control'), 120_000);
+
+  it('GEC.R8 authoring SQL byte qualification control',
+    () => runFrozenHistory(false, false, false, false, 'control', true), 120_000);
+
+  it.skipIf(process.env.PAPERCUSP_TEST_GEC_AUTHORING !== '1')('GEC.R8 supplemental provider authoring capture',
+    () => runFrozenHistory(false, false, false, false, 'provider', true), 810_000);
 
   it.each(['J2', 'J3'] as const)('GEC.%s composed DBOS transport control',
     journey => runFrozenHistory(false, false, journey), 400_000);

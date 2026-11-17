@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { NativeProofRun } from './testing-run-store';
+import type { WorkItem } from './work-items';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 export const nativeProofWitnessSchema = z.object({
@@ -124,7 +125,7 @@ export async function requiredNativeProofClearance(scope: NativeClearanceScope &
       },
       async run(id) {
         const { readNativeProofRun } = await import('./testing-run-store');
-        const run = await readNativeProofRun(sql, id);
+        const run = await readNativeProofRun(sql as unknown as Parameters<typeof readNativeProofRun>[0], id);
         if (!run) return null;
         const [row] = await sql<{ reserved_at: string }[]>`SELECT started_at::text AS reserved_at
           FROM harness_shared.testing_run_snapshots WHERE run_id = ${id}`;
@@ -162,4 +163,58 @@ export async function requiredNativeProofClearance(scope: NativeClearanceScope &
       },
     });
   });
+}
+
+/** Recheck the entire prerequisite closure, including terminal ancestors. A done
+ * token cannot substitute for a current native proof. No prefix or depth cap. */
+export async function requiredPrerequisiteNativeProofClearance(scope: NativeClearanceScope & {
+  planItemIds: readonly string[];
+}): Promise<NativeClearanceRefusal | null> {
+  try {
+    const { getPlanRow, planItemsForRow } = await import('./agent-tools/plans/source');
+    const opts = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug };
+    const row = await getPlanRow(scope.planSlug, opts);
+    if (!row) throw new Error('Prerequisite plan is unavailable.');
+    const items = new Map(planItemsForRow(row).map(item => [item.id, item]));
+    const roots = new Set(scope.planItemIds), seen = new Set<string>(), pending = [...roots];
+    for (let at = 0; at < pending.length; at++) {
+      const id = pending[at]!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const item = items.get(id);
+      if (!item) throw new Error(`Prerequisite plan item ${id} is unavailable.`);
+      pending.push(...item.blockedBy);
+    }
+    const planItemIds = [...seen].filter(id => !roots.has(id));
+    if (planItemIds.length === 0) return null;
+    const refusal = await requiredNativeProofClearance({ ...scope, planItemIds });
+    if (refusal) return refusal;
+    const fresh = await getPlanRow(scope.planSlug, opts);
+    if (!fresh || fresh.contentHash !== row.contentHash)
+      throw new Error('Prerequisite graph changed during native proof clearance.');
+    return null;
+  } catch (error) {
+    return { code: 'native_proof_authority_unavailable', error: `Cannot establish prerequisite native proof: ${String(error)}` };
+  }
+}
+
+/** Shared by the completion tool and the terminal-state writer. The current
+ * clause owns eligibility; force, historical status and caller prose do not. */
+export async function workItemNativeProofClearance(item: Pick<WorkItem, 'id' | 'payload' | 'harness'
+  | 'sourcePlanSlug' | 'sourcePlanItemIds'>, workspaceId: string): Promise<NativeClearanceRefusal | null> {
+  try {
+    const { resolvePlanItemStamp } = await import('./scheduler/plan-item-lane-guard');
+    const stamp = await resolvePlanItemStamp(item);
+    if (!stamp) {
+      if (item.sourcePlanSlug || (item.payload && typeof item.payload === 'object' && 'plan_item' in item.payload))
+        throw new Error('Native proof plan linkage is unavailable.');
+      return null;
+    }
+    if (!item.harness) throw new Error('Native proof harness is unavailable.');
+    const scope = { workspaceId, harnessSlug: item.harness, planSlug: stamp.plan_slug, planItemIds: stamp.item_ids };
+    return await requiredNativeProofClearance({ ...scope, workItemId: item.id })
+      ?? await requiredPrerequisiteNativeProofClearance(scope);
+  } catch (error) {
+    return { code: 'native_proof_authority_unavailable', error: `Cannot establish work-item native proof: ${String(error)}` };
+  }
 }

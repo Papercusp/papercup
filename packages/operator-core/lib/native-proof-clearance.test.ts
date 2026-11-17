@@ -19,8 +19,8 @@ function fixture() {
   required.falsifier!.requiredNativeProof = { profile: 'retained-baseline-v1',
     preflightSpecIds: { numericFold: 'fold', physicalInstall: 'install', priorFailureAudit: 'audit' } };
   const clauses = [required, clause('fold'), clause('install'), clause('audit')];
-  const input: NativeProofRun['input'] = { schemaVersion: 1, scope: { ...scope, planItemIds: undefined,
-    workItemId: undefined, planItemId: 'P-010' } as NativeProofRun['input']['scope'],
+  const input: NativeProofRun['input'] = { schemaVersion: 1, scope: { workspaceId: scope.workspaceId,
+    harnessSlug: scope.harnessSlug, planSlug: scope.planSlug, planItemId: 'P-010' },
     original: { sourceSha: 'b'.repeat(40), fixtureSha256: hash, captureSha256: hash, sourceDigests: { source: hash },
       dependenciesReconstructed: false }, prerequisiteSources: { source: hash },
     method: { sha256: hash, configurationSha256: hash, clientMatrix: ['mcp'] }, selectedInputs: { manifest: hash },

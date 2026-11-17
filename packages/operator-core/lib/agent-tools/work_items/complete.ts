@@ -141,12 +141,13 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v8',
+  version: 'work-items-completion-v9',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'work-outcome', description: 'New successful closes declare a result; structural duplicate and discard dispositions can derive it.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
     { key: 'spec-test-adequacy', description: 'Affected first-class specs have current independently audited proof.' },
+    { key: 'native-proof-clearance', description: 'Current native-proof clauses and transitive prerequisites have retained, independently reviewed native proof.' },
     { key: 'design-evidence', description: 'Enforced ratified design cases have current passing evidence.' },
     {
       key: 'verification-coverage',
@@ -4929,6 +4930,14 @@ async function completeOneTracked(
     }
     setContractRequirement('conformance-review-independence', applicable, reviewError);
   }
+
+  if (closeIntentRequested && !isAbandonedClose) {
+    const { workItemNativeProofClearance } = await import('../../native-proof-clearance');
+    const refusal = await track('native-proof', () => workItemNativeProofClearance(existing,
+      ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId()));
+    if (refusal) refuseGate(refusal.error, { nativeProofRefusal: refusal });
+    setContractRequirement('native-proof-clearance', true, refusal?.error);
+  } else setContractRequirement('native-proof-clearance', false);
 
   // P-029: read the existing plan linkage and BAR map before any completion write.
   if (closeIntentRequested && !isAbandonedClose) {
