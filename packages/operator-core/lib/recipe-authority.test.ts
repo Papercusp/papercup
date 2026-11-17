@@ -9,6 +9,7 @@ import {
   recipeRevision,
   recipeAuthorityMatches,
   recipeAuthorityMatchesLiveRefs,
+  recipeAuthorityMatchesLiveContext,
   toRecipeAuthorityMetadata,
   validateRecipeAuthorityProof,
 } from './recipe-authority';
@@ -31,6 +32,33 @@ describe('validated bound recipe authority (EI-28104391921574576)', () => {
       .toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
     expect(await validateRecipeAuthorityProof({ ...input, proof: { ...proof, revision: '0'.repeat(64) } }))
       .toMatchObject({ ok: false, error: 'authority_stale_revision' });
+  });
+});
+
+describe('server-measured recipe scalar scope', () => {
+  const descriptor = {
+    bound: true, unresolved: false, unresolvedCause: null,
+    refs: { workspaces: ['ws'], fleets: ['f'], harnesses: ['h'],
+      plans: ['p'], items: ['WI-held'], resources: ['file:held'] },
+  };
+  it.each([
+    [{ workspace: 'ws', fleet: 'f', harness: 'h' }, true],
+    [{ workspace: 'ws', fleet: 'f', harness: '*' }, true],
+    [{ workspace: 'ws', fleet: 'f', harness: 'all' }, true],
+    [{ workspace: 'other', fleet: 'f', harness: '*' }, false],
+    [{ workspace: '*', fleet: 'f', harness: '*' }, false],
+    [{ workspace: 'ws', fleet: 'other', harness: '*' }, false],
+    [{ workspace: 'ws', fleet: '*', harness: '*' }, false],
+    [{ workspace: 'ws', fleet: 'f', harness: 'other' }, false],
+    [{ workspace: 'ws', fleet: 'f' }, false],
+    [{ workspace: 'ws', harness: 'h' }, false],
+    [{ fleet: 'f', harness: 'h' }, false],
+  ] as const)('validates live scalars independently of set-valued custody: %j', (context, allowed) => {
+    expect(recipeAuthorityMatchesLiveContext(descriptor, context)).toBe(allowed);
+  });
+  it('does not turn an unresolved descriptor into scalar authority', () => {
+    expect(recipeAuthorityMatchesLiveContext({ ...descriptor, unresolved: true },
+      { workspace: 'ws', fleet: 'f', harness: '*' })).toBe(false);
   });
 });
 

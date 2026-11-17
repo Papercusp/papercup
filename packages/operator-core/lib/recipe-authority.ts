@@ -309,6 +309,17 @@ export function recipeAuthorityMatches(
  * The recommendation proof is caller-carried and therefore cannot itself prove
  * that a plan/item/resource is still held by the reuser at execution time.
  */
+export function recipeAuthorityMatchesLiveContext(
+  descriptor: RecipeAuthorityDescriptor,
+  context: RecipeAuthorityContext,
+): boolean {
+  // Only these scalars come from dispatch/presence. Plan, item and resource
+  // custody is measured separately; a caller-carried proof cannot supply it.
+  return recipeAuthorityMatches({ ...descriptor,
+    refs: { ...descriptor.refs, plans: [], items: [], resources: [] },
+  }, context, { operatorScope: true });
+}
+
 export function recipeAuthorityMatchesLiveRefs(
   descriptor: RecipeAuthorityDescriptor,
   liveRefs: Partial<RecipeAuthorityRefs>,
@@ -718,18 +729,9 @@ export async function validateRecipeAuthorityProof(input: {
     // workspace/fleet/harness come from the dispatch context/presence store.
     // Never fall back to the caller-carried proof when one is absent live: a
     // fabricated fleet in a valid-looking proof must fail closed.
-    const scalarDescriptor: RecipeAuthorityDescriptor = {
-      ...descriptor,
-      refs: {
-        ...descriptor.refs,
-        plans: [],
-        items: [],
-        resources: [],
-      },
-    };
     // Server-derived live scope (presence + ctx), so the operator-scope sentinel is
     // trustworthy here. The proof check above stays STRICT — see recipeAuthorityMatches.
-    if (!recipeAuthorityMatches(scalarDescriptor, input.liveContext, { operatorScope: true })) {
+    if (!recipeAuthorityMatchesLiveContext(descriptor, input.liveContext)) {
       return fail('authority_entity_mismatch');
     }
   }

@@ -1215,6 +1215,25 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       .toMatchObject({ ok: false, error: 'authority_live_context_unavailable', executed: false });
     expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
+  it.each([
+    ['alpha', true], ['beta', false], ['*', true], ['all', true],
+  ] as const)('keeps startup publication getter/run scalar scope consistent for %s', async (harnessSlug, allowed) => {
+    mockStartupPublication();
+    const ctx = Object.assign({}, mkCtx('operator'), { harnessSlug }) as never;
+    const fetched = publicationResult(await findTool('recipes:get').fn(
+      { id: ACTIVATION_QUALITY_RECIPE_ID, bindings: publicationBindings }, ctx));
+    const run = publicationResult(await findTool('recipes:run').fn({ id: ACTIVATION_QUALITY_RECIPE_ID,
+      authority: fetched.recipe.authority, bindings: publicationBindings, dryRun: true }, ctx));
+    expect(run.ok).toBe(allowed);
+    expect(fetched.recipe.authority.runnable).toBe(allowed);
+    if (allowed) {
+      expect(runOrchestrationMock).toHaveBeenCalledOnce();
+    } else {
+      expect(fetched.recipe.authorityLiveError).toBe('authority_entity_mismatch');
+      expect(run).toMatchObject({ error: 'authority_entity_mismatch', executed: false });
+      expect(runOrchestrationMock).not.toHaveBeenCalled();
+    }
+  });
 
   const mockBoundGetterRecipe = () => {
     getRecipeMock.mockResolvedValue({

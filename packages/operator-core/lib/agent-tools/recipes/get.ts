@@ -21,12 +21,15 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 import { deriveStoredRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata,
-  resolveLiveBoundRefs, recipeAuthorityMatchesCurrentRefs, type RecipeAuthorityRefs } from '../../recipe-authority';
+  resolveLiveBoundRefs, recipeAuthorityMatchesCurrentRefs, recipeAuthorityMatchesLiveContext,
+  type RecipeAuthorityRefs } from '../../recipe-authority';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { validateRecipeBindings } from '../../recipe-contract';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getTxPool } from '../locks/su-lock-store';
 import { readIdentity } from '../locks/identity';
+import { deriveFleetMembership } from '../coordination/identity';
+import { resolvePresenceFleet } from '../coordination/presence-fleet';
 
 export default defineTool({
   name: 'recipes:get',
@@ -80,6 +83,7 @@ export default defineTool({
     let identity: ReturnType<typeof readIdentity> | null = null;
     try { identity = readIdentity(ctx); } catch { /* Bound metadata fails closed below. */ }
     let liveRefs: Promise<RecipeAuthorityRefs> | undefined;
+    let liveFleet: Promise<string | null> | undefined;
     const catalog = orchestrationCallerSurface(ctx).catalog;
     const ids = mergeIds(args.id, args.ids);
     const env = await runBulk(
@@ -99,9 +103,17 @@ export default defineTool({
           ...(bindings?.ok ? { validatedInputs: bindings.value.inputs } : {}),
           context: { workspace: workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog } });
         if (!authority) return { ok: false as const, id, error: 'not_found' };
-        let liveAuthorityAllowed = true;
-        let authorityLiveError: string | undefined;
-        if (!authority.unresolved && (authority.refs.plans.length || authority.refs.items.length || authority.refs.resources.length)) {
+        if (authority.refs.fleets.length) {
+          liveFleet ??= resolvePresenceFleet(identity?.ownerId, deriveFleetMembership())
+            .then(value => value.fleetSlug).catch(() => null);
+        }
+        let liveAuthorityAllowed = recipeAuthorityMatchesLiveContext(authority, {
+          workspace: workspaceId, harness: ctx.harnessSlug,
+          fleet: liveFleet ? await liveFleet : null,
+        });
+        let authorityLiveError: string | undefined = !authority.unresolved && !liveAuthorityAllowed
+          ? 'authority_entity_mismatch' : undefined;
+        if (liveAuthorityAllowed && (authority.refs.plans.length || authority.refs.items.length || authority.refs.resources.length)) {
           if (!identity) {
             liveAuthorityAllowed = false;
             authorityLiveError = 'authority_live_context_unavailable';
