@@ -902,6 +902,8 @@ export async function specTestAdequacyCompletionGate(
       await track('source-bar', () => resolvePinnedSourceBarTestRequirements(
         clause.sourceBar,
         sourceBarRubricCache,
+        undefined,
+        clause.planItemId,
       )),
     ] as const));
     for (const [key, value] of requirements) sourceBarRequirementsByClause.set(key, value);
