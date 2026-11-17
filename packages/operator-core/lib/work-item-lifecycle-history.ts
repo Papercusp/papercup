@@ -59,6 +59,18 @@ export interface WorkItemLifecycleEvent {
   action?: string;
   /** Source-specific extras (reason, prevState, terminalOwner, force, …). */
   detail?: Record<string, unknown>;
+  /** Row-receipt validation is separate from actor authentication and interval proof. */
+  custodyCapture?: WorkItemCustodyCaptureEvidence;
+}
+
+export interface WorkItemCustodyCaptureEvidence {
+  receipt: 'valid' | 'invalid';
+  eventId: string | null;
+  operation: 'INSERT' | 'UPDATE' | 'DELETE' | null;
+  databaseRole: string | null;
+  actorAuthentication: 'unverified';
+  continuity: 'unknown';
+  problems: string[];
 }
 
 /** Current lifecycle FLAGS — state, not transitions. Kept separate on purpose. */
@@ -100,7 +112,7 @@ export interface WorkItemLifecycleHistory {
  */
 function notRecordedFor(family: string | null | undefined): string[] {
   const caveats = [
-    "non-terminal transitions (→ wip, → open) are not recorded in any store — an empty timeline never means 'this item never moved'",
+    "complete non-terminal transition coverage (→ wip, → open) is not established by this bounded read — an empty timeline never means 'this item never moved'",
     'reopenHistory retains only the newest five entries; this read does not qualify historical capture, DDL or retention continuity',
   ];
   if (family === 'issue') {
@@ -135,6 +147,53 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
+/** Validate draft 1643's existing audit receipt without certifying its mutable store.
+ * Equal endpoints, a valid receipt, and current trigger definitions cannot establish
+ * independent DDL/capture/retention continuity. The database role is not an agent.
+ */
+function readCustodyCapture(
+  details: Record<string, unknown> | null,
+  actor: string | null,
+  atMs: number,
+  subject: { id: string; workspaceId: string },
+): WorkItemCustodyCaptureEvidence {
+  const problems: string[] = [];
+  const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+  const eventId = nonempty(details?.eventId) ? details.eventId : null;
+  const operation = details?.operation === 'INSERT' || details?.operation === 'UPDATE' || details?.operation === 'DELETE'
+    ? details.operation : null;
+  const databaseRole = nonempty(details?.databaseRole) ? details.databaseRole : null;
+  const before = asRecord(details?.before);
+  const after = asRecord(details?.after);
+  if (details?.schemaVersion !== 1) problems.push('unsupported or missing capture schemaVersion');
+  if (!eventId) problems.push('missing capture eventId');
+  if (!operation) problems.push('unsupported or missing capture operation');
+  if (!databaseRole || actor !== `database:${databaseRole}`) problems.push('database-role attribution does not match the capture writer');
+  if (typeof details?.transactionId !== 'string' || !/^[1-9][0-9]*$/.test(details.transactionId)) {
+    problems.push('missing or invalid capture transactionId');
+  }
+  if (typeof details?.recordedAt !== 'string' || Date.parse(details.recordedAt) !== atMs) {
+    problems.push('capture recordedAt does not match the audit timestamp');
+  }
+  if ((operation === 'INSERT' && (details?.before !== null || !after))
+    || (operation === 'DELETE' && (!before || details?.after !== null))
+    || (operation === 'UPDATE' && (!before || !after))) {
+    problems.push('capture endpoints do not match the operation');
+  }
+  const endpoints = [before, after].filter((row): row is Record<string, unknown> => row !== null);
+  if (endpoints.some(row => !nonempty(row.workspace_id) || !nonempty(row.harness_slug)
+    || !nonempty(row.feature_id) || !(row.taken_by === null || nonempty(row.taken_by)))) {
+    problems.push('capture endpoint identity or holder is malformed');
+  }
+  if (!endpoints.some(row => row.workspace_id === subject.workspaceId && row.feature_id === subject.id)) {
+    problems.push('capture endpoints do not include the requested work item');
+  }
+  return {
+    receipt: problems.length === 0 ? 'valid' : 'invalid', eventId, operation, databaseRole,
+    actorAuthentication: 'unverified', continuity: 'unknown', problems,
+  };
+}
+
 /**
  * Read the unified lifecycle history for one work-item.
  *
@@ -160,6 +219,7 @@ export async function getWorkItemLifecycleHistory(params: {
   let auditRows = 0;
   let auditTruncated = false;
   let invalidEntries = 0;
+  let custodyCaptureObserved = false;
 
   // ---- source 1: audit_log -------------------------------------------------
   try {
@@ -187,7 +247,13 @@ export async function getWorkItemLifecycleHistory(params: {
       // so both normalize to null — reporting "system blocked this" would be a fabricated
       // attribution, and a wrong name is worse than an admitted absence.
       const rawActor = typeof row.actor === 'string' ? row.actor : null;
-      const by = rawActor && rawActor !== 'system' && rawActor !== 'user' ? rawActor : null;
+      const custodyCapture = row.action === 'work_items:custody:capture'
+        ? readCustodyCapture(details, rawActor, atMs, params) : undefined;
+      if (custodyCapture) {
+        custodyCaptureObserved = true;
+        if (custodyCapture.receipt === 'invalid') invalidEntries += 1;
+      }
+      const by = !custodyCapture && rawActor && rawActor !== 'system' && rawActor !== 'user' ? rawActor : null;
       events.push({
         at: new Date(atMs).toISOString(),
         atMs,
@@ -196,6 +262,7 @@ export async function getWorkItemLifecycleHistory(params: {
         source: 'audit_log',
         action: row.action,
         ...(details ? { detail: details } : {}),
+        ...(custodyCapture ? { custodyCapture } : {}),
       });
     }
   } catch {
@@ -234,6 +301,9 @@ export async function getWorkItemLifecycleHistory(params: {
   events.sort((a, b) => b.atMs - a.atMs);
   const truncated = auditTruncated || events.length > limit;
   const notRecorded = notRecordedFor(params.family);
+  if (custodyCaptureObserved) {
+    notRecorded.push('custody capture receipts identify a database role, not an authenticated agent; even valid receipts do not qualify independent DDL, capture or retention continuity');
+  }
   if (truncated) notRecorded.push(`additional lifecycle events are omitted by the display limit of ${limit}`);
 
   const heldOpenBy = typeof payload?.held_open_by === 'string' ? payload.held_open_by : null;

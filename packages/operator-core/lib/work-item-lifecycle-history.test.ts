@@ -279,4 +279,87 @@ describe('getWorkItemLifecycleHistory', () => {
     expect(unsafe.mock.calls[0]?.[1]).toEqual([WS, 'WI-1', 51]);
     expect(out.coverage.degraded).toBe(false);
   });
+
+  describe('prospective custody receipts', () => {
+    const endpoint = (feature_id = 'WI-1', workspace_id = WS) => ({
+      workspace_id, harness_slug: 'papercusp', feature_id, taken_by: 'su-caller-controlled',
+      payload: { actor: 'su-spoofed' },
+    });
+    const receipt = (overrides: Record<string, unknown> = {}) => ({
+      ts: 1_000, actor: 'database:harness_app', action: 'work_items:custody:capture',
+      details: {
+        schemaVersion: 1, eventId: 'capture-event-1', operation: 'UPDATE',
+        recordedAt: new Date(1_000).toISOString(), transactionId: '12345', databaseRole: 'harness_app',
+        before: endpoint(), after: endpoint(), ...overrides,
+      },
+    });
+
+    it.each(['INSERT', 'UPDATE', 'DELETE'])('reads a valid %s receipt without authenticating its holder or asserting continuity', async operation => {
+      unsafe.mockResolvedValue([receipt({
+        operation, before: operation === 'INSERT' ? null : endpoint(), after: operation === 'DELETE' ? null : endpoint(),
+      })]);
+      const out = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
+      expect(out.events[0]).toMatchObject({
+        by: null, source: 'audit_log', detail: { operation },
+        custodyCapture: {
+          receipt: 'valid', eventId: 'capture-event-1', operation, databaseRole: 'harness_app',
+          actorAuthentication: 'unverified', continuity: 'unknown', problems: [],
+        },
+      });
+      expect(out.coverage).toMatchObject({ invalidEntries: 0, degraded: false });
+      expect(out.coverage.notRecorded.join(' ')).toMatch(/not an authenticated agent/);
+      expect(out.coverage.notRecorded.join(' ')).toMatch(/independent DDL, capture or retention continuity/);
+    });
+
+    it('accepts either physical identity endpoint while preserving the complete move', async () => {
+      const before = endpoint('WI-old', 'old-workspace');
+      const after = endpoint('WI-new', 'new-workspace');
+      unsafe.mockResolvedValue([receipt({ before, after })]);
+      for (const row of [before, after]) {
+        const out = await getWorkItemLifecycleHistory({ id: row.feature_id, workspaceId: row.workspace_id });
+        expect(out.events[0]?.custodyCapture?.receipt).toBe('valid');
+        expect(out.events[0]?.detail).toMatchObject({ before, after });
+      }
+    });
+
+    it('never elevates a substituted actor or caller-controlled holder to an authenticated actor', async () => {
+      unsafe.mockResolvedValue([{ ...receipt(), actor: 'su-spoofed' }]);
+      const out = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
+      expect(out.events[0]?.by).toBeNull();
+      expect(out.events[0]?.custodyCapture).toMatchObject({
+        receipt: 'invalid', actorAuthentication: 'unverified', continuity: 'unknown',
+        problems: ['database-role attribution does not match the capture writer'],
+      });
+      expect(out.events[0]?.detail?.after).toEqual(endpoint());
+      expect(out.coverage).toMatchObject({ invalidEntries: 1, degraded: true });
+    });
+
+    it.each([
+      { schemaVersion: 2 }, { eventId: '' }, { operation: 'TRUNCATE' }, { transactionId: '0' },
+      { recordedAt: new Date(999).toISOString() }, { before: null },
+      { operation: 'INSERT', before: endpoint() }, { operation: 'DELETE', after: endpoint() },
+      { after: { ...endpoint(), taken_by: [] } },
+      { before: endpoint('WI-other'), after: endpoint('WI-other') },
+      { before: endpoint('WI-1', 'other-workspace'), after: endpoint('WI-1', 'other-workspace') },
+    ])('retains malformed receipt evidence and degrades instead of returning verified absence: %j', async override => {
+      unsafe.mockResolvedValue([receipt(override)]);
+      const out = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
+      expect(out.events).toHaveLength(1);
+      expect(out.events[0]?.custodyCapture).toMatchObject({ receipt: 'invalid', continuity: 'unknown' });
+      expect(out.events[0]?.custodyCapture?.problems.length).toBeGreaterThan(0);
+      expect(out.events[0]?.detail).toMatchObject(override);
+      expect(out.coverage).toMatchObject({ invalidEntries: 1, degraded: true });
+    });
+
+    it('distinguishes an unreadable receipt body from a source without any retained capture', async () => {
+      unsafe.mockResolvedValue([{ ...receipt(), details: null }]);
+      const malformed = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
+      expect(malformed.events[0]?.custodyCapture?.receipt).toBe('invalid');
+      expect(malformed.coverage).toMatchObject({ invalidEntries: 1, degraded: true });
+      unsafe.mockResolvedValue([]);
+      const absent = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS });
+      expect(absent.events).toEqual([]);
+      expect(absent.coverage.notRecorded.join(' ')).toMatch(/does not qualify historical capture, DDL or retention continuity/);
+    });
+  });
 });
