@@ -3126,6 +3126,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // A closure because it can run at two points: here, or after the join classification when
   // the pre-admission probe below expected a join that did not happen.
   const refuseOverMemoryBudget = async (): Promise<boolean> => {
+    // Compatibility receipt only: there is no aggregate RAM admission gate or reservation.
     const memoryAdmission = admitCheckpointMemory({ requestG: checkpointMemoryG });
     if (!memoryAdmission.admit) {
       console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${memoryAdmission.detail}`);

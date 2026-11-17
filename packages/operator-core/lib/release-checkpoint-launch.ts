@@ -2964,16 +2964,8 @@ export async function launchDetachedCheckpoint(
     }
   }
 
-  // P-006 (green-checkpoint-red-streak-root-cause-2026-08-17): the SAME cross-root memory
-  // bound the scheduled gate consults, applied here because this is the OTHER seam that
-  // creates a checkpoint scope. A bound at one launcher only is not a bound: the run-lock
-  // below is per-root, so without this a manual run would still be free to stack its 40 GiB
-  // on top of every other pot's in-flight scope. Placed immediately before the argv is built,
-  // so returning here means no scope — and therefore no commitment — is ever created.
-  //
-  // The request is computed with the SAME expression buildCheckpointSystemdArgv uses for its
-  // MemoryMax property, so the admission and the scope can never disagree about the size of
-  // this run. Fails open on an unmeasurable probe and on a sole run — see the module note.
+  // The per-run scope size is reported for compatibility; checkpoint launches have no
+  // aggregate RAM admission budget. Other roots' scope ceilings do not reserve memory.
   // WI-10003521: resolve through the reporting resolver so the reply can say — at launch, not
   // an hour into the run — when this launcher declared no (or no valid) capacity contract.
   // Reported on the RESULT (callers render it), not console.warn: every caller already surfaces
