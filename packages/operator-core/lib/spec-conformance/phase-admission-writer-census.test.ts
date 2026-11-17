@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  assertPhaseWriterCensus, inventoryPhaseWriters, reconcilePhaseWriterCensus,
+  assertPhaseWriterCensus, assertPhaseWriterTreeCensus, inventoryPhaseWriters, reconcilePhaseWriterCensus,
   inventoryPhaseWriterTree, readPhaseWriterCensus, verifyPhaseWriterTreeSnapshot, writePhaseWriterCensus,
   type PhaseWriterReview, type PhaseWriterSite, type PhaseWriterTreeManifest,
 } from './phase-admission-writer-census';
@@ -99,6 +99,78 @@ describe('phase binding writer census', () => {
       resolvedEdges: row.resolvedEdges.filter(edge => edge.edge !== 'resolveTable(subject)') } : row);
     expect(reconcilePhaseWriterCensus(inventory, missingTarget).problems.find(row => row.id === mutation.id)!.reasons)
       .toContain('unresolved-edge:resolveTable(subject)');
+  });
+
+  it('classifies every source writer and rejects unexplained advancing mutations', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-native-guard-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/writer.ts';
+      writeFileSync(join(root, path), write);
+      const original = inventoryPhaseWriterTree(root);
+      // This control comes from the known fixture, independently of the
+      // collector output used to construct the review population below.
+      expect(original.sites).toEqual([expect.objectContaining({ path, operation: 'exampleWrite', kind: 'sql',
+        statement: 'tx`UPDATE harness_shared.work_items SET status=${status} WHERE feature_id=${id}`',
+        relations: ['harness_shared.work_items'], columns: ['status'] })]);
+      const reviews = original.sites.map(site => review(site));
+      const current = assertPhaseWriterTreeCensus(root, reviews);
+      expect(current.ready).toBe(true);
+      expect(current.inventory.scope).toEqual({ kind: 'repository', root });
+      expect(current.inventory.sources).toEqual(original.sources);
+      expect(current.census.coverage.checked).toEqual(original.sites.map(site => site.id));
+      expect(current.census.coverage.residue).toEqual([]);
+      expect(current.freshness.coverage.residue).toEqual([]);
+      expect(Number.isNaN(Date.parse(current.observedAt))).toBe(false);
+
+      // Mutate the actual tree after its complete, reviewed snapshot. An old
+      // artifact stays internally valid but cannot be used as current truth.
+      const latePath = 'packages/new-writer.sql';
+      writeFileSync(join(root, latePath), "INSERT INTO harness_shared.plan_item_claims(item_id, owner) VALUES ('P-002', 'late')");
+      expect(assertPhaseWriterCensus(original, reviews).ready).toBe(true);
+      let refused: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, reviews); }
+      catch (error) { refused = (error as Error & { report: typeof current }).report; }
+      expect(refused?.ready).toBe(false);
+      const late = refused!.inventory.sites.find(site => site.path === latePath)!;
+      expect(late.statement).toContain("('P-002', 'late')");
+      expect(refused!.census.problems.find(problem => problem.id === late.id)!.reasons).toEqual(['unclassified-writer']);
+      expect(refused!.census.coverage.residue).toContain(late.id);
+      expect([...refused!.census.coverage.checked, ...refused!.census.coverage.notChecked,
+        ...refused!.census.coverage.notApplicable].sort()).toEqual([...refused!.census.coverage.population].sort());
+      rmSync(join(root, latePath));
+      expect(assertPhaseWriterTreeCensus(root, reviews).ready).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses stale exemptions dynamic frontiers and parse gaps through the actual tree guard', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-native-refusal-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/writer.ts';
+      writeFileSync(join(root, path), write);
+      const reviews = inventoryPhaseWriterTree(root).sites.map(site => review(site, 'isolated-fixture'));
+      expect(assertPhaseWriterTreeCensus(root, reviews).ready).toBe(true);
+      writeFileSync(join(root, path), write + '\nconst changed = true;');
+      expect(() => assertPhaseWriterTreeCensus(root, reviews)).toThrow('stale-review');
+      writeFileSync(join(root, path), write);
+      const dynamicPath = 'packages/dynamic.ts';
+      writeFileSync(join(root, dynamicPath), 'async function freshDynamic(db, statement) { await db.unsafe(statement); }');
+      const dynamic = inventoryPhaseWriterTree(root);
+      const unproved = dynamic.sites.map(site => site.path === dynamicPath
+        ? { ...review(site), resolvedEdges: [] } : reviews.find(row => row.siteId === site.id)!);
+      expect(() => assertPhaseWriterTreeCensus(root, unproved)).toThrow('unresolved-edge:statement');
+      rmSync(join(root, dynamicPath));
+      writeFileSync(join(root, 'packages/broken.ts'), 'export function broken( {');
+      let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, reviews); }
+      catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+      expect(report?.census.coverage.residue).toContain('gap:source:packages/broken.ts');
+      expect(report?.freshness.coverage.residue).toContain('gap:source:packages/broken.ts');
+      expect(report?.ready).toBe(false);
+      rmSync(join(root, 'packages/broken.ts'));
+      expect(assertPhaseWriterTreeCensus(root, reviews).ready).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it('discovers dormant literals renamed imports and dynamic relation targets', () => {

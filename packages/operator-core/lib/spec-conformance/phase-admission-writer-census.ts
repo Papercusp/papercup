@@ -571,6 +571,25 @@ export function assertPhaseWriterCensus(inventory: PhaseWriterInventory, reviews
   return report;
 }
 
+/** Native entry point: discover from the actual complete tree, then re-observe
+ * its bytes/enumeration before accepting classifications. A caller's old export
+ * or supplied-source subset is never substituted for this population. Both
+ * source freshness and site coverage retain their full refusal/recovery data.
+ * This measures source at observedAt; it grants no lifecycle authority.
+ */
+export function assertPhaseWriterTreeCensus(root: string, reviews: readonly PhaseWriterReview[]) {
+  const inventory = inventoryPhaseWriterTree(root);
+  const census = reconcilePhaseWriterCensus(inventory, reviews);
+  const freshness = verifyPhaseWriterTreeSnapshot(inventory);
+  const report = { schemaVersion: 1 as const, observedAt: freshness.observedAt,
+    ready: census.ready && freshness.ready, inventory, census, freshness };
+  if (!report.ready) {
+    const preview = census.problems[0]?.reasons[0] ?? 'source-snapshot-not-current';
+    throw Object.assign(new Error(`phase_writer_tree_census_incomplete:${preview}; first-reason-preview; complete report on error.report`), { report });
+  }
+  return report;
+}
+
 const streamKinds = ['header', 'source', 'site', 'gap', 'excluded', 'scanned', 'unscanned', 'review', 'coverage'] as const;
 type StreamKind = typeof streamKinds[number];
 type StreamCounts = Record<StreamKind, number>;
