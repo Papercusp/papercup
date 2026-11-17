@@ -474,7 +474,7 @@ function assertIdentityReadCurrent(budget?: IdentityRuleReadBudget): void {
  * without executing SQL in that case. Canceling a pipelined query directly can
  * instead cancel a different request on the shared connection (postgres.js).
  */
-async function identityRuleQuery<T>(read: (sql: Sql) => Promise<T>, budget?: IdentityRuleReadBudget): Promise<T> {
+export async function identityRuleQuery<T>(read: (sql: Sql) => Promise<T>, budget?: IdentityRuleReadBudget): Promise<T> {
   assertIdentityReadCurrent(budget);
   const org = getOrgPg();
   if (!budget) return read(org.sql);

@@ -288,7 +288,8 @@ describe('POST /agent-mcp/tool-guard', () => {
     for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     release();
     const [a, b, c] = await Promise.all([first, second, reused]);
-    expect(a).toEqual({ ok: true, text: 'Refused by identity safe-coder rule no-rm: no recursive deletes' });
+    expect(a).toEqual({ ok: true, text: 'Refused by identity safe-coder rule no-rm: no recursive deletes' +
+      `\nGuard diagnostic: requestId=${guardRequestId}.` });
     expect(b).toEqual(a);
     expect(c).toEqual({ ok: true, text: '' });
     expect(readAppliedWornRulesMock).toHaveBeenCalledTimes(2);
@@ -385,7 +386,8 @@ describe('POST /agent-mcp/tool-guard', () => {
         body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit', guardRequestId,
           input: { secret: NEVER_EMIT_MARKER } }),
       }));
-      expect((await res.json()).text).toBe('plan_execution_not_ready: Bound plan is draft');
+      expect((await res.json()).text).toBe('plan_execution_not_ready: Bound plan is draft' +
+        `\nGuard diagnostic: requestId=${guardRequestId}.`);
       expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
       const diagnostic = JSON.parse(log.mock.calls.find(([label]) => label === '[tool-guard-timing]')![1]);
       expect(diagnostic).toMatchObject({ guardRequestId, aborted: true,
@@ -527,7 +529,8 @@ describe('POST /agent-mcp/tool-guard', () => {
         method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
           guardRequestId, input: { secret: NEVER_EMIT_MARKER } }),
       }));
-      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' +
+        `\nGuard diagnostic: requestId=${guardRequestId}.` });
       expect(res.headers.get('X-Papercusp-Guard-Request-Id')).toBe(guardRequestId);
       const diagnostic = JSON.parse(log.mock.calls.find(([label]) => label === '[tool-guard-timing]')![1]);
       expect(diagnostic).toMatchObject({
@@ -540,16 +543,53 @@ describe('POST /agent-mcp/tool-guard', () => {
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
 
-  it('does not reflect an invalid caller identifier into headers or timing logs', async () => {
+  it('keeps an identity-budget refusal traceable in the native-visible response', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const guardRequestId = randomUUID();
+    readAppliedWornRulesMock.mockImplementation(() => new Promise(() => {}));
+    try {
+      const pending = route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+        method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
+          guardRequestId, input: { secret: NEVER_EMIT_MARKER } }),
+      }));
+      await vi.advanceTimersByTimeAsync(1000);
+      const response = await pending;
+      const { text } = await response.json();
+      expect(text).toMatch(/^tool_authority_unavailable: Native identity authority did not finish within the hook budget;/);
+      expect(text).toContain(`\nGuard diagnostic: requestId=${guardRequestId}.`);
+      expect(response.headers.get('X-Papercusp-Guard-Request-Id')).toBe(guardRequestId);
+      const diagnostic = JSON.parse(log.mock.calls.find(([label]) => label === '[tool-guard-timing]')![1]);
+      expect(diagnostic.guardRequestId).toBe(guardRequestId);
+      expect(readAppliedWornRulesMock.mock.calls[0]![3]!.signal.aborted).toBe(true);
+      expect(text).not.toContain(NEVER_EMIT_MARKER);
+      expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
+    } finally { log.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it('keeps an allowed response empty even when it has a valid request identifier', async () => {
+    const guardRequestId = randomUUID();
+    const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+      method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit', guardRequestId }),
+    }));
+    expect(await res.json()).toEqual({ ok: true, text: '' });
+    expect(res.headers.get('X-Papercusp-Guard-Request-Id')).toBe(guardRequestId);
+  });
+
+  it('does not reflect an invalid caller identifier into refusal text, headers or timing logs', async () => {
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    planExecutionGuard.mockImplementation(async () => { now += 600; return null; });
+    planExecutionGuard.mockImplementation(async () => {
+      now += 600;
+      return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
+    });
     try {
       const res = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
         method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
           guardRequestId: 'private-caller-prose' }),
       }));
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
       expect(res.headers.has('X-Papercusp-Guard-Request-Id')).toBe(false);
       expect(JSON.stringify(log.mock.calls)).not.toContain('private-caller-prose');
     } finally { clock.mockRestore(); log.mockRestore(); }
@@ -668,7 +708,8 @@ describe('tool-guard request acquisition diagnostics', () => {
           pending.get('second')!.finish();
           expect(await (await second).json()).toEqual({ ok: true, text: '' });
           pending.get('first')!.finish();
-          expect(await (await first).json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' });
+          expect(await (await first).json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' +
+            `\nGuard diagnostic: requestId=${firstId}.` });
           const records = timing.diagnostics();
           expect(records.map(record => record.guardRequestId)).toEqual([secondId, firstId]);
           for (const [index, owner] of ['second', 'first'].entries()) {
@@ -688,7 +729,7 @@ describe('tool-guard request acquisition diagnostics', () => {
     } finally { timing.restore(); }
   });
 
-  it('preserves partial histories on early refusal and labels pending waits as unobserved', async () => {
+  it('preserves the refusal and captures its pending waits without mutating the logged snapshot', async () => {
     const timing = timingHarness();
     let waiting: ReturnType<typeof acquireDiagnostics.beginAcquire> | undefined;
     let finishIdentity: ((value: null) => void) | undefined;
@@ -707,11 +748,15 @@ describe('tool-guard request acquisition diagnostics', () => {
     });
     try {
       const res = await route('/agent-mcp/tool-guard').handler(request('builder'));
-      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' });
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' +
+        `\nGuard diagnostic: requestId=${res.headers.get('X-Papercusp-Guard-Request-Id')}.` });
       expect(waiting).toBeDefined();
       const snapshot = timing.diagnostics()[0].pgAcquisitions;
       expect(snapshot).toMatchObject({ coverage: 'instrumented-acquisition-seam-only',
-        timing: 'begin-to-acquired-or-release-not-query-time', pendingAcquisitions: 'not-retained', omitted: 0 });
+        timing: 'begin-to-acquired-or-release-not-query-time',
+        pendingAcquisitions: 'request-scoped-active-tickets-only', omitted: 0, omittedPending: 0 });
+      expect(snapshot.pending).toEqual([{ pool: 'org-app-priority', elapsedMs: expect.any(Number) }]);
+      expect(snapshot.pending[0].elapsedMs).toBeGreaterThanOrEqual(0);
       expect(snapshot.acquisitions.map((entry: { outcome: string }) => entry.outcome))
         .toEqual(['acquired', 'released-before-acquire']);
       waiting!.release();
@@ -733,7 +778,8 @@ describe('tool-guard request acquisition diagnostics', () => {
     });
     try {
       const res = await route('/agent-mcp/tool-guard').handler(request('builder'));
-      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' });
+      expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: draft' +
+        `\nGuard diagnostic: requestId=${res.headers.get('X-Papercusp-Guard-Request-Id')}.` });
       const snapshot = timing.diagnostics()[0].pgAcquisitions;
       expect(snapshot.capacity).toBe(acquireDiagnostics.PG_ACQUIRE_TIMING_LIMIT);
       expect(snapshot.acquisitions).toHaveLength(acquireDiagnostics.PG_ACQUIRE_TIMING_LIMIT);
@@ -755,9 +801,23 @@ describe('tool-guard request acquisition diagnostics', () => {
       }
       expect(timing.diagnostics()[0].pgAcquisitions).toMatchObject({
         coverage: 'instrumented-acquisition-seam-only', acquisitions: [], omitted: 0,
-        pendingAcquisitions: 'not-retained',
+        pendingAcquisitions: 'request-scoped-active-tickets-only', pending: [], omittedPending: 0,
       });
     } finally { timing.restore(); }
+  });
+
+  it('preserves legacy coverage when pending measurements are absent', async () => {
+    const timing = timingHarness();
+    const snapshot = vi.spyOn(acquireDiagnostics, 'pgAcquireTimingSnapshot').mockReturnValue({
+      requestId: 'legacy-request', operation: 'native-tool-guard', capacity: 8, omitted: 0, acquisitions: [],
+    });
+    planExecutionGuard.mockImplementation(async () => { timing.setNow(600); return null; });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(request('builder'));
+      expect(await res.json()).toEqual({ ok: true, text: '' });
+      expect(timing.diagnostics()[0].pgAcquisitions).toMatchObject({ pendingAcquisitions: 'not-retained' });
+      expect(timing.diagnostics()[0].pgAcquisitions.pending).toBeUndefined();
+    } finally { snapshot.mockRestore(); timing.restore(); }
   });
 
   it('records slow plan and pool acquisition phases on route diagnostics', async () => {
@@ -798,8 +858,12 @@ describe('tool-guard request acquisition diagnostics', () => {
     try {
       const result = route('/agent-mcp/tool-guard').handler(request('builder'));
       if (outcome === 'throw') await expect(result).rejects.toBe(originalError);
-      else expect(await (await result).json()).toEqual({ ok: true,
-        text: outcome === 'refuse' ? 'plan_execution_not_ready: draft' : '' });
+      else {
+        const response = await result;
+        expect(await response.json()).toEqual({ ok: true,
+          text: outcome === 'refuse' ? 'plan_execution_not_ready: draft' +
+            `\nGuard diagnostic: requestId=${response.headers.get('X-Papercusp-Guard-Request-Id')}.` : '' });
+      }
       expect(snapshot).toHaveBeenCalledTimes(1);
       expect(timing.diagnostics()[0].pgAcquisitions).toEqual({ coverage: 'unavailable' });
       expect(JSON.stringify(timing.diagnostics())).not.toContain(NEVER_EMIT_MARKER);

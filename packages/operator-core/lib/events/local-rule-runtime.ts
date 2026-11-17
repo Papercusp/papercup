@@ -6,7 +6,7 @@ import { listLocalRules, localRuleSource, type LocalAuthoredRule } from './local
 import { registerStandaloneReactionRule } from './standalone-rules';
 import { listReactionRules, registerReactionRule, unregisterReactionRule, matchReactions } from './registry';
 import { executeIdentityReaction, type IdentityReactionPayload } from './identity-reaction';
-import { setLocalSyncRulesReader, type IdentityRuleReadBudget, type WornSyncRules } from '../agent-identities/sync-hook-rules';
+import { identityRuleQuery, setLocalSyncRulesReader, type IdentityRuleReadBudget, type WornSyncRules } from '../agent-identities/sync-hook-rules';
 import { keyMatchesPattern } from './await/pattern';
 import { setLocalRuleMatcher } from './engine';
 import type { ReactionCause, ToolInvocationEvent } from './types';
@@ -96,14 +96,13 @@ export async function readLocalSyncRules(ownerId: string, workspaceId: string, h
   const { resolvePotSlugsForHarnesses } = await import('../memory/hive-scope');
   remaining();
   const potSlug = (await resolvePotSlugsForHarnesses(workspaceId, [harnessSlug]))[0];
-  const acquireTimeoutMs = remaining();
+  remaining();
   if (!potSlug) return { rules: [], unreadable: [] };
-  const rows = await withWorkspace(workspaceId, tx => {
-    // A queued BEGIN can complete after the guard has ended. Roll back before
-    // reading rules, and never retry an acquisition beyond this call's budget.
-    remaining();
-    return listLocalRules({ workspaceId, potSlug }, { includeWorkspace: true, enabledOnly: true }, tx);
-  }, budget ? { acquireTimeoutMs, acquireRetries: 0, statementTimeoutMs: acquireTimeoutMs } : undefined);
+  // This store already filters workspace and pot explicitly. Reuse the applied
+  // identity reader's pool and deadline instead of acquiring an app transaction
+  // and adding BEGIN, workspace setup and COMMIT to every native tool call.
+  const rows = await identityRuleQuery(sql =>
+    listLocalRules({ workspaceId, potSlug }, { includeWorkspace: true, enabledOnly: true }, sql), budget);
   remaining();
   return { rules: rows.flatMap(row => row.authorId === ownerId && row.definition.delivery === 'sync'
     ? [{ identityId: localRuleRegistrationId(row), pinRef: localRuleRegistrationId(row), rule: row.definition }] : []), unreadable: [] };
