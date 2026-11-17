@@ -465,6 +465,18 @@ export class WorkspaceBackup {
       if (!lock) throw new Error('migration rendezvous acquisition returned no lock');
       return lock;
     };
+    const waitForHostBackupAdmission = async (error: string | undefined) => {
+      await this.event(snapshotRowId!, 'progress', {
+        phase: 'host_backup_admission_wait', error,
+        retryAfterMs: SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS,
+      });
+      const held = migrationLock;
+      migrationLock = undefined;
+      migrationLockReleasedForGuard = false;
+      await held?.release();
+      await new Promise<void>((resolve) => setTimeout(resolve, SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS));
+      migrationLock = await acquireSnapshotMigrationLock();
+    };
 
     const finalizeFailure = async (message: string): Promise<void> => {
       if (snapshotRowId === undefined || receiptFinalized) return;
@@ -572,7 +584,14 @@ export class WorkspaceBackup {
         // The orphan sweep can terminalize a lost producer before its explicit
         // recovery reaches this lock. Reopen only that machine-authored verdict,
         // after proving that the same row has no completed artifact.
-        const recovered = await this.reopenRecoverableProducer(snapshotRowId!, reason);
+        let recovered = await this.reopenRecoverableProducer(snapshotRowId!, reason);
+        while (recovered !== null && typeof recovered === 'object') {
+          // The host can release its rendezvous before removing its progress
+          // marker. Keep this recovery alive through that handoff, without
+          // modifying the protected terminal receipt or retaining its lock.
+          await waitForHostBackupAdmission(recovered.error);
+          recovered = await this.reopenRecoverableProducer(snapshotRowId!, reason);
+        }
         if (recovered !== null) {
           receiptFinalized = false;
         }
@@ -668,16 +687,7 @@ export class WorkspaceBackup {
         // Keep this exact intent running (and heartbeating) until the hook can
         // prove coverage or perform its own dump. Never hold the migration
         // rendezvous while waiting: the host producer needs it to finish.
-        await this.event(snapshotRowId!, 'progress', {
-          phase: 'host_backup_admission_wait', error: dumpOutcome.error,
-          retryAfterMs: SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS,
-        });
-        const held = migrationLock;
-        migrationLock = undefined;
-        migrationLockReleasedForGuard = false;
-        await held?.release();
-        await new Promise<void>((resolve) => setTimeout(resolve, SNAPSHOT_ADMISSION_RETRY_INTERVAL_MS));
-        migrationLock = await acquireSnapshotMigrationLock();
+        await waitForHostBackupAdmission(dumpOutcome.error);
         // Step results are durable. Replaying the first deferred outcome must
         // reach a NEW step, rather than caching that refusal forever. The
         // ordinal is deterministic across workflow replay; no receipt is lost.
@@ -1016,7 +1026,9 @@ export class WorkspaceBackup {
   }
 
   /** Called only while snapshotOnce holds the cross-process producer lock. */
-  private async reopenRecoverableProducer(snapshotId: number, reason: SnapshotTriggerReason): Promise<number | null> {
+  private async reopenRecoverableProducer(snapshotId: number, reason: SnapshotTriggerReason): Promise<
+    number | null | { deferred: 'host-backup-in-progress'; error: string }
+  > {
     const sql = backupHost().getSql();
     const [row] = await sql<{
       status: string; error_text: string | null; finished_at: string | null;
@@ -1052,7 +1064,10 @@ export class WorkspaceBackup {
       // Re-check live admission before modifying the failed receipt. The hook
       // checks again after the CAS, so a new writer racing this read still defers.
       const active = await readHostDumpInProgress();
-      if (active) throw new Error(`snapshot ${snapshotId} admission remains deferred: host backup is in progress (phase ${active.phase}, pid ${active.pid})`);
+      if (active) return {
+        deferred: 'host-backup-in-progress',
+        error: `snapshot ${snapshotId} admission remains deferred: host backup is in progress (phase ${active.phase}, pid ${active.pid})`,
+      };
       admissionEventId = eventId;
     }
     if (!orphan && !admissionEventId) return null;

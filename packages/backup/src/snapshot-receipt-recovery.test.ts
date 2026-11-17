@@ -303,14 +303,42 @@ describe('snapshot receipt recovery', () => {
     expect(f.steps).not.toContain('backup-pre-snapshot-hook');
   });
 
-  it.each(['active-host', 'actual-dump-failure', 'missing-hook', 'error-mismatch', 'capture-started', 'artifact', 'bad-finish', 'cas-race'] as const)
+  it.each([false, true])('waits through host teardown before reopening the same protected receipt (typed=%s)', async typed => {
+    const f = producerFixture('failed');
+    const error = 'host backup is in progress (phase guard-queued, pid 4242)';
+    f.row.hook_payload = { ok: false, error, ...(typed ? { deferred: 'host-backup-in-progress' } : {}) };
+    f.row.error_text = `pre-destructive backup requires a successful database dump: ${error}`;
+    f.row.finished_at = new Date().toISOString();
+    f.row.db_dump_ok = false;
+    admission.active = true;
+    const release = vi.fn(async () => {});
+    const acquire = vi.fn(async () => ({ release }));
+    configureWithSql(f.sql, acquire);
+    vi.useFakeTimers();
+    const pending = f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(f.row.status).toBe('failed');
+    expect(f.row.error_text).toBe(`pre-destructive backup requires a successful database dump: ${error}`);
+    expect(f.kopia).not.toHaveBeenCalled();
+    expect(f.queries.some(q => q.text.includes("SET status = 'running', finished_at = NULL"))).toBe(false);
+    admission.active = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await expect(pending).resolves.toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+    expect(acquire).toHaveBeenCalledTimes(3);
+    expect(release).toHaveBeenCalledTimes(3);
+    expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+    expect(f.steps).toContain('backup-pre-snapshot-hook:resume:78850:123');
+  });
+
+  it.each(['actual-dump-failure', 'missing-hook', 'error-mismatch', 'capture-started', 'artifact', 'bad-finish', 'cas-race'] as const)
   ('protects a terminal receipt when admission retry is not proven (%s)', async which => {
     const f = producerFixture('failed');
     const error = 'host backup is in progress (phase guard-queued, pid 4242)';
     f.row.hook_payload = { ok: false, error, deferred: 'host-backup-in-progress' };
     f.row.error_text = `pre-destructive backup requires a successful database dump: ${error}`;
     f.row.finished_at = new Date().toISOString(); f.row.db_dump_ok = false;
-    admission.active = which === 'active-host';
     if (which === 'actual-dump-failure') f.row.hook_payload.error = 'pg_dump exited 1';
     if (which === 'missing-hook') f.row.hook_payload = {};
     if (which === 'error-mismatch') f.row.error_text = 'some other failure';
