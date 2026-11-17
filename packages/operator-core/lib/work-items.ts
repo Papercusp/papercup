@@ -70,7 +70,7 @@ import { normalizeTakenBy } from './sync/hyperbee/projections/harness-features';
 // Type-only: the auto-clear module imports this one at runtime.
 import type { SystemClearedBlockerItem } from './work-item-ref-blocker-auto-clear';
 import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
-import { prepareBlockerDecision, type BlockerDecisionRecord } from './blocker-resolution-decision';
+import { admitBindingCorrection, prepareBlockerDecision, type BlockerDecisionRecord } from './blocker-resolution-decision';
 import { preflightBlockerDecision, type BlockerBoundaryContext } from './blocker-resolution-evidence';
 import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict, type BlockerDecisionMutation } from './blocker-resolution-persistence';
 import { boundedPgReadTxn } from './pg-read-query';
@@ -3017,6 +3017,7 @@ export async function searchWorkItemDuplicateCandidates(
   // complete while shrinking the bitmap candidate set the per-row count has to visit.
   const prefilterTokens = seedTokens.slice(0, seedTokens.length - requiredSeedMatches + 1);
   const seedQuery = prefilterTokens.join(' | ');
+  const maxSeedMisses = seedTokens.length - requiredSeedMatches;
   const issueWorkspace = issuesScopeWorkspace();
   const featureWorkspace = activeWorkspaceId();
   const rows = await sql<Array<{
@@ -3038,7 +3039,7 @@ export async function searchWorkItemDuplicateCandidates(
       SELECT plainto_tsquery('english', seed_term.token) AS q
         FROM unnest(${seedTokens}::text[]) AS seed_term(token)
     ),
-    -- Both families share one indexed search and one overlap count per eligible row.
+    -- Both families share one indexed search and one overlap decision per eligible row.
     -- Repeating the scan in each UNION branch detoasted and filtered the same broad
     -- GIN result twice, even when almost all of those rows were terminal/observations.
     matches AS MATERIALIZED (
@@ -3048,10 +3049,17 @@ export async function searchWorkItemDuplicateCandidates(
         CROSS JOIN seed
         CROSS JOIN LATERAL (SELECT wi._search || ''::tsvector AS v OFFSET 0) row_vec
         CROSS JOIN LATERAL (
-          SELECT count(*)::integer AS matched
-            FROM seed_terms
-           WHERE row_vec.v @@ seed_terms.q
-        ) seed_matches
+          -- matches >= k iff misses <= n-k. Stop after the first disqualifying miss;
+          -- low-overlap rows need not evaluate every seed. IS NOT TRUE also counts
+          -- NULL as a miss, exactly complementing the former positive WHERE test.
+          SELECT count(*)::integer AS unmatched
+            FROM (
+              SELECT 1
+                FROM seed_terms
+               WHERE (row_vec.v @@ seed_terms.q) IS NOT TRUE
+               LIMIT ${maxSeedMisses + 1}
+            ) misses
+        ) seed_misses
        WHERE (
            (wi.workspace_id = ${issueWorkspace}
              AND wi.item_kind IN (${sql.unsafe(ISSUE_FAMILY_KINDS_SQL_LIST)}))
@@ -3062,7 +3070,7 @@ export async function searchWorkItemDuplicateCandidates(
          AND wi.lane IS DISTINCT FROM 'observation'
          AND NOT (wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          AND wi._search @@ seed.query
-         AND seed_matches.matched >= ${requiredSeedMatches}
+         AND seed_misses.unmatched <= ${maxSeedMisses}
     ),
     candidates AS MATERIALIZED (
       SELECT id, title, summary, state,
@@ -11520,7 +11528,15 @@ async function mutateAgentBlockingRelation(
   const dependencySnapshot = await readWorkItemDependenciesForRefs(sql, {
     workspaceId: DEFAULT_COORD_WORKSPACE, refs: [blocked.ref],
   });
-  const prepared = opts.blockerEvidenceContext
+  const input = opts.blockerDecision?.input;
+  const correcting = Boolean(input && typeof input === 'object' && 'bindingCorrection' in input);
+  if (correcting && (!remove || !opts.blockerEvidenceContext || opts.blockerEvidenceContext.ownerId !== opts.by ||
+      opts.blockerEvidenceContext.workspaceId !== activeWorkspaceId() ||
+      JSON.stringify(dst) !== JSON.stringify(blocked))) {
+    throw Object.assign(new Error('Binding correction requires the exact authenticated blocking relation removal.'),
+      { code: 'blocker_decision_evidence' });
+  }
+  const prepared = opts.blockerEvidenceContext && !correcting
     ? await preflightBlockerDecision(dependent, opts.blockerDecision?.input, opts.blockerEvidenceContext, {
         effect, additionalDependencyRefs: remove ? [] : [blocker.ref],
       })
@@ -11536,7 +11552,58 @@ async function mutateAgentBlockingRelation(
     }
     if (isSettledWorkItemState(dependent.state)) throw new BlockerDecisionMutationConflict();
   }
-  await withWorkItemDependencyAdmissionTransaction(sql, async (tx) => {
+  const committed = await withWorkItemDependencyAdmissionTransaction(sql, async (tx) => {
+    // This entire branch is rebuilt on SERIALIZABLE retry. Never carry an
+    // administrative witness across attempts or mint one before row locks.
+    let attempt = prepared;
+    if (correcting) {
+      const rows = await tx`SELECT * FROM harness_shared.work_items
+        WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug IS NOT DISTINCT FROM ${dependent.harness}
+          AND feature_id = ${dependent.id} AND origin <> 'remote' FOR UPDATE`;
+      if (rows.length !== 1) throw new BlockerDecisionMutationConflict();
+      const row = rows[0]!;
+      const payload = (row.payload ?? {}) as Record<string, unknown>;
+      const fresh = prepareBlockerDecision(payload, input, { ownerId: opts.by ?? '',
+        sessionId: opts.blockerDecision!.sessionId, workItemId: dependent.id, custodianId: row.taken_by }, { effect });
+      if (!fresh.ok) throw Object.assign(new Error(fresh.nextAction), fresh);
+      if (fresh.replayed || isSettledWorkItemState(row.status)) throw new BlockerDecisionMutationConflict();
+      const current = await readWorkItemDependenciesForRefs(tx, {
+        workspaceId: DEFAULT_COORD_WORKSPACE, refs: [blocked.ref],
+      });
+      if (JSON.stringify(current) !== JSON.stringify(dependencySnapshot)) throw new BlockerDecisionMutationConflict();
+      const incoming = current.filter(edge => edge.blocked_kind === blocked.kind && edge.blocked_ref === blocked.ref);
+      if (incoming.length >= 25) throw new BlockerDecisionMutationConflict();
+      // Fence condition STATES as well as edge rows. A satisfied sibling can
+      // reopen without changing its edge. Shared locks also fence its authority.
+      for (const edge of incoming) {
+        const ref = await import('./work-items-events').then(m => m.workItemIdFromRef({ kind: edge.blocker_kind, ref: edge.blocker_ref }));
+        if (!ref) throw new BlockerDecisionMutationConflict();
+        const endpoints = await tx`SELECT feature_id FROM harness_shared.work_items w
+          WHERE workspace_id = ${activeWorkspaceId()} AND feature_id = ${ref.id}
+            AND ${ref.harness ? tx`harness_slug = ${ref.harness}` : tx`TRUE`}
+            AND CASE WHEN ${issueFamilyRouteSql(tx, 'w')} THEN 'issue' ELSE 'feature' END = ${edge.blocker_kind}
+          ORDER BY harness_slug, feature_id FOR SHARE`;
+        if (endpoints.length !== 1) throw new BlockerDecisionMutationConflict();
+      }
+      const unresolved = await readUnresolvedDepBlockers(dependent.id, dependent.harness ?? undefined);
+      if (unresolved.length >= 25 || unresolved.some(edge => edge.ref !== blocker.ref || edge.kind !== blocker.kind)) {
+        throw Object.assign(new Error('Binding correction cannot withdraw another unresolved dependency.'),
+          { code: 'blocker_decision_evidence' });
+      }
+      const admission = admitBindingCorrection(fresh, {
+        workspaceId: activeWorkspaceId(), expectedWorkspaceId: opts.blockerEvidenceContext!.workspaceId,
+        ownerId: opts.by ?? '', custodianId: row.taken_by, workItemId: dependent.id, harness: dependent.harness,
+        unbound: row.source_plan_slug == null && !(row.source_plan_item_ids?.length) &&
+          row.plan_slug == null && row.plan_line_id == null && payload.plan_item == null && payload.planItem == null,
+        noExternalConditions: payload.externalBlockers == null || (Array.isArray(payload.externalBlockers) &&
+          payload.externalBlockers.every(value => value && typeof value === 'object' && value.status === 'cleared')),
+        provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming,
+      });
+      if ('ok' in admission) throw Object.assign(new Error(admission.nextAction), admission);
+      attempt = await preflightBlockerDecision({ ...dependent, payload, state: row.status, assignee: row.taken_by },
+        input, opts.blockerEvidenceContext!, { effect, bindingCorrectionAdmission: admission });
+      if (!attempt.ok || 'ordinary' in attempt) throw Object.assign(new Error('Binding correction evidence refused.'), attempt);
+    }
     if ('ordinary' in prepared) {
       const rows = await tx`SELECT feature_id FROM harness_shared.work_items
         WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug IS NOT DISTINCT FROM ${dependent.harness}
@@ -11555,13 +11622,14 @@ async function mutateAgentBlockingRelation(
       mutations: [{ op: remove ? 'remove' : 'add', blocked, blocker,
         createdBy: opts.by, satisfaction: opts.satisfaction }],
     });
-    if (!('ordinary' in prepared)) await applyBlockerDecisionMutation(tx, {
+    if (!('ordinary' in attempt)) await applyBlockerDecisionMutation(tx, {
       workspace: activeWorkspaceId(), harness: dependent.harness, id: dependent.id,
-    }, { prepared, expectedState: dependent.state, expectedCustodianId: opts.by ?? '',
+    }, { prepared: attempt, expectedState: dependent.state, expectedCustodianId: opts.by ?? '',
       expectedExternalBlockers: (dependent.payload as Record<string, unknown> | null)?.externalBlockers,
-      payloadPatch: {}, unset: [] });
+      payloadPatch: {}, unset: [], bindingCorrection: correcting });
+    return attempt;
   });
-  if (!('ordinary' in prepared)) opts.onBlockerDecision?.({ record: prepared.record, replayed: false });
+  if (!('ordinary' in committed)) opts.onBlockerDecision?.({ record: committed.record, replayed: false });
   if (remove) {
     await subs.unsubscribeDerivedForEdge(blocked, blocker);
     void trackDetached(import('./work-items-events').then((m) => m.emitUnblockedOnEdgeRemoved(blocked, id))).catch(() => {});

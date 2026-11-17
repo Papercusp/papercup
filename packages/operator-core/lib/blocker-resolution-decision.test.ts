@@ -7,6 +7,8 @@ import {
   projectBlockerResolution,
   validateBlockerDecisionEvidence,
   BLOCKER_EVIDENCE_REF_GRAMMAR,
+  admitBindingCorrection,
+  consumeBindingCorrection,
   type BlockerEvidenceMeasurement,
   type BlockerDecisionInput,
   type PreparedBlockerDecision,
@@ -21,6 +23,101 @@ const defer = (): BlockerDecisionInput => ({
   attempts: [], evidenceRefs: [ref],
   deferral: { reason: 'active-peer', responsibleParty: 'su-b', nextAction: 'Repair owner verifies the endpoint',
     reasonEvidenceRefs: [ref], recheckRef: { kind: 'event', ref: 'dependency:repaired:WI-2' } },
+});
+
+describe('administrative binding correction', () => {
+  const provider = { kind: 'work-item' as const, ref: 'h#WI-2' };
+  const effect = { link: { id: 'WI-2', harness: 'h', dst: { kind: 'issue', ref: 'WI-1' },
+    rel: 'blocks', remove: true, satisfaction: 'success' } };
+  function fixture() {
+    const initial = prepareBlockerDecision({}, { ...defer(), evidenceRefs: [provider],
+      investigation: [{ action: 'Inspect provider', outcome: 'Pending', evidenceRefs: [provider] }],
+      deferral: { ...defer().deferral, reasonEvidenceRefs: [provider], recheckRef: provider } }, actor, options);
+    if (!initial.ok) throw new Error('invalid fixture');
+    const input = { ...defer(), disposition: 'self_resolve' as const, deferral: undefined,
+      idempotencyKey: 'correction', priorRevision: 1, evidenceRefs: [provider],
+      investigation: [{ action: 'Inspect original scope', outcome: 'Own voluntary binding was mistaken', evidenceRefs: [provider] }],
+      verification: { outcome: 'Withdraw only this consumer binding; shipment unverified', evidenceRefs: [provider] },
+      bindingCorrection: { edgeId: '1', rationale: 'The provider was agent-added bookkeeping outside the repair acceptance.' } };
+    delete input.deferral;
+    const prepared = prepareBlockerDecision(initial.patch, input, actor, { ...options, effect });
+    if (!prepared.ok) throw new Error('invalid fixture correction');
+    const scope = { workspaceId: 'w', expectedWorkspaceId: 'w', ownerId: actor.ownerId, custodianId: actor.ownerId,
+      workItemId: 'WI-1', harness: 'h', unbound: true, noExternalConditions: true,
+      provider: { id: 'WI-2', harness: 'h', kind: 'issue', ref: 'WI-2' }, blocked: effect.link.dst, effect,
+      edges: [{ id: 1, blocked_kind: 'issue', blocked_ref: 'WI-1', blocker_kind: 'issue', blocker_ref: 'WI-2',
+        satisfaction: 'success', created_by: actor.ownerId }] };
+    return { initial, input, prepared, scope };
+  }
+  it('binding correction preserves prior decision history and binds its rationale to replay', () => {
+    const { initial, input, prepared } = fixture();
+    expect(prepared.state.history).toEqual([...initial.state.history, prepared.record]);
+    expect(prepareBlockerDecision(prepared.patch, input, { ...actor, custodianId: 'successor' }, { effect }))
+      .toMatchObject({ ok: true, replayed: true, record: prepared.record });
+    expect(prepareBlockerDecision(prepared.patch, { ...input,
+      bindingCorrection: { ...input.bindingCorrection, rationale: 'different rationale' } }, actor, { effect }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+    expect(prepareBlockerDecision(prepared.patch, input, actor, { effect: { ...effect, remove: false } }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
+  });
+  const context = (requestHash: string) => ({ ownerId: actor.ownerId, workItemId: 'WI-1', obligationRefs: [provider],
+    bindingCorrectionRequestHash: requestHash,
+    readEvidence: async (): Promise<BlockerEvidenceMeasurement> => ({ status: 'available', condition: 'pending' }) });
+  it('binding correction refuses a caller-only witness and unrelated obligations', async () => {
+    const { prepared, scope } = fixture();
+    const check = (admission?: ReturnType<typeof admitBindingCorrection>) => validateBlockerDecisionEvidence(
+      prepared.record.decision, { ...context(prepared.record.requestHash),
+        bindingCorrectionAdmission: admission && !('ok' in admission) ? admission : undefined });
+    expect(await check({ transaction: Symbol('forged') })).toMatchObject({ ok: false });
+    expect(await check()).toMatchObject({ ok: false });
+    const admission = admitBindingCorrection(prepared, scope);
+    expect('ok' in admission).toBe(false);
+    if ('ok' in admission) throw new Error('refused fixture');
+    expect(await validateBlockerDecisionEvidence(prepared.record.decision, {
+      ...context(prepared.record.requestHash), bindingCorrectionAdmission: admission,
+      obligationRefs: [provider, { kind: 'event', ref: 'independent:pending' }],
+    })).toMatchObject({ ok: false });
+    expect(await check(admission)).toMatchObject({ ok: false });
+  });
+  it('admits only an administrative fact and consumes it once without satisfying the provider', async () => {
+    const { prepared, scope } = fixture();
+    const admission = admitBindingCorrection(prepared, scope);
+    if ('ok' in admission) throw new Error('refused fixture');
+    const measured = { status: 'available' as const, condition: 'pending' as const };
+    expect(await validateBlockerDecisionEvidence(prepared.record.decision, {
+      ...context(prepared.record.requestHash), bindingCorrectionAdmission: admission, readEvidence: async () => measured,
+    })).toEqual({ ok: true });
+    expect(measured.condition).toBe('pending');
+    expect(consumeBindingCorrection(prepared)).toBe(true);
+    expect(consumeBindingCorrection(prepared)).toBe(false);
+  });
+  it.each(['foreign-history', 'null-creator', 'lineage-alias', 'wrong-tenant', 'wrong-provider', 'wrong-kind',
+    'wrong-harness', 'wrong-edge', 'recreated-edge', 'changed-satisfaction', 'moved-custody', 'plan-bound',
+    'external-condition', 'missing-defer', 'unrelated-recheck', 'incomplete-census', 'non-removal'])(
+    'refuses %s provenance or effect', (variant) => {
+      const { prepared, scope } = fixture();
+      if (variant === 'foreign-history') (prepared.expectedState as typeof prepared.state).history[0].authorId = 'foreign';
+      if (variant === 'null-creator') scope.edges[0].created_by = null as unknown as string;
+      if (variant === 'lineage-alias') scope.edges[0].created_by = 'su-a-successor';
+      if (variant === 'wrong-tenant') scope.expectedWorkspaceId = 'other';
+      if (variant === 'wrong-provider') scope.provider.id = 'WI-3';
+      if (variant === 'wrong-kind') scope.provider.kind = 'feature';
+      if (variant === 'wrong-harness') scope.provider.harness = 'other';
+      if (variant === 'wrong-edge') scope.edges = [];
+      if (variant === 'recreated-edge') scope.edges[0].id = 2;
+      if (variant === 'changed-satisfaction') scope.edges[0].satisfaction = 'settled';
+      if (variant === 'moved-custody') scope.custodianId = 'su-other';
+      if (variant === 'plan-bound') scope.unbound = false;
+      if (variant === 'external-condition') scope.noExternalConditions = false;
+      if (variant === 'missing-defer') prepared.expectedState = undefined;
+      if (variant === 'unrelated-recheck') {
+        const prior = prepared.expectedState as typeof prepared.state;
+        if (prior.history[0].decision.disposition === 'defer') prior.history[0].decision.deferral.recheckRef = { kind: 'event', ref: 'unrelated' };
+      }
+      if (variant === 'incomplete-census') scope.edges = Array.from({ length: 25 }, () => ({ ...scope.edges[0] }));
+      if (variant === 'non-removal') scope.effect = { link: { ...scope.effect.link, remove: false } };
+      expect(admitBindingCorrection(prepared, scope)).toMatchObject({ ok: false });
+    });
 });
 
 describe('host unmeasured runtime provenance', () => {

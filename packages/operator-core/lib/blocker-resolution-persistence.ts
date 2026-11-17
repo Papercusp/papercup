@@ -1,5 +1,5 @@
 import type { Sql, TransactionSql } from 'postgres';
-import type { PreparedBlockerDecision } from './blocker-resolution-decision';
+import { consumeBindingCorrection, type PreparedBlockerDecision } from './blocker-resolution-decision';
 
 /** Internal handoff to the existing lifecycle transaction, never a tool argument.
  * The public boundary owns evidence validation; this seam owns atomic custody,
@@ -11,6 +11,7 @@ export interface BlockerDecisionMutation {
   expectedExternalBlockers: unknown;
   payloadPatch: Record<string, unknown>;
   unset: readonly string[];
+  bindingCorrection?: boolean;
 }
 
 export class BlockerDecisionMutationConflict extends Error {
@@ -31,7 +32,10 @@ export async function applyBlockerDecisionMutation(
 ): Promise<void> {
   if (mutation.prepared.replayed || mutation.prepared.record.workItemId !== identity.id ||
       mutation.prepared.record.authorId !== mutation.expectedCustodianId ||
-      mutation.unset.includes('blockerResolution')) throw new BlockerDecisionMutationConflict();
+      mutation.unset.includes('blockerResolution') || !consumeBindingCorrection(mutation.prepared)) throw new BlockerDecisionMutationConflict();
+  const correction = mutation.prepared.record.decision.disposition === 'self_resolve' &&
+    Boolean(mutation.prepared.record.decision.bindingCorrection);
+  if (correction && !mutation.bindingCorrection) throw new BlockerDecisionMutationConflict();
   const rows = await tx`
     UPDATE harness_shared.work_items
        SET payload = (COALESCE(payload, '{}'::jsonb) ||
@@ -42,6 +46,10 @@ export async function applyBlockerDecisionMutation(
        AND taken_by = ${mutation.expectedCustodianId}
        AND COALESCE(payload->'blockerResolution', 'null'::jsonb) = ${JSON.stringify(mutation.prepared.expectedState ?? null)}::text::jsonb
        AND COALESCE(payload->'externalBlockers', '[]'::jsonb) = ${JSON.stringify(mutation.expectedExternalBlockers ?? [])}::text::jsonb
+       AND (${!correction} OR (source_plan_slug IS NULL AND COALESCE(cardinality(source_plan_item_ids), 0) = 0
+         AND plan_slug IS NULL AND plan_line_id IS NULL
+         AND COALESCE(payload->'plan_item', 'null'::jsonb) = 'null'::jsonb
+         AND COALESCE(payload->'planItem', 'null'::jsonb) = 'null'::jsonb))
     RETURNING feature_id`;
   if (!rows.length) throw new BlockerDecisionMutationConflict();
 }

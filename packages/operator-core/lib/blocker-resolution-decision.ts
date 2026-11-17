@@ -54,6 +54,8 @@ export const blockerDecisionInputSchema = z.discriminatedUnion('disposition', [
     ...common,
     disposition: z.literal('self_resolve'),
     verification: z.object({ outcome: text(4000), evidenceRefs: evidence() }).strict(),
+    /** Administrative withdrawal, never settlement of the provider. */
+    bindingCorrection: z.object({ edgeId: text(200), rationale: text(4000) }).strict().optional(),
   }).strict(),
   z.object({
     ...common,
@@ -224,6 +226,62 @@ export type PreparedBlockerDecision = BlockerDecisionProblem | {
   patch: { blockerResolution: BlockerResolutionState };
 };
 
+/** Ephemeral transaction admission; caller-shaped objects carry no authority. */
+export interface BindingCorrectionAdmission { readonly transaction: symbol }
+const bindingCorrections = new WeakMap<BindingCorrectionAdmission, {
+  requestHash: string; ownerId: string; workItemId: string; providerRefs: string[];
+}>();
+const admittedCorrections = new WeakSet<object>();
+
+/** Called by the paired removal writer after locking the consumer and every
+ * endpoint in its complete canonical census. Nothing here measures shipment. */
+export function admitBindingCorrection(
+  prepared: Extract<PreparedBlockerDecision, { ok: true }>,
+  scope: {
+    workspaceId: string; expectedWorkspaceId: string; ownerId: string; custodianId: string | null;
+    workItemId: string; harness: string | null; unbound: boolean; noExternalConditions: boolean;
+    provider: { id: string; harness: string | null; kind: string; ref: string };
+    blocked: { kind: string; ref: string }; effect: unknown;
+    edges: readonly { id: string | number; blocked_kind: string; blocked_ref: string;
+      blocker_kind: string; blocker_ref: string; satisfaction: string | null; created_by: string | null }[];
+  },
+): BindingCorrectionAdmission | BlockerDecisionProblem {
+  const refuse = () => problem('blocker_decision_evidence', ['exact same-author unbound consumer binding and current prior deferral'],
+    'Read the canonical binding, complete decision history and remaining conditions; preserve custody and provider state.');
+  const input = prepared.record.decision;
+  const prior = readBlockerResolution({ blockerResolution: prepared.expectedState });
+  const providerRefs = [scope.provider.id, `${scope.provider.harness}#${scope.provider.id}`];
+  const namesProvider = (ref: BlockerEvidenceRef) => ref.kind === 'work-item' && providerRefs.includes(ref.ref);
+  const link = object(object(scope.effect).link);
+  const edge = scope.edges.find(row => input.disposition === 'self_resolve' && String(row.id) === input.bindingCorrection?.edgeId);
+  const expectedEffect = { link: { id: scope.provider.id, harness: scope.provider.harness,
+    dst: scope.blocked, rel: 'blocks', remove: true, satisfaction: link.satisfaction } };
+  if (input.disposition !== 'self_resolve' || !input.bindingCorrection || prepared.replayed ||
+      !scope.workspaceId || scope.workspaceId !== scope.expectedWorkspaceId || !scope.harness || !scope.provider.harness ||
+      scope.ownerId !== scope.custodianId || prepared.record.authorId !== scope.ownerId ||
+      prepared.record.workItemId !== scope.workItemId || !scope.unbound || !scope.noExternalConditions ||
+      prior.status !== 'recorded' || prior.current.decision.disposition !== 'defer' ||
+      prior.state.history.some(record => record.authorId !== scope.ownerId || record.workItemId !== scope.workItemId) ||
+      input.priorRevision !== prior.current.revision || !namesProvider(prior.current.decision.deferral.recheckRef) ||
+      !input.evidenceRefs.some(namesProvider) || !input.verification.evidenceRefs.some(namesProvider) ||
+      scope.edges.length >= 25 || !edge || edge.blocked_kind !== scope.blocked.kind || edge.blocked_ref !== scope.blocked.ref ||
+      edge.blocker_kind !== scope.provider.kind || edge.blocker_ref !== scope.provider.ref || edge.created_by !== scope.ownerId ||
+      !['settled', 'success'].includes(edge.satisfaction ?? '') ||
+      (link.satisfaction !== null && link.satisfaction !== edge.satisfaction) ||
+      JSON.stringify(canonical(scope.effect)) !== JSON.stringify(canonical(expectedEffect))) return refuse();
+  const admission = { transaction: Symbol('administrative binding removal') };
+  bindingCorrections.set(admission, { requestHash: prepared.record.requestHash, ownerId: scope.ownerId,
+    workItemId: scope.workItemId, providerRefs });
+  return admission;
+}
+
+/** Persistence consumes an exact validated decision once. A rollback/retry
+ * needs a newly established admission; other lifecycle writers cannot reuse it. */
+export function consumeBindingCorrection(prepared: Extract<PreparedBlockerDecision, { ok: true }>): boolean {
+  const input = prepared.record.decision;
+  return input.disposition !== 'self_resolve' || !input.bindingCorrection || admittedCorrections.delete(input);
+}
+
 function problem(code: BlockerDecisionProblem['code'], missing: string[], nextAction: string): BlockerDecisionProblem {
   return { ok: false, code, missing, nextAction };
 }
@@ -371,6 +429,8 @@ export async function validateBlockerDecisionEvidence(
     /** The current recorded `defer` this decision supersedes; its recheckRef is
      * already one of obligationRefs. Host-read from the stored record, never the request. */
     priorDeferral?: Extract<BlockerDecisionInput, { disposition: 'defer' }>['deferral'];
+    bindingCorrectionAdmission?: BindingCorrectionAdmission;
+    bindingCorrectionRequestHash?: string;
     readEvidence: (ref: BlockerEvidenceRef) => Promise<BlockerEvidenceMeasurement>;
   },
 ): Promise<{ ok: true } | BlockerDecisionProblem> {
@@ -388,6 +448,16 @@ export async function validateBlockerDecisionEvidence(
   const unique = new Map(refs.map((ref) => [evidenceKey(ref), ref]));
   const refuse = (missing: string[]) => problem('blocker_decision_evidence', missing,
     'Read the named canonical evidence and investigate the remaining condition; keep custody while the decision is refused.');
+  const admission = context.bindingCorrectionAdmission;
+  const removal = admission && bindingCorrections.get(admission);
+  if (admission) bindingCorrections.delete(admission);
+  const correcting = input.disposition === 'self_resolve' && Boolean(input.bindingCorrection);
+  if (correcting && (!removal || removal.requestHash !== context.bindingCorrectionRequestHash ||
+      removal.ownerId !== context.ownerId || removal.workItemId !== context.workItemId)) {
+    return refuse(['transaction-bound administrative binding removal']);
+  }
+  const administrativelyRemoved = (ref: BlockerEvidenceRef) => correcting && Boolean(removal) &&
+    ref.kind === 'work-item' && removal!.providerRefs.includes(ref.ref);
   if (unique.size > 64) return refuse(['at most 64 distinct evidence references per decision']);
   const measured = new Map<string, BlockerEvidenceMeasurement>();
   const entries = [...unique.entries()];
@@ -485,7 +555,7 @@ export async function validateBlockerDecisionEvidence(
     const satisfiedRelated = relatedRefs.filter(ref => value(ref).condition === 'satisfied');
     const relatedKeys = new Set(satisfiedRelated.map(evidenceKey));
     const relatedIdentities = new Set(satisfiedRelated.map(ref => value(ref).conditionIdentity).filter(Boolean));
-    const measuredVerification = input.verification.evidenceRefs.some((ref) => value(ref).condition === 'satisfied' &&
+    const measuredVerification = input.verification.evidenceRefs.some((ref) => administrativelyRemoved(ref) || value(ref).condition === 'satisfied' &&
       (relevant(ref) || relatedKeys.has(evidenceKey(ref)) ||
         (Boolean(value(ref).conditionIdentity) && relatedIdentities.has(value(ref).conditionIdentity))));
     // Verification run FOR this item: a satisfied condition measured on it, or a
@@ -520,6 +590,7 @@ export async function validateBlockerDecisionEvidence(
     const unresolved: string[] = [];
     let superseded = 0;
     for (const ref of context.obligationRefs) {
+      if (administrativelyRemoved(ref)) continue;
       if (value(ref).condition === 'satisfied') continue;
       if (clearedHumanSelfRecheck(ref)) continue;
       if (await lapsedPeerCustody(ref)) {
@@ -578,5 +649,7 @@ export async function validateBlockerDecisionEvidence(
         break;
     }
   }
-  return missing.length ? refuse(missing) : { ok: true };
+  if (missing.length) return refuse(missing);
+  if (correcting) admittedCorrections.add(input);
+  return { ok: true };
 }

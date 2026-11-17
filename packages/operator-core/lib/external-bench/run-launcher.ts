@@ -68,7 +68,7 @@ import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGate
   currentBenchSoloCapabilityControl,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
-  type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchTaskRequestCensus } from './current-su';
+  type CurrentSuBenchOptions, type CurrentSuBenchObservations, type CurrentBenchObservationReaderOptions, type CurrentBenchTaskRequestCensus } from './current-su';
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { FrontierSweNativeAssignment, FrontierSweProximusAssignment, FrontierSweLaunchAdapterConfig } from './frontier-swe-launch-adapter';
 import { frontierSweAgentNetworkArgs, type FrontierSweEnvHandle } from './frontier-swe-seam';
@@ -724,6 +724,9 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, p
   /** Trusted private-host lifecycle only. Never exposed in launch JSON or the
    * native tool ceiling; T06 solver reads cannot initiate an event replay. */
   prepareFixture?: (boundary: BenchFixtureReadBoundary) => Promise<void>;
+  /** Trusted same-process observer of the driver's original samples. This is
+   * host composition only, never launch JSON or a replacement task clock. */
+  observeTaskEndpoint?: CurrentSuBenchObservations['observeTaskEndpoint'];
 } = {}): Promise<
   Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls' | 'readRequestCensus' | 'issueSessionBudget'>> {
   const { options, protocol, task, context, scope, resources, loopId } = input;
@@ -776,6 +779,7 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, p
     const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
       workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);
     const observations = { ...host, observeIdentity,
+      ...(ports.observeTaskEndpoint ? { observeTaskEndpoint: ports.observeTaskEndpoint } : {}),
       ...(frozenReads ? { fixtureReads: structuredClone(input.fixtureReads!) } : {}),
       ...(fixtureLease ? { fixtureReadLease: fixtureLease.boundary.lease } : {}),
       admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) };

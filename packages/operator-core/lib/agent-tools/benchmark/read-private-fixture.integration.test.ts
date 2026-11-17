@@ -14,7 +14,9 @@ import { benchFixtureAllocationSha256, benchFixtureBoundarySchema, freezeBenchFi
   type BenchFixtureAllocation } from '../../external-bench/private-fixture-reads';
 import type { BenchFixtureReadArgs } from '../../external-bench/private-fixture-reads';
 import { startCurrentBenchTaskAssignment, currentBenchTaskProviderCapture, type CurrentTaskInput } from '../../external-bench/run-launcher';
-import { currentBenchAssignmentId, currentBenchLaunchRequest, liveCurrentSuBenchPorts } from '../../external-bench/current-su';
+import { currentBenchAssignmentId, currentBenchLaunchRequest, liveCurrentSuBenchPorts,
+  type CurrentBenchTaskEndpointObservation } from '../../external-bench/current-su';
+import { processMonotonicClock } from '../../process-monotonic-clock';
 import { upsertBenchRun } from '../../external-bench/run-store';
 import { runWithWorkspace } from '../../workspace-als';
 import { evaluateSessionConfinement, type SessionToolConfinement } from '../../capability-envelope/session-confinement';
@@ -98,7 +100,8 @@ afterAll(async () => { h.sql = undefined; h.appSql = undefined; if (fx) expect(a
 afterEach(() => { h.ceiling = undefined; vi.clearAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 async function fixture(armId: 'cold' | 'warm', taskId: 'LATENCY-M1:T01' | 'LATENCY-M1:T02' | 'LATENCY-M1:T03' | 'LATENCY-M1:T04' | 'LATENCY-M1:T05' | 'LATENCY-M1:T07' | 'LATENCY-M1:T08' | 'LATENCY-M1:T09' | 'LATENCY-M1:T10',
-  entries = [{ key: 'input', text: 'Use only the assigned source reader.' }]) {
+  entries = [{ key: 'input', text: 'Use only the assigned source reader.' }],
+  hostPorts: NonNullable<Parameters<typeof startCurrentBenchTaskAssignment>[1]> = {}) {
   const workspaceId = fx.fixture.workspace, sql = fx.db.adminSql, scope = { sql, workspaceId };
   const root = mkdtempSync(join(tmpdir(), 'latency-whole-read-')); roots.push(root);
   const checkout = join(root, 'assignment'); mkdirSync(checkout);
@@ -266,6 +269,7 @@ async function fixture(armId: 'cold' | 'warm', taskId: 'LATENCY-M1:T01' | 'LATEN
   h.item.mockResolvedValue({ harness: 'private-assignment', state: 'wip', assignee: ownerId });
   h.launch.mockImplementation(async (_args, nativeCtx) => { h.ceiling = nativeCtx[Symbol.for('latency-integration-ceiling')]; return { data: {} }; });
   const assignment = await startCurrentBenchTaskAssignment(input, {
+    ...hostPorts,
     startGateway: async () => ({ port: 32123, stop: async () => {} } as never) });
   roots.push((await currentBenchTaskProviderCapture(input)).captureRoot);
   const handle = { slug: 'private-assignment', featureId: 'WI-private-assignment', worktreePath: checkout };
@@ -299,6 +303,32 @@ async function readProduct<T>(args: BenchFixtureReadArgs, ctx: PapercuspUnifiedT
 }
 
 describe('real factory through native ceiling and private PG product readers', () => {
+  it('preserves original task samples and observer refusals through trusted factory composition', async () => {
+    const received: Readonly<CurrentBenchTaskEndpointObservation>[] = [];
+    const refusal = new Error('parent observer rejected the original result');
+    const observeTaskEndpoint = vi.fn((event: Readonly<CurrentBenchTaskEndpointObservation>) => {
+      received.push(event);
+      if (event.kind === 'result') throw refusal;
+    });
+    const f = await fixture('cold', 'LATENCY-M1:T01', undefined, { observeTaskEndpoint });
+    try {
+      const ports = liveCurrentSuBenchPorts(f.ctx, f.assignment.observations, f.assignment.options, { sql: fx.db.adminSql });
+      expect(ports.observeTaskEndpoint).toBe(observeTaskEndpoint);
+      const entry = Object.freeze({ kind: 'entry' as const, assignmentId: f.context.assignmentId,
+        atMs: processMonotonicClock.now(), clock: processMonotonicClock });
+      ports.observeTaskEndpoint!(entry);
+      expect(received[0]).toBe(entry);
+      const result = Object.freeze({ ...entry, kind: 'result' as const,
+        atMs: processMonotonicClock.now(), terminalDisposition: 'error' });
+      let caught: unknown;
+      try { ports.observeTaskEndpoint!(result); } catch (error) { caught = error; }
+      expect(caught).toBe(refusal);
+      expect(received[1]).toBe(result);
+      expect(received).toHaveLength(2);
+      expect(received.every(event => event.clock === processMonotonicClock)).toBe(true);
+    } finally { await f.assignment.stop(); }
+  }, 90_000);
+
   it.each(['cold', 'warm'] as const)('retains exact coverage IDs and raw eligibility evidence on the %s ceiling', async armId => {
     const sql = fx.db.adminSql;
     const population = async () => canonicalJson(await sql`SELECT to_jsonb(w) AS row

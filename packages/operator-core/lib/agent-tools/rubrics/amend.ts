@@ -444,7 +444,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(200)
       .optional()
       .describe(
-        'acceptance-kind only: atomically replace the full set; read rubrics:get and resubmit all stored criteria. Prefer structured acceptance/verification; legacy aliases must match or fail requirement_alias_conflict.',
+        'Atomically replace the full set; read rubrics:get and resubmit all stored criteria. Standard replacements return to proposed for fresh ratification. Acceptance replacements use the BAR amendment transaction. Prefer structured acceptance/verification; legacy aliases must match or fail requirement_alias_conflict.',
       ),
     criterionEvidencePlane: z
       .object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
@@ -633,7 +633,7 @@ export default defineTool({
   name: 'rubrics:amend',
   profile: 'engineer',
   description:
-    'Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining).',
+    'Patch a rubric criterion/requirement, full criterion set, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Full standard criterion replacements require fresh ratification; rating changes use rubrics:propose. Started BAR meaning changes require outside-lineage approval (see chaining).',
   guidance: {
     returns:
       "The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies. { ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). Missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`), invalid BAR contract fields (`acceptance_bar_amendment_test_layers_missing`, `acceptance_bar_amendment_test_layer_unrecordable`, `acceptance_bar_amendment_check_layer_mismatch`), required outside-lineage approval (`acceptance_bar_approval_required`), and unavailable reviewer models (`reviewer_model_not_allowed`) return { ok:false, code, error, next } as domain refusals and make no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",

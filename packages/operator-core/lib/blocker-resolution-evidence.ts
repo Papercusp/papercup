@@ -9,7 +9,8 @@ import { activeWorkspaceId } from './workspace-registry';
 import { readGitFilePublicationCondition, type GitFilePublicationBinding } from './git-file-publication-condition';
 import { BLOCKER_EVIDENCE_REF_GRAMMAR, hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
   validateBlockerDecisionEvidence, type BlockerEvidenceMeasurement, type BlockerEvidenceRef,
-  type BlockerDecisionProblem, type PreparedBlockerDecision, type UnmeasuredRuntimeScope } from './blocker-resolution-decision';
+  type BlockerDecisionProblem, type PreparedBlockerDecision, type UnmeasuredRuntimeScope,
+  type BindingCorrectionAdmission } from './blocker-resolution-decision';
 import type { WorkItem } from './work-items';
 
 /** Authenticated host context; never part of the public tool's arguments. */
@@ -142,7 +143,8 @@ export async function preflightBlockerDecision(
     /** Host-validated proposed conditions, checked before their first write. */
     additionalBlockers?: readonly ExternalBlockerRecord[];
     /** Canonical prospective dependency identities from the relation writer. */
-    additionalDependencyRefs?: readonly string[] },
+    additionalDependencyRefs?: readonly string[];
+    bindingCorrectionAdmission?: BindingCorrectionAdmission },
 ): Promise<PreparedBlockerDecision | { ok: true; ordinary: true }> {
   let prepared: PreparedBlockerDecision | undefined;
   if (input !== undefined) {
@@ -254,6 +256,8 @@ export async function preflightBlockerDecision(
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
       ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs, priorDeferral,
       allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral: plainReleaseScope,
+      bindingCorrectionAdmission: options.bindingCorrectionAdmission,
+      bindingCorrectionRequestHash: prepared.record.requestHash,
       unmeasuredParkedPlanLaneDeferral: parkedPlanLaneScope, readEvidence,
     });
     return checked.ok ? prepared : checked;

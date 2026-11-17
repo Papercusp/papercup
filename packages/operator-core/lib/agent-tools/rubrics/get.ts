@@ -33,6 +33,7 @@ import { mergeIds, runBulk, bulkContent } from '../_bulk';
 import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import type { Rubric } from '../../rubrics';
 import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
+import { resolveRubricSourceCitations, rubricSourceCitationDeps } from '../../rubrics-source-citations';
 
 /**
  * P-007 (RSR-P-007-A): the default rubric read is an INDEX — identity, the hashes a
@@ -227,7 +228,11 @@ export default defineTool({
               }
               return { ok: true as const, rubricRef, ...shaped, vetting };
             }
-            return { ok: true as const, rubricRef, ...shaped };
+            const sourceCitations = rubric.criteria.some(c => c.intent?.sourceRefs?.length)
+              ? await resolveRubricSourceCitations(rubric.criteria,
+                rubricSourceCitationDeps(rubric.workspaceId, identity.ownerId))
+              : [];
+            return { ok: true as const, rubricRef, ...shaped, ...(sourceCitations.length ? { sourceCitations } : {}) };
           }
 
           // An explicit revision is an immutable-read contract. Do not reuse the

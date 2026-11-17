@@ -133,6 +133,7 @@ const wi = await import('./work-items');
 const fulltextDupeGuard = await import('./agent-tools/work_items/fulltext-lexical-dupe-guard');
 const checkpointStore = await import('./work-item-checkpoint');
 const blockerPersistence = await import('./blocker-resolution-persistence');
+const dependencyStore = await import('./dbos/work-item-deps-store');
 
 let db: FreshPgDb;
 let links: PgLinkStore;
@@ -280,6 +281,126 @@ describe('atomic blocker decision lifecycle', () => {
   async function relationSnapshot(id: string) {
     return { ...await snapshot(id), edges: [...await db.sql`SELECT * FROM harness_shared.work_item_deps ORDER BY id`] };
   }
+
+  async function correctionSetup() {
+    const fixture = await relationSetup('task');
+    const provider = { kind: 'work-item' as const, ref: `papercup#${fixture.blocker.id}` };
+    await db.sql`UPDATE harness_shared.work_items SET status = 'blocked' WHERE feature_id = ${fixture.item.id}`;
+    const initial = { ...decision('voluntary-binding'), evidenceRefs: [provider],
+      investigation: [{ action: 'Read original scope', outcome: 'Provider pending', evidenceRefs: [provider] }],
+      deferral: { reason: 'external-dependency', responsibleParty: 'agB', nextAction: 'Original agent-added wait',
+        reasonEvidenceRefs: [provider], recheckRef: provider } };
+    await wi.linkWorkItem(fixture.blocker.id, fixture.dst, 'blocks', { ...relationOptions(), satisfaction: 'success',
+      blockerDecision: { input: initial, sessionId: 'authenticated-session-a' } });
+    const [edge] = await db.sql`SELECT id FROM harness_shared.work_item_deps`;
+    const input = { schemaVersion: 1, idempotencyKey: 'withdraw-voluntary-binding', disposition: 'self_resolve',
+      priorRevision: 1, symptom: 'Agent-added shipment acceptance was outside original repair scope',
+      investigation: initial.investigation, attempts: [], evidenceRefs: [provider],
+      verification: { outcome: 'Withdraw only the consumer binding; shipment remains unverified', evidenceRefs: [provider] },
+      bindingCorrection: { edgeId: String(edge.id), rationale: 'Original repair acceptance is proven separately from provider shipment.' } };
+    const opts = { harness: 'papercup', by: 'agA', satisfaction: 'success' as const,
+      blockerDecision: { input, sessionId: 'authenticated-session-a' },
+      blockerEvidenceContext: { ownerId: 'agA', sessionId: 'authenticated-session-a', workspaceId: 'default',
+        harnessSlug: 'papercup', role: 'su', root: null } };
+    return { ...fixture, input, opts };
+  }
+  const correctBinding = (f: Awaited<ReturnType<typeof correctionSetup>>) =>
+    wi.unlinkWorkItem(f.blocker.id, f.dst, 'blocks', f.opts);
+  const bindingSnapshot = async (id: string) => {
+    const state = await relationSnapshot(id);
+    return { row: state.row, edges: state.edges };
+  };
+  it('binding correction removes only the own ad-hoc binding while provider remains pending', async () => {
+    const f = await correctionSetup();
+    const prior = await bindingSnapshot(f.item.id);
+    const provider = await wi.getWorkItem(f.blocker.id, 'papercup');
+    expect(await correctBinding(f)).toMatchObject({ ok: true });
+    const after = await bindingSnapshot(f.item.id);
+    expect(after.edges).toHaveLength(0);
+    expect(after.row.payload.blockerResolution.history).toHaveLength(2);
+    expect(after.row.payload.blockerResolution.history[0]).toEqual(prior.row.payload.blockerResolution.history[0]);
+    expect(after.row.taken_by).toBe('agA');
+    expect(await wi.getWorkItem(f.blocker.id, 'papercup')).toEqual(provider);
+  });
+  it('binding correction records consumer scope without asserting provider shipment', async () => {
+    const f = await correctionSetup();
+    await correctBinding(f);
+    await wi.linkWorkItem(f.blocker.id, f.dst, 'blocks', { harness: 'papercup', by: 'agA', satisfaction: 'success' });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB' WHERE feature_id = ${f.item.id}`;
+    const before = await bindingSnapshot(f.item.id);
+    expect(await correctBinding(f)).toMatchObject({ ok: true, replayed: true });
+    expect(await bindingSnapshot(f.item.id)).toEqual(before);
+    expect((await wi.getWorkItem(f.blocker.id, 'papercup'))?.state).toBe('open');
+    await expect(wi.unlinkWorkItem(f.blocker.id, f.dst, 'blocks', { ...f.opts, blockerDecision: {
+      ...f.opts.blockerDecision, input: { ...f.input, bindingCorrection: { ...f.input.bindingCorrection, rationale: 'changed' } },
+    } })).rejects.toMatchObject({ code: 'blocker_decision_conflict' });
+  });
+  it.each(['source-plan', 'source-items', 'payload-plan', 'canonical-plan', 'external-condition', 'foreign-history',
+    'null-creator', 'wrong-recheck', 'plain-self-resolve'])(
+    'binding correction preserves authority guards: %s', async (variant) => {
+      const f = await correctionSetup();
+      if (variant === 'source-plan') await db.sql`UPDATE harness_shared.work_items SET source_plan_slug = 'real-plan' WHERE feature_id = ${f.item.id}`;
+      if (variant === 'source-items') await db.sql`UPDATE harness_shared.work_items SET source_plan_item_ids = ARRAY['P-001'] WHERE feature_id = ${f.item.id}`;
+      if (variant === 'payload-plan') await db.sql`UPDATE harness_shared.work_items SET payload = payload || '{"plan_item":{"plan_slug":"real-plan","item_id":"P-001"}}'::jsonb WHERE feature_id = ${f.item.id}`;
+      if (variant === 'canonical-plan') await db.sql`UPDATE harness_shared.work_items SET plan_slug = 'real-plan' WHERE feature_id = ${f.item.id}`;
+      if (variant === 'external-condition') await db.sql`UPDATE harness_shared.work_items SET payload = payload || '{"externalBlockers":[{"kind":"event","ref":"independent","status":"active"}]}'::jsonb WHERE feature_id = ${f.item.id}`;
+      if (variant === 'foreign-history') await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{blockerResolution,history,0,authorId}', '"foreign"') WHERE feature_id = ${f.item.id}`;
+      if (variant === 'null-creator') await db.sql`UPDATE harness_shared.work_item_deps SET created_by = NULL`;
+      if (variant === 'wrong-recheck') await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{blockerResolution,history,0,decision,deferral,recheckRef,ref}', '"papercup#WI-unrelated"') WHERE feature_id = ${f.item.id}`;
+      if (variant === 'plain-self-resolve') delete (f.input as { bindingCorrection?: unknown }).bindingCorrection;
+      const before = await bindingSnapshot(f.item.id);
+      await expect(correctBinding(f)).rejects.toBeDefined();
+      expect(await bindingSnapshot(f.item.id)).toEqual(before);
+    });
+  it.each(['plan-attachment', 'sibling-reopen', 'external-condition', 'decision-change', 'custody-change'])(
+    'binding correction preserves authority guards and rolls back concurrent changes: %s', async (variant) => {
+      const f = await correctionSetup();
+      const sibling = await wi.createWorkItem({ kind: 'task', title: 'satisfied sibling', harness: 'papercup' });
+      await db.sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = ${sibling.id}`;
+      await wi.linkWorkItem(sibling.id, f.dst, 'blocks', { harness: 'papercup', by: 'agA' });
+      const original = dependencyStore.withWorkItemDependencyAdmissionTransaction;
+      const spy = vi.spyOn(dependencyStore, 'withWorkItemDependencyAdmissionTransaction').mockImplementationOnce(async (sql, fn, retry) => {
+        if (variant === 'plan-attachment') await db.sql`UPDATE harness_shared.work_items SET source_plan_slug = 'new-plan' WHERE feature_id = ${f.item.id}`;
+        if (variant === 'sibling-reopen') await db.sql`UPDATE harness_shared.work_items SET status = 'open' WHERE feature_id = ${sibling.id}`;
+        if (variant === 'external-condition') await db.sql`UPDATE harness_shared.work_items SET payload = payload || '{"externalBlockers":[{"kind":"event","ref":"new","status":"active"}]}'::jsonb WHERE feature_id = ${f.item.id}`;
+        if (variant === 'decision-change') await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{blockerResolution,history,0,revision}', '2') WHERE feature_id = ${f.item.id}`;
+        if (variant === 'custody-change') await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agB' WHERE feature_id = ${f.item.id}`;
+        return original(sql, fn, retry);
+      });
+      try { await expect(correctBinding(f)).rejects.toBeDefined(); }
+      finally { spy.mockRestore(); }
+      expect((await bindingSnapshot(f.item.id)).edges).toHaveLength(2);
+      expect((await bindingSnapshot(f.item.id)).row.payload.blockerResolution.history).toHaveLength(1);
+    });
+  it('binding correction rolls back edge removal when receipt persistence fails', async () => {
+    const f = await correctionSetup();
+    const before = await bindingSnapshot(f.item.id);
+    await db.sql.unsafe(`CREATE OR REPLACE FUNCTION harness_shared.reject_correction() RETURNS trigger LANGUAGE plpgsql AS $fn$
+      BEGIN IF jsonb_array_length(NEW.payload->'blockerResolution'->'history') > 1 THEN RAISE EXCEPTION 'injected correction persistence failure'; END IF; RETURN NEW; END $fn$;
+      CREATE TRIGGER reject_correction BEFORE UPDATE ON harness_shared.work_items FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_correction()`);
+    try {
+      await expect(correctBinding(f)).rejects.toThrow('injected correction persistence failure');
+      expect(await bindingSnapshot(f.item.id)).toEqual(before);
+    } finally { await db.sql.unsafe('DROP TRIGGER reject_correction ON harness_shared.work_items'); }
+  });
+  it('binding correction re-establishes admission on serialization retry', async () => {
+    const f = await correctionSetup();
+    const original = dependencyStore.withWorkItemDependencyAdmissionTransaction;
+    let attempts = 0;
+    const spy = vi.spyOn(dependencyStore, 'withWorkItemDependencyAdmissionTransaction').mockImplementationOnce((sql, fn, retry) =>
+      original(sql, async tx => {
+        attempts += 1;
+        if (attempts === 2) await tx`UPDATE harness_shared.work_items SET source_plan_slug = 'new-plan' WHERE feature_id = ${f.item.id}`;
+        const result = await fn(tx);
+        if (attempts === 1) throw Object.assign(new Error('injected serialization retry'), { code: '40001' });
+        return result;
+      }, retry));
+    const before = await bindingSnapshot(f.item.id);
+    try { await expect(correctBinding(f)).rejects.toBeDefined(); }
+    finally { spy.mockRestore(); }
+    expect(attempts).toBe(2);
+    expect(await bindingSnapshot(f.item.id)).toEqual(before);
+  });
 
   it.each(['task', 'feature'] as const)('pairs dependency edges and decisions once, preserving successor custody on historical retry for %s', async (kind) => {
     const { item, blocker, dst } = await relationSetup(kind);
@@ -4207,6 +4328,29 @@ describe('unified work_items surface (real PG)', () => {
         searchWorkItems: wi.searchWorkItemDuplicateCandidates,
       });
       expect(screened?.map(({ id }) => id)).toEqual(expect.arrayContaining([feature.id, issue.id]));
+    }
+  });
+
+  it('fulltext duplicate screening retains Jaccard matches across every nonempty token subset', async () => {
+    const tokens = ['quintessa', 'fremulon', 'kadabrix', 'wizzlethorp',
+      'zorblax', 'rareword', 'frequentword', 'commonword'];
+    const expected: string[] = [];
+    // Exhaust the finite subset population, including the 4/5/6-token boundary
+    // around the public 0.6 Jaccard threshold. The oracle does not depend on which
+    // seven terms PostgreSQL selects as seeds or how it counts their overlap.
+    for (let mask = 1; mask < 1 << tokens.length; mask += 1) {
+      const words = tokens.filter((_, bit) => (mask & (1 << bit)) !== 0);
+      const item = await wi.createWorkItem({ kind: mask % 2 ? 'feature' : 'bug',
+        title: words.join(' '), harness: 'papercup', createdBy: 'agA' });
+      if (words.length / tokens.length >= 0.6) expected.push(item.id);
+    }
+    expect(expected).toHaveLength(93);
+    for (const analyzed of [false, true]) {
+      if (analyzed) await db.sql`ANALYZE harness_shared.work_items`;
+      const query = (analyzed ? [...tokens].reverse() : tokens).join(' ');
+      const result = await wi.searchWorkItemDuplicateCandidates(query);
+      expect(result.complete).toBe(true);
+      expect(result.items.map(({ id }) => id)).toEqual(expect.arrayContaining(expected));
     }
   });
 

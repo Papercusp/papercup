@@ -91,6 +91,7 @@ import {
 } from './acceptance-bar-amendment-requirements-drift';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 import { AcceptanceBarCandidateError, assertChangedAcceptanceBarProjectionsAtomic } from './acceptance-bar-projection';
+import { assertRubricSourceCitationsResolve, rubricSourceCitationDeps } from './rubrics-source-citations';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
 // rubric-template.ts (dependency-free, so instruments can import them without this
@@ -3866,6 +3867,10 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // subjectPlan would never gate anything, silently.
   const stored = await getRubric(input.rubricId);
   if (stored) assertRubricWritable(stored, 'proposeRubric');
+  if (kind === 'standard' && input.criteria.some(c => c.intent?.sourceRefs?.length)) {
+    await assertRubricSourceCitationsResolve(input.criteria, stored?.criteria ?? [],
+      rubricSourceCitationDeps(rubricsScopeWorkspace(), input.by ?? 'unattributed-rubric-writer'));
+  }
   if (kind === 'acceptance') {
     assertChangedAcceptanceBarProjectionsAtomic(
       input.criteria,
@@ -4063,8 +4068,9 @@ export interface AmendRubricInput {
     verification?: Partial<RequirementVerification>;
   };
   /**
-   * Acceptance-kind only: replace the COMPLETE criterion set through the
-   * cross-plan BAR amendment transaction. This is the post-seed escape hatch
+   * Replace the COMPLETE criterion set. Standard replacements return to proposed
+   * for fresh ratification; acceptance replacements use the cross-plan BAR
+   * amendment transaction. This is the post-seed escape hatch
    * for adding a declared R-N BAR or binding structured checks without routing
    * through rubrics:propose's pre-start readiness gate.
    */
@@ -4184,12 +4190,6 @@ export function applyRubricAmendment(
       'invalid_args: amendRubric: criteria is the complete replacement set and cannot be combined with criterion, criterionClass, or criterionEvidencePlane patches',
     );
   }
-  if (input.criteria && stored.kind !== 'acceptance') {
-    throw new Error(
-      'invalid_args: amendRubric: complete criteria replacement is acceptance-kind only; use rubrics:propose for a standard rubric revision',
-    );
-  }
-
   const classRef = input.classRef?.trim();
   let composes = input.composes === undefined ? stored.composes : normalizeRubricCompositionRefs(input.composes);
   if (input.classRef !== undefined) {
@@ -4223,8 +4223,8 @@ export function applyRubricAmendment(
   if (input.requirement) {
     const patch = input.requirement;
     const target = findAmendmentCriterion(criteria, patch.key);
-    if (stored.kind !== 'acceptance' || !target) {
-      throw new Error('invalid_args: requirement amendment requires an existing acceptance criterion');
+    if (!target || (stored.kind !== 'acceptance' && (patch.acceptance || patch.verification))) {
+      throw new Error('invalid_args: requirement amendment requires an existing criterion; Acceptance/Verification patches require acceptance kind');
     }
     if (
       ![patch.intent, patch.acceptance, patch.verification].some((section) => section && Object.keys(section).length)
@@ -4327,6 +4327,7 @@ export function applyRubricAmendment(
   }
 
   criteria = migrateLegacyCriterionProbeRevisions(criteria);
+  const standardReplacement = stored.kind === 'standard' && input.criteria !== undefined;
 
   return {
     rubricId: stored.rubricId,
@@ -4355,12 +4356,12 @@ export function applyRubricAmendment(
     ...(stored.stalenessWatched !== undefined ? { stalenessWatched: stored.stalenessWatched } : {}),
     ...((input.methodRef ?? stored.methodRef) ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
     ...((input.by ?? stored.createdBy) ? { by: (input.by ?? stored.createdBy)! } : {}),
-    status: stored.status,
+    status: standardReplacement ? 'proposed' : stored.status,
     // EI-10751: an amendment preserves the rubric's status, so it must also preserve the
     // ratifier of record — otherwise amending an active rubric leaves it active with the
     // stored ratifiedBy dropped, and the projection falls back to the plan owner (the
     // exact false-provenance record this fix removes).
-    ...(stored.status === 'active' && stored.ratifiedBy ? { ratifiedBy: stored.ratifiedBy } : {}),
+    ...(!standardReplacement && stored.status === 'active' && stored.ratifiedBy ? { ratifiedBy: stored.ratifiedBy } : {}),
     ...(input.allowMethodShrink !== undefined ? { allowMethodShrink: input.allowMethodShrink } : {}),
     ...(input.shrinkReason !== undefined ? { shrinkReason: input.shrinkReason } : {}),
     ...(input.checkPathRoot !== undefined ? { checkPathRoot: input.checkPathRoot } : {}),
@@ -6889,6 +6890,10 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
         );
       }
       const builtTemplateData = buildRubricTemplateData(amended);
+      if (stored.kind === 'standard' && amended.criteria.some(c => c.intent?.sourceRefs?.length)) {
+        await assertRubricSourceCitationsResolve(amended.criteria, stored.criteria,
+          rubricSourceCitationDeps(rubricsScopeWorkspace(), input.actorId ?? input.by ?? 'unattributed-rubric-writer'));
+      }
       await assertRubricCompositionLinksResolve(amended);
       const templateData = builtTemplateData.data;
       compatibilityAudit.current = builtTemplateData.compatibility;
