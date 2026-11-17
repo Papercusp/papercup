@@ -236,6 +236,27 @@ function finish(
   return { ...base, ready: status === 'ready', status, reason, message };
 }
 
+/** Starting non-final work does not open the scheduler's self-selection floor.
+ * Keep the original admission verdict intact, including its zero claimable width. */
+export function allowsPlanExecutionStart(admission: ExactPlanAdmission): boolean {
+  if (admission.ready) return true;
+  const promotion = admission.promotion;
+  const actionable = admission.planItems?.actionable;
+  if (admission.status !== 'refused' || admission.reason !== 'floor-gated' || admission.requestedSeats !== null ||
+      promotion?.sourceCapExhausted !== false || !Number.isSafeInteger(actionable) || !(actionable > 0) ||
+      promotion.coveredActionable !== actionable ||
+      !Array.isArray(promotion.missingActionableItemIds) || promotion.missingActionableItemIds.length ||
+      !Array.isArray(promotion.duplicateActionable) || promotion.duplicateActionable.length) return false;
+  const effective = admission.lane?.effective;
+  const matched = effective?.matchedByFilter;
+  const excluded = effective?.excluded;
+  return effective?.claimable === 0 && typeof matched === 'number' &&
+    Number.isSafeInteger(matched) && matched > 0 && excluded != null &&
+    excluded.stopTheLine === matched && excluded.claimFloors === matched &&
+    Object.entries(excluded).every(([key, count]) =>
+      key === 'stopTheLine' || key === 'claimFloors' ? count === matched : count === 0);
+}
+
 function zeroClaimableLaneVerdict(
   planSlug: string,
   lane: FleetLaneHealth,

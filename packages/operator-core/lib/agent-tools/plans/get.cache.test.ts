@@ -664,6 +664,26 @@ describe('plans:get — cache wiring', () => {
     expect(M.checkExecutionPlan).toHaveBeenCalledTimes(2);
   });
 
+  it('reports pending-only execution evaluation as unknown and refreshes it outside the plan cache', async () => {
+    M.checkExecutionPlan.mockResolvedValueOnce(['plan_readiness_pending']).mockResolvedValueOnce([]);
+    const pending = await run({ slug: 'alpha', mode: 'meta', executionReadiness: true });
+    expect(pending.results[0].executionReadiness).toMatchObject({
+      status: 'unknown', ready: null, blockers: ['plan_readiness_pending'],
+      unavailableReason: 'plan_readiness_pending', retryable: true, retryAfterMs: 10_000,
+    });
+    const ready = await run({ slug: 'alpha', mode: 'meta', executionReadiness: true });
+    expect(ready.results[0].executionReadiness).toEqual({ status: 'ready', ready: true, blockers: [] });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
+    expect(M.checkExecutionPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves concrete execution blockers when evaluation also reports pending', async () => {
+    const blockers = ['plan_readiness_pending', 'plan_start_revision_stale'];
+    M.checkExecutionPlan.mockResolvedValueOnce(blockers);
+    const result = await run({ slug: 'alpha', mode: 'meta', executionReadiness: true });
+    expect(result.results[0].executionReadiness).toEqual({ status: 'blocked', ready: false, blockers });
+  });
+
   it('keeps execution readiness continuation-scoped and previews a new item start through the live gate', async () => {
     M.checkExecutionPlan.mockResolvedValueOnce([]);
     M.checkDraftItemStartGateLive.mockResolvedValueOnce({

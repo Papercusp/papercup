@@ -106,6 +106,13 @@ export interface ActivationReadinessDiagnostic {
   ready: boolean;
   freshness: 'current' | 'changed' | 'unknown';
   basis: ActivationReadinessBasis | null;
+  /** Validated boundary snapshot; null when no final comparison was possible. */
+  finalBasis: ActivationReadinessBasis | null;
+  basisComparison: {
+    status: 'compared' | 'initial-unavailable' | 'final-unavailable';
+    /** Complete field population; exact values remain in basis and finalBasis. */
+    changedFields: (keyof ActivationReadinessBasis)[];
+  };
   stages: ActivationStage[];
   counts: { total: number; returned: number; omitted: number };
 }
@@ -120,7 +127,8 @@ export function unavailableActivationReadiness(error: unknown): ActivationReadin
   consult: PlanActivationConsultPreview;
 } {
   const message = error instanceof Error ? error.message : String(error);
-  return { schemaVersion: 1, advisory: true, ready: false, freshness: 'unknown', basis: null,
+  return { schemaVersion: 1, advisory: true, ready: false, freshness: 'unknown', basis: null, finalBasis: null,
+    basisComparison: { status: 'initial-unavailable', changedFields: [] },
     stages: ACTIVATION_STAGE_IDS.map(id => boundedStage(id, { status: 'unknown',
       codes: ['activation_stage_unavailable'], nextAction: `Restore the ${id} read and retry.`, detail: message })),
     counts: { total: ACTIVATION_STAGE_IDS.length, returned: ACTIVATION_STAGE_IDS.length, omitted: 0 },
@@ -134,14 +142,15 @@ const STAGE_DEPENDENCIES: Record<ActivationStageId, ActivationStageId[]> = {
   promotion: [], consult: [],
 };
 const settledStage = (status: ActivationStageStatus) => status === 'pass' || status === 'not-applicable';
+const ACTIVATION_BASIS_FIELDS = ['workspaceId', 'harnessSlug', 'planSlug', 'planRevision',
+  'planHash', 'requesterId', 'policyHash', 'specSetHash', 'evidenceHash'] as const;
 function basisKey(basis: ActivationReadinessBasis): string {
-  for (const key of ['workspaceId', 'harnessSlug', 'planSlug', 'planHash', 'requesterId',
-    'policyHash', 'specSetHash', 'evidenceHash'] as const) {
+  for (const key of ACTIVATION_BASIS_FIELDS) {
+    if (key === 'planRevision') continue;
     if (typeof basis[key] !== 'string' || !basis[key].trim()) throw new Error(`unmeasured ${key}`);
   }
   if (!Number.isSafeInteger(basis.planRevision) || basis.planRevision < 1) throw new Error('unmeasured planRevision');
-  return JSON.stringify([basis.workspaceId, basis.harnessSlug, basis.planSlug, basis.planRevision,
-    basis.planHash, basis.requesterId, basis.policyHash, basis.specSetHash, basis.evidenceHash]);
+  return JSON.stringify(ACTIVATION_BASIS_FIELDS.map(key => basis[key]));
 }
 function boundedStage(id: ActivationStageId, value: ActivationStageObservation): ActivationStage {
   if (!['pass', 'blocked', 'waiting', 'unknown', 'not-applicable'].includes(value.status) ||
@@ -202,8 +211,21 @@ export async function collectActivationReadiness(readers: ActivationReadinessRea
   }
   signal?.throwIfAborted();
   let freshness: ActivationReadinessDiagnostic['freshness'] = 'unknown';
-  if (initialKey) {
-    try { freshness = basisKey(await readers.readBasis(signal)) === initialKey ? 'current' : 'changed'; }
+  let finalBasis: ActivationReadinessBasis | null = null;
+  let basisComparison: ActivationReadinessDiagnostic['basisComparison'] = {
+    status: 'initial-unavailable', changedFields: [],
+  };
+  if (initialKey && basis) {
+    basisComparison.status = 'final-unavailable';
+    try {
+      const final = { ...await readers.readBasis(signal) };
+      signal?.throwIfAborted();
+      const finalKey = basisKey(final);
+      finalBasis = final;
+      freshness = finalKey === initialKey ? 'current' : 'changed';
+      basisComparison = { status: 'compared',
+        changedFields: ACTIVATION_BASIS_FIELDS.filter(key => basis[key] !== final[key]) };
+    }
     catch { /* Failure is unknown, never a stable scope. */ }
   }
   signal?.throwIfAborted();
@@ -216,7 +238,7 @@ export async function collectActivationReadiness(readers: ActivationReadinessRea
       }
     }
   }
-  return { schemaVersion: 1, advisory: true, basis, freshness,
+  return { schemaVersion: 1, advisory: true, basis, finalBasis, basisComparison, freshness,
     ready: freshness === 'current' && stages.every(stage => settledStage(stage.status)), stages,
     counts: { total: ACTIVATION_STAGE_IDS.length, returned: stages.length, omitted: 0 } };
 }

@@ -59,6 +59,7 @@ import { readPlanItemAnchors } from '../../plan-items/anchor-store';
 import { renderAnchorLine } from '../../plan-items/anchors';
 import { parsePlan } from '@papercusp/plan-parser';
 import { getPlanRevisionSnapshot } from './revisions';
+import { PLAN_READINESS_PENDING, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -1686,7 +1687,17 @@ export default defineTool({
             planSlug: result.slug,
             harnessSlug: executionScope.harnessSlug,
           }, executionScope.workspaceId);
-          result.executionReadiness = {
+          // A pending evaluation is unresolved, rather than a negative verdict.
+          // Any concrete blocker still takes precedence over that sentinel.
+          const pendingOnly = blockers.length > 0 && blockers.every(blocker => blocker === PLAN_READINESS_PENDING);
+          result.executionReadiness = pendingOnly ? {
+            status: 'unknown',
+            ready: null,
+            blockers,
+            unavailableReason: PLAN_READINESS_PENDING,
+            retryable: true,
+            retryAfterMs: READINESS_PENDING_RETRY_AFTER_MS,
+          } : {
             status: blockers.length ? 'blocked' : 'ready',
             ready: blockers.length === 0,
             blockers,

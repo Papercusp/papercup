@@ -4184,6 +4184,87 @@ describe('unified work_items surface (real PG)', () => {
     expect(ids.has(nearMiss.id)).toBe(false);
   });
 
+  it('fulltext duplicate screening preserves true matches with analyzed and stale term frequencies', async () => {
+    const query = 'quintessa fremulon kadabrix wizzlethorp zorblax rareword frequentword commonword';
+    for (let i = 0; i < 24; i += 1) {
+      await wi.createWorkItem({ kind: 'feature', title: 'frequentword commonword noise' + i,
+        harness: 'papercup', createdBy: 'agA' });
+    }
+    await db.sql`ANALYZE harness_shared.work_items`;
+    // These duplicates arrive AFTER ANALYZE, so the statistics omit their new rare terms.
+    // Seed ordering may change, but the overlap proof must retain both kind families.
+    const feature = await wi.createWorkItem({ kind: 'feature',
+      title: 'quintessa fremulon kadabrix wizzlethorp zorblax rareword',
+      harness: 'papercup', createdBy: 'agA' });
+    const issue = await wi.createWorkItem({ kind: 'bug',
+      title: 'rareword zorblax wizzlethorp kadabrix fremulon quintessa',
+      harness: 'papercup', createdBy: 'agA' });
+    for (const text of [query, query.split(' ').reverse().join(' ')]) {
+      const result = await wi.searchWorkItemDuplicateCandidates(text);
+      expect(result.complete).toBe(true);
+      expect(result.items.map(({ id }) => id)).toEqual(expect.arrayContaining([feature.id, issue.id]));
+      const screened = await fulltextDupeGuard.findFulltextLexicalDupes({ title: text }, {
+        searchWorkItems: wi.searchWorkItemDuplicateCandidates,
+      });
+      expect(screened?.map(({ id }) => id)).toEqual(expect.arrayContaining([feature.id, issue.id]));
+    }
+  });
+
+  it('fulltext duplicate screening keeps each family in its own workspace', async () => {
+    const query = 'quintessa fremulon kadabrix wizzlethorp zorblax';
+    const issue = await wi.createWorkItem({ kind: 'bug', title: query,
+      harness: 'papercup', workspaceId: 'default', createdBy: 'agA' });
+    const otherFeature = await wi.createWorkItem({ kind: 'feature', title: query,
+      harness: 'papercup', workspaceId: 'default', createdBy: 'agA' });
+    h.activeWorkspace = 'candidate-feature-workspace';
+    const feature = await wi.createWorkItem({ kind: 'feature', title: query,
+      harness: 'papercup', workspaceId: h.activeWorkspace, createdBy: 'agA' });
+    const otherIssue = await wi.createWorkItem({ kind: 'bug', title: query,
+      harness: 'papercup', workspaceId: h.activeWorkspace, createdBy: 'agA' });
+
+    // The legacy issues-per-workspace OFF configuration resolves issues to default while
+    // features retain the active workspace. Select that resolver contract explicitly;
+    // the normal ON configuration follows h.activeWorkspace for both families.
+    const legacyScope = vi.spyOn(await import('./issues-engineer'), 'issuesScopeWorkspace')
+      .mockReturnValue('default');
+    try {
+      const result = await wi.searchWorkItemDuplicateCandidates(query);
+      expect(result.complete).toBe(true);
+      expect(result.items.map(({ id }) => id).sort()).toEqual([issue.id, feature.id].sort());
+      expect(result.items.some(({ id }) => id === otherFeature.id || id === otherIssue.id)).toBe(false);
+    } finally {
+      legacyScope.mockRestore();
+    }
+  });
+
+  it('fulltext duplicate overflow stays unavailable at N+1 rather than hiding the last true match', async () => {
+    const query = 'quintessa fremulon kadabrix wizzlethorp zorblax';
+    const ids: string[] = [];
+    const limit = 3;
+    for (let count = 1; count <= limit + 1; count += 1) {
+      const item = await wi.createWorkItem({ kind: count % 2 ? 'feature' : 'bug', title: query,
+        harness: 'papercup', createdBy: 'agA' });
+      ids.push(item.id);
+      if (count < limit - 1) continue;
+      const result = await wi.searchWorkItemDuplicateCandidates(query, { maxCandidates: limit });
+      if (count <= limit) {
+        expect(result.complete).toBe(true);
+        expect(result.items.map(({ id }) => id).sort()).toEqual([...ids].sort());
+      } else {
+        expect(result).toEqual({ complete: false, items: [], reason: 'candidate-limit-exceeded' });
+        const screened = await fulltextDupeGuard.findFulltextLexicalDupes({ title: query }, {
+          searchWorkItems: (text) => wi.searchWorkItemDuplicateCandidates(text, { maxCandidates: limit }),
+        });
+        expect(screened).toBeNull();
+      }
+    }
+    // The source was retained intact: a caller with sufficient capacity recovers the final
+    // true match rather than inheriting a clean verdict from a partial candidate window.
+    const recovered = await wi.searchWorkItemDuplicateCandidates(query, { maxCandidates: ids.length });
+    expect(recovered.complete).toBe(true);
+    expect(recovered.items.map(({ id }) => id).sort()).toEqual([...ids].sort());
+  });
+
   it('search excludes retired chunks by default but an explicit chunk read remains available', async () => {
     const parent = await wi.createWorkItem({
       kind: 'feature',

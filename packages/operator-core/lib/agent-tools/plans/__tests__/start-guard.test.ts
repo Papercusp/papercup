@@ -10,7 +10,8 @@
  * real plan row.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
+import { lookupByMcpName } from '@papercusp/tooldef';
+import { dispatchProjectedTool } from '@papercusp/agent-mcp';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -271,7 +272,7 @@ const run = async (args: Record<string, unknown>, deps: Parameters<typeof dispat
     ...context,
   } as never, deps);
   expect(dispatched.ok).toBe(true);
-  expect(dispatched.result?.isError).not.toBe(true);
+  expect(dispatched.result?.isError, JSON.stringify(dispatched.result)).not.toBe(true);
   expect(input).toEqual(originalInput);
   return { ...dispatched.result, data: dispatched.result?.structuredContent } as {
     data: {
@@ -1355,6 +1356,22 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       promotionError: 'promotion boom',
     });
     expect(res.data.results[0].message).toContain('Item promotion failed: promotion boom');
+  });
+
+  it('starts non-final work when complete admission diagnostics show only stop-the-line exclusions', async () => {
+    admissionMocks.preflight.mockResolvedValueOnce({ ready: false, status: 'refused', reason: 'floor-gated',
+      requestedSeats: null, planItems: { actionable: 1 },
+      promotion: { sourceCapExhausted: false, coveredActionable: 1,
+        missingActionableItemIds: [], duplicateActionable: [] },
+      lane: { effective: { claimable: 0, matchedByFilter: 1,
+        excluded: { claimFloors: 1, stopTheLine: 1, reservedPlanLane: 0 } } },
+      message: 'Scheduler self-selection is stop-the-line gated.',
+    });
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+    expect(res.data.results[0]).toMatchObject({ ok: true,
+      admission: { ready: false, reason: 'floor-gated', lane: { effective: { claimable: 0 } } } });
+    expect(res.data.results[0].message).toContain('Non-final plan work may start');
+    expect(claimSpecMocks.setClaimSpec).toHaveBeenCalledOnce();
   });
 
   it('refuses a start whose exact-plan admission is not ready while preserving promotion evidence', async () => {

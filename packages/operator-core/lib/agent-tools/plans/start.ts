@@ -995,10 +995,11 @@ export default defineTool({
 
         let admission: Awaited<ReturnType<typeof import('./plan-admission-preflight').preflightExactPlanAdmission>> | null = null;
         let admissionError: string | null = null;
+        let admissionAllowsStart = false;
         let claimSpecBinding: Awaited<ReturnType<typeof import('../../scheduler/claim-spec-store').setClaimSpec>> | null = null;
         let claimSpecBindingError: string | null = null;
         try {
-          const [{ preflightExactPlanAdmission, buildExactPlanClaimSpec }, { resolveAgentIdentity }] = await Promise.all([
+          const [{ preflightExactPlanAdmission, buildExactPlanClaimSpec, allowsPlanExecutionStart }, { resolveAgentIdentity }] = await Promise.all([
             import('./plan-admission-preflight'),
             import('../coordination/identity'),
           ]);
@@ -1028,12 +1029,13 @@ export default defineTool({
             allowCallerHeld: true,
             teamAssignees,
           });
+          admissionAllowsStart = allowsPlanExecutionStart(admission);
 
           // The exact-plan oracle measures plan readiness; it is not a replacement
           // for an authored worker policy. Preserve cohort/dependency exceptions,
           // exclusions, ranking and limits, including inherited fleet policy.
           // Only an unscoped solo starter needs a new exact-plan default binding.
-          if (admission.ready) {
+          if (admissionAllowsStart) {
             try {
               const { getClaimSpecRecord, setClaimSpec } = await import('../../scheduler/claim-spec-store');
               const current = await getClaimSpecRecord({ cupId: ownerId, workspaceId: startWorkspaceId });
@@ -1083,7 +1085,7 @@ export default defineTool({
             ? ` Generated \`## Promoted\` block ${promotedBlock.changed ? 'written' : 'already current'} for ${promotedBlock.rows} work-item(s).`
             : '';
 
-        if (!admission?.ready) {
+        if (!admissionAllowsStart) {
           ctxAny.metadata?.({
             slug,
             harnessSlug,
@@ -1208,6 +1210,7 @@ export default defineTool({
           message:
             promotionMessage +
             promotedBlockMessage +
+            (admission?.ready ? '' : ` ${admission?.message} Non-final plan work may start; scheduler self-selection remains throttled. Final actions still require their canonical gates.`) +
             (axisLive
               ? ''
               : ' The operational started axis is PERMANENTLY RETIRED (P-068 DELETED papercusp-mug-kettle-system — there is no flag to flip and no toggle in /admin/features), so op_status was not written — su agents self-select these items via scheduler:get_next instead of waiting for a dispatcher.'),

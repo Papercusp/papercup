@@ -503,8 +503,11 @@ Promise<BlockerEvidenceMeasurement> {
       reasonRef: context.workItemId };
     return readGitFilePublicationCondition(binding, canonicalRoot);
   }));
-  const unavailable = checks.find(check => check.status !== 'available');
-  if (unavailable) return unknown(`exact local git-sync file predicate is unavailable: ${unavailable.status}`);
+  for (const [index, check] of checks.entries()) {
+    if (check.status !== 'available') {
+      return unknown(`exact local git-sync file predicate is unavailable for ${paths[index]}: ${check.status} (${check.detail})`);
+    }
+  }
   const condition = checks.every(check => check.status === 'available' && check.condition === 'satisfied')
     ? 'satisfied' : 'pending';
   return { status: 'available', condition, reachable: true, responsibleParty: 'system:git-sync',

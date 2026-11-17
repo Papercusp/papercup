@@ -32,6 +32,153 @@ const storedBindingSchema = z.union([
 ]);
 export type RuntimeConditionBinding = z.infer<typeof storedBindingSchema>;
 
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+export const runtimeConditionRebindInputSchema = z.object({
+  expectedBindingSha256: sha256,
+  binding: servingRuntimeConditionBindingInputSchema,
+  approvalRef: z.string().regex(/^thread-post:[1-9][0-9]*$/).optional(),
+}).strict();
+export type RuntimeConditionRebindInput = z.infer<typeof runtimeConditionRebindInputSchema>;
+const transitionReceiptSchema = z.object({
+  schemaVersion: z.literal('runtime-binding-transition-v1'),
+  workspaceId: z.string().min(1), harness: z.string().min(1), workItemId: z.string().min(1),
+  ref: z.string().min(1), custodianId: z.string().min(1),
+  sourcePlanSlug: z.string().min(1).nullable(),
+  expectedBindingSha256: sha256, expectedBlockersSha256: sha256,
+  binding: servingRuntimeConditionBindingInputSchema,
+}).strict();
+const transitionAuditSchema = z.object({
+  receipt: transitionReceiptSchema,
+  priorBinding: storedBindingSchema,
+  nextBinding: storedBindingSchema,
+  approvalRef: z.string().regex(/^thread-post:[1-9][0-9]*$/),
+  approvedBy: z.string().min(1), approvedAt: z.string().datetime({ offset: true }),
+  appliedBy: z.string().min(1), appliedAt: z.string().datetime({ offset: true }),
+}).strict();
+export type RuntimeBindingTransitionAudit = z.infer<typeof transitionAuditSchema>;
+export function runtimeBindingSha256(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
+type RebindItem = Pick<import('./work-items').WorkItem, 'id' | 'harness' | 'state' | 'assignee' | 'payload'> &
+  Partial<Pick<import('./work-items').WorkItem, 'createdBy' | 'terminalOwner' | 'sourcePlanSlug'>>;
+type BindingApprovalPost = { authorId: string; body: string; createdAt: string };
+
+/** Same authenticated, local, append-only post authority used by acceptance BAR
+ * review. A caller supplies a reference, never a reviewer identity or verdict. */
+async function readBindingApproval(ref: string, workspaceId: string): Promise<BindingApprovalPost | null> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const [post] = await sql<Array<{ author_id: string | null; body: string; created_at: Date }>>`
+    SELECT author_id, body, created_at FROM harness_shared.coord_thread_posts
+     WHERE workspace_id = ${workspaceId} AND id = ${ref.slice('thread-post:'.length)}::bigint
+       AND origin = 'local' AND octet_length(body) <= 65536`;
+  return post?.author_id?.trim()
+    ? { authorId: post.author_id, body: post.body, createdAt: new Date(post.created_at).toISOString() } : null;
+}
+
+async function independentBindingReviewer(item: RebindItem, prior: RuntimeConditionBinding,
+  reviewer: string, workspaceId: string): Promise<boolean> {
+  const [{ acceptanceLineageClosure }, { verificationParties }] = await Promise.all([
+    import('./acceptance-author-identity'), import('./harness/improvements/agent-review-policy'),
+  ]);
+  const parties = verificationParties(item);
+  if (parties.invalidCorrectionLineage) return false;
+  // Plan-bound upgrades use the canonical BAR review population, including the
+  // subject owner and rubric author. The plan's stored pin selects the screen.
+  if (item.sourcePlanSlug) {
+    const [{ getOrgPg }, { resolveAcceptanceBarApproverScreen }] = await Promise.all([
+      import('@papercusp/db-org'), import('./rubrics'),
+    ]);
+    const { sql } = getOrgPg();
+    const [plan] = await sql<Array<{ acceptance_bar_rubric_slug: string | null }>>`
+      SELECT acceptance_bar_rubric_slug FROM harness_shared.harness_plans
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${item.harness}
+         AND plan_slug = ${item.sourcePlanSlug}`;
+    if (!plan?.acceptance_bar_rubric_slug) return false;
+    const screen = await resolveAcceptanceBarApproverScreen({ rubricId: plan.acceptance_bar_rubric_slug,
+      applierId: item.assignee ?? undefined });
+    if (screen.subjectPlan !== item.sourcePlanSlug || !(await screen.check(reviewer)).eligible) return false;
+  }
+  const lineage = await acceptanceLineageClosure(reviewer, { workspaceId });
+  return ![item.assignee, prior.boundBy, ...parties.reporters, ...parties.implementers]
+    .some(id => id === reviewer || (id && lineage.has(id)));
+}
+
+/** Preview/apply an exact reviewed pin upgrade through the existing payload CAS.
+ * No condition is evaluated here, and no lifecycle or custody field is changed. */
+export async function prepareReviewedRuntimeBlockerBinding(
+  item: RebindItem, ref: string, input: unknown, actor: { ownerId: string; workspaceId: string },
+  deps: {
+    readApproval?: typeof readBindingApproval;
+    independent?: typeof independentBindingReviewer;
+    now?: () => string;
+  } = {},
+) {
+  const refuse = (error: string) => ({ ok: false as const, code: 'runtime_binding_invalid', error });
+  if (!actor.workspaceId || !item.harness || !actor.ownerId || item.assignee !== actor.ownerId ||
+      ['done', 'resolved', 'closed', 'passed', 'dropped', 'deprecated', 'failed', 'cancelled'].includes(item.state))
+    return refuse('Only the current custodian of a non-terminal, scoped item may upgrade its binding.');
+  const parsed = runtimeConditionRebindInputSchema.safeParse(input);
+  if (!parsed.success) return refuse('Supply exact old-binding hash and strict serving-runtime pins; approvalRef is only for apply.');
+  const request = parsed.data;
+  const raw = (item.payload as { externalBlockers?: unknown } | null)?.externalBlockers;
+  if (!Array.isArray(raw)) return refuse('Stored blocker history is unreadable.');
+  const matches = raw.map((row, index) => ({ row, index })).filter(({ row }) => row?.ref === ref && row?.status === 'active');
+  if (matches.length !== 1 || matches[0].row.kind !== 'runtime' ||
+      !readExternalBlockers(item.payload).some(row => row.ref === ref && row.status === 'active'))
+    return refuse('Name exactly one valid active runtime blocker.');
+  const { row, index } = matches[0];
+  const current = storedBindingSchema.safeParse(row.runtimeConditionBinding);
+  const history = z.array(transitionAuditSchema).max(128).safeParse(row.runtimeConditionBindingTransitions === undefined
+    ? [] : row.runtimeConditionBindingTransitions);
+  if (!current.success || 'kind' in current.data || !history.success)
+    return refuse('Only a readable serving-runtime binding with intact audit history may be upgraded.');
+  const prior = current.data;
+  const scope = { workspaceId: actor.workspaceId, harness: item.harness, workItemId: item.id, ref,
+    custodianId: actor.ownerId, sourcePlanSlug: item.sourcePlanSlug ?? null };
+  // A successful retry observes the exact resulting binding and retained receipt;
+  // it does not append a second audit entry or authenticate a different effect.
+  const last = history.data.at(-1);
+  if (last && request.approvalRef === last.approvalRef &&
+      isDeepStrictEqual(last.nextBinding, prior) &&
+      isDeepStrictEqual(last.receipt, { ...scope, schemaVersion: 'runtime-binding-transition-v1',
+        expectedBindingSha256: request.expectedBindingSha256,
+        expectedBlockersSha256: last.receipt.expectedBlockersSha256, binding: request.binding }))
+    return { ok: true as const, changed: false as const, replayed: true as const };
+  if (runtimeBindingSha256(prior) !== request.expectedBindingSha256)
+    return refuse('Stored binding changed; read it and obtain a fresh exact review.');
+  const next = request.binding;
+  if (next.host !== prior.host || next.toolSchema.tool !== prior.toolSchema.tool ||
+      !isDeepStrictEqual(Object.keys(next.sourceBlobs).sort(), Object.keys(prior.sourceBlobs).sort()))
+    return refuse('A pin upgrade must preserve the original host, public tool and source path set.');
+  if (isDeepStrictEqual(next.sourceBlobs, prior.sourceBlobs) && next.toolSchema.sha256 === prior.toolSchema.sha256)
+    return refuse('A reviewed upgrade must change exact source/schema pins.');
+  if (history.data.length === 128) return refuse('Binding audit history is full; never discard prior reviews.');
+  const receipt = transitionReceiptSchema.parse({ schemaVersion: 'runtime-binding-transition-v1', ...scope,
+    expectedBindingSha256: request.expectedBindingSha256, expectedBlockersSha256: runtimeBindingSha256(raw), binding: next });
+  if (!request.approvalRef) return { ok: true as const, changed: false as const, preview: receipt };
+  try {
+    const post = await (deps.readApproval ?? readBindingApproval)(request.approvalRef, actor.workspaceId);
+    if (!post) return refuse('Approval must be an authenticated workspace-local reviewer post.');
+    // Exactly one JSON value: prose, multiple receipts and caller-authored signer
+    // fields cannot silently select a different approved effect.
+    const approved = transitionReceiptSchema.safeParse(JSON.parse(post.body));
+    if (!approved.success || !isDeepStrictEqual(approved.data, receipt))
+      return refuse('Reviewer receipt does not approve this exact custody, history and binding transition.');
+    if (!await (deps.independent ?? independentBindingReviewer)(item, prior, post.authorId, actor.workspaceId))
+      return refuse('The approving author must be independent of this binding and its implementation lineage.');
+    const now = (deps.now ?? (() => new Date().toISOString()))();
+    const nextBinding = { ...next, boundBy: actor.ownerId, boundAt: now };
+    const audit = transitionAuditSchema.parse({ receipt, priorBinding: prior, nextBinding,
+      approvalRef: request.approvalRef, approvedBy: post.authorId, approvedAt: post.createdAt,
+      appliedBy: actor.ownerId, appliedAt: now });
+    const blockers = [...raw];
+    blockers[index] = { ...row, runtimeConditionBinding: nextBinding,
+      runtimeConditionBindingTransitions: [...history.data, audit] };
+    return { ok: true as const, changed: true as const, blockers, audit };
+  } catch { return refuse('Authenticated review or implementation-lineage evidence is unreadable; no binding was changed.'); }
+}
+
 /** Metadata compatibility only: the custodian declares what the old alias meant.
  * This does not measure recovery, change the original ref/status, or release custody.
  * The writer fences custody and the original blocker array in the same payload CAS. */

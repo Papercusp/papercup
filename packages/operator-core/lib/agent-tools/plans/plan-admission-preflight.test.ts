@@ -61,6 +61,8 @@ import {
   liftMigrationParkedCoverage,
   preflightExactPlanLaneHealth,
   preflightExactPlanAdmission,
+  allowsPlanExecutionStart,
+  type ExactPlanAdmission,
 } from './plan-admission-preflight';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 import { stopTheLineExplanation } from '../../work-items-admission';
@@ -533,6 +535,38 @@ describe('evaluateExactPlanAdmission', () => {
     });
     expect(partial.message).toContain('stopTheLine=2');
     expect(partial.message).not.toContain(stopTheLineExplanation('papercusp'));
+  });
+
+  it.each([1, 2, 3])('allows plan start for %i solely stop-the-line matches without changing self-selection', count => {
+    const verdict = evaluateExactPlanAdmission({ planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issueReachable: false, feature: 0, featureMatchedByFilter: count,
+        featureExcluded: { claimFloors: count, stopTheLine: count, reservedPlanLane: 0 } }),
+    });
+    expect(allowsPlanExecutionStart(verdict)).toBe(true);
+    expect(verdict).toMatchObject({ ready: false, reason: 'floor-gated', executableWidth: 0 });
+    expect(allowsPlanExecutionStart({ ...verdict, requestedSeats: 1 })).toBe(false);
+    expect(allowsPlanExecutionStart({ ...verdict, reason: 'promotion-lag' })).toBe(false);
+    expect(allowsPlanExecutionStart({ ...verdict, promotion: { ...verdict.promotion, sourceCapExhausted: true } })).toBe(false);
+    expect(allowsPlanExecutionStart({ ...verdict, promotion: { ...verdict.promotion, coveredActionable: 0 } })).toBe(false);
+    const refusedExclusions: Array<Record<string, number> | null> = [null, {}, { claimFloors: count, stopTheLine: count - 1 },
+      { claimFloors: count, stopTheLine: count, claimHold: 1 },
+      { claimFloors: count, stopTheLine: count, taken: 1 },
+      { claimFloors: count, stopTheLine: count, unknownFloor: Number.NaN }];
+    for (const excluded of refusedExclusions) {
+      expect(allowsPlanExecutionStart({ ...verdict,
+        lane: { ...verdict.lane!, effective: { ...verdict.lane!.effective, excluded } } })).toBe(false);
+    }
+    for (const matchedByFilter of [null, 0, count + 1]) {
+      expect(allowsPlanExecutionStart({ ...verdict,
+        lane: { ...verdict.lane!, effective: { ...verdict.lane!.effective, matchedByFilter } } })).toBe(false);
+    }
+  });
+
+  it('refuses plan-start exceptions when structural diagnostics are missing', () => {
+    expect(allowsPlanExecutionStart({ ready: false, status: 'refused', reason: 'floor-gated',
+      requestedSeats: null } as ExactPlanAdmission)).toBe(false);
   });
 
   it('keeps caller-held plan-start recovery out of a new-member fleet launch', () => {

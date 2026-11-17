@@ -7,6 +7,11 @@ const mergeWorkItemPayload = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
+const reviewedBinding = vi.fn();
+vi.mock('../../runtime-blocker-condition', async original => ({
+  ...await original<typeof import('../../runtime-blocker-condition')>(),
+  prepareReviewedRuntimeBlockerBinding: (...args: unknown[]) => reviewedBinding(...args),
+}));
 const preflightBlockerDecision = vi.fn();
 vi.mock('../../blocker-resolution-evidence', () => ({
   blockerBoundaryContext: async () => ({ ownerId: 'su-a', sessionId: 'su-a', workspaceId: 'default', root: null }),
@@ -276,6 +281,57 @@ describe('work_items:set_blocker audited runtime binding', () => {
     expect(await one(request)).toMatchObject({ ok: false, code: 'runtime_binding_conflict' });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
+  const rebind = { expectedBindingSha256: 'c'.repeat(64), binding: { ...binding,
+    toolSchema: { ...binding.toolSchema, sha256: 'd'.repeat(64) } } };
+  it.each([{ bindRuntimeCondition: binding }, { rebindRuntimeCondition: rebind }])(
+    'rejects top-level binding metadata alongside bulk lifecycle operations: %j', metadata => {
+      expect(() => parse({ id: item.id, ref: blocker.ref, ...metadata,
+        items: [{ id: item.id, ref: blocker.ref, clear: true }] })).toThrow();
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+  it('previews per-item bulk upgrades through the metadata-only path', async () => {
+    reviewedBinding.mockResolvedValueOnce({ ok: true, changed: false, preview: { exact: 'bulk receipt' } });
+    const result = await tool.handler(parse({ items: [{ id: item.id, harness: item.harness,
+      ref: blocker.ref, rebindRuntimeCondition: rebind }] }) as never, ctx) as { data: { results: unknown[] } };
+    expect(result.data.results).toEqual([expect.objectContaining({ ok: true, changed: false,
+      preview: { exact: 'bulk receipt' } })]);
+    expect(reviewedBinding).toHaveBeenCalledWith(item, blocker.ref, rebind,
+      { ownerId: 'su-a', workspaceId: expect.any(String) });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(preflightBlockerDecision).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it('returns a reviewed upgrade preview without writing or resolving the active blocker', async () => {
+    reviewedBinding.mockResolvedValueOnce({ ok: true, changed: false, preview: { exact: 'receipt' } });
+    expect(await one({ id: item.id, ref: blocker.ref, rebindRuntimeCondition: rebind }))
+      .toMatchObject({ ok: true, changed: false, preview: { exact: 'receipt' } });
+    expect(reviewedBinding).toHaveBeenCalledWith(item, blocker.ref, rebind, { ownerId: 'su-a', workspaceId: expect.any(String) });
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(preflightBlockerDecision).not.toHaveBeenCalled();
+  });
+  it('applies only through the existing raw-history/custody/nonterminal CAS', async () => {
+    reviewedBinding.mockResolvedValueOnce({ ok: true, changed: true, blockers: [blocker], audit: { approvedBy: 'su-reviewer' } });
+    expect(await one({ id: item.id, ref: blocker.ref, rebindRuntimeCondition: { ...rebind, approvalRef: 'thread-post:123' } }))
+      .toMatchObject({ ok: true, changed: true, audit: { approvedBy: 'su-reviewer' } });
+    expect(mergeWorkItemPayload).toHaveBeenCalledWith(item.id, { externalBlockers: [blocker] }, {
+      harness: item.harness, expectedCustodianId: 'su-a', requireNonTerminal: true, expectedExternalBlockers: item.payload.externalBlockers,
+    });
+    expect(preflightBlockerDecision).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+  it('refuses a lost reviewed-upgrade CAS without changing lifecycle', async () => {
+    reviewedBinding.mockResolvedValueOnce({ ok: true, changed: true, blockers: [blocker], audit: {} });
+    mergeWorkItemPayload.mockResolvedValueOnce(null);
+    expect(await one({ id: item.id, ref: blocker.ref, rebindRuntimeCondition: rebind }))
+      .toMatchObject({ ok: false, code: 'runtime_binding_conflict' });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+  it.each([{ clear: true }, { kind: 'runtime' }, { bindRuntimeCondition: binding }, { blockerDecision: {} }])(
+    'refuses mixed upgrade/lifecycle intent: %j', change => {
+      expect(() => parse({ id: item.id, ref: blocker.ref, rebindRuntimeCondition: rebind, ...change })).toThrow();
+    });
 });
 
 describe('work_items:set_blocker', () => {
