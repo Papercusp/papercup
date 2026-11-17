@@ -362,6 +362,17 @@ export function shouldIngestVitestLedgerInProcess(testRoot: string): boolean {
   return resolveAdminTestRunsReporterPath(testRoot) === undefined;
 }
 
+/** Keep the legacy child's native JSON serializer and capture its resolved project layers. */
+export function resolveVitestJsonReporterPath(testRoot: string): string {
+  try {
+    const fromChild = createRequire(join(testRoot, 'package.json'));
+    const { version } = JSON.parse(readFileSync(fromChild.resolve('vitest/package.json'), 'utf8'));
+    if (typeof version === 'string' && /^[123]\./.test(version))
+      return fileURLToPath(new URL('./legacy-vitest-json-reporter.ts', import.meta.url));
+  } catch { /* Unknown versions retain the existing JSON-only fallback. */ }
+  return 'json';
+}
+
 /** Resolve only a reporter whose lifecycle is supported by the executing Vitest. */
 export function resolveAdminTestRunsReporterPath(testRoot: string): string | undefined {
   const requireFromCheckout = createRequire(join(testRoot, 'package.json'));
@@ -881,7 +892,7 @@ export async function buildDetachedTestRunRequest(opts: {
     opts.files.length === 1 && /\.integration\.test\.[cm]?[jt]sx?$/i.test(opts.files[0]!);
   const reportPath = join(ensurePapercuspTmpdir() ?? tmpdir(), `papercusp-testing-run-detached-${randomUUID()}.json`);
   const vitestArgs = [
-    '--reporter=json',
+    `--reporter=${resolveVitestJsonReporterPath(opts.root)}`,
     ...(!parentIngestsIntegration && adminReporterPath ? [`--reporter=${adminReporterPath}`] : []),
     `--outputFile=${reportPath}`,
     ...(opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : []),
@@ -997,7 +1008,7 @@ export async function buildDetachedMixedTestRunRequest(opts: {
           join(group.root, 'scripts', 'test-files.mjs'),
           ...group.files,
           '--',
-          '--reporter=json', `--outputFile=${reportPathFor(group.root, group.files, true)}`, ...vitestArgs,
+          `--reporter=${resolveVitestJsonReporterPath(group.root)}`, `--outputFile=${reportPathFor(group.root, group.files, true)}`, ...vitestArgs,
         ],
         cwd: group.root,
       });
@@ -1008,7 +1019,7 @@ export async function buildDetachedMixedTestRunRequest(opts: {
       // file and an integration file with different Vitest configs). Vitest
       // replaces --outputFile on each invocation, so each child needs its own
       // artifact or the last route erases earlier ledger rows.
-      const routeVitestArgs = ['--reporter=json', `--outputFile=${reportPathFor(group.root, route.files)}`, ...vitestArgs];
+      const routeVitestArgs = [`--reporter=${resolveVitestJsonReporterPath(group.root)}`, `--outputFile=${reportPathFor(group.root, route.files)}`, ...vitestArgs];
       commands.push({
         command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
         args: [
@@ -4426,7 +4437,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
   const readerRefusalPath = join(packet.paths.directory, 'reader-compatibility-refusal.json');
   let outputLogPaths: string[] = [];
   try {
-    const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
+    const vitestArgs = [`--reporter=${resolveVitestJsonReporterPath(root)}`, `--outputFile=${reportPath}`];
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
     // the workspace config. Keep the admin ledger reporter in the same invocation, otherwise
     // testing:run returns correct counts but silently records no harness_shared.test_runs rows.

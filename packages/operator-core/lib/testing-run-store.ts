@@ -27,7 +27,7 @@ import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
 import { closeSync, constants, openSync } from 'node:fs';
 import { open, readFile, readdir, rm } from 'node:fs/promises';
-import { basename, dirname, join, isAbsolute, relative as pathRelative, resolve as pathResolve, posix } from 'node:path';
+import { basename, dirname, join, isAbsolute, relative as pathRelative, resolve as pathResolve, posix, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -35,6 +35,7 @@ import {
   isRecordedInstant,
   isRecordedCaseTitle,
   MAX_RECORDED_PASSED_CASES,
+  isRecordedTestLayer,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
 import {
@@ -1786,6 +1787,7 @@ export function completedDetachedReport(
   root: string,
   environment?: Readonly<Record<string, string | undefined>>,
   requestedFiles?: unknown,
+  runtimeScope?: VitestRuntimeScope,
 ): HarnessTestFileRow[] | null {
   try {
     const safeText = JSON.stringify(parseRedactedTestReportJson(text, environment));
@@ -1794,7 +1796,7 @@ export function completedDetachedReport(
       || report.testResults.length === 0 || report.testResults.some((file: VitestJsonFile) =>
         !file || !Number.isFinite(file.startTime) || !Number.isFinite(file.endTime)
         || file.endTime! < file.startTime! || !Array.isArray(file.assertionResults))) return null;
-    const rows = parseVitestJsonForHarnessRows(safeText, root, environment ?? process.env);
+    const rows = parseVitestJsonForHarnessRows(safeText, root, environment ?? {}, runtimeScope);
     if (rows.length !== report.testResults.length || rows.some(r => !r.execution)
       || new Set(rows.map(r => r.filePath)).size !== rows.length) return null;
     const counts = rows.reduce((sum, r) => ({
@@ -1826,6 +1828,7 @@ export function completedDetachedReport(
         failed: row.execution.failed,
         skipped: row.execution.skipped,
         collectionFailed: row.execution.collectionFailed,
+        ...(row.execution.testLayer ? { testLayer: row.execution.testLayer } : {}),
       } } : {}),
     }));
   } catch { return null; }
@@ -1870,7 +1873,8 @@ async function reconcilePersistedReportArtifact(
     }
     const expanded = sources.map(source => source.artifact);
     const reports = sources.map(({ artifact, reportText }) => ({ artifact, reportText,
-      rows: completedDetachedReport(reportText, artifact.root, environment, artifact.requestedFiles ?? requestedFiles),
+      rows: completedDetachedReport(reportText, artifact.root, environment, artifact.requestedFiles ?? requestedFiles,
+        artifact.scope ? { runGroupId: snapshot.runId, ...artifact.scope } : undefined),
     }));
     if (reports.some(report => report.rows === null)
       || !hasCompleteReportCoverage(artifacts, requestedFiles, reports, !environment)) return snapshot;
@@ -2561,7 +2565,8 @@ async function persistDetachedReportArtifacts(
       const reports = await Promise.all(expanded.map(async artifact => ({
         artifact,
         rows: completedDetachedReport(await readFile(artifact.reportPath, 'utf8'), artifact.root, environment,
-          artifact.requestedFiles ?? snapshot.requestedFiles),
+          artifact.requestedFiles ?? snapshot.requestedFiles,
+          artifact.scope ? { runGroupId: snapshot.runId, ...artifact.scope } : undefined),
       })));
       if (!hasCompleteReportCoverage(artifacts, snapshot.requestedFiles, reports)) return;
     }
@@ -3396,7 +3401,7 @@ export interface HarnessTestFileRow {
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
   execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'
-    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational'>;
+    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational' | 'testLayer'>;
   /** Complete normalized assertions, available only with the child's redaction environment. */
   cases?: readonly TestCaseRecord[] | null;
 }
@@ -3505,18 +3510,51 @@ function casesFromVitestAssertions(assertions: VitestJsonAssertion[]): TestCaseR
  * Pure + defensive: malformed JSON or an unexpected shape yields []. A
  * non-vitest report (no `testResults`) likewise yields [] — best-effort skip.
  */
+export interface VitestRuntimeScope { runGroupId: string; workspaceId: string; harnessSlug: string }
+
+function vitestRuntimeLayers(value: unknown, root: string, scope: Partial<VitestRuntimeScope>) {
+  const layers = new Map<string, TestRunExecutionDetails['testLayer']>();
+  if (!value || typeof value !== 'object') return layers;
+  const receipt = value as Record<string, unknown>;
+  const within = (base: string, path: unknown): path is string => {
+    if (typeof path !== 'string' || !isAbsolute(base) || !isAbsolute(path)) return false;
+    const rel = pathRelative(base, path);
+    return rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel);
+  };
+  if (receipt.schemaVersion !== 1 || !scope.runGroupId || !scope.workspaceId || !scope.harnessSlug
+    || receipt.runGroupId !== scope.runGroupId || receipt.workspaceId !== scope.workspaceId
+    || receipt.harnessSlug !== scope.harnessSlug || !within(root, receipt.root) || !Array.isArray(receipt.files)) return layers;
+  const seen = new Set<string>();
+  for (const value of receipt.files) {
+    if (!value || typeof value !== 'object') continue;
+    const file = value as Record<string, unknown>;
+    if (!within(root, file.filePath)) continue;
+    const path = relToRootPosix(file.filePath, root);
+    if (seen.has(path)) { layers.set(path, undefined); continue; }
+    seen.add(path);
+    if (within(receipt.root, file.projectRoot) && within(file.projectRoot, file.filePath)
+      && isRecordedTestLayer(file.testLayer)) layers.set(path, file.testLayer);
+  }
+  return layers;
+}
+
 export function parseVitestJsonForHarnessRows(
   jsonText: string,
   rootAbs: string,
   environment: Readonly<Record<string, string | undefined>> = process.env,
+  runtimeScope?: VitestRuntimeScope,
 ): HarnessTestFileRow[] {
-  let parsed: { testResults?: VitestJsonFile[] };
+  let parsed: { testResults?: VitestJsonFile[]; papercuspRuntime?: unknown };
   try {
     parsed = parseRedactedTestReportJson(jsonText, environment) as { testResults?: VitestJsonFile[] };
   } catch {
     return [];
   }
   const files = Array.isArray(parsed?.testResults) ? parsed.testResults : [];
+  const layers = vitestRuntimeLayers(parsed?.papercuspRuntime, rootAbs, runtimeScope ?? {
+    runGroupId: environment.PAPERCUSP_TEST_RUN_GROUP, workspaceId: environment.PAPERCUSP_WORKSPACE_ID,
+    harnessSlug: environment.PAPERCUSP_TEST_RUN_HARNESS,
+  });
   const rows: HarnessTestFileRow[] = [];
   for (const f of files) {
     if (!f || typeof f.name !== 'string' || f.name.length === 0) continue;
@@ -3544,6 +3582,8 @@ export function parseVitestJsonForHarnessRows(
     if (execution && f.status === 'failed' && execution.failed === 0) {
       execution.collectionFailed = true;
     }
+    const testLayer = layers.get(filePath);
+    if (execution && testLayer) execution.testLayer = testLayer;
 
     const start = typeof f.startTime === 'number' ? f.startTime : null;
     const end = typeof f.endTime === 'number' ? f.endTime : null;
@@ -4119,7 +4159,8 @@ export async function reconcileHarnessTestRunRows(params: PersistHarnessTestRuns
         || details.root !== params.root || details.runGroupId !== params.runGroupId
         || details.workspaceId !== params.workspaceId || details.harnessSlug !== params.harnessSlug
         || details.passed !== expected.execution.passed || details.failed !== expected.execution.failed
-        || details.skipped !== expected.execution.skipped || details.collectionFailed !== expected.execution.collectionFailed)
+        || details.skipped !== expected.execution.skipped || details.collectionFailed !== expected.execution.collectionFailed
+        || details.testLayer !== expected.execution.testLayer)
         throw new Error('retained_report_existing_result_mismatch');
     }
     return rows;
@@ -4162,7 +4203,8 @@ async function persistDetachedReportRows(
         || details.workspaceId !== params.workspaceId || details.harnessSlug !== params.harnessSlug
         || details.runGroupId !== params.runGroupId || details.testNamePattern !== (params.testNamePattern ?? null)
         || details.passed !== row.execution.passed || details.failed !== row.execution.failed
-        || details.skipped !== row.execution.skipped || details.collectionFailed !== row.execution.collectionFailed) {
+        || details.skipped !== row.execution.skipped || details.collectionFailed !== row.execution.collectionFailed
+        || details.testLayer !== row.execution.testLayer) {
         throw new Error('detached_report_case_parent_mismatch');
       }
       parents.push({ testRunId: String(id), cases: row.cases! });

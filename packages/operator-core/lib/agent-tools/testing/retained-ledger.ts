@@ -63,7 +63,9 @@ export async function recoverRetainedVitestLedger(input: {
   // Reuse restart recovery's complete-report validation and redaction. The
   // original child environment is unavailable, so free-form assertion text
   // cannot be safely persisted; measured counts/timestamps remain recoverable.
-  const rows = completedDetachedReport(text, source.root, undefined, files.map(file => join(source.root, file)));
+  const rows = completedDetachedReport(text, source.root, undefined, files.map(file => join(source.root, file)), {
+    runGroupId: input.runId, workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+  });
   if (counts.passed !== result.passed || counts.failed !== result.failed || counts.skipped !== result.skipped
     || !rows
     || JSON.stringify(rows.map(row => row.filePath).sort()) !== JSON.stringify(files)
