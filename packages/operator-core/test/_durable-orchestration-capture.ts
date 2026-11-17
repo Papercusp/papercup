@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { GroundedCensus, GroundedMeasurementScope, GroundedNonPersistingSql, observeGroundedStoreOperations } from '../lib/grounded-evidence-measurement';
 
-const crashFixtureSourceHash = '046da19ec8717510cb85fa7e821087f745e8e6cc0220948a29d0a5f385efaaf5';
+const crashFixtureSourceHash = 'bcec7d96ffeceb548821f80c4caf8b5320f2572ec6a678932b75e4d494bd3afa';
 const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939eb686e75745dfaffaeea7ac6f697902cc8985e9894270ac7de0eeb'
   + '+types.js@1883bd4536eab1c94b9e708d325b13708b0f18ec80020e3a825f34a72f603b81#Bind';
 
@@ -83,11 +83,12 @@ export function reviewedDurableFixturePayloadSql(crashFixture: string | undefine
  * parameter, guarded by a one-row outcome. Other SDK writers also persist
  * defaults, timestamps or existing column values and qualify only zero-row
  * no-ops. This applies to new observations, never retained tapes. */
-export function reviewedDurableDbosSqlWrites(systemDatabase: string | undefined, serializerSourceRef: string):
+export function reviewedDurableDbosSqlWrites(systemDatabase: string | undefined, serializerSourceRef: string,
+  serverSqlWrites: readonly { pool: string; queryHash: string }[] = []):
   NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serializedSqlParameters']> {
   const sourceHash = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
   if (systemDatabase !== sourceHash || !serializerSourceRef.trim()) return [];
-  return [...([
+  const writes: NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serializedSqlParameters']> = [...([
     ['8c66bbd7690cd0558564c7d7048db0203f799b093acd68cdb2894e628ab72135', 'UPDATE', 6, 'reenqueueWorkflowsForRecovery'],
     ['ea031961f36e32d61e46ec51718fa74b240f03f06dda78921d7966de06278d13', 'INSERT', 3, 'createApplicationVersion:insert'],
     ['c6fa0add461e01e4dcd38bfa70a23460e718726924ec6de54b837750727cb368', 'UPDATE', 4, 'transitionDelayedWorkflows'],
@@ -103,6 +104,9 @@ export function reviewedDurableDbosSqlWrites(systemDatabase: string | undefined,
     sourceRef: `source:@dbos-inc/dbos-sdk/dist/src/system_database.js@${sourceHash}#createApplicationVersion:claim`,
     serializerSourceRef, persistedParameters: [0], allOrNoneRows: 1,
   }];
+  // A query has exactly one byte oracle. Prefer the reviewed server receipt
+  // where installed; retain the parameter registrations in other pools.
+  return writes.filter(row => !serverSqlWrites.some(server => server.pool === row.pool && server.queryHash === row.queryHash));
 }
 
 /** Reviewed installed SDK statements, never a SELECT/command-prefix heuristic.

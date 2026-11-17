@@ -290,7 +290,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
     serializedSqlParameters: [
       ...reviewedDurableFixturePayloadSql(crashFixtureHash, fixtureSerializerSourceRef),
       ...(notificationSourceMatches ? [
-      ...reviewedDurableDbosSqlWrites(sdkSourceHashes.systemDatabase, serializerSourceRef),
+      ...reviewedDurableDbosSqlWrites(sdkSourceHashes.systemDatabase, serializerSourceRef, serverValues.serverSqlWrites),
       { pool: 'child-dbos-all-clients', sourceRef: operationOutputSourceRef, serializerSourceRef,
         queryHash: digest(Buffer.from(operationOutputStatement)), command: 'INSERT' as const, parameterCount: 11,
         persistedParameters: [2, 3], allOrNoneRows: 'zero-only' as const, insertOrNoop: initialKeyCensus },

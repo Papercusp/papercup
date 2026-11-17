@@ -43,6 +43,29 @@ describe('source-reviewed DBOS server-value fixture', () => {
     fixture.serverSqlWrites[0]!.columns = ['changed'];
     expect(reviewedDurableServerValues(input)!.serverSqlWrites[0]!.columns).toEqual(input.columns.workflow_status);
   });
+
+  it('admits composed server and parameter writers without duplicate query ownership', async () => {
+    const fixture = reviewedDurableServerValues(input)!;
+    const serializerSourceRef = 'test:original-driver';
+    const original = reviewedDurableDbosSqlWrites(input.systemDatabase, serializerSourceRef);
+    expect(original).toHaveLength(6);
+    const parameters = reviewedDurableDbosSqlWrites(input.systemDatabase, serializerSourceRef, fixture.serverSqlWrites);
+    expect(parameters).toEqual([]);
+    expect(reviewedDurableDbosSqlWrites(input.systemDatabase, serializerSourceRef,
+      fixture.serverSqlWrites.map(row => ({ ...row, pool: 'other-pool' })))).toEqual(original);
+    const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+    const pg = (await import('pg')).default;
+    const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+      ownerId: 'composition-control', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+      sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+    const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:composed-writers',
+      attemptId: 'composition-control', nodePostgres: [{ pool: 'child-dbos-all-clients',
+        clientPrototype: pg.Client.prototype, queryPrototype: pg.Query.prototype, serializerSourceRef,
+        serverMessageSourceRef: input.serverMessageSourceRef }],
+      serverSqlWrites: fixture.serverSqlWrites, serializedSqlParameters: parameters });
+    try { expect(tap.seal().complete).toBe(true); }
+    finally { tap.restore(); }
+  });
 });
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'durable-capture-'));
@@ -58,7 +81,7 @@ afterEach(() => {
 });
 
 describe('source-reviewed DBOS nonpersisting SQL', () => {
-  const crashFixtureHash = '046da19ec8717510cb85fa7e821087f745e8e6cc0220948a29d0a5f385efaaf5';
+  const crashFixtureHash = 'bcec7d96ffeceb548821f80c4caf8b5320f2572ec6a678932b75e4d494bd3afa';
   const sources = {
     systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
     databaseUtils: 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4',
