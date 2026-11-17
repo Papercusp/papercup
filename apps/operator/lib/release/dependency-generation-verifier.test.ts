@@ -3,12 +3,13 @@ import { chmodSync, closeSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempS
   readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildInputs, checkSource, buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
 import { bindFrozenDependencyGeneration } from '../../../../packages/operator-core/lib/dependency-generation-proof';
 import { prepareVerifierSource, runVerifierCommand, selectVerifierDependencySnapshot } from '../../../../scripts/source-preview.mjs';
 import { verifyRetainedDependencies } from '../../../../scripts/lib/committed-dependency-verification.mjs';
+import { killSpawnedProcessTree } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 // Imported builds intentionally report progress on stderr. Capture only this
 // operation and validate its diagnostics, leaving unexpected console errors fatal.
@@ -46,6 +47,8 @@ const repo = resolve(__dirname, '../../../..');
 const script = join(repo, 'apps/operator/bin/release/dependency-generation.sh');
 const helper = join(repo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
 const roots: string[] = [];
+let fixtureCaseDeadline = Infinity;
+beforeEach(({ task }) => { fixtureCaseDeadline = performance.now() + task.timeout; });
 function write(root: string, path: string, body: string) {
   mkdirSync(dirname(join(root, path)), { recursive: true });
   writeFileSync(join(root, path), body);
@@ -54,24 +57,51 @@ function write(root: string, path: string, body: string) {
 // Keep the original streams and the last executing shell operation even when
 // a deadline expires before the caller can inspect an exit status. Reuse the
 // runner's artifact directory so fixture cleanup cannot erase failed evidence.
-function fixtureShell(file: string, args: string[], env: NodeJS.ProcessEnv, evidenceRoot: string, timeoutMs = 90_000) {
+function fixtureShell(file: string, args: string[], env: NodeJS.ProcessEnv, evidenceRoot: string,
+  timeoutMs = 90_000, deadlineAt = fixtureCaseDeadline) {
   mkdirSync(evidenceRoot, { recursive: true });
   const directory = mkdtempSync(join(evidenceRoot, 'native-shell-'));
+  const npmLogsDirectory = join(directory, 'npm-logs');
+  mkdirSync(npmLogsDirectory);
+  const diagnosticEnv = { ...env };
+  // npm prefers lowercase lifecycle config. Replace both spellings so a
+  // caller's logging settings cannot discard evidence when its fixture dies.
+  for (const key of Object.keys(diagnosticEnv)) {
+    if (['npm_config_timing', 'npm_config_logs_dir'].includes(key.toLowerCase())) delete diagnosticEnv[key];
+  }
+  diagnosticEnv.npm_config_timing = 'true';
+  diagnosticEnv.npm_config_logs_dir = npmLogsDirectory;
   const startedAt = Date.now();
-  writeFileSync(join(directory, 'command.json'), JSON.stringify({ file, args, startedAt, timeoutMs }));
   const startup = join(directory, 'trace.bash');
   writeFileSync(startup, "PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE:-<command>}:${LINENO}: '; set -x\n");
   const trace = join(directory, 'trace.log');
   const traceFd = openSync(trace, 'w');
-  process.stderr.write('NATIVE_FIXTURE_SHELL ' + JSON.stringify({ phase: 'started', directory, file, args }) + '\n');
+  // spawnSync blocks Vitest's timeout callback. Share the case's existing
+  // deadline across children so a timed-out case cannot keep launching phases.
+  const effectiveTimeoutMs = Math.max(0, Math.min(timeoutMs, Math.ceil(deadlineAt - performance.now())));
+  const launched = effectiveTimeoutMs > 0;
+  writeFileSync(join(directory, 'command.json'), JSON.stringify({ file, args, startedAt, timeoutMs,
+    effectiveTimeoutMs, launched, npmLogsDirectory }));
+  process.stderr.write('NATIVE_FIXTURE_SHELL ' + JSON.stringify({ phase: launched ? 'started' : 'not-started',
+    directory, file, args, effectiveTimeoutMs }) + '\n');
   let result;
+  let timeoutCleanup: 'group' | 'child' | 'gone' | null = null;
   try {
-    result = spawnSync('bash', [file, ...args], {
-      env: { ...env, BASH_ENV: startup, BASH_XTRACEFD: '3' }, encoding: 'utf8', timeout: timeoutMs,
+    result = launched ? spawnSync('bash', [file, ...args], {
+      env: { ...diagnosticEnv, BASH_ENV: startup, BASH_XTRACEFD: '3' }, encoding: 'utf8', timeout: effectiveTimeoutMs,
+      detached: process.platform !== 'win32', killSignal: 'SIGKILL',
       stdio: ['pipe', 'pipe', 'pipe', traceFd],
-    });
+    }) : { pid: 0, status: null, signal: null, stdout: '', stderr: '',
+      error: Object.assign(new Error('Native fixture case deadline exhausted before child launch'), { code: 'ETIMEDOUT' }) };
+    if (result.error?.code === 'ETIMEDOUT' && result.pid > 0) {
+      // The synchronous timeout kills Bash alone. Its owned process group must
+      // be gone before afterEach can remove source still needed by descendants.
+      const pid = result.pid;
+      timeoutCleanup = killSpawnedProcessTree({ pid, kill: signal => process.kill(pid, signal) }, 'SIGKILL');
+    }
   } finally { closeSync(traceFd); }
-  const evidence = { directory, elapsedMs: Date.now() - startedAt, status: result.status, signal: result.signal,
+  const evidence = { directory, npmLogsDirectory, effectiveTimeoutMs, launched,
+    elapsedMs: Date.now() - startedAt, status: result.status, signal: result.signal, timeoutCleanup,
     error: result.error ? { ...result.error, message: result.error.message, stack: result.error.stack } : null };
   writeFileSync(join(directory, 'stdout.log'), result.stdout ?? '');
   writeFileSync(join(directory, 'stderr.log'), result.stderr ?? '');
@@ -113,11 +143,69 @@ describe('native fixture subprocess evidence', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-shell-evidence-')); roots.push(root);
     const result = fixtureShell('-c', ['printf "entered wait"; exec sleep 5'], process.env, root, 100);
     expect(result.status).toBeNull();
-    expect(result.evidence).toMatchObject({ signal: 'SIGTERM', error: { code: 'ETIMEDOUT' } });
+    expect(result.evidence).toMatchObject({ signal: 'SIGKILL', error: { code: 'ETIMEDOUT' } });
     expect(readFileSync(join(result.evidence.directory, 'stdout.log'), 'utf8')).toBe('entered wait');
     expect(readFileSync(join(result.evidence.directory, 'trace.log'), 'utf8')).toContain('exec sleep 5');
     expect(JSON.parse(readFileSync(join(result.evidence.directory, 'result.json'), 'utf8'))).toEqual(result.evidence);
   });
+
+  it('stops timed-out descendants before fixture cleanup can remove their source', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-shell-descendant-')); roots.push(root);
+    const started = join(root, 'started'), escaped = join(root, 'escaped');
+    const result = fixtureShell('-c', [
+      `bash -c 'trap "" TERM; printf started > "$2"; sleep 0.3; printf escaped > "$1"' _ "$1" "$2" >/dev/null 2>&1 & wait`,
+      '_', escaped, started,
+    ], process.env, root, 100);
+    expect(result.error?.code).toBe('ETIMEDOUT');
+    expect(result.evidence.timeoutCleanup).toBe('group');
+    expect(readFileSync(started, 'utf8')).toBe('started');
+    await new Promise(resolve => setTimeout(resolve, 400));
+    expect(existsSync(escaped), 'a descendant continued writing after fixture timeout').toBe(false);
+  });
+
+  it('bounds blocking children by the shared deadline and refuses a later phase after expiry', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-shell-deadline-')); roots.push(root);
+    const deadlineAt = performance.now() + 100;
+    const timedOut = fixtureShell('-c', ['printf "entered wait"; exec sleep 5'], process.env, root, 5000, deadlineAt);
+    expect(timedOut.evidence).toMatchObject({ launched: true, signal: 'SIGKILL', error: { code: 'ETIMEDOUT' } });
+    expect(timedOut.evidence.effectiveTimeoutMs).toBeGreaterThan(0);
+    expect(timedOut.evidence.effectiveTimeoutMs).toBeLessThanOrEqual(100);
+    const marker = join(root, 'late-phase');
+    const refused = fixtureShell('-c', ['printf late > "$1"', '_', marker], process.env, root, 5000, deadlineAt);
+    expect(refused.evidence).toMatchObject({ launched: false, effectiveTimeoutMs: 0,
+      signal: null, error: { code: 'ETIMEDOUT' } });
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(join(refused.evidence.directory, 'trace.log'), 'utf8')).toBe('');
+    expect(JSON.parse(readFileSync(join(refused.evidence.directory, 'command.json'), 'utf8')))
+      .toMatchObject({ launched: false, effectiveTimeoutMs: 0, timeoutMs: 5000 });
+  });
+
+  it('retains npm timing and debug logs after a failed lifecycle fixture is removed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-npm-evidence-')); roots.push(root);
+    const evidenceRoot = mkdtempSync(join(tmpdir(), 'native-npm-artifacts-')); roots.push(evidenceRoot);
+    write(root, 'package.json', JSON.stringify({ name: 'native-npm-evidence', private: true,
+      scripts: { build: 'node build.cjs' } }));
+    write(root, 'build.cjs', 'process.stderr.write("DIAGNOSTIC_BUILD_FAILURE\\n"); process.exit(17);\n');
+    const discardedLogs = join(root, 'discarded-npm-logs');
+    const result = fixtureShell('-c', ['set -euo pipefail; cd -- "$1"; npm run build', '_', root],
+      { ...process.env, NPM_CONFIG_TIMING: 'false', npm_config_timing: 'false',
+        NPM_CONFIG_LOGS_DIR: discardedLogs, npm_config_logs_dir: discardedLogs }, evidenceRoot);
+    expect(result.status, result.stderr).toBe(17);
+    expect(result.stderr).toContain('DIAGNOSTIC_BUILD_FAILURE');
+    rmSync(root, { recursive: true, force: true });
+    const names = readdirSync(result.evidence.npmLogsDirectory);
+    const timingFile = names.find(name => name.endsWith('-timing.json'));
+    const debugFile = names.find(name => name.endsWith('-debug-0.log'));
+    expect(timingFile).toBeDefined();
+    expect(debugFile).toBeDefined();
+    const timing = JSON.parse(readFileSync(join(result.evidence.npmLogsDirectory, timingFile!), 'utf8'));
+    expect(timing.timers.npm).toEqual(expect.any(Number));
+    expect(timing.timers.npm).toBeGreaterThanOrEqual(0);
+    const debug = readFileSync(join(result.evidence.npmLogsDirectory, debugFile!), 'utf8');
+    expect(debug).toContain(root);
+    expect(debug).toMatch(/(?:verbose exit|error code) 17/);
+    expect(JSON.parse(readFileSync(join(result.evidence.directory, 'result.json'), 'utf8'))).toEqual(result.evidence);
+  }, 90_000);
 });
 function installTsxRuntime(f: ReturnType<typeof fixture>) {
   const sourceLock = JSON.parse(readFileSync(join(repo, 'package-lock.json'), 'utf8'));
@@ -271,6 +359,24 @@ describe('bounded independent verifier copy', () => {
     expect(f.publishedPath(`DEPENDENCY_GENERATION_RESULT path=${generation}\n`)).toBe(generation);
     expect(() => f.privatePath(resolve(f.root, '..', 'escaped'))).toThrow('fixture path escaped');
   });
+
+  it('explains an unscoped native refusal caused by an unrelated app lock mismatch', () => {
+    const f = fixture('packages/cli', true);
+    write(f.donor, 'apps/independent/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/other': { version: '2.0.0' },
+    } }));
+    write(f.donor, 'apps/independent/node_modules/other/package.json', '{"name":"other","version":"2.0.0"}');
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.dest, encoding: 'utf8' }).trim();
+    // The unscoped verifier must explain its refusal before a caller selects
+    // the native closure. Census progress alone cannot diagnose this mismatch.
+    const unscoped = f.shell(f.generationScript, ['--integration', f.donor, '--generation-root', f.store,
+      '--ensure-ref', ref, '--verifier-source', f.dest]);
+    expect(unscoped.status).toBe(74);
+    expect(unscoped.stderr).toContain('native dependency preparation refused');
+    expect(unscoped.stderr).toContain('apps/independent/node_modules/other');
+    expect(unscoped.stderr).toContain('version "1.0.0" (ref) vs "2.0.0" (live)');
+    expect(unscoped.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, 30_000);
 
   it('admits the exact native scope despite an unrelated app lock mismatch, retaining its source proof', async () => {
     const f = fixture('packages/cli', true);
@@ -1142,6 +1248,59 @@ describe('D012 native generation closure', () => {
     const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
     expect(task.cleanup).toBe('completed');
     expect(existsSync(task.ownedRoot)).toBe(false);
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+  }, 120_000);
+
+  it.each([false, true])('scopes the source-preview caller to declared workspaces while preserving excluded app source (archive=%s)', async archiveMode => {
+    const workspace = 'packages/omp-plugin';
+    const f = fixture(workspace, true);
+    write(f.donor, 'scripts/source-preview.mjs',
+      'console.log(process.argv.includes("verifier-measure") ? "4096" : "inputs-ok");\n');
+    const lock = JSON.parse(readFileSync(join(f.donor, 'package-lock.json'), 'utf8'));
+    lock.packages[workspace] = JSON.parse(readFileSync(join(f.donor, workspace, 'package.json'), 'utf8'));
+    lock.packages['node_modules/tsx'] = { version: '4.0.0' };
+    write(f.donor, 'package-lock.json', JSON.stringify(lock));
+    write(f.donor, 'node_modules/tsx/package.json',
+      '{"name":"tsx","version":"4.0.0","type":"module","exports":"./index.mjs"}');
+    write(f.donor, 'node_modules/tsx/index.mjs', 'export {};\n');
+    const runtime = 'papercusp-desktop/src-tauri/resources/workbench-install.js';
+    if (archiveMode) write(f.donor, runtime, 'historical generated runtime');
+    execFileSync('git', ['add', 'package-lock.json', 'scripts/source-preview.mjs',
+      ...(archiveMode ? [runtime] : [])], { cwd: f.donor });
+    execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-qm', 'source-preview scoped caller inputs'], { cwd: f.donor });
+    const ref = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.donor, encoding: 'utf8' }).trim();
+    const excludedLock = readFileSync(join(f.donor, 'apps/independent/package-lock.json'), 'utf8');
+    // Only the nonmember installation drifts. Its pinned source remains part
+    // of the verifier and must survive selecting the native workspace closure.
+    write(f.donor, 'apps/independent/package-lock.json', JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/other': { version: '2.0.0' },
+    } }));
+    write(f.donor, 'apps/independent/node_modules/other/package.json', '{"name":"other","version":"2.0.0"}');
+    const receiptPath = join(f.root, 'scoped-command.json');
+    const prepareChildEnv = vi.fn(async ({ sourceRoot }: { sourceRoot: string }) => {
+      expect(existsSync(join(sourceRoot, '.git'))).toBe(!archiveMode);
+      expect(readFileSync(join(sourceRoot, 'apps/independent/package-lock.json'), 'utf8')).toBe(excludedLock);
+      expect(existsSync(join(sourceRoot, 'apps/independent/node_modules'))).toBe(false);
+      for (const path of ['node_modules/pkg/index.js', workspace + '/dist/cli.cjs',
+        'papercusp-desktop/node_modules/@tauri-apps/cli/tauri.js']) {
+        expect(existsSync(join(sourceRoot, path))).toBe(true);
+        expect(statSync(join(sourceRoot, path)).ino).not.toBe(statSync(join(f.donor, path)).ino);
+      }
+      return {};
+    });
+    const code = await runVerifierCommand({ repo: f.donor, ref, receiptPath,
+      inputs: ['scripts/source-preview.mjs'],
+      env: { ...f.env, NODE_OPTIONS: '', NODE_PATH: '',
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 300_000) },
+      command: [process.execPath, 'node_modules/.bin/probe'], prepareChildEnv });
+    expect(code).toBe(0);
+    expect(prepareChildEnv).toHaveBeenCalledTimes(1);
+    const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(phases.filter(row => row.event === 'completed').map(row => row.phase))
+      .toEqual(expect.arrayContaining(['source.freeze', 'deps.generation.ensure', 'child.run',
+        'deps.postverify', 'source.postverify', 'cleanup']));
+    expect(JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8')).cleanup).toBe('completed');
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
   }, 120_000);
 
