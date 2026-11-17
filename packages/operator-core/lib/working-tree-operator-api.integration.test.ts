@@ -68,7 +68,7 @@ it('runs a caller against an operator bundled from the working tree on private p
         mode: 'caller', callerExit: 0, hostStopped: true,
         // The acceptance bar: the working-tree operator answers a real MCP tool call.
         probe: { calledTool: expect.stringMatching(/^coord[:_]whoami$/), calledToolOk: true,
-          toolCount: expect.any(Number) },
+          toolCount: expect.any(Number), responseVersion: 'batch-v1' },
       });
       expect(receipt.probe.toolCount).toBeGreaterThan(0);
       expect(LIVE_OPERATOR_PORTS).not.toContain(new URL(receipt.base).port);

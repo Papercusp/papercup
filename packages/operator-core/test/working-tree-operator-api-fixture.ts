@@ -46,9 +46,21 @@ async function probeMcp(url: URL, headers: Record<string, string>, token: string
     const tool = listing.tools.find(({ name }) => PROBE_TOOL_NAMES.includes(name));
     assert.ok(tool, 'private operator did not list coord:whoami; first tools: '
       + listing.tools.slice(0, 20).map(({ name }) => name).join(', '));
-    const result = await client.callTool({ name: tool.name, arguments: {} }, undefined, { timeout: 30_000 });
+    // tools/list advertises the framework batch result. The operator keeps the
+    // legacy operation response as its default until a client negotiates v1.
+    const result = await client.callTool({ name: tool.name, arguments: {},
+      _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } }, undefined, { timeout: 30_000 });
     assert.notEqual(result.isError, true, `${tool.name} failed: ${JSON.stringify(result).slice(0, 2_000)}`);
-    return { toolCount: listing.tools.length, calledTool: tool.name, calledToolOk: true };
+    const batch = result.structuredContent as { ok?: boolean; results?: Array<{ ok?: boolean; status?: string }> };
+    assert.equal(batch?.ok, true, 'private MCP probe batch failed');
+    assert.ok(batch.results, 'private MCP probe must return its operations');
+    assert.equal(batch.results.length, 1, 'private MCP probe must return exactly one operation');
+    const operation = batch.results[0];
+    assert.ok(operation, 'private MCP probe operation is missing');
+    assert.deepEqual({ ok: operation.ok, status: operation.status },
+      { ok: true, status: 'completed' }, 'private MCP probe operation failed');
+    return { toolCount: listing.tools.length, calledTool: tool.name, calledToolOk: true,
+      responseVersion: 'batch-v1' };
   } finally {
     await client.close();
   }
