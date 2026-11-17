@@ -2,11 +2,13 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { expect } from 'vitest';
 import type postgres from 'postgres';
+import pg from 'pg';
 import type { GroundedMeasurementInput, GroundedMeasurementScope } from '../lib/grounded-evidence-measurement';
-import { captureDurableProcessBoundary, materializeDurableCapture } from './_durable-orchestration-capture';
+import { captureDurableProcessBoundary, materializeDurableCapture, reviewedDurableServerValues } from './_durable-orchestration-capture';
 
 export interface DurableCrashScenario {
   runKey: string;
@@ -29,8 +31,42 @@ export function createDurableCrashHarness(config: {
   packageRoot: string; dsn: () => string; sql: () => postgres.Sql; artifacts: string; workspaceId?: string;
 }) {
   const childPath = resolve(config.packageRoot, 'test/_durable-orchestration-crash-child.ts');
+  async function retainServerValueSetup(mode: 'crash' | 'recover', scenario: DurableCrashScenario) {
+    const require = createRequire(import.meta.url);
+    const sdkDirectory = dirname(require.resolve('@dbos-inc/dbos-sdk'));
+    const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    const systemDatabase = digest(readFileSync(join(sdkDirectory, 'system_database.js')));
+    const serverMessageSourceRef = 'source:pg/lib/client.js@'
+      + digest(readFileSync(join(dirname(require.resolve('pg')), 'client.js'))) + '#NoticeResponse+ReadyForQuery';
+    const { SystemDatabase } = require(join(sdkDirectory, 'system_database.js')) as {
+      SystemDatabase: new (...args: unknown[]) => { init(): Promise<void>; destroy(): Promise<void> } };
+    const pool = new pg.Pool({ connectionString: config.dsn(), max: 1 });
+    const quiet = () => {};
+    const database = new SystemDatabase(config.dsn(), { debug: quiet, info: quiet, warn: quiet, error: quiet }, {},
+      1, pool, 'dbos', false);
+    try { await database.init(); }
+    finally { try { await database.destroy(); } finally { await pool.end(); } }
+    const query = "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'dbos' AND table_name IN ('workflow_status', 'operation_outputs', 'application_versions') ORDER BY table_name, ordinal_position";
+    const catalog = [...await config.sql().unsafe(query)];
+    const columns = Object.fromEntries(['workflow_status', 'operation_outputs', 'application_versions']
+      .map(table => [table, catalog.filter(row => row.table_name === table).map(row => String(row.column_name))])) as
+      Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
+    const sourceRef = join(config.artifacts, `${scenario.runKey}-${mode}.server-values.json`);
+    const fixture = reviewedDurableServerValues({ systemDatabase, serverMessageSourceRef, columns,
+      marker: digest(JSON.stringify({ scope: scenario.gecScope, mode, runKey: scenario.runKey, pid: process.pid })),
+      catalogSourceRef: sourceRef + '#catalog@sha256:' + digest(JSON.stringify(catalog)) });
+    if (!fixture) throw new Error('GEC unreviewed installed DBOS server-value writer or protocol');
+    for (const statement of fixture.ddl) await config.sql().unsafe(statement);
+    writeFileSync(sourceRef, JSON.stringify({ kind: 'dbos-server-value-setup', scope: scenario.gecScope,
+      mode, runKey: scenario.runKey, producerPid: process.pid, databaseHash: digest(config.dsn()),
+      systemDatabase, serverMessageSourceRef, query, catalog, columns, fixture,
+      complete: true, exclusive: true }), { flag: 'wx', mode: 0o600 });
+  }
   async function retainInitialKeys(mode: 'crash' | 'recover', scenario: DurableCrashScenario) {
     if (!scenario.gecScope) return;
+    // Migrate and install the exclusive fixture before the measured process
+    // exists. Bootstrap pools are closed before the child's protocol hooks bind.
+    await retainServerValueSetup(mode, scenario);
     const admittedAt = new Date().toISOString();
     const query = 'SELECT workflow_uuid, function_id, output, error FROM dbos.operation_outputs ORDER BY workflow_uuid, function_id';
     // This fixture runs one child at a time against its private database. Read
@@ -64,6 +100,7 @@ export function createDurableCrashHarness(config: {
         DURABLE_CRASH_REVOKE: mode === 'recover' ? (scenario.revoke ?? '') : '',
         ...(scenario.gecScope ? { DURABLE_CRASH_GEC_SCOPE: JSON.stringify(scenario.gecScope),
           DURABLE_CRASH_GEC_TAPE: join(config.artifacts, `${scenario.runKey}-${mode}.json`),
+          DURABLE_CRASH_GEC_SERVER_VALUES: join(config.artifacts, `${scenario.runKey}-${mode}.server-values.json`),
           DURABLE_CRASH_GEC_INITIAL_KEYS: join(config.artifacts, `${scenario.runKey}-${mode}.initial-keys.json`) } : {}),
       }, timeout: mode === 'code' ? 240_000 : 150_000, encoding: 'utf8',
     });

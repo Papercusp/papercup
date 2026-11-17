@@ -14,7 +14,8 @@ import dns from 'node:dns';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { createDurableCaptureRecorder, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql } from './_durable-orchestration-capture';
+import { createDurableCaptureRecorder, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql,
+  reviewedDurableServerValues } from './_durable-orchestration-capture';
 import postgres from 'postgres';
 import pg from 'pg';
 import { DBOS } from '@dbos-inc/dbos-sdk';
@@ -181,6 +182,28 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   ].map(([name, file]) => [name, digest(readFileSync(new URL(
     '../../../node_modules/@dbos-inc/dbos-sdk/dist/src/' + file, import.meta.url)))]));
   const notificationSourceMatches = sdkSourceHashes.systemDatabase === notificationSourceHash;
+  const serverMessageSourceRef = 'source:pg/lib/client.js@'
+    + digest(readFileSync(new URL('../../../node_modules/pg/lib/client.js', import.meta.url))) + '#NoticeResponse+ReadyForQuery';
+  const setupPath = process.env.DURABLE_CRASH_GEC_SERVER_VALUES;
+  if (!setupPath) throw new Error('GEC requires independent pre-child DBOS server-value setup');
+  const setupBytes = readFileSync(setupPath), setup = JSON.parse(setupBytes.toString('utf8'));
+  if (setup.kind !== 'dbos-server-value-setup' || !isDeepStrictEqual(setup.scope, scope)
+    || setup.mode !== mode || setup.runKey !== runKey || setup.databaseHash !== digest(Buffer.from(dsn))
+    || !Number.isSafeInteger(setup.producerPid) || setup.producerPid <= 0 || setup.producerPid === process.pid
+    || setup.complete !== true || setup.exclusive !== true || !Array.isArray(setup.catalog)
+    || setup.systemDatabase !== sdkSourceHashes.systemDatabase || setup.serverMessageSourceRef !== serverMessageSourceRef)
+    throw new Error('GEC foreign or incomplete independent DBOS server-value setup');
+  const columns = Object.fromEntries(['workflow_status', 'operation_outputs', 'application_versions']
+    .map(table => [table, setup.catalog.filter((row: { table_name: string }) => row.table_name === table)
+      .map((row: { column_name: string }) => row.column_name)])) as
+    Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
+  const serverValues = reviewedDurableServerValues({ systemDatabase: sdkSourceHashes.systemDatabase!, serverMessageSourceRef,
+    marker: createHash('sha256').update(JSON.stringify({ scope, mode, runKey, pid: setup.producerPid })).digest('hex'),
+    columns, catalogSourceRef: setupPath + '#catalog@sha256:' + digest(Buffer.from(JSON.stringify(setup.catalog))) });
+  if (!serverValues || !isDeepStrictEqual(setup.columns, columns) || !isDeepStrictEqual(setup.fixture, serverValues))
+    throw new Error('GEC changed pre-child DBOS trigger or writer registration');
+  const serverValueFixture = { sourceRef: setupPath + '@sha256:' + digest(setupBytes),
+    producerPid: setup.producerPid, serverMessageSourceRef, fixture: serverValues };
   const crashFixtureHash = digest(readFileSync(new URL(import.meta.url)));
   const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@'
     + digest(readFileSync(new URL('../../../node_modules/postgres/src/connection.js', import.meta.url)))
@@ -223,6 +246,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
         processId: process.pid,
         initialKeyCensus,
         sdkSourceHashes,
+        serverValueFixture,
         phases: gecPhases,
         processTermination,
         sqlObservations,
@@ -260,7 +284,8 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   storeTap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: path,
     attemptId: `${runKey}:${mode}`, postgres: [{ pool: 'child-effect-log', client: sql }],
     nodePostgres: [{ pool: 'child-dbos-all-clients', clientPrototype: pg.Client.prototype,
-      queryPrototype: pg.Query.prototype, serializerSourceRef }],
+      queryPrototype: pg.Query.prototype, serializerSourceRef, serverMessageSourceRef }],
+    serverSqlWrites: serverValues.serverSqlWrites,
     nonPersistingSql: reviewedDurableDbosSql({ ...sdkSourceHashes, crashFixture: crashFixtureHash }),
     serializedSqlParameters: [
       ...reviewedDurableFixturePayloadSql(crashFixtureHash, fixtureSerializerSourceRef),

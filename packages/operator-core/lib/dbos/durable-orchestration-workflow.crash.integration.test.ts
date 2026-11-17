@@ -168,6 +168,16 @@ describe('GEC frozen B durable consumer captures', () => {
         [digest(row.workflow_uuid), digest(String(row.function_id))]));
       expect(capture.initialKeyCensus).toEqual({ scope, sourceRef: initialRef + '@sha256:' + digest(initialBytes),
         complete: true, exclusive: true, keyParameters: [0, 1], initialKeys: initial.initialKeys });
+      const setupRef = join(gecArtifacts, `${scenario.runKey}-${mode}.server-values.json`);
+      const setupBytes = readFileSync(setupRef), setup = JSON.parse(setupBytes.toString('utf8'));
+      expect(setup).toMatchObject({ kind: 'dbos-server-value-setup', scope, mode, runKey: scenario.runKey,
+        producerPid: process.pid, complete: true, exclusive: true });
+      expect(capture.serverValueFixture).toEqual({ sourceRef: setupRef + '@sha256:' + digest(setupBytes),
+        producerPid: process.pid, serverMessageSourceRef: setup.serverMessageSourceRef, fixture: setup.fixture });
+      expect(setup.fixture.serverSqlWrites).toHaveLength(8);
+      for (const table of ['workflow_status', 'operation_outputs', 'application_versions'])
+        expect(setup.columns[table]).toEqual(setup.catalog.filter((row: { table_name: string }) => row.table_name === table)
+          .map((row: { column_name: string }) => row.column_name));
       const processCapture = JSON.parse(readFileSync(originalRef + '.process.json', 'utf8'));
       expect(processCapture).toMatchObject({ complete: true, gaps: [], scope, originalCaptureRef: originalRef,
         accountingScope: 'process-lifetime-and-admissions', acceptance: 'unmeasured',
@@ -246,8 +256,19 @@ describe('GEC frozen B durable consumer captures', () => {
       && row.sql.serializedParameters?.sourceRef.startsWith('source:@dbos-inc/dbos-sdk/'));
     expect(sdkNoops.length).toBeGreaterThan(0);
     expect(sdkNoops.some((row: { persistedBytes: unknown }) => row.persistedBytes === 0)).toBe(true);
-    for (const row of sdkNoops) expect(row.persistedBytes)
+    for (const row of sdkNoops.filter((row: { sql: { serverWrite?: unknown } }) => !row.sql.serverWrite)) expect(row.persistedBytes)
       .toBe(row.sql.status === 'ok' && row.sql.rowOutcome.affectedRows === 0 ? 0 : null);
+    const serverWrites = recovered.storage.rows.filter((row: { sql: { serverWrite?: unknown } }) => row.sql.serverWrite);
+    expect(serverWrites.length).toBeGreaterThan(0);
+    for (const row of serverWrites) {
+      const proof = row.sql.serverWrite;
+      if (proof.outcome !== 'committed') { expect(row.persistedBytes).toBeNull(); continue; }
+      expect(row.persistedBytes).toBe(proof.values.flat().reduce((sum: number,
+        value: { changed: boolean; bytes: number }) => sum + (value.changed ? value.bytes : 0), 0));
+      expect(row.sql.serverMessages.sourceRef).toBe(recovered.serverValueFixture.serverMessageSourceRef);
+      expect(row.sql.backendProcessId).toEqual(expect.any(Number));
+      expect(proof.commitQueryId).toEqual(expect.any(String));
+    }
     const notificationControls = recovered.storage.rows.filter((row: { sql: { command: string } }) =>
       ['LISTEN', 'NOTIFY'].includes(row.sql.command));
     expect(notificationControls).toHaveLength(4);

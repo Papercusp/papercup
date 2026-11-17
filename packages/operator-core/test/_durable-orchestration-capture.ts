@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { GroundedCensus, GroundedMeasurementScope, GroundedNonPersistingSql, observeGroundedStoreOperations } from '../lib/grounded-evidence-measurement';
 
-const crashFixtureSourceHash = '23fa4c6dcd82d6f6ac946c58ff88eea5af278454afc69a8c16ddf879a4cff6a8';
+const crashFixtureSourceHash = '046da19ec8717510cb85fa7e821087f745e8e6cc0220948a29d0a5f385efaaf5';
 const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939eb686e75745dfaffaeea7ac6f697902cc8985e9894270ac7de0eeb'
   + '+types.js@1883bd4536eab1c94b9e708d325b13708b0f18ec80020e3a825f34a72f603b81#Bind';
 
