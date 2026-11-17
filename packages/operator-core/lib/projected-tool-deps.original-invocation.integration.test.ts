@@ -136,14 +136,20 @@ describe('original invocation ledger (real Postgres)', () => {
 
   it('preserves original authority against advisory enrichment and refuses duplicate settlement', async () => {
     const req = request(); const ref = await observer.begin(req);
+    const claimTransactions = [{ schemaVersion: 'work-item-claim-transaction-v1', itemId: 'EI-private', transactionId: '42' }];
+    await db.adminSql`UPDATE harness_shared.tool_invocations
+      SET metadata_json=jsonb_set(metadata_json, '{workItemClaims}', ${db.adminSql.json(claimTransactions)})
+      WHERE id=${ref.substring('tool-invocation:'.length)}::bigint`;
     await settle(req, ref);
     const before = await read(ref);
     await PROJECTED_DEPS.recordInvocation!({ ...req, invocationRef: ref, windowKey: 'run:original', durationMs: 12,
       status: 'ok', metadataJson: { originalInvocation: { ownerId: 'foreign' },
-        executionObservation: { state: 'cancelled' }, responseObservation: { delivery: 'acknowledged' } },
+        executionObservation: { state: 'cancelled' }, responseObservation: { delivery: 'acknowledged' },
+        workItemClaims: [{ itemId: 'forged-advisory-claim', transactionId: 'foreign' }] },
     });
     await flushPendingTelemetry();
     expect((await read(ref)).metadata_json).toMatchObject(before.metadata_json);
+    expect((await read(ref)).metadata_json.workItemClaims).toEqual(claimTransactions);
     await expect(settle(req, ref)).rejects.toThrow('settlement join is unavailable');
     expect((await read(ref)).metadata_json).toMatchObject(before.metadata_json);
   });
@@ -184,7 +190,16 @@ describe('original invocation ledger (real Postgres)', () => {
       expect(first).toBe(second); return first;
     } });
     expect(observationError).toBeUndefined();
-    expect(result.ok, JSON.stringify(result)).toBe(!throws);
+    // The canonical batch transport returns an envelope even when its child
+    // throws. Check the child disposition separately from transport success;
+    // the mandatory ledger below must still retain the unknown effect outcome.
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    if (!result.ok || !result.result) throw new Error('Missing batch response');
+    expect(result.result.isError === true).toBe(throws);
+    expect(result.result.structuredContent).toMatchObject({
+      ok: !throws, counts: { ok: throws ? 0 : 1, failed: throws ? 1 : 0 },
+      results: [{ ok: !throws, status: throws ? 'failed' : 'completed' }],
+    });
     const effects = await db.adminSql`SELECT * FROM harness_shared.original_invocation_probe_effects WHERE call_id=${key}`;
     expect(effects).toHaveLength(1);
     const rows = await db.adminSql`SELECT metadata_json FROM harness_shared.tool_invocations

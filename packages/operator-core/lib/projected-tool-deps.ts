@@ -1486,7 +1486,7 @@ const TELEMETRY_ENRICH_SQL = `UPDATE harness_shared.tool_invocations
  SET window_key=$4, duration_ms=$5, status=$6, output_ref=$7, output_size=$8,
      error_message=$9, args_json=$10::jsonb, event_count=$11, error_code=$12,
      metadata_json=COALESCE(metadata_json, '{}'::jsonb) ||
-       (COALESCE($13::jsonb, '{}'::jsonb) - 'originalInvocation' - 'executionObservation' - 'responseObservation')
+       (COALESCE($13::jsonb, '{}'::jsonb) - 'originalInvocation' - 'executionObservation' - 'responseObservation' - 'workItemClaims')
  WHERE workspace_id=$1 AND id=$2::bigint
    AND metadata_json->'originalInvocation'->>'callId'=$3
  RETURNING id::text`;
