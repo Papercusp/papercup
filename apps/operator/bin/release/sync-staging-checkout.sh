@@ -1346,16 +1346,37 @@ preflight_staging_migrations() {
 # existing no-pending path without applying new files outside the rendezvous.
 prepare_staging_schema() {
   local candidate_root="${1:-$STAGING_ROOT}"
+  local log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+  local attempt="${INVOCATION_ID:-$$}" schema_log schema_status
+  [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
+  schema_log="$log_root/staging-setup-$attempt-schema.log"
+  if ! mkdir -p -- "$log_root" || ! printf 'candidate: %s\n' "$candidate_root" > "$schema_log"; then
+    log "FATAL: cannot retain staging schema preparation evidence at $schema_log; keeping the current $UNIT process"
+    return 1
+  fi
   log "preparing the target schema while the current $UNIT process keeps serving"
-  if ! (
+  if (
+    # Keep output live during a legitimate backup wait, and retain it even if
+    # the environment or Node exits before the JavaScript catch can report it.
+    set +e
+    (
+    printf '[staging-schema] phase=load-runtime-env\n'
     # Use the same runtime environment as ExecStart. Otherwise preflight can
     # migrate a discovered desktop DB while the candidate serves the pinned DB.
     set -a
     if [[ -f "$candidate_root/apps/operator/.env.local" ]]; then
-      . "$candidate_root/apps/operator/.env.local" || exit 1
+      if . "$candidate_root/apps/operator/.env.local"; then
+        :
+      else
+        schema_status=$?
+        printf '[staging-schema] environment load failed (exit %s)\n' "$schema_status" >&2
+        exit "$schema_status"
+      fi
     fi
     set +a
-    cd "$candidate_root" &&
+    printf '[staging-schema] phase=select-candidate\n'
+    cd "$candidate_root" || exit $?
+    printf '[staging-schema] phase=run-migration-client\n'
     PAPERCUSP_INTEGRATION_ROOT="$candidate_root" \
       TSX_TSCONFIG_PATH="$candidate_root/apps/operator/tsconfig.json" \
       node --import tsx --input-type=module - <<'JS'
@@ -1379,9 +1400,19 @@ import { assertRequiredServingMigrationsApplied } from './packages/operator-core
     process.exit(1);
   }
 JS
+    ) 2>&1 | tee -a "$schema_log"
+    schema_statuses=("${PIPESTATUS[@]}")
+    printf '[staging-schema] command_exit=%s capture_exit=%s\n' \
+      "${schema_statuses[0]}" "${schema_statuses[1]}" >> "$schema_log" || exit 1
+    [[ "${schema_statuses[1]}" -eq 0 ]] || exit "${schema_statuses[1]}"
+    exit "${schema_statuses[0]}"
   ); then
-    log "FATAL: staging schema preparation failed; keeping the current $UNIT process"
-    return 1
+    return 0
+  else
+    schema_status=$?
+    cat -- "$schema_log" >&2 || true
+    log "FATAL: staging schema preparation failed (exit $schema_status); raw evidence retained at $schema_log; keeping the current $UNIT process"
+    return "$schema_status"
   fi
 }
 

@@ -1010,7 +1010,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
       'DATABASE_URL=postgresql://fixture/candidate\nPAPERCUSP_INTEGRATION_ROOT=/stale/source\n');
     const r = runFn(['prepare_staging_schema'],
       'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
-        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'),
+        env: { STAGING_ROOT: root, PAPERCUSP_HOME: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'),
           DATABASE_URL: 'postgresql://fixture/inherited', EXPECT_DATABASE_URL: 'postgresql://fixture/candidate',
           FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
       });
@@ -1026,7 +1026,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
 
     const blocked = runFn(['prepare_staging_schema'],
       'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
-        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'blocked-trace'),
+        env: { STAGING_ROOT: root, PAPERCUSP_HOME: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'blocked-trace'),
           FIXTURE_RESULT: '{"applied":0,"failed":[]}',
           MISSING_REQUIRED_MIGRATION: '1489-fallback-observations-samples.sql' },
       });
@@ -1037,7 +1037,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
 
     const ready = runFn(['prepare_staging_schema'],
       'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
-        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'ready-trace'),
+        env: { STAGING_ROOT: root, PAPERCUSP_HOME: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'ready-trace'),
           FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
       });
     expect(ready.status).toBe(0);
@@ -1050,7 +1050,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
     const trace = join(root, 'trace');
     const r = runFn(['prepare_staging_schema'],
       'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
-        env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: trace,
+        env: { STAGING_ROOT: root, PAPERCUSP_HOME: root, UNIT: 'fixture.service', TRACE_FILE: trace,
           FIXTURE_RESULT: '{"applied":0,"failed":[]}' },
       });
     expect(r.status).toBe(1);
@@ -1058,11 +1058,40 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
     expect(r.stdout).not.toContain('restart-requested');
   });
 
+  it.each([
+    { phase: 'environment', exitCode: 9 },
+    { phase: 'silent client', exitCode: 23 },
+  ])('retains schema failure evidence for $phase', ({ phase, exitCode }) => {
+    const binDir = join(root, 'bin');
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, 'node'), '#!/usr/bin/env bash\nexit 23\n', { mode: 0o700 });
+    if (phase === 'environment') {
+      writeFileSync(join(root, 'apps/operator/.env.local'), 'return 9\n');
+    }
+    const trace = join(root, 'trace');
+    const r = runFn(['prepare_staging_schema'],
+      'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
+        env: { STAGING_ROOT: root, PAPERCUSP_HOME: root, UNIT: 'fixture.service',
+          INVOCATION_ID: 'schema-evidence-fixture', TRACE_FILE: trace,
+          PATH: binDir + ':' + (process.env.PATH ?? '') },
+      });
+    const evidencePath = join(root, 'checkpoint-logs/staging-setup-schema-evidence-fixture-schema.log');
+    const evidence = readFileSync(evidencePath, 'utf8');
+    expect(r.status).toBe(exitCode);
+    expect(r.stdout).not.toContain('restart-requested');
+    expect(r.stdout).toContain(`raw evidence retained at ${evidencePath}`);
+    expect(evidence).toContain(`candidate: ${root}`);
+    expect(evidence).toContain('phase=load-runtime-env');
+    expect(evidence).toContain(`command_exit=${exitCode} capture_exit=0`);
+    expect(evidence.includes('phase=run-migration-client')).toBe(phase === 'silent client');
+    expect(existsSync(trace)).toBe(false);
+  });
+
   it.each(['null', '{"applied":0,"failed":[{"file":"pending.sql","error":"guard refused"}]}', 'throw'])(
     'never requests restart when guarded preparation returns %s', (result) => {
       const r = runFn(['prepare_staging_schema'],
         'log() { printf "%s\\n" "$*"; }\nprepare_staging_schema && echo restart-requested', {
-          env: { STAGING_ROOT: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'), FIXTURE_RESULT: result },
+          env: { STAGING_ROOT: root, PAPERCUSP_HOME: root, UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'), FIXTURE_RESULT: result },
         });
       expect(r.status).toBe(1);
       expect(r.stdout).toContain('keeping the current fixture.service process');
@@ -1080,7 +1109,7 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
       'log() { printf "%s\\n" "$*"; }',
       'prepare_staging_schema',
       'echo restart-requested',
-    ].join('\n')], { env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, STAGING_ROOT: root,
+    ].join('\n')], { env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, STAGING_ROOT: root, PAPERCUSP_HOME: root,
       UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'), FIXTURE_RESULT: 'wait' } });
     const output = createTextCollector(child.stdout);
     const closed = new Promise<number | null>((resolve) => child.on('close', resolve));
