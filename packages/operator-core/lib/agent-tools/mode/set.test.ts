@@ -10,6 +10,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentIdentity } from '../coordination/identity';
+import type { WakeSourceAwait, WorkItemAwaitTarget } from '../../events/await/wake-source-predicate';
 
 const h = vi.hoisted(() => ({
   getSelectedModeDefinitions: vi.fn(),
@@ -67,6 +68,8 @@ const h = vi.hoisted(() => ({
     async (_opts: unknown): Promise<{ generation: number; state?: { modes: string[] } } | null> => ({ generation: 1 }),
   ),
   getLoopStatus: vi.fn(async (_ownerId: string) => null as { active: boolean } | null),
+  readOpenAwaitsForSubscribers: vi.fn(async (_owners: readonly string[], _sql?: unknown, _opts?: { wakeOnly?: boolean }) => [] as WakeSourceAwait[]),
+  readWorkItemAwaitTargets: vi.fn(async (_awaits: readonly { eventKey: string }[]) => new Map<string, WorkItemAwaitTarget[]>()),
   deactivateLoopForGoal: vi.fn(async (..._args: unknown[]) => false),
   assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
   retractFact: vi.fn(async (_args: unknown) => true),
@@ -131,6 +134,11 @@ vi.mock('../../goal-launch-settings', async () => {
 vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: h.getLoopStatus,
   deactivateLoopForGoal: h.deactivateLoopForGoal,
+}));
+vi.mock('../../events/await/wake-source-predicate', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../events/await/wake-source-predicate')>(),
+  readOpenAwaitsForSubscribers: h.readOpenAwaitsForSubscribers,
+  readWorkItemAwaitTargets: h.readWorkItemAwaitTargets,
 }));
 vi.mock('../coordination/messages', () => ({ sendMessage: h.sendMessage }));
 // Partial-shaped on purpose, like the loop mock above: set.ts uses exactly these
@@ -233,6 +241,8 @@ beforeEach(() => {
     return { generation: 1, state: { modes: written?.enabled ? [written.modeId] : [] } };
   });
   h.getLoopStatus.mockClear().mockResolvedValue(null);
+  h.readOpenAwaitsForSubscribers.mockClear().mockResolvedValue([]);
+  h.readWorkItemAwaitTargets.mockClear().mockResolvedValue(new Map());
   h.deactivateLoopForGoal.mockClear().mockResolvedValue(false);
   h.assertFact.mockClear().mockResolvedValue({ ok: true });
   h.retractFact.mockClear().mockResolvedValue(true);
@@ -800,7 +810,98 @@ describe('mode:set handler — wake-source guard wiring', () => {
     h.getLoopStatus.mockResolvedValue({ active: true });
     const body = parse(await run({ mode: 'auto', reason: 'go', ownerDirected: true }));
     expect(body.wakeSourceWarning).toBeUndefined();
-    expect(body.wakeSource).toBeUndefined();
+    expect(body.wakeSource).toBe('loop');
+    expect(body.guaranteedWake).toBe(true);
+    expect(h.readOpenAwaitsForSubscribers).not.toHaveBeenCalled();
+  });
+
+  const eventAwait = (overrides: Partial<WakeSourceAwait> = {}): WakeSourceAwait => ({
+    subscriberId: ME,
+    eventKey: 'release:deployed',
+    expiresTs: new Date(Date.now() + 60_000).toISOString(),
+    timeoutBehavior: 'expire',
+    once: true,
+    ...overrides,
+  });
+
+  it('reports a conditional event wake with a deadline warning for on_timeout:expire', async () => {
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([eventAwait()]);
+    const body = parse(await run({ mode: 'auto', reason: 'await deployment' }));
+    expect(body.wakeSource).toBe('event');
+    expect(body.guaranteedWake).toBe(false);
+    expect(body.wakeSourceWarning).toContain('NO GUARANTEED WAKE');
+    expect(body.wakeSourceWarning).toContain('on_timeout');
+    expect(body.wakeSourceWarning).not.toContain('ONLY wake source');
+  });
+
+  it('reports a guaranteed bounded event wake for on_timeout:wake without a false alarm', async () => {
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([eventAwait({ timeoutBehavior: 'wake' })]);
+    const body = parse(await run({ mode: 'auto', reason: 'bounded deployment await' }));
+    expect(body.wakeSource).toBe('event');
+    expect(body.guaranteedWake).toBe(true);
+    expect(body.wakeSourceWarning).toBeUndefined();
+    expect(h.readOpenAwaitsForSubscribers).toHaveBeenCalledWith([ME], undefined, { wakeOnly: true });
+  });
+
+  it('does not mistake an unbounded event for a guaranteed deadline wake', async () => {
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([eventAwait({ expiresTs: null, timeoutBehavior: 'wake' })]);
+    const body = parse(await run({ mode: 'auto', reason: 'wait for event' }));
+    expect(body.wakeSource).toBe('event');
+    expect(body.guaranteedWake).toBe(false);
+    expect(body.wakeSourceWarning).toContain('NO GUARANTEED WAKE');
+  });
+
+  it('excludes the platform inbox keepalive but accepts an explicit bounded inbox wake', async () => {
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([
+      eventAwait({ eventKey: 'coord:inbox-wake:' + ME, expiresTs: null, once: false }),
+    ]);
+    const keepalive = parse(await run({ mode: 'auto', reason: 'keepalive only' }));
+    expect(keepalive.wakeSource).toBe('owner-only');
+    expect(keepalive.guaranteedWake).toBe(false);
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([
+      eventAwait({ eventKey: 'coord:inbox-wake:' + ME, timeoutBehavior: 'wake' }),
+    ]);
+    const deliberate = parse(await run({ mode: 'auto', reason: 'bounded inbox await' }));
+    expect(deliberate.wakeSource).toBe('event');
+    expect(deliberate.guaranteedWake).toBe(true);
+  });
+
+  it.each([
+    ['self-held', [{ status: 'wip', takenBy: ME }]],
+    ['terminal', [{ status: 'done', takenBy: null }]],
+    ['missing', []],
+  ] as const)('excludes a %s work-item done await even when bounded', async (_kind, rows) => {
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([
+      eventAwait({ eventKey: 'work-item:done:WI-1', timeoutBehavior: 'wake' }),
+    ]);
+    h.readWorkItemAwaitTargets.mockResolvedValue(new Map([['WI-1', [...rows]]]));
+    const body = parse(await run({ mode: 'auto', reason: 'dead await' }));
+    expect(body.wakeSource).toBe('owner-only');
+    expect(body.guaranteedWake).toBe(false);
+    expect(body.wakeSourceWarning).toContain('NO WAKE SOURCE');
+  });
+
+  it('sends the conditional-event warning to a peer using the target await evidence', async () => {
+    currentIdentity = { ownerId: PEER, ownerLabel: 'su · peer', source: 'omp-hook-session', workspaceId: 'default', userId: null };
+    h.readOpenAwaitsForSubscribers.mockResolvedValue([eventAwait()]);
+    await run({ mode: 'auto', reason: 'you await deployment', agent: ME });
+    expect(h.readOpenAwaitsForSubscribers).toHaveBeenCalledWith([ME], undefined, { wakeOnly: true });
+    const [, sendOpts] = h.sendMessage.mock.calls[0] as [unknown, Record<string, string>];
+    expect(sendOpts.body).toContain('NO GUARANTEED WAKE');
+    expect(sendOpts.body).not.toContain('ONLY wake source');
+  });
+
+  it.each(['awaits', 'targets'])('keeps a failed %s read unknown instead of reporting no source', async (leg) => {
+    if (leg === 'awaits') h.readOpenAwaitsForSubscribers.mockRejectedValue(new Error('pg down'));
+    else {
+      h.readOpenAwaitsForSubscribers.mockResolvedValue([eventAwait()]);
+      h.readWorkItemAwaitTargets.mockRejectedValue(new Error('pg down'));
+    }
+    const body = parse(await run({ mode: 'auto', reason: 'go' }));
+    expect(body.ok).toBe(true);
+    expect(body.wakeSource).toBe('unknown');
+    expect(body.guaranteedWake).toBeUndefined();
+    expect(body.wakeSourceWarning).toBeUndefined();
   });
 
   it('reads the TARGET\'s loop on a peer-set, not the caller\'s — the target is who goes inert', async () => {
