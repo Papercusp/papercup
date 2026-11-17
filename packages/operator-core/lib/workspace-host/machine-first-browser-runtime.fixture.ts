@@ -19,7 +19,7 @@ import { openSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { moduleRepoRoot } from '../module-repo-root';
 import { serve } from '@hono/node-server';
-import { installedHostedIdentityProvider, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
+import { createHostedFixtureSession, installedHostedIdentityProvider, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
 
 const repo = moduleRepoRoot(import.meta.url);
 const control = process.env.PAPERCUSP_WORKSPACE_ID ?? '';
@@ -240,8 +240,8 @@ try {
       organizationName: `Private R1 ${target.label}`, expiresAt }));
   }
   savePsuConnectionStore({ version: PSU_CONNECTION_STORE_VERSION, profiles });
-  const session = await hosted.plane.components.sessionStore.create({ userId, organizationId: orgId,
-    workspaceId: targets[0].workspaceId, permissionVersion: 1, upstreamProvider: 'private-r1',
+  const session = await createHostedFixtureSession(hosted.plane.components, { userId, organizationId: orgId,
+    workspaceId: targets[0].workspaceId, upstreamProvider: 'private-r1',
     upstreamSessionId: randomUUID(), expiresAt });
   const { HOSTED_SESSION_COOKIE } = await import('../auth/hosted-session');
   await writeFile(`${evidence}.auth.json`, JSON.stringify({ cookie: { name: HOSTED_SESSION_COOKIE,

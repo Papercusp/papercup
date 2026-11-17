@@ -12,6 +12,8 @@ import { promisify } from 'node:util';
 import { chromium, request as playwrightRequest, type Browser, type Page } from 'playwright-core';
 import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
 import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_SESSION } from '../auth/hosted/fake-provider';
+import { HOSTED_PRINCIPAL_DENIAL_REASONS } from '../auth/hosted-principal-resolver';
+import type { CreateHostedSessionInput } from '../auth/hosted-session';
 
 type Input = {
   repo: string; privateRoot: string; evidence: string; control: string; config: NodeJS.ProcessEnv;
@@ -34,15 +36,26 @@ export function installedHostedIdentityProvider(nowMs = Date.now()) {
       issuedAtMs: nowMs - 60_000, authenticatedAtMs: nowMs - 30_000, expiresAtMs: nowMs + 30 * 60_000 } });
 }
 
-/** Keep only safe auth codes, never cookie values, response bodies or identity data. */
+/** Snapshot fixture sessions through the production membership authority. */
+export async function createHostedFixtureSession(
+  components: Pick<HostedHandler['plane']['components'], 'sessionStore' | 'membershipAuthority'>,
+  input: Omit<CreateHostedSessionInput, 'permissionVersion'>,
+) {
+  const membership = await components.membershipAuthority.resolveActive(input);
+  assert(membership, 'Private browser session requires active membership');
+  return components.sessionStore.create({ ...input, permissionVersion: membership.permissionVersion });
+}
+
+/** Keep safe auth codes and known denial reasons, never arbitrary response data. */
 export async function assertInstalledPortalSession(response: { status(): number; json(): Promise<unknown> },
   expected: { userId: string; organizationId: string; workspaceId: string }) {
   const body = await response.json().catch(() => null) as {
-    ok?: boolean; error?: { code?: unknown }; session?: Record<string, unknown> } | null;
+    ok?: boolean; error?: { code?: unknown; message?: unknown }; session?: Record<string, unknown> } | null;
   const code = typeof body?.error?.code === 'string' && /^[a-z_]{1,80}$/.test(body.error.code)
     ? body.error.code : 'unknown';
+  const reason = HOSTED_PRINCIPAL_DENIAL_REASONS.find(known => known === body?.error?.message) ?? 'unknown';
   assert(response.status() === 200 && body?.ok === true,
-    `Installed Portal auth preflight failed: HTTP ${response.status()} code=${code}`);
+    `Installed Portal auth preflight failed: HTTP ${response.status()} code=${code} reason=${reason}`);
   assert(body.session && Object.entries(expected).every(([key, value]) => body.session![key] === value),
     'Installed Portal auth preflight returned a different private session');
 }
@@ -319,8 +332,8 @@ export async function runInstalledComputerServedBrowser(input: Input) {
   const installId = INSTALLED_FIXTURE_SESSION_ID;
   const linked = await cli.upsertLinkedWorkspace({ organizationId: orgId, installId,
     displayName: 'Private installed computer', userId, at: new Date() });
-  const session = await hosted.plane.components.sessionStore.create({ userId, organizationId: orgId,
-    workspaceId: linked.customerWorkspaceId, permissionVersion: 1, upstreamProvider: INSTALLED_FIXTURE_PROVIDER_ID,
+  const session = await createHostedFixtureSession(hosted.plane.components, { userId, organizationId: orgId,
+    workspaceId: linked.customerWorkspaceId, upstreamProvider: INSTALLED_FIXTURE_PROVIDER_ID,
     upstreamSessionId: installId, expiresAt: new Date(Date.now() + 30 * 60_000) });
   const { HOSTED_SESSION_COOKIE } = await import('../auth/hosted-session');
   const expectedSession = { userId, organizationId: orgId, workspaceId: linked.customerWorkspaceId };

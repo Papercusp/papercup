@@ -85,6 +85,21 @@ describe('served Portal prerequisite and document readiness', () => {
       .rejects.toThrow('different private session');
   });
 
+  it.each(['session_permission_version_stale', 'session_cookie_missing'])(
+    'retains the safe mounted authorization reason %s', async reason => {
+      await expect(assertInstalledPortalSession({ status: () => 401,
+        json: async () => ({ error: { code: 'unauthorized', message: reason } }) }, expectedSession))
+        .rejects.toThrow(`code=unauthorized reason=${reason}`);
+    });
+
+  it('does not retain an arbitrary authorization message', async () => {
+    const error = await assertInstalledPortalSession({ status: () => 401,
+      json: async () => ({ error: { code: 'unauthorized', message: 'secret cookie and database details' } }) },
+    expectedSession).catch(String);
+    expect(error).toContain('code=unauthorized reason=unknown');
+    expect(error).not.toMatch(/secret|cookie and|database/);
+  });
+
   it('waits for the actual browser launcher after document readiness', async () => {
     const origin = await start((_, response) => {
       response.setHeader('content-type', 'text/html');

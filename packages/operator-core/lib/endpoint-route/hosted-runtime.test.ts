@@ -3,7 +3,9 @@ import { formatWithOptions } from 'node:util';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { createHostedSecretRefResolver } from '../auth/hosted/secret-ref';
-import { installedHostedIdentityProvider } from '../workspace-host/installed-computer-served-browser.fixture';
+import { createHostedFixtureSession, installedHostedIdentityProvider } from '../workspace-host/installed-computer-served-browser.fixture';
+import { toAuthority } from '../auth/hosted-membership-authority';
+import { HOSTED_SESSION_COOKIE, type HostedSession } from '../auth/hosted-session';
 import {
   HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS,
   createHostedRuntime,
@@ -36,6 +38,51 @@ function serviceRunner(currentUser = 'hosted_service', bootOrder?: string[]): Ho
 }
 
 describe('hosted runtime composition', () => {
+  it('mints a current fixture snapshot through the real mounted session authorization layer', async () => {
+    const now = new Date();
+    const userId = '10000000-0000-4000-8000-000000000001';
+    const organizationId = '10000000-0000-4000-8000-000000000002';
+    const membership = toAuthority({ user_id: userId, organization_id: organizationId,
+      role: 'owner', status: 'active', updated_at: now })!;
+    expect(membership.permissionVersion).toBeGreaterThan(1);
+    const provider = installedHostedIdentityProvider(now.getTime());
+    const plane = await createHostedRuntime(configuration, {
+      resolveSecret: async () => 'private-composition-secret-with-at-least-32-bytes',
+      runService: serviceRunner(), identityProvider: provider,
+    });
+    let session: HostedSession = { id: `hs_${'A'.repeat(43)}`, userId, organizationId,
+      workspaceId: 'private-workspace', permissionVersion: 1, upstreamProvider: provider.providerId,
+      upstreamSessionId: 'inst-private-served-browser', expiresAt: new Date(now.getTime() + 60_000),
+      createdAt: now, updatedAt: now, rotatedAt: null, lastSeenAt: null, revokedAt: null, revocationReason: null };
+    const authority = vi.spyOn(plane.components.membershipAuthority, 'resolveActive').mockResolvedValue(membership);
+    vi.spyOn(plane.components.membershipAuthority, 'workspaceBelongsToOrganization').mockResolvedValue(true);
+    vi.spyOn(plane.components.sessionStore, 'resolve').mockImplementation(async () => session);
+    const create = vi.spyOn(plane.components.sessionStore, 'create').mockImplementation(async input =>
+      ({ ...session, ...input, workspaceId: input.workspaceId ?? null }));
+    const request = () => plane.app.request('/api/hosted/auth/session', { headers: {
+      cookie: `${HOSTED_SESSION_COOKIE}=${plane.components.sessionCookieCodec.encode(session.id)}` } });
+    try {
+      const stale = await request();
+      expect(stale.status).toBe(401);
+      expect(await stale.json()).toMatchObject({ error: {
+        code: 'unauthorized', message: 'session_permission_version_stale' } });
+      expect(provider.calls.validateSession).toHaveLength(0);
+      const input = { userId, organizationId, workspaceId: session.workspaceId,
+        upstreamProvider: provider.providerId, upstreamSessionId: session.upstreamSessionId,
+        expiresAt: session.expiresAt };
+      session = await createHostedFixtureSession(plane.components, input);
+      expect(session.permissionVersion).toBe(membership.permissionVersion);
+      const current = await request();
+      expect(current.status).toBe(200);
+      expect(await current.json()).toMatchObject({ ok: true, session: { userId, organizationId,
+        workspaceId: session.workspaceId } });
+      expect(provider.calls.validateSession).toHaveLength(1);
+      authority.mockResolvedValue(null);
+      await expect(createHostedFixtureSession(plane.components, input)).rejects.toThrow('active membership');
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally { vi.restoreAllMocks(); }
+  });
+
   it.each([false, true])('checks the real session route with private provider composition=%s', async injected => {
     const provider = installedHostedIdentityProvider();
     const plane = await createHostedRuntime(configuration, {
