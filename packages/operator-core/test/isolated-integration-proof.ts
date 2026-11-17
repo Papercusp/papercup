@@ -12,6 +12,7 @@ import { parse as parseToml } from '@iarna/toml';
 import { defaultEvidenceRoot, runHarness } from '@papercusp/verification-harness';
 import { resolveTestRunHarnessSlug, resolveTestRunWorkspaceId } from '@papercusp/test-config/admin-test-runs-reporter';
 import { linuxPpidFromProcStat, readProcessIdentity } from '../lib/process-identity';
+import { verifyNativeMethodAuthority } from './native-method-authority';
 import { readCommittedFiles } from '../lib/agent-tools/plans/committed-tree-reader';
 import { qualifyCommittedReaderOriginalPreparation as qualifyOriginalPreparation } from './private-http-workspace-preflight';
 import { it } from 'vitest';
@@ -1023,6 +1024,8 @@ export function isolatedIntegrationProofSourcePaths(filePath: string, sourcePath
       'packages/operator-core/lib/consult/selection-policies.ts',
       'packages/operator-core/lib/rubrics.ts',
       'packages/operator-core/lib/acceptance-author-identity.ts',
+      'packages/operator-core/test/native-method-authority.ts',
+      'packages/operator-core/test/native-method-authority-fixture.ts',
     ] : []),
     ...sourcePaths,
   ])].sort();
@@ -1110,9 +1113,9 @@ export async function recordIsolatedIntegrationProof(options: IsolatedIntegratio
   const { nativeProofFingerprint } = await import('../lib/testing-run-store');
   const fingerprint = nativeProofFingerprint(input).fingerprint;
   assert.equal(admission.reviewedFingerprint, fingerprint, 'Native proof reviewed edition changed');
-  const { verifyMethodReviewAnswer } = await import('../lib/consult/get-feedback-prod');
-  await verifyMethodReviewAnswer({ ...input.scope, subjectPlan: input.scope.planSlug,
-    fingerprint, reviewRef: admission.reviewRef });
+  await verifyNativeMethodAuthority(options.root, { workspaceId: input.scope.workspaceId,
+    harnessSlug: input.scope.harnessSlug, subjectPlan: input.scope.planSlug,
+    fingerprint, reviewRef: admission.reviewRef }, { signal: options.signal });
   const { executeNativeProofOnce } = await import('../lib/testing-run-store');
   return executeNativeProofOnce(sql, input, admission, async intent => {
     options.signal?.throwIfAborted();

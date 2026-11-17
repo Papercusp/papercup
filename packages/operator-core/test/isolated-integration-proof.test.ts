@@ -16,7 +16,7 @@ import { privateOperatorApiBuildBudget } from './private-http-workspace-prefligh
 import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restricted-hold-preflight.mjs';
 
 const methodAuthority = vi.hoisted(() => vi.fn());
-vi.mock('../lib/consult/get-feedback-prod', () => ({ verifyMethodReviewAnswer: methodAuthority }));
+vi.mock('./native-method-authority', () => ({ verifyNativeMethodAuthority: methodAuthority }));
 
 describe('isolated negative preflight evidence', () => {
   const expected = 'MCP tool call requires approval, but approval policy is never';
@@ -99,7 +99,8 @@ describe('P010 native proof allocation admission', () => {
     const fingerprint = nativeProofFingerprint(input).fingerprint;
     const admission = { reviewedFingerprint: fingerprint, reviewRef: 'thread-post:123',
       preflightRefs: { numericFold: 'fold-proof', physicalInstall: 'install-proof', priorFailureAudit: 'audit-proof' } };
-    const begin = vi.fn<Sql['begin']>(async () => { throw new Error('ledger-start-sentinel'); });
+    const beginCalls = vi.fn();
+    const begin: Sql['begin'] = async () => { beginCalls(); throw new Error('ledger-start-sentinel'); };
     const sql = Object.assign(vi.fn(async () => []), { begin });
     const prepare = vi.fn(); const execute = vi.fn();
     methodAuthority.mockReset();
@@ -108,9 +109,10 @@ describe('P010 native proof allocation admission', () => {
     await expect(recordIsolatedIntegrationProof({ root, filePath, sourcePaths: [entry], nativeChildEntryPoint: entry,
       nativeProof: { sql, input, admission }, prepare, execute }))
       .rejects.toThrow(approved ? 'ledger-start-sentinel' : 'canonical-method-refused');
-    expect(methodAuthority).toHaveBeenCalledWith(expect.objectContaining({ ...input.scope,
-      subjectPlan: input.scope.planSlug, fingerprint, reviewRef: admission.reviewRef }));
-    expect(begin).toHaveBeenCalledTimes(approved ? 1 : 0);
+    expect(methodAuthority).toHaveBeenCalledWith(root, expect.objectContaining({
+      workspaceId: input.scope.workspaceId, harnessSlug: input.scope.harnessSlug,
+      subjectPlan: input.scope.planSlug, fingerprint, reviewRef: admission.reviewRef }), { signal: undefined });
+    expect(beginCalls).toHaveBeenCalledTimes(approved ? 1 : 0);
     expect(sql).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled();
   });

@@ -1,12 +1,14 @@
 /** Real schema and independence screen; only the org connection is isolated. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { runWithWorkspace } from '../workspace-als';
 import { seedAcceptanceBarsInTransaction } from '../acceptance-bar-seed';
 import { hashPlanContent } from '../agent-tools/plans/content-hash';
 import { verifyMethodReviewAnswer } from './get-feedback-prod';
+import { verifyNativeMethodAuthority } from '../../test/native-method-authority';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -69,6 +71,35 @@ describe('retained method review authority on migrated PostgreSQL', () => {
     await expect(runWithWorkspace('foreign-ambient', () => verifyMethodReviewAnswer(f)))
       .resolves.toMatchObject({ fingerprint: f.fingerprint, sourceOwnerId: 'expert', answeringOwnerId: 'answerer' });
   });
+  it.each([false, true])('pins the real child and nested rubric reads to the durable authority plane (related=%s)', async related => {
+    const f = await fixture();
+    if (related) await db.adminSql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id,mode,coord_owner_id,launch_spec)
+      VALUES (${f.workspaceId},'console','answerer',${JSON.stringify({ launchedBy: 'implementer' })}::jsonb)`;
+    const { postId: _post, conversationId: _conversation, threadId: _thread, rubricId: _rubric, ...input } = f;
+    const result = verifyNativeMethodAuthority(resolve(import.meta.dirname, '../../../..'), input, { env: {
+      ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: db.adminDsn,
+      HARNESS_ADMIN_DATABASE_URL: 'postgresql://invalid-product:1/disposable',
+      HARNESS_DATABASE_URL: 'postgresql://invalid-product:1/disposable', DATABASE_URL: 'postgresql://invalid-product:1/disposable',
+    } });
+    if (related) await expect(result).rejects.toThrow('method_review_identity_ineligible');
+    else await expect(result).resolves.toMatchObject({ targetSource: 'env', review: { fingerprint: f.fingerprint } });
+  }, 45_000);
+  it('cannot approve from the product database when the durable authority has no answer', async () => {
+    const f = await fixture();
+    const durable = await createOrgTestDb();
+    try {
+      // The ambient product reader really can approve; the fresh reader must
+      // still refuse because its explicitly selected authority has no record.
+      await expect(verifyMethodReviewAnswer(f)).resolves.toMatchObject({ fingerprint: f.fingerprint });
+      await expect(verifyNativeMethodAuthority(resolve(import.meta.dirname, '../../../..'), {
+        workspaceId: f.workspaceId, harnessSlug: f.harnessSlug, subjectPlan: f.subjectPlan,
+        fingerprint: f.fingerprint, reviewRef: f.reviewRef,
+      }, { env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: durable.adminDsn,
+        HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.adminDsn, DATABASE_URL: db.adminDsn,
+      } })).rejects.toThrow('method_review_answer_missing_or_superseded');
+    } finally { await durable.cleanup(); }
+  }, 45_000);
   it.each(['thread-parent', 'remote-post', 'meta-author', 'meta-conversation', 'missing-meta'])
     ('refuses a broken canonical %s join', async kind => {
       const f = await fixture();
