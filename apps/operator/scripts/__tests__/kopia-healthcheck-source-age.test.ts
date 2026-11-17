@@ -56,6 +56,12 @@ interface AlertFixture {
   force?: boolean;
 }
 
+interface ListingFixture {
+  stage: 'aggregate' | 'coverage' | 'home' | 'vm';
+  error: string;
+  exitCode: number;
+}
+
 function runHealthcheck(
   dumpSnapshotAgeSeconds: number,
   status: Record<string, unknown> = {},
@@ -63,6 +69,7 @@ function runHealthcheck(
   alertFixture: AlertFixture = {},
   maintenanceError = '',
   archiveFixture?: { error: string; exitCode: number },
+  listingFixture?: ListingFixture,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'kopia-healthcheck-source-age-'));
   tempDirs.push(root);
@@ -138,12 +145,13 @@ function runHealthcheck(
       'fi',
       'if [ "$1" != "snapshot" ] || [ "$2" != "list" ]; then exit 2; fi',
       'case "$3" in',
-      '  --all) printf %s\\n ' + shellQuote(allSources) + ' ;;',
+      '  --all) printf %s\\n ' + shellQuote(allSources) + '; if [ "${4:-}" = "-n" ]; then stage=aggregate; else stage=coverage; fi ;;',
       '  "$PAPERCUSP_HOST_PG_DUMP_DIR") printf %s\\n ' + shellQuote(sourceBlock(dumpDir, snapshotTime(dumpSnapshotAgeSeconds)).join('\n')) + ' ;;',
-      '  "$HOME") printf %s\\n ' + shellQuote(homeListing) + ' ;;',
-      '  "$HOME/macos-vm") printf %s\\n ' + shellQuote(vmListing) + ' ;;',
+      '  "$HOME") printf %s\\n ' + shellQuote(homeListing) + '; stage=home ;;',
+      '  "$HOME/macos-vm") printf %s\\n ' + shellQuote(vmListing) + '; stage=vm ;;',
       '  *) exit 0 ;;',
       'esac',
+      'if [ "${stage:-}" = "$TEST_LISTING_FAIL_STAGE" ]; then printf "%s\\n" "$TEST_LISTING_ERROR" >&2; exit "$TEST_LISTING_EXIT"; fi',
     ].join('\n') + '\n',
   );
   chmodSync(fakeKopia, 0o755);
@@ -196,6 +204,9 @@ function runHealthcheck(
       TEST_ARCHIVE_ERROR: archiveFixture?.error ?? '',
       TEST_ARCHIVE_EXIT: String(archiveFixture?.exitCode ?? 0),
       TEST_MAINTENANCE_CALLS: maintenanceCalls,
+      TEST_LISTING_FAIL_STAGE: listingFixture?.stage ?? 'none',
+      TEST_LISTING_ERROR: listingFixture?.error ?? '',
+      TEST_LISTING_EXIT: String(listingFixture?.exitCode ?? 0),
       MAX_SNAP_AGE_S: '3600',
       KOPIA_UNIT_CGROUP_ROOT: unitCgroupRoot,
       KOPIA_HEALTHCHECK_SYSTEMCTL: fakeSystemctl,
@@ -205,6 +216,7 @@ function runHealthcheck(
   });
 
   return {
+    unrelated,
     maintenanceCalls: existsSync(maintenanceCalls) ? readFileSync(maintenanceCalls, 'utf8').trim().split('\n').length : 0,
     systemctlCalls: existsSync(subStateCounter) ? Number(readFileSync(subStateCounter, 'utf8').trim()) : 0,
     result,
@@ -241,6 +253,39 @@ describe('Kopia healthcheck archive diagnostics (EI-28646224189373945)', () => {
     const run = runHealthcheck(60, {}, undefined, {}, '', { error: '', exitCode: 0 });
     expect(run.result.status, run.log).toBe(0);
     expect(run.log).toContain('OK: dump ');
+  });
+});
+
+describe('Kopia healthcheck listing diagnostics', () => {
+  it.each(['aggregate', 'coverage', 'home', 'vm'] as const)(
+    'rejects partial fresh output from a failed %s listing',
+    (stage) => {
+      const run = runHealthcheck(60, {}, undefined, {}, '', undefined, {
+        stage, error: 'unable to read snapshot manifests', exitCode: 23,
+      });
+      expect(run.result.status, run.log).toBe(1);
+      expect(run.log).toContain('Kopia snapshot listing failed (exit 23)');
+      expect(run.log).toContain('unable to read snapshot manifests');
+      expect(run.log).not.toContain('OK: dump ');
+      expect(run.alertLog).toBe('');
+    },
+  );
+
+  it('bounds multiline listing failures', () => {
+    const run = runHealthcheck(60, {}, undefined, {}, '', undefined, {
+      stage: 'aggregate', error: 'manifest failure\n' + 'x'.repeat(3000), exitCode: 24,
+    });
+    expect(run.result.status, run.log).toBe(1);
+    expect(run.log).toContain('Kopia snapshot listing failed (exit 24)');
+    expect(run.log).toContain('manifest failure');
+    expect(run.log).not.toContain('x'.repeat(513));
+  });
+
+  it('retains the source and snapshot row selected for aggregate recency', () => {
+    const run = runHealthcheck(10 * 60);
+    expect(run.result.status, run.log).toBe(0);
+    expect(run.log).toContain('SNAPSHOT RECENCY: source=jdoe@host:' + run.unrelated);
+    expect(run.log).toContain('abc123 1 GB');
   });
 });
 
