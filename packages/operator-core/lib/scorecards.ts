@@ -4614,6 +4614,7 @@ interface ScorecardRowDb {
   issue_id: string;
   created_by: string | null;
   created_at: string | Date;
+  created_at_cursor?: string;
   payload: unknown | null;
   superseded_by: string | null;
   audit_rubric_revision: unknown;
@@ -4799,6 +4800,7 @@ async function listScorecardsAtLimit(
       batch = await acquireWithContentionRetry(() =>
         boundedPgReadTxn<ScorecardRowDb[]>((tx) => tx<ScorecardRowDb[]>`
     SELECT scorecard.issue_id, scorecard.created_by, scorecard.created_at, scorecard.payload,
+           to_char(scorecard.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_cursor,
            (
              SELECT audit.payload -> 'observation' -> 'rubricRevision'
                FROM harness_shared.engineer_issues AS audit
@@ -4937,7 +4939,7 @@ async function listScorecardsAtLimit(
       rows.push(row);
     }
     const tail = batch[batch.length - 1]!;
-    before = { createdAt: tsIso(tail.created_at), issueId: tail.issue_id };
+    before = { createdAt: tail.created_at_cursor ?? tsIso(tail.created_at), issueId: tail.issue_id };
     if (batch.length < batchLimit) exhausted = true;
   }
 
@@ -5060,7 +5062,9 @@ async function listScorecardsAtLimit(
 
     out.push({
       issueId: row.issue_id,
-      createdAt: tsIso(row.created_at),
+      // Preserve PG's microseconds for the next keyset read. Keep the historical
+      // millisecond spelling when no additional precision exists.
+      createdAt: row.created_at_cursor?.replace(/(\.\d{3})000Z$/, '$1Z') ?? tsIso(row.created_at),
       createdBy: row.created_by,
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
       ...(observation.subject ? { subject: observation.subject } : {}),
@@ -5139,6 +5143,8 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
 export interface ScorecardPage {
   rows: ScorecardRow[];
   hasMore: boolean;
+  /** Exact last returned position, present while another page remains. */
+  nextCursor?: ScorecardListCursor | null;
   /** Counts describe this keyset scan, including its one eligible lookahead row. */
   selection?: ScorecardSelection;
 }
@@ -5152,7 +5158,11 @@ export async function listScorecardPage(filter: ListScorecardsFilter = {}): Prom
   const limit = Math.min(Math.max(Math.trunc(filter.limit ?? 100), 1), 500);
   const selection: ScorecardSelection = { examinedCount: 0, excludedCounts: {} };
   const rows = await listScorecardsAtLimit(filter, limit + 1, selection);
-  return { rows: rows.slice(0, limit), hasMore: rows.length > limit,
+  const page = rows.slice(0, limit);
+  const hasMore = rows.length > limit;
+  const tail = page[page.length - 1];
+  return { rows: page, hasMore,
+    nextCursor: hasMore && tail ? { createdAt: tail.createdAt, issueId: tail.issueId } : null,
     ...(filter.finalizedOnly ? { selection } : {}) };
 }
 

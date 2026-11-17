@@ -15,8 +15,9 @@
  * This module must stay free of node:child_process; the subprocess half lives in
  * ./pr-git-facts-compute and is loaded only by the producer.
  *
- * A miss returns null (never computed yet, or a superseded producerVersion). That
- * read warms the key in the background, and the snapshot write invalidates every
+ * A missing, stale or failed snapshot returns null: an old promoted ref cannot
+ * establish that the current PR head is untested. The read warms the key in the
+ * background, and the snapshot write invalidates every
  * resolver listing harness_shared.derived_read_snapshots in its backingTables, so an
  * open PR pane re-reads once the facts exist.
  */
@@ -29,10 +30,10 @@ export interface HarnessPrGitFacts {
   promotedSha: string | null;
 }
 
-/** The latest snapshot for one harness, or null when none has been computed yet. */
+/** Fresh facts for one harness, or null while the background producer recovers. */
 export async function readHarnessPrGitFacts(harnessSlug: string): Promise<HarnessPrGitFacts | null> {
   const { readDerivedSnapshot } = await import('../derived-reads/registry');
   await import('../derived-reads/producers'); // side effect: registers the producer
-  const { payload } = await readDerivedSnapshot<HarnessPrGitFacts>(HARNESS_PR_GIT_FACTS_KEY, { harnessSlug });
-  return payload;
+  const { payload, meta } = await readDerivedSnapshot<HarnessPrGitFacts>(HARNESS_PR_GIT_FACTS_KEY, { harnessSlug });
+  return meta.missing || meta.stale || meta.error || meta.computedAt == null ? null : payload;
 }

@@ -24,12 +24,15 @@ import {
   buildAcceptanceBarAmendmentCandidate,
   computeAcceptanceBarHash,
   computeAcceptanceBarSetHash,
+  criterionGradeKey,
+  criterionMethodHash,
   effectiveCriterionInstrumentKey,
   type Rubric,
   type RubricCriterion,
 } from './rubrics';
 import type { SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import type { ScorecardRow } from './scorecards';
+import * as scorecardsModule from './scorecards';
 import { classifyGradingAuditCurrentness } from './scorecards';
 import { getAcceptanceRubricVettingStatus } from './acceptance-rubric-vetting';
 import { evaluateAcceptanceBarLifecycle } from './acceptance-bar-lifecycle-evaluator';
@@ -350,6 +353,96 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
     graderSelectionVia: new Map([['su-grader', 'floor']]),
   };
 }
+
+describe('R2 per-requirement grade selection', () => {
+  const graded = (source: AcceptanceBarContractSnapshotInput, key: string, overrides: Partial<ScorecardRow> = {}) => {
+    const bar = source.rubrics.rows[0]!.criteria.find(c => c.key === key)!;
+    const methodHash = criterionMethodHash(bar.method);
+    return scorecard({
+      ratings: { [key]: { rating: 'healthy', evidence: `independent ${key}` } },
+      missingKeys: source.rubrics.rows[0]!.criteria.filter(c => c.key !== key).map(c => c.key),
+      criterionGrades: { [key]: { barHash: bar.barHash!, methodHash,
+        gradeKey: criterionGradeKey(bar.barHash!, methodHash), proof: [] } },
+      ...overrides,
+    });
+  };
+
+  it('counts partial cards independently across a sibling amendment and stales only a changed method', () => {
+    const source = fixture();
+    source.scorecards = rows([
+      graded(source, 'r-1', { issueId: 'SC-1', rubricRevision: 1, criteriaHash: 'old-whole-rubric' }),
+      graded(source, 'r-2', { issueId: 'SC-2' }),
+    ]);
+    expect(projectAcceptanceBarContractSnapshot(source).bars.map(b => b.grading.state)).toEqual(['pass', 'pass']);
+    source.rubrics.rows[0]!.criteria[1]!.method += ' Changed procedure.';
+    expect(projectAcceptanceBarContractSnapshot(source).bars.map(b => b.grading.state)).toEqual(['pass', 'stale']);
+  });
+
+  it.each(['self', 'author', 'retracted', 'synthesized', 'unresolved', 'missing-grade', 'stale-grade'])(
+    'does not let a newer %s rating replace a current independent pass', exclusion => {
+      const source = fixture(1);
+      const pass = graded(source, 'r-1', { issueId: 'PASS' });
+      const newer = graded(source, 'r-1', { issueId: 'NEW', createdAt: '2026-09-04T15:00:00Z',
+        ratings: { 'r-1': { rating: 'broken', evidence: 'newer but excluded' } } });
+      if (exclusion === 'self') newer.createdBy = 'su-impl';
+      if (exclusion === 'author') newer.createdBy = 'su-author';
+      if (exclusion === 'retracted') newer.retracted = { reason: 'withdrawn' } as ScorecardRow['retracted'];
+      if (exclusion === 'synthesized') newer.synthesized = true;
+      if (exclusion === 'unresolved') newer.rubricResolved = false;
+      if (exclusion === 'missing-grade') newer.criterionGrades = {};
+      if (exclusion === 'stale-grade') newer.criterionGrades!['r-1']!.gradeKey = 'old-key';
+      for (const cards of [[pass, newer], [newer, pass]]) {
+        source.scorecards = rows(cards);
+        expect(projectAcceptanceBarContractSnapshot(source).bars[0]!.grading).toMatchObject({ state: 'pass', scorecardId: 'PASS' });
+      }
+    });
+
+  it('lets the newest eligible current reject win and keeps legacy whole-rubric currency', () => {
+    const source = fixture(1);
+    const pass = graded(source, 'r-1', { issueId: 'PASS' });
+    const reject = graded(source, 'r-1', { issueId: 'REJECT', createdAt: '2026-09-04T15:00:00Z',
+      ratings: { 'r-1': { rating: 'broken', evidence: 'independent reject' } } });
+    source.scorecards = rows([pass, reject]);
+    expect(projectAcceptanceBarContractSnapshot(source).bars[0]!.grading).toMatchObject({ state: 'not-pass', scorecardId: 'REJECT' });
+    delete pass.criterionGrades;
+    pass.rubricRevision = 1; pass.criteriaHash = 'old';
+    source.scorecards = rows([pass]);
+    expect(projectAcceptanceBarContractSnapshot(source).bars[0]!.grading.state).toBe('stale');
+    pass.rubricRevision = 2; pass.criteriaHash = 'criteria-hash';
+    expect(projectAcceptanceBarContractSnapshot(source).bars[0]!.grading.state).toBe('pass');
+  });
+
+  it.each([49, 50, 51, 151, 251].flatMap(count => ['healthy', 'broken'].map(rating => ({ count, rating }))))(
+    'default consumer exhausts $count cards before counting an older $rating grade', async ({ count, rating }) => {
+      const source = fixture(1);
+      const cards = Array.from({ length: count }, (_, i) => graded(source, 'r-1', {
+        issueId: `SC-${String(count - i).padStart(4, '0')}`,
+        createdBy: i === count - 1 ? 'su-grader' : 'su-impl',
+        ratings: { 'r-1': { rating, evidence: 'decisive grade beyond the page boundary' } },
+      }));
+      const spy = vi.spyOn(scorecardsModule, 'listScorecardPage').mockImplementation(async filter => {
+        const before = filter?.before ? JSON.parse(JSON.stringify(filter.before)) : null;
+        const eligible = before ? cards.filter(c => c.issueId < before.issueId) : cards;
+        const page = eligible.slice(0, filter?.limit);
+        const hasMore = eligible.length > page.length;
+        const tail = page.at(-1);
+        return { rows: page, hasMore, nextCursor: hasMore && tail ? { createdAt: tail.createdAt, issueId: tail.issueId } : null };
+      });
+      try {
+        const result = await readAcceptanceBarContractSnapshot('plan-a', {
+          readPlans: async () => source.planRows, readRubrics: async () => source.rubrics,
+          readPlanItems: async () => source.planItems, readClauses: async () => source.clauses,
+          readWorkContracts: async () => source.workContracts, readEvidence: async () => source.evidence,
+          readLineage: async () => source.lineage, readVettingScorecards: async () => source.vettingScorecards,
+          readParties: async () => source.partyByIdentity, readGraderSelectionVia: async () => source.graderSelectionVia,
+        });
+        expect(result.bars[0]!.grading).toMatchObject({ state: rating === 'healthy' ? 'pass' : 'not-pass', scorecardId: 'SC-0001' });
+        expect(spy).toHaveBeenCalledTimes(Math.ceil(count / 50));
+        expect(spy.mock.calls.every(([filter]) => filter?.limit === 50)).toBe(true);
+        expect(result.bounded.scorecards).toMatchObject({ rowsRead: count, truncated: false });
+      } finally { spy.mockRestore(); }
+    });
+});
 
 function currentRegisteredTestEvidence(
   base: AcceptanceBarEvidenceSource,

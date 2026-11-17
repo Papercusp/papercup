@@ -1138,6 +1138,40 @@ describe('listScorecards (P-013) — real PG', () => {
     expect(second.hasMore).toBe(false);
   });
 
+  it.each([49, 50, 51, 151])('R2 native history resumes %i rows at exact microsecond positions after restart', async count => {
+    const rubricRef = `test-r2-precision-${count}`;
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'hive-coordination',
+      title: `R2 precision ${count}`, criteria: CRITERIA, status: 'active', by: 'su-test' });
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      ids.push(await fileScorecard(db, {
+        id: `r2-precision-${count}-${i}`, rubricRef,
+        createdAt: `2026-11-01T00:00:00.${String(100001 + Math.floor(i / 2)).padStart(6, '0')}Z`,
+        ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: `retained row ${i}` } },
+      }));
+    }
+    const expected = await db.adminSql<Array<{ issue_id: string }>>`
+      SELECT issue_id FROM harness_shared.engineer_issues WHERE issue_id=ANY(${ids}::text[])
+      ORDER BY created_at DESC, issue_id DESC`;
+    const readAll = async () => {
+      const seen: string[] = [];
+      let before: { createdAt: string; issueId: string } | undefined;
+      for (;;) {
+        const page = await listScorecardPage({ issueIds: ids, limit: 50, includeGeneration: false,
+          ...(before ? { before } : {}) });
+        seen.push(...page.rows.map(row => row.issueId));
+        if (!page.hasMore) { expect(page.nextCursor).toBeNull(); break; }
+        expect(page.nextCursor?.createdAt).toMatch(/\.\d{6}Z$/);
+        // Persist and reconstruct only the native continuation, as a restarted consumer does.
+        before = JSON.parse(JSON.stringify(page.nextCursor));
+        expect(new Set(seen).size).toBe(seen.length);
+      }
+      return seen;
+    };
+    expect(await readAll()).toEqual(expected.map(row => row.issue_id));
+    expect(await readAll()).toEqual(expected.map(row => row.issue_id));
+  });
+
   it.each(['mixed-history-before-limit', 'legacy-partial-excluded', 'finalized-failure-included',
     'explicit-diagnostic-history'] as const)('%s: preserves the requested finalized or diagnostic history', async scenario => {
     const rubricRef = `test-finalized-${scenario}`;

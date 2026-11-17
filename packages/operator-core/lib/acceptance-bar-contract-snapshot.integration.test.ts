@@ -53,7 +53,7 @@ const { bindSpecEvidence, listSpecEvidence, measureRepoFilesEvidenceAtRoot } = a
 const { listSpecClauses, setSpecClause } = await import('./agent-tools/plans/spec-clauses-store');
 const { MAX_BAR_PROJECTION_EDGES, seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
 const { readAcceptanceBarContractSnapshot } = await import('./acceptance-bar-contract-snapshot');
-const { getRubric } = await import('./rubrics');
+const { getRubric, criterionGradeKey, criterionMethodHash } = await import('./rubrics');
 const { createIssue } = await import('./issues-engineer');
 const { PAPERCUSP_WORKSPACE_ID } = await import('./harness/papercusp-workspace');
 const { runWithWorkspace } = await import('./workspace-als');
@@ -148,6 +148,60 @@ afterAll(async () => {
 }, 30_000);
 
 describe('acceptance BAR contract snapshot — real Postgres reuse preflight', () => {
+  it.each([49, 50, 51, 151].flatMap(count => ['healthy', 'broken'].map(rating => ({ count, rating }))))(
+    'R2 native default consumer exhausts $count cards before selecting the older $rating grade', async ({ count, rating }) => {
+      const slug = `r2-native-history-${count}-${rating}`;
+      const content = planContent.replaceAll(PLAN, slug);
+      await db.adminSql`INSERT INTO harness_shared.harness_plans
+        (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,
+         acceptance_bar_epoch,acceptance_bar_cohort)
+        VALUES (${WORKSPACE},${HARNESS},${slug},${content},${hashPlanContent(content)},1,
+          ${slug},'active','su-author',1,'post-epoch')`;
+      await db.adminSql`INSERT INTO harness_shared.plan_items
+        (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
+        VALUES (${WORKSPACE},${HARNESS},${slug},${ITEM},1,'done','Read complete grade history')`;
+      const seeded = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+        workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: slug, planContent: content,
+        planTitle: slug, planStatus: 'active', planVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch',
+        actorId: 'su-author', now: new Date(OBSERVED_AT), executor: tx as unknown as SpecClauseSql,
+      }));
+      expect(seeded.ok).toBe(true);
+      const rubric = await getRubric(`acceptance-${slug}`);
+      if (!rubric) throw new Error('Native history fixture rubric missing');
+      const criterion = rubric.criteria[0]!;
+      const methodHash = criterionMethodHash(criterion.method);
+      const grade = { barHash: criterion.barHash!, methodHash,
+        gradeKey: criterionGradeKey(criterion.barHash!, methodHash), proof: [] };
+      const cards = Array.from({ length: count }, (_, i) => ({
+        issue_id: `EI-${slug}-${String(i).padStart(4, '0')}`,
+        created_by: i === 0 ? 'su-independent-grader' : 'su-author',
+        payload: { observation: {
+          rubricRef: rubric.rubricId, rubricRevision: rubric.revision, criteriaHash: rubric.criteriaHash,
+          rubricMeaningRevision: rubric.barContract?.meaningRevision,
+          sourceHive: HARNESS,
+          ratings: { [criterion.key]: { rating: i === 0 ? rating : 'broken', evidence: `native row ${i}` } },
+          // Both historical and grade-key cards share the same native pages.
+          ...(i % 2 === 0 && count % 2 === 0 ? { criterionGrades: { [criterion.key]: grade } } : {}),
+          ...(i > 0 && i % 3 === 0 ? { retracted: { reason: 'fixture exclusion', at: OBSERVED_AT, by: 'su-author' } } : {}),
+        } },
+      }));
+      await db.adminSql`INSERT INTO harness_shared.engineer_issues
+        (workspace_id,issue_id,kind,scope,title,body,severity,source,state,payload,created_by,signal_origin,created_at,updated_at)
+        SELECT ${WORKSPACE},r.issue_id,'change','harness:papercusp',r.issue_id,'','minor','test','done',
+          r.payload,r.created_by,'organic','2026-11-01T00:00:00.100001Z'::timestamptz,now()
+        FROM jsonb_to_recordset(${JSON.stringify(cards)}::jsonb) AS r(issue_id text,payload jsonb,created_by text)`;
+      for (let restart = 0; restart < 2; restart++) {
+        // No injected scorecard array or reader: this follows the production
+        // snapshot -> listScorecardPage -> real PG keyset to verified exhaustion.
+        const snapshot = await readAcceptanceBarContractSnapshot(slug, {}, { harnessSlug: HARNESS });
+        expect(snapshot.bounded.scorecards).toMatchObject({ rowsRead: count, limit: 50, truncated: false });
+        expect(snapshot.bars[0]!.grading).toMatchObject({
+          state: rating === 'healthy' ? 'pass' : 'not-pass', scorecardId: cards[0]!.issue_id,
+        });
+        expect(snapshot.bars[0]!.grading.history).toHaveLength(count);
+      }
+    });
+
   it('reuses one exact current proof and invalidates only its freshness when the measured source changes', async () => {
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans

@@ -6,7 +6,7 @@ import { withPlanLock } from './agent-tools/plans/with-plan-lock';
 import { rubricSuiteTemplateDataSchema, type RubricSuiteTemplateData } from './agent-tools/plans/rubric-suite-template';
 import { getRubric, type Rubric } from './rubrics';
 import { listScorecardPage, type ScorecardRow, type ScorecardListCursor } from './scorecards';
-import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import { acceptanceLineageClosure, areAcceptanceLineageRelated } from './acceptance-author-identity';
 import { insertPlanRun, readPlanRunCheckpoint, compareAndSetPlanRunCheckpoint } from './agent-tools/plans/runs';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
 
@@ -75,7 +75,9 @@ export async function writeRubricSuite(input: WriteSuiteInput, scope: PlanSource
       ...(interval != null ? { rescoreIntervalMs: interval } : {}),
     });
     for (const { rubricRef } of data.members) {
-      if (!await d.readRubric(rubricRef)) throw new Error(`unknown_suite_member: ${rubricRef}`);
+      const rubric = await d.readRubric(rubricRef);
+      if (!rubric) throw new Error(`unknown_suite_member: ${rubricRef}`);
+      if (rubric.status === 'retired') throw new Error(`retired_suite_member: ${rubricRef}`);
     }
     const name = input.name;
     if (name !== undefined && (!name.trim() || /[\r\n]/.test(name))) throw new Error('invalid_suite_name');
@@ -185,18 +187,35 @@ export async function advanceSuiteMemberHistory(rubricRef: string, suite: Rubric
   const identity = rubricFingerprint(rubric);
   if (prior && (prior.rubricFingerprint !== identity || prior.result.rubricRef !== rubricRef)) throw new StaleSuiteCursorError();
   out.rubricRevision = rubric.revision ?? null;
-  if (!rubric.createdBy) return { complete: true, progress: { rubricFingerprint: identity, eligibilityUnknown: false,
+  if (!rubric.createdBy?.trim()) return { complete: true, progress: { rubricFingerprint: identity, eligibilityUnknown: false,
     result: { ...out, reason: 'rubric author identity is unavailable', unreadable: out.unreadable + 1 } } };
   let eligibilityUnknown = prior?.eligibilityUnknown ?? false;
+  // One lazy census per processing step. The legacy pairwise reader bounds its
+  // walk and cannot prove independence beyond that frontier. A strict census
+  // rejects incomplete evidence; a new run can retry after the graph is readable.
+  // Keep the injected pairwise seam for callers supplying their own relation.
+  let lineage: Promise<Set<string>> | undefined;
   const page = await d.scorecardPage({ rubricRef, limit: SUITE_SCORECARD_PAGE_SIZE, before: prior?.before, comparisonTime });
   out.historyRead += page.rows.length;
   for (const row of page.rows) {
     if (Date.parse(row.createdAt) > Date.parse(comparisonTime) || !scorecardComplete(row, rubric)) continue;
     if (row.retracted || row.supersededBy || row.provisional || row.purpose === 'diagnostic') continue;
-    if (!row.createdBy) { eligibilityUnknown = true; out.unreadable++; continue; }
+    if (!row.createdBy?.trim()) {
+      eligibilityUnknown = true; out.unreadable++;
+      out.reason = 'scorecard grader identity is unavailable; start a new suite run after identity evidence is repaired';
+      continue;
+    }
     let related: boolean;
-    try { related = await d.related(rubric.createdBy, row.createdBy, { workspaceId: scope.workspaceId }); }
-    catch { eligibilityUnknown = true; out.unreadable++; continue; }
+    try {
+      related = deps.related
+        ? await d.related(rubric.createdBy, row.createdBy, { workspaceId: scope.workspaceId })
+        : (await (lineage ??= acceptanceLineageClosure(rubric.createdBy,
+          { workspaceId: scope.workspaceId, requireComplete: true }))).has(row.createdBy.trim());
+    } catch (error) {
+      eligibilityUnknown = true; out.unreadable++;
+      out.reason = `scorecard independence unreadable: ${String(error)}; start a new suite run after the lineage census is readable`;
+      continue;
+    }
     if (related || out.scorecardRef || eligibilityUnknown) continue;
     out.scorecardRef = row.issueId;
     out.evidenceFingerprint = memberEvidenceFingerprint(rubric, row);

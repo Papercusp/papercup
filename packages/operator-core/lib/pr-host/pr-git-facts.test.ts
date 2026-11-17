@@ -64,9 +64,11 @@ describe('git fact computation (producer side)', () => {
 });
 
 describe('readHarnessPrGitFacts (read side)', () => {
+  const freshMeta = { computedAt: Date.now(), missing: false, stale: false, error: null };
+
   it('serves the harness-scoped snapshot without computing', async () => {
     const facts = { originRemote: 'github.com/acme/widget', promotedSha: 'a'.repeat(40) };
-    readDerivedSnapshot.mockResolvedValue({ payload: facts, meta: {} });
+    readDerivedSnapshot.mockResolvedValue({ payload: facts, meta: freshMeta });
 
     expect(await readHarnessPrGitFacts('widget')).toEqual(facts);
     expect(readDerivedSnapshot).toHaveBeenCalledWith(HARNESS_PR_GIT_FACTS_KEY, { harnessSlug: 'widget' });
@@ -74,6 +76,29 @@ describe('readHarnessPrGitFacts (read side)', () => {
 
   it('returns null on a snapshot miss', async () => {
     readDerivedSnapshot.mockResolvedValue({ payload: null, meta: { missing: true } });
+    expect(await readHarnessPrGitFacts('widget')).toBeNull();
+  });
+
+  it('withholds an expired promoted ref until the background refresh replaces it', async () => {
+    const oldFacts = { originRemote: 'github.com/acme/widget', promotedSha: 'a'.repeat(40) };
+    const newFacts = { ...oldFacts, promotedSha: 'b'.repeat(40) };
+    readDerivedSnapshot
+      .mockResolvedValueOnce({ payload: oldFacts, meta: { ...freshMeta, stale: true } })
+      .mockResolvedValueOnce({ payload: newFacts, meta: freshMeta });
+
+    expect(await readHarnessPrGitFacts('widget')).toBeNull();
+    expect(await readHarnessPrGitFacts('widget')).toEqual(newFacts);
+  });
+
+  it.each([
+    { error: 'git refresh failed' },
+    { computedAt: null },
+  ])('withholds a retained payload with unusable freshness: %j', async (meta) => {
+    readDerivedSnapshot.mockResolvedValue({
+      payload: { originRemote: 'github.com/acme/widget', promotedSha: 'a'.repeat(40) },
+      meta: { ...freshMeta, ...meta },
+    });
+
     expect(await readHarnessPrGitFacts('widget')).toBeNull();
   });
 });

@@ -13,6 +13,8 @@ import { isNonAutomatedBehaviorClass, resolveVerification } from './plan-verific
 import { getOrgPg } from '@papercusp/db-org';
 import {
   classifyRubricEvidenceCurrentness,
+  criterionGradeKey,
+  criterionMethodHash,
   computeAcceptanceBarHash,
   computeAcceptanceBarSetHash,
   diffAcceptanceBarHashInputs,
@@ -717,10 +719,28 @@ function partyOf(identity: string | null | undefined, parties: ReadonlyMap<strin
   return id ? (parties.get(id) ?? id) : null;
 }
 
-function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric: Rubric | null) {
+function criterionGradeIsCurrent(card: ScorecardRow, rubric: Rubric, criterion: RubricCriterion): boolean {
+  if (card.criterionGrades !== undefined) {
+    const grade = card.criterionGrades[criterion.key];
+    const methodHash = criterionMethodHash(criterion.method);
+    return Boolean(criterion.barHash && grade && grade.barHash === criterion.barHash &&
+      grade.methodHash === methodHash && grade.gradeKey === criterionGradeKey(criterion.barHash, methodHash));
+  }
+  return classifyRubricEvidenceCurrentness(
+    { revision: card.rubricRevision, criteriaHash: card.criteriaHash, meaningRevision: card.rubricMeaningRevision },
+    { revision: rubric.revision, criteriaHash: rubric.criteriaHash, meaningRevision: rubric.barContract?.meaningRevision },
+  ).state === 'current';
+}
+
+function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric: Rubric | null,
+  criterion?: RubricCriterion) {
   if (!rubric) return { card: undefined, via: null as SelectionVia | null, authorVerdict: undefined,
     roleOf: (_card: ScorecardRow) => 'unattributed' as const };
-  const allComplete = input.scorecards.rows.filter(completeScorecard);
+  const allComplete = input.scorecards.rows.filter(card => criterion
+    ? card.rubricResolved && !card.synthesized && !card.retracted && Boolean(card.ratings[criterion.key]) &&
+      (card.criterionGrades !== undefined || card.missingKeys.length === 0) &&
+      (card.criterionGrades === undefined || Boolean(card.criterionGrades[criterion.key]))
+    : completeScorecard(card));
   const author = rubric.createdBy ?? rubric.proposedBy ?? null;
   const authorParty = partyOf(author, input.partyByIdentity);
   const principalParties = new Set(
@@ -735,7 +755,7 @@ function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric:
     return party !== null && principalParties.has(party);
   };
   const standingAuthorVerdicts = new Map(
-    allComplete
+    input.scorecards.rows.filter(completeScorecard)
       .filter((card) => !card.supersededBy && holdsAuthorAuthority(card) && card.acceptance && card.supersedes)
       .map((card) => [card.issueId, card.supersedes!] as const),
   );
@@ -747,7 +767,10 @@ function authoritativeGrading(input: AcceptanceBarContractSnapshotInput, rubric:
         !isPrincipal(card)),
   );
   const independent = standing.filter((card) => !holdsAuthorAuthority(card) && !isPrincipal(card));
-  const card = pickAuthoritativeGrading(independent, (candidate) => gradingViaOf(candidate, input.graderSelectionVia));
+  const current = criterion ? independent.filter(card => criterionGradeIsCurrent(card, rubric, criterion)) : independent;
+  // Keep a stale candidate for diagnosis only when no current grade exists.
+  const card = pickAuthoritativeGrading(current.length ? current : independent,
+    (candidate) => gradingViaOf(candidate, input.graderSelectionVia));
   const authorVerdict = standing
     .filter((candidate) => holdsAuthorAuthority(candidate) && scorecardAcceptance(candidate))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
@@ -1209,6 +1232,7 @@ export function projectAcceptanceBarContractSnapshot(
   for (const criterion of verificationCriteria
     .slice()
     .sort((a, b) => (a.barKey ?? a.key).localeCompare(b.barKey ?? b.key))) {
+    const grading = authoritativeGrading(input, rubric, criterion);
     const barKey = criterion.barKey?.trim() || criterion.key.trim();
     const clauses = input.clauses.rows
       .filter((clause) => clause.sourceBar?.barKey === barKey)
@@ -1357,7 +1381,9 @@ export function projectAcceptanceBarContractSnapshot(
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
-    const gradingCurrent = classifyRubricEvidenceCurrentness(
+    const gradingCurrent = grading.card?.criterionGrades !== undefined && rubric
+      ? criterionGradeIsCurrent(grading.card, rubric, criterion)
+      : classifyRubricEvidenceCurrentness(
       {
         revision: grading.card?.rubricRevision,
         criteriaHash: grading.card?.criteriaHash,
@@ -1675,18 +1701,8 @@ export function projectAcceptanceBarContractSnapshot(
               rubricRevision: card.rubricRevision ?? null, criteriaHash: card.criteriaHash ?? null,
               role: grading.roleOf(card),
               authoritative: card.issueId === grading.card?.issueId || card.issueId === grading.authorVerdict?.issueId,
-              currentRevision: classifyRubricEvidenceCurrentness(
-                {
-                  revision: card.rubricRevision,
-                  criteriaHash: card.criteriaHash,
-                  meaningRevision: card.rubricMeaningRevision,
-                },
-                {
-                  revision: rubricRevision,
-                  criteriaHash: rubricCriteriaHash,
-                  meaningRevision: rubric?.barContract?.meaningRevision,
-                },
-              ).state === 'current', complete: completeScorecard(card),
+              currentRevision: rubric ? criterionGradeIsCurrent(card, rubric, criterion) : false,
+              complete: completeScorecard(card),
               retracted: Boolean(card.retracted), supersedes: card.supersedes ?? null,
               supersededBy: card.supersededBy ?? null, selectedVia: gradingViaOf(card, input.graderSelectionVia),
               rating: entry?.rating ?? null, evidence: entry?.evidence ?? null,
@@ -2141,17 +2157,29 @@ async function defaultReadLineage(plan: AcceptanceBarSubjectPlanSource): Promise
 }
 
 async function defaultReadScorecards(rubric: Rubric): Promise<BoundedAcceptanceBarRows<ScorecardRow>> {
-  const page = await listScorecardPage({
-    rubricRef: rubric.rubricId,
-    includeSuperseded: true,
-    includeRetracted: true,
-    limit: ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT,
-  });
-  return {
-    rows: page.rows,
-    limit: ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT,
-    truncated: page.hasMore,
-  };
+  const rows: ScorecardRow[] = [];
+  let before: import('./scorecards').ScorecardListCursor | undefined;
+  const visited = new Set<string>();
+  for (;;) {
+    const page = await listScorecardPage({
+      rubricRef: rubric.rubricId,
+      includeSuperseded: true,
+      includeRetracted: true,
+      limit: ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT,
+      ...(before ? { before } : {}),
+    });
+    rows.push(...page.rows);
+    if (!page.hasMore) return { rows, limit: ACCEPTANCE_BAR_SNAPSHOT_SCORECARD_LIMIT, truncated: false };
+    // An omitted page is never exhaustion. A broken continuation makes the
+    // existing read-failure path refuse instead of certifying a prefix.
+    const cursor = page.nextCursor;
+    const key = JSON.stringify(cursor);
+    if (!cursor || !page.rows.length || visited.has(key)) {
+      throw new Error('Scorecard history continuation missing or repeated; restart the snapshot read.');
+    }
+    visited.add(key);
+    before = cursor;
+  }
 }
 
 async function defaultReadVettingScorecards(rubric: Rubric): Promise<BoundedAcceptanceBarRows<ScorecardRow>> {

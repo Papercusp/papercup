@@ -25,6 +25,12 @@ const row = (issueId: string, createdAt: string): ScorecardRow => ({
 });
 
 describe('scorecard history list query', () => {
+  it('preserves submillisecond and timezone precision when restoring a saved cursor', () => {
+    for (const createdAt of ['2026-11-01T00:00:00.100001Z', '2026-11-01T02:00:00.100002+02:00']) {
+      const cursor = { createdAt, issueId: 'EI-precision' };
+      expect(decodeScorecardHistoryCursor(JSON.stringify(cursor))).toEqual(cursor);
+    }
+  });
   it('bounds enriched pages by whole rows and resumes without losing any criterion evidence', async () => {
     const cards = Array.from({ length: 5 }, (_, index) => ({ ...row(`EI-${index}`, '2026-11-01T00:00:00Z'),
       ratings: { a: { rating: 'healthy', evidence: '測'.repeat(20_000) }, b: { rating: 'unknown', evidence: 'Retained second key.' } } }));

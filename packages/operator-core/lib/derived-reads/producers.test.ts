@@ -759,13 +759,14 @@ describe('derived-reads producers: syncReads.audit (EI-19457924854150358)', () =
       'plans.lint', 'learning.soakReport', 'learning.dreamDecisionJournal', 'syncReads.audit',
     ]);
 
-    // plans.lint, learning.soakReport and learning.dreamDecisionJournal are
-    // demand-driven. syncReads.audit remains dedicated-routine owned, so an
-    // ordinary read can never launch its minutes-scale audit.
+    // The excluded producers below are demand-driven. PR git facts also refresh
+    // expired evidence on demand while remaining in the ordinary sweep.
+    // syncReads.audit stays dedicated-routine owned.
     expect(all.filter((p) => p.refreshOnRead).map((p) => p.key)).toEqual([
       'plans.lint',
       'learning.soakReport',
       'learning.dreamDecisionJournal',
+      'harnessPrs.gitFacts',
     ]);
   });
 });

@@ -60,7 +60,7 @@ export function decodeScorecardHistoryCursor(raw: string | null | undefined): Sc
       Number.isFinite(Date.parse(parsed.createdAt)) &&
       typeof parsed.issueId === 'string' &&
       parsed.issueId.length > 0
-      ? { createdAt: new Date(parsed.createdAt).toISOString(), issueId: parsed.issueId }
+      ? { createdAt: parsed.createdAt, issueId: parsed.issueId }
       : null;
   } catch {
     return null;

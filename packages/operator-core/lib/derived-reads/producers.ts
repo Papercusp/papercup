@@ -861,12 +861,14 @@ registerDerivedRead({
 //
 // Two millisecond-scale git calls per harness, so this stays in the default sweep.
 // The promoted sha only feeds the detail view's merge-test status; the merge action
-// re-checks live. A pane may therefore lag a promotion by up to one tick.
+// re-checks live. A stale read also requests a deduplicated background refresh,
+// so a stalled sweep cannot leave the PR pane judging an obsolete promoted ref.
 registerDerivedRead({
   key: HARNESS_PR_GIT_FACTS_KEY,
   ttlMs: 60_000,
   producerVersion: 1,
   scope: 'harness',
+  refreshOnRead: true,
   // Both PR panes read this snapshot (WI-6554700010030747); push them on a real change.
   alsoInvalidates: ['harnessPrs.byHarness', 'harnessPrs.detail'],
   compute: async (ctx) => {
