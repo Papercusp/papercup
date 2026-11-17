@@ -14,6 +14,7 @@
  *  - Unknown tool (404 with unknown_tool code)
  */
 import { test, expect } from './_egress';
+import { readSuperuserToken } from '@papercusp/operator-core/lib/superuser-token';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -73,12 +74,24 @@ test.describe('agent-tools catch-all routing', () => {
 
   test('config:list-overrides preserves availability and scoped recovery through HTTP', async ({ request }) => {
     const concern = 'rate-limit-config';
+    // Exercise the installed operator as its verified caller. The native rig
+    // provisions this token under its private PAPERCUSP_HOME and exports the
+    // disposable data workspace separately from the shared result ledger.
+    const token = readSuperuserToken();
+    const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE;
+    if (!token) throw new Error('Config HTTP acceptance requires the current operator superuser token');
+    if (!workspaceId) throw new Error('Config HTTP acceptance requires the operator data workspace');
+    const endpoint = new URL('/api/agent-tools/config/list-overrides', baseURL);
+    endpoint.searchParams.set('superuser', '1');
+    endpoint.searchParams.set('workspace', workspaceId);
     const read = async (args: { concern: string }) => {
-      const response = await request.post(`${baseURL}/api/agent-tools/config/list-overrides`, {
+      const response = await request.post(endpoint.href, {
         data: args,
+        headers: { Authorization: `Bearer ${token}` },
       });
-      expect(response.status()).toBe(200);
-      const envelope = await response.json();
+      const responseText = await response.text();
+      expect(response.status(), responseText).toBe(200);
+      const envelope = JSON.parse(responseText);
       return JSON.parse(envelope.content[0].text);
     };
     const inventory = await read({ concern });

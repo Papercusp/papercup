@@ -30628,7 +30628,7 @@
           "POST"
         ]
       },
-      "description": "Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining).",
+      "description": "Patch a rubric criterion/requirement, full criterion set, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Full standard criterion replacements require fresh ratification; rating changes use rubrics:propose. Started BAR meaning changes require outside-lineage approval (see chaining).",
       "capabilities": [
         "coord:write"
       ],
