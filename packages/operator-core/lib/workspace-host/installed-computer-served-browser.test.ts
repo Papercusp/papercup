@@ -112,6 +112,70 @@ describe('served Portal prerequisite and document readiness', () => {
     } finally { await browser.close(); }
   });
 
+  it.each([0, 50])('opens the launcher through the fresh account guide after %ims hydration', async delay => {
+    const mutations: unknown[] = [];
+    const origin = await start((request, response) => {
+      if (request.url === '/api/hosted/browser/onboarding/tutorial-progress') {
+        expect(request.method).toBe('POST');
+        let body = '';
+        request.on('data', chunk => { body += chunk; });
+        request.on('end', () => {
+          mutations.push(JSON.parse(body));
+          response.setHeader('content-type', 'application/json');
+          response.end(JSON.stringify({ record: { disposition: 'skipped' } }));
+        });
+        return;
+      }
+      response.setHeader('content-type', 'text/html');
+      response.end(`<html><body>Loading<script>
+        setTimeout(() => {
+          document.body.innerHTML = '<main>Product guide<button>Skip guide</button></main>';
+          document.querySelector('button').onclick = async () => {
+            const response = await fetch('/api/hosted/browser/onboarding/tutorial-progress', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ disposition: 'skipped' }) });
+            const body = await response.json();
+            if (response.ok && body.record.disposition === 'skipped')
+              document.body.innerHTML = '<button>Connect your computer</button>';
+          };
+        }, ${delay});
+      </script></body></html>`);
+    });
+    const browser = await chromium.launch({ channel: 'chrome', headless: true });
+    try {
+      const page = await browser.newPage();
+      await expect(waitForInstalledPortalSetup(page, origin, 2000))
+        .resolves.toMatchObject({ status: 200, guideDisposition: 'skipped' });
+      expect(mutations).toEqual([{ disposition: 'skipped' }]);
+      await expect(page.getByRole('button', { name: 'Connect your computer', exact: true }).isVisible())
+        .resolves.toBe(true);
+    } finally { await browser.close(); }
+  });
+
+  it.each([{ status: 403, disposition: 'skipped' }, { status: 200, disposition: 'active' }])(
+    'refuses a guide save without acknowledgement ($status/$disposition) even if the launcher appears',
+    async ({ status, disposition }) => {
+      const origin = await start((request, response) => {
+        if (request.url === '/api/hosted/browser/onboarding/tutorial-progress') {
+          response.writeHead(status, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ record: { disposition } }));
+          return;
+        }
+        response.setHeader('content-type', 'text/html');
+        response.end(`<html><body>Product guide<button>Skip guide</button><script>
+          document.querySelector('button').onclick = async () => {
+            await fetch('/api/hosted/browser/onboarding/tutorial-progress', { method: 'POST' });
+            document.body.innerHTML = '<button>Connect your computer</button>';
+          };
+        </script></body></html>`);
+      });
+      const browser = await chromium.launch({ channel: 'chrome', headless: true });
+      try {
+        await expect(waitForInstalledPortalSetup(await browser.newPage(), origin, 1000))
+          .rejects.toThrow(status === 403 ? 'Guide skip HTTP 403' : 'Guide skip was not acknowledged');
+      } finally { await browser.close(); }
+    });
+
   it('retains browser errors and rendered state when HTTP 200 never hydrates the launcher', async () => {
     const origin = await start((request, response) => {
       if (request.url === '/missing-bootstrap.js') { response.writeHead(404); response.end('missing'); return; }

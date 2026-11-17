@@ -304,9 +304,27 @@ export async function waitForInstalledPortalSetup(page: Page, url: string, timeo
   try {
     const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
     assert.equal(response?.status(), 200, 'Authenticated Portal entry must return HTTP 200');
-    await page.getByRole('button', { name: 'Connect your computer', exact: true }).first()
-      .waitFor({ state: 'visible', timeout: timeoutMs });
-    return { status: response!.status(), title: await page.title() };
+    const launcher = page.getByRole('button', { name: 'Connect your computer', exact: true }).first();
+    const skipGuide = page.getByRole('button', { name: 'Skip guide', exact: true });
+    await launcher.or(skipGuide).first().waitFor({ state: 'visible', timeout: timeoutMs });
+    let guideDisposition: 'skipped' | 'not-shown' = 'not-shown';
+    if (await skipGuide.isVisible()) {
+      // Fresh hosted accounts enter the account-first guide. Follow the same
+      // public control and acknowledged save as the maintained Portal journey.
+      const [saved] = await Promise.all([
+        page.waitForResponse(reply => reply.request().method() === 'POST'
+          && new URL(reply.url()).origin === new URL(url).origin
+          && new URL(reply.url()).pathname === '/api/hosted/browser/onboarding/tutorial-progress',
+        { timeout: timeoutMs }),
+        skipGuide.click({ timeout: timeoutMs }),
+      ]);
+      assert(saved.ok(), `Guide skip HTTP ${saved.status()}`);
+      const body = await saved.json();
+      assert.equal(body?.record?.disposition, 'skipped', 'Guide skip was not acknowledged');
+      guideDisposition = 'skipped';
+    }
+    await launcher.waitFor({ state: 'visible', timeout: timeoutMs });
+    return { status: response!.status(), title: await page.title(), guideDisposition };
   } catch (cause) {
     const rendered = await page.locator('body').innerText({ timeout: 1000 }).catch(() => 'body unavailable');
     const buttons = await page.getByRole('button').allTextContents().catch(() => []);
