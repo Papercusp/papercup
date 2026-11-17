@@ -17,9 +17,10 @@ import {
   type RecipeAuthorityRefs,
   type RecipeUnresolvedCause,
 } from './recipe-authority-derive';
-import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, NON_TERMINAL_INPUT_STATES } from './work-item-dispatch-states';
 import { resolveStoredSourceOperation } from './recipe-source-operation';
 import type { CurrentCallerCapabilityCatalog } from './recipe-contract';
+import { ACTIVATION_QUALITY_PUBLICATION_SCRIPT } from './agent-tools/recipes/activation-quality-publication';
 
 // P-007: the pure static derivation lives in `recipe-authority-derive.ts` so the
 // Cupboard Worker can run the SAME analysis at publish time (this module pulls
@@ -141,7 +142,8 @@ export interface RecipeAuthorityMetadata {
    * count computed over a capped fetch: state the boundedness ON the value, so
    * a floor is never read as a total.
    *
-   * NOT redundant with `runnable`, which is co-extensive with it TODAY.
+   * Independent of current custody: `runnable` can also be false after a
+   * complete derivation when the caller no longer holds the required scope.
    * `runnable` is a verdict about EXECUTION ("do not run this"); `refsMeasured`
    * scopes to the `refs`/`requiresContext` fields ("what you are reading
    * under-reports"). A consumer that uses `refs` for anything other than
@@ -178,13 +180,14 @@ export interface RecipeAuthorityMetadata {
 export function toRecipeAuthorityMetadata(
   descriptor: RecipeAuthorityDescriptor,
   revision: string,
+  liveAuthorityAllowed = true,
 ): RecipeAuthorityMetadata {
   return {
     version: 1,
     revision,
     refs: descriptor.refs,
     requiresContext: descriptor.bound,
-    runnable: !descriptor.unresolved,
+    runnable: !descriptor.unresolved && liveAuthorityAllowed,
     refsMeasured: !descriptor.unresolved,
     unresolvedCause: descriptor.unresolvedCause ?? null,
   };
@@ -315,6 +318,73 @@ export function recipeAuthorityMatchesLiveRefs(
     hasAll(descriptor.refs.items, liveRefs.items ?? []) &&
     hasAll(descriptor.refs.resources, liveRefs.resources ?? [])
   );
+}
+
+/** Readiness publication precedes plan-item claims. Its maintained script may
+ * use exact, current bootstrap custody instead; this never adds implementation
+ * authority to liveRefs or trusts a caller-carried runnable flag. */
+export async function recipeAuthorityMatchesCurrentRefs(input: {
+  sql: postgres.Sql;
+  workspaceId: string;
+  ownerId: string;
+  script: string;
+  descriptor: RecipeAuthorityDescriptor;
+  liveRefs: Partial<RecipeAuthorityRefs>;
+}): Promise<boolean> {
+  const { sql, workspaceId, ownerId, script, descriptor, liveRefs } = input;
+  if (recipeAuthorityMatchesLiveRefs(descriptor, liveRefs)) return true;
+  const { refs } = descriptor;
+  if (descriptor.unresolved || script !== ACTIVATION_QUALITY_PUBLICATION_SCRIPT ||
+      refs.plans.length !== 1 || refs.harnesses.length !== 1 ||
+      refs.items.length !== 0 || refs.resources.length !== 0 || !workspaceId || !ownerId) return false;
+  const [plan] = refs.plans;
+  const [harness] = refs.harnesses;
+  // One snapshot, no row/depth cap. A cycle invalidates its entire custody
+  // lineage instead of accepting a witness encountered before the cycle.
+  const rows = await sql<Array<{ allowed: boolean }>>`
+    WITH RECURSIVE custody AS (
+      SELECT wi.feature_id AS root_id, wi.feature_id, wi.parent_id,
+        wi.source_plan_slug, wi.plan_slug, wi.plan_line_id, wi.payload,
+        ARRAY[wi.feature_id]::text[] AS ancestry, false AS cyclic
+        FROM harness_shared.work_items wi
+       WHERE wi.workspace_id=${workspaceId} AND wi.harness_slug=${harness}
+         AND wi.taken_by=${ownerId}
+         AND wi.status=ANY(${[...NON_TERMINAL_INPUT_STATES]}::text[])
+      UNION ALL
+      SELECT c.root_id, wi.feature_id, wi.parent_id,
+        wi.source_plan_slug, wi.plan_slug, wi.plan_line_id, wi.payload,
+        c.ancestry || wi.feature_id, wi.feature_id=ANY(c.ancestry)
+        FROM custody c JOIN harness_shared.work_items wi ON wi.feature_id=c.parent_id
+         AND wi.workspace_id=${workspaceId} AND wi.harness_slug=${harness}
+       WHERE NOT c.cyclic
+         AND wi.status=ANY(${[...NON_TERMINAL_INPUT_STATES]}::text[])
+    )
+    SELECT EXISTS (
+      SELECT 1 FROM custody c JOIN harness_shared.harness_plans p
+        ON p.workspace_id=${workspaceId} AND p.harness_slug=${harness} AND p.plan_slug=${plan}
+       WHERE p.status IN ('draft','ready','active','paused')
+         AND (p.execution_start_revision_seq IS NULL OR p.execution_start_invalidation IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM custody cycle WHERE cycle.root_id=c.root_id AND cycle.cyclic)
+         AND (
+           (c.plan_slug IS NULL AND c.plan_line_id IS NULL AND (
+             c.source_plan_slug=p.plan_slug OR
+             c.payload #>> '{workDefinition,verificationTarget,target}'=p.plan_slug
+           )) OR (
+             c.plan_slug=p.plan_slug AND c.plan_line_id IS NOT NULL
+             AND EXISTS (SELECT 1 FROM harness_shared.plan_items i
+               WHERE i.workspace_id=p.workspace_id AND i.harness_slug=p.harness_slug
+                 AND i.plan_slug=p.plan_slug AND i.item_id=c.plan_line_id)
+             AND (SELECT count(*) FROM harness_shared.work_items other
+               WHERE other.workspace_id=p.workspace_id AND other.harness_slug=p.harness_slug
+                 AND other.plan_slug=p.plan_slug AND other.plan_line_id=c.plan_line_id)=1
+             AND (SELECT count(*) FROM harness_shared.work_items other
+               WHERE other.workspace_id=p.workspace_id AND other.harness_slug=p.harness_slug
+                 AND other.plan_slug=p.plan_slug AND other.plan_line_id IS NOT NULL
+                 AND other.feature_id=c.feature_id)=1
+           )
+         )
+    ) AS allowed`;
+  return rows.length === 1 && rows[0].allowed === true;
 }
 
 export interface RecipeRevisionContract {

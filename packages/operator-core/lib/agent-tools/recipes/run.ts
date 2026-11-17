@@ -44,7 +44,7 @@ import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import {
   resolveLiveBoundRefs,
   recipeAuthorityContextFromRefs,
-  recipeAuthorityMatchesLiveRefs,
+  recipeAuthorityMatchesCurrentRefs,
   recipeRevisionDiagnostics,
   validateRecipeAuthorityProof,
   type RecipeAuthorityMetadata,
@@ -434,15 +434,15 @@ export default defineTool({
           authority.descriptor.refs.resources.length > 0;
         if (needsLiveRefs) {
           const pendingRefs = liveBoundRefs();
-          if (!pendingRefs) return refused({ ok: false, id: it.id, error: 'authority_live_context_unavailable' });
-          let refs: RecipeAuthorityRefs;
+          if (!pendingRefs || !ownerId) return refused({ ok: false, id: it.id, error: 'authority_live_context_unavailable' });
           try {
-            refs = await pendingRefs;
+            const refs = await pendingRefs;
+            if (!await recipeAuthorityMatchesCurrentRefs({ sql, workspaceId, ownerId,
+              script: recipe.script, descriptor: authority.descriptor, liveRefs: refs })) {
+              return refused({ ok: false, id: it.id, error: 'authority_entity_mismatch' });
+            }
           } catch {
             return refused({ ok: false, id: it.id, error: 'authority_live_context_unavailable' });
-          }
-          if (!recipeAuthorityMatchesLiveRefs(authority.descriptor, refs)) {
-            return refused({ ok: false, id: it.id, error: 'authority_entity_mismatch' });
           }
         }
         const dryRun = it.dryRun ?? false;

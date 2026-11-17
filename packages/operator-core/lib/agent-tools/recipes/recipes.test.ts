@@ -25,6 +25,8 @@ import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispa
 import type { SqlCandidateWorklist } from '../../sql-tool-candidate-worklist';
 import { compileSourceOperation, describeRecipeSourceOperation } from '../../recipe-source-operation';
 import { deriveLegacyForegroundManifest } from '../../recipe-contract';
+import { ACTIVATION_QUALITY_RECIPE_ID, ACTIVATION_QUALITY_BINDINGS,
+  ACTIVATION_QUALITY_CAPABILITIES, ACTIVATION_QUALITY_PUBLICATION_SCRIPT } from './activation-quality-publication';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
@@ -174,6 +176,9 @@ import '../work_items/get';
 // Output-schema preflight regression uses the live optional `gate` field contract.
 import '../release/trace';
 import '../storage/usage';
+import '../plans/evaluate-spec-quality';
+import '../scorecards/emit';
+import '../scorecards/get';
 // Private operation adapters retain the real current-catalog checks.
 import '../dev/pg_query';
 import '../capability/bash';
@@ -1144,6 +1149,71 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(JSON.parse((rejected as { content: { text: string }[] }).content[0].text).results[0])
       .toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
     expect(runOrchestrationMock).toHaveBeenCalledOnce();
+  });
+
+  function mockStartupPublication() {
+    getRecipeMock.mockResolvedValue({ id: ACTIVATION_QUALITY_RECIPE_ID,
+      title: 'Exact readiness publication', description: 'd', script: ACTIVATION_QUALITY_PUBLICATION_SCRIPT,
+      updatedAt: '2026-11-17T00:00:00Z', bindingSchema: ACTIVATION_QUALITY_BINDINGS,
+      capabilityManifest: ACTIVATION_QUALITY_CAPABILITIES, authorRole: 'operator',
+      toolsUsed: ['plans:evaluate-spec-quality', 'scorecards:emit', 'scorecards:get'],
+      runCount: 0, successCount: 0, status: 'active', tags: [] });
+    let held = true;
+    orgSqlMock.mockImplementation(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      const query = parts.join(' ');
+      if (query.includes('WITH RECURSIVE custody')) {
+        return [{ allowed: held && values.includes('draft-plan') && !values.includes('foreign-plan') }];
+      }
+      return [];
+    });
+    return { release: () => { held = false; } };
+  }
+  const publicationBindings = { values: { harness: 'alpha', plan: 'draft-plan', expectedSpecSetHash: 'a'.repeat(64) } };
+  const publicationResult = (r: unknown) => JSON.parse((r as { content: { text: string }[] }).content[0].text).results[0];
+
+  it('runs the maintained pre-start publication without implementation claims and remeasures getter/run custody', async () => {
+    const custody = mockStartupPublication();
+    const fetched = publicationResult(await findTool('recipes:get').fn(
+      { id: ACTIVATION_QUALITY_RECIPE_ID, bindings: publicationBindings }, mkCtx('operator')));
+    expect(fetched.recipe.authority).toMatchObject({ runnable: true, refsMeasured: true,
+      refs: { plans: ['draft-plan'], harnesses: ['alpha'] } });
+    const run = () => findTool('recipes:run').fn({ id: ACTIVATION_QUALITY_RECIPE_ID,
+      authority: fetched.recipe.authority, bindings: publicationBindings, dryRun: true }, mkCtx('operator'));
+    expect(publicationResult(await run())).toMatchObject({ ok: true });
+    expect(runOrchestrationMock).toHaveBeenCalledOnce();
+    custody.release();
+    expect(publicationResult(await run())).toMatchObject({ ok: false, error: 'authority_entity_mismatch', executed: false });
+    const released = publicationResult(await findTool('recipes:get').fn(
+      { id: ACTIVATION_QUALITY_RECIPE_ID, bindings: publicationBindings }, mkCtx('operator')));
+    expect(released.recipe.authority).toMatchObject({ runnable: false, refsMeasured: true });
+    expect(released.recipe.authorityLiveError).toBe('authority_entity_mismatch');
+    expect(runOrchestrationMock).toHaveBeenCalledOnce();
+  });
+  it('does not authorize a foreign plan or a stale recipe revision through startup custody', async () => {
+    mockStartupPublication();
+    const bindings = { values: { ...publicationBindings.values, plan: 'foreign-plan' } };
+    const fetched = publicationResult(await findTool('recipes:get').fn(
+      { id: ACTIVATION_QUALITY_RECIPE_ID, bindings }, mkCtx('operator')));
+    expect(fetched.recipe.authority.runnable).toBe(false);
+    expect(publicationResult(await findTool('recipes:run').fn({ id: ACTIVATION_QUALITY_RECIPE_ID,
+      bindings, authority: fetched.recipe.authority, dryRun: true }, mkCtx('operator'))))
+      .toMatchObject({ ok: false, error: 'authority_entity_mismatch', executed: false });
+    expect(publicationResult(await findTool('recipes:run').fn({ id: ACTIVATION_QUALITY_RECIPE_ID,
+      bindings, authority: { ...fetched.recipe.authority, revision: '0'.repeat(64) }, dryRun: true }, mkCtx('operator'))))
+      .toMatchObject({ ok: false, error: 'authority_stale_revision', executed: false });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
+  });
+  it('marks live-authority lookup failure unavailable instead of advertising runnable metadata', async () => {
+    mockStartupPublication();
+    orgSqlMock.mockRejectedValue(new Error('custody unavailable'));
+    const fetched = publicationResult(await findTool('recipes:get').fn(
+      { id: ACTIVATION_QUALITY_RECIPE_ID, bindings: publicationBindings }, mkCtx('operator')));
+    expect(fetched.recipe.authority).toMatchObject({ runnable: false, refsMeasured: true });
+    expect(fetched.recipe.authorityLiveError).toBe('authority_live_context_unavailable');
+    expect(publicationResult(await findTool('recipes:run').fn({ id: ACTIVATION_QUALITY_RECIPE_ID,
+      bindings: publicationBindings, authority: fetched.recipe.authority, dryRun: true }, mkCtx('operator'))))
+      .toMatchObject({ ok: false, error: 'authority_live_context_unavailable', executed: false });
+    expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 
   const mockBoundGetterRecipe = () => {

@@ -20,9 +20,13 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { deriveStoredRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata } from '../../recipe-authority';
+import { deriveStoredRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata,
+  resolveLiveBoundRefs, recipeAuthorityMatchesCurrentRefs, type RecipeAuthorityRefs } from '../../recipe-authority';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { validateRecipeBindings } from '../../recipe-contract';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { getTxPool } from '../locks/su-lock-store';
+import { readIdentity } from '../locks/identity';
 
 export default defineTool({
   name: 'recipes:get',
@@ -72,6 +76,10 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const sql = getOrgPg().sql;
+    const workspaceId = ctx.workspaceId ?? activeWorkspaceId();
+    let identity: ReturnType<typeof readIdentity> | null = null;
+    try { identity = readIdentity(ctx); } catch { /* Bound metadata fails closed below. */ }
+    let liveRefs: Promise<RecipeAuthorityRefs> | undefined;
     const catalog = orchestrationCallerSurface(ctx).catalog;
     const ids = mergeIds(args.id, args.ids);
     const env = await runBulk(
@@ -89,8 +97,26 @@ export default defineTool({
         }
         const authority = await deriveStoredRecipeAuthority({ ...recipe,
           ...(bindings?.ok ? { validatedInputs: bindings.value.inputs } : {}),
-          context: { workspace: ctx.workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog } });
+          context: { workspace: workspaceId, harness: resolveConcreteHarnessSlug(undefined, ctx), catalog } });
         if (!authority) return { ok: false as const, id, error: 'not_found' };
+        let liveAuthorityAllowed = true;
+        let authorityLiveError: string | undefined;
+        if (!authority.unresolved && (authority.refs.plans.length || authority.refs.items.length || authority.refs.resources.length)) {
+          if (!identity) {
+            liveAuthorityAllowed = false;
+            authorityLiveError = 'authority_live_context_unavailable';
+          } else {
+            try {
+              liveRefs ??= resolveLiveBoundRefs(sql, getTxPool(), identity.ownerId, identity.coordinationDomain);
+              liveAuthorityAllowed = await recipeAuthorityMatchesCurrentRefs({ sql, workspaceId,
+                ownerId: identity.ownerId, script: recipe.script, descriptor: authority, liveRefs: await liveRefs });
+              if (!liveAuthorityAllowed) authorityLiveError = 'authority_entity_mismatch';
+            } catch {
+              liveAuthorityAllowed = false;
+              authorityLiveError = 'authority_live_context_unavailable';
+            }
+          }
+        }
         const updatedAt = recipe.updatedAt ?? recipe.createdAt ?? '';
         const authorityDiagnostics = recipeRevisionDiagnostics({
           script: recipe.script,
@@ -122,7 +148,9 @@ export default defineTool({
             authority: toRecipeAuthorityMetadata(
               authority,
               authorityDiagnostics.computedRevision,
+              liveAuthorityAllowed,
             ),
+            ...(authorityLiveError ? { authorityLiveError } : {}),
             authorityDiagnostics,
           },
         };
