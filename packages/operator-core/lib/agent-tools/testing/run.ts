@@ -368,7 +368,7 @@ export function resolveVitestJsonReporterPath(testRoot: string): string {
     const fromChild = createRequire(join(testRoot, 'package.json'));
     const { version } = JSON.parse(readFileSync(fromChild.resolve('vitest/package.json'), 'utf8'));
     if (typeof version === 'string' && /^[123]\./.test(version))
-      return fileURLToPath(new URL('./legacy-vitest-json-reporter.ts', import.meta.url));
+      return join(REPO_ROOT, 'packages/operator-core/lib/agent-tools/testing/legacy-vitest-json-reporter.ts');
   } catch { /* Unknown versions retain the existing JSON-only fallback. */ }
   return 'json';
 }

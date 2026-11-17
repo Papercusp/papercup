@@ -1510,7 +1510,12 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         for (let index = 0; index < count; index++) expect(observeFallback('gec-serializer-control', {
           eligible: 1, applied: 0, reason: `original-λ-${label}-${count}-${index}`, scope: h,
         }, { ...options, workspaceId: workspace })).toBe(true);
-        expect(await flushFallbackObservations(options)).toMatchObject({ written: count, failed: 0, dropped: 0 });
+        const flush = await flushFallbackObservations(options);
+        expect(flush).toMatchObject({ failed: 0, dropped: 0, rejected: 0 });
+        // The full batch starts its own flush at observe time. This explicit
+        // drain waits for it, but reports only writes it starts itself. The
+        // sealed SQL census below proves every batch's actual persisted bytes.
+        if (count < FALLBACK_FLUSH_BATCH) expect(flush.written).toBe(count);
       }
     };
     for (const { pool, client, sql } of [
