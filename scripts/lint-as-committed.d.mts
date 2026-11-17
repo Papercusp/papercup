@@ -112,6 +112,8 @@ export function retainCommittedWorkRoot(workRoot: any, expectedSha: any, artifac
     sha: any;
     artifact: string;
 }>;
+/** Releasing a copied donor is optional; a deferred release keeps its finite lease. */
+export function releaseCommittedDependencyDonor(pin: any, pinOptions?: {}): Promise<any>;
 /** Dispose a command's own extracted tree unless a consumer retained it. */
 export function cleanupCommittedWorkRoot(workRoot: any, keep?: boolean, pinOptions?: {}): Promise<any>;
 /**

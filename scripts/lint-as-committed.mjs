@@ -728,6 +728,14 @@ async function withOptionalRetentionPinProtection(work, deferred, options = {}) 
   }
 }
 
+/** Releasing a copied donor is optional; a deferred release keeps its finite lease. */
+export async function releaseCommittedDependencyDonor(pin, pinOptions = {}) {
+  return withOptionalRetentionPinProtection(() => {
+    removeRetentionPin(pin.id, pin.owner, pinOptions);
+    return { released: true, deferred: false };
+  }, { released: false, deferred: true, pinId: pin.id, expiresAt: pin.expiresAt }, pinOptions);
+}
+
 /** Dispose a command's own extracted tree unless a consumer retained it. */
 export async function cleanupCommittedWorkRoot(workRoot, keep = false, pinOptions = {}) {
   if (keep) return false;
@@ -1823,11 +1831,13 @@ async function main() {
   let dependencyDonorPin;
   const releaseDependencyDonor = async () => {
     if (!dependencyDonorPin) return;
-    await withFsMutex('papercusp-disk-retention', () => {
-      if (!dependencyDonorPin) return;
-      removeRetentionPin(dependencyDonorPin.id, dependencyDonorPin.owner);
-      dependencyDonorPin = null;
-    });
+    const disposition = await releaseCommittedDependencyDonor(dependencyDonorPin);
+    if (disposition.deferred) {
+      console.warn('lint-as-committed: donor pin retained until finite expiry', disposition);
+    }
+    // Do not retry optional disposal on exit. The retained lease stays on disk
+    // and protects the donor until expiry; private dependencies are independent.
+    dependencyDonorPin = null;
   };
   let results = [];
   // Exit and sweep share the dependent-artifact rule: retention may be added by
