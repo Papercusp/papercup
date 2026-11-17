@@ -20,7 +20,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const M = vi.hoisted(() => ({
   readInbox: vi.fn(async () => [] as unknown[]),
+  getMessagesByIds: vi.fn(async (_ids: string[]) => new Map()),
   renderInjection: vi.fn((_entries: unknown[], _options?: unknown) => ''),
+  collectNotices: false,
+  proofs: {} as Record<string, { fingerprint: string; emittedAt: number }>,
+  sql: vi.fn(async () => []),
 }));
 
 vi.mock("../identity", async (importOriginal) => ({
@@ -37,7 +41,18 @@ vi.mock("../actor-identity", () => ({
 }));
 vi.mock("../messages", () => ({
   readInbox: M.readInbox,
+  getMessagesByIds: M.getMessagesByIds,
   drainAndDeliverUserMailbox: vi.fn(async () => {}),
+}));
+vi.mock('@papercusp/db-org', async original => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: M.sql }),
+}));
+vi.mock('../../../memory/session-epoch-ledger', async original => ({
+  ...await original<typeof import('../../../memory/session-epoch-ledger')>(),
+  collectsMemoryEmission: () => M.collectNotices,
+  currentSessionEpoch: async () => 0,
+  provenSystemNoticeEmissions: async () => M.proofs,
 }));
 vi.mock("../presence", () => ({
   heartbeatPresence: vi.fn(async () => {}),
@@ -74,6 +89,7 @@ import tool, {
   inboxPriorityBucket,
   prioritizedInboxWindow,
 } from "./inbox";
+import { systemNoticeIdentity } from '../inbox-visibility';
 
 type InboxContextOverrides = {
   contextTier?: "trimmed" | "standard" | "full";
@@ -129,10 +145,12 @@ const direct = (m: number, summary: string) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   M.readInbox.mockImplementation(async () => []);
+  M.collectNotices = false;
+  M.proofs = {};
 });
 
 describe('native notice delivery versus public inbox VIEW', () => {
-  it('passes committed notice state to injection filtering while the public VIEW stays repeatable', async () => {
+  it('keeps selected notices replayable until an emission is proven', async () => {
     const row = broadcast(1, 'Compaction over-limit: other', {
       auto: true, category: 'severe-event', condition_key: 'compaction:other',
     });
@@ -141,6 +159,20 @@ describe('native notice delivery versus public inbox VIEW', () => {
     expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([row]);
     expect(first.__systemNoticeState).toBeDefined();
     const repeated = await callInbox({ __systemNoticeState: first.__systemNoticeState });
+    expect(M.getMessagesByIds).toHaveBeenCalledWith([row.msg_id]);
+    expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([row]);
+    expect(repeated.system_notices_suppressed).toBe(0);
+  });
+
+  it('suppresses a proven native emission while the public VIEW stays repeatable', async () => {
+    const row = broadcast(1, 'Compaction over-limit: other', {
+      auto: true, category: 'severe-event', condition_key: 'compaction:other',
+    });
+    const identity = systemNoticeIdentity(row)!;
+    M.collectNotices = true;
+    M.proofs = { [identity.key]: { fingerprint: identity.fingerprint, emittedAt: Date.now() } };
+    M.readInbox.mockResolvedValue([row]);
+    const repeated = await callInbox({ __systemNoticeState: {} });
     expect(M.renderInjection.mock.calls.at(-1)?.[0]).toEqual([]);
     expect(repeated.system_notices_suppressed).toBe(1);
     const view = await callInbox();
