@@ -9,7 +9,8 @@ vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(),
   getOrgPg: vi.fn(),
 }));
-vi.mock('../adv-sessions', () => ({
+vi.mock('../adv-sessions', async (original) => ({
+  ...await original<typeof import('../adv-sessions')>(),
   endedRecordedOwnerIds: state.ended,
   recordedLiveOwnerIds: state.live,
 }));
