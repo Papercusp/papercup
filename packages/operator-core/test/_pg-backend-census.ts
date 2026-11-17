@@ -17,12 +17,15 @@ import { getOrgPg } from '@papercusp/db-org';
 export interface PgBackendRow {
   client_port: number | null;
   application_name: string | null;
+  datname: string | null;
   state: string | null;
 }
 
 export async function readPgBackendCensus(): Promise<PgBackendRow[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<PgBackendRow[]>`SELECT client_port, application_name, state
-    FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`;
+  // Locks owns pools on papercusp_su in this same disposable cluster. A
+  // current_database() filter hides their labels from the socket correlation.
+  const rows = await sql<PgBackendRow[]>`SELECT client_port, application_name, datname, state
+    FROM pg_stat_activity WHERE client_port IS NOT NULL`;
   return [...rows];
 }

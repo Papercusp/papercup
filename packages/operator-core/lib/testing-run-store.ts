@@ -25,7 +25,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
-import { closeSync, constants, openSync } from 'node:fs';
+import { closeSync, constants, openSync, readFileSync } from 'node:fs';
 import { open, readFile, readdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, isAbsolute, relative as pathRelative, resolve as pathResolve, posix, sep } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -51,9 +51,11 @@ import type { TestRunSource } from './testing-run-source';
 import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
+  appendTestRunReceipts, testRunReceiptBaseFor,
   insertTestCaseRowsWithSql, TEST_CASE_KEY_MAX_CHARS, TEST_CASE_ERROR_TAIL_MAX_CHARS,
   type PgSql, type TestCaseRecord,
 } from '@papercusp/test-config/admin-test-runs-reporter';
+import { readMutationInvocationDescriptor, mutationDescriptorForRow } from '@papercusp/test-config/mutation-descriptor';
 import {
   beginSyncEnrolment,
   completeSyncEnrolment,
@@ -3401,7 +3403,7 @@ export interface HarnessTestFileRow {
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
   execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'
-    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational' | 'testLayer'>;
+    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational' | 'testLayer' | 'mutation'>;
   /** Complete normalized assertions, available only with the child's redaction environment. */
   cases?: readonly TestCaseRecord[] | null;
 }
@@ -3556,6 +3558,9 @@ export function parseVitestJsonForHarnessRows(
     harnessSlug: environment.PAPERCUSP_TEST_RUN_HARNESS,
   });
   const rows: HarnessTestFileRow[] = [];
+  const mutationInvocation = readMutationInvocationDescriptor(environment);
+  const mutationPhase = environment.PAPERCUSP_MUTATION_PROBE === '1'
+    ? environment.PAPERCUSP_MUTATION_PHASE?.trim() || null : null;
   for (const f of files) {
     if (!f || typeof f.name !== 'string' || f.name.length === 0) continue;
     const filePath = relToRootPosix(f.name, rootAbs);
@@ -3584,6 +3589,16 @@ export function parseVitestJsonForHarnessRows(
     }
     const testLayer = layers.get(filePath);
     if (execution && testLayer) execution.testLayer = testLayer;
+    if (execution && mutationInvocation && mutationPhase) {
+      let testFileSha256: string | null = null;
+      const localPath = pathRelative(pathResolve(rootAbs), pathResolve(rootAbs, filePath));
+      if (localPath && !isAbsolute(localPath) && localPath !== '..' && !localPath.startsWith(`..${sep}`)) {
+        try { testFileSha256 = createHash('sha256').update(readFileSync(pathResolve(rootAbs, filePath))).digest('hex'); }
+        catch { /* An unreadable test has unknown identity, never an invented hash. */ }
+      }
+      const mutation = mutationDescriptorForRow(mutationInvocation, mutationPhase, testFileSha256);
+      if (mutation) execution.mutation = mutation;
+    }
 
     const start = typeof f.startTime === 'number' ? f.startTime : null;
     const end = typeof f.endTime === 'number' ? f.endTime : null;
@@ -4130,6 +4145,8 @@ export interface PersistHarnessTestRunsParams {
   testNamePattern?: string | null;
   /** Test-config mutation phase, if any. */
   mutationPhase?: string | null;
+  /** Receipt destinations captured from the measured child, never the later host environment. */
+  receiptEnvironment?: Readonly<Record<string, string | undefined>>;
   /**
    * test_runs.configuration_snapshot (migration 1448): the configuration the MEASURED child
    * process ran under — capture it from that child's env with captureConfigurationSnapshot.
@@ -4160,6 +4177,8 @@ export async function reconcileHarnessTestRunRows(params: PersistHarnessTestRuns
         || details.workspaceId !== params.workspaceId || details.harnessSlug !== params.harnessSlug
         || details.passed !== expected.execution.passed || details.failed !== expected.execution.failed
         || details.skipped !== expected.execution.skipped || details.collectionFailed !== expected.execution.collectionFailed
+        || details.mutationPhase !== (params.mutationPhase ?? null)
+        || canonicalJson(details.mutation ?? null) !== canonicalJson(expected.execution.mutation ?? null)
         || (expected.execution.testLayer !== undefined && details.testLayer !== expected.execution.testLayer))
         throw new Error('retained_report_existing_result_mismatch');
     }
@@ -4609,6 +4628,17 @@ async function persistHarnessTestRunsInternal(
           })
         : undefined;
       phase = 'insert';
+      // The reporter receipt contract requires a measured duration. Keep an
+      // unknown SQL duration NULL rather than fabricating a replayable receipt.
+      const receiptBase = params.receiptEnvironment && row.durationMs !== null ? testRunReceiptBaseFor({
+        filePath: row.filePath, status: row.status, durationMs: row.durationMs,
+        startedAt: row.startedAt, finishedAt: row.finishedAt, outputTail: row.outputTail,
+        // This INSERT leaves is_scratch_config at its schema default (false).
+        isScratchConfig: false, worktreeDirty, commitSha: commit,
+        executionDetails: executionDetails ?? undefined,
+        ...(row.cases ? { cases: row.cases } : {}),
+      }) : undefined;
+      let receiptOutcome: 'failed' | 'timeout' = 'failed';
       const insert = Promise.resolve(
         sql`
           INSERT INTO harness_shared.test_runs
@@ -4635,6 +4665,7 @@ async function persistHarnessTestRunsInternal(
         })
         .catch((error: unknown) => {
           failure ??= classifyTestRunPersistenceFailure(error, 'insert', rowIndex);
+          if (error instanceof Error && error.message === 'pg_insert_timeout') receiptOutcome = 'timeout';
           return null;
         });
       const id = Array.isArray(inserted)
@@ -4644,6 +4675,11 @@ async function persistHarnessTestRunsInternal(
       else if (inserted !== null) failure ??= {
         phase: 'receipt', rowIndex, errorName: 'MissingInsertId',
       };
+      if (receiptBase && params.receiptEnvironment) appendTestRunReceipts(params.receiptEnvironment, [
+        id !== null ? { ...receiptBase, outcome: 'inserted', id: String(id) }
+          : { ...receiptBase, outcome: inserted === null ? receiptOutcome : 'timeout',
+            reason: failure?.errorCode ?? failure?.errorName ?? 'ledger_insert_unconfirmed', replayable: false },
+      ]);
     }
   } catch (error) {
     failure ??= classifyTestRunPersistenceFailure(error, phase, rowIndex);

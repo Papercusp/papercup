@@ -62,6 +62,9 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       'packages/operator-core/lib/desktop-install/papercusp-files.ts',
       'packages/operator-core/lib/role-codex-home.ts', ...hookInputs,
       ...(recovery ? ['packages/operator-core/test/task-artifacts-baseline-repair.ts',
+        'packages/operator-core/lib/task-artifacts-baseline-custody.ts',
+        'scripts/npm-install-safe.mjs', 'apps/operator/bin/release/dependency-generation.sh',
+        'apps/operator/bin/release/dependency-lock-tree-audit.mjs',
         'packages/operator-core/lib/testing-run-store.ts', 'packages/operator-core/test/native-method-authority.ts',
         'packages/operator-core/test/native-method-authority-fixture.ts',
         'packages/operator-core/lib/consult/get-feedback-prod.ts', 'packages/operator-core/lib/consult/review-findings.ts',
@@ -73,7 +76,10 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       ...(scenario === 'current-su-native-recovery-baseline' ? ['phases/execute/native-recovery-fixture.json',
         'phases/execute/native-recovery-continuation.json', 'phases/execute/native-recovery-readback.json',
         'phases/execute/native-recovery-runtime.json', 'phases/prepare/native-recovery-installed.json',
-        'phases/prepare/native-recovery-built.json', 'phases/prepare/native-recovery-installed-tree.json'] : []),
+        'phases/prepare/native-recovery-built.json', 'phases/prepare/native-recovery-installed-tree.json',
+        'phases/execute/native-recovery-runtime-custody-before.json',
+        'phases/execute/native-recovery-runtime-custody-after.json',
+        'phases/execute/native-recovery-runtime-custody-trace.json'] : []),
       ...(scenario.includes('-frozen-carry-') ? ['phases/execute/native-frozen-carry-delivery.json'] : [])],
     ...(nativeProof ? { retainProducedArtifacts: async (runDir: string) => {
       const fingerprint = JSON.parse(readFileSync(join(runDir, 'phases/prepare/native-proof-intent.json'), 'utf8')).fingerprint;
@@ -216,6 +222,21 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
         expect(createHash('sha256').update(readFileSync(join(evidenceDir, 'native-recovery-fixture.json'))).digest('hex'))
           .toBe(readback.fixtureSha256);
         expect(readback.notExercised).toContain('paired-outcome-ledger');
+        const before = readFileSync(join(evidenceDir, 'native-recovery-runtime-custody-before.json'));
+        const after = readFileSync(join(evidenceDir, 'native-recovery-runtime-custody-after.json'));
+        expect(after).toEqual(before);
+        const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+        const beforeSha256 = digest(before), afterSha256 = digest(after);
+        const runtime = JSON.parse(readFileSync(join(evidenceDir, 'native-recovery-runtime.json'), 'utf8'));
+        expect(runtime.custodyBeforeSha256).toBe(beforeSha256);
+        expect(receipt.runtimeCustody).toEqual({ ...JSON.parse(after.toString()),
+          custodyBeforeSha256: beforeSha256, custodyAfterSha256: afterSha256 });
+        const trace = JSON.parse(readFileSync(join(evidenceDir, 'native-recovery-runtime-custody-trace.json'), 'utf8'));
+        expect(trace).toEqual({ schemaVersion: 1, fingerprint: nativeChild!.fingerprint,
+          continuation: { path: 'native-recovery-continuation.json',
+            sha256: digest(readFileSync(join(evidenceDir, 'native-recovery-continuation.json'))) },
+          custodyBefore: { path: 'native-recovery-runtime-custody-before.json', sha256: beforeSha256 },
+          custodyAfter: { path: 'native-recovery-runtime-custody-after.json', sha256: afterSha256 } });
       }
       if (scenario.includes('-frozen-carry-')) expect(receipt.frozenCarry).toMatchObject({
         mode: scenario.endsWith('-on') ? 'on' : 'off', inputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),

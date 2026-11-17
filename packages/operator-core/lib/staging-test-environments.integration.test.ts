@@ -164,7 +164,8 @@ describe('current-build execution route contract', () => {
     try {
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
-        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
+        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--private-http-scenario=current-su-native-home-repair'], {
         cwd: root, encoding: 'utf8', timeout: 700_000, maxBuffer: 16 * 1024 * 1024,
         env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-home-repair',
           STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
@@ -177,16 +178,20 @@ describe('current-build execution route contract', () => {
 
   it('prepares the dummy account, real hooks and MCP bearer in the native fixture private home', () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));
+    let verified = false;
     try {
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
-        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
+        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--private-http-scenario=current-su-native-setup'], {
         cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
         env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: 'current-su-native-setup',
           STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
           NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --trace-warnings` },
       });
       expect(result.status, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBe(0);
+      expect(result.stdout).toContain('PRIVATE_HTTP_SCENARIO_SELECTED current-su-native-setup');
+      expect(result.stdout).not.toContain('STAGING_FIRST_HTTP_PHASE bundle-start');
       const line = result.stdout.split('\n').find(row => row.startsWith('CURRENT_SU_NATIVE_SETUP_RECEIPT '));
       expect(line, result.stdout.slice(-2000)).toBeTruthy();
       const receipt = JSON.parse(line!.slice('CURRENT_SU_NATIVE_SETUP_RECEIPT '.length));
@@ -203,25 +208,35 @@ describe('current-build execution route contract', () => {
       expect(receipt.nodeOptions).toContain('--trace-warnings');
       if (process.env.NODE_OPTIONS?.includes('committed-source-loader.mjs'))
         expect(receipt.nodeOptions).toContain('committed-source-loader.mjs');
-    } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+      verified = true;
+    } finally {
+      if (verified) rmSync(evidenceDir, { recursive: true, force: true });
+      else console.error('Retained private native setup evidence: ' + evidenceDir);
+    }
   }, 200_000);
 
   it.each([
     ['pool', false], ['pool', true], ['launch', false], ['launch', true],
     ['spawn', false], ['spawn', true], ['hub', false], ['hub', true],
+    ['hooks', false], ['hooks', true],
   ] as const)('retires private native %s pools after the fixture (failure=%s)', (kind, failure) => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-pool-cleanup-'));
+    const scenario = `current-su-native-${kind}-cleanup` + (failure ? '-failure' : '');
+    let verified = false;
     try {
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx',
-        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')], {
+        join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        '--private-http-scenario=' + scenario], {
         cwd: root, encoding: 'utf8', timeout: 180_000, maxBuffer: 16 * 1024 * 1024,
-        env: { ...process.env, STAGING_FIRST_HTTP_SCENARIO: `current-su-native-${kind}-cleanup` + (failure ? '-failure' : ''),
+        env: { ...process.env,
           STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir },
       });
       expect(result.error, result.stderr.slice(-2000)).toBeUndefined();
       expect(result.signal).toBeNull();
       expect(result.status, result.stdout.slice(-2000) + result.stderr.slice(-2000)).toBe(failure ? 1 : 0);
+      expect(result.stdout).toContain('PRIVATE_HTTP_SCENARIO_SELECTED ' + scenario);
+      expect(result.stdout).not.toContain('STAGING_FIRST_HTTP_PHASE bundle-start');
       expect(result.stdout).toContain('CURRENT_SU_NATIVE_POOL_READY ');
       if (failure) expect(result.stderr).toContain('Private native pool cleanup exception control');
       const progress = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8')
@@ -236,13 +251,21 @@ describe('current-build execution route contract', () => {
       if (kind === 'hub') expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
         expect.objectContaining({ application_name: expect.stringMatching(/^pcusp:listen-hub:/) }),
       ]));
+      if (kind === 'hooks') expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
+        expect.objectContaining({ datname: 'papercusp_su',
+          application_name: expect.stringMatching(/^(?:pcusp:su-lock-tx:|papercusp-su:)/) }),
+      ]));
       // A disconnected TCP handle can retain its local endpoint for one more
       // close callback even though this child already exited normally. The
       // original native leak kept an established remote PG endpoint alive.
       // Keep that distinction alongside the authoritative child-exit guard.
       expect(progress.at(-1).activeSockets.filter((socket: any) =>
         socket.active && socket.referenced && socket.remote && socket.pgConnection)).toEqual([]);
-    } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+      verified = true;
+    } finally {
+      if (verified) rmSync(evidenceDir, { recursive: true, force: true });
+      else console.error('Retained private native cleanup evidence: ' + evidenceDir);
+    }
   }, 200_000);
 
   it.each(['--isolated-runtime', '--isolated-runtime=operator-api'])(

@@ -22,6 +22,7 @@ import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, bu
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   retainIsolatedWorkerProgress, withNativeProofLedger, nativeProofRecorder, type NativeProofRecorder } from './isolated-integration-proof';
 import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
+import { assertBaselineRuntimeCustody } from './task-artifacts-baseline-repair';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -86,6 +87,12 @@ async function main(native?: NativeProofRecorder) {
   const root = resolve(import.meta.dirname, '../../..');
   const evidenceDir = e.STAGING_FIRST_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
+  // Check the private child's physical tree and executable before any host or
+  // native task effects. Receipt labels from the parent alone are insufficient.
+  const custodyBeforePath = join(evidenceDir, 'native-recovery-runtime-custody-before.json');
+  const custodyBefore = native ? await assertBaselineRuntimeCustody(root, join(evidenceDir, '../prepare'),
+    await native.readIntent(), undefined, 'native-recovery') : undefined;
+  if (native) writeFileSync(custodyBeforePath, JSON.stringify(custodyBefore), { flag: 'wx' });
   // Native assignments launch from this worker as well as the private host.
   // Filtering only hostEnv leaves test preloads on the worker's launch lineage.
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native'))
@@ -107,7 +114,8 @@ async function main(native?: NativeProofRecorder) {
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-hub-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-launch-cleanup') ||
-      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-spawn-cleanup')) {
+      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-spawn-cleanup') ||
+      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-hooks-cleanup')) {
     // Native launch readers use pools besides the org query client. Exercise
     // the idle LISTEN connection too: ending only sql cannot release it.
     await getOrgPgApp().sql`SELECT 1`;
@@ -118,7 +126,11 @@ async function main(native?: NativeProofRecorder) {
       const { hubListen } = await import('../lib/pg-listen-hub');
       await hubListen('private_native_hub_cleanup', () => {});
     }
-    if (!e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-pool-cleanup')) {
+    if (e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-hooks-cleanup')) {
+      // The real hook installer takes a file lock on the separate private
+      // papercusp_su database. No API build, CLI or inference is needed.
+      await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
+    } else if (!e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-pool-cleanup')) {
       // Exercise the native launch module and its standing-wake callback without
       // spawning a CLI, container, provider request or private API build.
       await import('../lib/agent-tools/capability/launch-agent');
@@ -577,7 +589,8 @@ async function main(native?: NativeProofRecorder) {
     if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-recovery-baseline') {
       assert.ok(native, 'Native F01 needs its original reviewed single-fork admission');
       const runtimePath = join(evidenceDir, 'native-recovery-runtime.json');
-      writeFileSync(runtimePath, JSON.stringify({ workspace, base, bundleSha256, health, hostIdentity }), { flag: 'wx' });
+      writeFileSync(runtimePath, JSON.stringify({ workspace, base, bundleSha256, health, hostIdentity,
+        custodyBeforeSha256: createHash('sha256').update(readFileSync(custodyBeforePath)).digest('hex') }), { flag: 'wx' });
       await native.observe('runtime', runtimePath);
     }
     const receipt = await (await import('./current-su-native-http-scenario')).measureCurrentSuNativeScenario({
@@ -586,10 +599,29 @@ async function main(native?: NativeProofRecorder) {
       ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-on' ? { frozenCarryMode: 'on' as const } : {}),
       ...(e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-frozen-carry-off' ? { frozenCarryMode: 'off' as const } : {}),
     });
-    if (native) await native.observe('trace', join(evidenceDir, 'native-recovery-continuation.json'));
     await stopHost();
+    let runtimeCustody;
+    if (native) {
+      const intent = await native.readIntent();
+      const custodyAfter = await assertBaselineRuntimeCustody(root, join(evidenceDir, '../prepare'),
+        intent, undefined, 'native-recovery');
+      assert.deepEqual(custodyAfter, custodyBefore, 'native_recovery_runtime_custody_changed');
+      const custodyAfterPath = join(evidenceDir, 'native-recovery-runtime-custody-after.json');
+      writeFileSync(custodyAfterPath, JSON.stringify(custodyAfter), { flag: 'wx' });
+      const original = (path: string) => ({ path,
+        sha256: createHash('sha256').update(readFileSync(join(evidenceDir, path))).digest('hex') });
+      const tracePath = join(evidenceDir, 'native-recovery-runtime-custody-trace.json');
+      const trace = { schemaVersion: 1, fingerprint: intent.fingerprint,
+        continuation: original('native-recovery-continuation.json'),
+        custodyBefore: original('native-recovery-runtime-custody-before.json'),
+        custodyAfter: original('native-recovery-runtime-custody-after.json') };
+      writeFileSync(tracePath, JSON.stringify(trace), { flag: 'wx' });
+      await native.observe('trace', tracePath);
+      runtimeCustody = { ...custodyAfter, custodyBeforeSha256: trace.custodyBefore.sha256,
+        custodyAfterSha256: trace.custodyAfter.sha256 };
+    }
     console.log('CURRENT_SU_NATIVE_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health,
-      dockerHost: e.DOCKER_HOST }));
+      dockerHost: e.DOCKER_HOST, ...(runtimeCustody ? { runtimeCustody } : {}) }));
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'compaction-warm') {
@@ -824,7 +856,16 @@ catch (error) {
     // pools, or its referenced socket keeps the worker alive after a failure.
     const { _stopHubForTests } = await import('../lib/pg-listen-hub');
     await _stopHubForTests();
-    await _resetForTests();
+    // Native hook installation uses locks' separate papercusp_su pools. Stop
+    // their producers before draining the pools: the janitor can otherwise
+    // reopen the transaction client after db-org has already been reset.
+    const { _resetListenersForTests, _resetForTests: resetLockPools } = await import('@papercusp/locks');
+    try {
+      await _resetListenersForTests();
+    } finally {
+      try { await resetLockPools(); }
+      finally { await _resetForTests(); }
+    }
     // libuv completes socket close callbacks on the next loop turn. Record
     // after that boundary so an already-closing handle is not called a leak.
     await new Promise<void>(done => setImmediate(done));
