@@ -2619,6 +2619,14 @@ verifier_dependency_workspaces() {
 
 preflight_verifier_dependencies() {
   local source_repo="$1" prediction prediction_rc=0 line verdict="" headers=0
+  if [ -n "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}" ]; then
+    # Explicit immutable stores are consumption-only. Validate the selected
+    # source closure instead of comparing it with a mutable live install.
+    # The materializer repeats this same fail-closed selector/closure check.
+    bash "$source_repo/papercusp-desktop/bin/lib/pinned-deps.sh" \
+      preflight-generation "$source_repo" "$source_repo"
+    return $?
+  fi
   local workspace_dirs workspace_args=() workspace
   workspace_dirs="$(verifier_dependency_workspaces "$source_repo" "$REPO_DIR" "$VERIFY_TAURI_SOURCE_REF")" || return $?
   while IFS= read -r workspace; do

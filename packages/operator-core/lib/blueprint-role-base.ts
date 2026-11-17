@@ -4,6 +4,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { AGENT_ROLES } from '@papercusp/agent-mcp/role-config';
 import { getEffectiveBlueprint } from './blueprint/project-to-pg';
 import { canonicalHiveHomeSlug } from './hive-federation';
+import { canonicalCoordRole } from './agent-tools/coordination/roles';
 
 const canonicalRoles: ReadonlySet<string> = new Set(AGENT_ROLES);
 
@@ -22,7 +23,8 @@ export async function resolveInstalledRoleForAllowlist(
       const declarations = blueprint.roles.filter(declaration => declaration.id === role);
       if (declarations.length !== 1) continue;
       const base = declarations[0]!.baseRole;
-      return base && canonicalRoles.has(base) ? base : null;
+      const canonicalBase = base ? canonicalCoordRole(base) : null;
+      return canonicalBase && canonicalRoles.has(canonicalBase) ? canonicalBase : null;
     }
   } catch {
     // The dispatch role gate remains closed if installation evidence is unavailable.

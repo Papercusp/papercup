@@ -290,8 +290,7 @@ describe('scorecard coverage and pinned procedure presentation', () => {
     expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Fulfillment unknown');
   });
 
-  it('keeps a healthy manual rating separate from unavailable manual support in the fixed two-criterion fixture', () => {
-    const card: ScorecardRow = { issueId: 'EI-manual-coverage-ui', createdAt: '2026-11-02T00:00:00Z',
+  const manualFixture = (): ScorecardRow => ({ issueId: 'EI-manual-coverage-ui', createdAt: '2026-11-02T00:00:00Z',
       createdBy: 'su-grader', rubricRef: 'manual-coverage-fixture', nKeys: 2, missingKeys: [],
       rubricResolved: true, score10: 10,
       ratings: {
@@ -306,13 +305,39 @@ describe('scorecard coverage and pinned procedure presentation', () => {
         freshness: { current: [], stale: [], unknown: ['manual-review', 'executable-review'] },
         unresolvedKeys: ['manual-review', 'executable-review'],
         requestedScope: { state: 'unknown', denominator: null, reason: 'canonical-scope-authority-unavailable' },
-        fulfillment: 'unknown' } };
+        fulfillment: 'unknown' } });
+
+  it('keeps a healthy manual rating separate from unavailable manual support in the fixed two-criterion fixture', () => {
+    const card = manualFixture();
     const before = JSON.stringify(card);
     render(<ScorecardDetail scorecard={card} />);
     expect(screen.getByLabelText('Assessment coverage').textContent).toContain('2/2 rating keys present · 0/2 supported · 2 unresolved');
     expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Requested scope unknown · Fulfillment unknown');
     expect(screen.getByText('healthy')).toBeTruthy();
     expect(screen.getByText('unknown')).toBeTruthy();
+    expect(screen.getByText('Next evidence action: Retain the immutable manual review receipt under the original contract.')).toBeTruthy();
+    expect(JSON.stringify(card)).toBe(before);
+  });
+
+  it('shows admissible manual support without a machine check and preserves the historical assessment', () => {
+    // Match the retained projection from the measured manual producer integration fixture.
+    // This consumer case leaves canonical receipt admission to that integration journey.
+    const card = manualFixture();
+    card.ratings['manual-review']!.evidence = 'Archived reviewer judgment.';
+    card.coverage!.evidence = { current: ['manual-review'], stale: [], absent: ['executable-review'], unknown: [] };
+    card.coverage!.freshness = { current: ['manual-review'], stale: [], unknown: ['executable-review'] };
+    card.coverage!.unresolvedKeys = ['executable-review'];
+    const before = JSON.stringify(card);
+
+    render(<ScorecardDetail scorecard={card} />);
+
+    const coverage = screen.getByLabelText('Assessment coverage').textContent;
+    expect(coverage).toContain('2/2 rating keys present · 1/2 supported · 1 unresolved');
+    expect(coverage).toContain('Requested scope unknown · Fulfillment unknown');
+    expect(screen.getByText('healthy')).toBeTruthy();
+    expect(screen.getByText('unknown')).toBeTruthy();
+    expect(screen.getByText('10 / 10')).toBeTruthy();
+    expect(screen.getByText('Archived reviewer judgment.')).toBeTruthy();
     expect(screen.getByText('Next evidence action: Retain the immutable manual review receipt under the original contract.')).toBeTruthy();
     expect(JSON.stringify(card)).toBe(before);
   });

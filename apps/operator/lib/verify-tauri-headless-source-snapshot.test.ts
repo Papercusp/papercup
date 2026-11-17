@@ -88,10 +88,11 @@ describe('EI-28749412177316997 — exact-ref dependencies are admitted before so
   const header = (verdict: string) => `DEPENDENCY_GENERATION_PREDICTION schema=1 ref=${commit} input=${'a'.repeat(64)} live=${'b'.repeat(64)} verdict=${verdict} links=0`;
   const preflight = src.match(/^preflight_verifier_dependencies\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
 
-  function run(prediction: string, helperStatus = 0) {
+  function run(prediction: string, helperStatus = 0, generationStatus?: number) {
     const fixture = mkdtempSync(resolve(tmpdir(), 'verifier-dependency-preflight-'));
     const sourceRepo = resolve(fixture, 'selected source');
     const generator = resolve(sourceRepo, 'apps/operator/bin/release/dependency-generation.sh');
+    const pinnedDeps = resolve(sourceRepo, 'papercusp-desktop/bin/lib/pinned-deps.sh');
     try {
       mkdirSync(resolve(generator, '..'), { recursive: true });
       writeFileSync(generator, [
@@ -99,6 +100,12 @@ describe('EI-28749412177316997 — exact-ref dependencies are admitted before so
         'echo predict >> "$TEST_ROOT/order"',
         'printf "%s\\n" "$TEST_PREDICTION"',
         'exit "$TEST_HELPER_STATUS"',
+      ].join('\n'));
+      mkdirSync(resolve(pinnedDeps, '..'), { recursive: true });
+      writeFileSync(pinnedDeps, [
+        'printf "%s\\n" "$*" > "$TEST_ROOT/generation-args"',
+        'echo generation >> "$TEST_ROOT/order"',
+        'exit "$TEST_GENERATION_STATUS"',
       ].join('\n'));
       const result = spawnSync('bash', ['-c', [
         'set -euo pipefail',
@@ -115,11 +122,15 @@ describe('EI-28749412177316997 — exact-ref dependencies are admitted before so
       ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: {
         ...hermeticSpawnEnv(), TEST_ROOT: fixture, TEST_PREDICTION: prediction,
         TEST_HELPER_STATUS: String(helperStatus), TEST_RESOLVED_SOURCE_REF: commit,
+        TEST_GENERATION_STATUS: String(generationStatus ?? 0),
+        PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationStatus === undefined ? '' : resolve(fixture, 'immutable store'),
         VERIFY_TAURI_SOURCE_REPO_DIR: sourceRepo, VERIFY_TAURI_SOURCE_INPUTS_FILE: '', VH_PHASE_DIR: '',
       } });
       return { ...result,
         order: readFileSync(resolve(fixture, 'order'), 'utf8').trim().split('\n'),
-        args: readFileSync(resolve(fixture, 'predict-args'), 'utf8').trim(),
+        args: existsSync(resolve(fixture, 'predict-args')) ? readFileSync(resolve(fixture, 'predict-args'), 'utf8').trim() : '',
+        generationArgs: existsSync(resolve(fixture, 'generation-args')) ? readFileSync(resolve(fixture, 'generation-args'), 'utf8').trim() : '',
+        sourceRepo,
         allocated: readdirSync(fixture).some(name => name.startsWith('verify-tauri-headless.')),
       };
     } finally { rmSync(fixture, { recursive: true, force: true }); }
@@ -162,6 +173,24 @@ describe('EI-28749412177316997 — exact-ref dependencies are admitted before so
     expect(result.status, spawnDiagnostic(result)).toBe(63);
     expect(result.stdout).toContain(header('prewarmed'));
     expect(result.order).toEqual(['verifier-inputs-check', 'predict']);
+    expect(result.allocated).toBe(false);
+  });
+
+  it('admits an explicit immutable generation despite incompatible live donor inputs', () => {
+    const result = run(header('refused'), 74, 0);
+    expect(result.status, spawnDiagnostic(result)).toBe(0);
+    expect(result.generationArgs).toBe(`preflight-generation ${result.sourceRepo} ${result.sourceRepo}`);
+    expect(result.args).toBe('');
+    expect(result.order).toEqual(['verifier-inputs-check', 'generation', 'verifier-measure', 'reserve', 'allocated', 'verifier-prepare', 'verifier-verify', 'deps']);
+    expect(result.allocated).toBe(true);
+  });
+
+  it.each([63, 74])('preserves explicit generation failure %s without falling back to a live donor', status => {
+    const result = run(header('prewarmed'), 0, status);
+    expect(result.status, spawnDiagnostic(result)).toBe(status);
+    expect(result.generationArgs).toBe(`preflight-generation ${result.sourceRepo} ${result.sourceRepo}`);
+    expect(result.args).toBe('');
+    expect(result.order).toEqual(['verifier-inputs-check', 'generation']);
     expect(result.allocated).toBe(false);
   });
 });

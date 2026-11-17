@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchProjectedTool, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { dispatchProjectedTool, listMcpProjections, lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { BlueprintSchema } from '@papercusp/orchestrator/blueprint';
 import * as orgDb from '@papercusp/db-org';
 import * as blueprints from './blueprint/project-to-pg';
@@ -87,6 +87,45 @@ describe('installed custom-role allowlist resolution', () => {
     vi.mocked(blueprints.getEffectiveBlueprint).mockImplementation(async (_sql, scope) =>
       scope.workspaceId === 'workspace-a' && scope.harnessSlug === 'oddsmith-hive' ? installed : null);
     expect(await resolveInstalledRoleForAllowlist(context({ harnessSlug: 'oddsmith-alias' }))).toBe('worker');
+  });
+
+  it.each([
+    ['bee', 'cup'], ['queen', 'mug'], ['sentinel', 'papercup'],
+    ['overwatch', 'kettle'], ['scout', 'blender'],
+  ])('resolves installed legacy base role %s through its canonical role %s', async (baseRole, canonical) => {
+    vi.mocked(blueprints.getEffectiveBlueprint).mockResolvedValue(BlueprintSchema.parse({
+      ...installed, roles: [{ id: 'oddsmith-analyst', baseRole }],
+    }));
+    expect(await resolveInstalledRoleForAllowlist(context())).toBe(canonical);
+  });
+
+  it('lists and dispatches the legacy worker lifecycle without widening its capability ceiling', async () => {
+    const legacy = BlueprintSchema.parse({ ...installed,
+      roles: [{ id: 'oddsmith-analyst', baseRole: 'bee' }],
+    });
+    vi.mocked(blueprints.getEffectiveBlueprint).mockResolvedValue(legacy);
+    const ctx = context();
+    const base = await resolveInstalledRoleForAllowlist(ctx);
+    const names = listMcpProjections(ctx.role, 'engineer', base).map(tool => tool.name);
+    expect(names).toEqual(expect.arrayContaining(lifecycle));
+    setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: lifecycle,
+      imposedBy: 'installed-analysis-launcher', reason: 'read/propose workflow only' }));
+    const handler = vi.fn(async (_name, _args, actual: UnifiedToolContext) => {
+      expect(actual.role).toBe('oddsmith-analyst');
+      expect([...actual.principal!.capabilities]).toEqual(allowedCaps);
+      return { content: [{ type: 'text' as const, text: 'admitted' }] };
+    });
+    const deps = { resolveRoleForAllowlist: resolveInstalledRoleForAllowlist,
+      checkCapabilityEnvelope: checkSessionConfinement, overrideTool: handler };
+    for (const name of lifecycle) {
+      const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, {}, ctx, deps);
+      expect(result.ok, JSON.stringify(result)).toBe(true);
+    }
+    const denied = await dispatchProjectedTool(lookupByMcpName('plans:set-content')!,
+      'plans:set-content', {}, ctx, deps);
+    expect(denied.error?.code).toBe('capability_denied');
+    expect(handler).toHaveBeenCalledTimes(lifecycle.length);
+    expect(legacy.roles[0]!.baseRole).toBe('bee');
   });
 
   it('never aliases a built-in role or accepts an unknown/chained base role', async () => {
