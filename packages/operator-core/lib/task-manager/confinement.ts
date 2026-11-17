@@ -31,9 +31,9 @@
  * `enroll-sync` now derives the value at the write (WI-2141828), but ~1300 historical
  * agent-session rows are NOT retroactively repaired. D-111 is therefore binding on this
  * module: a read surface must never present a stored `cgroup_path` for a confined row as
- * current truth. So we do not read that column at all for confined tasks. We DERIVE, from
- * `scope_unit`, which was correct all along — and is correct for historical rows too, which
- * is why deriving beats the alternative of only reporting post-fix rows.
+ * current truth. Class-based derivation is also only a prediction: a unit can override
+ * its Slice (EI-28962401056087673). Use the same request's kernel scan instead. Without
+ * that positive observation, the current path and restart containment remain unknown.
  *
  * ── WHY A DISCRIMINATED UNION ────────────────────────────────────────────────
  *
@@ -50,13 +50,7 @@
  * given a ledger ROW, where does it live?
  */
 import { type CgroupFs, nodeCgroupFs, readProcessCgroupPath } from './cgroup-read';
-import {
-  deriveUserManagerRoot,
-  scopeCgroupRelPath,
-  taskIdFromScopeUnit,
-  type TaskClass,
-  type TaskState,
-} from './types';
+import { taskIdFromScopeUnit, type TaskState } from './types';
 
 /** The ledger fields this resolver reads. Deliberately NOT the stored `cgroupPath` for a
  *  confined row — see the module header. */
@@ -66,7 +60,7 @@ export interface ConfinementInput {
   confined: boolean;
   scopeUnit?: string | null;
   class: string;
-  /** Spawn-time path for unconfined tasks; reconcile-observed path for an unaccounted residue. */
+  /** Historical path; never current confinement evidence for a task scope. */
   cgroupPath?: string | null;
   unconfinedReason?: string | null;
 }
@@ -76,24 +70,16 @@ export type TaskConfinement =
       confined: true;
       cgroupPath: string;
       scopeUnit: string;
-      /** Derived from `scope_unit` + class, so it is correct for pre-WI-2141828 rows too. */
-      source: 'derived-from-scope-unit';
-      /** True ⇒ an operator restart takes this task down with it. */
-      insideOperatorCgroup: boolean;
-    }
-  | {
-      confined: true;
-      cgroupPath: string;
-      scopeUnit: string;
-      /** Kernel census path for an unaccounted residue with an exact task scope. */
+      /** Same-request kernel census path for this exact task scope. */
       source: 'observed-at-reconcile';
-      insideOperatorCgroup: boolean;
+      /** Absent when the operator's own cgroup could not be read. */
+      insideOperatorCgroup?: boolean;
     }
   | {
       confined: true;
       cgroupPath: null;
-      scopeUnit: null;
-      /** Confined, but nothing to derive from. NOT the same as unconfined. */
+      scopeUnit: string | null;
+      /** Confined, but no current path observation. NOT the same as unconfined. */
       source: 'not-derivable';
       reason: string;
     }
@@ -107,37 +93,58 @@ export type TaskConfinement =
     };
 
 /**
- * Resolve one ledger row's confinement.
+ * Index current kernel observations, including scopes whose Slice differs from the
+ * class default. Descendants corroborate the unit root; conflicting roots stay unknown
+ * independent of scan order. No input prefix or fixed number of paths decides truth.
+ */
+export function observedTaskScopePaths(paths: Iterable<string>): ReadonlyMap<string, string | null> {
+  const observed = new Map<string, string | null>();
+  for (const path of paths) {
+    if (!path.startsWith('/')) continue;
+    const segments = path.slice(1).split('/');
+    if (segments.some((segment) => !segment || segment === '.' || segment === '..')) continue;
+    const ownedRoot = segments.indexOf('papercusp.slice');
+    if (ownedRoot < 0) continue;
+    for (let i = ownedRoot + 1; i < segments.length; i++) {
+      const unit = segments[i]!;
+      if (!taskIdFromScopeUnit(unit)) continue;
+      const root = `/${segments.slice(0, i + 1).join('/')}`;
+      if (!observed.has(unit)) observed.set(unit, root);
+      else if (observed.get(unit) !== root) observed.set(unit, null);
+    }
+  }
+  return observed;
+}
+
+/**
+ * Resolve one ledger row's confinement using observations from this request only.
  *
  * `fs` is injectable so tests can drive the operator's own cgroup read; production callers
  * take the default.
  */
-export function resolveTaskConfinement(row: ConfinementInput, fs: CgroupFs = nodeCgroupFs): TaskConfinement {
+export function resolveTaskConfinement(
+  row: ConfinementInput,
+  fs: CgroupFs = nodeCgroupFs,
+  observedPaths: ReadonlyMap<string, string | null> = new Map(),
+): TaskConfinement {
   const ownCgroupPath = readProcessCgroupPath(process.pid, fs);
-
-  // Residue rows do not have the original task class needed to derive the
-  // systemd slice path. Their cgroup_path is instead captured from the kernel
-  // census. Trust it only when the exact pc-unit encodes this row's task id and
-  // the observed path ends at that unit beneath our owned slice.
+  const scopeUnit = row.scopeUnit ?? null;
+  const exactTaskScope = Boolean(row.taskId && scopeUnit && taskIdFromScopeUnit(scopeUnit) === row.taskId);
+  const observedPath = scopeUnit ? observedPaths.get(scopeUnit) : null;
   if (
-    row.state === 'unaccounted' &&
-    row.taskId &&
-    row.scopeUnit &&
-    row.cgroupPath &&
-    taskIdFromScopeUnit(row.scopeUnit) === row.taskId &&
-    row.cgroupPath.includes('/papercusp.slice/') &&
-    row.cgroupPath.endsWith(`/${row.scopeUnit}`)
+    exactTaskScope && scopeUnit && observedPath &&
+    observedPath.includes('/papercusp.slice/') && observedPath.endsWith(`/${scopeUnit}`)
   ) {
     return {
       confined: true,
-      cgroupPath: row.cgroupPath,
-      scopeUnit: row.scopeUnit,
+      cgroupPath: observedPath,
+      scopeUnit,
       source: 'observed-at-reconcile',
-      insideOperatorCgroup: isInside(row.cgroupPath, ownCgroupPath),
+      ...(ownCgroupPath ? { insideOperatorCgroup: isInside(observedPath, ownCgroupPath) } : {}),
     };
   }
 
-  if (!row.confined) {
+  if (!row.confined && !(row.state === 'unaccounted' && exactTaskScope)) {
     return {
       confined: false,
       cgroupPath: row.cgroupPath ?? null,
@@ -149,25 +156,14 @@ export function resolveTaskConfinement(row: ConfinementInput, fs: CgroupFs = nod
     };
   }
 
-  const scopeUnit = row.scopeUnit ?? null;
-  if (!scopeUnit) {
-    return {
-      confined: true,
-      cgroupPath: null,
-      scopeUnit: null,
-      source: 'not-derivable',
-      reason:
-        'confined, but no scope unit was recorded, so its cgroup path cannot be derived — this is UNKNOWN, not unconfined',
-    };
-  }
-
-  const cgroupPath = scopeCgroupRelPath(deriveUserManagerRoot(ownCgroupPath), row.class as TaskClass, scopeUnit);
   return {
     confined: true,
-    cgroupPath,
+    cgroupPath: null,
     scopeUnit,
-    source: 'derived-from-scope-unit',
-    insideOperatorCgroup: isInside(cgroupPath, ownCgroupPath),
+    source: 'not-derivable',
+    reason: scopeUnit
+      ? 'current cgroup path is unknown: no unambiguous kernel observation for this exact task scope; use processes:list live:true to re-observe it'
+      : 'confined, but no scope unit was recorded; the current cgroup path is UNKNOWN, not unconfined',
   };
 }
 

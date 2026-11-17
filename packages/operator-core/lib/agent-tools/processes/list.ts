@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listTasksPage, residueTaskId } from '../../task-manager/store';
-import { resolveTaskConfinement } from '../../task-manager/confinement';
+import { observedTaskScopePaths, resolveTaskConfinement } from '../../task-manager/confinement';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick, type ReconcileTickResult } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
@@ -287,7 +287,7 @@ export default defineTool({
     chaining:
       'Filter one exact row with `taskId`, `scopeUnit`, `invocationId` or `dispatchCallId`. Use `includeAttemptEvidence:true` for its bounded redacted excerpt. Lost a bash launch response? Search by `dispatchCallId` with `includeEnded:true`; do not relaunch. Then use `processes:kill`, `freeze` or `limit` on the exact task. Check `taskPage.truncated` and kernel scan truncation before treating a row as absent.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids: number|null (PID count), livePids: number[]|null (PID array for live unaccounted tasks; null otherwise), confined, scopeUnit, confinement, deadlineAt, logPath }], live?: { unaccountedGroups?: Array<{ taskId: string (stable ledger key), pids: number[] (PID array), ageSec: number|null }>, exactScopeUnitMatches?: Array<{ taskId: string, pids: number[], ageSec: number|null (lower bound; null if any PID start is unknown) }> } } — `confinement` answers "what confines this task, and therefore what can kill it": `{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }`. Read `source` before the path. `derived-from-scope-unit` is the trustworthy case — the path is DERIVED, because the stored `cgroup_path` column holds the SPAWNER cgroup on ~1300 historical rows and would answer "would restarting the operator kill this agent?" with the pre-EI-9748 YES (D-111). `insideOperatorCgroup` IS that answer, and is absent — never false — when unknown. `not-derivable` means confined but no scope unit was recorded: that is UNKNOWN, not unconfined, so `confined` stays true. `recorded-at-spawn` is the unconfined case, where the /proc read is correct. `observed-at-reconcile` means an unaccounted residue had an exact `pc-<taskId>` scope and matching kernel-scanned path; it uses that observed path because its original task class is unknown. To find your OWN row pass `coordOwnerId` (your coord owner id) — `launchedBy` is whoever spawned you, and `pgrep -f <ownerId>` self-matches your own command line. `cpuSec` is cumulative CPU time; `cpuBusyPercent` is derived from two cumulative samples (100% = one saturated core) and is null until a second valid sample exists. Unfiltered `live:true` reads include `live.verifierGroups` and other reconciler groups; a task-filtered live read keeps the compact reconciliation summary but omits unrelated global group samples. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable. An exact-identity lookup (`dispatchCallId` especially) that finds nothing is not proof no command ran: legacy jobs may lack that identity.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, cpuBusyPercent, pids: number|null (PID count), livePids: number[]|null (PID array for live unaccounted tasks; null otherwise), confined, scopeUnit, confinement, deadlineAt, logPath }], live?: { unaccountedGroups?: Array<{ taskId: string (stable ledger key), pids: number[] (PID array), ageSec: number|null }>, exactScopeUnitMatches?: Array<{ taskId: string, pids: number[], ageSec: number|null (lower bound; null if any PID start is unknown) }> } } — confinement:{ confined, cgroupPath, scopeUnit, source, insideOperatorCgroup?, reason? }. With live:true, observed-at-reconcile means this request observed the exact task unit in the kernel; its actual Slice may differ from the task class default. Historical stored paths and class predictions are never current confinement evidence (D-111). not-derivable means confined but current path unknown, including when no live scan was requested or no unambiguous matching scope was observed; use live:true to re-observe it. insideOperatorCgroup answers whether an operator restart kills the task and is absent when either path is unknown. recorded-at-spawn applies only to unconfined tasks. To find your own row use coordOwnerId; launchedBy is the launcher. cpuSec is cumulative CPU time; cpuBusyPercent uses two cumulative samples (100% = one core), otherwise null. pids is a count; livePids is a PID array or null. Unfiltered live:true includes global verifier/unaccounted groups; task selectors keep a compact summary, and scopeUnit also returns exactScopeUnitMatches. A missing exact identity does not prove no command ran: legacy rows may lack that identity.',
   },
   requirePrincipal: false,
   // Release-fixer must inspect the managed task ledger when classifying a
@@ -527,6 +527,10 @@ export default defineTool({
       byState[r.state] = (byState[r.state] ?? 0) + 1;
       byClass[r.class] = (byClass[r.class] ?? 0) + 1;
     }
+    // Positive paths come only from this request's scan, never the historical ledger
+    // or a class-to-Slice prediction. A partial scan can still establish a positive
+    // observation; everything it did not observe remains unknown.
+    const confinementPaths = observedTaskScopePaths((liveTick?.scannedProcesses ?? []).map((p) => p.cgroupPath));
     const sampledAtMs = Date.now();
     pruneCpuSamples(sampledAtMs);
 
@@ -546,7 +550,7 @@ export default defineTool({
               },
               ...(live ? { live } : {}),
               tasks: displayRows.map((r) => {
-                const confinement = resolveTaskConfinement(r);
+                const confinement = resolveTaskConfinement(r, undefined, confinementPaths);
                 const nowMs = Date.now();
                 const cpuSampledAt = r.cpuSampledAt ?? null;
                 const rssSampledAt = r.rssSampledAt ?? null;

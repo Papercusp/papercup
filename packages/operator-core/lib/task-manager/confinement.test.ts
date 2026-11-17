@@ -1,19 +1,18 @@
 /**
  * confinement.test.ts — P-023 / WI-2141828 / D-111.
  *
- * The load-bearing test here is `ignores the stored cgroup_path`. ~1300 historical
+ * The load-bearing tests reject the stored cgroup_path AND class-based guesses. Historical
  * agent-session rows hold the SPAWNER's cgroup in that column (the pre-EI-9748
  * `papercup-dev-api.service` value), and D-111 binds this read surface never to present
  * one as current truth. A resolver that simply echoed the column would pass every other
  * assertion in this file, so that test is what separates a fix from a rename.
  *
- * No module mocking: a fake `CgroupFs` drives the operator's own /proc read, so the real
- * parse + derivation path is exercised end to end.
+ * No module mocking: a fake CgroupFs and same-request scan paths exercise the real resolver.
  */
 import { describe, expect, it } from 'vitest';
 
 import type { CgroupFs } from './cgroup-read';
-import { resolveTaskConfinement } from './confinement';
+import { observedTaskScopePaths, resolveTaskConfinement } from './confinement';
 
 const USER_MANAGER = '/user.slice/user-1000.slice/user@1000.service';
 /** Where the operator itself lives — and the exact wrong value the ledger recorded. */
@@ -30,23 +29,26 @@ function fsWithOwnCgroup(path: string): CgroupFs {
 
 const operatorFs = fsWithOwnCgroup(OPERATOR_CGROUP);
 
-const AGENT_SESSION_SCOPE = `${USER_MANAGER}/papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice/pc-abc.scope`;
+const AGENT_SESSION_SCOPE = `${USER_MANAGER}/papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice/pc-abc1234.scope`;
+const agentObservations = observedTaskScopePaths([AGENT_SESSION_SCOPE]);
 
 describe('resolveTaskConfinement', () => {
-  it('ignores the stored cgroup_path and DERIVES from the scope unit (D-111)', () => {
+  it('ignores the stored spawner cgroup and uses the current exact scope observation (D-111)', () => {
     // Exactly the shape of a historical row: confined, a good scope_unit, and a
     // cgroup_path naming the operator because the /proc read caught the spawner.
     const c = resolveTaskConfinement(
       {
+        taskId: 'abc1234',
         confined: true,
-        scopeUnit: 'pc-abc.scope',
+        scopeUnit: 'pc-abc1234.scope',
         class: 'agent-session',
         cgroupPath: OPERATOR_CGROUP,
       },
       operatorFs,
+      agentObservations,
     );
 
-    expect(c.source).toBe('derived-from-scope-unit');
+    expect(c.source).toBe('observed-at-reconcile');
     expect(c.cgroupPath).toBe(AGENT_SESSION_SCOPE);
     // The point of the whole item: the wrong stored value must not survive the read.
     expect(c.cgroupPath).not.toBe(OPERATOR_CGROUP);
@@ -54,8 +56,9 @@ describe('resolveTaskConfinement', () => {
 
   it('answers "an operator restart does not kill this agent" for a post-EI-9748 session', () => {
     const c = resolveTaskConfinement(
-      { confined: true, scopeUnit: 'pc-abc.scope', class: 'agent-session', cgroupPath: OPERATOR_CGROUP },
+      { taskId: 'abc1234', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session', cgroupPath: OPERATOR_CGROUP },
       operatorFs,
+      agentObservations,
     );
     expect(c).toMatchObject({ confined: true, insideOperatorCgroup: false });
   });
@@ -66,8 +69,9 @@ describe('resolveTaskConfinement', () => {
   it('reports insideOperatorCgroup TRUE when the operator really does contain the scope', () => {
     const nested = fsWithOwnCgroup(`${USER_MANAGER}/papercusp.slice`);
     const c = resolveTaskConfinement(
-      { confined: true, scopeUnit: 'pc-abc.scope', class: 'agent-session' },
+      { taskId: 'abc1234', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session' },
       nested,
+      agentObservations,
     );
     expect(c).toMatchObject({ confined: true, insideOperatorCgroup: true });
   });
@@ -85,6 +89,7 @@ describe('resolveTaskConfinement', () => {
         cgroupPath: observedPath,
       },
       operatorFs,
+      observedTaskScopePaths([observedPath]),
     );
 
     expect(c).toEqual({
@@ -113,11 +118,43 @@ describe('resolveTaskConfinement', () => {
     expect(c).toMatchObject({ confined: false, scopeUnit: null, source: 'recorded-at-spawn' });
   });
 
-  it('expands the systemd slice hierarchy rather than treating the name as one directory', () => {
-    const c = resolveTaskConfinement({ confined: true, scopeUnit: 'pc-1.scope', class: 'bash-job' }, operatorFs);
-    expect(c.cgroupPath).toBe(
-      `${USER_MANAGER}/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/pc-1.scope`,
+  it.each(['papercusp.slice', 'papercusp.slice/papercusp-deploy.slice', 'papercusp.slice/legacy.slice'])(
+    'uses the actual %s slice for a deploy unit instead of its class default', (slice) => {
+      const scopeUnit = 'pc-release123.service';
+      const actualPath = `${USER_MANAGER}/${slice}/${scopeUnit}`;
+      const c = resolveTaskConfinement(
+        { taskId: 'release123', confined: true, scopeUnit, class: 'deploy', cgroupPath: OPERATOR_CGROUP },
+        operatorFs,
+        observedTaskScopePaths([`${actualPath}/worker`]),
+      );
+      expect(c).toMatchObject({ cgroupPath: actualPath, source: 'observed-at-reconcile', insideOperatorCgroup: false });
+    },
+  );
+
+  it('does not turn a class prediction or stored path into a current observation', () => {
+    const c = resolveTaskConfinement(
+      { taskId: 'abc1234', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session', cgroupPath: AGENT_SESSION_SCOPE },
+      operatorFs,
     );
+    expect(c).toMatchObject({ confined: true, cgroupPath: null, scopeUnit: 'pc-abc1234.scope', source: 'not-derivable' });
+    expect(c).not.toHaveProperty('insideOperatorCgroup');
+    expect(c).toHaveProperty('reason', expect.stringContaining('live:true'));
+  });
+
+  it('rejects a current scope observation belonging to a different task', () => {
+    const c = resolveTaskConfinement(
+      { taskId: 'other', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session' },
+      operatorFs,
+      agentObservations,
+    );
+    expect(c.cgroupPath).toBeNull();
+    expect(c).not.toHaveProperty('insideOperatorCgroup');
+  });
+
+  it('does not retain an observation across requests or trust an old residue path', () => {
+    const row = { taskId: 'abc1234', state: 'unaccounted' as const, confined: true, scopeUnit: 'pc-abc1234.scope', class: 'other', cgroupPath: AGENT_SESSION_SCOPE };
+    expect(resolveTaskConfinement(row, operatorFs, agentObservations).cgroupPath).toBe(AGENT_SESSION_SCOPE);
+    expect(resolveTaskConfinement(row, operatorFs).cgroupPath).toBeNull();
   });
 
   it('reports a confined task with no scope unit as UNKNOWN, never as unconfined', () => {
@@ -155,17 +192,44 @@ describe('resolveTaskConfinement', () => {
     // operator restart kills the agent — the exact wrong answer, restored by a typo.
     const siblingFs = fsWithOwnCgroup(`${USER_MANAGER}/papercusp.slice/papercusp-agent.slice/papercusp-agent`);
     const c = resolveTaskConfinement(
-      { confined: true, scopeUnit: 'pc-abc.scope', class: 'agent-session' },
+      { taskId: 'abc1234', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session' },
       siblingFs,
+      agentObservations,
     );
     expect(c).toMatchObject({ insideOperatorCgroup: false });
   });
 
-  it('still derives a path when the process is not under a user manager at all', () => {
-    const container = fsWithOwnCgroup('/system.slice/papercusp.service');
-    const c = resolveTaskConfinement({ confined: true, scopeUnit: 'pc-9.scope', class: 'bash-job' }, container);
+  it('leaves containment unknown when the operator cgroup read is unavailable', () => {
+    const unreadable: CgroupFs = { readFile: () => null, readDir: () => [], isDir: () => false };
+    const c = resolveTaskConfinement(
+      { taskId: 'abc1234', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session' }, unreadable, agentObservations,
+    );
+    expect(c.cgroupPath).toBe(AGENT_SESSION_SCOPE);
+    expect(c).not.toHaveProperty('insideOperatorCgroup');
+  });
+});
 
-    expect(c.source).toBe('derived-from-scope-unit');
-    expect(c.cgroupPath).toBe('/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/pc-9.scope');
+describe('observedTaskScopePaths', () => {
+  it.each([199, 200, 201, 1000])('finds the decisive path after %i unrelated observations', (count) => {
+    const paths = Array.from({ length: count }, (_, i) => `${USER_MANAGER}/papercusp.slice/pc-task${i}.scope`);
+    for (const scan of [[...paths, AGENT_SESSION_SCOPE], [AGENT_SESSION_SCOPE, ...paths]]) {
+      expect(observedTaskScopePaths(scan).get('pc-abc1234.scope')).toBe(AGENT_SESSION_SCOPE);
+    }
+  });
+
+  it('rejects conflicting roots in every scan order, including later corroboration', () => {
+    const other = `${USER_MANAGER}/papercusp.slice/pc-abc1234.scope`;
+    for (const paths of [[AGENT_SESSION_SCOPE, other, AGENT_SESSION_SCOPE], [other, AGENT_SESSION_SCOPE, other]]) {
+      const observed = observedTaskScopePaths(paths);
+      expect(observed.get('pc-abc1234.scope')).toBeNull();
+      expect(resolveTaskConfinement(
+        { taskId: 'abc1234', confined: true, scopeUnit: 'pc-abc1234.scope', class: 'agent-session' }, operatorFs, observed,
+      ).cgroupPath).toBeNull();
+    }
+  });
+
+  it('rejects paths outside the owned slice and noncanonical paths', () => {
+    const invalid = [OPERATOR_CGROUP, AGENT_SESSION_SCOPE.slice(1), `${AGENT_SESSION_SCOPE}/..`, `${AGENT_SESSION_SCOPE}//worker`];
+    expect(observedTaskScopePaths(invalid).size).toBe(0);
   });
 });

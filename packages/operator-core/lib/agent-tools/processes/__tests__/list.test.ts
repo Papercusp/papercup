@@ -1177,7 +1177,7 @@ describe('processes:list structured output', () => {
 });
 
 /**
- * P-023/D-111 — the tool must DERIVE confinement, never surface the stored column.
+ * P-023/D-111 — the tool must use a current kernel observation, never a stored or predicted path.
  *
  * `confinement.test.ts` proves the resolver. Nothing proved the TOOL calls it, and that
  * is the regression with teeth: replacing `resolveTaskConfinement(r)` with the obvious
@@ -1319,16 +1319,28 @@ describe('processes:list confinement (P-023/D-111)', () => {
     });
   });
 
-  it('derives the path from scope_unit and does NOT echo the stored spawner cgroup', async () => {
+  it('leaves the path and restart containment unknown without a current scan', async () => {
     const [task] = await tasksFor(confinedRow());
 
-    expect(task!.confinement.source).toBe('derived-from-scope-unit');
+    expect(task!.confinement.source).toBe('not-derivable');
     expect(task!.confinement.scopeUnit).toBe('pc-agent-row.scope');
-    // The derived root depends on the host's own cgroup, so assert the PROPERTY that
-    // distinguishes derivation from a column read rather than a literal path.
-    expect(task!.confinement.cgroupPath).toContain('pc-agent-row.scope');
-    expect(task!.confinement.cgroupPath).not.toBe(STORED_SPAWNER_CGROUP);
-    expect(task!.confinement.cgroupPath).not.toContain('papercup-dev-api.service');
+    expect(task!.confinement.cgroupPath).toBeNull();
+    expect(task!.confinement).not.toHaveProperty('insideOperatorCgroup');
+  });
+
+  it.each([false, true])('uses the same-request alternate slice observation (degraded=%s)', async (degraded) => {
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    const path = '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-release123.service';
+    mockResolvedOnceTyped(reconcileTick, tickResult({
+      degraded,
+      scannedProcesses: [{ pid: 123, cgroupPath: `${path}/worker`, owned: true, scope: 'owned', processIdentity: 'linux:boot:123', cmdline: 'release', exemptReason: null }],
+    }));
+    const row = confinedRow({ taskId: 'release123', scopeUnit: 'pc-release123.service', class: 'deploy' });
+    const [task] = await tasksFor(row, { live: true, taskId: 'release123' });
+    expect(task!.confinement).toMatchObject({ cgroupPath: path, source: 'observed-at-reconcile' });
+    const [later] = await tasksFor(row, { taskId: 'release123' });
+    expect(later!.confinement.cgroupPath).toBeNull();
+    expect(later!.confinement).not.toHaveProperty('insideOperatorCgroup');
   });
 
   it('reports an unaccounted exact task scope from its observed cgroup path', async () => {
@@ -1336,6 +1348,10 @@ describe('processes:list confinement (P-023/D-111)', () => {
     const scopeUnit = 'pc-abc123.scope';
     const observedPath =
       `/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-sidecar.slice/${scopeUnit}`;
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    mockResolvedOnceTyped(reconcileTick, tickResult({ scannedProcesses: [{
+      pid: 123, cgroupPath: observedPath, owned: true, scope: 'owned', processIdentity: null, cmdline: 'residue', exemptReason: null,
+    }] }));
     const [task] = await tasksFor(
       confinedRow({
         taskId,
@@ -1346,6 +1362,7 @@ describe('processes:list confinement (P-023/D-111)', () => {
         scopeUnit,
         cgroupPath: observedPath,
       }),
+      { live: true, taskId },
     );
 
     expect(task).toMatchObject({
