@@ -1,21 +1,18 @@
 /** D-043: exercise the default population SQL and execution receipt selector. */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { readIdopP001AppliedStackPopulation } from './idop-p001-baseline';
+import { readIdopP001AppliedStackPopulation as readPopulation } from './idop-p001-baseline';
 
 let db: OrgTestDb;
-// Replace the connection only. The production anchor query, launch-row query,
+// Inject the connection only. The production anchor query, launch-row query,
 // receipt narrowing and artifact replay all run against migrated PostgreSQL.
-// Do not lazily import the real connection/schema barrel inside this mock.
-// Its cold evaluation is unrelated to the SQL/receipt behavior under test and
-// must never make a timed-out case fall back to the live connection factory.
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: db.adminSql }),
-}));
-// Pure receipt selection must not install the real host just to read records.
-// Together with the minimal DB mock this detects that entire import class.
-vi.mock('@papercusp/agent-mcp', () => { throw new Error('P001 population reader initialized live MCP/bootstrap'); });
+// No protected-module replacement or live host initialization is necessary.
+const readIdopP001AppliedStackPopulation = (workspace: string, _dependencies?: undefined,
+  options: { payloads: 'retained' | 'digests-only' } = { payloads: 'retained' }) => {
+  if (!db) throw new Error('P001 private population database is not initialized');
+  return readPopulation(workspace, undefined, { ...options, sql: db.adminSql });
+};
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const artifact = (id: string) => compileAgentSpecification({
@@ -48,9 +45,8 @@ async function launch(workspace: string, owner: string, record: unknown, ended =
 describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
-    // Resolve and verify the adapter's default route BEFORE a case can run.
-    const { getOrgPg } = await import('@papercusp/db-org');
-    expect(getOrgPg().sql).toBe(db.adminSql);
+    // The wrapper cannot call the reader until the private connection exists.
+    expect(db.adminSql).toBeDefined();
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 

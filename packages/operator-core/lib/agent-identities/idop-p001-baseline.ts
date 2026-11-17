@@ -1653,7 +1653,7 @@ type AppliedStackDependencies = {
 export async function readIdopP001AppliedStackPopulation(
   workspaceId: string,
   dependencies?: AppliedStackDependencies,
-  options: { payloads: 'retained' | 'digests-only' } = { payloads: 'retained' },
+  options: { payloads: 'retained' | 'digests-only'; sql?: import('postgres').Sql } = { payloads: 'retained' },
 ) {
   if (!workspaceId.trim() || workspaceId !== workspaceId.trim()) throw new Error('IDOP applied stacks require a workspace');
   if (options.payloads !== 'retained' && options.payloads !== 'digests-only') {
@@ -1715,10 +1715,10 @@ export async function readIdopP001AppliedStackPopulation(
       includesInactiveAnchors: true as const, livenessMeasured: false as const, stacks, refused };
   };
   if (dependencies) return enumerate(dependencies);
-  const [{ getOrgPg }, { narrowedLaunchSpecToAppliedPairSql }] = await Promise.all([
-    import('@papercusp/db-org'), import('../capability-envelope/identity-receipt-narrowing'),
-  ]);
-  const sql = getOrgPg().sql;
+  const { narrowedLaunchSpecToAppliedPairSql } = await import('../capability-envelope/identity-receipt-narrowing');
+  // A private test connection exercises these exact queries without importing
+  // the live DB/bootstrap barrel or replacing its growing export surface.
+  const sql = options.sql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
   // One MVCC snapshot binds anchors and latest launch rows, including while
   // other sessions activate. Batch BEFORE reading bodies and reuse the gate's
   // exact per-row history narrowing; never retrieve every historical receipt.
