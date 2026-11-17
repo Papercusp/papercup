@@ -40,6 +40,6 @@ process.on('message', (message: { type: string; requestId: string; url?: string;
     process.send?.({ requestId: message.requestId, type: 'result', pid: process.pid,
       installId: row?.installId, grant: currentPortalRelayDesktopGrant(row),
       machinePublicKey: machine.publicKey.toString('base64'), connector: portalRelayConnectorStatus() });
-  }).catch(error => process.send?.({ requestId: message.requestId, type: 'error', code: error.code, message: error.message }));
+  }).catch(error => { process.send?.({ requestId: message.requestId, type: 'error', code: error.code, message: error.message }); });
 });
 process.on('disconnect', () => { stopPortalRelayConnector('fixture_disconnected'); process.exit(0); });
