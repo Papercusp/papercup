@@ -11,10 +11,12 @@ import * as ts from 'typescript';
 import { archivePrivateOperatorApiBuild, assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration,
   buildPrivateOperatorApiBundle, censusPrivateRuntimeArtifact, preparePrivateOperatorApiBundle,
   privateOperatorApiBuildBudget, privateBundleRuntimeEnv, privateGitCloneBundleEnv, privateMcpSourceSha,
-  privatePgStartupIdentity, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
+  privatePgStartupIdentity, readPrivateMcpServingGeneration, resolvePreparedPrivateApiSourceSha, stopPrivateOperatorHost,
   waitForPrivateOperator, type PrivateHostStopObservation } from './private-http-workspace-preflight';
 import { createHash, randomUUID } from 'node:crypto';
 import { readProcessIdentity } from '../lib/process-identity';
+import { composeServingGeneration, readServingGeneration, REQUIRED_SERVING_MIGRATIONS } from '../lib/serving-generation';
+import { digestAppliedMigrationRows } from '../lib/migration-drift';
 import { hashNativeArtifactBytes, readNativeProcessTraceArtifacts } from '../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const dirs: string[] = [];
@@ -1513,4 +1515,64 @@ it('carries the prepared source pin and refuses unknown or foreign private MCP g
   expect(() => assertPrivateMcpToolsListGeneration(generation, [
     { _meta: { 'papercusp/servingGeneration': `serving-generation-v1:${'b'.repeat(64)}` } },
   ])).toThrow(/unknown or foreign/);
+});
+
+function privateMcpGenerationFixture() {
+  const rows = REQUIRED_SERVING_MIGRATIONS.map(filename => ({ filename, sha256: 'a'.repeat(64) }));
+  const appliedMigrations = { state: 'known' as const, rows, digest: digestAppliedMigrationRows(rows) };
+  const buildSha = 'abcdef123456';
+  const clientRegistry = 'projected-tool-registry-v1:0000000000000000';
+  const serverRegistry = 'projected-tool-registry-v1:ffffffffffffffff';
+  const served = composeServingGeneration({ buildSha, appliedMigrations, toolRegistryRevision: serverRegistry });
+  expect(served.state).toBe('known');
+  if (served.state !== 'known') throw new Error('fixture serving generation must be known');
+  const tools: Array<{ _meta: Record<string, unknown> }> = [{ _meta: { 'papercusp/servingGeneration': served.revision,
+    'papercusp/toolRegistryRevision': serverRegistry } }];
+  const readGeneration: typeof readServingGeneration = options => readServingGeneration({
+    ...options, appliedMigrations, toolRegistryRevision: options?.toolRegistryRevision ?? clientRegistry,
+  });
+  return { buildSha, appliedMigrations, serverRegistry, clientRegistry, served, tools, readGeneration };
+}
+
+it('qualifies a private MCP generation when the client has only a partial tool registry', async () => {
+  const { buildSha, served, tools, readGeneration } = privateMcpGenerationFixture();
+  const expected = await readPrivateMcpServingGeneration(buildSha, tools, readGeneration);
+  expect(expected).toEqual(served);
+  if (expected.state !== 'known') throw new Error('private generation must be known');
+  expect(() => assertPrivateMcpToolsListGeneration(expected.revision, tools)).not.toThrow();
+});
+
+it.each(['source', 'migrations', 'registry'])('refuses a private MCP generation with foreign %s inputs', async changed => {
+  const { buildSha, appliedMigrations, serverRegistry, clientRegistry, tools, readGeneration } = privateMcpGenerationFixture();
+  const rows = appliedMigrations.rows.map(row => ({ ...row, sha256: 'b'.repeat(64) }));
+  const foreign = composeServingGeneration({
+    buildSha: changed === 'source' ? 'fedcba654321' : buildSha,
+    appliedMigrations: changed === 'migrations'
+      ? { state: 'known', rows, digest: digestAppliedMigrationRows(rows) } : appliedMigrations,
+    toolRegistryRevision: serverRegistry,
+  });
+  if (foreign.state !== 'known') throw new Error('foreign generation must be attributable');
+  tools[0]!._meta['papercusp/servingGeneration'] = foreign.revision;
+  if (changed === 'registry') tools[0]!._meta['papercusp/toolRegistryRevision'] = clientRegistry;
+  const expected = await readPrivateMcpServingGeneration(buildSha, tools, readGeneration);
+  if (expected.state !== 'known') throw new Error('expected generation must be known');
+  expect(() => assertPrivateMcpToolsListGeneration(expected.revision, tools)).toThrow(/unknown or foreign/);
+});
+
+it.each(['missing', 'unknown', 'malformed', 'mixed'])('refuses %s private MCP catalog identity', async kind => {
+  const { buildSha, tools, readGeneration } = privateMcpGenerationFixture();
+  if (kind === 'missing') delete tools[0]!._meta['papercusp/toolRegistryRevision'];
+  else if (kind === 'mixed') tools.push({ _meta: { ...tools[0]!._meta,
+    'papercusp/toolRegistryRevision': 'projected-tool-registry-v1:1111111111111111' } });
+  else tools[0]!._meta['papercusp/toolRegistryRevision'] = kind === 'unknown' ? 'unknown' : 123;
+  await expect(readPrivateMcpServingGeneration(buildSha, tools, readGeneration)).rejects.toThrow(/registry revision/);
+});
+
+it('refuses mixed private MCP generations and an empty catalog', async () => {
+  const { buildSha, tools, readGeneration } = privateMcpGenerationFixture();
+  await expect(readPrivateMcpServingGeneration(buildSha, [], readGeneration)).rejects.toThrow(/no tools/);
+  const expected = await readPrivateMcpServingGeneration(buildSha, tools, readGeneration);
+  if (expected.state !== 'known') throw new Error('expected generation must be known');
+  tools.push({ _meta: { ...tools[0]!._meta, 'papercusp/servingGeneration': `serving-generation-v1:${'a'.repeat(64)}` } });
+  expect(() => assertPrivateMcpToolsListGeneration(expected.revision, tools)).toThrow(/unknown or foreign/);
 });

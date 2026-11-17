@@ -20,6 +20,7 @@ import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-he
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
 import { linuxProcStateFromStat, linuxStartTicksFromProcStat, readProcessIdentity } from '../lib/process-identity';
 import { processMonotonicClock } from '../lib/process-monotonic-clock';
+import { readServingGeneration } from '../lib/serving-generation';
 import type { CurrentBenchTaskEndpointObservation } from '../lib/external-bench/current-su';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
@@ -932,6 +933,26 @@ export function assertPrivateMcpToolsListGeneration(expectedGeneration: string,
   assert.ok(generations.every(value => value === expectedGeneration),
     'Private MCP tools/list returned an unknown or foreign serving generation');
   return { servingGeneration: expectedGeneration, toolCount: tools.length };
+}
+
+/**
+ * A client has not loaded the API's tool catalogue. Bind its independently
+ * pinned source and private migration frontier to the complete registry
+ * advertised by tools/list, just as the MCP host does when composing its
+ * generation. A partial client registry is not the serving contract.
+ */
+export async function readPrivateMcpServingGeneration(expectedSourceSha: string,
+  tools: readonly { _meta?: Record<string, unknown> | null }[],
+  readGeneration: typeof readServingGeneration = readServingGeneration) {
+  assert.match(expectedSourceSha, /^[a-f0-9]{7,64}$/, 'Prepared private MCP source SHA must be attributable');
+  assert.ok(tools.length > 0, 'Private MCP tools/list returned no tools');
+  const revisions = tools.map(tool => tool._meta?.['papercusp/toolRegistryRevision']);
+  const registryRevision = revisions[0];
+  assert.ok(typeof registryRevision === 'string' && /^projected-tool-registry-v1:[a-f0-9]{16}$/.test(registryRevision),
+    'Private MCP tools/list omitted its complete tool registry revision');
+  assert.ok(revisions.every(value => value === registryRevision),
+    'Private MCP tools/list mixed tool registry revisions');
+  return readGeneration({ buildSha: expectedSourceSha, toolRegistryRevision: registryRevision });
 }
 
 /** Prepared ESM bundles must not inherit test transformers or Vitest's passive

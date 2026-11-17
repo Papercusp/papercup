@@ -13,11 +13,11 @@ import { readPgBackendCensus } from './_pg-backend-census';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
 import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
-import { readServingGeneration } from '../lib/serving-generation';
+import type { ServingGeneration } from '../lib/serving-generation';
 import { assertPrivateMcpSourceIdentity, assertPrivateMcpToolsListGeneration, buildPrivateOperatorApiBundle,
   privateBundleRuntimeEnv, privateNativeDockerHost, waitForPrivateOperator, stopPrivateOperatorHost,
   qualifyCommittedReaderSource, observeCommittedReaderLoadedSources, retainCommittedReaderWorkerEnvironment,
-  parsePrivateCompletionFixtureControls, parsePrivateHttpScenario,
+  parsePrivateCompletionFixtureControls, parsePrivateHttpScenario, readPrivateMcpServingGeneration,
   resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle, resolvePreparedPrivateApiSourceSha } from './private-http-workspace-preflight';
 import { captureIsolatedWorker, codexManagedToolsNativeProofOptions, isolatedWorkerOptions, isolatedWorkerFailureDetail, isolatedWorkerReceipt,
   retainIsolatedWorkerProgress, withNativeProofLedger, nativeProofRecorder, type NativeProofRecorder } from './isolated-integration-proof';
@@ -376,15 +376,13 @@ async function main(native?: NativeProofRecorder) {
   if (isCurrentSuNative || isPrivateMcpPreflightOnly) {
     const preflightPath = join(evidenceDir, 'private-mcp-preflight.json');
     let expectedServingGeneration: string | null = null;
+    let expectedGeneration: ServingGeneration | null = null;
+    let listedRegistryRevisions: unknown[] = [];
+    let listedServingGenerations: unknown[] = [];
     let identity: ReturnType<typeof assertPrivateMcpToolsListGeneration> | undefined;
     try {
       assert.ok(preparedSourceSha, 'Current-su native MCP requires the prepared source pin');
       assertPrivateMcpSourceIdentity(preparedSourceSha, health.sha);
-      const expectedGeneration = await readServingGeneration({ buildSha: preparedSourceSha });
-      if (expectedGeneration.state !== 'known') {
-        throw new Error(`Private native MCP serving generation is unknown: ${expectedGeneration.reason}`);
-      }
-      expectedServingGeneration = expectedGeneration.revision;
       const { isValidSuperuserBearer, readSuperuserToken } = await import('../lib/superuser-token');
       const token = readSuperuserToken();
       assert.ok(isValidSuperuserBearer(token), 'Private native MCP preflight requires its private bearer');
@@ -401,14 +399,21 @@ async function main(native?: NativeProofRecorder) {
       } finally {
         await client.close();
       }
+      listedRegistryRevisions = [...new Set(listing.tools.map(tool => tool._meta?.['papercusp/toolRegistryRevision'] ?? null))];
+      listedServingGenerations = [...new Set(listing.tools.map(tool => tool._meta?.['papercusp/servingGeneration'] ?? null))];
+      expectedGeneration = await readPrivateMcpServingGeneration(preparedSourceSha, listing.tools);
+      if (expectedGeneration.state !== 'known') {
+        throw new Error(`Private native MCP serving generation is unknown: ${expectedGeneration.reason}`);
+      }
+      expectedServingGeneration = expectedGeneration.revision;
       identity = assertPrivateMcpToolsListGeneration(expectedGeneration.revision, listing.tools);
       writeFileSync(preflightPath, JSON.stringify({
-        sourceSha: preparedSourceSha, healthSha: health.sha, ...identity,
+        sourceSha: preparedSourceSha, healthSha: health.sha, ...identity, expectedGeneration,
       }), { flag: 'wx', mode: 0o600 });
     } catch (error) {
       writeFileSync(preflightPath, JSON.stringify({
         outcome: 'failed', sourceSha: preparedSourceSha ?? null, healthSha: health.sha ?? null,
-        expectedServingGeneration,
+        expectedServingGeneration, expectedGeneration, listedRegistryRevisions, listedServingGenerations,
         error: error instanceof Error ? error.message : String(error),
       }), { flag: 'wx', mode: 0o600 });
       throw error;
