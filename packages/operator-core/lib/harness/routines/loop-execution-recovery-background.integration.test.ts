@@ -1,6 +1,7 @@
 /** Current-build acceptance for the accepted-successor guard race. Shared
  * bg-host adoption and deployed shipment require their own evidence. */
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +31,11 @@ it('verifies the accepted-successor guard in an original isolated background wor
       'phases/execute/recovery-test-receipts.ndjson'],
     execute: async (observe, evidenceDir) => {
       const receipts = join(evidenceDir, 'recovery-test-receipts.ndjson');
+      // The nested suite has its own requested-file population. Reusing the
+      // encompassing group's identity adds an unrequested file to its ledger.
+      const childRunGroup = randomUUID();
       const environment: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+        PAPERCUSP_TEST_RUN_GROUP: childRunGroup,
         PAPERCUSP_TEST_RUNS_DB_URL: resolveExecutedMapPgUrl().url,
         PAPERCUSP_TEST_RUN_HARNESS: 'papercusp', PAPERCUSP_TEST_RUN_WORKSPACE: 'papercusp-workspace',
         PAPERCUSP_TEST_RUN_RECEIPT_FILE: receipts,
@@ -68,12 +73,13 @@ it('verifies the accepted-successor guard in an original isolated background wor
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const row = rows.find(value => value.filePath === assertion);
         expect(row).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-          passed: 1, failed: 0, collectionFailed: false, passedCaseTitles: [caseTitle] } } });
+          runGroupId: childRunGroup, passed: 1, failed: 0, collectionFailed: false, passedCaseTitles: [caseTitle] } } });
+        expect(row.row.executionDetails.runGroupId).not.toBe(process.env.PAPERCUSP_TEST_RUN_GROUP);
         // This route selects one journey. The original complete 115-case source
         // proof remains separate; excluded cases cannot count as runtime passes.
         expect(result.output).toMatch(/TEST_FILE_RESULT[^\n]*status=passed[^\n]*childSubstituted=0/);
         console.info('LOOP_RECOVERY_BACKGROUND_ACCEPTANCE ' + JSON.stringify({
-          selectedCase: caseTitle, environmentObserved, testRunId: row.row.id,
+          selectedCase: caseTitle, environmentObserved, childRunGroup,
           scope: 'isolated current-build background; shared bg-host adoption unmeasured',
         }));
       } finally {
