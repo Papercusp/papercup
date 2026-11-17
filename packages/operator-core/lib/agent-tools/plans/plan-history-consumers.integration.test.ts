@@ -56,7 +56,7 @@ import { engineeringEvidenceQuery, readEngineeringEvidence } from '../../code-in
 import { appendPipelineEvent } from '../../harness/git-sync/pipeline-events';
 import { PgL2Store } from '../../cache/pg-l2-store';
 import { recordCommitAttribution } from '../../edit-attribution';
-import { flushFallbackObservations, observeFallback } from '../../degradation/fallback-observations';
+import { FALLBACK_FLUSH_BATCH, flushFallbackObservations, observeFallback } from '../../degradation/fallback-observations';
 import { createDurableCrashHarness } from '../../../test/_durable-orchestration-crash-harness';
 import { composeDurableCaptureCensus } from '../../../test/_durable-orchestration-capture';
 
@@ -1226,9 +1226,25 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     expect(serializerSource).toContain('parameters[i] = x = type in options.serializers');
     expect(serializerSource).toContain('options.serializers[type](x)');
     const serializerSourceRef = `source:${fileURLToPath(new URL(serializerPath, import.meta.url))}@${digest(serializerSource)}#Bind`;
+    // The maintained writer chunks at FALLBACK_FLUSH_BATCH. Pin its source
+    // template and enroll every permitted cardinality before execution; model
+    // timing can produce any batch size, including the original four-row miss.
+    const fallbackWriterSource = await readFile(new URL('../../degradation/fallback-observations.ts', import.meta.url), 'utf8');
+    const fallbackColumns = ['workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope',
+      'process_tag', 'correlation_id', 'observed_at', 'samples', 'population_known'];
+    expect(fallbackWriterSource).toContain("${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at', 'samples', 'population_known')}");
+    expect(fallbackWriterSource).toContain('rows.slice(i, i + FALLBACK_FLUSH_BATCH)');
+    const fallbackBatchSizes = Array.from({ length: FALLBACK_FLUSH_BATCH }, (_, index) => index + 1);
+    const fallbackWriteShapes = fallbackBatchSizes.map(count => {
+      const values = Array.from({ length: count }, (_, row) => '(' + fallbackColumns
+        .map((_, column) => `$${row * fallbackColumns.length + column + 1}`).join(',') + ')').join(',');
+      const statement = '\n    INSERT INTO harness_shared.fallback_observations\n      ('
+        + fallbackColumns.map(column => `"${column}"`).join(',') + ')values' + values + '\n  ';
+      return [digest(statement), count * fallbackColumns.length, '../../degradation/fallback-observations.ts'] as const;
+    });
+    expect(fallbackWriteShapes[3]?.[0]).toBe('538ca0858167b990a9482e189954103b54dbefb0288ad813eb89769fe6ac7e33');
     const observationWrites = (await Promise.all(([
-      ['1f6499853c48d246238643053bea9e1badadff3acf66d02f3aaa264af4f769b0', 11, '../../degradation/fallback-observations.ts'],
-      ['d4590cde1bab3537449c3a6da30041fe8b88be33a48d2f143caf0d7c75cd60e0', 22, '../../degradation/fallback-observations.ts'],
+      ...fallbackWriteShapes,
       ['6bb1972dbd518dd64f34f69acd1a325917b0118c078fd92e390d64e73ba251bc', 12, '../../goals/plan-closure-observations.ts'],
       ['7bf62a411b55921ec42b81623184880e2fdf71b7e9900ba1254cc2e15844c0c7', 12, '../../goals/plan-closure-observations.ts'],
     ] as const).map(async ([queryHash, parameterCount, path]) => {
@@ -1337,6 +1353,13 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       ['dc7242d0b1877e020d67b0812996e53aea09de8bd251d3314d4300642b85f504', 'read', 'SELECT', 'ok', '../../goals/plan-closure-observations.ts'],
       ['af945e6b142f31f4dc430c137ce9d5e97577c87b2c0e10be35e2c66c7bba3666', 'read', 'SELECT', 'ok', '../../plan-acceptance-gate.ts'],
       ['fbc0fd304acbf2cdf1fc4efa1659ef0de0b5b71992f35dc04a47d78ff9ed0970', 'read', 'SELECT', 'ok', '../../session-brief-mission.ts'],
+      // Native285fec19 original C1/C2/C4 misses: exact source-reviewed
+      // execution binding, lifecycle and discovery reads. Originals stay unknown.
+      ['d32162df129145d80c983b768e07377deaec93fad6bfab9d78f9d595074cfe74', 'read', 'SELECT', 'ok', './plan-execution-authority.ts'],
+      ['de9d0ec3f02c768f69904e3a8bd621c111eaae51df7dd5171badd5103f65caba', 'read', 'SELECT', 'ok', '../../work-item-lifecycle-history.ts'],
+      ['977d4868e67c4df203782536dff9ab7d3093616539c36796b807a0a3369757b3', 'control', 'SELECT', 'ok', '../../plan-audits.ts'],
+      ['30208684e394b6f982e6827ecb1ce884b9a7010c3b0d0709bc83c821e2cc8412', 'read', 'SELECT', 'ok', '../../plan-audits.ts'],
+      ['4c27452ecbac890e2c1454b4adbff03ae97fefbe7d48d571aa69eb85f1385590', 'read', 'SELECT', 'ok', '../../plan-audits.ts'],
     ] as const).map(async ([queryHash, kind, command, status, path]) => ({ queryHash, kind, command, status,
       sourceRef: `source:${fileURLToPath(new URL(path, import.meta.url))}@${digest(await readFile(new URL(path, import.meta.url)))}` })));
     if (!readerPreflight) {
@@ -1476,14 +1499,14 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     const defaultDatabase = await defaultFallbackSql`SELECT current_database() AS database`;
     expect(defaultDatabase[0].database).toBe(fixtureDatabase[0].database);
 
-    // Both original fallback batch arities and both actual writer routes are
+    // Every source-permitted batch arity and both actual writer routes are
     // required, independently of what a public reader happens to enqueue.
     await flushFallbackObservations({ sql: admin });
     const fallbackControlHashes: string[] = [];
     const fallbackControls: unknown[] = [];
     const emitFallbackBatches = async (label: string, sql?: postgres.Sql) => {
       const options = sql ? { sql } : {};
-      for (const count of [1, 2]) {
+      for (const count of fallbackBatchSizes) {
         for (let index = 0; index < count; index++) expect(observeFallback('gec-serializer-control', {
           eligible: 1, applied: 0, reason: `original-λ-${label}-${count}-${index}`, scope: h,
         }, { ...options, workspaceId: workspace })).toBe(true);
@@ -1503,7 +1526,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         await fallbackControlTap.run(() => emitFallbackBatches(pool, sql));
         const census = fallbackControlTap.seal();
         expect(census.complete).toBe(true);
-        expect(census.rows).toHaveLength(2);
+        expect(census.rows).toHaveLength(FALLBACK_FLUSH_BATCH);
         expect(census.rows.every(row => row.sql?.pool === pool)).toBe(true);
         const hashes = census.rows.map(row => row.sql!.queryHash);
         expect(hashes.sort()).toEqual(registrations.map(row => row.queryHash).sort());
@@ -2232,6 +2255,8 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                 includeHistory: false } },
               { tool: 'plans:get', args: { slug: p, harness: h, mode: 'full', items: ['P-001'],
                 operationalBrief: true, shipReadiness: true, includeHistory: true } },
+              { tool: 'plans:get', args: { slug: p, harness: h, mode: 'full',
+                operationalBrief: true, executionReadiness: true } },
               { tool: 'plans:get', args: { slug: p, harness: h, includeHistory: true,
                 priorAttemptRefs: [`plan:${p}#comment:${materialized.mapping.e1}`, `${children[24]}#checkpoint`] } },
               ...[true, false].map(include_context => ({ tool: 'graph:query', args: {
@@ -2291,6 +2316,12 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                 'd4590cde1bab3537449c3a6da30041fe8b88be33a48d2f143caf0d7c75cd60e0',
                 '6bb1972dbd518dd64f34f69acd1a325917b0118c078fd92e390d64e73ba251bc',
                 '7bf62a411b55921ec42b81623184880e2fdf71b7e9900ba1254cc2e15844c0c7',
+                'd32162df129145d80c983b768e07377deaec93fad6bfab9d78f9d595074cfe74',
+                'de9d0ec3f02c768f69904e3a8bd621c111eaae51df7dd5171badd5103f65caba',
+                '977d4868e67c4df203782536dff9ab7d3093616539c36796b807a0a3369757b3',
+                '30208684e394b6f982e6827ecb1ce884b9a7010c3b0d0709bc83c821e2cc8412',
+                '4c27452ecbac890e2c1454b4adbff03ae97fefbe7d48d571aa69eb85f1385590',
+                '538ca0858167b990a9482e189954103b54dbefb0288ad813eb89769fe6ac7e33',
               ];
               const observedHashes = new Set([...fallbackControlHashes,
                 ...branchStorage.rows.flatMap(row => row.sql ? [row.sql.queryHash] : [])]);
