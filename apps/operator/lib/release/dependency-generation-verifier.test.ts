@@ -1387,6 +1387,48 @@ describe('D012 native generation closure', () => {
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
   }, 120_000);
 
+  it('reuses unchanged materialized workspace outputs on a dependency snapshot retry', () => {
+    const f = fixture(); f.publish();
+    const first = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest]);
+    expect(first.status, first.stderr).toBe(0);
+    const output = join(f.dest, 'packages/cli/dist/cli.cjs');
+    const before = statSync(output);
+    const retry = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest]);
+    expect(retry.status, retry.stderr).toBe(0);
+    expect(statSync(output).ino).toBe(before.ino);
+    expect(statSync(output).mtimeMs).toBe(before.mtimeMs);
+    expect(readFileSync(join(f.dest, '.papercusp-pinned-deps'), 'utf8')).toContain('mode=generation-copy');
+    expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+  }, 120_000);
+
+  it.each(['bytes', 'missing-file', 'receipt', 'link', 'generation-inode'])(
+    'refuses %s materialized workspace custody before rewriting dependency trees on retry', defect => {
+      const f = fixture(), generation = f.publish();
+      const first = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest]);
+      expect(first.status, first.stderr).toBe(0);
+      const output = join(f.dest, 'packages/cli/dist/cli.cjs');
+      if (defect === 'bytes') { chmodSync(output, 0o644); writeFileSync(output, 'changed output'); }
+      if (defect === 'missing-file') rmSync(output);
+      if (defect === 'receipt') {
+        const receipt = join(f.dest, 'packages/cli/dist/.papercusp-workspace-build.json');
+        chmodSync(receipt, 0o644); writeFileSync(receipt, '{}');
+      }
+      if (defect === 'link') { rmSync(output); symlinkSync('../build.cjs', output); }
+      if (defect === 'generation-inode') {
+        rmSync(output); linkSync(join(generation, 'tree/packages/cli/dist/cli.cjs'), output);
+      }
+      const dependency = join(f.dest, 'node_modules/pkg/index.js');
+      const before = statSync(dependency);
+      const preflight = f.shell(f.snapshotHelper, ['preflight-generation', f.donor, f.dest]);
+      expect(preflight.status, preflight.stderr).not.toBe(0);
+      const retry = f.shell(f.snapshotHelper, ['snapshot-generation-locked', f.donor, f.dest]);
+      expect(retry.status, retry.stderr).not.toBe(0);
+      expect(statSync(dependency).ino).toBe(before.ino);
+      expect(readFileSync(dependency, 'utf8')).toBe('published dependency');
+      expect(existsSync(join(f.dest, '.papercusp-pinned-deps'))).toBe(false);
+      expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
+    }, 120_000);
+
   it('consumes leased workspace and exact desktop closures with donor reads refused and private inodes', async () => {
     const f = fixture(), generation = f.publish();
     rmSync(join(f.donor, 'node_modules'), { recursive: true });

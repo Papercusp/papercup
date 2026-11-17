@@ -394,10 +394,22 @@ export function verifyClosure(generation, sourceRoot, copy = false, materialized
   equal(workspaceRequirements(sourceRoot, archive).map(row => row.output).sort(),
     closure.workspaces.map(row => row.output).sort(), 'workspace-requirements-mismatch');
   const population = closure.workspaces.length ? measuredBuildInputs(sourceRoot, archive) : null;
+  const checkMaterialized = entry => {
+    checkWorkspace(sourceRoot, entry, sourceRoot, population);
+    const receipt = entry.output + '/' + RECEIPT;
+    equal(identity(sourceRoot, receipt), identity(tree, receipt), 'stale-workspace-receipt:' + entry.output);
+    for (const { path } of [...entry.outputs, { path: receipt }]) {
+      const copied = lstatSync(safe(sourceRoot, path)), original = lstatSync(safe(tree, path));
+      if (copied.dev === original.dev && copied.ino === original.ino) fail('linked-generation-output:' + path);
+    }
+  };
   for (const entry of closure.workspaces) {
     if (!entry.output.endsWith('/dist')) fail('invalid-output-path');
     checkWorkspace(tree, entry, sourceRoot, population);
-    if (materialized) checkWorkspace(sourceRoot, entry, sourceRoot, population);
+    // Retries may retain outputs from a completed or interrupted copy. Check
+    // every retained tree before the caller rewrites any dependency tree.
+    if (materialized || lstatSync(safe(sourceRoot, entry.output), { throwIfNoEntry: false }))
+      checkMaterialized(entry);
   }
   const desktop = closure.desktop;
   if (existsSync(join(sourceRoot, 'papercusp-desktop/package.json'))) {
@@ -409,10 +421,15 @@ export function verifyClosure(generation, sourceRoot, copy = false, materialized
   // Validate the entire contract before the first output mutation.
   if (copy) for (const entry of closure.workspaces) {
     const dest = safe(sourceRoot, entry.output);
-    if (existsSync(dest) || lstatSync(dest, { throwIfNoEntry: false })) fail('preexisting-output:' + entry.output);
+    if (lstatSync(dest, { throwIfNoEntry: false })) {
+      // Recheck at the mutation boundary, including a destination that appeared
+      // after preflight; never overwrite it or couple it to generation inodes.
+      checkMaterialized(entry);
+      continue;
+    }
     mkdirSync(dirname(dest), { recursive: true });
     cpSync(safe(tree, entry.output), dest, { recursive: true, dereference: false, force: false, errorOnExist: true });
-    equal(files(sourceRoot, entry.output), entry.outputs, 'copied-output-mismatch:' + entry.output);
+    checkMaterialized(entry);
   }
   return closure;
 }
