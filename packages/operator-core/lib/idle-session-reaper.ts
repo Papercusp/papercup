@@ -1111,6 +1111,7 @@ export async function runWorkItemLeaseReap(
     const nowMs = Date.now();
     const plan = planWorkItemLeaseReap({ leases, liveOwners, nowMs, graceMs: opts.graceMs });
     let ownersReconciled = 0;
+    const reapedIds = dryRun ? plan.reap.map((l) => l.id) : [];
     if (!dryRun && plan.reap.length) {
       // Per distinct dead owner: force-release every lease it holds + reconcile
       // its claim ledger via the SHARED core (work-item-lease-release.ts) — the
@@ -1120,7 +1121,8 @@ export async function runWorkItemLeaseReap(
       const deadOwners = [...new Set(plan.reap.map((l) => l.takenBy))];
       for (const owner of deadOwners) {
         const rel = await releaseAllWorkItemLeasesForOwner(owner);
-        if (rel.claimsCleared) ownersReconciled += 1;
+        reapedIds.push(...rel.releasedIds);
+        if (rel.releasedIds.length || rel.claimsCleared) ownersReconciled += 1;
       }
     }
     // The SU-lock legs are opt-in because this function is also used by isolated
@@ -1147,8 +1149,8 @@ export async function runWorkItemLeaseReap(
     return {
       enabled: true,
       scanned: leases.length,
-      reaped: plan.reap.length,
-      reapedIds: plan.reap.map((l) => l.id),
+      reaped: reapedIds.length,
+      reapedIds,
       ownersReconciled: dryRun ? new Set(plan.reap.map((l) => l.takenBy)).size : ownersReconciled,
       keptLive: plan.keptLive.length,
       keptFresh: plan.keptFresh.length,

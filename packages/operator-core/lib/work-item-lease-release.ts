@@ -29,7 +29,7 @@ import { captureWorkItemFlightRecordsForItems, harnessFromIssueScope } from './w
 export interface OwnerLeaseReleaseResult {
   /** Work-item ids whose lease was released (or found already clear). */
   releasedIds: string[];
-  /** Number of rows swept from the work-item and plan-item coordination claim ledgers. */
+  /** Orphan rows swept after the canonical releases perform their own claim cleanup. */
   claimsCleared: number;
 }
 
@@ -83,28 +83,17 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
       ]);
     }
 
-    // Clear both coordination claim ledgers BEFORE releasing the work-item rows.
-    // releaseWorkItem() also schedules best-effort lease cleanup, so doing this
-    // afterward made the explicit cleanup race with that fire-and-forget path and
-    // report claimsCleared=0 even though the row disappeared (WI-11788/WI-4399).
-    // Plan-item lane claims are a separate table and ownership surface; omitting
-    // them leaves a completed plan item pinned to a dead session (EI-21674158297810406).
-    let claimsCleared = 0;
-    try {
-      claimsCleared = await releaseAllClaimsForOwner(featureWs, ownerId);
-    } catch (e) {
-      console.warn(`[work-item-lease-release] claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
-    }
-    try {
-      claimsCleared += await releaseAllPlanItemClaimsForOwner(featureWs, ownerId);
-    } catch (e) {
-      console.warn(`[work-item-lease-release] plan-item claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
-    }
+    // The guarded canonical release owns per-item claim cleanup. Clearing all
+    // claims first loses a still-held item's lease if its UPDATE/audit fails.
+    // Continue other rows, but retain unswept claims until every release succeeds.
+    let releaseFailed = false;
     for (const r of featureRows) {
       try {
         const released = await releaseWorkItem(r.id, { harness: r.harness, expectedAssignee: ownerId });
         if (released) releasedIds.push(r.id);
+        else releaseFailed = true;
       } catch (e) {
+        releaseFailed = true;
         console.warn(`[work-item-lease-release] release failed for ${r.id} (${ownerId}):`, (e as Error)?.message ?? e);
       }
     }
@@ -112,8 +101,26 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
       try {
         const released = await releaseWorkItem(r.id, { expectedAssignee: ownerId });
         if (released) releasedIds.push(r.id);
+        else releaseFailed = true;
       } catch (e) {
+        releaseFailed = true;
         console.warn(`[work-item-lease-release] release failed for ${r.id} (${ownerId}):`, (e as Error)?.message ?? e);
+      }
+    }
+    // Sweep orphaned claims only after the item releases. This includes the
+    // separate plan ledger (EI-21674158297810406); a failed item remains retryable.
+    // claimsCleared counts these sweeps, not cleanup already done by releaseWorkItem.
+    let claimsCleared = 0;
+    if (!releaseFailed) {
+      try {
+        claimsCleared = await releaseAllClaimsForOwner(featureWs, ownerId);
+      } catch (e) {
+        console.warn(`[work-item-lease-release] claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
+      }
+      try {
+        claimsCleared += await releaseAllPlanItemClaimsForOwner(featureWs, ownerId);
+      } catch (e) {
+        console.warn(`[work-item-lease-release] plan-item claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
       }
     }
     return { releasedIds, claimsCleared };

@@ -14,6 +14,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hostname } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -39,6 +40,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 
 const { runWorkItemLeaseReap, gatherProtectedSessionOwners, gatherBusyOwners } = await import('./idle-session-reaper');
 const { acquireClaimLocal, getClaim } = await import('./work-item-claims');
+const { releaseAllWorkItemLeasesForOwner } = await import('./work-item-lease-release');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
 let db: OrgTestDb;
@@ -187,6 +189,106 @@ describe('runWorkItemLeaseReap (P-001 — the backstop schedule)', () => {
     expect(await featureTakenBy('F-MULTI-1')).toBeNull();
     expect(await featureTakenBy('F-MULTI-2')).toBeNull();
   });
+});
+
+describe('draft 1643 — actual session-death dispatcher custody capture', () => {
+  beforeAll(async () => {
+    // Prospective controls only in this disposable migrated database. The
+    // unarmed draft supplies neither historical continuity nor agent identity.
+    await sql.unsafe(await readFile(new URL(
+      '../../../libs/papercusp/libs/db/sql/1643-work-item-custody-audit-capture.sql.DRAFT', import.meta.url,
+    ), 'utf8'));
+  });
+
+  async function receipts(id: string) {
+    return sql<{
+      details: {
+        eventId: string;
+        before: { taken_by: string | null } | null;
+        after: { taken_by: string | null } | null;
+      };
+    }[]>`SELECT details FROM harness_shared.audit_log
+      WHERE workspace_id = ${WS} AND subject = ${id}
+        AND action = 'work_items:custody:capture' ORDER BY ts, id`;
+  }
+
+  it('captures both released families, preserves another holder, and emits no repeat transition', async () => {
+    const owner = 'su-capture-session-death';
+    await seedFeature('F-CAPTURE-DEATH', owner, 5 * GRACE_MS);
+    await seedIssue('EI-CAPTURE-DEATH', owner, 5 * GRACE_MS);
+    await seedFeature('F-CAPTURE-PEER', 'su-capture-peer', 5 * GRACE_MS);
+    for (const id of ['F-CAPTURE-DEATH', 'EI-CAPTURE-DEATH']) {
+      await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: id, owner });
+    }
+    const before = await Promise.all(['F-CAPTURE-DEATH', 'EI-CAPTURE-DEATH', 'F-CAPTURE-PEER'].map(receipts));
+
+    const result = await releaseAllWorkItemLeasesForOwner(owner);
+    expect(result.releasedIds.sort()).toEqual(['EI-CAPTURE-DEATH', 'F-CAPTURE-DEATH']);
+    expect(await featureTakenBy('F-CAPTURE-DEATH')).toBeNull();
+    expect(await issueAssignee('EI-CAPTURE-DEATH')).toBeNull();
+    expect(await featureTakenBy('F-CAPTURE-PEER')).toBe('su-capture-peer');
+    const after = await Promise.all(['F-CAPTURE-DEATH', 'EI-CAPTURE-DEATH', 'F-CAPTURE-PEER'].map(receipts));
+    for (const [index, id] of ['F-CAPTURE-DEATH', 'EI-CAPTURE-DEATH'].entries()) {
+      expect(await getClaim(WS, HARNESS, id)).toBeNull();
+      const transitions = after[index]!.slice(before[index]!.length).filter(row =>
+        row.details.before?.taken_by !== row.details.after?.taken_by);
+      expect(transitions.map(row => [row.details.before?.taken_by, row.details.after?.taken_by]))
+        .toEqual([[owner, null]]);
+      expect(transitions[0]?.details.eventId).toEqual(expect.any(String));
+    }
+    expect(after[2]).toEqual(before[2]);
+    expect((await releaseAllWorkItemLeasesForOwner(owner)).releasedIds).toEqual([]);
+    expect(await Promise.all(['F-CAPTURE-DEATH', 'EI-CAPTURE-DEATH', 'F-CAPTURE-PEER'].map(receipts))).toEqual(after);
+  });
+
+  for (const route of ['session-death', 'reaper'] as const) {
+    it.each(['feature', 'issue'] as const)(`%s: ${route} retains a rejected capture claim and reports only successful releases`, async (family) => {
+    const id = `${family === 'feature' ? 'F' : 'EI'}-CAPTURE-DEATH-REFUSED`;
+    const owner = 'su-capture-death-refused';
+    if (family === 'feature') await seedFeature(id, owner, 5 * GRACE_MS);
+    else await seedIssue(id, owner, 5 * GRACE_MS);
+    await seedFeature('F-CAPTURE-DEATH-HEALTHY', owner, 5 * GRACE_MS);
+    for (const item of [id, 'F-CAPTURE-DEATH-HEALTHY']) {
+      await acquireClaimLocal({ workspaceId: WS, harnessSlug: HARNESS, workItemId: item, owner });
+    }
+    const lease = await getClaim(WS, HARNESS, id);
+    const before = await receipts(id);
+    await sql.unsafe(`ALTER TABLE harness_shared.audit_log ADD CONSTRAINT refuse_death_custody_capture
+      CHECK (action <> 'work_items:custody:capture' OR subject <> '${id}') NOT VALID`);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let releasedIds: string[];
+    try {
+      if (route === 'session-death') {
+        releasedIds = (await releaseAllWorkItemLeasesForOwner(owner)).releasedIds;
+      } else {
+        const result = await runWorkItemLeaseReap({});
+        releasedIds = result.reapedIds;
+        expect(result.reaped).toBe(1);
+        expect(result.ownersReconciled).toBe(1);
+      }
+      expect(warning).toHaveBeenCalledWith(
+        `[work-item-lease-release] release failed for ${id} (${owner}):`,
+        expect.stringContaining('refuse_death_custody_capture'));
+    } finally {
+      warning.mockRestore();
+      await sql.unsafe('ALTER TABLE harness_shared.audit_log DROP CONSTRAINT refuse_death_custody_capture');
+    }
+    expect(releasedIds).toEqual(['F-CAPTURE-DEATH-HEALTHY']);
+    expect(family === 'feature' ? await featureTakenBy(id) : await issueAssignee(id)).toBe(owner);
+    expect(await receipts(id)).toEqual(before);
+    expect(await getClaim(WS, HARNESS, id)).toEqual(lease);
+    expect(await featureTakenBy('F-CAPTURE-DEATH-HEALTHY')).toBeNull();
+    expect(await getClaim(WS, HARNESS, 'F-CAPTURE-DEATH-HEALTHY')).toBeNull();
+
+    // A later successful attempt clears the retained claim and records the
+    // missing edge. No duplicate attempt or endpoint equality can backfill it.
+    expect((await releaseAllWorkItemLeasesForOwner(owner)).releasedIds).toEqual([id]);
+    expect(await getClaim(WS, HARNESS, id)).toBeNull();
+    expect((await receipts(id)).slice(before.length).filter(row =>
+      row.details.before?.taken_by !== row.details.after?.taken_by).map(row =>
+      [row.details.before?.taken_by, row.details.after?.taken_by])).toEqual([[owner, null]]);
+    });
+  }
 });
 
 describe('gatherProtectedSessionOwners includeClaimHolders toggle (the circularity break)', () => {

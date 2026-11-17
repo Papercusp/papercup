@@ -55,7 +55,7 @@ beforeEach(() => {
 });
 
 describe('releaseAllWorkItemLeasesForOwner flight-record ordering', () => {
-  it('queries held rows and awaits capture before clearing claims or releasing either lease family', async () => {
+  it('captures held rows, then releases each item before sweeping orphan claims', async () => {
     const result = await releaseAllWorkItemLeasesForOwner('su-dead');
 
     expect(h.capture).toHaveBeenCalledWith({
@@ -71,10 +71,11 @@ describe('releaseAllWorkItemLeasesForOwner flight-record ordering', () => {
     expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('claims'));
     expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('release:WI-F'));
     expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('release:EI-I'));
+    expect(h.events.indexOf('release:EI-I')).toBeLessThan(h.events.indexOf('claims'));
     expect(result).toEqual({ releasedIds: ['WI-F', 'EI-I'], claimsCleared: 1 });
   });
 
-  it('sweeps plan-item lane claims before releasing work-item leases', async () => {
+  it('sweeps orphaned plan-item lane claims after successful work-item releases', async () => {
     h.planClaims.mockImplementationOnce(async () => {
       h.events.push('plan-claims');
       return 2;
@@ -84,8 +85,28 @@ describe('releaseAllWorkItemLeasesForOwner flight-record ordering', () => {
 
     expect(h.planClaims).toHaveBeenCalledWith('ws', 'su-dead');
     expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('plan-claims'));
-    expect(h.events.indexOf('plan-claims')).toBeLessThan(h.events.indexOf('release:WI-F'));
-    expect(h.events.indexOf('plan-claims')).toBeLessThan(h.events.indexOf('release:EI-I'));
+    expect(h.events.indexOf('plan-claims')).toBeGreaterThan(h.events.indexOf('release:WI-F'));
+    expect(h.events.indexOf('plan-claims')).toBeGreaterThan(h.events.indexOf('release:EI-I'));
     expect(result).toEqual({ releasedIds: ['WI-F', 'EI-I'], claimsCleared: 3 });
+  });
+
+  it.each(['refused', 'throws'])('retains unswept claims after a release %s and continues other items', async (failure) => {
+    h.release.mockImplementationOnce(async () => {
+      if (failure === 'throws') throw new Error('capture rejected');
+      return false;
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await releaseAllWorkItemLeasesForOwner('su-dead');
+      expect(result).toEqual({ releasedIds: ['EI-I'], claimsCleared: 0 });
+      expect(h.release).toHaveBeenCalledTimes(2);
+      expect(h.claims).not.toHaveBeenCalled();
+      expect(h.planClaims).not.toHaveBeenCalled();
+      if (failure === 'throws') expect(warning).toHaveBeenCalledWith(
+        '[work-item-lease-release] release failed for WI-F (su-dead):', 'capture rejected');
+      else expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
   });
 });
