@@ -170,11 +170,43 @@ describe('stepStandingPrMerge (P-021 + P-024 exact-merge gate)', () => {
     expect(calls.started).toEqual([]);
   });
 
-  it('waits while the suite runs on the merge result', async () => {
+  it.each([false, true])('waits while the suite runs on the merge result (viewer=%s)', async (viewerApproved) => {
     const last = { mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP, result: 'running' as const };
     const { deps, calls } = fakeDeps({ last });
-    expect(await stepStandingPrMerge({ ...base, pr: pr() }, deps)).toMatchObject({ action: 'waiting', mergeSha: MERGE });
+    expect(await stepStandingPrMerge({ ...base, pr: pr(), viewerApproved }, deps)).toMatchObject({ action: 'waiting', mergeSha: MERGE });
+    expect(calls.started).toEqual([]);
     expect(calls.advanced).toEqual([]);
+  });
+
+  it('lets an explicit reviewer retry a failed test while automatic polling keeps holding', async () => {
+    const last: MergeTestRecord = { mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP,
+      result: 'fail', failure: { phase: 'suite', exitCode: 1, output: 'previous failure' } };
+    const { deps, calls } = fakeDeps({ last });
+    expect(await stepStandingPrMerge({ ...base, pr: pr(), viewerApproved: false }, deps))
+      .toMatchObject({ action: 'refused', reason: 'merge-result-failed' });
+    expect(calls.started).toEqual([]);
+    expect(await stepStandingPrMerge({ ...base, pr: pr(), viewerApproved: true }, deps))
+      .toMatchObject({ action: 'testing', reason: 'retry-failed', mergeSha: MERGE });
+    expect(calls.saved).toEqual([{ mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP, result: 'running' }]);
+    expect(calls.started).toEqual(calls.saved);
+    expect(calls.advanced).toEqual([]);
+  });
+
+  it('keeps policy, revoked-author, review and checks guards on a reviewer retry', async () => {
+    const cases = [
+      { overrides: { policy: 'owner' as const }, expected: { action: 'left-for-owner' } },
+      { overrides: { authorRevoked: true }, expected: { action: 'refused', reason: 'author-revoked' } },
+      { overrides: { pr: pr({ review_decision: 'changes_requested' }) }, expected: { action: 'skipped', reason: 'not-approved' } },
+      { overrides: { pr: pr({ checks_state: 'failure' }) }, expected: { action: 'skipped', reason: 'checks-failing' } },
+    ];
+    for (const { overrides, expected } of cases) {
+      const { deps, calls } = fakeDeps({ last: { mergeSha: MERGE, prHeadSha: HEAD, targetTipSha: TIP, result: 'fail' } });
+      expect(await stepStandingPrMerge({ ...base, pr: pr(), viewerApproved: true, ...overrides }, deps))
+        .toMatchObject(expected);
+      expect(calls.saved).toEqual([]);
+      expect(calls.started).toEqual([]);
+      expect(calls.advanced).toEqual([]);
+    }
   });
 
   it('advances the target to exactly the tested sha under a lease on the tested tip', async () => {

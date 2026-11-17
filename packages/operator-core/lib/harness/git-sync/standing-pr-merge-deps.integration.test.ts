@@ -296,6 +296,42 @@ describe('stepStandingPrMerge over the real deps (D-008 end to end)', () => {
     expect(git(bare, 'rev-parse', 'main')).toBe(mergeSha);
   });
 
+  it('reviewer retries a failed result, reuses its running test and merges only the passing exact commit', async () => {
+    const head = makePrHead();
+    const before = git(bare, 'rev-parse', 'main');
+    let release!: () => void;
+    const resume = new Promise<void>((resolve) => { release = resolve; });
+    const tested: string[] = [];
+    const runner = makeWorktreeSuiteRunner('node -e "process.exit(0)"');
+    const d = makeDeps(memStore(), async (args) => {
+      tested.push(args.sha);
+      await resume;
+      return runner(args);
+    });
+    const previousMerge = (await d.buildMergeResult(head, before))!;
+    await d.saveTest(PR_NUMBER, { mergeSha: previousMerge, prHeadSha: head, targetTipSha: before,
+      result: 'fail', failure: { phase: 'suite', exitCode: 1, output: 'previous failure' } });
+    expect(await stepStandingPrMerge(input(head), d)).toMatchObject({ action: 'refused', reason: 'merge-result-failed' });
+    expect(tested).toEqual([]);
+    const reviewer = { ...input(head), viewerApproved: true };
+    const retry = await stepStandingPrMerge(reviewer, d);
+    expect(retry).toMatchObject({ action: 'testing', reason: 'retry-failed' });
+    if (retry.action !== 'testing') throw new Error('Expected a fresh exact-merge test');
+    try {
+      expect(await stepStandingPrMerge(reviewer, d)).toMatchObject({ action: 'waiting', mergeSha: retry.mergeSha });
+      expect(tested).toEqual([retry.mergeSha]);
+      expect(git(bare, 'rev-parse', 'main')).toBe(before);
+    } finally {
+      release();
+    }
+    await waitFor(() => !isStandingPrMergeRunActive(INSTALL, PR_NUMBER, retry.mergeSha));
+    expect(await d.loadLastTest(PR_NUMBER)).toMatchObject({ mergeSha: retry.mergeSha, result: 'pass' });
+    expect((await d.loadLastTest(PR_NUMBER))?.failure).toBeUndefined();
+    expect(await stepStandingPrMerge(reviewer, d)).toMatchObject({ action: 'merged', mergeSha: retry.mergeSha });
+    expect(git(bare, 'rev-parse', 'main')).toBe(retry.mergeSha);
+    expect(git(bare, 'rev-list', '--parents', '-n1', retry.mergeSha).split(' ').slice(1)).toEqual([before, head]);
+  });
+
   it('target moved after a pass -> rebuilt and re-tested on the new tip, never merged untested', async () => {
     const head = makePrHead();
     const tested: string[] = [];

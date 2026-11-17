@@ -67,6 +67,8 @@ export interface MergeGateInput {
   targetTipSha: string;
   /** The latest merge-result test, if any. */
   lastTest: MergeTestRecord | null;
+  /** An explicit reviewer merge request may retry a failed suite; automatic polls never set this. */
+  retryFailed?: boolean;
   /**
    * The submodule publication check (D-017 §6). The merge step always supplies it.
    * It is absent only for a display-only caller that cannot run git (the PR
@@ -102,7 +104,7 @@ export type MergeGateDecision =
     }
   | {
       action: 'build-and-test';
-      reason: 'never-tested' | 'target-moved' | 'pr-head-moved';
+      reason: 'never-tested' | 'target-moved' | 'pr-head-moved' | 'retry-failed';
       prHeadSha: string;
       targetTipSha: string;
       detail: string;
@@ -210,6 +212,15 @@ export function decideMergeGate(input: MergeGateInput): MergeGateDecision {
     };
   }
   if (lastTest.result === 'fail') {
+    if (input.retryFailed === true) {
+      return {
+        action: 'build-and-test',
+        reason: 'retry-failed',
+        prHeadSha,
+        targetTipSha,
+        detail: 'The reviewer requested another test of the merged result. Building it and running the test suite before merging.',
+      };
+    }
     return {
       action: 'refuse',
       reason: 'merge-result-failed',

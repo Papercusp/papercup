@@ -83,6 +83,35 @@ describe('decideMergeGate (P-024 / D-008)', () => {
     expect(d).toMatchObject({ action: 'refuse', reason: 'merge-result-failed' });
   });
 
+  it('rebuilds and tests a failed result only when a reviewer requests a retry', () => {
+    const input = { prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, lastTest: test({ result: 'fail' }) };
+    expect(decideMergeGate({ ...input, retryFailed: false }))
+      .toMatchObject({ action: 'refuse', reason: 'merge-result-failed' });
+    expect(decideMergeGate({ ...input, retryFailed: true }))
+      .toMatchObject({ action: 'build-and-test', reason: 'retry-failed', prHeadSha: PR, targetTipSha: TIP });
+  });
+
+  it('does not replace a running test or rerun a passing test for a reviewer retry', () => {
+    const input = { prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, retryFailed: true };
+    expect(decideMergeGate({ ...input, lastTest: test({ result: 'running' }) }))
+      .toMatchObject({ action: 'wait', mergeSha: MERGE });
+    expect(decideMergeGate({ ...input, lastTest: test() }))
+      .toMatchObject({ action: 'merge', advanceTargetTo: MERGE, expectedTargetTip: TIP });
+  });
+
+  it.each([
+    { overrides: { promotedSha: null }, reason: 'nothing-promoted' },
+    { overrides: { promotedSha: OTHER }, reason: 'pr-head-not-promoted' },
+    { overrides: { pathAttribution: { ok: false, reason: 'unavailable' } }, reason: 'path-attribution-unverifiable' },
+    { overrides: { pathAttribution: { ok: true, prDiffPaths: ['extra.ts'], admittedFixPaths: [] } }, reason: 'unattributed-delta' },
+    { overrides: { submodulePins: { ok: false, error: 'unavailable' } }, reason: 'submodule-pins-unverifiable' },
+    { overrides: { submodulePins: { ok: true, unpublished: [{ path: 'libs/core', sha: OTHER }] } }, reason: 'unpublished-gitlinks' },
+  ] as const)('keeps $reason enforced before retrying a failure', ({ overrides, reason }) => {
+    expect(decideMergeGate({ prHeadSha: PR, promotedSha: PR, targetTipSha: TIP,
+      lastTest: test({ result: 'fail' }), retryFailed: true, ...overrides }))
+      .toMatchObject({ action: 'refuse', reason });
+  });
+
   it('merges exactly the tested merge commit, leased on the tested target tip', () => {
     const d = decideMergeGate({ prHeadSha: PR, promotedSha: PR, targetTipSha: TIP, lastTest: test() });
     expect(d).toEqual(expect.objectContaining({ action: 'merge', advanceTargetTo: MERGE, expectedTargetTip: TIP }));

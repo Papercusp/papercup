@@ -116,7 +116,7 @@ export type StandingPrMergeOutcome =
       detail: string;
     }
   | { action: 'skipped'; reason: 'not-approved' | 'checks-failing'; detail: string }
-  | { action: 'testing'; reason: 'never-tested' | 'target-moved' | 'pr-head-moved'; mergeSha: string; detail: string }
+  | { action: 'testing'; reason: 'never-tested' | 'target-moved' | 'pr-head-moved' | 'retry-failed'; mergeSha: string; detail: string }
   | { action: 'waiting'; mergeSha: string; detail: string }
   | { action: 'merged'; mergeSha: string; detail: string }
   | { action: 'retest'; reason: 'target-moved'; detail: string }
@@ -166,6 +166,7 @@ export async function stepStandingPrMerge(
     promotedSha: input.promotedSha,
     targetTipSha,
     lastTest,
+    retryFailed: input.viewerApproved === true,
     submodulePins,
     pathAttribution,
   });
