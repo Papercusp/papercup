@@ -190,6 +190,10 @@ export async function toolGuardText(
   const identityController = new AbortController();
   const identityBudget = { signal: identityController.signal, deadlineAtMs: readinessDeadlineAtMs };
   const identityUnavailable = 'tool_authority_unavailable: Native identity authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.';
+  const planUnavailable: PlanExecutionRefusal = {
+    code: 'plan_execution_not_ready', blockers: ['plan_authority_unavailable'],
+    reason: 'Native plan execution authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.',
+  };
   let planRefused = false;
   const plan = (async () => {
     const startedAt = performance.now();
@@ -206,14 +210,20 @@ export async function toolGuardText(
       // identity microtask; the timeout wrapper must not delay that fast path.
       const check = checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
         toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming, readinessDeadlineAtMs })
-        .then(refusal => { planRefused = Boolean(refusal); recordPlanTiming(); return refusal; },
+        .then(refusal => {
+          // A late promise can settle before an overdue timer callback. Keep
+          // that expired plan permit from being attributed to identity below.
+          if (!refusal && performance.now() >= readinessDeadlineAtMs) refusal = planUnavailable;
+          planRefused = Boolean(refusal);
+          recordPlanTiming();
+          return refusal;
+        },
           error => { recordPlanTiming(); throw error; });
       const bounded = await withBoundedTimeout<PlanExecutionRefusal | null>(
         check,
         { timeoutMs: Math.max(1, readinessDeadlineAtMs - performance.now()), warn: false,
           label: 'native-plan-execution-authority',
-          fallback: { code: 'plan_execution_not_ready', blockers: ['plan_authority_unavailable'],
-            reason: 'Native plan execution authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.' } },
+          fallback: planUnavailable },
       );
       if (bounded.reason === 'error') throw bounded.error;
       planRefused = Boolean(bounded.value);
