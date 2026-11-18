@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
   applyPackageResourceDependent, packageResourceKey, preparePackageResource,
-  readPackageResourceReceipt, releasePackageResource,
+  readPackageResourceReceipt, releasePackageResource, readPackageResourcePopulation,
   beginPackageInstallation, readPackageInstallation, beginPackageInstallationRelease, finishPackageInstallationRelease,
   carryAppliedPackageInstallation,
   declarePackageInstallationHumanOwner, type PackageInstallationHumanOwnerProof,
@@ -73,6 +73,149 @@ function externalStore() {
 describe('blueprint package resource journal (real Postgres)', () => {
   const emptyInstall = (name: string) => ({ workspaceId: 'human-ownership', ownerId: 'wearer-' + name,
     dependentId: name, specificationRevision: hash(name), stateRevision: hash('state'), expectedResources: new Map<string, string>() });
+
+  const populationFixture = async (name: string) => {
+    const resource = { ...address(name), workspaceId: 'population-' + name };
+    const key = packageResourceKey(resource);
+    const input = { ...emptyInstall(name), workspaceId: resource.workspaceId,
+      expectedResources: new Map([[key, resource.installedHash]]) };
+    const { proof } = await humanOwner(input);
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof });
+    const store = externalStore();
+    await preparePackageResource(db.adminSql, resource, input.dependentId, store.driver);
+    return { resource, key, input, store };
+  };
+
+  it('enumerates empty installs, shared resources, unknown legacy owners and released history without dropping references', async () => {
+    const { input, resource, key, store } = await populationFixture('complete-journal');
+    const empty = { ...emptyInstall('empty-journal'), workspaceId: input.workspaceId };
+    await beginPackageInstallation(db.adminSql, empty);
+    const legacy = { ...input, ownerId: 'legacy-wearer', dependentId: 'legacy-journal' };
+    await beginPackageInstallation(db.adminSql, legacy);
+    await preparePackageResource(db.adminSql, resource, legacy.dependentId, store.driver);
+    // Supported pre-parent journal rows must remain visible with unknown
+    // ownership; an INNER JOIN would silently omit this shared dependent.
+    await preparePackageResource(db.adminSql, resource, 'no-parent-receipt', store.driver);
+    await db.adminSql.begin(tx => applyPackageResourceDependent(tx, input.workspaceId, input.dependentId));
+    await beginPackageInstallationRelease(db.adminSql, input.workspaceId, empty.dependentId);
+    await finishPackageInstallationRelease(db.adminSql, input.workspaceId, empty.dependentId);
+    await beginPackageInstallation(db.adminSql, { ...emptyInstall('foreign-journal'), workspaceId: 'foreign-journal' });
+    const census = await readPackageResourcePopulation(db.adminSql, input.workspaceId);
+    expect(census.status).toBe('ok');
+    if (census.status !== 'ok') throw new Error('expected journal population');
+    expect(census.scope).toBe('workspace-package-resource-journal');
+    expect(census.installations.map(row => row.dependent_id)).toEqual([input.dependentId, empty.dependentId, legacy.dependentId]);
+    expect(census.installations.find(row => row.dependent_id === empty.dependentId))
+      .toMatchObject({ phase: 'released', expected_resources: {}, human_ownership: null });
+    expect(census.installations.find(row => row.dependent_id === input.dependentId)?.human_ownership)
+      .toMatchObject({ userId: 'human-one', ownerId: input.ownerId, specificationRevision: input.specificationRevision });
+    expect(census.installations.find(row => row.dependent_id === legacy.dependentId)?.human_ownership).toBeNull();
+    expect(census.resources).toHaveLength(1);
+    expect(census.resources[0].resource_key).toBe(key);
+    expect(census.dependents.map(row => row.dependent_id)).toEqual([input.dependentId, legacy.dependentId, 'no-parent-receipt']);
+    // Detaching a result must not mutate the canonical source or its revision.
+    census.installations[0].owner_id = 'forged-owner';
+    expect(await readPackageResourcePopulation(db.adminSql, input.workspaceId)).toMatchObject({ revision: census.revision });
+  });
+
+  it('distinguishes verified empty journals and connection visibility, including RLS scope mismatch', async () => {
+    const empty = await readPackageResourcePopulation(db.adminSql, 'empty-population');
+    expect(empty).toMatchObject({ status: 'ok', installations: [], resources: [], dependents: [] });
+    await expect(readPackageResourcePopulation(db.appSql, 'empty-population')).rejects.toThrow(/not visible/);
+    await db.appSql.begin('isolation level repeatable read read only', async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'other-population', true)`;
+      await expect(readPackageResourcePopulation(tx, 'empty-population')).rejects.toThrow(/not visible/);
+    });
+    const visible = await db.appSql.begin('isolation level repeatable read read only', async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'empty-population', true)`;
+      return readPackageResourcePopulation(tx, 'empty-population');
+    });
+    expect(visible).toEqual(empty);
+  });
+
+  it.each(['installation', 'resource', 'dependent'] as const)('refuses stale %s evidence before a protected effect', async domain => {
+    const { input, key } = await populationFixture('stale-' + domain);
+    const before = await readPackageResourcePopulation(db.adminSql, input.workspaceId);
+    if (domain === 'installation') await beginPackageInstallation(db.adminSql, {
+      ...emptyInstall('new-install'), workspaceId: input.workspaceId });
+    if (domain === 'resource') await db.adminSql`UPDATE harness_shared.blueprint_package_resources
+      SET external_refs = '[{"id":"changed","fingerprint":"changed"}]'::jsonb
+      WHERE workspace_id = ${input.workspaceId} AND resource_key = ${key}`;
+    if (domain === 'dependent') await db.adminSql`UPDATE harness_shared.blueprint_package_dependents
+      SET phase = 'released' WHERE workspace_id = ${input.workspaceId} AND dependent_id = ${input.dependentId}`;
+    let effects = 0;
+    await db.adminSql.begin(async tx => {
+      const current = await readPackageResourcePopulation(tx, input.workspaceId, { expectedRevision: before.revision });
+      expect(current.status).toBe('stale');
+      if (current.status === 'ok') effects++;
+    });
+    expect(effects).toBe(0);
+  });
+
+  it.each(['installation', 'resource', 'dependent'] as const)('holds %s writes, including phantoms, until the effect transaction ends', async domain => {
+    const { input, key } = await populationFixture('lease-' + domain);
+    const before = await readPackageResourcePopulation(db.adminSql, input.workspaceId);
+    let pending: Promise<unknown> | undefined;
+    try {
+      await db.adminSql.begin(async tx => {
+        const [holder] = await tx`SELECT pg_backend_pid() AS pid`;
+        expect(await readPackageResourcePopulation(tx, input.workspaceId, { expectedRevision: before.revision }))
+          .toMatchObject({ status: 'ok', revision: before.revision });
+        if (domain === 'installation') pending = beginPackageInstallation(db.adminSql, {
+          ...emptyInstall('phantom-install'), workspaceId: input.workspaceId }).catch(error => error);
+        if (domain === 'resource') pending = db.adminSql`UPDATE harness_shared.blueprint_package_resources
+          SET error = 'concurrent-update' WHERE workspace_id = ${input.workspaceId} AND resource_key = ${key}`.execute().catch(error => error);
+        if (domain === 'dependent') pending = db.adminSql`INSERT INTO harness_shared.blueprint_package_dependents
+          (workspace_id, dependent_id, resource_key) VALUES (${input.workspaceId}, 'phantom-reference', ${key})`.execute().catch(error => error);
+        await vi.waitFor(async () => {
+          const [waiter] = await tx`SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted
+            AND ${holder.pid} = ANY(pg_blocking_pids(pid))`;
+          expect(waiter.n).toBeGreaterThan(0);
+        }, { timeout: 5000 });
+        expect(await readPackageResourcePopulation(tx, input.workspaceId, { expectedRevision: before.revision }))
+          .toMatchObject({ status: 'ok', revision: before.revision });
+      });
+      expect(await pending).not.toBeInstanceOf(Error);
+    } finally { await pending; }
+    expect(await readPackageResourcePopulation(db.adminSql, input.workspaceId)).not.toMatchObject({ revision: before.revision });
+  });
+
+  it('refuses historical effect snapshots, unguarded transaction reads and plain-client effect claims', async () => {
+    const scope = 'population-old-snapshot';
+    const before = await readPackageResourcePopulation(db.adminSql, scope);
+    await expect(readPackageResourcePopulation(db.adminSql, scope, { expectedRevision: before.revision }))
+      .rejects.toThrow(/existing transaction/);
+    await db.adminSql.begin(async tx => {
+      await expect(readPackageResourcePopulation(tx, scope)).rejects.toThrow(/snapshot requires/);
+    });
+    let effects = 0;
+    await db.adminSql.begin('isolation level repeatable read', async tx => {
+      await tx`SELECT count(*) FROM harness_shared.blueprint_package_installations`;
+      await beginPackageInstallation(db.adminSql, { ...emptyInstall('newer-than-snapshot'), workspaceId: scope });
+      await expect(readPackageResourcePopulation(tx, scope, { expectedRevision: before.revision }).then(result => {
+        if (result.status === 'ok') effects++;
+        return result;
+      }))
+        .rejects.toThrow(/read committed/);
+      // A read-only historical inventory is explicitly a different contract.
+      expect(await readPackageResourcePopulation(tx, scope)).toMatchObject({ revision: before.revision });
+      expect(effects).toBe(0);
+    });
+    expect((await readPackageResourcePopulation(db.adminSql, scope)).revision).not.toBe(before.revision);
+  });
+
+  it('uses timezone-independent canonical revisions and refuses malformed persisted resource evidence', async () => {
+    const { input, key } = await populationFixture('canonical-data');
+    const before = await readPackageResourcePopulation(db.adminSql, input.workspaceId);
+    const elsewhere = await db.adminSql.begin('isolation level repeatable read read only', async tx => {
+      await tx`SET LOCAL TIME ZONE 'Pacific/Honolulu'`;
+      return readPackageResourcePopulation(tx, input.workspaceId);
+    });
+    expect(elsewhere.revision).toBe(before.revision);
+    await db.adminSql`UPDATE harness_shared.blueprint_package_resources SET external_refs = '[{"id":"missing-fingerprint"}]'::jsonb
+      WHERE workspace_id = ${input.workspaceId} AND resource_key = ${key}`;
+    await expect(readPackageResourcePopulation(db.adminSql, input.workspaceId)).rejects.toThrow(/malformed resource/);
+  });
 
   it('snapshots the explicit ownership declaration before asynchronous authentication', async () => {
     const input = emptyInstall('declaration-snapshot');

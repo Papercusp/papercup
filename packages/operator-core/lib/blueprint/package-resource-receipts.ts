@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Sql, TransactionSql } from 'postgres';
 import type { HostRequestPrincipalResolver } from '../auth/require-principal';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 
 export interface PackageResourceAddress {
   workspaceId: string;
@@ -164,6 +165,111 @@ export async function readPackageInstallation(sql: Db, workspaceId: string, depe
       throw new Error('package installation human ownership scope mismatch');
   }
   return row ?? null;
+}
+
+type InstallationPopulationRow = PackageInstallationReceipt & { dependent_id: string; updated_at: string };
+type ResourcePopulationRow = PackageResourceReceipt & {
+  memory_scope: string; package_kind: string; package_ref: string; package_version: string;
+  package_hash: string; resource_kind: string; item_key: string; updated_at: string;
+};
+type DependentPopulationRow = {
+  dependent_id: string; resource_key: string; phase: 'prepared' | 'applied' | 'released'; updated_at: string;
+};
+
+/** Canonical source population for P-002, including empty installs, all phases,
+ * shared references and legacy dependents without an installation receipt.
+ * NULL ownership means UNKNOWN, never the editor, wearer, publisher or pot.
+ * This is the package journal's population only: it neither discovers every
+ * worn/library stack nor proves external backend state or scoped permissions.
+ *
+ * A normal read uses one MVCC snapshot. An effect read instead requires the
+ * caller's READ COMMITTED transaction and holds SHARE on all three tables
+ * through the caller's effect, including against phantom insertions. Join the
+ * other authority sources under their own guards; keep this broad write lock
+ * short and perform no external I/O while holding it. */
+export async function readPackageResourcePopulation(sql: Db, workspaceId: string, options: {
+  expectedRevision?: string; pinForEffect?: boolean;
+} = {}) {
+  options = { ...options };
+  const text = (value: unknown): value is string => typeof value === 'string' &&
+    !!value.trim() && value === value.trim();
+  const digest = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  if (!text(workspaceId) || (options.expectedRevision !== undefined && !digest(options.expectedRevision)))
+    throw new Error('package population requires an exact workspace and revision');
+  const pinned = options.pinForEffect === true || options.expectedRevision !== undefined;
+  const transaction = typeof (sql as TransactionSql).savepoint === 'function';
+  if (pinned && !transaction) throw new Error('pinned package population requires an existing transaction');
+  const read = async (tx: TransactionSql) => {
+    const [isolation] = await tx`SELECT current_setting('transaction_isolation') AS isolation`;
+    if (pinned) {
+      if (isolation?.isolation !== 'read committed')
+        throw new Error('pinned package population requires read committed isolation');
+      await tx`LOCK TABLE harness_shared.blueprint_package_installations,
+        harness_shared.blueprint_package_resources, harness_shared.blueprint_package_dependents IN SHARE MODE`;
+    } else if (!['repeatable read', 'serializable'].includes(isolation?.isolation))
+      throw new Error('package population snapshot requires repeatable read or serializable isolation');
+    const [visibility] = await tx`SELECT current_setting('app.workspace_id', true) AS workspace,
+      (row_security_active('harness_shared.blueprint_package_installations') OR
+       row_security_active('harness_shared.blueprint_package_resources') OR
+       row_security_active('harness_shared.blueprint_package_dependents')) AS restricted`;
+    if (!visibility || (visibility.restricted && visibility.workspace !== workspaceId))
+      throw new Error('package population workspace is not visible to this connection');
+    // No LIMIT or phase filter: neither a prefix nor the live-only index is a
+    // census. Epoch microseconds avoid timezone-dependent revision identities.
+    const installations = await tx<InstallationPopulationRow[]>`SELECT dependent_id, owner_id, human_ownership,
+      specification_revision, state_revision, expected_resources, phase, error,
+      floor(extract(epoch from updated_at) * 1000000)::text AS updated_at
+      FROM harness_shared.blueprint_package_installations WHERE workspace_id = ${workspaceId} ORDER BY dependent_id`;
+    const resources = await tx<ResourcePopulationRow[]>`SELECT resource_key, write_key, installed_hash,
+      memory_scope, package_kind, package_ref, package_version, package_hash, resource_kind, item_key,
+      phase, external_refs, error, floor(extract(epoch from updated_at) * 1000000)::text AS updated_at
+      FROM harness_shared.blueprint_package_resources WHERE workspace_id = ${workspaceId} ORDER BY resource_key`;
+    const dependents = await tx<DependentPopulationRow[]>`SELECT dependent_id, resource_key, phase,
+      floor(extract(epoch from updated_at) * 1000000)::text AS updated_at
+      FROM harness_shared.blueprint_package_dependents WHERE workspace_id = ${workspaceId}
+      ORDER BY dependent_id, resource_key`;
+    const timestamp = (value: unknown) => typeof value === 'string' && /^-?\d+$/.test(value);
+    const error = (value: unknown) => value === null || typeof value === 'string';
+    for (const row of installations) {
+      if (!text(row.dependent_id) || !text(row.owner_id) || !digest(row.specification_revision) ||
+          !text(row.state_revision) || !timestamp(row.updated_at) || !error(row.error) ||
+          !['preparing', 'applied', 'releasing', 'released', 'cleanup_failed'].includes(row.phase) ||
+          !row.expected_resources || typeof row.expected_resources !== 'object' || Array.isArray(row.expected_resources) ||
+          Object.entries(row.expected_resources).some(([key, hash]) => !digest(key) || !digest(hash)))
+        throw new Error('package population has a malformed installation');
+      if (row.human_ownership !== null) {
+        const owner = validateHumanOwnership(row.human_ownership);
+        if (owner.workspaceId !== workspaceId || owner.ownerId !== row.owner_id ||
+            owner.specificationRevision !== row.specification_revision)
+          throw new Error('package population human ownership scope mismatch');
+        row.human_ownership = owner;
+      }
+    }
+    for (const row of resources) {
+      if (!digest(row.resource_key) || !text(row.write_key) || !timestamp(row.updated_at) || !error(row.error) ||
+          !['intent', 'ready', 'cleanup_failed', 'deleted', 'detached'].includes(row.phase) ||
+          !Array.isArray(row.external_refs) || row.external_refs.some(ref => !ref ||
+            !text(ref.id) || !text(ref.fingerprint) || (ref.owned !== undefined && typeof ref.owned !== 'boolean') ||
+            (ref.disposition !== undefined && !['removed', 'absent', 'changed', 'unowned'].includes(ref.disposition)) ||
+            (ref.error !== undefined && typeof ref.error !== 'string')) ||
+          new Set(row.external_refs.map(ref => ref.id)).size !== row.external_refs.length ||
+          packageResourceKey({ workspaceId, memoryScope: row.memory_scope, packageKind: row.package_kind,
+            packageRef: row.package_ref, packageVersion: row.package_version, packageHash: row.package_hash,
+            resourceKind: row.resource_kind, itemKey: row.item_key, installedHash: row.installed_hash }) !== row.resource_key)
+        throw new Error('package population has a malformed resource');
+    }
+    for (const row of dependents) if (!text(row.dependent_id) || !digest(row.resource_key) ||
+        !['prepared', 'applied', 'released'].includes(row.phase) || !timestamp(row.updated_at))
+      throw new Error('package population has a malformed dependent');
+    const population = { scope: 'workspace-package-resource-journal' as const, workspaceId,
+      installations: [...installations], resources: [...resources], dependents: [...dependents] };
+    const revision = createHash('sha256').update(canonicalJson(population)).digest('hex');
+    if (options.expectedRevision !== undefined && revision !== options.expectedRevision)
+      return { status: 'stale' as const, revision };
+    return { status: 'ok' as const, revision, ...population };
+  };
+  if (transaction) return read(sql as TransactionSql);
+  return (sql as Sql).begin('isolation level repeatable read read only', tx => read(tx as TransactionSql));
 }
 
 /** Persist the full intended set before any external write, including zero writes.
