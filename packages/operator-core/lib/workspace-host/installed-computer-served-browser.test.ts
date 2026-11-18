@@ -371,7 +371,9 @@ describe('served Portal prerequisite and document readiness', () => {
   });
 
   it.each(['packages/operator-core/lib/rubrics.ts',
-    'packages/operator-core/lib/agent-tools/scorecards/emit.ts'])(
+    'packages/operator-core/lib/agent-tools/scorecards/emit.ts',
+    'packages/agent-mcp/src/_bulk.ts',
+    'packages/operator-core/lib/agent-tools/_bulk.ts'])(
     'refuses an unpublished import-cohort member before runtime work: %s', async provider => {
       await vi.mocked(execFileSync).withImplementation(() => Buffer.from('committed'), async () => {
         await vi.mocked(readFile).withImplementation(async path =>

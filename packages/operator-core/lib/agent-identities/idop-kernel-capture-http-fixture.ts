@@ -6,7 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { IDOP_P001_BASELINE_REL, loadIdopP001RolePermissionReader,
+import { IDOP_P001_BASELINE_REL, loadIdopP001DispatchPermissionReader, loadIdopP001RolePermissionReader,
   replayIdopP001KernelPermissionSnapshot, runIdopP001PermissionComparison } from './idop-p001-baseline';
 
 function object(value: unknown): Record<string, unknown> {
@@ -90,18 +90,38 @@ async function main() {
     assert.notEqual(original.inner.runtime.pid, process.pid);
     const root = resolve(import.meta.dirname, '../../../..');
     const baseline = JSON.parse(readFileSync(resolve(root, IDOP_P001_BASELINE_REL), 'utf8'));
-    const evaluate = async (revision: string) => {
+    const evaluate = async (revision: string, layer: 'inner' | 'outer') => {
+      // Each source arm and kernel layer gets its own original state cursor.
+      // An inner replay must never consume the outer replay's state reads.
       const ports = replay.createPorts();
       const reader = loadIdopP001RolePermissionReader({ root, revision, testingFullAccess: 'off' });
       const inner = await reader.createInnerKernelReader(ports.inner);
-      const verdict = await inner.evaluate(ports.requests[0]!);
+      let evaluateKernel = inner.evaluate;
+      if (layer === 'outer') {
+        const generic = await loadIdopP001DispatchPermissionReader({ root, revision });
+        const structural = reader.createStructuralKernelReader({ resolveIdentity: ports.inner.resolveIdentity,
+          sameKernelRevision: generic.sameKernelRevision });
+        evaluateKernel = reader.createOuterKernelReader({ app: ports.app, organization: ports.organization,
+          resolveControlAnchor: inner.evaluate,
+          structural: request => structural(request, request.ctx.kernelState) });
+      }
+      const verdict = await evaluateKernel(ports.requests[0]!);
       assert.ok(verdict, 'canonical kernel returned no verdict');
       assert.equal(verdict.decision, 'allow', JSON.stringify(verdict));
       return JSON.parse(JSON.stringify(verdict));
     };
-    const comparison = await runIdopP001PermissionComparison({ population: () => ['private-self-kernel'],
-      enumerate: () => [{ id: 'private-self-kernel', input: { snapshotSha256: capture.sha256 as string } }],
-      before: () => evaluate(baseline.base.commit), after: () => evaluate('working-tree'), manifest: [] });
+    const layers = ['inner', 'outer'] as const;
+    const cases = layers.map(layer => ({ id: `private-self-${layer}-kernel`,
+      input: { snapshotSha256: capture.sha256 as string, layer } }));
+    const layerOf = (id: string) => {
+      const layer = layers.find(layer => id === `private-self-${layer}-kernel`);
+      assert.ok(layer, 'comparison requested an uncaptured kernel layer');
+      return layer;
+    };
+    const comparison = await runIdopP001PermissionComparison({ population: () => cases.map(row => row.id),
+      enumerate: () => cases,
+      before: (_input, id) => evaluate(baseline.base.commit, layerOf(id)),
+      after: (_input, id) => evaluate('working-tree', layerOf(id)), manifest: [] });
     assert.equal(comparison.passed, true, JSON.stringify(comparison));
     const evidenceDir = env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR!;
     writeFileSync(resolve(evidenceDir, 'idop-kernel-capture.json'), JSON.stringify(capture), { flag: 'wx', mode: 0o600 });

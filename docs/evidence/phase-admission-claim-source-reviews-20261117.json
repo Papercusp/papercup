@@ -29,7 +29,8 @@
     "packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
     "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
     "packages/operator-core/lib/build-info.ts",
-    "libs/generic/module-singleton/src/index.ts"
+    "libs/generic/module-singleton/src/index.ts",
+    "libs/papercusp/libs/db/src/raw-serializers.ts"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -43,6 +44,132 @@
     "runtimeAttestation": false
   },
   "reviews": [
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"0f723da48b6464a530ed1d19d456e50a95488b6cc7498c8668c6d280c6621819\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "0f723da48b6464a530ed1d19d456e50a95488b6cc7498c8668c6d280c6621819",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact buildClient call and complete installer. It reads options.shared.typeArrayMap and seeds missing built-in element/array OID constants in that process-local map. It preserves existing entries and invokes no query, callback, socket or lifecycle writer.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts#seedBuiltinArrayTypes",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "seedBuiltinArrayTypes",
+          "reason": "Inspected the exact buildClient call and complete installer. It reads options.shared.typeArrayMap and seeds missing built-in element/array OID constants in that process-local map. It preserves existing entries and invokes no query, callback, socket or lifecycle writer.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#seedBuiltinArrayTypes",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/raw-serializers.ts#930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+          "reason": "Inspected the exact buildClient call and complete installer. It reads options.shared.typeArrayMap and seeds missing built-in element/array OID constants in that process-local map. It preserves existing entries and invokes no query, callback, socket or lifecycle writer.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#seedBuiltinArrayTypes",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"29b30cbc46998a9ae3f355db79033a81ce62c60d9d49accbb82b84403103b868\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "29b30cbc46998a9ae3f355db79033a81ce62c60d9d49accbb82b84403103b868",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact buildClient call and complete installer. It defines sticky local serializer accessors for OIDs 114/3802. Installation invokes no serializer or database operation; the installed closure only preserves a string or JSON.stringify encodes a value. This review does not approve constructors or subsequent query execution.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts#restoreRawJsonbSerializer",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "restoreRawJsonbSerializer",
+          "reason": "Inspected the exact buildClient call and complete installer. It defines sticky local serializer accessors for OIDs 114/3802. Installation invokes no serializer or database operation; the installed closure only preserves a string or JSON.stringify encodes a value. This review does not approve constructors or subsequent query execution.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#restoreRawJsonbSerializer",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/raw-serializers.ts#930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+          "reason": "Inspected the exact buildClient call and complete installer. It defines sticky local serializer accessors for OIDs 114/3802. Installation invokes no serializer or database operation; the installed closure only preserves a string or JSON.stringify encodes a value. This review does not approve constructors or subsequent query execution.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#restoreRawJsonbSerializer",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"ba50ea33c8cb8019abc58776318320c1e5967b55a861f5cb11a2ec042ea19c3a\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "ba50ea33c8cb8019abc58776318320c1e5967b55a861f5cb11a2ec042ea19c3a",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact buildClient call and complete installer plus serializePgArray. It defines sticky local scalar/array serializer accessors; installation invokes no query or deferred serializer. The callbacks encode Date/scalar/array values and delegate the supplied element serializer at later parameter encoding. That later dynamic delegation remains a distinct unreviewed source identity, not an execution-authority exemption.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts#restoreRawDateSerializers",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "restoreRawDateSerializers",
+          "reason": "Inspected the exact buildClient call and complete installer plus serializePgArray. It defines sticky local scalar/array serializer accessors; installation invokes no query or deferred serializer. The callbacks encode Date/scalar/array values and delegate the supplied element serializer at later parameter encoding. That later dynamic delegation remains a distinct unreviewed source identity, not an execution-authority exemption.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#restoreRawDateSerializers",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/raw-serializers.ts#930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+          "reason": "Inspected the exact buildClient call and complete installer plus serializePgArray. It defines sticky local scalar/array serializer accessors; installation invokes no query or deferred serializer. The callbacks encode Date/scalar/array values and delegate the supplied element serializer at later parameter encoding. That later dynamic delegation remains a distinct unreviewed source identity, not an execution-authority exemption.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#restoreRawDateSerializers",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"3d63ba68f59a2654e10117f793ac01456cc12ba7f1aafb9b2289d0c5b6f08890\"]#1",
       "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",

@@ -60,7 +60,8 @@ it('captures authenticated original kernel inputs on a containing private host a
         snapshot: { workspaceId: receipt.workspace }, provenance: { workspaceId: receipt.workspace } });
       const comparison = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-kernel-comparison.json'), 'utf8'));
       expect(comparison).toMatchObject({ passed: true, unexpected: [], unusedManifest: [], differences: [] });
-      expect(comparison.checked).toHaveLength(1);
+      expect(comparison.population).toEqual(['private-self-inner-kernel', 'private-self-outer-kernel']);
+      expect(comparison.checked.map((row: { id: string }) => row.id)).toEqual(comparison.population);
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

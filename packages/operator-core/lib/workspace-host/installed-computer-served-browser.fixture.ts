@@ -236,6 +236,10 @@ export async function assertInstalledRuntimeSource(repo: string) {
     'packages/operator-core/lib/auth/hosted/fake-provider.ts',
     'packages/operator-core/lib/rubrics.ts',
     'packages/operator-core/lib/agent-tools/scorecards/emit.ts',
+    // These Zod adapters must be published together with consumers. Native
+    // children otherwise re-export removed framework symbols from old HEAD.
+    'packages/agent-mcp/src/_bulk.ts',
+    'packages/operator-core/lib/agent-tools/_bulk.ts',
     'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
     'packages/operator-core/lib/workspace-host/installed-computer-served-browser.fixture.ts',
     'packages/operator-core/lib/workspace-host/installed-computer-runtime-loader.mjs',
@@ -375,6 +379,14 @@ export async function runInstalledComputerServedBrowser(input: Input) {
   const installId = INSTALLED_FIXTURE_SESSION_ID;
   const linked = await cli.upsertLinkedWorkspace({ organizationId: orgId, installId,
     displayName: 'Private installed computer', userId, at: new Date() });
+  await stage('installed-sealed-hosting-preflight');
+  const { readCustomerWorkspaceHosting, readHostedWorkspaceHosting } =
+    await import('../../../../apps/operator/bin/hosted-handler');
+  assert.equal(await readCustomerWorkspaceHosting(control, linked.customerWorkspaceId), 'byoc',
+    'Private linked workspace must select sealed BYOC without cloud provisioning');
+  assert.equal(await readHostedWorkspaceHosting({ ...linked, controlPlaneWorkspaceId: control,
+    organizationId: orgId, generation: 1, transport: 'websocket', state: 'active' }), 'byoc',
+  'Private linked connector must select sealed BYOC before installed-host startup');
   const session = await createHostedFixtureSession(hosted.plane.components, { userId, organizationId: orgId,
     workspaceId: linked.customerWorkspaceId, upstreamProvider: INSTALLED_FIXTURE_PROVIDER_ID,
     upstreamSessionId: installId, expiresAt: new Date(Date.now() + 30 * 60_000) });
