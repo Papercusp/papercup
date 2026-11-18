@@ -1294,7 +1294,8 @@ async function readQuotaStateImpl(
             AND tool_name = $2
             AND role = $3
             AND window_key = $4
-            AND status IN ('ok', 'refused')`,
+            AND (metadata_json->'quotaReservation'->>'state' IN ('reserved', 'committed')
+              OR (status IN ('ok', 'refused') AND NOT (COALESCE(metadata_json, '{}'::jsonb) ? 'quotaReservation')))`,
         [workspaceId, toolName, ctx.role ?? '', windowKey],
       );
     });
@@ -1307,6 +1308,55 @@ async function readQuotaStateImpl(
     return null;
   }
 }
+
+/** Quota claims share the invocation ledger with observation and telemetry.
+ * The transaction lock scopes admission across processes, not just one batch.
+ * Reservation metadata survives best-effort telemetry and records started work
+ * even when the caller loses its response or the process dies before settlement. */
+const reserveQuotaImpl: NonNullable<DispatchProjectedDeps['reserveQuota']> = async request => {
+  const { ctx, toolName, windowKey, limit, callId } = request;
+  if (!ctx.workspaceId || !Number.isInteger(limit) || limit < 1 || !callId) {
+    throw new Error('Atomic quota admission identity is unavailable');
+  }
+  const row = buildTelemetryRow({ toolName, pluginName: request.pluginName, ctx, callId,
+    windowKey, durationMs: 0, status: 'ok', metadataJson: { originalInvocation: { callId } } });
+  if (!row) throw new Error('Atomic quota invocation is unavailable');
+  row.params[12] = 'pending';
+  row.params[19] = jsonbSafeStringify({ ...JSON.parse(String(row.params[19] ?? '{}')),
+    quotaReservation: { callId, state: 'reserved' } });
+  const { sql } = getOrgPg();
+  const admitted = await sql.begin(async tx => {
+    await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
+    await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [JSON.stringify(['tool-quota', row.workspaceId, toolName, ctx.role ?? '', windowKey])]);
+    const rows = await tx.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM harness_shared.tool_invocations
+      WHERE workspace_id=$1 AND tool_name=$2 AND role=$3 AND window_key=$4
+        AND (metadata_json->'quotaReservation'->>'state' IN ('reserved', 'committed')
+          OR (status IN ('ok', 'refused') AND NOT (COALESCE(metadata_json, '{}'::jsonb) ? 'quotaReservation')))`,
+    [row.workspaceId, toolName, ctx.role ?? '', windowKey]);
+    const count = rows[0]?.n;
+    if (typeof count !== 'number') throw new Error('Atomic quota count is unavailable');
+    if (count >= limit) return { allowed: false as const, count };
+    const inserted = await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL,
+      row.params as unknown as Parameters<typeof tx.unsafe>[1]);
+    if (!inserted[0]?.id) throw new Error('Atomic quota reservation was not persisted');
+    return { allowed: true as const, id: inserted[0].id };
+  });
+  if (!admitted.allowed) return admitted;
+  let settlement: Promise<void> | undefined;
+  return { allowed: true, invocationRef: 'tool-invocation:' + admitted.id,
+    settle: outcome => settlement ??= sql.begin(async tx => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
+      const rows = await tx.unsafe<{ id: string }[]>(`UPDATE harness_shared.tool_invocations
+        SET metadata_json=jsonb_set(metadata_json, '{quotaReservation,state}', to_jsonb($4::text))
+        WHERE workspace_id=$1 AND id=$2::bigint
+          AND metadata_json->'quotaReservation'->>'callId'=$3
+          AND metadata_json->'quotaReservation'->>'state'='reserved' RETURNING id::text`,
+      [row.workspaceId, admitted.id, callId, outcome === 'commit' ? 'committed' : 'released']);
+      if (!rows[0]?.id) throw new Error('Quota reservation settlement was not persisted');
+    }),
+  };
+};
 
 interface RecordInvocationInput {
   toolName: string;
@@ -1486,7 +1536,7 @@ const TELEMETRY_ENRICH_SQL = `UPDATE harness_shared.tool_invocations
  SET window_key=$4, duration_ms=$5, status=$6, output_ref=$7, output_size=$8,
      error_message=$9, args_json=$10::jsonb, event_count=$11, error_code=$12,
      metadata_json=COALESCE(metadata_json, '{}'::jsonb) ||
-       (COALESCE($13::jsonb, '{}'::jsonb) - 'originalInvocation' - 'executionObservation' - 'responseObservation' - 'workItemClaims')
+       (COALESCE($13::jsonb, '{}'::jsonb) - 'originalInvocation' - 'executionObservation' - 'responseObservation' - 'workItemClaims' - 'quotaReservation')
  WHERE workspace_id=$1 AND id=$2::bigint
    AND metadata_json->'originalInvocation'->>'callId'=$3
  RETURNING id::text`;
@@ -1530,8 +1580,15 @@ const originalInvocationObserver: OriginalInvocationObserver = {
     // begin fails before admission; it must never fall back to the lossy queue.
     const id = await sql.begin(async tx => {
       await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
-      const rows = await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL,
-        row.params as unknown as Parameters<typeof tx.unsafe>[1]);
+      const rows = request.invocationRef
+        ? await tx.unsafe<{ id: string }[]>(`UPDATE harness_shared.tool_invocations
+            SET metadata_json=metadata_json || $4::jsonb
+            WHERE workspace_id=$1 AND id=$2::bigint
+              AND metadata_json->'quotaReservation'->>'callId'=$3
+              AND metadata_json->'quotaReservation'->>'state'='reserved' RETURNING id::text`,
+          [row.workspaceId, originalInvocationId(request.invocationRef), callId, row.params[19] as string])
+        : await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL,
+          row.params as unknown as Parameters<typeof tx.unsafe>[1]);
       if (!rows[0]?.id) throw new Error('Original invocation was not persisted');
       return rows[0].id;
     });
@@ -2321,6 +2378,7 @@ async function recordInvocationImpl(input: RecordInvocationInput): Promise<void>
   // OTel identity and child receipts are host-owned, including when tracing was
   // unavailable. Caller metadata must never survive as a guessed observation.
   const { otel: _untrustedOtel, managedOperation: _untrustedOperation, sqlCoverageExecution: _untrustedSqlCoverage,
+    quotaReservation: _untrustedQuota,
     [CODE_INTEL_RESULT_METADATA_KEY]: _untrustedCodeIntel, ...metadata } = input.metadataJson ?? {};
   const codeIntelResult = codeIntel
     ? classifyCodeIntelExit({
@@ -2664,6 +2722,7 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   computeQuotaWindow: (ctx, roleQuota, toolName, input) =>
     papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota, toolName, input),
   readQuotaState: readQuotaStateImpl,
+  reserveQuota: reserveQuotaImpl,
   recordInvocation: recordInvocationImpl,
   // Native code-intel calls record a result status even on a transport with no quota window
   // (HTTP/IPC/unscoped internal), so the unknown-rate denominator covers every call (P-004 / R-2).

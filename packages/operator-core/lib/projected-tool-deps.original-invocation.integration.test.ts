@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type postgres from 'postgres';
 import {
   defineTool, dispatchProjectedTool, lookupByMcpName, _resetCatalogForTests,
-  type DispatchProjectedDeps,
+  type DispatchProjectedDeps, type BatchResult, type UnifiedToolContext,
 } from '@papercusp/tooldef';
 import { createOrgTestDb, type OrgTestDb } from '../test/_org-test-db';
 
@@ -75,6 +75,74 @@ const settle = (req: Begin, ref: string, changes: Partial<Settle> = {}) => obser
 });
 
 describe('original invocation ledger (real Postgres)', () => {
+  it('UTB-atomic-quota admits one effect for simultaneous parents and reuses the reserved invocation', async () => {
+    const name = 'example:p003_quota';
+    const runId = randomUUID();
+    const handler = vi.fn(async ({ key }: { key: string }, ctx: UnifiedToolContext) => {
+      await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
+      ctx.metadata?.({ quotaReservation: { state: 'released' } });
+      return { data: { key } };
+    });
+    defineTool({ name, requirePrincipal: false, capability: 'example:write',
+      args: z.object({ key: z.string() }), handler });
+    const tool = lookupByMcpName(name)!;
+    tool.rolesQuota = { worker: { perRun: 1 } };
+    const deps: DispatchProjectedDeps = { reserveQuota: PROJECTED_DEPS.reserveQuota,
+      readQuotaState: PROJECTED_DEPS.readQuotaState, invocationObserver: observer,
+      recordInvocation: PROJECTED_DEPS.recordInvocation };
+    const keys = [randomUUID(), randomUUID()];
+    const ctx = { ...request().ctx, runId };
+    const results = await Promise.all(keys.map(key => dispatchProjectedTool(tool, name, { key }, ctx, deps)));
+    const items = results.flatMap(result => (result.result!.structuredContent as unknown as BatchResult).results);
+    expect(items.map(item => item.ok).sort()).toEqual([false, true]);
+    expect(handler).toHaveBeenCalledOnce();
+    const effects = await db.adminSql`SELECT * FROM harness_shared.original_invocation_probe_effects WHERE call_id IN ${db.adminSql(keys)}`;
+    expect(effects).toHaveLength(1);
+    await flushPendingTelemetry();
+    expect(await deps.readQuotaState!(name, ctx, 'run:' + runId)).toEqual({ count: 1 });
+    const rows = await db.adminSql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id=${workspaceId} AND tool_name=${name} AND run_id=${runId}
+        AND metadata_json ? 'quotaReservation'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata_json.quotaReservation.state).toBe('committed');
+    expect(rows[0].metadata_json.originalInvocation.callId).toBe(rows[0].metadata_json.quotaReservation.callId);
+    expect(rows[0].metadata_json.executionObservation.state).toBe('succeeded');
+  });
+
+  it('releases a denied child so the next sibling can claim its slot', async () => {
+    const name = 'example:p003_quota_release';
+    const ctx = { ...request().ctx, runId: randomUUID() };
+    const handler = vi.fn(async ({ key }: { key: string }) => ({ data: { key } }));
+    defineTool({ name, requirePrincipal: false, capability: 'example:write',
+      args: z.object({ key: z.string() }), authorize: async ({ input }) => ({ allow: input.key !== 'denied' }), handler });
+    const tool = lookupByMcpName(name)!;
+    tool.rolesQuota = { worker: { perRun: 1 } };
+    const result = await dispatchProjectedTool(tool, name, { _batch: 1,
+      items: [{ args: { key: 'denied' } }, { args: { key: 'ok' } }] }, ctx, {
+      reserveQuota: PROJECTED_DEPS.reserveQuota, invocationObserver: observer,
+      recordInvocation: PROJECTED_DEPS.recordInvocation,
+    });
+    expect((result.result!.structuredContent as unknown as BatchResult).results.map(item => item.ok)).toEqual([false, true]);
+    expect(handler).toHaveBeenCalledOnce();
+    await flushPendingTelemetry();
+    expect(await PROJECTED_DEPS.readQuotaState!(name, ctx, 'run:' + ctx.runId)).toEqual({ count: 1 });
+    const rows = await db.adminSql`SELECT metadata_json->'quotaReservation'->>'state' AS state
+      FROM harness_shared.tool_invocations WHERE workspace_id=${workspaceId} AND tool_name=${name}
+        AND run_id=${ctx.runId} AND metadata_json ? 'quotaReservation' ORDER BY id`;
+    expect(rows.map(row => row.state)).toEqual(['released', 'committed']);
+  });
+
+  it('refuses to bind a different call to a quota reservation', async () => {
+    const req = request();
+    const reservation = await PROJECTED_DEPS.reserveQuota!({ ...req, windowKey: randomUUID(),
+      limit: 1, signal: req.ctx.signal! });
+    expect(reservation.allowed).toBe(true);
+    if (!reservation.allowed) throw new Error('fixture reservation refused');
+    await expect(observer.begin({ ...request(), invocationRef: reservation.invocationRef })).rejects.toThrow();
+    await Promise.all([reservation.settle('release'), reservation.settle('release')]);
+    expect((await read(reservation.invocationRef!)).metadata_json.quotaReservation.state).toBe('released');
+  });
+
   it('commits the original audience and budgets before returning a recoverable reference', async () => {
     const req = request();
     const ref = await observer.begin(req);
