@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import manifest from '../harness-leaderboard-manifest.json';
+import manifest from '../harness-leaderboard-manifest.json' with { type: 'json' };
 import { currentBenchmarkProtocolSchema, planCurrentBenchmarkConfirmation, requireCurrentBenchmarkAssignment } from './schema';
 import { computePreregHash } from './prereg';
 import { currentProtocolFixture, hlbProtocolFixture } from './_protocol-test-fixture';

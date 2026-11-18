@@ -1,9 +1,34 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import manifest from './harness-leaderboard-manifest.json';
+import manifest from './harness-leaderboard-manifest.json' with { type: 'json' };
 
 describe('Harness Leaderboard retained source manifest (P-023)', () => {
+  it('loads the reproducibility schema through the native Playwright ESM loader', () => {
+    const loaderHost = join(dirname(createRequire(import.meta.url).resolve('playwright/package.json')),
+      'lib/common/esmLoaderHost.js');
+    // Vitest bundles JSON imports. Native fixture imports use Playwright's ESM
+    // loader, which leaves JSON attribute validation to Node.
+    const script = `
+      import { createRequire } from 'node:module';
+      const loader = createRequire(import.meta.url)(${JSON.stringify(loaderHost)});
+      loader.registerESMLoader();
+      await loader.configureESMLoader();
+      const schema = await import(${JSON.stringify(new URL('./reproducibility/schema.ts', import.meta.url).href)});
+      if (!Object.keys(schema).length) throw new Error('Schema exports are missing');
+      console.log('PLAYWRIGHT_SCHEMA_IMPORT_OK');
+      process.exit(0);
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module'], {
+      input: script, encoding: 'utf8', env: process.env, timeout: 30_000,
+    });
+    expect(result.status, result.stderr || result.error?.message).toBe(0);
+    expect(result.stdout).toContain('PLAYWRIGHT_SCHEMA_IMPORT_OK');
+  }, 35_000);
+
   it('preserves the complete reviewed source witness byte for byte', () => {
     const bytes = readFileSync(new URL('./harness-leaderboard-manifest.json', import.meta.url));
     expect(createHash('sha256').update(bytes).digest('hex'))

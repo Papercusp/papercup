@@ -30,7 +30,7 @@ import { canonicalJson } from './canonical-json';
 import { MIN_COMPACTION_LIMIT_TOKENS } from '../../agent-config-constants';
 // Value import; capability-ablations.ts imports this module for types only, so there is no runtime cycle.
 import { requireRunnableAblation } from '../capability-ablations';
-import hlbManifest from '../harness-leaderboard-manifest.json';
+import hlbManifest from '../harness-leaderboard-manifest.json' with { type: 'json' };
 import { assertModelRegistrySnapshot, resolveEvaluatedModel, type ModelRegistrySnapshot } from '../model-registry-snapshot';
 
 const pin = z.string().trim().min(1);

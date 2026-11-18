@@ -1,5 +1,5 @@
 import { BENCHMARK_CAPABILITIES, type ArmControl, type CurrentBenchmarkProtocol } from './schema';
-import hlbManifest from '../harness-leaderboard-manifest.json';
+import hlbManifest from '../harness-leaderboard-manifest.json' with { type: 'json' };
 import { MODEL_REGISTRY_SNAPSHOT_SCHEMA, modelRegistrySnapshotId, type ModelRegistrySnapshot } from '../model-registry-snapshot';
 import type { CurrentBenchNativeRunCost } from '../current-su';
 
