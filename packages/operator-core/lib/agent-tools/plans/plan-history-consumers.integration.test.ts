@@ -1899,6 +1899,8 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           boundary: 'fresh canonical context and fixtureRead handlers; excludes provider and test-ledger persistence' };
         try {
         const resumeDispatches: Array<{ tool: string; args: unknown; blocked: boolean }> = [];
+        const authoringAdmissions: Array<{ targets: Array<{ id: string | undefined; harness: string }>;
+          admitted: boolean; succeeded: boolean }> = [];
         const readerContext = { isSuperuser: true, uiClientId: 'su-gec-model-integration',
           workspaceId: workspace, harnessSlug: h, metadata: vi.fn(), log: vi.fn(), progress: vi.fn() };
         const fixtureRead = async (tool: string, args: unknown): Promise<unknown> => {
@@ -1906,11 +1908,22 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             if (tool === 'work_items:checkpoint' && authoring) {
               const checkpoint = (await import('../work_items/checkpoint')).default;
               const parsed = checkpoint.args.parse(args);
-              // Only disposable records in this invocation's private fixture may
-              // be authored. The foreign dispatch remains in the original census.
-              if (parsed.harness !== h || ![item, unrelated].includes(parsed.id ?? '') || parsed.items?.length)
+              // Match the canonical handler's single/bulk and harness-default
+              // semantics, then validate the WHOLE batch before any write.
+              const targets = parsed.items?.length
+                ? parsed.items.map(entry => ({ id: entry.id,
+                  harness: entry.harness ?? parsed.harness ?? readerContext.harnessSlug }))
+                : [{ id: parsed.id ?? parsed.workItem, harness: parsed.harness ?? readerContext.harnessSlug }];
+              const admission = { targets, admitted: targets.every(target => target.harness === h
+                && [item, unrelated].includes(target.id ?? '')), succeeded: false };
+              authoringAdmissions.push(admission);
+              if (!admission.admitted)
                 return { ok: false, error: 'authoring fixture rejects foreign record scope' };
-              return checkpoint.handler(parsed as never, readerContext as never);
+              const result = await checkpoint.handler(parsed as never, readerContext as never);
+              const outcome = (result as { data?: { ok?: boolean; results?: Array<{ ok?: boolean }> } }).data;
+              admission.succeeded = outcome?.ok === true && outcome.results?.length === targets.length
+                && outcome.results.every(row => row.ok === true);
+              return result;
             }
             if (tool === 'release:deploy') return { ok: false, error: 'This action is unavailable in this execution context.' };
             if (tool === 'testing:run') {
@@ -2494,11 +2507,23 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
                   ? iteration === 2 ? { name: 'release__deploy', args: { op: 'status' } }
                     : { name: 'plans__get', args: { slug: p, harness: h, heading: 'History' } }
                   : { name: 'work_items__get', args: { id: iteration === 3 ? item : unrelated, harness: h } };
+              const authoringNote = `Measured writing-path fixture iteration ${iteration}`;
+              const authoringArgs = iteration === 1
+                ? [{ id: item, harness: h, checkpoint: authoringNote, confirmShrink: true },
+                  { workItem: unrelated, checkpoint: authoringNote, confirmShrink: true }]
+                : [{ ...(iteration === 2 ? { harness: h } : {}),
+                  items: [item, unrelated].map((id, index) => ({ id, checkpoint: authoringNote, confirmShrink: true,
+                    ...(iteration === 3 && index === 0 ? { harness: h } : {}) })) }];
               const output = authoring && controlRound++ === 0
-                ? [item, unrelated, 'foreign-authoring-control'].map((id, index) => ({ type: 'function_call',
+                ? [...authoringArgs,
+                  { harness: h, items: [{ id: item, checkpoint: 'Rejected mixed-id batch must not persist' },
+                    { id: 'foreign-authoring-control', checkpoint: authoringNote }] },
+                  { harness: h, items: [{ id: unrelated, checkpoint: 'Rejected mixed-harness batch must not persist' },
+                    { id: item, harness: `${h}-foreign`, checkpoint: authoringNote }] },
+                  { id: 'foreign-authoring-control', harness: h, checkpoint: authoringNote },
+                ].map((args, index) => ({ type: 'function_call',
                   id: `fc-author-${index}`, call_id: `call-author-${index}`, name: 'work_items__checkpoint',
-                  arguments: JSON.stringify({ id, harness: h,
-                    checkpoint: `Measured writing-path fixture iteration ${iteration}`, confirmShrink: true }) }))
+                  arguments: JSON.stringify(args) }))
                 : !authoring && controlRound++ === 0
                 ? [{ type: 'function_call', id: `fc-${stageId}`, call_id: `call-${stageId}`,
                   name: call.name, arguments: JSON.stringify(call.args) }]
@@ -2559,7 +2584,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             acceptance: 'unmeasured', frozenJourneyObservation: false, authoring, qualifyAuthoringSql, authoringWrites,
             limitation: 'Selected private-PG writing boundary only. Counts serialized persisted values, excluding tuple/index/WAL overhead; positive server-clock updates remain unknown. Scripted usage is a recorder control only.',
             fixtureRef: retained, runtimeClosure, catalog: catalogSnapshot, modelSourceHashes,
-            question, stages, resumeDispatches, providerTapes, observedModels, routes, sendFailure,
+            question, stages, resumeDispatches, authoringAdmissions, providerTapes, observedModels, routes, sendFailure,
             contractsBefore, contractsAfter, contractCapture, modelStatements, input, measured,
             controlProjection, stored, ledgerRows });
           const saved = await saveImmutableTextArtifact(h, tape);
@@ -2571,8 +2596,10 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             expect(observedModels.complete).toBe(true);
             expect(contractCapture.gaps).toEqual([]);
             expect(stored).toHaveLength(2);
-            for (const row of stored) expect(row.note).toContain(`Measured writing-path fixture iteration ${iteration}`);
-            expect(measured.values.agentAuthoringCalls).toBeGreaterThanOrEqual(2);
+            for (const row of stored) expect(row.note).toBe(`Measured writing-path fixture iteration ${iteration}`);
+            expect(authoringAdmissions.some(row => row.admitted)).toBe(true);
+            expect(authoringAdmissions.filter(row => row.admitted && !row.succeeded)).toEqual([]);
+            expect(measured.values.agentAuthoringCalls).toBeGreaterThanOrEqual(1);
             if (qualifyAuthoringSql) {
               expect(input.storage.complete).toBe(true);
               const noteWrites = input.storage.rows.filter(row => row.sql?.queryHash === authoringWrites[0]?.queryHash);
@@ -2594,9 +2621,13 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             } else expect(measured.values.storageBytes).toBeNull();
             if (authoring === 'control') {
               expect(controlRequests).toHaveLength(2);
-              expect(resumeDispatches.map(row => row.tool)).toEqual(Array(3).fill('work_items:checkpoint'));
+              const expectedCalls = iteration === 1 ? 5 : 4;
+              expect(resumeDispatches.map(row => row.tool)).toEqual(Array(expectedCalls).fill('work_items:checkpoint'));
+              expect(authoringAdmissions.filter(row => !row.admitted)).toHaveLength(3);
+              expect(authoringAdmissions.filter(row => row.admitted).flatMap(row => row.targets.map(target => target.id)))
+                .toEqual([item, unrelated]);
               expect(measured.values.modelCalls).toBeNull();
-              expect(controlProjection?.values).toMatchObject({ modelCalls: 2, agentAuthoringCalls: 3,
+              expect(controlProjection?.values).toMatchObject({ modelCalls: 2, agentAuthoringCalls: expectedCalls,
                 agentAuthoringInputTokens: 240, agentAuthoringOutputTokens: 34 });
               const missing = structuredClone({ ...input, models: observedModels });
               missing.models.rows[0]!.usageRef = null;
