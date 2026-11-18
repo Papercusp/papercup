@@ -9,7 +9,7 @@ let db: OrgTestDb;
 // receipt narrowing and artifact replay all run against migrated PostgreSQL.
 // No protected-module replacement or live host initialization is necessary.
 const readIdopP001AppliedStackPopulation = (workspace: string, _dependencies?: undefined,
-  options: { payloads: 'retained' | 'digests-only' } = { payloads: 'retained' }) => {
+  options: Omit<NonNullable<Parameters<typeof readPopulation>[2]>, 'sql'> = { payloads: 'retained' }) => {
   if (!db) throw new Error('P001 private population database is not initialized');
   return readPopulation(workspace, undefined, { ...options, sql: db.adminSql });
 };
@@ -152,5 +152,39 @@ describe('IDOP D-043 persisted applied population (real PostgreSQL)', () => {
     expect(compact.stacks[0]).not.toHaveProperty('artifact');
     expect(compact.refused).toMatchObject([{ ownerId: 'su-idop-population-digests-refused',
       resolution: { kind: 'stale-artifact', reason: 'receipt-missing' } }]);
+  });
+
+  it('captures members inside one MVCC snapshot while a different connection changes later inputs', async () => {
+    const workspace = 'idop-population-visit-snapshot';
+    const first = 'su-idop-visit-a';
+    const later = 'su-idop-visit-z';
+    await anchor(workspace, first, { applied: pair });
+    await anchor(workspace, later, { applied: pair });
+    await launch(workspace, first, receipt);
+    await launch(workspace, later, receipt);
+    const visited: string[] = [];
+    const result = await readIdopP001AppliedStackPopulation(workspace, undefined, {
+      payloads: 'digests-only', visit: async member => {
+        visited.push(member.ownerId);
+        expect(member.kind).toBe('stack');
+        if (member.kind === 'stack') expect(member.artifact).toEqual(applied);
+        if (member.ownerId === first) {
+          await anchor(workspace, 'su-idop-visit-new', { applied: pair });
+          await db.adminSql`UPDATE harness_shared.session_briefs SET control_state = ${JSON.stringify({
+            activation: { applied: { ...pair, stateRevision: 'changed-after-capture-start' } },
+          })}::text::jsonb WHERE workspace_id = ${workspace} AND owner_id = ${later}`;
+          await launch(workspace, later, { ...receipt, specificationArtifact: desired });
+        }
+      },
+    });
+    expect(visited).toEqual([first, later]);
+    expect(result.stacks.map(row => row.ownerId)).toEqual([first, later]);
+    expect(result.stacks.every(row => row.launchRecord === undefined && row.artifact === undefined)).toBe(true);
+    // A later independent read sees the changed population, proving the writer
+    // committed while the visitor was holding the original read snapshot.
+    const after = await readIdopP001AppliedStackPopulation(workspace);
+    expect([...after.stacks, ...after.refused].map(row => row.ownerId).sort())
+      .toEqual([first, 'su-idop-visit-new', later]);
+    expect(after.refused.map(row => row.ownerId)).toContain(later);
   });
 });
