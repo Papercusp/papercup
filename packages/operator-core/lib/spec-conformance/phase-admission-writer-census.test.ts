@@ -96,7 +96,8 @@ describe('phase binding writer census', () => {
     const paths = [...new Set([...reviewed.reviewedSourcePaths, serializers])];
     const sources = paths.map(path => ({ path, content: readFileSync(new URL(path, root), 'utf8') }));
     const inventory = inventoryPhaseWriters(sources);
-    const names = ['restoreRawDateSerializers', 'restoreRawJsonbSerializer', 'seedBuiltinArrayTypes'];
+    const names = ['restoreRawDateSerializers', 'restoreRawJsonbSerializer', 'seedBuiltinArrayTypes',
+      'installNumericArrayTyping'];
     const installers = inventory.sites.filter(site => site.path === connection && site.operation === 'buildClient'
       && site.kind === 'helper-edge' && names.includes(site.callees[0] ?? ''));
     expect(installers.map(site => site.statement).sort()).toEqual(names.map(name => `${name}(client)`).sort());
@@ -130,9 +131,9 @@ describe('phase binding writer census', () => {
       id: site.id, reasons: ['unclassified-writer'],
     });
     const unresolved = inventory.sites.filter(site => site.path === connection && site.kind === 'helper-edge'
-      && ['postgres', 'drizzle', 'installNumericArrayTyping', 'adminStatementTimeoutMs', 'getOrgPg']
+      && ['postgres', 'drizzle', 'adminStatementTimeoutMs', 'getOrgPg']
         .includes(site.callees[0] ?? ''));
-    for (const name of ['postgres', 'drizzle', 'installNumericArrayTyping', 'adminStatementTimeoutMs']) {
+    for (const name of ['postgres', 'drizzle', 'adminStatementTimeoutMs']) {
       expect(unresolved.some(site => site.callees[0] === name)).toBe(true);
     }
     for (const site of unresolved) {
@@ -204,6 +205,60 @@ describe('phase binding writer census', () => {
     for (const { siteId } of reviewed.pendingAdvancing) {
       expect(current.problems).toContainEqual({ id: siteId, reasons: ['unclassified-writer'] });
     }
+  });
+
+  it('pins numeric-array installation while preserving deferred driver delegation as residue', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const connection = 'libs/papercusp/libs/db/src/connection.ts';
+    const serializers = 'libs/papercusp/libs/db/src/raw-serializers.ts';
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const inventory = inventoryPhaseWriters(sources);
+    const installer = inventory.sites.find(site => site.path === connection
+      && site.operation === 'buildClient' && site.kind === 'helper-edge'
+      && site.statement === 'installNumericArrayTyping(client)')!;
+    expect(installer).toBeDefined();
+    const current = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const approval = reviewed.reviews.find(row => row.siteId === installer.id);
+    expect(current.coverage.checked).toContain(installer.id);
+    expect(approval?.disposition).toBe('metadata-only');
+    for (const path of [connection, serializers]) expect(approval?.sourceProofs).toContainEqual({
+      path, sha256: inventory.sources.find(row => row.path === path)!.sha256,
+    });
+    // The installed wrapper's original.call/apply frontiers execute later.
+    // Approving installation must not also approve those driver calls.
+    const delegates = inventory.sites.filter(site => site.path === serializers
+      && site.unresolved.includes('indirect-call-target-requires-review')
+      && /original\.(?:call|apply)\(/.test(site.statement));
+    expect(delegates.length).toBeGreaterThan(0);
+    for (const site of delegates) {
+      expect(current.coverage.residue).toContain(site.id);
+      expect(reviewed.reviews.some(row => row.siteId === site.id)).toBe(false);
+    }
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === serializers
+      ? { ...source, content: source.content.replace('const original = (client as any)?.array;',
+        "client.unsafe('UPDATE harness_shared.plan_item_claims SET owner=owner');"
+          + '\n  const original = (client as any)?.array;') }
+      : source));
+    expect(changed.sites.some(site => site.id === installer.id)).toBe(true);
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    expect(stale.coverage.residue).toContain(installer.id);
+    expect(stale.problems.find(row => row.id === installer.id)?.reasons)
+      .toContain('stale-source-proof:' + serializers);
+    const injected = changed.sites.filter(site => site.path === serializers
+      && site.kind === 'sql' && site.statement.includes('SET owner=owner'));
+    expect(injected.length).toBeGreaterThan(0);
+    for (const site of injected) expect(stale.problems).toContainEqual({
+      id: site.id, reasons: ['unclassified-writer'],
+    });
+    expect(current.ready).toBe(false);
+    for (const { siteId } of reviewed.pendingAdvancing) expect(current.coverage.residue).toContain(siteId);
   });
 
   it('pins identity helper reviews while leaving database and notification closure unresolved', () => {
@@ -919,6 +974,32 @@ describe('phase binding writer census', () => {
       expect(() => assertPhaseWriterCensus(inventory, inspected.map(row => ({ ...row, resolvedEdges: [] }))))
         .toThrow('unresolved-edge');
     }
+  });
+
+  it('retains parameter-derived callable aliases across declarations assignments and cycles', () => {
+    const variants = [
+      'const original = client.array; original.call(client, values)',
+      'const original = (client as any)?.array; const second = original; second.apply(client, values)',
+      'let original; original = client.array; original(values)',
+      'const { array: original } = client; original(values)',
+      'const { nested: { array: original } } = client; original(values)',
+      'const [original] = client; original(values)',
+      'let first = second; let second = first; second = client.array; first(values)',
+      Array.from({ length: 40 }, (_, index) => `const alias${index} = ${index ? `alias${index - 1}` : 'client.array'};`)
+        .join(' ') + ' alias39(values)',
+    ];
+    for (const body of variants) {
+      const inventory = inventoryPhaseWriters([source(`function dispatch(client, values) { ${body}; }`)]);
+      const frontiers = inventory.sites.filter(site =>
+        site.unresolved.includes('indirect-call-target-requires-review'));
+      expect(frontiers, body).toHaveLength(1);
+      const report = reconcilePhaseWriterCensus(inventory, []);
+      expect(report.ready).toBe(false);
+      expect(report.coverage.residue).toContain(frontiers[0]!.id);
+    }
+    const local = inventoryPhaseWriters([source(
+      'function local() { const value = Math.abs; const alias = value; alias(-1); let a=b,b=a; a(); }')]);
+    expect(local.sites.filter(site => site.unresolved.includes('indirect-call-target-requires-review'))).toEqual([]);
   });
 
   it('invalidates an unchanged helper review when its resolved target changes', () => {
