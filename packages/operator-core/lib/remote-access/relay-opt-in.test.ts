@@ -6,6 +6,7 @@
  * fail here the way it would fail against Postgres.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   PORTAL_RELAY_NOTICE,
   PORTAL_RELAY_NOTICE_VERSION,
@@ -25,12 +26,18 @@ import {
   portalRelayMcpUrl,
   portalRelayStatus,
   reconcilePortalRelay,
+  startPortalRelayReconciler,
   resetPortalRelayStateForTests,
   type PortalRelayDeps,
   type PortalRelayPortalClient,
 } from './relay-opt-in';
 import { PORTAL_RELAY_NOTICE as PORTAL_ROUTE_NOTICE } from '../endpoint-route/routes/hosted-cli';
 import { currentPortalRelayDesktopGrant, type PortalRelayRow, type PortalRelaySecrets } from './portal-relay-store';
+
+vi.mock('@papercusp/scheduled-registry', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/scheduled-registry')>(),
+  managedSetInterval: vi.fn(),
+}));
 
 const PORTAL = 'https://portal.example.com';
 const APP_BASE = `${PORTAL}/api/workspaces/cw-1`;
@@ -621,6 +628,35 @@ describe('separate local desktop consent', () => {
     await reconcilePortalRelay(w.deps);
     return w;
   }
+
+  it('uses the elected owner on the existing boot timer to restart after desktop approval', async () => {
+    const w = await linked();
+    const notOwner = { ...w.deps, isConnectorOwner: () => false };
+    vi.mocked(managedSetInterval).mockClear();
+    startPortalRelayReconciler(notOwner);
+    await reconcilePortalRelay(notOwner);
+    startPortalRelayReconciler(w.deps);
+    await reconcilePortalRelay(w.deps);
+    startPortalRelayReconciler();
+    await reconcilePortalRelay(w.deps);
+    expect(managedSetInterval).toHaveBeenCalledTimes(1);
+    const tick = vi.mocked(managedSetInterval).mock.calls[0]![2];
+    const context = { signal: new AbortController().signal };
+    const starts = w.connectorStarts.length;
+    await approvePortalRelayDesktop(input, w.deps);
+    await tick(context);
+    expect(w.connectorStarts).toHaveLength(starts + 1);
+    expect(w.connectorStarts.at(-1)?.desktopGrant?.id).toBe(w.row!.desktopGrant!.id);
+    await tick(context);
+    expect(w.connectorStarts).toHaveLength(starts + 1);
+    // Relinquishing ownership must also update the same timer.
+    startPortalRelayReconciler(notOwner);
+    await reconcilePortalRelay(notOwner);
+    await revokePortalRelayDesktop(w.deps);
+    await tick(context);
+    expect(w.connectorStarts).toHaveLength(starts + 1);
+    expect(managedSetInterval).toHaveBeenCalledTimes(1);
+  });
 
   it('app/link approval alone grants no desktop access; the account comes from the approved token', async () => {
     const w = await linked();
