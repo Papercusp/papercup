@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../../governance-policy/host-authority-bindings', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../governance-policy/host-authority-bindings')>(),
+  enrollHostAuthorityBinding: vi.fn(),
+}));
+
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 vi.mock('../../../governance-policy/sensitive-action', async importOriginal => ({
   ...await importOriginal<typeof import('../../../governance-policy/sensitive-action')>(),
@@ -44,6 +49,7 @@ import { getSensitiveAction, LEGACY_ADOPTION_ACTION, SensitiveActionError,
 import { decideLegacyAdoption, reserveLegacyAdoption, retainLegacyAdoptionHuman,
   validateLegacyAdoptionRequest } from '../../../blind-review-continuation-custody';
 import routes, { GOVERNANCE_POLICY_CHANGE_STATUS } from './policy';
+import { enrollHostAuthorityBinding, HostAuthorityEnrollmentError } from '../../../governance-policy/host-authority-bindings';
 
 // Partial fixtures cast to the mocked functions' REAL return types instead of
 // `as never`, so a changed field type still fails here at compile time
@@ -87,6 +93,39 @@ beforeEach(() => {
   vi.mocked(simulateGovernancePolicy).mockReset();
   vi.mocked(setGovernancePolicyLayer).mockReset();
   vi.mocked(addGovernancePolicyException).mockReset();
+});
+
+describe('explicit host enrollment HTTP door', () => {
+  const route = routes.find(route => route.path === '/governance-policy/enroll-authority')!;
+  const input = { kind: 'platform', subjectId: 'floor', reason: 'explicit ownership' };
+  it('uses the actual request credentials and server workspace, never the admin actor label', async () => {
+    vi.mocked(enrollHostAuthorityBinding).mockResolvedValue({ status: 'enrolled', binding: {
+      kind: 'platform', subjectId: 'floor', humanOwnerId: 'actual-human',
+      requestPrincipalRevision: 'a'.repeat(64), reason: input.reason, recordedAt: '2030-01-01T00:00:00.000000Z',
+    } });
+    const res = await route.handler(new Request('http://127.0.0.1/api/governance-policy/enroll-authority', {
+      method: 'POST', headers: { cookie: 'actual-cookie=retained' }, body: JSON.stringify(input),
+    }), ctxFor({}, 'forged-admin')) as Response;
+    expect(res.status).toBe(200);
+    const [headers, workspace, received] = vi.mocked(enrollHostAuthorityBinding).mock.calls[0]!;
+    expect(headers.get('cookie')).toBe('actual-cookie=retained');
+    expect(workspace).toBe('ws-active');
+    expect(received).toEqual(input);
+    expect(await res.json()).toMatchObject({ ok: true, status: 'enrolled', binding: { humanOwnerId: 'actual-human' } });
+  });
+
+  it.each([['invalid', 400], ['forbidden', 403], ['conflict', 409]] as const)('preserves %s refusal', async (code, status) => {
+    vi.mocked(enrollHostAuthorityBinding).mockRejectedValue(new HostAuthorityEnrollmentError(code, 'refused'));
+    const res = await route.handler(new Request('http://127.0.0.1/enroll', { method: 'POST', body: JSON.stringify(input) }), ctxFor({})) as Response;
+    expect(res.status).toBe(status);
+    expect(await res.json()).toMatchObject({ ok: false, code });
+  });
+
+  it('refuses malformed JSON before calling the writer', async () => {
+    const res = await route.handler(new Request('http://127.0.0.1/enroll', { method: 'POST', body: '{' }), ctxFor({})) as Response;
+    expect(res.status).toBe(400);
+    expect(enrollHostAuthorityBinding).not.toHaveBeenCalled();
+  });
 });
 
 describe('D011 HTTP stored adoption dispatch', () => {

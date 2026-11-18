@@ -4,7 +4,7 @@ import postgres from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { readHostAuthorityBindings } from './host-authority-bindings';
+import { enrollHostAuthorityBinding, readHostAuthorityBindings } from './host-authority-bindings';
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -23,10 +23,135 @@ beforeAll(async () => {
   // runtime role. Stripping grants hid a nonexistent-role typo before arming.
   await sql.unsafe(readFileSync(source, 'utf8'));
   await sql`CREATE TABLE harness_shared.binding_effects (target text NOT NULL)`;
+  await sql`CREATE TABLE harness_shared.users (id uuid PRIMARY KEY, is_active boolean NOT NULL DEFAULT true)`;
+  await sql`CREATE TABLE harness_shared.user_sessions (token text PRIMARY KEY, user_id uuid NOT NULL,
+    workspace_id text, capabilities text[], expires_at timestamptz NOT NULL)`;
 }, 60_000);
 afterAll(async () => { await sql?.end({ timeout: 5 }); });
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.governance_host_authority_bindings, harness_shared.binding_effects`;
+  await sql`TRUNCATE harness_shared.governance_host_authority_bindings, harness_shared.binding_effects,
+    harness_shared.users, harness_shared.user_sessions`;
+});
+
+async function browser(capabilities = ['*'], workspace = 'ws') {
+  const userId = '11111111-1111-4111-8111-111111111111';
+  const token = randomBytes(32).toString('hex');
+  await sql`INSERT INTO harness_shared.users (id) VALUES (${userId}) ON CONFLICT DO NOTHING`;
+  await sql`INSERT INTO harness_shared.user_sessions (token, user_id, workspace_id, capabilities, expires_at)
+    VALUES (${token}, ${userId}, ${workspace}, ${capabilities}, clock_timestamp() + interval '1 hour')`;
+  return { userId, token, headers: new Headers({ cookie: `papercusp_session=${token}` }) };
+}
+const enrollment = { kind: 'platform' as const, subjectId: 'explicit-floor', reason: 'I explicitly own this platform floor' };
+
+describe('P-002 authenticated explicit host enrollment', () => {
+  it('enrolls the exact browser human and named floor, without creating a policy or leaking credentials', async () => {
+    const f = await browser();
+    const self = await enrollHostAuthorityBinding(f.headers, 'ws',
+      { kind: 'user', subjectId: f.userId, reason: 'I explicitly enroll myself' }, sql);
+    const floor = await enrollHostAuthorityBinding(f.headers, 'ws', enrollment, sql);
+    expect(self).toMatchObject({ status: 'enrolled', binding: { humanOwnerId: f.userId, subjectId: f.userId } });
+    expect(floor).toMatchObject({ status: 'enrolled', binding: { humanOwnerId: f.userId, subjectId: 'explicit-floor',
+      requestPrincipalRevision: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+    expect(JSON.stringify({ self, floor })).not.toContain(f.token);
+    expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ requiredUserIds: [f.userId], requiredPlatformIds: ['explicit-floor'] });
+    expect(await sql`SELECT to_regclass('harness_shared.governance_policy_layers') AS policy`).toEqual([{ policy: null }]);
+  });
+
+  it.each(['missing', 'bearer', 'foreign', 'limited', 'inactive', 'expired', 'revoked'])(
+    'refuses %s credentials without writing ownership', async mode => {
+      const f = await browser(mode === 'limited' ? ['tools:read'] : ['*'], mode === 'foreign' ? 'foreign' : 'ws');
+      if (mode === 'inactive') await sql`UPDATE harness_shared.users SET is_active = false`;
+      if (mode === 'expired') await sql`UPDATE harness_shared.user_sessions SET expires_at = clock_timestamp() - interval '1 second'`;
+      if (mode === 'revoked') await sql`DELETE FROM harness_shared.user_sessions`;
+      const headers = mode === 'missing' ? new Headers() : mode === 'bearer'
+        ? new Headers({ authorization: `Bearer ${f.token}` }) : f.headers;
+      await expect(enrollHostAuthorityBinding(headers, 'ws', enrollment, sql)).rejects.toMatchObject({ code: 'forbidden' });
+      expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [] });
+    },
+  );
+
+  it('refuses another user subject, forged human ownership, wildcard subjects and missing reasons', async () => {
+    const f = await browser();
+    await expect(enrollHostAuthorityBinding(f.headers, 'ws', { ...enrollment, kind: 'user', subjectId: 'another-human' }, sql))
+      .rejects.toMatchObject({ code: 'forbidden' });
+    for (const input of [{ ...enrollment, humanOwnerId: 'another-human' }, { ...enrollment, subjectId: '*' },
+      { ...enrollment, reason: '' }, { ...enrollment, workspaceId: 'foreign' }])
+      await expect(enrollHostAuthorityBinding(f.headers, 'ws', input, sql)).rejects.toMatchObject({ code: 'invalid' });
+    expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [] });
+  });
+
+  it('cannot replace, refresh or implicitly replay existing ownership', async () => {
+    const f = await browser();
+    const first = await enrollHostAuthorityBinding(f.headers, 'ws', enrollment, sql);
+    await expect(enrollHostAuthorityBinding(f.headers, 'ws', { ...enrollment, reason: 'replace' }, sql))
+      .rejects.toMatchObject({ code: 'conflict' });
+    expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [first.binding] });
+  });
+
+  it.each(['expired', 'revoked', 'capability', 'reassigned', 'extended'] as const)(
+    'rechecks %s credentials after a real binding-table wait', async mode => {
+      const f = await browser();
+      let pending: Promise<unknown> | undefined;
+      // A real conflicting lock makes authorization-before-lock bugs observable.
+      // pg_locks is the synchronization signal; no guessed sleeps or fake SQL.
+      await sql.begin(async blocker => {
+        await blocker`LOCK TABLE harness_shared.governance_host_authority_bindings IN SHARE MODE`;
+        pending = enrollHostAuthorityBinding(f.headers, 'ws', enrollment, sql);
+        const outcome = pending.catch(error => error);
+        const deadline = Date.now() + 10_000;
+        let waiting = false;
+        while (!waiting && Date.now() < deadline) {
+          const [row] = await blocker`SELECT EXISTS(SELECT 1 FROM pg_locks
+            WHERE relation = 'harness_shared.governance_host_authority_bindings'::regclass
+              AND mode = 'ShareRowExclusiveLock' AND NOT granted) AS waiting`;
+          waiting = row.waiting;
+          if (!waiting) await blocker`SELECT pg_sleep(0.01)`;
+        }
+        expect(waiting, 'enrollment reached the actual binding-table wait').toBe(true);
+        if (mode === 'expired') await blocker`UPDATE harness_shared.user_sessions SET expires_at = clock_timestamp() - interval '1 second'`;
+        if (mode === 'revoked') await blocker`DELETE FROM harness_shared.user_sessions`;
+        if (mode === 'capability') await blocker`UPDATE harness_shared.user_sessions SET capabilities = ARRAY['tools:read']::text[]`;
+        if (mode === 'reassigned') await blocker`UPDATE harness_shared.user_sessions SET workspace_id = 'foreign'`;
+        if (mode === 'extended') await blocker`UPDATE harness_shared.user_sessions SET expires_at = expires_at + interval '1 hour'`;
+        pending = outcome;
+      });
+      expect(await pending).toMatchObject({ code: 'forbidden' });
+      expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [] });
+    },
+  );
+
+  it('owns its transaction instead of accepting an old caller snapshot', async () => {
+    const f = await browser();
+    await expect(sql.begin('isolation level repeatable read', tx =>
+      enrollHostAuthorityBinding(f.headers, 'ws', enrollment, txSql(tx))))
+      .rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('checks wall-clock expiry on the INSERT after an auth-row lock wait, not only before locking', async () => {
+    const f = await browser();
+    await sql`UPDATE harness_shared.user_sessions SET expires_at = clock_timestamp() + interval '2 seconds'`;
+    let pending: Promise<unknown> | undefined;
+    await sql.begin(async blocker => {
+      // An unchanged row preserves the content revision while making FOR SHARE
+      // wait. Its pre-wait WHERE may already have evaluated unexpired=true.
+      await blocker`UPDATE harness_shared.users SET is_active = true WHERE id = ${f.userId}`;
+      pending = enrollHostAuthorityBinding(f.headers, 'ws', enrollment, sql).catch(error => error);
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (!waiting && Date.now() < deadline) {
+        const [row] = await blocker`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'
+            AND query LIKE '%FOR SHARE OF s, u%') AS waiting`;
+        waiting = row.waiting;
+        if (!waiting) await blocker`SELECT pg_sleep(0.01)`;
+      }
+      expect(waiting, 'enrollment reached the actual credential-row wait').toBe(true);
+      await blocker`SELECT pg_sleep(GREATEST(0, EXTRACT(epoch FROM (expires_at - clock_timestamp()))) + 0.01)
+        FROM harness_shared.user_sessions WHERE token = ${f.token}`;
+    });
+    expect(await pending).toMatchObject({ code: 'forbidden' });
+    expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [] });
+  });
 });
 const txSql = (tx: postgres.TransactionSql) => tx as unknown as postgres.Sql;
 // Storage fixtures, deliberately not proof of a production enrollment writer.

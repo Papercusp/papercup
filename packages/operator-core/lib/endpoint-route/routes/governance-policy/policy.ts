@@ -60,6 +60,8 @@ import { getSensitiveAction, LEGACY_ADOPTION_ACTION, SensitiveActionError } from
 import { decideLegacyAdoption, reserveLegacyAdoption, retainLegacyAdoptionHuman,
   validateLegacyAdoptionRequest } from '../../../blind-review-continuation-custody';
 import type { GovernedRequest, PolicyException } from '../../../governance-policy/inherited-policy';
+import { enrollHostAuthorityBinding, HostAuthorityEnrollmentError } from '../../../governance-policy/host-authority-bindings';
+import { PrincipalCheckError } from '../../../auth/require-principal';
 
 export const GOVERNANCE_POLICY_WRITE_STATUS: Record<GovernancePolicyWriteCode, number> = {
   invalid: 400,
@@ -268,4 +270,26 @@ const authority = defineTool({
   },
 });
 
-export default [explain, simulate, set, addException, prepare, decide, apply, delegate, revokeDelegation, authority];
+const enrollAuthority = defineTool({
+  method: 'POST',
+  path: '/governance-policy/enroll-authority',
+  auth: 'loopback',
+  async handler(req) {
+    let input;
+    try { input = await req.json(); }
+    catch { return badRequest('enroll-authority', 'invalid JSON'); }
+    try {
+      const out = await enrollHostAuthorityBinding(req.headers, activeWorkspaceId(), input);
+      return Response.json({ ok: true, op: 'enroll-authority', ...out });
+    } catch (error) {
+      if (error instanceof HostAuthorityEnrollmentError)
+        return Response.json({ ok: false, op: 'enroll-authority', code: error.code, error: error.message },
+          { status: { invalid: 400, forbidden: 403, conflict: 409 }[error.code] });
+      if (error instanceof PrincipalCheckError)
+        return Response.json({ ok: false, op: 'enroll-authority', code: 'forbidden', error: error.message }, { status: error.status });
+      throw error;
+    }
+  },
+});
+
+export default [explain, simulate, set, addException, prepare, decide, apply, delegate, revokeDelegation, authority, enrollAuthority];

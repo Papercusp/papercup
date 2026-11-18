@@ -1,11 +1,13 @@
 /** P-002 independent host enrollment source, separate from policy roots.
- * This is storage evidence, not authenticated enrollment or edit admission.
- * The host's enrollment writer is intentionally a separate, guarded operation;
- * legacy/unenrolled authorities stay unknown and no ownership is synthesized.
+ * Enrollment records explicit human ownership, never permission-edit admission.
+ * Legacy/unenrolled authorities stay unknown; no ownership is synthesized.
  */
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { resolveSessionToken } from '../auth';
+import { refuseLegacyBootstrapPrincipal } from '../auth/require-principal';
 
 export interface HostAuthorityBinding {
   kind: 'user' | 'platform';
@@ -18,6 +20,88 @@ export interface HostAuthorityBinding {
 
 const exact = (value: unknown): value is string => typeof value === 'string' &&
   !!value.trim() && value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value);
+
+export class HostAuthorityEnrollmentError extends Error {
+  constructor(readonly code: 'invalid' | 'forbidden' | 'conflict', message: string) { super(message); }
+}
+
+export interface HostAuthorityEnrollment {
+  kind: 'user' | 'platform';
+  subjectId: string;
+  reason: string;
+}
+
+/** Only the original browser cookie authenticates this explicit request. An
+ * agent/system principal, caller-supplied owner, or default user cannot enroll.
+ * Reuses the local-session source and org admin transaction, without calling
+ * getSessionUser (and its pool last_seen_at write) behind any authorization lock.
+ * This inserts ownership evidence only; it neither writes a policy nor replaces
+ * an enrolled owner. Policy edits still need ordinary authority and the full
+ * permission-change guard. No unauthenticated bootstrap/backfill is provided.
+ */
+export async function enrollHostAuthorityBinding(headers: Headers, workspaceId: string,
+  input: HostAuthorityEnrollment, sql?: Sql) {
+  const credentials = new Headers(headers);
+  input = { ...input };
+  if (!exact(workspaceId) || workspaceId === '*' || !input ||
+      !['user', 'platform'].includes(input.kind) || !exact(input.subjectId) || input.subjectId === '*' ||
+      !exact(input.reason) || Object.keys(input).some(key => !['kind', 'subjectId', 'reason'].includes(key)))
+    throw new HostAuthorityEnrollmentError('invalid', 'exact enrollment subject and reason required');
+  refuseLegacyBootstrapPrincipal(credentials);
+  const token = await resolveSessionToken(credentials);
+  if (!token || !/^[a-f0-9]{64}$/.test(token))
+    throw new HostAuthorityEnrollmentError('forbidden', 'authenticated browser session required');
+  sql ??= getOrgPg().sql;
+  if (typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function')
+    throw new HostAuthorityEnrollmentError('invalid', 'enrollment owns its read committed transaction');
+
+  // A content pin prevents a grant, reassignment or extended lifetime acquired
+  // while waiting from widening what the original request actually possessed.
+  // Secrets never leave SQL. UTC fixes the revision across connection settings.
+  const authority = (tx: Sql) => tx<Array<{ userId: string; revision: string }>>`
+    SELECT s.user_id::text AS "userId",
+      encode(sha256(convert_to(jsonb_build_object(
+        'purpose', 'host-authority-enrollment-v1', 'userId', s.user_id,
+        'workspaceId', s.workspace_id, 'capabilities', s.capabilities, 'active', u.is_active,
+        'session', encode(sha256(convert_to(s.token, 'UTF8')), 'hex'),
+        'expiresAt', to_char(s.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+      )::text, 'UTF8')), 'hex') AS revision
+      FROM harness_shared.user_sessions s JOIN harness_shared.users u ON u.id = s.user_id
+     WHERE s.token = ${token} AND s.workspace_id = ${workspaceId}
+       AND s.expires_at > clock_timestamp() AND u.is_active = true
+       AND s.capabilities @> ARRAY['*']::text[]`;
+  const [original] = await authority(sql);
+  if (!original || (input.kind === 'user' && input.subjectId !== original.userId))
+    throw new HostAuthorityEnrollmentError('forbidden', 'full operator session and explicit self ownership required');
+
+  return sql.begin('isolation level read committed', async transaction => {
+    const tx = transaction as unknown as Sql;
+    // Serialize enrollment, including absent subjects, with the effect reader's
+    // SHARE lease. Acquire this BEFORE reading current credentials: a long wait
+    // must not turn a formerly valid cookie into permission to write later.
+    await tx`LOCK TABLE harness_shared.governance_host_authority_bindings IN SHARE ROW EXCLUSIVE MODE`;
+    const current = await tx<Array<{ userId: string; revision: string }>>`${authority(tx)} FOR SHARE OF s, u`;
+    if (current.length !== 1 || current[0].revision !== original.revision)
+      throw new HostAuthorityEnrollmentError('forbidden', 'enrollment credential changed or expired');
+    const existing = await tx`SELECT 1 FROM harness_shared.governance_host_authority_bindings
+      WHERE workspace_id = ${workspaceId} AND kind = ${input.kind} AND subject_id = ${input.subjectId}`;
+    if (existing.length) throw new HostAuthorityEnrollmentError('conflict', 'authority already enrolled; ownership replacement requires a separate guarded change');
+    // Re-evaluate on the INSERT, after ALL lock waits, with wall-clock expiry
+    // rather than transaction-start now(). Held auth rows block revocation and
+    // capability changes through this effect; time itself still needs this test.
+    const rows = await tx<HostAuthorityBinding[]>`
+      INSERT INTO harness_shared.governance_host_authority_bindings
+        (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+      SELECT ${workspaceId}, ${input.kind}, ${input.subjectId}, a."userId", a.revision, ${input.reason}
+        FROM (${authority(tx)}) a WHERE a.revision = ${original.revision} AND a."userId" = ${original.userId}
+      ON CONFLICT DO NOTHING
+      RETURNING kind, subject_id AS "subjectId", human_owner_id AS "humanOwnerId",
+        request_principal_revision AS "requestPrincipalRevision", reason,
+        to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "recordedAt"`;
+    if (rows.length !== 1) throw new HostAuthorityEnrollmentError('forbidden', 'enrollment credential unavailable at effect');
+    return { status: 'enrolled' as const, binding: rows[0] };
+  });
+}
 
 /** Complete registered source, never a caller-selected subset or a scan of
  * policy roots. An empty source is explicit and proves no required population
