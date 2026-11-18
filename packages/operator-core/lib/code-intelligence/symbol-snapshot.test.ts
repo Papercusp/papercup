@@ -8,6 +8,112 @@ function build(sources: Record<string, string>) {
     resolveModule: (file: string, spec: string) => relativeSymbolModule(file, spec, new Set(files)) });
 }
 describe('precomputed symbol snapshot', () => {
+  it('streams exact declaration identities without conflating exports in one source file', () => {
+    const sources: Record<string, string> = {
+      'definitions.ts': 'export default function writer() {}\nexport const serialize = (value: string) => value;',
+      'barrel.ts': 'export { default as advance, serialize } from "./definitions"; export * from "./cycle";',
+      'cycle.ts': 'export * from "./barrel";',
+      'default.ts': 'import run from "./definitions"; run();',
+      'renamed.ts': 'import { advance as renamed, serialize } from "./barrel"; renamed(); serialize("x");',
+      'namespace.ts': 'import * as api from "./barrel"; api.advance(); api.serialize("x");',
+    };
+    type Declaration = { id: string; path: string; name: string; line: number; column: number };
+    const collect = (files: string[], censusOnly: boolean, partitioned: boolean) => {
+      const rows: Array<{ call: string; target: string | null; declaration: Declaration | null }> = [];
+      const fileSet = new Set(files);
+      const input = { files, censusOnly, includeCallCensus: true,
+        readSource: (path: string) => sources[path] ?? null,
+        resolveModule: (path: string, spec: string) => relativeSymbolModule(path, spec, fileSet),
+        callCensusSink: (call: { path: string; line: number; column: number }, target: string | null,
+          _index: number, declaration: Declaration | null) => rows.push({
+          call: JSON.stringify([call.path, call.line, call.column]), target, declaration,
+        }),
+      };
+      const parts = partitioned ? files.map(path => parseSymbolSnapshot({ ...input, files: [path] })) : [];
+      const parsed = partitioned ? {
+        units: new Map(parts.flatMap(part => [...part.units])),
+        symbols: new Map(parts.flatMap(part => [...part.symbols])),
+        immediateCalls: parts.flatMap(part => part.immediateCalls),
+        stats: { ...parts[0]!.stats, files: parts.reduce((sum, part) => sum + part.stats.files, 0) },
+      } : undefined;
+      const snapshot = buildSymbolSnapshot({ ...input, ...(parsed ? { parsed } : {}) });
+      expect(snapshot.stats.callCensusTruncated).toBe(false);
+      expect(snapshot.callCensus).toEqual([]);
+      return rows.sort((a, b) => a.call.localeCompare(b.call));
+    };
+    const files = Object.keys(sources), baseline = collect(files, false, false);
+    expect(baseline).toHaveLength(5);
+    const writer = baseline.filter(row => row.declaration?.name === 'writer');
+    const serializer = baseline.filter(row => row.declaration?.name === 'serialize');
+    expect(writer).toHaveLength(3);
+    expect(serializer).toHaveLength(2);
+    expect(new Set(writer.map(row => row.declaration!.id)).size).toBe(1);
+    expect(new Set(serializer.map(row => row.declaration!.id)).size).toBe(1);
+    expect(writer[0]!.declaration!.id).not.toBe(serializer[0]!.declaration!.id);
+    for (const row of baseline) {
+      expect(row.target).toBe('definitions.ts');
+      expect(row.declaration).toEqual({
+        id: JSON.stringify(['definitions.ts', row.declaration!.line, row.declaration!.column, row.declaration!.name]),
+        path: 'definitions.ts', name: row.declaration!.name, line: row.declaration!.line, column: row.declaration!.column,
+      });
+    }
+    for (const order of [files, [...files].reverse()]) for (const compact of [false, true]) {
+      expect(collect(order, compact, false)).toEqual(baseline);
+      expect(collect(order, compact, true)).toEqual(baseline);
+    }
+  });
+  it('keeps unresolved calls and incomplete export closure without declaration proof', () => {
+    const sources: Record<string, string> = {
+      'a.ts': 'export function target() {}', 'b.ts': 'export function target() {}',
+      'barrel.ts': 'export * from "./a"; export * from "./b";',
+      'shadow.ts': 'import { target } from "./a"; function run(target: any) { target(); }',
+      'missing.ts': 'import { target } from "./absent"; target();',
+      'ambiguous.ts': 'import { target } from "./barrel"; target();',
+      'dynamic.ts': 'getTarget()();',
+    };
+    const collect = (input: Record<string, string>) => {
+      const files = Object.keys(input), rows: Array<{ target: string | null; declaration: unknown }> = [];
+      const snapshot = buildSymbolSnapshot({ files, censusOnly: true,
+        readSource: (path: string) => input[path] ?? null,
+        resolveModule: (path: string, spec: string) => relativeSymbolModule(path, spec, new Set(files)),
+        callCensusSink: (_call: unknown, target: string | null, _index: number, declaration: unknown) => {
+          rows.push({ target, declaration });
+        },
+      });
+      return { rows, snapshot };
+    };
+    const unresolved = collect(sources);
+    expect(unresolved.rows).toHaveLength(5);
+    expect(unresolved.rows.every(row => row.target === null && row.declaration === null)).toBe(true);
+    for (const depth of [31, 32, 33]) {
+      const name = (index: number) => `chain-${String(index).padStart(3, '0')}`;
+      const chain: Record<string, string> = {};
+      for (let index = 0; index <= depth; index++) chain[name(index) + '.ts'] = index === depth
+        ? 'export function target() {}' : `export * from "./${name(index + 1)}";`;
+      chain['use.ts'] = `import { target } from "./${name(0)}"; target();`;
+      const result = collect(chain);
+      expect(result.rows).toHaveLength(1);
+      expect(result.snapshot.stats.callCensusTruncated).toBe(depth >= 32);
+      if (depth >= 32) expect(result.rows[0]!.declaration).toBeNull();
+      else expect(result.rows[0]!.declaration).toMatchObject({ path: name(depth) + '.ts', name: 'target' });
+    }
+  });
+  it('streams declaration proof past the caller summary boundary without losing call identities', () => {
+    for (const count of [499, 500, 501]) {
+      const rows: Array<{ index: number; declaration: unknown }> = [];
+      const text = 'export function target() {}\n' + 'target();\n'.repeat(count);
+      const snapshot = buildSymbolSnapshot({ files: ['target.ts'], readSource: () => text,
+        resolveModule: () => null, censusOnly: true,
+        callCensusSink: (_call: unknown, _target: string | null, index: number, declaration: unknown) => {
+          rows.push({ index, declaration });
+        },
+      });
+      expect(rows.map(row => row.index)).toEqual(Array.from({ length: count }, (_, index) => index));
+      expect(rows.every(row => row.declaration !== null && row.declaration !== undefined)).toBe(true);
+      expect(new Set(rows.map(row => JSON.stringify(row.declaration))).size).toBe(1);
+      expect(snapshot.stats).toMatchObject({ callCensusTruncated: false, truncated: count > 500 });
+    }
+  });
   it('resolves a merged parse only after cross-partition exports and cycles are complete', () => {
     const sources: Record<string, string> = {
       'a.ts': 'import { alias } from "./barrel"; alias(); new (factory())();',
