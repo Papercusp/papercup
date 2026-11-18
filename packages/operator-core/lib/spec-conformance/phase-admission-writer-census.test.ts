@@ -24,6 +24,98 @@ const write = 'async function exampleWrite(tx) { await tx`UPDATE harness_shared.
 
 describe('phase binding writer census', () => {
 
+  it('classifies source-owned stage snapshots while retaining supplied snapshot and context effects', async () => {
+    const { createStageAttempt, withStageAttempt } = await import('../sync/hyperbee/stage-stall-log');
+    const { installDbDiagnosticCorrelationWiring } = await import('../agent-tools/db-diagnostic-correlation-wiring');
+    const { createPgDiagnosticHooks, resetPgDiagnosticContextResolver } = await import(
+      '../../../../libs/papercusp/libs/db/src/acquire-registry');
+    const { default: postgres } = await import('postgres');
+    const events: string[] = [];
+    const attempt = createStageAttempt({ rowId: '1', onEvent: event => { events.push(event.event); } });
+    const client = postgres('postgres://census:census@127.0.0.1:1/census', {
+      ...createPgDiagnosticHooks('phase-stage-snapshot'), max: 1,
+      socket: () => { throw new Error('snapshot observer attempted a connection'); },
+    });
+    try {
+      for (const count of [0, 1, 2, 3]) {
+        if (count) attempt.begin('scope-query', 'await');
+        const before = [...events];
+        const snapshot = attempt.snapshot();
+        expect(snapshot.activeHops.map(hop => hop.hopId)).toEqual(Array.from({ length: count }, (_, index) => index + 1));
+        expect(events).toEqual(before);
+        for (const record of [snapshot, snapshot.context, snapshot.activeHops, ...snapshot.activeHops]) {
+          expect(Object.isFrozen(record)).toBe(true);
+          expect(Object.values(Object.getOwnPropertyDescriptors(record)).every(descriptor => 'value' in descriptor)).toBe(true);
+        }
+      }
+      // A typed StageAttempt need not come from the factory. Exercise the real
+      // host registration, ALS and installed driver; zero SQL/socket execution
+      // cannot exempt these supplied methods, getters or spread operations.
+      const effects: string[] = [];
+      const supplied = {
+        ...attempt,
+        snapshot() { effects.push('snapshot'); return attempt.snapshot(); },
+        get context() {
+          effects.push('context');
+          return new Proxy(attempt.context, {
+            ownKeys(target) { effects.push('context-keys'); return Reflect.ownKeys(target); },
+          });
+        },
+      };
+      installDbDiagnosticCorrelationWiring();
+      const before = [...events];
+      const queries = withStageAttempt(supplied, () => [
+        client`SELECT 1`, client.unsafe('SELECT 2'), client.file('/never-read-stage-snapshot.sql'),
+      ]);
+      expect(effects).toEqual(Array.from({ length: 3 }, () => ['snapshot', 'context', 'context-keys']).flat());
+      expect(events).toEqual(before);
+      for (const query of queries) {
+        expect(Reflect.get(query, 'executed')).toBe(false);
+        expect(Reflect.get(query, 'diagnosticContext')).toMatchObject({ state: 'linked', correlation: attempt.context });
+      }
+    } finally {
+      resetPgDiagnosticContextResolver();
+      attempt.finish();
+      await client.end({ timeout: 0 });
+    }
+
+    const root = new URL('../../../../', import.meta.url);
+    const path = 'packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts';
+    const inspected = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+      };
+    const sources = inspected.reviewedSourcePaths.map(path => ({ path, content: readFileSync(new URL(path, root), 'utf8') }));
+    const inventory = inventoryPhaseWriters(sources);
+    const snapshots = inventory.sites.filter(site => site.path === path && (
+      site.operation === 'createStageAttempt::snapshot' || site.operation === 'createStageAttempt::snapshot::<callback>'));
+    const ids = new Set(snapshots.map(site => site.id));
+    const reviews = inspected.reviews.filter(row => ids.has(row.siteId));
+    expect(reviews.map(row => row.siteId).sort()).toEqual([...ids].sort());
+    expect(reviews.every(row => row.disposition === 'metadata-only')).toBe(true);
+    const report = reconcilePhaseWriterCensus(inventory, reviews);
+    expect([...report.coverage.checked].sort()).toEqual([...ids].sort());
+    for (const site of snapshots) {
+      expect(reconcilePhaseWriterCensus(inventory, reviews.filter(row => row.siteId !== site.id)).problems)
+        .toContainEqual({ id: site.id, reasons: ['unclassified-writer'] });
+    }
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === path
+      ? { ...source, content: source.content + '\n// snapshot source changed\n' } : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviews);
+    expect(stale.coverage.checked).toEqual([]);
+    for (const id of ids) expect(stale.problems.find(problem => problem.id === id)?.reasons)
+      .toContain(`stale-source-proof:${path}`);
+    const suppliedSnapshot = inventory.sites.find(site => site.path === path
+      && site.operation === 'currentStageDiagnosticContext' && site.statement === 'attempt.snapshot()')!;
+    const suppliedContext = inventory.sites.find(site => site.path === path
+      && site.operation === 'currentStageDiagnosticContext' && site.statement === 'attempt.context')!;
+    for (const site of [suppliedSnapshot, suppliedContext]) {
+      expect(site).toBeDefined();
+      expect(report.problems).toContainEqual({ id: site.id, reasons: ['unclassified-writer'] });
+    }
+    expect(report.ready).toBe(false);
+  });
+
   it('retains actual postgres query-context effects before lazy queries reach a socket', async () => {
     const { default: postgres } = await import('postgres');
     const { createPgDiagnosticHooks, setPgDiagnosticContextResolver, resetPgDiagnosticContextResolver } = await import(
@@ -1302,6 +1394,55 @@ describe('phase binding writer census', () => {
       expect(report?.ready).toBe(false);
       rmSync(join(root, 'packages/broken.ts'));
       expect(assertPhaseWriterTreeCensus(root, reviews).ready).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains each generated docs mirror exclusion without exempting source or lookalike paths', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-generated-docs-'));
+    const generated = [
+      ['apps/operator/public/internal/docs/index.html', '<html>built docs</html>'],
+      ['apps/operator/public/internal/docs/pagefind/chunk.js', write],
+      ['apps/operator/public/internal/docs/pagefind/shard.pf_fragment', Buffer.from([0xff, 0xfe])],
+    ] as const;
+    const sources = [
+      'apps/operator-docs/src/renderer.ts',
+      'apps/operator/public/internal/docs-source/renderer.ts',
+      'apps/operator/public/internal/docs.old.notes/renderer.ts',
+    ];
+    try {
+      for (const [path, content] of [...generated, ...sources.map(path => [path, write] as const)]) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), content);
+      }
+      const inventory = inventoryPhaseWriterTree(root);
+      const excluded = generated.map(([path]) => ({
+        path, reason: 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh',
+      })).sort((a, b) => a.path.localeCompare(b.path));
+      expect(inventory.excluded).toEqual(excluded);
+      expect(inventory.gaps).toEqual([]);
+      expect(inventory.sources.map(source => source.path).sort()).toEqual([...sources].sort());
+      expect(inventory.sites.every(site => sources.includes(site.path))).toBe(true);
+      const inspected = inventory.sites.map(site => review(site));
+      expect(assertPhaseWriterTreeCensus(root, inspected).ready).toBe(true);
+      for (const path of sources) {
+        const writer = inventory.sites.find(site => site.path === path && site.kind === 'sql')!;
+        expect(writer).toBeDefined();
+        let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+        try { assertPhaseWriterTreeCensus(root, inspected.filter(row => row.siteId !== writer.id)); }
+        catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+        expect(report?.census.coverage.residue).toEqual([writer.id]);
+      }
+      const lines: string[] = [];
+      const footer = await writePhaseWriterCensus(inventory, inspected, async line => { lines.push(line); });
+      expect(await readPhaseWriterCensus(lines)).toEqual(footer);
+      expect(lines.map(line => JSON.parse(line)).filter(row => row.kind === 'excluded').map(row => row.value))
+        .toEqual(excluded);
+      const added = 'apps/operator/public/internal/docs/pagefind/new-shard.pf_fragment';
+      writeFileSync(join(root, added), Buffer.from([0xff]));
+      expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual([
+        { id: `excluded:${added}`, reason: 'added', expected: null,
+          actual: 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh' },
+      ]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

@@ -737,6 +737,12 @@ function readPhaseWriterTree(root: string) {
     if (path.split('/').some(part => generated.has(part))) {
       excluded.push({ path, reason: 'generated-or-vendor-output' }); continue;
     }
+    // astro.config.mjs emits dist/, then this maintained publisher copies the
+    // complete build into this exact served mirror. Keep the authored docs,
+    // publisher and similarly named sibling paths in the source population.
+    if (path.startsWith('apps/operator/public/internal/docs/')) {
+      excluded.push({ path, reason: 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh' }); continue;
+    }
     // File extensions do not establish whether a runtime-root file can execute
     // or configure a writer. Keep unfamiliar and extensionless text for review;
     // unreadable/binary inputs remain explicit gaps below.
