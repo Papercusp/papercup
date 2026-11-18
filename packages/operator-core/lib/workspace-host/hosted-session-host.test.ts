@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import SecretStream from '@hyperswarm/secret-stream';
 import { ByocSealedChannel } from './byoc-sealed-channel';
+import { rosterEntryForSession } from './hosted-desktop-backend';
+import type { DesktopSessionRecord } from '../desktop/desktop-session-registry';
+import { parseHostedDesktopProtocolMessage } from '../../../../apps/operator/app/cloud-workspaces/hosted-desktop-viewer-protocol';
 import {
   HOSTED_HOST_MAX_FILE_BYTES,
   HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
@@ -1224,6 +1227,41 @@ describe('HostedWorkspaceHostSessionAdapter — desktop roster and thumbnails (P
     } while (cursor);
     expect(seen).toEqual([...many].map((entry) => entry.desktopSessionId).sort());
     expect(new Set(seen).size).toBe(count);
+  });
+
+  it('carries the production KasmVNC lease record on the 193rd entry through the host and browser parser', async () => {
+    // Earlier pagination tests used id/state-only rows. The served acceptance's
+    // decisive last row is the production registry projection of a live lease.
+    const live = rosterEntryForSession({
+      id: '00000000-0000-4000-8000-000000000193', workspaceId: 'private-installed',
+      kind: 'xvfb-local', scope: 'agent', scopeRef: 'private-installed-fixture',
+      name: 'served-0192-live', state: 'ready', display: ':110',
+      displayGeometry: { width: 1024, height: 768, depth: 24 },
+      lastActiveAt: new Date('2026-11-18T00:00:00Z'),
+    } as DesktopSessionRecord);
+    const many = Array.from({ length: 192 }, (_, index) => ({
+      desktopSessionId: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, state: 'ready',
+    }));
+    const host = desktopHarness({ roster: [...many, live] });
+    await host.openDesktop('live-last', 'observer');
+    let cursor: string | null = null;
+    const sizes: number[] = [], seen: string[] = [];
+    for (let index = 0; index < 4; index++) {
+      await host.relay('live-last', { type: 'desktop.roster', requestId: 'live-pages', ...(cursor ? { cursor } : {}) });
+      const parsed = parseHostedDesktopProtocolMessage(host.payloads('live-last').at(-1));
+      expect(parsed?.kind).toBe('roster');
+      if (parsed?.kind !== 'roster') throw new Error('production final page rejected by browser parser');
+      sizes.push(parsed.desktops.length);
+      seen.push(...parsed.desktops.map(entry => entry.desktopSessionId));
+      expect(parsed.page?.remaining).toBe(193 - seen.length);
+      cursor = parsed.page!.nextCursor;
+      if (index === 3) {
+        expect(parsed.desktops).toEqual([live]);
+        expect(parsed.page).toMatchObject({ hasMore: false, nextCursor: null, remaining: 0 });
+      } else expect(cursor).not.toBeNull();
+    }
+    expect(sizes).toEqual([64, 64, 64, 1]);
+    expect(new Set(seen).size).toBe(193);
   });
 
   it('requires explicit resync when roster membership changes or a cursor is invalid', async () => {
