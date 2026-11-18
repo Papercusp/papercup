@@ -148,8 +148,8 @@ async function selectGeneration(helper, donor, destination, deadline, environmen
 
 // These receipts cache COPY work only. They cannot authorize dependency bytes;
 // the complete retained-tree verifier below still runs after publication.
-async function copyMetadata(helper, root, names, parent, deadline, environment) {
-  const records = join(parent, 'metadata-' + randomUUID());
+async function copyMetadata(helper, root, names, parent, deadline, environment, capture) {
+  const records = capture ?? join(parent, 'metadata-' + randomUUID());
   try {
     const value = (await command(helper, [root, records, ...names], [
       'entries=(); missing=()',
@@ -163,9 +163,29 @@ async function copyMetadata(helper, root, names, parent, deadline, environment) 
     if (!/^[a-f0-9]{64}$/.test(value)) fail('invalid copy metadata fingerprint');
     return value;
   } finally {
-    rmSync(records, { force: true });
+    if (!capture) rmSync(records, { force: true });
     rmSync(records + '.unsorted', { force: true });
   }
+}
+
+// Hardlink refreshes change ctime without changing bytes. A metadata miss must
+// not force the whole completed chunk through rsync again. Reuse the existing
+// incremental copier's byte comparator, with its exact pruning/record policy.
+// This only saves COPY work; it never supplies a retained-verification proof.
+// `work` contains the exact records already captured for the receipt lookup.
+// Re-reading them here adds two tree walks without providing a stronger check:
+// the caller still recaptures both trees after comparing the actual bytes.
+async function copyBytesMatch(helper, source, partial, work, deadline, environment) {
+  return (await command(helper, [source, partial, work], [
+    'work="$4"',
+    'if ! dependency_generation_records_projection "$work/unmatched" > "$work/source-view" ||',
+    '   ! dependency_generation_records_projection "$work/predecessor" > "$work/target-view" ||',
+    '   ! cmp -s "$work/source-view" "$work/target-view"; then printf "different\\n"; exit 0; fi',
+    'dependency_generation_incremental_verify "$2" "$3" "$work"',
+    'expected="$(awk -F "\\t" \'$2 == "f" { n++ } END { print n+0 }\' "$work/unmatched")"',
+    'actual="$(wc -l < "$work/verified")"',
+    'if [ "$expected" -eq "$actual" ]; then printf "equal\\n"; else printf "different\\n"; fi',
+  ].join('\n'), deadline, environment)).trim() === 'equal';
 }
 
 async function copyMissingTree(helper, source, partial, parent, deadline, environment, progress) {
@@ -188,37 +208,57 @@ async function copyMissingTree(helper, source, partial, parent, deadline, enviro
     chunk.push(...group);
   }
   if (chunk.length) chunks.push(chunk);
-  Object.assign(progress, { copyChunks: chunks.length, copiedChunks: 0, reusedCopyChunks: 0 });
-  for (const entries of chunks) {
+  Object.assign(progress, { copyChunks: chunks.length, copiedChunks: 0, reusedCopyChunks: 0,
+    contentMatchedCopyChunks: 0 });
+  // A completed prefix can take the entire bounded attempt to recheck after
+  // donor ctime churn. Advance uncopied chunks first. Receipts affect ordering
+  // only: every completed chunk is still rechecked before publication, then
+  // the full retained-tree verifier independently decides readiness.
+  const pending = chunks.map(entries => {
     const receipt = join(parent, 'copy-' + digest(JSON.stringify(entries)) + '.json');
-    const before = await copyMetadata(helper, source, entries, parent, deadline, environment);
-    const target = await copyMetadata(helper, partial, entries, parent, deadline, environment);
-    const cached = readJournal(receipt);
-    if (cached?.binding === binding && cached.source === before && cached.target === target) {
-      progress.reusedCopyChunks++;
-      continue;
-    }
-    const selection = join(parent, 'files-' + randomUUID());
-    const fd = openSync(selection, 'wx', 0o600);
-    try { writeFileSync(fd, entries.join('\0') + '\0'); } finally { closeSync(fd); }
+    return { entries, receipt, cached: readJournal(receipt) };
+  }).sort((a, b) => Number(Boolean(a.cached)) - Number(Boolean(b.cached)));
+  for (const { entries, receipt, cached } of pending) {
+    const work = mkdtempSync(join(parent, '.compare-'));
     try {
-      await command(helper, [source, partial, selection], [
-        'dependency_generation_acquire_copy_lock "retained dependency resume"',
-        'trap dependency_generation_release_copy_lock EXIT',
-        'dependency_generation_check_headroom "$2" "$3"',
-        'mapfile -d "" -t filters < <(dependency_generation_prune_ephemeral --rsync-filters)',
-        'dependency_generation_copy_with_progress "$2" "$3" --rsync-checksum "${filters[@]}" --from0 --recursive --files-from="$4"',
-      ].join('\n'), deadline, environment);
-      const after = await copyMetadata(helper, source, entries, parent, deadline, environment);
-      // A copy is untrusted preparation. Cache churn may alter directory
-      // metadata; only the full byte/census verifier decides readiness.
-      if (before === after) writeJournal(receipt, { schemaVersion, binding, source: after,
-        target: await copyMetadata(helper, partial, entries, parent, deadline, environment) });
-      else rmSync(receipt, { force: true });
-      progress.copiedChunks++;
-      console.error('COMMITTED_DEPENDENCY_COPY ' + JSON.stringify({ copiedChunks: progress.copiedChunks,
-        reusedCopyChunks: progress.reusedCopyChunks, copyChunks: progress.copyChunks }));
-    } finally { rmSync(selection, { force: true }); }
+      const before = await copyMetadata(helper, source, entries, parent, deadline, environment, join(work, 'unmatched'));
+      const target = await copyMetadata(helper, partial, entries, parent, deadline, environment, join(work, 'predecessor'));
+      if (cached?.binding === binding && cached.source === before && cached.target === target) {
+        progress.reusedCopyChunks++;
+        continue;
+      }
+      if (await copyBytesMatch(helper, source, partial, work, deadline, environment)) {
+        const after = await copyMetadata(helper, source, entries, parent, deadline, environment);
+        const targetAfter = await copyMetadata(helper, partial, entries, parent, deadline, environment);
+        if (before === after && target === targetAfter)
+          writeJournal(receipt, { schemaVersion, binding, source: after, target: targetAfter });
+        else rmSync(receipt, { force: true });
+        progress.reusedCopyChunks++;
+        progress.contentMatchedCopyChunks++;
+        continue;
+      }
+      const selection = join(parent, 'files-' + randomUUID());
+      const fd = openSync(selection, 'wx', 0o600);
+      try { writeFileSync(fd, entries.join('\0') + '\0'); } finally { closeSync(fd); }
+      try {
+        await command(helper, [source, partial, selection], [
+          'dependency_generation_acquire_copy_lock "retained dependency resume"',
+          'trap dependency_generation_release_copy_lock EXIT',
+          'dependency_generation_check_headroom "$2" "$3"',
+          'mapfile -d "" -t filters < <(dependency_generation_prune_ephemeral --rsync-filters)',
+          'dependency_generation_copy_with_progress "$2" "$3" --rsync-checksum "${filters[@]}" --from0 --recursive --files-from="$4"',
+        ].join('\n'), deadline, environment);
+        const after = await copyMetadata(helper, source, entries, parent, deadline, environment);
+        // A copy is untrusted preparation. Cache churn may alter directory
+        // metadata; only the full byte/census verifier decides readiness.
+        if (before === after) writeJournal(receipt, { schemaVersion, binding, source: after,
+          target: await copyMetadata(helper, partial, entries, parent, deadline, environment) });
+        else rmSync(receipt, { force: true });
+        progress.copiedChunks++;
+        console.error('COMMITTED_DEPENDENCY_COPY ' + JSON.stringify({ copiedChunks: progress.copiedChunks,
+          reusedCopyChunks: progress.reusedCopyChunks, copyChunks: progress.copyChunks }));
+      } finally { rmSync(selection, { force: true }); }
+    } finally { rmSync(work, { recursive: true, force: true }); }
   }
   await command(helper, [partial], 'dependency_generation_prune_ephemeral "$2"', deadline, environment);
 }

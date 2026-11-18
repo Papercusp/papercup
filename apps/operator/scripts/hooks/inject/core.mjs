@@ -10,7 +10,9 @@
  * scripts the wrong answer.
  *
  * ── FAIL-SILENT IS THE CONTRACT, NOT AN ERROR-HANDLING STYLE (invariant 1) ──
- * Every failure path returns null and every caller injects nothing. A context
+ * Transport failures return null. A loop-fire turn may still receive a local
+ * instruction to recheck its checkpoint when freshness could not be proved.
+ * Ordinary callers inject nothing on failure. A context
  * hook that raises an error can wedge the client's turn — and it would do so at
  * the exact moment the operator is already unhealthy, i.e. it converts a
  * degraded backend into a broken agent. The bare `|| exit 0` and blanket
@@ -1365,6 +1367,27 @@ function isSafeWithoutExecutionAuthority(partial, env) {
     isCanonicalPlanEditCommand(command) || isCanonicalReviewPtoolCommand(command, env);
 }
 
+/** The installed hook cannot import the TS envelope leaf. Keep these head-only
+ * and whole-paste patterns aligned with turn-provenance/envelope-grammar.ts.
+ * This recognizes a need to recheck, never an authority grant. */
+function loopCheckpointFreshnessFallback(prompt, text, outcome, owner) {
+  if (typeof prompt !== 'string') return text;
+  const paste = /^\s*<pasted_content id="([A-Za-z0-9_-]{1,64})">\r?\n?([\s\S]*?)\r?\n?<\/pasted_content id="\1">\s*$/.exec(prompt);
+  if (!/^\s*⟦turn-origin:loop-fire nonce:[a-f0-9]{8,64}⟧/.test(paste ? paste[2] : prompt)) return text;
+  // A lifecycle append alone does not prove the checkpoint made it into the
+  // response: the server can omit that leg at its response deadline. Keep an
+  // existing modern checkpoint (including its explicit failed-read instruction)
+  // only when the outcome is bound to this request and the block names us.
+  const hasCheckpoint = (text ?? '').split('\n').some(line =>
+    /^(?:🔄 TURN-START LOOP CHECKPOINT RE-CHECK|⚠ (?:TURN-START LOOP CHECKPOINT|UNPROVEN TURN-START LOOP CHECKPOINT|STALE LOOP WAKE AT TURN START))/.test(line) &&
+    (line.includes(`(owner=${owner},`) || line.includes(`owner ${owner}.`) || line.includes(`owner ${owner},`)));
+  if (outcome?.serverOutcome === 'matched' && outcome.loopFire === true && hasCheckpoint) return text;
+  const fallback = `⚠ TURN-START LOOP CHECKPOINT FRESHNESS UNPROVEN for owner ${owner}. ` +
+    'This hook has no matched turn-start checkpoint proof. Call loop:status before following the queued checkpoint; ' +
+    'use its current checkpoint and loop state to reconcile the wake.';
+  return text ? `${text}\n\n${fallback}` : fallback;
+}
+
 /**
  * The whole pipeline for one event, minus the client specifics.
  *
@@ -1390,6 +1413,7 @@ function isSafeWithoutExecutionAuthority(partial, env) {
 export async function runInjection({ adapter, nativeEvent, event, env = process.env, fetchImpl, openDeliveryLedger }) {
   const trace = hookOutcomeTracer(env, { client: adapter?.client ?? null, nativeEvent: nativeEvent ?? null });
   let post = null;
+  let turnStartOutcome = null;
   let unavailableMutationGuard = null;
   const done = (stage, value = null, extra = {}) => {
     trace?.({ stage, ...(post ? { post } : {}), ...extra });
@@ -1473,7 +1497,10 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     const postOptions = {
       env,
       fetchImpl,
-      ...(ledger ? { onTurnStartOutcome: outcome => ledger.recordOutcome(outcome) } : {}),
+      onTurnStartOutcome: outcome => {
+        turnStartOutcome = outcome;
+        ledger?.recordOutcome(outcome);
+      },
       onHookOutcome: outcome => { post = outcome; },
     };
     let response = await postInjection(port, request, postOptions);
@@ -1495,6 +1522,9 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     if (!response && post?.stage !== 'response-received' && unavailableMutationGuard)
       return done('guard-unavailable-deny', unavailableMutationGuard(), { port });
     let safeText = fenceControlTransition(response?.text ?? null, owner);
+    if (port === 'turn-start') safeText = loopCheckpointFreshnessFallback(
+      typeof event?.prompt === 'string' ? event.prompt : request.prompt, safeText, turnStartOutcome, owner,
+    );
     if (!safeText) return done(response?.text ? 'fenced-empty' : 'no-text', null, { port });
     // Preserve the client's correlation id when an older operator omits it.
     // Empty verdicts above still emit nothing; existing matching ids stay intact.
