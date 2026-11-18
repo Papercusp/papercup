@@ -193,7 +193,9 @@ describe('phase binding writer census', () => {
     expect(numericArrayElementOid([Number.MAX_SAFE_INTEGER])).toBe(20);
     expect(numericArrayElementOid([Number.MAX_SAFE_INTEGER + 1])).toBe(701);
     const elements = [1];
-    elements[Symbol.iterator] = function* () { effects.push('iterator'); yield 1; };
+    Object.defineProperty(elements, Symbol.iterator, {
+      value: function* () { effects.push('iterator'); yield 1; },
+    });
     expect(numericArrayElementOid(elements)).toBe(20);
     restoreRawJsonbSerializer(new Proxy({}, {
       get(_target, key) { effects.push(`property:${String(key)}`); return undefined; },
