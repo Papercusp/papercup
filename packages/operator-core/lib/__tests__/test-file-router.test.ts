@@ -1892,6 +1892,31 @@ describe('workspace test launcher — explicit paths use the owning-config guard
     expect(packageJson.scripts?.test?.split(' && ')[0]).toBe('node ../../scripts/workspace-test.mjs --passWithNoTests');
   });
 
+  it('routes the npm integration entry through recovery without losing either requested file', () => {
+    const workspace = resolve(REPO_ROOT, 'packages/operator-core');
+    const manifest = JSON.parse(readFileSync(join(workspace, 'package.json'), 'utf8'));
+    const [command, launcher, ...fixedArgs] = manifest.scripts['test:integration'].split(/\s+/);
+    expect(command).toBe('node');
+    expect(resolve(workspace, launcher)).toBe(resolve(REPO_ROOT, 'scripts/workspace-test.mjs'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(workspace);
+      expect(workspaceTestInvocation(fixedArgs)).toMatchObject({
+        routed: false,
+        args: ['vitest', 'run', '--config', 'vitest.integration.config.ts', '--passWithNoTests'],
+      });
+      const files = ['lib/work-items-lifecycle.integration.test.ts',
+        'lib/agent-tools/plans/plan-execution-guard.integration.test.ts'];
+      const invocation = workspaceTestInvocation([...fixedArgs, ...files, '-t', 'original case name']);
+      expect(invocation).toMatchObject({ command: process.execPath, routed: true });
+      expect(invocation.args).toEqual([
+        '--import', resolve(REPO_ROOT, 'scripts/lib/committed-source-loader.mjs'),
+        resolve(REPO_ROOT, 'scripts/test-files.mjs'),
+        ...files.map(file => `packages/operator-core/${file}`), '--', '-t', 'original case name',
+      ]);
+    } finally { process.chdir(previousCwd); }
+  });
+
   it('rewrites package-relative focused paths when npm runs the launcher from the workspace cwd', () => {
     const previousCwd = process.cwd();
     try {
