@@ -1117,9 +1117,20 @@ for (const candidate of [dirname(subject), cwd]) {
   if (existsSync(join(root, '.git', 'lint-as-committed-owner.json'))) roots.add(realpathSync(root));
 }
 if (roots.size) {
+  const sources = [...roots].map(root => ({ root,
+    marker: JSON.parse(readFileSync(join(root, '.git', 'lint-as-committed-owner.json'), 'utf8')) }));
+  // Root node_modules can exist after an interrupted copy while workspace-local
+  // packages are still absent. Only the materializer publishes readiness after
+  // every dependency tree, workspace build and link check has finished.
+  for (const { root, marker } of sources) {
+    if (marker.dependencyMode !== 'independent-copy-v1') {
+      console.error('MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=committed-dependencies-incomplete');
+      console.error(`mutation-probe: committed dependency preparation is incomplete or unrecognized at ${root}. Finish or resume scripts/lint-as-committed.mjs --materialize-only for the recorded commit before probing; root node_modules alone is not preparation proof.`);
+      process.exit(2);
+    }
+  }
   const { retainCommittedWorkRoot } = await import(pathToFileURL(helper).href);
-  for (const root of roots) {
-    const marker = JSON.parse(readFileSync(join(root, '.git', 'lint-as-committed-owner.json'), 'utf8'));
+  for (const { root, marker } of sources) {
     await retainCommittedWorkRoot(root, marker.sha, scratch);
     process.stdout.write(`MUTATION_PROBE_SOURCE_RETAINED ${JSON.stringify({ root, sha: marker.sha })}\n`);
   }
