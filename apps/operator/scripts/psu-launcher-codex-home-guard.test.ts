@@ -970,6 +970,7 @@ describe('Codex resume reconciles project MCP servers', () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
+      vi.stubEnv('PAPERCUSP_SU_CODEX_HOMES_DIR', join(dir, 'caller-codex-homes'));
       writeFileSync(join(home, 'AGENTS.md'), '# papercusp su\n');
       writeFileSync(join(home, 'config.toml'), REAL_CONFIG.replace(
         'command = "npx"',
@@ -983,6 +984,7 @@ describe('Codex resume reconciles project MCP servers', () => {
         operatorUrl: 'http://operator',
         token: 'test-token',
         headless: true,
+        env: {},
         fetchImpl: async (url: string, opts: { body: string }) => {
           calls.push({ url, body: JSON.parse(opts.body) });
           return { json: async () => ({ ok: true, repaired: true }) };
@@ -997,6 +999,7 @@ describe('Codex resume reconciles project MCP servers', () => {
       }]);
     } finally {
       errorSpy.mockRestore();
+      vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });
     }
   });
@@ -1396,6 +1399,7 @@ describe('Codex managed carry keeps the selected account route', () => {
       await launcher.ensureCodexHomeViaOperator(owner, home, advSessionId, {
         operatorUrl: 'http://operator',
         token: 'test-token',
+        env: {},
         routeMode: routeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE,
         accountId: routeEnv.PAPERCUSP_ACCOUNT_ID,
         priority: 'su',
