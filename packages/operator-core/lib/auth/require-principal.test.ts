@@ -38,7 +38,8 @@ vi.mock('../device-store', async (orig) => ({
   isRevoked: vi.fn(async () => false),
 }));
 
-import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal, retainRequestPrincipal } from './require-principal';
+import { PrincipalCheckError, requirePrincipal, tryResolvePrincipal, retainRequestPrincipal,
+  readRetainedRequestPrincipal } from './require-principal';
 import { getSessionUser } from '../auth';
 import { verifyDeviceToken } from '../device-jwt';
 import { isRevoked } from '../device-store';
@@ -61,6 +62,45 @@ const h = (init: Record<string, string> = {}) => new Headers(init);
 describe('retained host request principal', () => {
   const user = (capabilities = ['tasks:read']) => ({ id: 'launch-user', username: 'launch',
     display_name: 'Launch', has_password: true, workspace_id: 'ws-active', capabilities });
+
+  it('loads only the branded original request, with detached current principal evidence', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user());
+    const resolve = await retainRequestPrincipal(h(), 'ws-active');
+    const first = await readRetainedRequestPrincipal(resolve, 'ws-active');
+    expect(first.status).toBe('ok');
+    if (first.status !== 'ok') throw new Error('fixture did not authenticate');
+    expect(first.revision).toMatch(/^[a-f0-9]{64}$/);
+    (first.principal.capabilities as Set<string>).add('*');
+    expect(await readRetainedRequestPrincipal(resolve, 'ws-active', first.revision)).toMatchObject({
+      status: 'ok', principal: { slug: 'launch-user', capabilities: new Set(['tasks:read']) },
+    });
+    expect(await readRetainedRequestPrincipal(async () => first.principal, 'ws-active'))
+      .toEqual({ status: 'unavailable' });
+    expect(await readRetainedRequestPrincipal(resolve, 'other-workspace')).toEqual({ status: 'unavailable' });
+    expect(await readRetainedRequestPrincipal(undefined, 'ws-active')).toEqual({ status: 'unavailable' });
+  });
+
+  it('refuses a permission revision changed after review, including narrowing', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user(['tasks:read', 'tasks:write']));
+    const resolve = await retainRequestPrincipal(h(), 'ws-active');
+    const first = await readRetainedRequestPrincipal(resolve, 'ws-active');
+    if (first.status !== 'ok') throw new Error('fixture did not authenticate');
+    vi.mocked(getSessionUser).mockResolvedValue(user(['tasks:read']));
+    expect(await readRetainedRequestPrincipal(resolve, 'ws-active', first.revision)).toEqual({ status: 'stale' });
+    const current = await readRetainedRequestPrincipal(resolve, 'ws-active');
+    expect(current).toMatchObject({ status: 'ok', principal: { capabilities: new Set(['tasks:read']) } });
+    vi.mocked(getSessionUser).mockResolvedValue(null);
+    expect(await readRetainedRequestPrincipal(resolve, 'ws-active', first.revision)).toEqual({ status: 'unavailable' });
+  });
+
+  it('pins authority rather than display names or set insertion order', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user(['tasks:write', 'tasks:read']));
+    const resolve = await retainRequestPrincipal(h(), 'ws-active');
+    const first = await readRetainedRequestPrincipal(resolve, 'ws-active');
+    if (first.status !== 'ok') throw new Error('fixture did not authenticate');
+    vi.mocked(getSessionUser).mockResolvedValue({ ...user(['tasks:read', 'tasks:write']), display_name: 'Changed label' });
+    expect(await readRetainedRequestPrincipal(resolve, 'ws-active', first.revision)).toMatchObject({ status: 'ok' });
+  });
 
   it('retains original headers privately and re-resolves the same authenticated identity', async () => {
     vi.mocked(getSessionUser).mockResolvedValue(user());

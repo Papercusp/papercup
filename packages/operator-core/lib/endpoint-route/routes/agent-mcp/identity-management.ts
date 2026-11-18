@@ -1,8 +1,9 @@
-/** Loopback owner mutation door for Settings → Identities. */
+/** Loopback mutation door for Settings → Identities, with retained editor credentials. */
 import { defineTool } from '@papercusp/agent-mcp';
 import { isLoopbackRequest } from '../../../superuser-token';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { composeModePromptSection } from './bootstrap-su-shared';
+import { PrincipalCheckError, retainRequestPrincipal } from '../../../auth/require-principal';
 
 interface Body {
   ownerId?: unknown;
@@ -39,6 +40,12 @@ export default defineTool({
       return Response.json({ ok: false, error: 'ownerId and a valid action are required' }, { status: 400 });
     }
     try {
+      const workspaceId = activeWorkspaceId();
+      const writes = action !== 'preview' && action !== 'preview-composition';
+      const editor = writes ? { workspaceId,
+        resolvePrincipal: await retainRequestPrincipal(req.headers, workspaceId) } : undefined;
+      if (writes && !editor?.resolvePrincipal)
+        return Response.json({ ok: false, error: 'authenticated identity editor required' }, { status: 403 });
       if (compositionAction) {
         if (typeof body.compositionId !== 'string' || !Array.isArray(body.componentRefs) ||
             body.componentRefs.some((ref) => typeof ref !== 'string') ||
@@ -51,7 +58,6 @@ export default defineTool({
           import('../../../identity-management'), import('../../../spawn-config'),
           import('../../../papercusp-root'),
         ]);
-        const workspaceId = activeWorkspaceId();
         const repoDir = harnessSlug
           ? await resolveProjectDir(harnessSlug, workspaceId)
           : papercuspPathForWorkspace(workspaceId);
@@ -59,7 +65,7 @@ export default defineTool({
         const input = { id: body.compositionId, componentRefs: body.componentRefs as string[],
           description: body.description as string | undefined, repoDir };
         const result = action === 'save-composition'
-          ? await saveNamedIdentityComposition(input)
+          ? await saveNamedIdentityComposition(input, editor)
           : await previewNamedIdentityComposition(input);
         if (action === 'save-composition') {
           const { notifySyncInvalidate } = await import('../../../sync-sse');
@@ -77,7 +83,7 @@ export default defineTool({
         return Response.json({ ok: false, error: 'The selected session has no mutable launch specification.' }, { status: 409 });
       }
       const result = await mutateIdentityStack({
-        workspaceId: activeWorkspaceId(),
+        workspaceId,
         ownerId,
         action: action as 'preview' | 'attach' | 'switch' | 'detach' | 'rollback',
         identityId: typeof body.identityId === 'string' ? body.identityId : null,
@@ -88,12 +94,13 @@ export default defineTool({
           drainMode: record.drainMode,
           loopArmed: record.loopArmed,
         }),
-      });
+      }, editor);
       const { notifySyncInvalidate } = await import('../../../sync-sse');
       await notifySyncInvalidate('identities.surface').catch(() => {});
       return Response.json(result);
     } catch (error) {
-      return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) }, { status: 409 });
+      return Response.json({ ok: false, error: error instanceof Error ? error.message : String(error) },
+        { status: error instanceof PrincipalCheckError ? error.status : 409 });
     }
   },
 });

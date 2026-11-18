@@ -31,6 +31,7 @@
  */
 
 import type { Principal, PrincipalKind, PrincipalTrust, PrincipalRequirements } from '@papercusp/agent-mcp';
+import { createHash } from 'node:crypto';
 // Keep the pre-auth purpose check on the existing leaf; the agent-mcp barrel
 // also imports operator routes and must not become this resolver's runtime edge.
 import { hasLegacyBootstrapAuthorization } from '@papercusp/agent-mcp/auth';
@@ -172,6 +173,36 @@ export async function retainRequestPrincipal(
   };
   retainedRequestPrincipals.add(retained);
   return retained;
+}
+
+export type RetainedRequestPrincipalRead =
+  | { status: 'ok'; principal: Principal; revision: string }
+  | { status: 'unavailable' | 'stale' };
+
+/** Read actual retained credentials, never a serialized editor descriptor. The
+ * content revision covers the complete principal scope, including an absent vs
+ * empty tool allowlist. Re-read with that revision immediately before effect.
+ * Authentication is evidence for policy evaluation, not ordinary edit authority
+ * or an affected human owner's consent. This does not lease the auth store. */
+export async function readRetainedRequestPrincipal(
+  resolve: HostRequestPrincipalResolver | undefined,
+  workspaceId: string,
+  expectedRevision?: string,
+): Promise<RetainedRequestPrincipalRead> {
+  if (!workspaceId || workspaceId === '*' || !isRetainedRequestPrincipal(resolve))
+    return { status: 'unavailable' };
+  const resolved = await resolve().catch(() => null);
+  if (!resolved || resolved.workspaceId !== workspaceId ||
+      !['trusted', 'verified'].includes(resolved.trust)) return { status: 'unavailable' };
+  const principal = structuredClone(resolved);
+  const revision = createHash('sha256').update(JSON.stringify({
+    kind: principal.kind, slug: principal.slug, workspaceId: principal.workspaceId,
+    authMethod: principal.authMethod, trust: principal.trust,
+    capabilities: [...principal.capabilities].sort(), roles: [...principal.roles ?? []].sort(),
+    allowedTools: principal.allowedTools === undefined ? null : [...principal.allowedTools].sort(),
+  })).digest('hex');
+  if (expectedRevision !== undefined && revision !== expectedRevision) return { status: 'stale' };
+  return { status: 'ok', principal, revision };
 }
 
 /**

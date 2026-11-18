@@ -24,6 +24,12 @@ const H = vi.hoisted(() => ({
   saveComposition: vi.fn(async (_input: unknown) => ({ ok: true, id: 'named-composition' })),
   modeSection: vi.fn(() => 'mode-section'),
   invalidate: vi.fn(async (_name: string) => {}),
+  resolvePrincipal: vi.fn(async () => null),
+  retainPrincipal: vi.fn(),
+}));
+
+vi.mock('../../../auth/require-principal', async original => ({
+  ...(await original<object>()), retainRequestPrincipal: H.retainPrincipal,
 }));
 
 vi.mock('../../../superuser-token', () => ({ isLoopbackRequest: H.isLoopbackRequest }));
@@ -60,6 +66,7 @@ beforeEach(() => {
   H.readLaunchSpec.mockResolvedValue({ launch: true });
   H.parseLaunchSpec.mockReturnValue({ autoMode: true, drainMode: false, loopArmed: true });
   H.mutate.mockResolvedValue({ ok: true, changed: true });
+  H.retainPrincipal.mockResolvedValue(H.resolvePrincipal);
 });
 
 describe('POST /agent-mcp/identity-management', () => {
@@ -97,7 +104,7 @@ describe('POST /agent-mcp/identity-management', () => {
       slot: 'domain',
       operatorBaseUrl: 'http://operator.test',
       modeSection: 'mode-section',
-    });
+    }, { workspaceId: 'ws-test', resolvePrincipal: H.resolvePrincipal });
     expect(H.invalidate).toHaveBeenCalledWith('identities.surface');
   });
 
@@ -124,6 +131,18 @@ describe('POST /agent-mcp/identity-management', () => {
     expect((await post('{')).status).toBe(400);
     expect((await post({ ownerId: 'su-target', action: 'rebind' })).status).toBe(400);
     expect(H.mutate).not.toHaveBeenCalled();
+  });
+
+  it.each(['switch', 'save-composition'])('refuses %s without an authenticated editor regardless of body owner claims', async action => {
+    H.retainPrincipal.mockResolvedValue(undefined);
+    const response = await post({ action, ownerId: 'su-target', principalId: 'system:superuser',
+      editor: { kind: 'user', slug: 'claimed-owner', capabilities: ['*'] },
+      compositionId: 'named', componentRefs: ['domain:research-steward'] });
+    expect(response.status).toBe(403);
+    expect(H.mutate).not.toHaveBeenCalled();
+    expect(H.saveComposition).not.toHaveBeenCalled();
+    expect(H.readLaunchSpec).not.toHaveBeenCalled();
+    expect(H.invalidate).not.toHaveBeenCalled();
   });
 
   it('surfaces an immutable/missing launch spec and a mutation refusal without invalidating', async () => {

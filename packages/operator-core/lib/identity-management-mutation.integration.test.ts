@@ -98,6 +98,11 @@ vi.mock('./agent-identities/source', () => ({
 }));
 
 vi.mock('./spawn-config', () => ({ resolveProjectDir: vi.fn(async () => null) }));
+// Source selection/rendering is controlled above. Funding has its own real-source
+// suite; do not mix the user's installed package tree into this mutation fixture.
+vi.mock('./cupboard/identity-activation-gate-io', () => ({
+  assertIdentityActivationFunded: vi.fn(async () => {}),
+}));
 
 vi.mock('./events/await/psu-pty-discovery', () => ({
   findLiveHostAsync: vi.fn(async (ownerId: string) => {
@@ -162,6 +167,11 @@ vi.mock('./agent-orders-notify', async (importOriginal) => ({
 
 import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { mutateIdentityStack as mutateCurrentIdentityStack } from './identity-management';
+import { retainRequestPrincipal } from './auth/require-principal';
+vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => ({
+  kind: 'user', slug: 'identity-test-editor', workspaceId: 'identity-mutation-integration',
+  authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['*']),
+}) }));
 import { buildControlAnchorState, refreshControlAnchorAfterMutation } from './agent-tools/coordination/control-anchor';
 
 // Reuse the standard copy-out probe without mutating the shared identity writer.
@@ -310,7 +320,7 @@ async function activationEvents(owner: string) {
      ORDER BY id`;
 }
 
-const mutate = (owner: string, action: 'switch' | 'rollback', identityId?: string) =>
+const mutate = async (owner: string, action: 'switch' | 'rollback', identityId?: string) =>
   mutateIdentityStack({
     workspaceId: WS,
     ownerId: owner,
@@ -319,7 +329,7 @@ const mutate = (owner: string, action: 'switch' | 'rollback', identityId?: strin
     slot: identityId ? 'domain' : null,
     operatorBaseUrl: 'http://127.0.0.1:0',
     modeSection: '',
-  });
+  }, { workspaceId: WS, resolvePrincipal: await retainRequestPrincipal(new Headers(), WS) });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
   async function superseded(owner: string, ended: boolean, stack: readonly string[]) {

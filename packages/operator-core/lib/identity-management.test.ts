@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { dirname, join } from 'node:path';
 import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,14 @@ import { bindSelectedIdentitySetting, getIdentitySource, getSelectedModeCatalog,
 import { renderStackTransitionContext, renderStackTransitionContextResult } from './stack-binding-channel';
 import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 import type { SuLaunchSpecRecord } from './su-persona-render';
+import { retainRequestPrincipal } from './auth/require-principal';
+
+vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => ({
+  kind: 'user', slug: 'identity-test-editor', workspaceId: 'identity-service-fixture',
+  authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['*']),
+}) }));
+const editorRequest = async () => ({ workspaceId: 'identity-service-fixture',
+  resolvePrincipal: await retainRequestPrincipal(new Headers(), 'identity-service-fixture') });
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoDir = join(here, '..', '..', '..');
@@ -119,7 +127,7 @@ describe('identity management service', () => {
       expect(preview.components.map((component) => component.tier)).toEqual(['local', 'local']);
       expect(preview.preview.launchCompatibility).toMatchObject({ eligible: true });
       expect(preview.preview.layers.map((layer) => layer.id)).toContain(domainId);
-      const saved = await saveNamedIdentityComposition(input);
+      const saved = await saveNamedIdentityComposition(input, await editorRequest());
       expect(saved.ok).toBe(true);
       const yaml = await readFile(join(root, '.papercusp', 'blueprints', id, 'blueprint.yaml'), 'utf8');
       expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [] });
@@ -156,7 +164,7 @@ describe('identity management service', () => {
         .toMatchObject({ eligible: false, reason: expect.stringContaining('producer binding') });
       expect(withProvider.identities.find((entry) => entry.id === 'zz-provider-child')?.launchCompatibility)
         .toMatchObject({ eligible: false, reason: expect.stringContaining('producer binding') });
-      await expect(saveNamedIdentityComposition(input)).rejects.toThrow(/already exists/);
+      await expect(saveNamedIdentityComposition(input, await editorRequest())).rejects.toThrow(/already exists/);
       await expect(previewNamedIdentityComposition({ ...input, id: 'zz-bad-composition',
         componentRefs: [`practice:${domainId}`] })).rejects.toThrow(/does not declare/);
     } finally {

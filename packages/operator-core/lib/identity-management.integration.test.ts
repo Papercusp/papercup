@@ -10,7 +10,15 @@ const mutationHost = vi.hoisted(() => ({
   provision: vi.fn<typeof import('./role-launch-spec').provisionLaunchIdentityResources>(),
   activate: vi.fn<typeof import('./agent-tools/coordination/control-anchor').requestSessionIdentityActivationInTransaction>(),
   funded: vi.fn(async () => {}),
+  editorRevoked: false,
+  editorCapabilities: ['*'],
 }));
+
+vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => mutationHost.editorRevoked ? null : ({
+  kind: 'user', slug: 'authenticated-editor', workspaceId: 'identity-management-schema-test',
+  authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(mutationHost.editorCapabilities),
+}) }));
+vi.mock('./auth/principal/from-bearer-token', () => ({ principalFromBearerToken: async () => null }));
 
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<object>()), getOrgPg: () => ({ sql: mutationHost.sql }),
@@ -46,6 +54,8 @@ vi.mock('./spawn-config', () => ({
 }));
 
 import { mutateIdentityStack, readIdentitySurface } from './identity-management';
+import { retainRequestPrincipal } from './auth/require-principal';
+import type { IdentityEditRequest } from './identity-management';
 
 const WORKSPACE = 'identity-management-schema-test';
 const OWNER = 'su-identity-management-test';
@@ -154,6 +164,7 @@ describe('identity management live-schema contract', () => {
 });
 
 describe('identity mutation before-image fence', () => {
+  let editor: IdentityEditRequest;
   const owner = OWNER + '-mutation';
   const beforeRevision = 'a'.repeat(64);
   const afterRevision = 'b'.repeat(64);
@@ -171,6 +182,9 @@ describe('identity mutation before-image fence', () => {
     unknown as Awaited<ReturnType<typeof import('./su-persona-render').rebuildSuLaunchArtifact>>;
 
   beforeEach(async () => {
+    mutationHost.editorRevoked = false;
+    mutationHost.editorCapabilities = ['*'];
+    editor = { workspaceId: WORKSPACE, resolvePrincipal: await retainRequestPrincipal(new Headers(), WORKSPACE) };
     vi.clearAllMocks();
     mutationHost.rebuild.mockReset().mockResolvedValue(rebuilt);
     mutationHost.provision.mockReset().mockImplementation(async () => {
@@ -197,7 +211,7 @@ describe('identity mutation before-image fence', () => {
       await db.sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${db.sql.json(concurrent)} WHERE id = 100`;
       return rebuilt;
     });
-    await expect(mutateIdentityStack(input)).rejects.toThrow('changed concurrently');
+    await expect(mutateIdentityStack(input, editor)).rejects.toThrow('changed concurrently');
     expect(mutationHost.provision).not.toHaveBeenCalled();
     expect(mutationHost.activate).not.toHaveBeenCalled();
     expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
@@ -216,10 +230,13 @@ describe('identity mutation before-image fence', () => {
       expect(row!.launch_spec).toEqual(original);
       await db.sql`INSERT INTO harness_shared.identity_mutation_effects VALUES (${afterRevision})`;
     });
-    await expect(mutateIdentityStack(input)).resolves.toMatchObject({ ok: true, changed: true,
+    await expect(mutateIdentityStack(input, editor)).resolves.toMatchObject({ ok: true, changed: true,
       specificationRevision: afterRevision, stateRevision: 'after' });
     expect(mutationHost.provision).toHaveBeenCalledTimes(1);
     expect(mutationHost.activate).toHaveBeenCalledTimes(1);
+    expect(mutationHost.activate.mock.calls[0]![0].attribution).toEqual({
+      actorId: 'authenticated-editor', principalId: 'authenticated-editor', sessionId: owner,
+    });
     expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([{ target: afterRevision }]);
     const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
     expect(row!.launch_spec).toMatchObject({ specificationRevision: afterRevision, stateRevision: 'after' });
@@ -230,12 +247,37 @@ describe('identity mutation before-image fence', () => {
 
   it('keeps the before-image and releases its fence when preparation fails', async () => {
     mutationHost.provision.mockRejectedValueOnce(new Error('package preparation refused'));
-    await expect(mutateIdentityStack(input)).rejects.toThrow('package preparation refused');
+    await expect(mutateIdentityStack(input, editor)).rejects.toThrow('package preparation refused');
     expect(mutationHost.activate).not.toHaveBeenCalled();
     const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
     expect(row!.launch_spec).toEqual(original);
     await db.sql.begin(async tx => {
       await tx`SELECT id FROM harness_shared.adv_sessions WHERE id = 100 FOR UPDATE NOWAIT`;
     });
+  });
+
+  it('refuses missing or forged editor credentials before any mutation work', async () => {
+    await expect(mutateIdentityStack(input)).rejects.toThrow('retained authenticated');
+    await expect(mutateIdentityStack(input, { workspaceId: WORKSPACE,
+      resolvePrincipal: async () => ({ kind: 'user', slug: owner, workspaceId: WORKSPACE,
+        trust: 'verified', authMethod: 'cookie-session', capabilities: new Set(['*']) }) }))
+      .rejects.toThrow('unavailable or revoked');
+    expect(mutationHost.rebuild).not.toHaveBeenCalled();
+    expect(mutationHost.provision).not.toHaveBeenCalled();
+    expect(mutationHost.activate).not.toHaveBeenCalled();
+  });
+
+  it.each(['revoked', 'narrowed'] as const)('rechecks an editor %s during compilation before the first effect', async change => {
+    mutationHost.rebuild.mockImplementationOnce(async () => {
+      if (change === 'revoked') mutationHost.editorRevoked = true;
+      else mutationHost.editorCapabilities = [];
+      return rebuilt;
+    });
+    await expect(mutateIdentityStack(input, editor)).rejects.toThrow(/editor (authority changed|credentials)/);
+    expect(mutationHost.provision).not.toHaveBeenCalled();
+    expect(mutationHost.activate).not.toHaveBeenCalled();
+    expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+    const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
+    expect(row!.launch_spec).toEqual(original);
   });
 });

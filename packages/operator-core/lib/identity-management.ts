@@ -33,9 +33,29 @@ import {
 import { requestSessionIdentityActivationInTransaction } from './agent-tools/coordination/control-anchor';
 import { findLiveHostAsync, injectIntoHost } from './events/await/psu-pty-discovery';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
+import { PrincipalCheckError, readRetainedRequestPrincipal,
+  type HostRequestPrincipalResolver } from './auth/require-principal';
 
 const HISTORY_LIMIT = IDENTITY_HISTORY_LIMIT;
 const TRANSITION_LIMIT = 30;
+
+/** Host-only request context. Never populate this from an HTTP body or a
+ * target session's ownerId. Full permission admission additionally needs the
+ * canonical policy/affected-owner census; this is only the editor source. */
+export interface IdentityEditRequest {
+  workspaceId: string;
+  resolvePrincipal: HostRequestPrincipalResolver | undefined;
+}
+
+async function readIdentityEditor(workspaceId: string, request?: IdentityEditRequest, revision?: string) {
+  if (!request || request.workspaceId !== workspaceId)
+    throw new PrincipalCheckError(403, 'identity edit requires retained authenticated request credentials');
+  const read = await readRetainedRequestPrincipal(request.resolvePrincipal, workspaceId, revision);
+  if (read.status !== 'ok') throw new PrincipalCheckError(403,
+    read.status === 'stale' ? 'identity editor authority changed; review the edit again'
+      : 'identity editor credentials are unavailable or revoked');
+  return read;
+}
 
 interface SessionRow {
   id: number | string;
@@ -280,10 +300,13 @@ export async function previewNamedIdentityComposition(input: {
     } };
 }
 
-export async function saveNamedIdentityComposition(input: Parameters<typeof previewNamedIdentityComposition>[0]) {
+export async function saveNamedIdentityComposition(input: Parameters<typeof previewNamedIdentityComposition>[0],
+  request?: IdentityEditRequest) {
+  const editor = await readIdentityEditor(request?.workspaceId ?? '', request);
   const prepared = await previewNamedIdentityComposition(input);
   const root = await realpath(input.repoDir);
   const parent = join(root, '.papercusp', 'blueprints');
+  await readIdentityEditor(request!.workspaceId, request, editor.revision);
   await mkdir(parent, { recursive: true });
   const actualParent = await realpath(parent);
   const within = relative(root, actualParent);
@@ -504,7 +527,9 @@ async function nudgeOwner(
   };
 }
 
-export async function mutateIdentityStack(input: IdentityMutationInput): Promise<IdentityMutationResult> {
+export async function mutateIdentityStack(input: IdentityMutationInput,
+  request?: IdentityEditRequest): Promise<IdentityMutationResult> {
+  const editor = input.action === 'preview' ? null : await readIdentityEditor(input.workspaceId, request);
   const sql = getOrgPg().sql;
   const rows = await sql<SessionRow[]>`
     SELECT a.id, a.coord_owner_id, a.mode,
@@ -585,6 +610,9 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
     `;
     if (locked.length !== 1)
       throw new Error('The session identity changed concurrently; reload and review the new diff.');
+    // Re-resolve only after the row-lock wait and all asynchronous compilation.
+    // The target session is never evidence of the editor's identity.
+    const currentEditor = await readIdentityEditor(input.workspaceId, request, editor!.revision);
     // The package journal owns independent transactions and compensation, so it
     // uses the pool, not this transaction. Its committed preparation receipts
     // must survive an activation failure for recovery. The launch row remains
@@ -609,8 +637,8 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
         stateRevision: rebuilt.artifact.stateRevision,
       },
       attribution: {
-        actorId: input.ownerId,
-        principalId: record.principalId ?? input.ownerId,
+        actorId: currentEditor.principal.slug,
+        principalId: currentEditor.principal.slug,
         sessionId: input.ownerId,
       },
       source: 'restart',

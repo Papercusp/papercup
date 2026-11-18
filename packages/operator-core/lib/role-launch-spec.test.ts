@@ -6,6 +6,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
+import { retainRequestPrincipal } from './auth/require-principal';
+vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => ({
+  kind: 'user', slug: 'identity-test-editor', workspaceId: 'identity-launch-fixture',
+  authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['*']),
+}) }));
+const identityEditorRequest = async () => ({ workspaceId: 'identity-launch-fixture',
+  resolvePrincipal: await retainRequestPrincipal(new Headers(), 'identity-launch-fixture') });
 
 const assembleRolePromptMock = vi.fn();
 const tagTurnForInjectionMock = vi.fn(({ text, sid, origin }: { text: string; sid: string; origin: string }) => ({
@@ -1007,7 +1014,7 @@ describe('buildRoleLaunchSpec', () => {
         componentRefs: ['domain:named-domain', 'practice:named-practice'] };
       writeFixtureWorkspaceModel(dir, 'named-default', { su: 'named-su' });
       await previewNamedIdentityComposition(selection);
-      await saveNamedIdentityComposition(selection);
+      await saveNamedIdentityComposition(selection, await identityEditorRequest());
       expect(await resolveLaunchIdentityModelDefault({ cwd: dir, role: 'su',
         stack: ['composition:named-review'] })).toBe('named-su');
       expect(await resolveLaunchIdentityModelDefault({ cwd: dir, role: 'worker',
@@ -1078,7 +1085,7 @@ describe('buildRoleLaunchSpec', () => {
         'id: state-domain\nextends: identity-root\nversion: 1.0.0\nslots:\n  - slot: domain\n');
       writeFileSync(join(componentDir, 'prompts', 'domain.md'), 'STATE LIBRARY DOMAIN\n');
       await saveNamedIdentityComposition({ id: 'state-named', repoDir: home,
-        componentRefs: ['domain:state-domain'] });
+        componentRefs: ['domain:state-domain'] }, await identityEditorRequest());
       expect((await getIdentitySource('state-named', { repoDir: checkout })).ok).toBe(true);
       const launch = await compileLaunchSpecificationArtifact({
         promptText: 'ROLE KERNEL', cwd: checkout, role: 'su',
