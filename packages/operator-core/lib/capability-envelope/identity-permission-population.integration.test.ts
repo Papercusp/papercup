@@ -263,19 +263,27 @@ describe('P-002 canonical session identity population', () => {
     expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
   });
 
-  it('refuses a hidden workspace rather than reporting a filtered empty population', async () => {
+  it('refuses malformed journal evidence instead of returning a partial joined population', async () => {
+    await seed();
+    await seedPackages();
+    await sql`UPDATE harness_shared.blueprint_package_installations SET expected_resources = '{"bad":"not-a-hash"}'`;
+    await expect(readIdentityPermissionPopulation(sql, 'ws', joined)).rejects.toThrow('malformed installation');
+  });
+
+  it.each(['sessions', 'packages'] as const)('refuses hidden %s instead of reporting a filtered empty population', async domain => {
     const role = `population_reader_${randomBytes(5).toString('hex')}`;
+    const table = domain === 'sessions' ? 'adv_sessions' : 'blueprint_package_installations';
     await sql.unsafe(`CREATE ROLE "${role}"; GRANT USAGE ON SCHEMA harness_shared TO "${role}";
       GRANT SELECT ON ALL TABLES IN SCHEMA harness_shared TO "${role}";
-      ALTER TABLE harness_shared.adv_sessions ENABLE ROW LEVEL SECURITY`);
+      ALTER TABLE harness_shared.${table} ENABLE ROW LEVEL SECURITY`);
     try {
       await sql.begin('isolation level repeatable read', async tx => {
         await tx.unsafe(`SET LOCAL ROLE "${role}"`);
         await tx`SET LOCAL app.workspace_id = 'foreign'`;
-        await expect(readIdentityPermissionPopulation(txSql(tx), 'ws')).rejects.toThrow('not visible');
+        await expect(readIdentityPermissionPopulation(txSql(tx), 'ws', domain === 'packages' ? joined : {})).rejects.toThrow('not visible');
       });
     } finally {
-      await sql.unsafe(`ALTER TABLE harness_shared.adv_sessions DISABLE ROW LEVEL SECURITY;
+      await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE ROW LEVEL SECURITY;
         DROP OWNED BY "${role}"; DROP ROLE "${role}"`);
     }
   });
