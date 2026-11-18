@@ -531,7 +531,10 @@ export interface IdentityPermissionSessionSource {
  * source does not establish that no host authority is required.
  * includeScopedPolicies also joins the canonical user/platform policy census,
  * requiring those independently enrolled subjects even if other roots exist.
- * Library, inherited policy and external backend sources still need their join.
+ * includeInheritedPolicies joins the canonical organization-to-workspace chain
+ * in this same snapshot. An absent/malformed chain remains unavailable, and
+ * policy editors are never promoted to human owners. Library and external
+ * backend sources, and the remaining explicit owner bindings, still need joins.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -550,6 +553,7 @@ export interface IdentityPermissionSessionSource {
 export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: string,
   options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
     includeWorkspaceUsers?: boolean; includeHostAuthorities?: boolean; includeScopedPolicies?: boolean;
+    includeInheritedPolicies?: boolean;
     visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
   options = { ...options };
   if (!workspaceId || workspaceId !== workspaceId.trim() ||
@@ -652,12 +656,30 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       scopedPolicies = population;
       hash.update('\n').update(canonicalJson({ scopedPolicyRevision: scopedPolicies.revision }));
     }
+    let inheritedPolicies: Extract<Awaited<ReturnType<typeof import('../governance-policy/store').loadPolicyAuthoritiesForWorkspace>>,
+      { status: 'ok' }> | undefined;
+    if (options.includeInheritedPolicies) {
+      // Lock insertion gaps as well as current ancestors before reading at the
+      // effect boundary. READ COMMITTED sees changes completed during the wait;
+      // the aggregate revision below refuses a changed before-image. No pool
+      // provisioner or separately committed chain participates in this lease.
+      if (pinned && !options.includeScopedPolicies)
+        await tx`LOCK TABLE harness_shared.governance_policy_layers IN SHARE MODE`;
+      const [visibility] = await tx<Array<{ restricted: boolean }>>`
+        SELECT row_security_active('harness_shared.governance_policy_layers') AS restricted`;
+      if (!visibility || visibility.restricted) throw new Error('inherited policy population is not fully visible');
+      const { loadPolicyAuthoritiesForWorkspace } = await import('../governance-policy/store');
+      const population = await loadPolicyAuthoritiesForWorkspace(workspaceId, tx);
+      if (population.status !== 'ok') throw new Error(`inherited policy population is unavailable: ${population.status}`);
+      inheritedPolicies = population;
+      hash.update('\n').update(canonicalJson({ inheritedPolicyRevision: inheritedPolicies.revision }));
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
       : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}),
         ...(workspaceUsers ? { workspaceUsers } : {}), ...(hostAuthorities ? { hostAuthorities } : {}),
-        ...(scopedPolicies ? { scopedPolicies } : {}) };
+        ...(scopedPolicies ? { scopedPolicies } : {}), ...(inheritedPolicies ? { inheritedPolicies } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));

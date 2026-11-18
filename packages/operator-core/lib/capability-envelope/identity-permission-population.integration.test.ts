@@ -7,7 +7,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
-import { upsertScopedPolicyAuthority } from '../governance-policy/store';
+import { upsertLayer, upsertLayerInTx, upsertScopedPolicyAuthority } from '../governance-policy/store';
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -581,7 +581,119 @@ describe('P-002 canonical session identity population', () => {
     expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
   });
 
-  it.each(['sessions', 'packages', 'host-authorities', 'scoped-policies'] as const)('refuses hidden %s instead of reporting a filtered empty population', async domain => {
+  const inherited = { includeInheritedPolicies: true };
+  async function seedInherited(department = true) {
+    const common = { actor: 'editor-is-not-owner', reason: 'inherited source fixture', rules: { actions: { allow: ['inspect'] } } };
+    await upsertLayer({ ...common, layerId: 'organization', level: 'organization', scopeRef: 'org', parentLayerId: null }, sql);
+    if (department) await upsertLayer({ ...common, layerId: 'department', level: 'department', scopeRef: 'dept', parentLayerId: 'organization' }, sql);
+    await upsertLayer({ ...common, layerId: 'workspace', level: 'workspace', scopeRef: 'ws',
+      parentLayerId: department ? 'department' : 'organization' }, sql);
+  }
+
+  it('joins the canonical inherited chain without turning its editor into a human owner', async () => {
+    await seedInherited();
+    const result = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    expect(result).toMatchObject({ status: 'ok', inheritedPolicies: { status: 'ok', policies: [
+      { kind: 'organization', id: 'organization', state: 'present' },
+      { kind: 'department', id: 'department', state: 'present' },
+      { kind: 'workspace', id: 'workspace', state: 'present' },
+    ] } });
+    expect(JSON.stringify(result)).not.toContain('editor-is-not-owner');
+    const unjoined = await readIdentityPermissionPopulation(sql, 'ws');
+    expect(unjoined).not.toHaveProperty('inheritedPolicies');
+    expect(result.revision).not.toBe(unjoined.revision);
+    expect(await readIdentityPermissionPopulation(sql, 'ws', inherited)).toEqual(result);
+  });
+
+  it('retains canonical explicit no-department evidence in the inherited join', async () => {
+    await seedInherited(false);
+    expect(await readIdentityPermissionPopulation(sql, 'ws', inherited)).toMatchObject({ inheritedPolicies: { policies: [
+      { kind: 'organization' }, { kind: 'workspace' }, { kind: 'department', state: 'not-applicable' },
+    ] } });
+  });
+
+  it.each(['absent', 'broken-parent', 'hash-mismatch'] as const)('refuses %s inherited sources', async mode => {
+    if (mode !== 'absent') await seedInherited();
+    if (mode === 'broken-parent') await sql`UPDATE harness_shared.governance_policy_layers SET parent_layer_id = 'workspace' WHERE layer_id = 'department'`;
+    if (mode === 'hash-mismatch') await sql`UPDATE harness_shared.governance_policy_layers SET rules = '{}' WHERE layer_id = 'organization'`;
+    await expect(readIdentityPermissionPopulation(sql, 'ws', inherited)).rejects.toThrow('inherited policy population is unavailable');
+  });
+
+  it('reads sessions and inherited policies in one MVCC snapshot and refuses the changed source at effect', async () => {
+    await seed(); await seedInherited();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    let changed = false;
+    const during = await readIdentityPermissionPopulation(sql, 'ws', { ...inherited, visit: async () => {
+      if (changed) return;
+      changed = true;
+      await upsertLayer({ layerId: 'organization', level: 'organization', scopeRef: 'org', parentLayerId: null,
+        rules: { actions: { allow: ['edit'] } }, actor: 'different-editor', reason: 'concurrent change', expectedVersion: 1 }, sql);
+    } });
+    expect(changed).toBe(true);
+    expect(during).toEqual(before);
+    expect((await readIdentityPermissionPopulation(sql, 'ws', inherited)).revision).not.toBe(before.revision);
+    const result = await sql.begin(async tx => {
+      const current = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...inherited, expectedRevision: before.revision });
+      if (current.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+      return current;
+    });
+    expect(result.status).toBe('stale');
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it('rejects inherited changes committed while the effect reader waits for its policy lock', async () => {
+    await seedInherited();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    let pending: Promise<unknown> | undefined;
+    await sql.begin(async writer => {
+      await upsertLayerInTx(txSql(writer), { layerId: 'organization', level: 'organization', scopeRef: 'org', parentLayerId: null,
+        rules: { actions: { allow: ['edit'] } }, actor: 'concurrent-editor', reason: 'change during lease wait',
+        expectedVersion: 1 });
+      pending = sql.begin(async reader => {
+        const current = await readIdentityPermissionPopulation(txSql(reader), 'ws', {
+          ...inherited, expectedRevision: before.revision,
+        });
+        if (current.status === 'ok') await reader`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+        return current;
+      });
+      // Preserve a rejection immediately, including when synchronization fails.
+      pending = pending.catch(error => error);
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (!waiting && Date.now() < deadline) {
+        const [row] = await writer`SELECT EXISTS(SELECT 1 FROM pg_locks
+          WHERE relation = 'harness_shared.governance_policy_layers'::regclass
+            AND mode = 'ShareLock' AND NOT granted) AS waiting`;
+        waiting = row.waiting;
+        if (!waiting) await writer`SELECT pg_sleep(0.01)`;
+      }
+      expect(waiting, 'reader reached the actual inherited policy lock wait').toBe(true);
+    });
+    expect(await pending).toMatchObject({ status: 'stale' });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it('holds inherited updates, removals and new roots through the protected effect', async () => {
+    await seedInherited();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...inherited, expectedRevision: before.revision })).toEqual(before);
+      for (const action of ['update', 'delete', 'insert']) {
+        await expect(sql.begin(async peer => {
+          await peer`SET LOCAL lock_timeout = '80ms'`;
+          if (action === 'update') await peer`UPDATE harness_shared.governance_policy_layers SET rules = '{}' WHERE layer_id = 'organization'`;
+          else if (action === 'delete') await peer`DELETE FROM harness_shared.governance_policy_layers WHERE layer_id = 'workspace'`;
+          else await peer`INSERT INTO harness_shared.governance_policy_layers SELECT
+            'new-root', level, scope_ref || '-new', parent_layer_id, version, rules, exceptions, content_hash, updated_by, updated_at
+            FROM harness_shared.governance_policy_layers WHERE layer_id = 'organization'`;
+        })).rejects.toMatchObject({ code: '55P03' });
+      }
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('current')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
+  });
+
+  it.each(['sessions', 'packages', 'host-authorities', 'scoped-policies', 'inherited-policies'] as const)('refuses hidden %s instead of reporting a filtered empty population', async domain => {
     const role = `population_reader_${randomBytes(5).toString('hex')}`;
     const table = domain === 'sessions' ? 'adv_sessions' : domain === 'packages'
       ? 'blueprint_package_installations' : domain === 'host-authorities'
@@ -592,12 +704,13 @@ describe('P-002 canonical session identity population', () => {
     try {
       await sql.begin('isolation level repeatable read', async tx => {
         await tx.unsafe(`SET LOCAL ROLE "${role}"`);
-        const workspace = ['host-authorities', 'scoped-policies'].includes(domain) ? 'ws' : 'foreign';
+        const workspace = ['host-authorities', 'scoped-policies', 'inherited-policies'].includes(domain) ? 'ws' : 'foreign';
         expect(await tx`SELECT set_config('app.workspace_id', ${workspace}, true) AS workspace`)
           .toEqual([{ workspace }]);
         await expect(readIdentityPermissionPopulation(txSql(tx), 'ws', domain === 'packages' ? joined
           : domain === 'host-authorities' ? { includeHostAuthorities: true }
-            : domain === 'scoped-policies' ? { includeScopedPolicies: true } : {})).rejects.toThrow(/not (fully )?visible/);
+            : domain === 'scoped-policies' ? { includeScopedPolicies: true }
+              : domain === 'inherited-policies' ? { includeInheritedPolicies: true } : {})).rejects.toThrow(/not (fully )?visible/);
       });
     } finally {
       await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE ROW LEVEL SECURITY;
