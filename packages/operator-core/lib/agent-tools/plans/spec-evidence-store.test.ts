@@ -723,6 +723,30 @@ describe('completed isolated runtime certification', () => {
     await state.save();
     return { ...state, basis };
   }
+  it.each([
+    ['playwright', 'e2e', 'current'],
+    ['vitest', 'e2e', 'current'],
+    ['vitest', 'integration', 'current'],
+    ['playwright', 'integration', 'unknown'],
+    ['playwright', 'unit', 'unknown'],
+    ['unknown-runner', 'e2e', 'unknown'],
+  ])('qualifies direct desktop runtime framework %s at layer %s as %s', async (framework, layer, expected) => {
+    const state = await setupDirectVerifier(layer);
+    state.row.test_run_framework = framework;
+    expect((await read()).currentness.dimensions.environment).toBe(expected);
+  });
+  it.each(['dirty', 'wrong-scope', 'wrong-runtime', 'failed', 'missing-receipt'])(
+    'keeps direct desktop Playwright runtime fail-closed for %s', async invalid => {
+      const state = await setupDirectVerifier();
+      state.row.test_run_framework = 'playwright';
+      if (invalid === 'dirty') state.row.test_run_worktree_dirty = true;
+      if (invalid === 'wrong-scope') state.execution.workspaceId = 'foreign-workspace';
+      if (invalid === 'wrong-runtime') state.execution.runtimeEnvironmentAfter.fingerprint = 'b'.repeat(64);
+      if (invalid === 'failed') state.execution.failed = 1;
+      if (invalid === 'missing-receipt') await rm(join(artifacts, 'verify-tauri-headless', verifierRunId,
+        'phases/prepare/verifier-source-receipt.json'));
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
   it.each(['live', 'tree'].flatMap(plane => ['filtered', 'missing-pattern', 'invalid-pattern',
     'selected-skip', 'missing-ledger', 'missing-case', 'failed-case', 'unmatched-pass', 'wrong-pass-count']
     .map(condition => [condition, plane])))(

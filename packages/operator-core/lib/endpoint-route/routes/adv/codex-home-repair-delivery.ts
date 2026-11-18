@@ -23,7 +23,7 @@ const text = z.string().trim().min(1).max(2000);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const gitSha = z.string().regex(/^[a-f0-9]{40}$/);
 const id = z.number().int().positive().safe();
-const runtimeSchema = z.object({ host: z.enum(['port-3170', 'port-3070']), processId: text, buildSha: text,
+const runtimeSchema = z.object({ host: z.enum(['port-3170', 'port-3070']), processId: text, buildSha: gitSha,
   artifact: z.object({ status: z.literal('measured'), sourceSha: gitSha, bundleSha256: sha256,
     manifestSha256: sha256, sourceBlobs: z.record(z.string(), gitSha), evidenceRef: text }) });
 const pinSchema = z.object({ id, specId: text, specRevision: id, specFingerprint: sha256,
@@ -64,6 +64,13 @@ function proof(value: unknown, reason: string): asserts value { if (!value) thro
 function same(a: unknown, b: unknown) { return canonicalJson(a) === canonicalJson(b); }
 function hash(bytes: Buffer) { return createHash('sha256').update(bytes).digest('hex'); }
 function blob(bytes: Buffer) { return createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex'); }
+/** The generic host identity is a short label. Resolve it only from the same
+ * measured process-boot artifact; packets and the validator retain full SHAs. */
+export function normalizeRepairServingRuntime(input: unknown): RepairRuntime {
+  const observed = runtimeSchema.extend({ buildSha: z.string().regex(/^[a-f0-9]{7,40}$/) }).parse(input);
+  proof(observed.artifact.sourceSha.startsWith(observed.buildSha), 'serving build label does not match boot artifact');
+  return { ...observed, buildSha: observed.artifact.sourceSha };
+}
 function matchesCase(key: string, title: string) {
   return key === title || key.endsWith(' > ' + title) || key.endsWith(' ' + title);
 }
@@ -97,7 +104,7 @@ export async function validateRepairDelivery(input: unknown, mode: 'prerequisite
         const { sourceBlobs: actualBlobs, ...actualArtifact } = actual.observingRuntime.artifact;
         proof(same(actualArtifact, wantedArtifact) && actual.observingRuntime.host === expected.host
           && actual.observingRuntime.processId === expected.processId && actual.observingRuntime.buildSha === expected.buildSha
-          && expected.artifact.sourceSha.startsWith(expected.buildSha)
+          && expected.artifact.sourceSha === expected.buildSha
           && expected.artifact.sourceBlobs[f.path] === f.gitBlob && actualBlobs[f.path] === f.gitBlob,
         'runtime artifact identity: ' + plane);
       }
@@ -145,8 +152,10 @@ export async function validateRepairDelivery(input: unknown, mode: 'prerequisite
         && same(iv.fingerprints, op.fingerprints) && same(iv.details.codexHomeRepairDelivery, repairDeliverySubject(p))
         && Date.parse(iv.createdAt) > Date.parse(op.createdAt) && Date.parse(iv.observedAt) > Date.parse(op.observedAt),
       'IV frozen subject or order');
-      proof(!await reads.related(iv.createdBy, p.implementerId, p.workspaceId)
-        && !await reads.related(iv.createdBy, op.createdBy, p.workspaceId), 'IV related lineage');
+      const citedAuthors = new Set([p.implementerId, op.createdBy, ...tests.map(row => row.createdBy)]);
+      for (const author of citedAuthors) {
+        proof(!await reads.related(iv.createdBy, author, p.workspaceId), 'IV related lineage');
+      }
     }
     return { ok: true, packetSha256: hash(Buffer.from(canonicalJson(p))), bindingIds: ids };
   } catch (error) { return { ok: false, reason: error instanceof Error ? error.message : String(error) }; }
@@ -207,8 +216,12 @@ export async function runLiveRepairDelivery(mode: 'prerequisite' | 'final') {
       planSlugs: [packet.planSlug], bindingIds, includeCaseEvidence: true, limit: bindingIds.length }),
     committedBytes: async (commit, path) => (await git('git', ['cat-file', 'blob', commit + ':' + path],
       { cwd: root.trim(), encoding: 'buffer', maxBuffer: 1024 * 1024 })).stdout,
-    runtime: (plane, commit, path, expectedSourceSha256) => readServingPipeline(plane, p,
-      { path, sha: commit, expectedSourceSha256, sourceRuntimeOnly: true, payloadTier: 'full' }),
+    runtime: async (plane, commit, path, expectedSourceSha256) => {
+      const observed = z.object({ acceptedSource: z.unknown(), observingRuntime: z.unknown() }).parse(
+        await readServingPipeline(plane, p,
+          { path, sha: commit, expectedSourceSha256, sourceRuntimeOnly: true, payloadTier: 'full' }));
+      return { ...observed, observingRuntime: normalizeRepairServingRuntime(observed.observingRuntime) };
+    },
     related: (a, b, workspaceId) => areAcceptanceLineageRelated(a, b, { workspaceId }),
   }, startedAt);
 }

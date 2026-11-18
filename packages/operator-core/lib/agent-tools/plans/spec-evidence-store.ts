@@ -4843,7 +4843,8 @@ export async function measureCompletedTestRuntime(
       : row.test_run_framework === 'vitest')
     || row.test_run_worktree_dirty !== false
     || !execution || !(directVerifier
-      ? row.test_run_framework === 'vitest' && ['integration', 'e2e'].includes(execution.testLayer ?? '')
+      ? (row.test_run_framework === 'vitest' && ['integration', 'e2e'].includes(execution.testLayer ?? ''))
+        || (row.test_run_framework === 'playwright' && execution.testLayer === 'e2e')
       : execution.testLayer === (selector.kind === 'llm-in-process' ? 'llm' : 'e2e'))
     || execution.worktreeDirty
     || execution.collectionFailed || (!directVerifier && execution.skipped !== 0)

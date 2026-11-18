@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
 import { REPAIR_SOURCE_PATHS, REPAIR_REQUIRED_CASES, REPAIR_PREREQUISITE_CASE, REPAIR_FINAL_CASE,
-  repairDeliverySubject, validateRepairDelivery, runLiveRepairDelivery,
+  repairDeliverySubject, validateRepairDelivery, runLiveRepairDelivery, normalizeRepairServingRuntime,
   type RepairDeliveryPacket, type RepairDeliveryReads } from './codex-home-repair-delivery';
 
 const at = (second: number) => new Date(Date.UTC(2026, 10, 18, 0, 0, second)).toISOString();
@@ -62,6 +62,12 @@ it('accepts a complete canonical repair delivery packet', async () => {
     for (const plane of ['staging-operator', 'release-operator'])
       expect(f.runtimeRead).toHaveBeenCalledWith(plane, f.packet.acceptedCommit, source.path, source.sha256);
   }
+  const observed = f.runtimeRead.getMockImplementation()!;
+  f.runtimeRead.mockImplementation(async (...args) => {
+    const value = await observed(...args), runtime = value.observingRuntime;
+    return { ...value, observingRuntime: normalizeRepairServingRuntime({ ...runtime, buildSha: runtime.buildSha.slice(0, 11) }) };
+  });
+  expect(await run(f)).toMatchObject({ ok: true });
 });
 
 it('rejects substituted canonical receipt source artifact runtime and test identities', async () => {
@@ -98,20 +104,48 @@ it('rejects substituted canonical receipt source artifact runtime and test ident
   }
   // Keep the packet, canonical operational row and source fixed. Substitute
   // just the actually observed runtime so no stale subject can explain refusal.
-  for (const field of ['process', 'host', 'bundle', 'manifest', 'source', 'blob', 'containment']) {
-    const f = fixture(), observed = f.runtimeRead.getMockImplementation()!;
-    f.runtimeRead.mockImplementation(async (...args) => {
-      const value = await observed(...args);
-      if (field === 'process') value.observingRuntime.processId = 'other-process';
-      if (field === 'host') value.observingRuntime.host = args[0] === 'staging-operator' ? 'port-3070' : 'port-3170';
-      if (field === 'bundle') value.observingRuntime.artifact.bundleSha256 = 'd'.repeat(64);
-      if (field === 'manifest') value.observingRuntime.artifact.manifestSha256 = 'd'.repeat(64);
-      if (field === 'source') value.observingRuntime.artifact.sourceSha = 'd'.repeat(40);
-      if (field === 'blob') value.observingRuntime.artifact.sourceBlobs[args[2]] = 'd'.repeat(40);
-      if (field === 'containment') value.acceptedSource.runtimeContainment[args[0]] = false;
-      return value;
-    });
-    expect(await run(f), 'isolated observed runtime ' + field).toMatchObject({ ok: false });
+  for (const plane of ['staging-operator', 'release-operator'] as const) {
+    for (const field of ['process', 'host', 'bundle', 'manifest', 'source', 'blob', 'containment']) {
+      const f = fixture(), observed = f.runtimeRead.getMockImplementation()!;
+      f.runtimeRead.mockImplementation(async (...args) => {
+        const value = await observed(...args);
+        if (args[0] !== plane) return value;
+        if (field === 'process') value.observingRuntime.processId = 'other-process';
+        if (field === 'host') value.observingRuntime.host = plane === 'staging-operator' ? 'port-3070' : 'port-3170';
+        if (field === 'bundle') value.observingRuntime.artifact.bundleSha256 = 'd'.repeat(64);
+        if (field === 'manifest') value.observingRuntime.artifact.manifestSha256 = 'd'.repeat(64);
+        if (field === 'source') value.observingRuntime.artifact.sourceSha = 'd'.repeat(40);
+        if (field === 'blob') value.observingRuntime.artifact.sourceBlobs[args[2]] = 'd'.repeat(40);
+        if (field === 'containment') value.acceptedSource.runtimeContainment[plane] = false;
+        return value;
+      });
+      expect(await run(f), 'isolated observed runtime ' + plane + ' ' + field).toMatchObject({ ok: false,
+        reason: 'runtime ' + (field === 'containment' ? 'accepted containment: ' : 'artifact identity: ') + plane });
+    }
+  }
+  expect(await run(fixture())).toMatchObject({ ok: true });
+  for (const plane of ['staging-operator', 'release-operator'] as const) {
+    for (const length of [1, 7, 39, 40]) {
+      const f = fixture(), runtime = f.packet.runtimes[plane];
+      runtime.buildSha = length === 40 ? 'd'.repeat(40) : runtime.artifact.sourceSha.slice(0, length);
+      // Keep the canonical frozen subject and observed runtime synchronized so
+      // only the build/source identity relation can explain the refusal.
+      f.op.details.codexHomeRepairDelivery = structuredClone(repairDeliverySubject(f.packet));
+      expect(await run(f), plane + ' build length ' + length).toMatchObject({ ok: false });
+    }
+    for (const invalid of ['mismatch', 'null', 'empty', 'one-character', 'missing-artifact', 'unmeasured', 'short-source']) {
+      const runtime = fixture().packet.runtimes[plane];
+      const raw: { host: string; processId: string; buildSha: unknown; artifact?: unknown } = structuredClone(runtime);
+      raw.buildSha = runtime.buildSha.slice(0, 11);
+      if (invalid === 'mismatch') raw.buildSha = 'd'.repeat(11);
+      if (invalid === 'null') raw.buildSha = null;
+      if (invalid === 'empty') raw.buildSha = '';
+      if (invalid === 'one-character') raw.buildSha = runtime.buildSha.slice(0, 1);
+      if (invalid === 'missing-artifact') Reflect.deleteProperty(raw, 'artifact');
+      if (invalid === 'unmeasured') raw.artifact = { ...runtime.artifact, status: 'unmeasured' };
+      if (invalid === 'short-source') raw.artifact = { ...runtime.artifact, sourceSha: 'b'.repeat(39) };
+      expect(() => normalizeRepairServingRuntime(raw), plane + ' raw observation ' + invalid).toThrow();
+    }
   }
 });
 
@@ -132,6 +166,15 @@ it('fails closed for missing unavailable failed absent skipped or unexecuted del
   for (const [index, change] of changes.entries()) {
     const f = fixture(); change(f);
     expect(await run(f), 'isolated missing proof ' + index).toMatchObject({ ok: false });
+  }
+  for (const plane of ['staging-operator', 'release-operator'] as const) {
+    const f = fixture(), observed = f.runtimeRead.getMockImplementation()!;
+    f.runtimeRead.mockImplementation(async (...args) => {
+      if (args[0] === plane) throw new Error('runtime unavailable: ' + plane);
+      return observed(...args);
+    });
+    expect(await run(f), 'isolated unavailable runtime ' + plane)
+      .toMatchObject({ ok: false, reason: 'runtime unavailable: ' + plane });
   }
   expect(await validateRepairDelivery({}, 'prerequisite', fixture().reads, started)).toMatchObject({ ok: false });
   vi.stubEnv('PAPERCUSP_CODEX_HOME_REPAIR_LIVE', '');
@@ -170,6 +213,32 @@ it('accepts independent verification of the exact frozen operational delivery bi
   expect(f.related).toHaveBeenCalledWith('independent', 'implementer', f.packet.workspaceId);
 });
 
+async function verifyCitedAuthorLineage() {
+  const independent = fixture();
+  independent.tests.forEach((row, index) => { row.createdBy = 'test-author:' + index; });
+  expect(await run(independent, 'final')).toMatchObject({ ok: true });
+  for (const author of new Set([independent.packet.implementerId, independent.op.createdBy,
+    ...independent.tests.map(row => row.createdBy)])) {
+    expect(independent.related).toHaveBeenCalledWith(independent.iv.createdBy, author, independent.packet.workspaceId);
+  }
+  expect(independent.related).toHaveBeenCalledTimes(3);
+  for (const index of [0, 1]) {
+    for (const unavailable of [false, true]) {
+      const f = fixture(), citedAuthor = 'cited-test-author';
+      f.tests[index]!.createdBy = citedAuthor;
+      f.related.mockImplementation(async (first, second) => {
+        if (second === citedAuthor) {
+          if (unavailable) throw new Error('cited-author lineage unavailable');
+          return true;
+        }
+        return first === second;
+      });
+      expect(await run(f, 'final'), 'test author ' + index + ' unavailable=' + unavailable)
+        .toMatchObject({ ok: false, reason: unavailable ? 'cited-author lineage unavailable' : 'IV related lineage' });
+    }
+  }
+}
+
 it('rejects independent verification of substituted test operational packet clause revision runtime lineage or stale bindings', async () => {
   const changes: Array<(f: Fixture) => void> = [
     f => { f.iv.verifiesBindingId = f.tests[0]!.id; }, f => { f.iv.verifiesBindingId = 999; },
@@ -190,6 +259,7 @@ it('rejects independent verification of substituted test operational packet clau
     const f = fixture(); change(f);
     expect(await run(f, 'final'), 'isolated IV substitution ' + index).toMatchObject({ ok: false });
   }
+  await verifyCitedAuthorLineage();
 });
 
 it('requires the exact final live case at final-item closure while prerequisite proof remains passing', async () => {
@@ -206,13 +276,15 @@ it('requires the exact final live case at final-item closure while prerequisite 
   const f = fixture();
   const grade = (owner: string, file: string, title: string, state = 'pass') => {
     const specId = 'AUTO-BAR-R-4-' + owner;
+    const testLayer = file === finalFile ? 'e2e' : prerequisite.layer;
     const clause = { planSlug: f.packet.planSlug, specId, sourceValId: specId, currentRevision: 1, revision: 1,
       planItemId: owner, behavior: 'The exact delivery case passes.', behaviorClass: 'happy-path', requiredEvidence: [],
-      requiredTestLayers: ['integration'], mutationRequired: false, lifecycleStatus: 'active', supersedes: null,
+      requiredTestLayers: [testLayer], mutationRequired: false, lifecycleStatus: 'active', supersedes: null,
       exemption: null, falsifier: null, contentHash: 'a'.repeat(64), createdBy: 'implementer', createdAt: at(1),
       acceptedBy: 'reviewer', acceptedAt: at(2), acceptanceRef: 'D-007' };
     const row = { ...structuredClone(f.tests[0]!), specId, specRevision: 1, specFingerprint: clause.contentHash,
-      evidenceRef: file, details: { adequacy: { testCases: [title], targeted: specId, collected: true,
+      evidenceRef: file, details: { adequacy: { testCases: [title], targeted: specId, testLayer,
+        pathReachable: state === 'pass', collected: true,
         executed: state !== 'unexecuted', skipped: state === 'skip', outcome: state === 'pass' ? 'passed' : state } },
       currentness: { ...f.tests[0]!.currentness, comparisonSupplied: true,
         dimensions: Object.fromEntries(['spec','source','test','fixture','rubric','environment','coverageEvidence','testRun'].map(k => [k, 'current'])),
@@ -220,18 +292,23 @@ it('requires the exact final live case at final-item closure while prerequisite 
       testRunProvenance: { ...f.tests[0]!.testRunProvenance, filePath: file, framework: 'vitest', mutationPhase: null },
       testRunExecution: { ...f.tests[0]!.testRunExecution, status: state === 'fail' ? 'fail' : 'pass',
         passed: state === 'pass' ? 1 : 0, failed: state === 'fail' ? 1 : 0, skipped: state === 'skip' ? 1 : 0,
-        filePath: file, passedCaseTitles: state === 'pass' ? [title] : [] } };
+        filePath: file, testLayer, passedCaseTitles: state === 'pass' ? [title] : [],
+        cases: state === 'unexecuted' ? [] : [{ caseKey: title, occurrence: 1,
+          status: state === 'fail' ? 'fail' : state === 'skip' ? 'skip' : 'pass' }] } };
     const requirements = { status: 'required' as const, ...selectSourceBarTestRequirements(check, owner) };
     const result = evaluateSpecTestAdequacy({ clause: clause as Parameters<typeof evaluateSpecTestAdequacy>[0]['clause'],
       evidence: [row] as unknown as Parameters<typeof evaluateSpecTestAdequacy>[0]['evidence'],
-      classRef: 'plan-class-feature-ship', sourceBarTestRequirements: requirements });
-    return result.ratings['correct-layer'].evidence;
+      classRef: 'plan-class-bugfix', sourceBarTestRequirements: requirements });
+    return result.ratings['correct-layer'];
   };
-  expect(grade('P-003', prerequisite.file, prerequisite.testName)).toContain('Every registered source BAR test file has a current passing binding');
-  expect(grade('P-002', finalFile, REPAIR_FINAL_CASE)).toContain('Every registered source BAR test file has a current passing binding');
+  for (const [owner, file, title] of [['P-003', prerequisite.file, prerequisite.testName],
+    ['P-002', finalFile, REPAIR_FINAL_CASE]]) {
+    const rating = grade(owner!, file!, title!);
+    expect(rating.rating, rating.evidence).toBe('pass');
+  }
   for (const [file, title, state] of [[prerequisite.file, prerequisite.testName, 'pass'],
     [finalFile, 'another passing case', 'pass'], [finalFile, REPAIR_FINAL_CASE, 'fail'],
     [finalFile, REPAIR_FINAL_CASE, 'skip'], [finalFile, REPAIR_FINAL_CASE, 'unexecuted']]) {
-    expect(grade('P-002', file!, title!, state)).not.toContain('Every registered source BAR test file has a current passing binding');
+    expect(grade('P-002', file!, title!, state).rating).not.toBe('pass');
   }
 });
