@@ -21,7 +21,7 @@ export async function repairRoleCodexHome(input: {
   const { advSessionId, owner, sessionRow, rawRecord, operatorBaseUrl, body } = input;
   const measure = input.measure ?? (<T>(_phase: string, work: () => T | PromiseLike<T>): Promise<T> =>
     Promise.resolve().then(work));
-  const [{ recordSuLaunchSpec }, { parseSuLaunchSpecRecord }, { CODEX_DEFAULT_MODEL },
+  const [{ recordSuLaunchSpec, readAdvSessionLaunchRecordByOwner }, { parseSuLaunchSpecRecord }, { CODEX_DEFAULT_MODEL },
     { requestSessionIdentityActivation }, { wakeAccountRouteFromArgv }, { codexWakeGatewayInputs }] =
     await Promise.all([
       import('./adv-sessions'), import('./su-persona-render'), import('./model-context-budget.mjs'),
@@ -37,12 +37,26 @@ export async function repairRoleCodexHome(input: {
     if (!sessionRow.feature && !flagValueFromArgv(provenanceArgv, 'role')) {
       const original = saved.originalMemberLaunch as Record<string, unknown> | undefined;
       if (original?.v === 1 && original.advSessionId === advSessionId && original.ownerId === owner
-        && original.sessionId === sessionRow.sessionId && original.workspaceId === sessionRow.workspaceId
+        && typeof original.sessionId === 'string' && original.workspaceId === sessionRow.workspaceId
         && original.agent === sessionRow.agent && Array.isArray(original.launchArgv)
         && original.launchArgv.every((argument) => typeof argument === 'string')
         && (typeof saved.harnessSlug !== 'string'
           || flagValueFromArgv(original.launchArgv, 'harness') === saved.harnessSlug)) {
-        provenanceArgv = original.launchArgv;
+        // Managed carry preserves the immutable birth receipt while rotating
+        // this same actor's native id. Only the existing append-only custody
+        // reader may establish that transition; mutable launch metadata cannot.
+        const custody = original.sessionId !== sessionRow.sessionId && sessionRow.sessionId
+          ? (await readAdvSessionLaunchRecordByOwner(owner, sessionRow.workspaceId, {
+            advSessionId, sessionId: sessionRow.sessionId,
+          }))?.originalMemberNativeCustody : null;
+        if (original.sessionId === sessionRow.sessionId || (custody
+          && custody.workspaceId === sessionRow.workspaceId && custody.advSessionId === advSessionId
+          && custody.ownerId === owner && custody.originalSessionId === original.sessionId
+          && custody.currentSessionId === sessionRow.sessionId
+          && custody.originalEventId && custody.reanchorEventId
+          && custody.originalEventId !== custody.reanchorEventId)) {
+          provenanceArgv = original.launchArgv;
+        }
       }
     }
     const harnessSlug = typeof saved.harnessSlug === 'string' ? saved.harnessSlug
