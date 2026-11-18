@@ -386,6 +386,35 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const target = targetName(node.right);
           if (target) aliases.push({ name: node.left.text, target });
         }
+        // Getters/setters and Proxy traps can run a writer without an explicit
+        // CallExpression. Preserve each access, including accesses inside a
+        // call's receiver/arguments; a callable declaration does not prove its
+        // receiver evaluation safe. Assignment/delete/update retain the whole
+        // modifying expression and RHS rather than just its property spelling.
+        if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+          const edges = [node.expression.getText(unit.ast), ts.isPropertyAccessExpression(node)
+            ? node.name.getText(unit.ast) : node.argumentExpression.getText(unit.ast)];
+          let expression: ts.Node = node;
+          for (;;) {
+            const parent = expression.parent;
+            if (parent && (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
+              || ts.isNonNullExpression(parent) || ts.isTypeAssertionExpression(parent)
+              || ts.isSatisfiesExpression(parent))) expression = parent;
+            else break;
+          }
+          const parent = expression.parent;
+          if (ts.isBinaryExpression(parent) && parent.left === expression
+            && parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+            && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+            expression = parent; edges.push(parent.right.getText(unit.ast));
+          } else if (ts.isDeleteExpression(parent)
+            || (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+              && (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken)) {
+            expression = parent;
+          }
+          add(source, operation(node), expression.getText(unit.ast), unit.span(expression).line,
+            'unresolved', { dynamicEdges: edges, unresolved: ['property-dispatch-requires-review'] });
+        }
         if (ts.isTaggedTemplateExpression(node)) {
           const text = literal(node.template);
           const start = sites.length;

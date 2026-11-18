@@ -1087,6 +1087,30 @@ describe('phase binding writer census', () => {
       .toThrow('unresolved-edge');
   });
 
+  it('retains property getter setter and proxy dispatch without an explicit call', () => {
+    const variants = [
+      { body: 'return actor.status', expression: 'actor.status', edges: ['actor', 'status'] },
+      { body: 'actor.status = next', expression: 'actor.status = next', edges: ['actor', 'status', 'next'] },
+      { body: 'actor[key] += next', expression: 'actor[key] += next', edges: ['actor', 'key', 'next'] },
+      { body: 'delete actor.status', expression: 'delete actor.status', edges: ['actor', 'status'] },
+      { body: '++actor.status', expression: '++actor.status', edges: ['actor', 'status'] },
+    ];
+    for (const { body, expression, edges } of variants) {
+      const inventory = inventoryPhaseWriters([source(`function entry(actor, key, next) { ${body}; }`)]);
+      const sites = inventory.sites.filter(site => site.unresolved.includes('property-dispatch-requires-review'));
+      expect(sites.map(site => site.statement), body).toEqual([expression]);
+      expect(sites[0]!.dynamicEdges).toEqual(edges);
+      expect(() => assertPhaseWriterCensus(inventory, [])).toThrow('unclassified-writer');
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(sites[0]!.id);
+    }
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-property-frontier-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      writeFileSync(join(root, 'packages/property.ts'), 'function entry(actor) { return actor.status; }');
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('retains opaque tagged invocations even without SQL text through the native tree guard', () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-writer-tag-frontier-'));
     try {
