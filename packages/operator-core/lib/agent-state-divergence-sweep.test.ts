@@ -73,6 +73,19 @@ function mockSqlTag(rows: unknown[] = []) {
 }
 
 describe('loadRecentCalls', () => {
+  it('does not notify or escalate when only post-handler test reply delivery is unknown', async () => {
+    const d = deps({ loadRecentCalls: async () => flailCalls().map(c => ({
+      ...c, toolName: 'testing:run', status: 'error', errorCode: 'aborted',
+      errorMessage: 'tool "testing:run" was aborted by its parent signal after the handler returned',
+    })) });
+
+    const result = await divergenceSweep(d);
+
+    expect(result.report?.divergences).toEqual([]);
+    expect(d.sendMessage).not.toHaveBeenCalled();
+    expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
   it('excludes hook-origin activity:report rows before the retry threshold while retaining agent calls', async () => {
     const hookOriginFixture = { tool_name: 'activity:report', call_origin: 'hook' };
     const { sql, calls, originPredicate } = mockSqlTag();
