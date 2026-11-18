@@ -250,13 +250,37 @@ describe('router native custody population (P002)', () => {
       complete: true, stdout: Buffer.from([0, 255, 10]), stderr: Buffer.from([254, 0, 10]),
     } }, 'npx', ['vitest', 'run', ...group.selected]);
   }
-  it.each([-1, 0, 1])('admits managed custody only beyond the shared settlement reserve (%i ms)', async delta => {
+  it('settles standalone custody during the reserve within its original task deadline', async () => {
     const now = 1_800_000_000_000;
     const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const progress = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      const launch = setup({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + 120_000 + delta) });
+      const { session } = await setup({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + 300_000) });
+      for (const group of session.expected) produce(session, group.id);
+      // There is no parent tool to seal this packet after the producer cutoff.
+      clock.mockReturnValue(now + 180_001);
+      const result = await session.finish();
+      const read = verifyNativeProofPacket(session.directory, result.locator, {
+        identity: session.identity, expected: session.expected,
+      });
+      expect(read.status).toBe('complete');
+      expect(read.manifest.groups.map((group: { id: string }) => group.id)).toEqual(['group-0', 'group-1']);
+      expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      expect(existsSync(join(session.directory, 'locator.json'))).toBe(true);
+    } finally { clock.mockRestore(); progress.mockRestore(); log.mockRestore(); }
+  });
+
+  it.each([-1, 0, 1])('keeps admission and explicit child cutoff at the settlement reserve boundary (%i ms)', async delta => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const progress = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const launch = setup({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + 120_000 + delta),
+        // A tool child still leaves the admitted parent's reserve untouched.
+        ...(delta > 0 ? { PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(now + delta) } : {}),
+      });
       if (delta <= 0) {
         await expect(launch).rejects.toThrow('TASK_DEADLINE_REFUSAL');
         expect(existsSync(join(root, 'packets'))).toBe(false);

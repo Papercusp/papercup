@@ -694,17 +694,17 @@ export function perGroupVitestEnv(env, groupIndex, groupCount, { vitestArgs = []
  * start. Keep the unsealed declaration readable if the router is hard-killed. */
 export async function createRouterProofCustody(groups, env, repoRoot) {
   if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
-  // testing:run supplies its child cutoff; direct managed launches instead
-  // inherit the task deadline. Reserve settlement time through the existing
-  // admission contract before any producer starts. Never extend an announced
-  // cutoff past the enclosing task's deadline.
+  // testing:run supplies a child cutoff and its parent seals retained packets
+  // within the remaining reserve. A standalone router owns that settlement
+  // itself, so admit it before launch but keep its original task deadline for
+  // sealing. Explicit child cutoffs still belong to the parent contract.
   const childCutoff = readTaskDeadlineEpochMs({
     PAPERCUSP_TASK_DEADLINE_EPOCH_MS: env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS,
   });
   const taskDeadline = readTaskDeadlineEpochMs(env);
   const deadlineAtMs = childCutoff !== null
     ? taskDeadline === null ? childCutoff : Math.min(childCutoff, taskDeadline)
-    : taskDeadline === null ? null : admitTaskDeadline({ env }).childCutoffEpochMs;
+    : taskDeadline === null ? null : admitTaskDeadline({ env }).deadlineEpochMs;
   // Keep ordinary router supervision independent of the native custody subject.
   // In mutation probes its test child must exercise the intended overlay; an
   // eager parent import would instead load committed scheduler bytes even when
