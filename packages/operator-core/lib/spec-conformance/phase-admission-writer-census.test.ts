@@ -99,7 +99,8 @@ describe('phase binding writer census', () => {
     const inventory = inventoryPhaseWriters(sources);
     const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
     const helpers = inventory.sites.filter(site => [connection, identity].includes(site.path)
-      && site.kind === 'helper-edge' && byId.has(site.id));
+      && site.kind === 'helper-edge'
+      && byId.get(site.id)?.sourceProofs.some(proof => proof.path === identity));
     expect(helpers.map(site => site.statement).sort()).toEqual([
       'describeStoreIdentityMismatch(verdict.pinned, verdict.observed)',
       'endpointKey(disc.host, disc.port)', 'endpointKey(endpoint.host, endpoint.port)',
@@ -147,6 +148,79 @@ describe('phase binding writer census', () => {
     }
     const fresh = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
     expect([...fresh.coverage.checked].sort()).toEqual([...report.coverage.checked].sort());
+  });
+
+  it('invalidates resource-profile reviews when any inspected discovery dependency changes', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const connection = 'libs/papercusp/libs/db/src/connection.ts';
+    const binding = 'packages/operator-core/lib/resource-profile.ts';
+    const generic = 'libs/generic/resource-profile/src/index.ts';
+    const discovery = 'packages/operator-core/lib/embedded-pg-discovery.ts';
+    const dependencies = [binding, generic, discovery,
+      'packages/operator-core/lib/background-workers.ts',
+      'libs/generic/embedded-pg-discovery/src/index.ts',
+      'libs/papercusp/libs/db/src/operator-db-env.ts'];
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const inventory = inventoryPhaseWriters(sources);
+    const expected = [
+      [connection, 'pgbouncerEnabled', 'getResourceProfile'],
+      [connection, 'resolveOrgPoolMax', 'getResourceProfile'],
+      [connection, 'resolveOrgPoolMax', 'boundedOrgPoolMax'],
+      [generic, 'deriveResourceProfile', 'deriveDatabaseTuning'],
+      [generic, 'deriveResourceProfile', 'maxClusterWorkersForConnBudget'],
+      [generic, 'getResourceProfile', 'detectResourceSignals'],
+      [generic, 'getResourceProfile', 'deriveResourceProfile'],
+      [generic, 'maxClusterWorkersForConnBudget', 'boundedOrgPoolMax'],
+      [binding, 'detectEmbeddedPg', 'getHarnessAdminUrlWithSource'],
+      [binding, 'detectHostRole', 'utilityHostEnabled'],
+      [binding, 'detectHostRole', 'backgroundWorkersEnabled'],
+      [binding, 'getResourceProfile', 'configureResourceProfile'],
+      [binding, 'getResourceProfile', 'detectEmbeddedPg'],
+      [binding, 'getResourceProfile', 'detectHostRole'],
+      [binding, 'getResourceProfile', 'getGenericResourceProfile'],
+      [discovery, 'getHarnessAdminUrlWithSource', 'resolvePgUrl'],
+    ].map(row => JSON.stringify(row)).sort();
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    const helpers = inventory.sites.filter(site => site.kind === 'helper-edge'
+      && expected.includes(JSON.stringify([site.path, site.operation, site.callees[0]])));
+    expect(helpers.map(site => JSON.stringify([site.path, site.operation, site.callees[0]])).sort())
+      .toEqual(expected);
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    for (const site of helpers) {
+      expect(report.coverage.checked).toContain(site.id);
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+      for (const path of [connection, ...dependencies]) expect(byId.get(site.id)?.sourceProofs)
+        .toContainEqual({ path, sha256: inventory.sources.find(row => row.path === path)!.sha256 });
+    }
+    // Keep caller identity fixed while introducing a mutation into each actual
+    // transitive dependency. No old review may survive merely because the
+    // imported getter or the scalar computation has kept its name.
+    const callers = helpers.filter(site => site.path === connection);
+    expect(callers).toHaveLength(3);
+    for (const dependency of dependencies) {
+      const changed = inventoryPhaseWriters(sources.map(source => source.path === dependency
+        ? { ...source, content: source.content + '\nexport function changedProfileEffect(sql: any) {'
+          + ' return sql`UPDATE harness_shared.plan_item_claims SET owner=\'changed\'`; }\n' }
+        : source));
+      const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+      for (const site of callers) {
+        expect(changed.sites.some(current => current.id === site.id)).toBe(true);
+        expect(stale.coverage.checked).not.toContain(site.id);
+        expect(stale.problems.find(row => row.id === site.id)?.reasons)
+          .toContain('stale-source-proof:' + dependency);
+      }
+    }
+    for (const { siteId } of reviewed.pendingAdvancing) {
+      expect(report.problems).toContainEqual({ id: siteId, reasons: ['unclassified-writer'] });
+    }
+    expect(report.ready).toBe(false);
   });
 
   it('pins manually reviewed SQL modules without accepting changed bodies or adjacent migrations', () => {

@@ -16,7 +16,13 @@
     "apps/operator/bin/hono-host.ts",
     "packages/operator-core/lib/cluster-fork.ts",
     "libs/papercusp/libs/db/src/connection.ts",
-    "libs/papercusp/libs/db/src/store-identity.ts"
+    "libs/papercusp/libs/db/src/store-identity.ts",
+    "packages/operator-core/lib/resource-profile.ts",
+    "libs/generic/resource-profile/src/index.ts",
+    "packages/operator-core/lib/embedded-pg-discovery.ts",
+    "packages/operator-core/lib/background-workers.ts",
+    "libs/generic/embedded-pg-discovery/src/index.ts",
+    "libs/papercusp/libs/db/src/operator-db-env.ts"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -30,6 +36,1046 @@
     "runtimeAttestation": false
   },
   "reviews": [
+    {
+      "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"deriveResourceProfile\",\"helper-edge\",\"b7f33c44b6c523aa7ce202b0691280d7927488a46fa1dab9bd6fa9217b409295\"]#1",
+      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "statementSha256": "b7f33c44b6c523aa7ce202b0691280d7927488a46fa1dab9bd6fa9217b409295",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "maxClusterWorkersForConnBudget",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"deriveResourceProfile\",\"helper-edge\",\"c12b1865c7e9c6a24cd3b764fe2e484fd57530833298388420987df63ef4d165\"]#1",
+      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "statementSha256": "c12b1865c7e9c6a24cd3b764fe2e484fd57530833298388420987df63ef4d165",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "deriveDatabaseTuning",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"getResourceProfile\",\"helper-edge\",\"363b01e073ce7f50477d11995447a8c4c0cae5aca432da25579c3eb2ec778d7d\"]#1",
+      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "statementSha256": "363b01e073ce7f50477d11995447a8c4c0cae5aca432da25579c3eb2ec778d7d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "detectResourceSignals",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"getResourceProfile\",\"helper-edge\",\"a78031817aed1d41ca5787e7779e83482c41e96dcc25c0dc2009db51bdfc2426\"]#1",
+      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "statementSha256": "a78031817aed1d41ca5787e7779e83482c41e96dcc25c0dc2009db51bdfc2426",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "deriveResourceProfile",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"maxClusterWorkersForConnBudget\",\"helper-edge\",\"bfc729e88be16cafa09d3625bc49f944a4258d34441a09d66ea0d8ec373c02e6\"]#1",
+      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "statementSha256": "bfc729e88be16cafa09d3625bc49f944a4258d34441a09d66ea0d8ec373c02e6",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "boundedOrgPoolMax",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/generic/resource-profile/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"pgbouncerEnabled\",\"helper-edge\",\"52e477dc7e15643e88e77e3bd23bf1d6d8644992e2ed65413b88b52852c625a6\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "52e477dc7e15643e88e77e3bd23bf1d6d8644992e2ed65413b88b52852c625a6",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getResourceProfile",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/resource-profile.ts#e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"resolveOrgPoolMax\",\"helper-edge\",\"52e477dc7e15643e88e77e3bd23bf1d6d8644992e2ed65413b88b52852c625a6\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "52e477dc7e15643e88e77e3bd23bf1d6d8644992e2ed65413b88b52852c625a6",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getResourceProfile",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/resource-profile.ts#e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"resolveOrgPoolMax\",\"helper-edge\",\"bda01b305ca8b03cc58f7393c13c4ef25b42c61211c82384f1cd131236d123c1\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "bda01b305ca8b03cc58f7393c13c4ef25b42c61211c82384f1cd131236d123c1",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "boundedOrgPoolMax",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "imported-call-target-requires-review",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/embedded-pg-discovery.ts\",\"getHarnessAdminUrlWithSource\",\"helper-edge\",\"ee4ac0df2ddd9da972cf00d112d8aa6925b9f03d07d41c1399f384797aa0b75f\"]#1",
+      "sourceSha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9",
+      "statementSha256": "ee4ac0df2ddd9da972cf00d112d8aa6925b9f03d07d41c1399f384797aa0b75f",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "resolvePgUrl",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "imported-call-target-requires-review",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"detectEmbeddedPg\",\"helper-edge\",\"ce94c14b4bf3658cc886d14cf57c77b37a555acdff7cf8ea5b43ea7fb8933358\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "ce94c14b4bf3658cc886d14cf57c77b37a555acdff7cf8ea5b43ea7fb8933358",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getHarnessAdminUrlWithSource",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/embedded-pg-discovery.ts#b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"detectHostRole\",\"helper-edge\",\"2540578da4a20ce5a9abab157ffb0fc6a47011020ee1a0b07c7d8eaf7a351051\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "2540578da4a20ce5a9abab157ffb0fc6a47011020ee1a0b07c7d8eaf7a351051",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "utilityHostEnabled",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/background-workers.ts#ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"detectHostRole\",\"helper-edge\",\"cb596baaee74a2b365848ea3a28aa4eea1d4d28ddf9b43bfaaa71f7ea173ae2d\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "cb596baaee74a2b365848ea3a28aa4eea1d4d28ddf9b43bfaaa71f7ea173ae2d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "backgroundWorkersEnabled",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/background-workers.ts#ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"getResourceProfile\",\"helper-edge\",\"315b852322cb9ecbc778dffba7572049f0b49d4921a4d860e3a6c82e0631496d\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "315b852322cb9ecbc778dffba7572049f0b49d4921a4d860e3a6c82e0631496d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "configureResourceProfile",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "imported-call-target-requires-review",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"getResourceProfile\",\"helper-edge\",\"35be82af0824b8ab347c69a6f98a86dd390c4810779b339b20d2c5f96e99b03d\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "35be82af0824b8ab347c69a6f98a86dd390c4810779b339b20d2c5f96e99b03d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "detectEmbeddedPg",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/resource-profile.ts#e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"getResourceProfile\",\"helper-edge\",\"ae19f667907bfc46106b5d4ca08cd80622caf1b0df7c998620d2ffba8a71dd6d\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "ae19f667907bfc46106b5d4ca08cd80622caf1b0df7c998620d2ffba8a71dd6d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "getGenericResourceProfile",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "imported-call-target-requires-review",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/resource-profile.ts\",\"getResourceProfile\",\"helper-edge\",\"c980aea83221c2b935b5fcadda303e745c64300d6d24b5b85a9a7a7aa5fda791\"]#1",
+      "sourceSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+      "statementSha256": "c980aea83221c2b935b5fcadda303e745c64300d6d24b5b85a9a7a7aa5fda791",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "packages/operator-core/lib/resource-profile.ts",
+          "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/index.ts",
+          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+        },
+        {
+          "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+          "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+        },
+        {
+          "path": "packages/operator-core/lib/background-workers.ts",
+          "sha256": "ced97dc31096809cdff2f602bd8b7f4f4e096f50c4b5c040ee58fd58337b8771"
+        },
+        {
+          "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+          "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+          "sha256": "740f4f4bd0a2df976532f2888a816f3cb4400918039b06b8d5586969e07d8fa5"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:packages/operator-core/lib/resource-profile.ts",
+        "source:libs/generic/resource-profile/src/index.ts",
+        "source:packages/operator-core/lib/embedded-pg-discovery.ts",
+        "source:packages/operator-core/lib/background-workers.ts",
+        "source:libs/generic/embedded-pg-discovery/src/index.ts",
+        "source:libs/papercusp/libs/db/src/operator-db-env.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "detectHostRole",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/resource-profile.ts#e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+          "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/resource-profile.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"_quarantineDiscoveryEndpointIfProvenForeign\",\"helper-edge\",\"42e763590de5f35812838eea227545c4743bf345fee9523f0466e48509e646b2\"]#1",
       "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
