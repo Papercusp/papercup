@@ -175,6 +175,28 @@ async function connected() {
 }
 
 describe("tutorial host binding receipts", () => {
+  it('preserves live installed discovery across equivalent machine refreshes and detaches on identity change', async () => {
+    const onBound = vi.fn();
+    const onBridge = vi.fn();
+    const props = { hostId: 'host-1', routeLabel: 'route-1', workspaceName: 'Linked computer',
+      onWorkspaceBound: onBound, onDesktopBridgeChange: onBridge };
+    const install = { installId: 'install-1', customerWorkspaceId: 'ws-1', connection: 'online' as const };
+    const session = render(<HostedWorkspaceSession {...props} linkedInstallation={install} />);
+    const socket = await connected();
+    act(() => socket.emit('message', { data: JSON.stringify({ type: 'desktop.discovery.ready' }) }));
+    await waitFor(() => expect(onBridge.mock.calls.some(([bridge]) => bridge !== null)).toBe(true));
+    onBound.mockClear();
+    onBridge.mockClear();
+    session.rerender(<HostedWorkspaceSession {...props} linkedInstallation={{ ...install, connection: 'unknown' }} />);
+    await act(async () => {});
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(onBound).not.toHaveBeenCalledWith(null);
+    expect(onBridge).not.toHaveBeenCalledWith(null);
+    session.rerender(<HostedWorkspaceSession {...props} linkedInstallation={{ ...install, installId: 'different-install' }} />);
+    expect(socket.close).toHaveBeenCalledWith(1000, 'browser_detached');
+    expect(onBound).toHaveBeenCalledWith(null);
+    expect(onBridge).toHaveBeenCalledWith(null);
+  });
   it('uses linked discovery without initializing a terminal, listing files or creating a desktop', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const onBound = vi.fn(); const onBridge = vi.fn();
