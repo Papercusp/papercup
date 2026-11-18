@@ -62,7 +62,8 @@ function normalizedFiles(files: readonly string[]): string[] {
   return [...new Set(files.map((file) => file.trim()).filter(Boolean))].sort();
 }
 
-function testRequirements(check: TestCheck, planItemId?: string): Pick<Extract<SourceBarTestRequirements, { status: 'required' }>, 'files' | 'cases'> {
+/** Shared by completion and pre-grading: validate ownership before selecting exact cases. */
+export function selectSourceBarTestRequirements(check: TestCheck, planItemId?: string): Pick<Extract<SourceBarTestRequirements, { status: 'required' }>, 'files' | 'cases'> {
   const parsed = rubricCriterionCheckSchema.parse(check) as TestCheck;
   const selected = parsed.filesByPlanItem
     ? (planItemId ? parsed.filesByPlanItem[planItemId] : undefined)
@@ -91,7 +92,7 @@ async function liveTestFiles(
   cache: SourceBarRubricCache,
   live: SourceBarLiveRead,
   planItemId?: string,
-): Promise<({ subjectPlan: string } & ReturnType<typeof testRequirements>) | null> {
+): Promise<({ subjectPlan: string } & ReturnType<typeof selectSourceBarTestRequirements>) | null> {
   const subjectPlan = rubric.subjectPlan;
   if (rubric.kind !== 'acceptance' || !subjectPlan) return null;
   try {
@@ -118,7 +119,7 @@ async function liveTestFiles(
     const liveRubric = await overlaid;
     const criterion = liveRubric?.criteria.find((candidate) => candidate.barKey === pin.barKey);
     if (criterion?.check?.kind !== 'tests') return null;
-    const requirements = testRequirements(criterion.check, planItemId);
+    const requirements = selectSourceBarTestRequirements(criterion.check, planItemId);
     return requirements.files.length > 0 ? { ...requirements, subjectPlan } : null;
   } catch {
     return null;
@@ -184,9 +185,9 @@ export async function resolveSourceBarTestRequirements(
   }
   if (criterion.check?.kind !== 'tests') return { status: 'not-required' };
 
-  let pinnedRequirements: ReturnType<typeof testRequirements>;
+  let pinnedRequirements: ReturnType<typeof selectSourceBarTestRequirements>;
   try {
-    pinnedRequirements = testRequirements(criterion.check, planItemId);
+    pinnedRequirements = selectSourceBarTestRequirements(criterion.check, planItemId);
   } catch (error) {
     return { status: 'unavailable', reason: `pinned BAR ${pin.barKey} declares an invalid tests check: ${error instanceof Error ? error.message : String(error)}` };
   }

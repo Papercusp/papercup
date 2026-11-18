@@ -36,6 +36,7 @@ import {
 import { listSpecEvidence, readSpecEvidencePlane, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, frozenOracleReviewRating, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { evaluateMechanicalTestAdequacy } from './agent-tools/plans/mechanical-test-adequacy';
+import { selectSourceBarTestRequirements, type SourceBarTestRequirements } from './agent-tools/plans/source-bar-test-requirements';
 import { listScorecardPage, settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
 import { lineagePartyKeys } from './acceptance-author-identity';
@@ -1311,9 +1312,6 @@ export function projectAcceptanceBarContractSnapshot(
     const staleEvidence = activeEvidence.filter((row) => !currentEvidence.includes(row));
     const requiredTestLayers = normalized(criterion.requiredTestLayers);
     const hasStructuredTestsCheck = criterion.check?.kind === 'tests';
-    const sourceBarTestRequirements = criterion.check?.kind === 'tests'
-      ? { status: 'required' as const, files: criterion.check.files }
-      : { status: 'not-required' as const };
     // The declared evidence plane is a separate lifecycle obligation. Adequacy
     // must inspect every current exact-cohort row because a BAR can require
     // mixed test layers (for example, tree/unit plus live/e2e). Filtering here
@@ -1325,6 +1323,16 @@ export function projectAcceptanceBarContractSnapshot(
     const adequacyDeclared = requiredTestLayers.length > 0 || hasStructuredTestsCheck;
     const mechanicalProofBindingIds = new Set<number>();
     const adequacyChecks = !adequacyDeclared ? [] : enforceableClauses.map((clause) => {
+      let sourceBarTestRequirements: SourceBarTestRequirements = { status: 'not-required' };
+      if (criterion.check?.kind === 'tests') {
+        try {
+          sourceBarTestRequirements = { status: 'required',
+            ...selectSourceBarTestRequirements(criterion.check, clause.planItemId ?? undefined) };
+        } catch (error) {
+          sourceBarTestRequirements = { status: 'unavailable',
+            reason: error instanceof Error ? error.message : String(error) };
+        }
+      }
       // Keep plan grading on the same measured proof path as work-item completion.
       // Structured checks name their tests; passing runs plus a calibrated caught
       // mutant replace the legacy evaluator's per-clause judgment obligations.

@@ -705,6 +705,43 @@ function mixedClauseFixture(kind: 'mechanical' | 'judgment', frozenOracle = true
 }
 
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('uses each clause owned files and exact cases without weakening the aggregate BAR', () => {
+    const input = mechanicallyProvedFixture();
+    const criterion = input.rubrics.rows[0]!.criteria[0]!;
+    const clause = input.clauses.rows[0]!;
+    const check = { kind: 'tests' as const, files: ['src/guard.test.ts', 'src/final.live.e2e.test.ts'],
+      filesByPlanItem: { [clause.planItemId!]: ['src/guard.test.ts'], 'P-099': ['src/final.live.e2e.test.ts'] },
+      cases: [{ file: 'src/guard.test.ts', testName: 'source-bar-check-10' },
+        { file: 'src/final.live.e2e.test.ts', testName: 'exact final case' }] };
+    criterion.check = check;
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(input.rubrics.rows[0]!.criteria);
+    input.rubrics.rows[0]!.barSetHash = input.planRows.rows[0]!.barSetHash = barSetHash;
+    Object.assign(clause.sourceBar!, { barHash: criterion.barHash, barSetHash });
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(snapshot.bars[0]!.check).toEqual(check);
+    check.cases[0]!.testName = 'a different case in the passing file';
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const changedSetHash = computeAcceptanceBarSetHash(input.rubrics.rows[0]!.criteria);
+    input.rubrics.rows[0]!.barSetHash = input.planRows.rows[0]!.barSetHash = changedSetHash;
+    Object.assign(clause.sourceBar!, { barHash: criterion.barHash, barSetHash: changedSetHash });
+    expect(projectAcceptanceBarContractSnapshot(input).readiness.codes).not.toContain('bar_snapshot_bar_hash_mismatch');
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.adequacy?.state).not.toBe('pass');
+  });
+
+  it('keeps missing or invalid reviewed ownership unavailable for that clause', () => {
+    const input = mechanicallyProvedFixture();
+    const criterion = input.rubrics.rows[0]!.criteria[0]!;
+    criterion.check = { kind: 'tests', files: ['src/guard.test.ts'],
+      filesByPlanItem: { 'P-099': ['src/guard.test.ts'] } };
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(input.rubrics.rows[0]!.criteria);
+    input.rubrics.rows[0]!.barSetHash = input.planRows.rows[0]!.barSetHash = barSetHash;
+    Object.assign(input.clauses.rows[0]!.sourceBar!, { barHash: criterion.barHash, barSetHash });
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.adequacy?.state).not.toBe('pass');
+  });
+
   describe.each(['mechanical', 'judgment'] as const)('mixed-clause %s oracle obligations', kind => {
     it('keeps a missing frozen-oracle review UNKNOWN despite a passing sibling', () => {
       const snapshot = projectAcceptanceBarContractSnapshot(mixedClauseFixture(kind));
