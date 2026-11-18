@@ -11,8 +11,9 @@
  * distribution layer already supported all three tiers — the tool gating was
  * the artificial restriction, retired per D-005.
  */
-import { dirname, join } from 'node:path';
-import { existsSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import {
   blueprintRetirement,
   builtinBlueprintPath,
@@ -66,18 +67,96 @@ export interface BlueprintSourceLocation {
   file: string;
 }
 
-/** The existing file catalog, with the same local → installed → built-in precedence as resolution. */
-export function availableBlueprintSources(opts: { localDirs?: string[] } = {}): BlueprintSourceLocation[] {
-  const roots: Array<{ root: string; tier: BlueprintSourceLocation['tier'] }> = [
-    { root: dirname(dirname(builtinBlueprintPath('probe'))), tier: 'builtin' },
-    { root: INSTALLED_BLUEPRINTS_DIR(), tier: 'installed' },
+/** Keep inventory and resolution on the same registered distribution tiers. */
+function blueprintSourceRoots(opts: { localDirs?: string[] }) {
+  return [
+    { root: dirname(dirname(builtinBlueprintPath('probe'))), tier: 'builtin' as const },
+    { root: INSTALLED_BLUEPRINTS_DIR(), tier: 'installed' as const },
     ...(opts.localDirs ?? []).slice().reverse().map((root) => ({ root, tier: 'local' as const })),
   ];
+}
+
+/** The existing file catalog, with the same local → installed → built-in precedence as resolution. */
+export function availableBlueprintSources(opts: { localDirs?: string[] } = {}): BlueprintSourceLocation[] {
   const selected = new Map<string, BlueprintSourceLocation>();
-  for (const { root, tier } of roots) {
+  for (const { root, tier } of blueprintSourceRoots(opts)) {
     for (const id of listBlueprintIdsIn(root)) selected.set(id, { id, tier, file: join(root, id, 'blueprint.yaml') });
   }
   return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * P-002 library source inventory, including sources hidden by a higher tier.
+ * Hash actual bytes throughout each registered root, not mtime/size cache keys:
+ * prompts, resource files, release metadata and currently empty directories can
+ * all change the affected population. Invalid YAML stays a source to inspect;
+ * unreadable data, links and special files refuse the entire read.
+ *
+ * This is an optimistic filesystem read, NOT an atomic snapshot, effect lease,
+ * human-owner census or permission grant. The host must supply every affected
+ * checkout's local roots and guard these roots against writes before using the
+ * revision for admission. A matching expectedRevision does not acquire a lease.
+ * Missing roots are represented explicitly, never proof of absent authority.
+ */
+export function readBlueprintSourcePopulation(opts: { localDirs?: string[]; expectedRevision?: string } = {}) {
+  if (opts.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(opts.expectedRevision))
+    throw new Error('blueprint population requires an exact content revision');
+  const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const scan = (path: string): { revision: string; declaration?: boolean;
+    children?: Map<string, { revision: string; file: boolean; declaration?: boolean }> } => {
+    const stat = lstatSync(path);
+    if (stat.isFile()) return { revision: createHash('sha256').update(readFileSync(path)).digest('hex') };
+    if (!stat.isDirectory()) throw new Error(`unsupported blueprint population source: ${path}`);
+    const children = new Map<string, { revision: string; file: boolean; declaration?: boolean }>();
+    for (const name of readdirSync(path).sort()) {
+      // Git bookkeeping is not a blueprint source. Do not follow .git links.
+      if (name === '.git') continue;
+      const child = scan(join(path, name));
+      children.set(name, { revision: child.revision, file: child.children === undefined,
+        ...(child.declaration !== undefined ? { declaration: child.declaration } : {}) });
+    }
+    return { revision: digest([...children]), children,
+      ...(children.has('blueprint.yaml') ? { declaration: children.get('blueprint.yaml')!.file } : {}) };
+  };
+  try {
+    const roots: Array<{ root: string; canonicalRoot: string | null;
+      tier: BlueprintSourceLocation['tier']; state: 'present' | 'absent'; revision: string }> = [];
+    const sources: Array<BlueprintSourceLocation & { revision: string; selected: boolean }> = [];
+    const seen = new Set<string>();
+    for (const location of blueprintSourceRoots({ localDirs: opts.localDirs?.slice() })) {
+      const root = resolve(location.root);
+      const key = JSON.stringify([location.tier, root]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      let state: ReturnType<typeof scan>;
+      try { state = scan(root); }
+      catch (error) {
+        // Only an absent ROOT is absence. A file removed during traversal must
+        // refuse the read instead of erasing an existing library from the census.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT' ||
+            (error as NodeJS.ErrnoException).path !== root) throw error;
+        roots.push({ root, tier: location.tier, state: 'absent', canonicalRoot: null, revision: digest(['absent']) });
+        continue;
+      }
+      if (!state.children) throw new Error(`blueprint population root is not a directory: ${root}`);
+      roots.push({ root, tier: location.tier, state: 'present', canonicalRoot: realpathSync(root), revision: state.revision });
+      for (const [id, child] of state.children) {
+        if (child.file || child.declaration === undefined) continue;
+        const file = join(root, id, 'blueprint.yaml');
+        if (!child.declaration) throw new Error(`blueprint declaration is not a regular file: ${file}`);
+        sources.push({ id, tier: location.tier, file, revision: child.revision, selected: false });
+      }
+    }
+    const selected = new Map<string, typeof sources[number]>();
+    for (const source of sources) selected.set(source.id, source);
+    for (const source of selected.values()) source.selected = true;
+    const revision = digest({ roots, sources });
+    return opts.expectedRevision !== undefined && opts.expectedRevision !== revision
+      ? { status: 'stale' as const, revision }
+      : { status: 'ok' as const, revision, roots, sources };
+  } catch (error) {
+    return { status: 'unavailable' as const, reason: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
