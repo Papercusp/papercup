@@ -418,7 +418,9 @@ describe('served Portal prerequisite and document readiness', () => {
     });
   });
 
-  it.each(['packages/operator-core/lib/rubrics.ts',
+  it.each(['apps/operator/app/cloud-workspaces/HostedDesktopConnection.tsx',
+    'apps/operator/app/cloud-workspaces/HostedWorkspaceSession.tsx',
+    'packages/operator-core/lib/rubrics.ts',
     'packages/operator-core/lib/agent-tools/scorecards/emit.ts',
     'packages/agent-mcp/src/_bulk.ts',
     'packages/operator-core/lib/agent-tools/_bulk.ts'])(

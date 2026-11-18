@@ -300,6 +300,10 @@ export async function assertInstalledRuntimeSource(repo: string) {
     'packages/operator-core/lib/workspace-host/byoc-sealed-channel.ts',
     'packages/operator-core/lib/workspace-host/sodium-browser.cjs',
     'apps/operator/app/cloud-workspaces/installed-computer-connection.ts',
+    // Vite serves these parents from the same immutable source root. A stale
+    // parent can flood thumbnail reads even when pagination itself is current.
+    'apps/operator/app/cloud-workspaces/HostedDesktopConnection.tsx',
+    'apps/operator/app/cloud-workspaces/HostedWorkspaceSession.tsx',
     'packages/operator-core/lib/remote-access/relay-opt-in.ts',
     'packages/operator-core/lib/remote-access/portal-relay-runtime.ts',
   ];

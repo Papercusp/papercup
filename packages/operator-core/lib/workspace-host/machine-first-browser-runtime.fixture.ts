@@ -112,6 +112,8 @@ try {
     'packages/operator-core/lib/endpoint-route/routes/hosted-cli/store.ts',
     'packages/operator-core/lib/workspace-context-middleware.ts',
     'packages/operator-core/lib/workspace-host/machine-first-browser-runtime.fixture.ts',
+    'apps/operator/app/cloud-workspaces/HostedDesktopConnection.tsx',
+    'apps/operator/app/cloud-workspaces/HostedWorkspaceSession.tsx',
     'apps/operator/scripts/install-standalone-mcp.sh',
   ];
   status.sourceHashes = Object.fromEntries(await Promise.all(sourcePaths.map(async p =>
