@@ -6,6 +6,13 @@ import { pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { assertNativeIsolatedWorkspace, NATIVE_CUSTODY_LIFECYCLE_PICK, readNativeCustodyLifecycle } from './testing-native-runtime';
 import { applyPick } from './result-projection/apply';
+import { applyResultDoor, resetResultDoorAggregatesForTests } from './result-door';
+import { safeScratchFilesystemPath } from './scratch-uri';
+
+vi.mock('./context-doors-config', async () => {
+  const { BAKED_DOOR_CONSTANTS } = await import('./context-doors');
+  return { getDoorConstantsSync: () => BAKED_DOOR_CONSTANTS };
+});
 
 const root = resolve(import.meta.dirname, '../../..');
 const modulePath = join(root, 'packages/operator-core/lib/testing-native-runtime.ts');
@@ -38,6 +45,57 @@ it('preserves empty and populated native custody timelines through the real resp
   for (const response of [null, {}, { results: [] },
     { results: [{ id: 'WI-foreign', lifecycle: { events: [], coverage } }] }])
     expect(() => readNativeCustodyLifecycle(response, id)).toThrow('requested work-item');
+});
+
+it('recovers seven complete native receipts through the real MCP overflow door and rejects foreign or corrupt evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'native-custody-overflow-'));
+  const previous = process.env.PAPERCUSP_SCRATCH_ROOT;
+  process.env.PAPERCUSP_SCRATCH_ROOT = dir;
+  resetResultDoorAggregatesForTests();
+  const id = 'WI-native-custody-overflow';
+  const scope = { workspaceId: 'verify-tauri-isolated-90', ownerId: 'native-custody-test-owner' };
+  const coverage = { auditRows: 7, reopenEntries: 0, notRecorded: ['continuity unknown'],
+    truncated: false, invalidEntries: 0, degraded: false };
+  const events = Array.from({ length: 7 }, (_, index) => ({
+    action: 'work_items:custody:capture', detail: { before: 'preserved history '.repeat(1000), index },
+    custodyCapture: { receipt: 'valid', operation: 'UPDATE', actorAuthentication: 'unverified',
+      continuity: 'unknown', problems: [] },
+  }));
+  const { picked } = applyPick({ results: [{ id, lifecycle: { events, coverage } }] }, NATIVE_CUSTODY_LIFECYCLE_PICK);
+  try {
+    const result = applyResultDoor({ content: [{ type: 'text', text: JSON.stringify(picked) }],
+      _meta: { explicitFullRequest: true } }, { toolName: 'work_items:get', ...scope,
+      runId: '11111111-2222-4333-8444-555555555555' });
+    const envelope = JSON.parse((result.content[0] as { text: string }).text);
+    expect(envelope.incomplete.reason).toBe('explicit-full-request-overflow');
+    expect(envelope.content[0]).toMatchObject({ kind: 'evidence-reference', evidenceClass: 'event' });
+    expect(readNativeCustodyLifecycle(envelope, id, scope)).toEqual({ events, coverage });
+    const reference = envelope.content[0];
+    expect(readNativeCustodyLifecycle({ ...envelope, content: [{ ...reference, kind: 'reference' }] }, id, scope))
+      .toEqual({ events, coverage });
+    for (const content of [[], [reference, reference], [{ ...reference, kind: 'replay-state' }]])
+      expect(() => readNativeCustodyLifecycle({ ...envelope, content }, id, scope))
+        .toThrow('one owned recoverable reference');
+    expect(() => readNativeCustodyLifecycle(envelope, 'WI-foreign', scope)).toThrow('requested work-item');
+    expect(() => readNativeCustodyLifecycle(envelope, id, { ...scope, workspaceId: 'foreign' }))
+      .toThrow('this workspace');
+    expect(() => readNativeCustodyLifecycle(envelope, id, { ...scope, ownerId: 'another-owner' }))
+      .toThrow('creating owner');
+    expect(() => readNativeCustodyLifecycle({ ...envelope, content: [{ ...reference, sha256: '0'.repeat(64) }] }, id, scope))
+      .toThrow('response manifest');
+    const file = safeScratchFilesystemPath(reference.uri);
+    const bytes = readFileSync(file);
+    bytes[bytes.length - 2] ^= 1;
+    writeFileSync(file, bytes);
+    expect(() => readNativeCustodyLifecycle(envelope, id, scope)).toThrow('SHA-256 mismatch');
+    rmSync(file);
+    expect(() => readNativeCustodyLifecycle(envelope, id, scope)).toThrow('ENOENT');
+  } finally {
+    if (previous === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+    else process.env.PAPERCUSP_SCRATCH_ROOT = previous;
+    resetResultDoorAggregatesForTests();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 it('preserves native fixture isolation through actual hermetic worker setup', async () => {

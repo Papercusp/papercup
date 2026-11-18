@@ -10,6 +10,8 @@ import { isCliEntry } from './util/cli-entry';
 import { readProcessIdentity, linuxProcStateFromStat } from './process-identity.ts';
 import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
 import type { WorkItemLifecycleHistory } from './work-item-lifecycle-history';
+import { authorizeScratchReference, parseScratchReference } from './scratch-reference';
+import { parseScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
 
@@ -19,7 +21,41 @@ export const NATIVE_CUSTODY_LIFECYCLE_PICK = [
   'results[].id', 'results[].lifecycle.events', 'results[].lifecycle.coverage',
 ];
 
-export function readNativeCustodyLifecycle(response: unknown, id: string): Pick<WorkItemLifecycleHistory, 'events' | 'coverage'> {
+export function readNativeCustodyLifecycle(response: unknown, id: string, scope = {
+  workspaceId: process.env.PAPERCUSP_WORKSPACE, ownerId: process.env.PAPERCUSP_SID,
+}): Pick<WorkItemLifecycleHistory, 'events' | 'coverage'> {
+  // A populated timeline can exceed the MCP result door even after projection.
+  // Recover its actual response using the existing URI, integrity and audience
+  // contracts; a reference is neither a missing item nor an empty timeline.
+  if ((response as { schemaVersion?: unknown } | null)?.schemaVersion === 'papercusp.output-envelope/v1') {
+    const envelope = response as { state?: unknown; content?: { kind?: unknown; uri?: unknown;
+      byteCount?: unknown; sha256?: unknown }[] };
+    const reference = envelope.content?.[0];
+    if (envelope.state !== 'incomplete' || envelope.content?.length !== 1
+      || (reference?.kind !== 'reference' && reference?.kind !== 'evidence-reference')
+      || typeof reference.uri !== 'string'
+      || !scope.workspaceId || !scope.ownerId)
+      throw new Error('Native custody response requires one owned recoverable reference');
+    const parts = parseScratchUri(reference.uri);
+    if (parts.workspaceId !== scope.workspaceId || parts.toolName !== 'work_items:get')
+      throw new Error('Native custody reference must belong to this workspace and work_items:get');
+    const parsed = parseScratchReference(readFileSync(safeScratchFilesystemPath(reference.uri)));
+    if (!parsed) throw new Error('Native custody reference requires a scratch manifest');
+    authorizeScratchReference(parsed.manifest, scope);
+    if (parsed.manifest.sha256 !== reference.sha256 || parsed.manifest.byteCount !== reference.byteCount
+      || parsed.manifest.mediaType !== 'application/json'
+      || parsed.manifest.bodyOffsetInPayload === undefined)
+      throw new Error('Native custody reference does not match its response manifest');
+    const raw = JSON.parse(parsed.payload.subarray(parsed.manifest.bodyOffsetInPayload).toString('utf8'));
+    const bodies: unknown[] = [];
+    for (const item of raw.content ?? []) {
+      if (item.type !== 'text') continue;
+      try { const body = JSON.parse(item.text); if (Array.isArray(body?.results)) bodies.push(body); }
+      catch { /* Projection advisories are prose, not response bodies. */ }
+    }
+    if (bodies.length !== 1) throw new Error('Native custody reference requires one work-item response body');
+    response = bodies[0];
+  }
   const body = response as { results?: { id?: unknown; lifecycle?: Partial<WorkItemLifecycleHistory> }[] } | null;
   if (!Array.isArray(body?.results) || body.results.length !== 1 || body.results[0]?.id !== id)
     throw new Error('Native custody response must contain the requested work-item');
