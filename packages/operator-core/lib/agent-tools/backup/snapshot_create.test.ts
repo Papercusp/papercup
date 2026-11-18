@@ -14,7 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ snapshot: vi.fn(), reconcileSnapshotReceipt: vi.fn() }));
+const h = vi.hoisted(() => ({ snapshot: vi.fn(), reconcileSnapshotReceipt: vi.fn(), durableStart: vi.fn() }));
 vi.mock('../../backup', () => ({
   workspaceBackupFor: vi.fn(() => ({
     snapshot: h.snapshot,
@@ -24,8 +24,10 @@ vi.mock('../../backup', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../dbos/dbos-flags', () => ({ dbosBackupActive: vi.fn(() => false) }));
 vi.mock('../../dbos/bootstrap', () => ({ dbosStarted: vi.fn(() => false) }));
+vi.mock('../../dbos/backup-workflow', () => ({ startBackupSnapshotWorkflow: h.durableStart }));
 
 const { workspaceBackupFor } = await import('../../backup');
+const { dbosStarted } = await import('../../dbos/bootstrap');
 const forM = vi.mocked(workspaceBackupFor);
 const mod = await import('./snapshot_create');
 const tool = mod.default;
@@ -37,6 +39,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(dbosStarted).mockReturnValue(false);
 });
 
 afterEach(() => {
@@ -87,6 +90,31 @@ describe('backup:snapshot_create handler — deadline race', () => {
     expect(h.snapshot).toHaveBeenCalledWith('pre_destructive', undefined,
       expect.objectContaining({ resumeSnapshotId: 99, onStarted: expect.any(Function) }));
     expect(body(out)).toMatchObject({ snapshotId: 99, kopiaSnapshotId: 'recovered', dbDumpOk: true });
+  });
+
+  it('keeps explicit same-receipt recovery durable when the executor is launched', async () => {
+    vi.mocked(dbosStarted).mockReturnValue(true);
+    h.reconcileSnapshotReceipt.mockResolvedValue({ snapshotId: 99, stillRunning: true, status: 'running' });
+    h.durableStart.mockResolvedValue({ snapshotId: 99, kopiaSnapshotId: 'durable-recovery', dbDumpOk: true });
+    const out = await call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true });
+    expect(h.durableStart).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', reason: 'pre_destructive', context: undefined, resumeSnapshotId: 99,
+    }, expect.any(String));
+    expect(h.snapshot).not.toHaveBeenCalled();
+    expect(body(out)).toMatchObject({ snapshotId: 99, kopiaSnapshotId: 'durable-recovery' });
+  });
+
+  it('returns the existing receipt while its durable recovery outlives the request deadline', async () => {
+    vi.useFakeTimers();
+    vi.mocked(dbosStarted).mockReturnValue(true);
+    h.reconcileSnapshotReceipt.mockResolvedValue({ snapshotId: 99, stillRunning: true, status: 'running' });
+    let finish!: (value: unknown) => void;
+    h.durableStart.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const pending = call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true });
+    await vi.advanceTimersByTimeAsync(mod.SAFE_DEADLINE_MS);
+    expect(body(await pending)).toMatchObject({ stillRunning: true, snapshotId: 99 });
+    expect(h.snapshot).not.toHaveBeenCalled();
+    finish({ snapshotId: 99, kopiaSnapshotId: 'later' });
   });
 
   it('does not restart an already successful receipt even with producer resume requested', async () => {
