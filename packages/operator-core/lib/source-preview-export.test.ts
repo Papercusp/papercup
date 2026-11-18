@@ -20,6 +20,7 @@ import nativeFs, { chmodSync, cpSync, existsSync, fstatSync, linkSync, mkdirSync
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
+import { clearTimeout as clearRealTimeout, setTimeout as setRealTimeout } from 'node:timers';
 import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFailed, vi } from 'vitest';
 import { bindRuntimeExecEntry, bindRuntimeProcessTree, observeRuntimeExecEntry, observeRuntimeExecutableMemory, observeRuntimePageSize, observeRuntimeProcessIdentity, isRuntimeProcessAlive,
@@ -2222,14 +2223,75 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     ['absolute', 'snapshot'], ['task', 'snapshot'],
     ['absolute', 'census'], ['task', 'census'],
   ] as const)('keeps advancing %s deadline bounded for %s progress', async (boundary, kind) => {
+    // Real process startup is not progress. Freeze only the parent's clock until
+    // each actual child counter arrives, then exercise the unchanged deadlines.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const startedAt = Date.now();
     const env = childEnv();
+    delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
     if (boundary === 'task') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + 11_000);
-    await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
-      let completed = 0;
-      setInterval(() => console.log(${JSON.stringify(kind === 'census'
-        ? 'verifier census progress: scan=123:1 checked=' : 'snapshot progress: completed=')} + (++completed)), 100);
-    `], { cwd: tmp, env, timeoutMs: 500, maxMs: boundary === 'task' ? 5000 : 1000,
-      stallWindowMs: 400, extensionMs: 300 })).rejects.toThrow('absolute-ceiling');
+    const prefix = kind === 'census'
+      ? 'verifier census progress: scan=123:1 checked=' : 'snapshot progress: completed=';
+    let notifyProgress = () => {};
+    let startupTimer: ReturnType<typeof setRealTimeout> | undefined;
+    const nextProgress = () => new Promise<void>((resolve, reject) => {
+      startupTimer = setRealTimeout(() => reject(new Error('child progress did not arrive')), 10_000);
+      notifyProgress = () => { clearRealTimeout(startupTimer); resolve(); };
+    });
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(chunk => {
+      if (String(chunk).includes(prefix)) notifyProgress();
+      return true;
+    });
+    let notifyExtension = () => {};
+    let extensionTimer: ReturnType<typeof setRealTimeout> | undefined;
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => {
+      for (const line of String(chunk).split('\n')) {
+        if (!line.startsWith('VERIFIER_DEPENDENCY_WATCHDOG ')) continue;
+        const decision = JSON.parse(line.slice('VERIFIER_DEPENDENCY_WATCHDOG '.length));
+        if (decision.event === 'extend') notifyExtension();
+        // The actual process-group exit fence must keep its real clock.
+        if (decision.event === 'kill') vi.useRealTimers();
+      }
+      return true;
+    });
+    const controller = new AbortController();
+    let result: Promise<unknown> | undefined;
+    try {
+      const ready = nextProgress();
+      const extended = new Promise<void>((resolve, reject) => {
+        extensionTimer = setRealTimeout(() => reject(new Error('watchdog extension did not arrive')), 10_000);
+        notifyExtension = () => { clearRealTimeout(extensionTimer); resolve(); };
+      });
+      result = runVerifierDependencyCommand(process.execPath, ['-e', `
+        let completed = 0;
+        const report = () => console.log(${JSON.stringify(prefix)} + (++completed));
+        report(); setInterval(report, 10);
+      `], { cwd: tmp, env, timeoutMs: 500, maxMs: boundary === 'task' ? 5000 : 1000,
+        stallWindowMs: 400, extensionMs: 300, signal: controller.signal }).catch(error => error);
+      await ready;
+      vi.setSystemTime(startedAt + 500);
+      await nextProgress();
+      await extended;
+      vi.setSystemTime(startedAt + 1000);
+      const error = await result;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('absolute-ceiling');
+      const decisions = stderr.mock.calls.flatMap(([chunk]) => String(chunk).split('\n'))
+        .filter(line => line.startsWith('VERIFIER_DEPENDENCY_WATCHDOG '))
+        .map(line => JSON.parse(line.slice('VERIFIER_DEPENDENCY_WATCHDOG '.length)));
+      expect(decisions.some(decision => decision.event === 'extend')).toBe(true);
+      expect(decisions.at(-1)).toMatchObject({ event: 'kill', elapsedMs: 1000, maxMs: 1000,
+        decision: { reason: 'absolute-ceiling' } });
+      expect(decisions.at(-1).recentProgress.length).toBeGreaterThan(1);
+    } finally {
+      if (startupTimer) clearRealTimeout(startupTimer);
+      if (extensionTimer) clearRealTimeout(extensionTimer);
+      vi.useRealTimers();
+      controller.abort();
+      await result;
+      stdout.mockRestore();
+      stderr.mockRestore();
+    }
   });
 
   it.for([
