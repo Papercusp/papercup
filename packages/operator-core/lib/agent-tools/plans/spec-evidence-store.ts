@@ -4249,6 +4249,7 @@ export type SupersedeSpecEvidenceBatchItem = Pick<
 
 export interface SupersedeSpecEvidenceBatchOptions {
   harnessSlug?: string;
+  workspaceId?: string;
   actorId: string;
   /** Every binding created by this call, excluded from all sibling withdrawals. */
   keepBindingIds: readonly number[];
@@ -4286,7 +4287,7 @@ export async function supersedeSpecEvidenceAtRevisionBatch(
   deps: SpecEvidenceGradingAuditNotificationDeps = {},
 ): Promise<SupersedeSpecEvidenceBatchResult> {
   if (options.items.length === 0) return { results: [], cancelledAuditIssueIds: [] };
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug, workspaceId: options.workspaceId });
   const actorId = options.actorId.trim();
   const keepBindingIds = [...new Set([
     ...options.keepBindingIds,

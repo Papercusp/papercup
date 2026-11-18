@@ -1500,11 +1500,9 @@ async function carryControlActivationIdentityReceipt(input: {
     SELECT a.id, to_jsonb(a)->'launch_spec' AS launch_spec
       FROM harness_shared.adv_sessions a
      WHERE a.workspace_id = ${input.workspaceId} AND a.coord_owner_id = ${input.ownerId}
-       AND a.ended_at IS NULL AND a.ended_by IS NULL
-     -- session_briefs is owner-scoped, but tool preflight evaluates the
-     -- caller's live adv_sessions row. Never carry its receipt onto a newer
-     -- ended sibling and leave the live caller stale.
-     ORDER BY a.started_at DESC, a.id DESC
+     -- Receipt the same latest registration used by buildControlAnchorState
+     -- and identity-management, even if predecessor activity is newer.
+     ORDER BY a.id DESC
      LIMIT 1
      FOR UPDATE OF a
   `;
