@@ -14,7 +14,7 @@ import type { WorkItemLifecycleHistory } from './work-item-lifecycle-history';
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
 
 // Selecting leaves below events[] omits an empty timeline. Keep the array and
-// its coverage together so verified absence cannot become missing evidence.
+// its coverage together so an explicit empty list cannot become missing evidence.
 export const NATIVE_CUSTODY_LIFECYCLE_PICK = [
   'results[].id', 'results[].lifecycle.events', 'results[].lifecycle.coverage',
 ];

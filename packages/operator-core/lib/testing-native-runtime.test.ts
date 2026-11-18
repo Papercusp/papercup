@@ -26,6 +26,11 @@ it('preserves empty and populated native custody timelines through the real resp
     expect(picked).toEqual({ results: [{ id, lifecycle: { events, coverage } }] });
     expect(readNativeCustodyLifecycle(JSON.parse(JSON.stringify(picked)), id)).toEqual({ events, coverage });
   }
+  const empty = { results: [{ id, lifecycle: { events: [], coverage } }] };
+  const oldSelection = applyPick(empty, ['results[].id',
+    'results[].lifecycle.events[].action', 'results[].lifecycle.events[].custodyCapture',
+    'results[].lifecycle.coverage']).picked;
+  expect(() => readNativeCustodyLifecycle(oldSelection, id)).toThrow('event array and coverage');
   for (const lifecycle of [{ coverage }, { events: null, coverage }, { events: {}, coverage },
     { events: [] }, { events: [], coverage: { notRecorded: null } }])
     expect(() => readNativeCustodyLifecycle({ results: [{ id, lifecycle }] }, id))
