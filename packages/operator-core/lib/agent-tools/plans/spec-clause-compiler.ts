@@ -338,6 +338,27 @@ function hasIndependentCommaClauseSeries(behavior: string): boolean {
   return clauses.length > 1;
 }
 
+function maskNominalSeparate(predicates: string): string {
+  // Support the unambiguous singular form "receives ... under ... and
+  // separate <modifier> <head>". Bare predicates remain ambiguous: "workers
+  // receive ... under ... and separate records" can describe two outcomes.
+  const under = /\bunder\b/i.exec(predicates);
+  if (!under) return predicates;
+  const prefix = predicates.slice(0, under.index);
+  const verbs = prefix.match(new RegExp('\\b' + EXTENDED_OBSERVABLE_VERB + '\\b', 'gi')) ?? [];
+  if (verbs.length !== 1 || !/s$/i.test(verbs[0]) ||
+      /\b(?:and|or|while|when|if|unless|can|may|must|shall|should|will|would|could)\b/i.test(prefix)) {
+    return predicates;
+  }
+  const nominal = predicates.slice(under.index);
+  const separate = /\b(and|or)\s+separate\b(?=\s+[a-z0-9-]+\s+[a-z0-9-]+)/i.exec(nominal);
+  if (!separate || EXTENDED_OBSERVABLE_PREDICATE_RE.test(nominal.slice(0, separate.index))) return predicates;
+  // Only this adjective is masked. A later "and records ...", a separate
+  // subject, and determiner-led object bundles retain their existing checks.
+  return prefix + nominal.slice(0, separate.index) +
+    nominal.slice(separate.index).replace(/^(and|or)\s+separate\b/i, '$1 modifier');
+}
+
 export function specBehaviorNonAtomicReason(rawBehavior: string): string | null {
   const lines = rawBehavior
     .split(/\r?\n/)
@@ -347,9 +368,9 @@ export function specBehaviorNonAtomicReason(rawBehavior: string): string | null 
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (/;\s*\S/.test(behavior)) return 'behavior contains multiple semicolon-separated assertions';
   if (/[.!?]\s+(?=[A-Z0-9])/.test(behavior)) return 'behavior contains multiple sentences';
-  const predicates = behavior
+  const predicates = maskNominalSeparate(behavior
     .replace(HYPHENATED_TOKEN_RE, (token) => token.replace(HYPHENATED_PREDICATE_COMPONENT_RE, 'modifier'))
-    .replace(ATTRIBUTIVE_PARTICIPLE_RE, '$1 modifier');
+    .replace(ATTRIBUTIVE_PARTICIPLE_RE, '$1 modifier'));
   if (MULTI_SUBJECT_SHARED_PREDICATE_RE.test(predicates)) {
     return 'behavior groups multiple subjects under one predicate';
   }

@@ -1476,6 +1476,37 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    "An ambiguous selected-step population receives a deterministic,exhaustive coverage classification under Design's primary-partition,diagnostic-flag and separate missing-work contract.",
+    'The classifier receives a classification under a primary partition and separate missing-work contract.',
+    'Each population receives a classification under the primary partition, diagnostic flag or separate missing-work contract.',
+  ])('allows nominal separate in a singular predicate prepositional list: %s', (behavior) => {
+    expect(specBehaviorNonAtomicReason(behavior)).toBeNull();
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause({ behavior })],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['atomic-observable-behavior'].rating).toBe('pass');
+  });
+
+  it.each([
+    'Workers receive the records and separate missing records.',
+    'The classifier receives the record and separates missing work.',
+    'Workers receive the records under a primary partition and separate missing records.',
+    'The classifier can receive the records under a primary partition and separate missing records.',
+    'The task receives the approved watchlist and a separate brief limit.',
+    "An ambiguous selected-step population receives a classification under Design's primary-partition,diagnostic-flag and separate missing-work contract and records the decision.",
+    'The classifier receives the record under a primary partition and the workers separate missing records.',
+    'An item receives a report while workers receive the records under a primary partition and separate missing records.',
+    'A classifier dismisses the record under a primary partition and separates missing records.',
+    'Workers dismiss a report under a primary partition and separate missing records.',
+  ])('keeps finite separate and independently observable outcomes visible: %s', (behavior) => {
+    expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
+  });
+
+  it.each([
     'The audit has exactly one evidence-based disposition and never counts queued or delivered as pickup.',
     'The audit completes the parked-agent census and records complete coverage.',
   ])('detects compound clauses whose verbs were previously missing from the detector: %s', (behavior) => {
