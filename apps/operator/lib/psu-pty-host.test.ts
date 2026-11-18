@@ -1450,7 +1450,7 @@ describe('current loop-fire provenance renewal (WI-6554700010048011)', () => {
     expect(appended).toEqual({
       ...original,
       ts: nowMs,
-      ttlMs: LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
+      ttlMs: LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS - (nowMs - issuedAtMs),
       loopFire: { routineId: 'routine-1', wakeCount: 17 },
     });
   });
@@ -1477,6 +1477,16 @@ describe('current loop-fire provenance renewal (WI-6554700010048011)', () => {
 });
 
 describe('wake provenance TTL guard (EI-18126834395314388)', () => {
+  it('does not let a recent renewal outlive the original enrollment deadline', () => {
+    const originalAtMs = 1_000_000;
+    const message = {
+      provenanceIssuedAtMs: originalAtMs + 60 * 60_000,
+      provenanceExpiresAtMs: originalAtMs + LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
+    };
+    expect(checkWakeProvenanceAge(message, { nowMs: message.provenanceExpiresAtMs }).expired).toBe(false);
+    expect(checkWakeProvenanceAge(message, { nowMs: message.provenanceExpiresAtMs + 1 }).expired).toBe(true);
+  });
+
   it('accepts the exact TTL boundary, rejects older and future timestamps, and preserves legacy senders', () => {
     const nowMs = 1_000_000;
     const ttl = WAKE_PROVENANCE_MAX_AGE_MS;
@@ -8972,6 +8982,93 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
     ]);
     expect(unjoined(h.events)).toEqual([]);
   });
+
+  it('renews an exact current loop fire that expires during a re-arm prompt wait', async () => {
+    let nowMs = 1_000_000;
+    const issuedAtMs = nowMs;
+    const events: Ev[] = [];
+    const message = {
+      mode: 'turn', ownerId: 'owner-1', routineId: 'routine-1', fireNumber: 17,
+      data: '⟦turn-origin:loop-fire nonce:0123456789abcdef⟧\nDelayed loop wake',
+      deliveryId: 'd-renewed', provenanceIssuedAtMs: issuedAtMs,
+    };
+    const row = {
+      sid: message.ownerId, nonce: '0123456789abcdef', origin: 'loop-fire',
+      sha256: 'a'.repeat(64), ts: issuedAtMs,
+      loopFire: { routineId: message.routineId, wakeCount: message.fireNumber },
+    };
+    const appendRow = vi.fn(async () => true);
+    const waitAtPrompt = vi.fn(async () => {
+      nowMs = issuedAtMs + WAKE_PROVENANCE_MAX_AGE_MS + 1;
+      return { deferred: waitAtPrompt.mock.calls.length === 1 };
+    });
+    const deliver = vi.fn(async () => ({ delivered: true }));
+    const controller = makeCarryRearmController({
+      acquireInject: async () => () => {}, waitAtPrompt, recycle: async () => {},
+      performDelivery: deliver,
+      getRearmExpiryReason: (candidate) => checkWakeProvenanceAge(candidate, { nowMs }).expired
+        ? 'provenance-expired' : null,
+      renewExpiredLoopFire: (candidate) => renewCurrentLoopFireProvenance(candidate, {
+        nowMs, readRows: async () => [row], appendRow,
+      }),
+      emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      capMs: 10,
+    });
+    expect(controller.schedule(message)).toBe('queued');
+    for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+
+    expect(appendRow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      nonce: row.nonce, ts: nowMs, loopFire: row.loopFire,
+    }));
+    expect(waitAtPrompt).toHaveBeenCalledTimes(2);
+    expect(deliver).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({
+      kind: 'wake-provenance-renewed', deliveryId: message.deliveryId,
+    }));
+    expect(events.filter((event) => TERMINAL.has(event.kind))).toEqual([
+      expect.objectContaining({ kind: 'wake-rearm-delivered', deliveryIds: [message.deliveryId] }),
+    ]);
+    expect(controller.pendingCount()).toBe(0);
+  });
+
+  it.each(['missing-row', 'wrong-fire', 'original-expired'])(
+    'keeps re-arm renewal fail-closed for %s', async (condition) => {
+      const originalAtMs = 1_000_000;
+      const issuedAtMs = condition === 'original-expired' ? originalAtMs + 50 * 60_000 : originalAtMs;
+      const nowMs = condition === 'original-expired'
+        ? originalAtMs + LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS + 1
+        : issuedAtMs + WAKE_PROVENANCE_MAX_AGE_MS + 1;
+      const row = {
+        sid: 'owner-1', nonce: '0123456789abcdef', origin: 'loop-fire', sha256: 'a'.repeat(64),
+        ts: issuedAtMs, loopFire: { routineId: 'routine-1', wakeCount: condition === 'wrong-fire' ? 18 : 17 },
+      };
+      const rows = condition === 'missing-row' ? [] : condition === 'original-expired'
+        ? [{ ...row, ts: originalAtMs }, row] : [row];
+      const appendRow = vi.fn(async () => true);
+      const deliver = vi.fn(async () => ({ delivered: true }));
+      const events: Ev[] = [];
+      const controller = makeCarryRearmController({
+        acquireInject: async () => () => {}, waitAtPrompt: async () => ({}), recycle: async () => {},
+        performDelivery: deliver,
+        getRearmExpiryReason: (candidate) => checkWakeProvenanceAge(candidate, { nowMs }).expired
+          ? 'provenance-expired' : null,
+        renewExpiredLoopFire: (candidate) => renewCurrentLoopFireProvenance(candidate, {
+          nowMs, readRows: async () => rows, appendRow,
+        }),
+        emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+      });
+      controller.schedule({ mode: 'turn', ownerId: 'owner-1', routineId: 'routine-1', fireNumber: 17,
+        data: '⟦turn-origin:loop-fire nonce:0123456789abcdef⟧\nDelayed loop wake',
+        deliveryId: 'd-refused', provenanceIssuedAtMs: issuedAtMs });
+      for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+      expect(appendRow).not.toHaveBeenCalled();
+      expect(deliver).not.toHaveBeenCalled();
+      expect(events).toContainEqual(expect.objectContaining({
+        kind: 'wake-rearm-dropped', reason: 'provenance-expired',
+      }));
+      expect(controller.pendingCount()).toBe(0);
+    },
+  );
 
   it('drops a turn re-arm that expires during a prompt wait before another safe-boundary wait', async () => {
     let nowMs = 1_000_000;

@@ -5680,6 +5680,9 @@ export function makeCarryRearmController({
   // carry-respawn, an expired turn must settle before another safe-boundary
   // wait because its final PTY write is no longer authorized.
   getRearmExpiryReason = /** @type {(_msg: any) => string | null} */ ((_msg) => null),
+  // Reuse the host's exact-row renewal for a current loop fire before the
+  // re-arm expiry fence discards it. Ordinary turns retain their short TTL.
+  renewExpiredLoopFire = /** @type {null | ((message: any) => Promise<number | null>)} */ (null),
   // Age may not expire a production continuation. Epoch supersession MUST:
   // an obsolete request must neither suppress wakes nor replace its successor.
   isSuperseded = (_msg) => false,
@@ -6000,8 +6003,25 @@ export function makeCarryRearmController({
           settle(key, { delivered: false, reason });
           return true;
         };
-        const dropExpired = (candidate) => {
-          const reason = getRearmExpiryReason(candidate);
+        const dropExpired = async (candidate) => {
+          let reason = getRearmExpiryReason(candidate);
+          if (reason === 'provenance-expired' && candidate?.mode === 'turn' && renewExpiredLoopFire) {
+            const priorIssuedAtMs = candidate.provenanceIssuedAtMs;
+            let renewedAtMs = null;
+            try { renewedAtMs = await renewExpiredLoopFire(candidate); } catch { /* keep expiry fail-closed */ }
+            if (typeof renewedAtMs === 'number' && Number.isFinite(renewedAtMs) && renewedAtMs > priorIssuedAtMs) {
+              candidate.provenanceIssuedAtMs = renewedAtMs;
+              emitEvent('wake-provenance-renewed', {
+                deliveryId: candidate.deliveryId ?? null,
+                routineId: candidate.routineId ?? null,
+                fireNumber: candidate.fireNumber ?? null,
+                provenanceIssuedAtMs: renewedAtMs,
+                priorAgeMs: renewedAtMs - priorIssuedAtMs,
+                phase: 'rearm',
+              });
+              reason = getRearmExpiryReason(candidate);
+            }
+          }
           if (!reason) return false;
           emitEvent(droppedKind, {
             ...extra, ...dropDiagnostics(), rearmed: true, reason,
@@ -6016,7 +6036,7 @@ export function makeCarryRearmController({
             if (disposed) return;
             reportIfStalled();
             const beforeLock = latest.get(key) ?? msg;
-            if (dropSuperseded(beforeLock) || dropExpired(beforeLock)) return;
+            if (dropSuperseded(beforeLock) || await dropExpired(beforeLock)) return;
             const release = await acquireInject();
             if (disposed) {
               release();
@@ -6033,12 +6053,12 @@ export function makeCarryRearmController({
               if (disposed) return;
               // Check BEFORE waiting on the successor's output. Otherwise an
               // obsolete retry can retain pending wake suppression indefinitely.
-              if (dropSuperseded(current) || dropExpired(current)) return;
+              if (dropSuperseded(current) || await dropExpired(current)) return;
               if (waitIdle) {
                 const idle = await waitIdle();
                 if (disposed) return;
                 const afterIdle = latest.get(key) ?? current;
-                if (dropSuperseded(afterIdle) || dropExpired(afterIdle)) return;
+                if (dropSuperseded(afterIdle) || await dropExpired(afterIdle)) return;
                 if (idle?.deferred) {
                   deferReason = idle.reason || 'owner-input-cap';
                   await yieldAfterDefer();
@@ -6049,7 +6069,7 @@ export function makeCarryRearmController({
                 const clear = waitForOwnerInputClear ? await waitForOwnerInputClear() : null;
                 if (disposed) return;
                 const afterOwnerInput = latest.get(key) ?? current;
-                if (dropSuperseded(afterOwnerInput) || dropExpired(afterOwnerInput)) return;
+                if (dropSuperseded(afterOwnerInput) || await dropExpired(afterOwnerInput)) return;
                 if (clear?.deferred || hasPendingOwnerInput()) {
                   deferReason = clear?.reason || 'owner-input-cap';
                   await yieldAfterDefer();
@@ -6064,7 +6084,7 @@ export function makeCarryRearmController({
               wakeModePauseReason = await carryWakeModePauseReason(current);
               if (disposed) return;
               const beforePrompt = latest.get(key) ?? current;
-              if (dropSuperseded(beforePrompt) || dropExpired(beforePrompt)) return;
+              if (dropSuperseded(beforePrompt) || await dropExpired(beforePrompt)) return;
               if (wakeModePauseReason) deferReason = wakeModePauseReason;
               if (!wakeModePauseReason) {
                 atPrompt = await waitAtPrompt(capMs, current);
@@ -6075,7 +6095,7 @@ export function makeCarryRearmController({
                   verifierReason = atPrompt.verifier;
                 }
                 const afterPrompt = latest.get(key) ?? current;
-                if (dropSuperseded(afterPrompt) || dropExpired(afterPrompt)) return;
+                if (dropSuperseded(afterPrompt) || await dropExpired(afterPrompt)) return;
                 // The owner may have started composing during the prompt wait.
                 if (hasPendingOwnerInput()) {
                   // Re-enter through the composer wait AND a fresh prompt check.
@@ -6090,7 +6110,7 @@ export function makeCarryRearmController({
                 }
                 wakeModePauseReason = await carryWakeModePauseReason(latest.get(key) ?? current);
                 if (disposed) return;
-                if (dropExpired(latest.get(key) ?? current)) return;
+                if (await dropExpired(latest.get(key) ?? current)) return;
                 if (wakeModePauseReason) deferReason = wakeModePauseReason;
               }
               if (!wakeModePauseReason) {
@@ -6105,7 +6125,7 @@ export function makeCarryRearmController({
                 // reading a stale `current` here would cut in the older carry
                 // even though a fresher one had already arrived.
                 const deliver = latest.get(key) ?? current;
-                if (dropExpired(deliver)) return;
+                if (await dropExpired(deliver)) return;
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
@@ -7393,7 +7413,11 @@ export function checkWakeProvenanceAge(message, {
   if (issuedAtMs == null) return { checked: false, expired: false, ageMs: null };
   if (!Number.isFinite(issuedAtMs) || issuedAtMs <= 0) return { checked: true, expired: true, ageMs: null };
   const ageMs = nowMs - issuedAtMs;
-  return { checked: true, expired: ageMs < 0 || ageMs > maxAgeMs, ageMs };
+  // This private deadline is set only after exact-row renewal. It can tighten
+  // the short TTL, never relax it or be supplied by the decoded wire envelope.
+  const expiresAtMs = message?.provenanceExpiresAtMs;
+  const pastRenewalDeadline = Number.isFinite(expiresAtMs) && nowMs > expiresAtMs;
+  return { checked: true, expired: ageMs < 0 || ageMs > maxAgeMs || pastRenewalDeadline, ageMs };
 }
 
 /** Parse the additive quota-recovery descriptor carried only by a durable
@@ -10639,14 +10663,26 @@ export async function renewCurrentLoopFireProvenance(message, {
     !row.loopFire || row.loopFire.routineId !== routineId || row.loopFire.wakeCount !== fireNumber
   ))) return null;
 
+  // A queued fire may need several short-TTL renewals. Anchor their total
+  // lifetime to its original enrollment, which the ledger retains through
+  // this horizon, rather than extending authorization on every retry.
+  const originalIssuedAtMs = Math.min(...rows.filter((candidate) =>
+    candidate?.sid === sid && candidate.nonce === row.nonce && candidate.origin === row.origin &&
+    candidate.sha256 === row.sha256 && Number.isFinite(candidate.ts))
+    .map((candidate) => candidate.ts));
+  if (!Number.isFinite(originalIssuedAtMs) ||
+      nowMs - originalIssuedAtMs > LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS) return null;
+
   const renewed = {
     ...row,
     ts: nowMs,
-    ttlMs: LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS,
+    ttlMs: originalIssuedAtMs + LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS - nowMs,
     loopFire: row.loopFire ?? { routineId, wakeCount: fireNumber },
   };
   try {
-    return await appendRow(renewed) === true ? nowMs : null;
+    if (await appendRow(renewed) !== true) return null;
+    message.provenanceExpiresAtMs = originalIssuedAtMs + LOOP_FIRE_PROVENANCE_RENEWAL_MAX_AGE_MS;
+    return nowMs;
   } catch {
     return null;
   }
@@ -15341,6 +15377,11 @@ export function hostThroughPty(o) {
     getRearmExpiryReason: (msg) => {
       if (msg?.mode !== 'turn') return null;
       return wakeProvenanceRejection(msg)?.rejection ?? null;
+    },
+    renewExpiredLoopFire: async (msg) => {
+      if (!msg?.routineId || !Number.isInteger(msg.fireNumber) ||
+          !staleFireGuard.compare(msg.routineId, msg.fireNumber).admit) return null;
+      return renewCurrentLoopFireProvenance(msg);
     },
     isSuperseded: (msg) =>
       msg !== lastRespawnCarryRequest &&
