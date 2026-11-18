@@ -651,6 +651,216 @@ export async function readBugInflowDaily(
   return shapeBugInflow(rows, { now, windowDays });
 }
 
+// Reuse the existing text-artifact store, as the roster audit does. Content
+// addresses retain previous snapshots, receipts and failed epochs across restart;
+// they are integrity witnesses, never authenticated authorship or history proof.
+const R11_EVIDENCE_PREFIX = 'evidence/bug-backlog-inflow-and-duplicate-review-2026-11-13/p012/stored/';
+const r11Digest = (content: string) => createHash('sha256').update(content).digest('hex');
+
+async function storeR11Evidence(kind: string, value: unknown, sql: Sql): Promise<string> {
+  const content = canonicalJson({
+    schemaVersion: 'bug-scoreboard-evidence-v1', kind,
+    workspaceId: R11_METRIC_REGISTRY.population.workspaceId,
+    harnessSlug: R11_METRIC_REGISTRY.population.harnessSlug,
+    registryHash: R11_METRIC_REGISTRY_HASH, value,
+  });
+  const ref = `${R11_EVIDENCE_PREFIX}${kind}/${r11Digest(content)}.json`;
+  await sql.unsafe(`INSERT INTO harness_shared.harness_text_artifacts
+    (workspace_id, harness_slug, rel_path, content, updated_at) VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (harness_slug, rel_path) DO NOTHING`, [
+    R11_METRIC_REGISTRY.population.workspaceId, R11_METRIC_REGISTRY.population.harnessSlug,
+    ref, content, Date.now(),
+  ]);
+  // Also detects a cross-workspace primary-key collision without overwriting it.
+  await loadR11Evidence(ref, kind, sql);
+  return ref;
+}
+
+async function loadR11Evidence(ref: string, kind: string, sql: Sql): Promise<unknown> {
+  const prefix = `${R11_EVIDENCE_PREFIX}${kind}/`;
+  if (!ref.startsWith(prefix) || !ref.endsWith('.json') ||
+      !r11Hash(ref.slice(prefix.length, -5))) throw new Error('invalid R11 evidence identity');
+  const rows = await sql.unsafe(`SELECT content FROM harness_shared.harness_text_artifacts
+    WHERE workspace_id = $1 AND harness_slug = $2 AND rel_path = $3`, [
+    R11_METRIC_REGISTRY.population.workspaceId, R11_METRIC_REGISTRY.population.harnessSlug, ref,
+  ]) as unknown as Array<{ content: string }>;
+  if (rows.length !== 1 || r11Digest(rows[0].content) !== ref.slice(prefix.length, -5))
+    throw new Error(`R11 evidence missing or changed: ${ref}`);
+  const record: unknown = JSON.parse(rows[0].content);
+  if (!r11Record(record) || record.schemaVersion !== 'bug-scoreboard-evidence-v1' ||
+      record.kind !== kind || record.registryHash !== R11_METRIC_REGISTRY_HASH ||
+      record.workspaceId !== R11_METRIC_REGISTRY.population.workspaceId ||
+      record.harnessSlug !== R11_METRIC_REGISTRY.population.harnessSlug)
+    throw new Error(`R11 evidence scope or registry mismatch: ${ref}`);
+  return record.value;
+}
+
+export interface R11SourceRow {
+  itemId: string;
+  /** The complete database row, including retained payload evidence. No preview. */
+  record: Record<string, unknown>;
+}
+interface R11SourceSnapshot {
+  capturedAt: string;
+  qualification: 'row-snapshot-only';
+  rows: R11SourceRow[];
+}
+
+/** One MVCC statement freezes the COMPLETE exact population. No SQL LIMIT or
+ * mutable keyset can strand a row inserted behind the consumer's cursor.
+ * A row snapshot does not establish complete close/reopen/reviewer history. */
+export async function freezeBugScoreboardSource(opts: { now?: Date; sql?: Sql } = {}): Promise<{
+  ref: string; sha256: string; totalRows: number; capturedAt: string;
+}> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql.unsafe(`SELECT w.feature_id AS item_id, to_jsonb(w) AS record
+    FROM harness_shared.work_items w
+    WHERE w.workspace_id = $1 AND w.harness_slug = $2 AND w.item_kind = 'bug'
+      AND w.lane IS DISTINCT FROM 'observation'
+    ORDER BY w.feature_id COLLATE "C"`, [
+    R11_METRIC_REGISTRY.population.workspaceId, R11_METRIC_REGISTRY.population.harnessSlug,
+  ]) as unknown as Array<{ item_id: string; record: Record<string, unknown> }>;
+  const capturedAt = (opts.now ?? new Date()).toISOString();
+  const snapshot: R11SourceSnapshot = {
+    capturedAt, qualification: 'row-snapshot-only',
+    rows: rows.map(row => ({ itemId: row.item_id, record: row.record })),
+  };
+  const ref = await storeR11Evidence('source', snapshot, sql);
+  return { ref, sha256: ref.slice(-69, -5), totalRows: rows.length, capturedAt };
+}
+
+export interface R11SourcePage {
+  ref: string; capturedAt: string; qualification: 'row-snapshot-only';
+  totalRows: number; rowsRead: number; omitted: number; nextCursor: string | null;
+  rows: R11SourceRow[];
+}
+
+async function loadR11SourceSnapshot(ref: string, sql: Sql): Promise<R11SourceSnapshot> {
+  const raw = await loadR11Evidence(ref, 'source', sql);
+  if (!r11Record(raw) || !Array.isArray(raw.rows) || raw.qualification !== 'row-snapshot-only' ||
+      typeof raw.capturedAt !== 'string' || !Number.isFinite(r11Time(raw.capturedAt)))
+    throw new Error('invalid R11 source snapshot');
+  const ids = new Set<string>();
+  for (const row of raw.rows) {
+    if (!r11Record(row) || !r11Text(row.itemId) || ids.has(row.itemId) || !r11Record(row.record) ||
+        row.record.feature_id !== row.itemId || row.record.workspace_id !== R11_METRIC_REGISTRY.population.workspaceId ||
+        row.record.harness_slug !== R11_METRIC_REGISTRY.population.harnessSlug || row.record.item_kind !== 'bug' ||
+        row.record.lane === 'observation') throw new Error('invalid R11 source population');
+    ids.add(row.itemId);
+  }
+  return raw as unknown as R11SourceSnapshot;
+}
+
+function pageR11Source(ref: string, raw: R11SourceSnapshot, opts: { cursor?: string; pageSize?: number }): R11SourcePage {
+  const size = opts.pageSize ?? 200;
+  if (!Number.isSafeInteger(size) || size < 1) throw new Error('R11 pageSize must be a positive safe integer');
+  const digest = ref.slice(-69, -5);
+  let offset = 0;
+  if (opts.cursor !== undefined) {
+    const parts = opts.cursor.split(':');
+    if (parts.length !== 2 || parts[0] !== digest || !/^(0|[1-9][0-9]*)$/.test(parts[1]))
+      throw new Error('R11 cursor does not belong to this frozen source');
+    offset = Number(parts[1]);
+  }
+  if (!Number.isSafeInteger(offset) || offset > raw.rows.length) throw new Error('R11 cursor offset outside source');
+  const end = size >= raw.rows.length - offset ? raw.rows.length : offset + size;
+  return {
+    ref, capturedAt: raw.capturedAt, qualification: 'row-snapshot-only',
+    totalRows: raw.rows.length, rowsRead: end, omitted: raw.rows.length - end,
+    nextCursor: end < raw.rows.length ? `${digest}:${end}` : null,
+    rows: raw.rows.slice(offset, end),
+  };
+}
+
+/** Page size bounds work/display, never truth. The cursor binds the immutable
+ * full source and the exact next offset; it remains usable by a new process. */
+export async function readBugScoreboardSourcePage(ref: string, opts: {
+  cursor?: string; pageSize?: number; sql?: Sql;
+} = {}): Promise<R11SourcePage> {
+  if (opts.pageSize !== undefined && (!Number.isSafeInteger(opts.pageSize) || opts.pageSize < 1))
+    throw new Error('R11 pageSize must be a positive safe integer');
+  return pageR11Source(ref, await loadR11SourceSnapshot(ref, opts.sql ?? getOrgPg().sql), opts);
+}
+
+/** The production consumer follows EVERY page, including an exact-size last
+ * page. A caller that intentionally pauses retains nextCursor and source ref. */
+export async function readBugScoreboardSource(ref: string, opts: { pageSize?: number; sql?: Sql } = {}): Promise<R11SourcePage> {
+  const snapshot = await loadR11SourceSnapshot(ref, opts.sql ?? getOrgPg().sql);
+  const rows: R11SourceRow[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = pageR11Source(ref, snapshot, { ...opts, cursor });
+    for (const row of page.rows) rows.push(row);
+    if (page.nextCursor === null) return { ...page, rows };
+    cursor = page.nextCursor;
+  }
+}
+
+interface R11StoredManifest {
+  input: Omit<BugInflowScoreboardInput, 'receipts'>;
+  receipts: Array<{ writerRef: string; independentRef?: string }>;
+}
+
+/** Persist producer records and independent packets separately. Neither the
+ * caller's authorId nor its claimed lineage becomes an authentication receipt. */
+export async function persistBugScoreboardEvidence(input: BugInflowScoreboardInput,
+  opts: { sql?: Sql } = {}): Promise<{ manifestRef: string; receiptRefs: string[] }> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  if (input.registryHash !== R11_METRIC_REGISTRY_HASH) throw new Error('R11 metric registry mismatch');
+  const { receipts, ...header } = input;
+  const stored: R11StoredManifest = { input: header, receipts: [] };
+  for (const receipt of receipts) {
+    const { independent, ...writer } = receipt;
+    const writerRef = await storeR11Evidence('receipt', writer, sql);
+    const independentRef = independent ? await storeR11Evidence('independent', independent, sql) : undefined;
+    stored.receipts.push({ writerRef, ...(independentRef ? { independentRef } : {}) });
+  }
+  return { manifestRef: await storeR11Evidence('manifest', stored, sql), receiptRefs: stored.receipts.map(r => r.writerRef) };
+}
+
+/** Retained-artifact transport to the existing assessor. A production resolver
+ * must authenticate independent authorship AND qualify capture continuity before
+ * supplying host-resolved independent inputs; stored self-claims are stripped.
+ * This reader therefore cannot certify a row snapshot as historical evidence. */
+export async function readStoredBugScoreboard(manifestRef: string, opts: {
+  now?: Date; sql?: Sql; pageSize?: number;
+} = {}): Promise<R11ScoreboardAssessment> {
+  const now = opts.now ?? new Date(), sql = opts.sql ?? getOrgPg().sql;
+  const unknown = () => assessBugInflowScoreboard(undefined, now);
+  try {
+    const raw = await loadR11Evidence(manifestRef, 'manifest', sql);
+    if (!r11Record(raw) || !r11Record(raw.input) || !Array.isArray(raw.receipts)) throw new Error('invalid R11 manifest');
+    const input = { ...raw.input, receipts: [] } as unknown as BugInflowScoreboardInput;
+    const refs: string[] = [];
+    for (const entry of raw.receipts) {
+      if (!r11Record(entry) || !r11Text(entry.writerRef)) throw new Error('invalid R11 receipt reference');
+      refs.push(entry.writerRef);
+      const writer = await loadR11Evidence(entry.writerRef, 'receipt', sql);
+      if (!r11Record(writer) || !r11Record(writer.source) || !r11Text(writer.source.ref)) throw new Error('invalid R11 writer receipt');
+      const source = await readBugScoreboardSource(writer.source.ref, { sql, pageSize: opts.pageSize });
+      if (source.totalRows !== writer.source.totalRows || writer.source.sha256 !== writer.source.ref.slice(-69, -5))
+        throw new Error('R11 source count or hash mismatch');
+      if (entry.independentRef !== undefined) {
+        if (!r11Text(entry.independentRef)) throw new Error('invalid R11 independent reference');
+        // Verify the actual packet bytes, while refusing its self-asserted author/lineage.
+        await loadR11Evidence(entry.independentRef, 'independent', sql);
+        refs.push(entry.independentRef);
+      }
+      const { independent: _untrusted, ...retained } = writer;
+      input.receipts.push(retained as unknown as R11ScoreboardReceipt);
+    }
+    const assessment = assessBugInflowScoreboard(input, now);
+    assessment.retainedReceiptRefs.push(...refs);
+    assessment.reasons.push('row snapshots do not qualify event-history continuity; independent artifact authorship is unverified');
+    return assessment;
+  } catch (error) {
+    const assessment = unknown();
+    assessment.reasons.push(error instanceof Error ? error.message : 'R11 retained evidence unreadable');
+    assessment.retainedReceiptRefs.push(manifestRef);
+    return assessment;
+  }
+}
+
 /** One line for the fleet brief: "inflow 7d: filed 812 (watchdog 530, role:su 190, …) vs closed 640 (done 410, dropped 230) · net +172". */
 export function formatBugInflowLine(r: BugInflowReading, topSources = 4): string {
   if (r.assessment === 'unmeasured') return `bug inflow: unmeasured — ${r.reasons[0] ?? 'no stored rows'}`;
