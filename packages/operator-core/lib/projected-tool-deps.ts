@@ -27,6 +27,7 @@ import {
   withPriorityOrgPg,
 } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
+import { boundedOrgTxn, ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS } from './pg-bounded-txn';
 import {
   CODE_INTEL_RESULT_METADATA_KEY,
   classifyCodeIntelExit,
@@ -1325,8 +1326,15 @@ const reserveQuotaImpl: NonNullable<DispatchProjectedDeps['reserveQuota']> = asy
   row.params[12] = 'pending';
   row.params[19] = jsonbSafeStringify({ ...JSON.parse(String(row.params[19] ?? '{}')),
     quotaReservation: { callId, state: 'reserved' } });
-  const { sql } = getOrgPg();
-  const admitted = await sql.begin(async tx => {
+  // A response race alone leaves an abandoned SQL waiter in the pool. Reuse
+  // the host's cancellable transaction seam, including its acquisition bound.
+  const remainingMs = Math.min(ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS,
+    (ctx.deadlineAtMs ?? Infinity) - Date.now(),
+    (ctx.executionDeadlineAtMs ?? Infinity) - Date.now());
+  request.signal.throwIfAborted();
+  if (remainingMs <= 0) throw new Error('Quota admission deadline expired');
+  const signal = AbortSignal.any([request.signal, AbortSignal.timeout(Math.ceil(remainingMs))]);
+  const admitted = await boundedOrgTxn(async tx => {
     await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
     await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
       [JSON.stringify(['tool-quota', row.workspaceId, toolName, ctx.role ?? '', windowKey])]);
@@ -1338,15 +1346,19 @@ const reserveQuotaImpl: NonNullable<DispatchProjectedDeps['reserveQuota']> = asy
     const count = rows[0]?.n;
     if (typeof count !== 'number') throw new Error('Atomic quota count is unavailable');
     if (count >= limit) return { allowed: false as const, count };
+    signal.throwIfAborted();
     const inserted = await tx.unsafe<{ id: string }[]>(TELEMETRY_INSERT_SQL,
       row.params as unknown as Parameters<typeof tx.unsafe>[1]);
     if (!inserted[0]?.id) throw new Error('Atomic quota reservation was not persisted');
     return { allowed: true as const, id: inserted[0].id };
-  });
+  }, { signal, acquireTimeoutMs: remainingMs, acquireRetries: 0, connectionSetupRetries: 0,
+    statementTimeoutMs: remainingMs, lockTimeoutMs: remainingMs, phase: 'quota-admission' });
   if (!admitted.allowed) return admitted;
   let settlement: Promise<void> | undefined;
   return { allowed: true, invocationRef: 'tool-invocation:' + admitted.id,
-    settle: outcome => settlement ??= sql.begin(async tx => {
+    // A dead process leaves a conservative reserved row for this window. A
+    // failed settlement is memoized: it cannot authorize an in-process replay.
+    settle: outcome => settlement ??= boundedOrgTxn(async tx => {
       await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [row.workspaceId]);
       const rows = await tx.unsafe<{ id: string }[]>(`UPDATE harness_shared.tool_invocations
         SET metadata_json=jsonb_set(metadata_json, '{quotaReservation,state}', to_jsonb($4::text))
@@ -1355,7 +1367,7 @@ const reserveQuotaImpl: NonNullable<DispatchProjectedDeps['reserveQuota']> = asy
           AND metadata_json->'quotaReservation'->>'state'='reserved' RETURNING id::text`,
       [row.workspaceId, admitted.id, callId, outcome === 'commit' ? 'committed' : 'released']);
       if (!rows[0]?.id) throw new Error('Quota reservation settlement was not persisted');
-    }),
+    }, { acquireRetries: 0, connectionSetupRetries: 0, phase: 'quota-settlement' }),
   };
 };
 

@@ -272,6 +272,45 @@ describe('original invocation ledger (real Postgres)', () => {
     expect((await read(reservation.invocationRef!)).metadata_json.quotaReservation.state).toBe('released');
   });
 
+  it('counts orphaned reservations at the quota boundary and restores capacity in a new window', async () => {
+    const req = request();
+    const windowKey = randomUUID();
+    const reserve = (window = windowKey) => PROJECTED_DEPS.reserveQuota!({ ...req,
+      callId: randomUUID(), windowKey: window, limit: 2, signal: req.ctx.signal! });
+    const first = await reserve();
+    expect(first.allowed).toBe(true);
+    expect(await PROJECTED_DEPS.readQuotaState!(req.toolName, req.ctx, windowKey)).toEqual({ count: 1 });
+    const second = await reserve();
+    expect(second.allowed).toBe(true);
+    // Simulate process death: neither of the existing claims is settled.
+    expect(await PROJECTED_DEPS.readQuotaState!(req.toolName, req.ctx, windowKey)).toEqual({ count: 2 });
+    expect(await reserve()).toEqual({ allowed: false, count: 2 });
+    const next = await reserve(randomUUID());
+    expect(next.allowed).toBe(true);
+    if (next.allowed) await next.settle('release');
+    expect(await PROJECTED_DEPS.readQuotaState!(req.toolName, req.ctx, windowKey)).toEqual({ count: 2 });
+  });
+
+  it('memoizes failed settlement even after its persisted join becomes available again', async () => {
+    const req = request();
+    const windowKey = randomUUID();
+    const reservation = await PROJECTED_DEPS.reserveQuota!({ ...req, windowKey,
+      limit: 1, signal: req.ctx.signal! });
+    if (!reservation.allowed) throw new Error('fixture reservation refused');
+    const id = reservation.invocationRef!.substring('tool-invocation:'.length);
+    await db.adminSql`UPDATE harness_shared.tool_invocations
+      SET metadata_json=jsonb_set(metadata_json, '{quotaReservation,callId}', '"different-call"'::jsonb)
+      WHERE workspace_id=${workspaceId} AND id=${id}::bigint`;
+    const failed = reservation.settle('release');
+    await expect(failed).rejects.toThrow('Quota reservation settlement was not persisted');
+    await db.adminSql`UPDATE harness_shared.tool_invocations
+      SET metadata_json=jsonb_set(metadata_json, '{quotaReservation,callId}', to_jsonb(${req.callId}::text))
+      WHERE workspace_id=${workspaceId} AND id=${id}::bigint`;
+    expect(reservation.settle('release')).toBe(failed);
+    await expect(reservation.settle('release')).rejects.toThrow('Quota reservation settlement was not persisted');
+    expect(await PROJECTED_DEPS.readQuotaState!(req.toolName, req.ctx, windowKey)).toEqual({ count: 1 });
+  });
+
   it.each(['cancel', 'deadline'] as const)('disposes a quota lock waiter on %s without persisting a claim', async mode => {
     const req = request();
     const windowKey = randomUUID();

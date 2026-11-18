@@ -101,6 +101,22 @@ describe('IDOP D-043 immutable host authority read inputs', () => {
     expect(await result.ports.getFlag('papercusp-capability-envelope', 'system')).toBe(true);
   });
 
+  it('preserves explicit undefined context fields and distinguishes them from absent fields', async () => {
+    const original = { ...ctx(), advSessionId: undefined };
+    const missing = ctx();
+    const captured = await captureIdopP001HostPermissionPorts({ ...options(), contexts: [original] }, readers());
+    for (const replay of [captured, replayIdopP001HostPermissionSnapshot(captured.snapshot, captured.sha256)]) {
+      expect(Object.hasOwn(replay.contexts[0]!, 'advSessionId')).toBe(true);
+      expect(replay.contexts[0]!.advSessionId).toBeUndefined();
+      expect(await replay.ports.resolveConfinement(original)).toMatchObject({ imposedBy: 'original-launcher' });
+      expect(() => replay.ports.resolveConfinement(missing)).toThrow(/context was not captured/);
+    }
+    const absent = await captureIdopP001HostPermissionPorts({ ...options(), contexts: [missing] }, readers());
+    expect(Object.hasOwn(absent.contexts[0]!, 'advSessionId')).toBe(false);
+    expect(absent.sha256).not.toBe(captured.sha256);
+    expect(() => absent.ports.resolveConfinement(original)).toThrow(/context was not captured/);
+  });
+
   it('reloads persisted envelope authority without live readers and isolates both source arms', async () => {
     const source = readers();
     const saved = await captureIdopP001HostPermissionPorts(options(), source);

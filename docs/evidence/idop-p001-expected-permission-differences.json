@@ -11,6 +11,14 @@
         "identity-definitions-own-policy-2026-10-17#D-043"
       ],
       "differences": []
+    },
+    {
+      "id": "private-self-host-envelope-and-arguments",
+      "expectation": "D-043 requires unchanged role-envelope and argument-confinement decisions for the original authenticated private-host SELF call to dev:telemetry host-permission-inputs. No difference is authorized in this scope. This scope covers only that caller and those captured read inputs; it does not certify other callers, roles, worn stacks, tool arguments, vault behavior or the full runtime population.",
+      "authorityRefs": [
+        "identity-definitions-own-policy-2026-10-17#D-043"
+      ],
+      "differences": []
     }
   ]
 }

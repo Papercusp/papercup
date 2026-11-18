@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { getOrgPg } from '@papercusp/db-org';
 import { IDOP_P001_BASELINE_REL, loadIdopP001DispatchPermissionReader, loadIdopP001RolePermissionReader,
+  readIdopP001ExpectedPermissionDifferences, replayIdopP001HostPermissionSnapshot,
   replayIdopP001KernelPermissionSnapshot, runIdopP001PermissionComparison } from './idop-p001-baseline';
 import { idopAuthorityData, idopAuthorityValue, type PermissionInputJson } from './permission-input-data';
 
@@ -48,8 +49,9 @@ async function main() {
     await client.listTools(undefined, { timeout: 30_000 });
     const call = async (name: string, args: Record<string, unknown>) => jsonContent(
       await client.callTool({ name, arguments: args }, undefined, { timeout: 60_000 }));
-    let capture = await call('dev_telemetry', { view: 'kernel-permission-inputs', payloadTier: 'full' });
-    if (capture.schemaVersion === 'papercusp.output-envelope/v1') {
+    const readCapture = async (view: 'kernel-permission-inputs' | 'host-permission-inputs') => {
+      let capture = await call('dev_telemetry', { view, payloadTier: 'full' });
+      if (capture.schemaVersion !== 'papercusp.output-envelope/v1') return capture;
       assert.equal(capture.state, 'incomplete');
       assert.ok(Array.isArray(capture.content));
       assert.equal(capture.content.length, 1);
@@ -74,7 +76,9 @@ async function main() {
       assert.equal(bytes.length, reference.byteCount);
       assert.equal(createHash('sha256').update(bytes).digest('hex'), reference.sha256);
       capture = jsonContent(JSON.parse(bytes.toString('utf8')));
-    }
+      return capture;
+    };
+    const capture = await readCapture('kernel-permission-inputs');
     assert.equal(capture.ok, true);
     assert.equal(capture.scope, 'original-host-self-kernel-permission-inputs');
     const provenance = object(capture.provenance);
@@ -99,17 +103,20 @@ async function main() {
     const [server] = await sql`SELECT inet_server_port() AS port`;
     assert.equal(Number(server.port), Number(env.PAPERCUSP_PG_PORT));
     assert.equal(typeof request.callId, 'string');
-    const invocations = await sql<{ id: string; invokedAt: string; status: string;
-      ownerId: string; metadata: Record<string, unknown> }[]>`
-      SELECT id::text, invoked_at::text AS "invokedAt", status,
-        coord_owner_id AS "ownerId", metadata_json AS metadata
-      FROM harness_shared.tool_invocations
-      WHERE workspace_id=${workspace} AND coord_owner_id=${provenance.ownerId as string}
-        AND tool_name='dev:telemetry'
-        AND metadata_json->'originalInvocation'->>'callId'=${request.callId!}
-      ORDER BY id LIMIT 2`;
-    assert.equal(invocations.length, 1, 'kernel capture must bind one original invocation');
-    const invocation = invocations[0]!;
+    const readInvocation = async (callId: string) => {
+      const rows = await sql<{ id: string; invokedAt: string; status: string;
+        ownerId: string; metadata: Record<string, unknown> }[]>`
+        SELECT id::text, invoked_at::text AS "invokedAt", status,
+          coord_owner_id AS "ownerId", metadata_json AS metadata
+        FROM harness_shared.tool_invocations
+        WHERE workspace_id=${workspace} AND coord_owner_id=${provenance.ownerId as string}
+          AND tool_name='dev:telemetry'
+          AND metadata_json->'originalInvocation'->>'callId'=${callId}
+        ORDER BY id LIMIT 2`;
+      assert.equal(rows.length, 1, 'capture must bind one original invocation');
+      return rows[0]!;
+    };
+    const invocation = await readInvocation(request.callId!);
     assert.equal(invocation.status, 'ok');
     assert.ok(Number.isFinite(Date.parse(invocation.invokedAt)));
     const observed = object(invocation.metadata.originalInvocation);
@@ -167,10 +174,82 @@ async function main() {
       before: (_input, id) => evaluate(baseline.base.commit, layerOf(id)),
       after: (_input, id) => evaluate('working-tree', layerOf(id)), manifest: [] });
     assert.equal(comparison.passed, true, JSON.stringify(comparison));
+
+    // Capture the same authenticated SELF's ORIGINAL host inputs separately.
+    // Contexts from two calls are not interchangeable: dispatchCallId and other
+    // request fields must remain bound to the call that supplied each snapshot.
+    const hostCapture = await readCapture('host-permission-inputs');
+    assert.equal(hostCapture.ok, true);
+    assert.equal(hostCapture.scope, 'original-host-self-permission-inputs');
+    const hostProvenance = object(hostCapture.provenance);
+    assert.equal(hostProvenance.ownerId, provenance.ownerId);
+    assert.equal(hostProvenance.workspaceId, workspace);
+    assert.deepEqual(hostProvenance.runtime, provenance.runtime);
+    assert.equal(typeof hostCapture.sha256, 'string');
+    const hostReplay = () => replayIdopP001HostPermissionSnapshot(hostCapture.snapshot, hostCapture.sha256 as string);
+    const originalHost = hostReplay();
+    assert.equal(originalHost.contexts.length, 1);
+    const hostContext = originalHost.contexts[0]!;
+    assert.equal(hostContext.uiClientId, provenance.ownerId);
+    assert.equal(hostContext.workspaceId, workspace);
+    assert.equal(hostContext.isSuperuser, true);
+    assert.equal(typeof hostContext.dispatchCallId, 'string');
+    assert.notEqual(hostContext.dispatchCallId, request.callId);
+    const hostInvocation = await readInvocation(hostContext.dispatchCallId!);
+    assert.equal(hostInvocation.status, 'ok');
+    const hostObserved = object(hostInvocation.metadata.originalInvocation);
+    assert.equal(hostObserved.callId, hostContext.dispatchCallId);
+    assert.deepEqual(hostObserved.runtime, observed.runtime);
+    const hostPermission = object(hostObserved.permissionContext);
+    assert.equal(hostPermission.scope, 'original-dispatch-context-projection');
+    assert.equal(hostPermission.status, 'captured');
+    const hostData = hostPermission.data as PermissionInputJson;
+    assert.equal(createHash('sha256').update(JSON.stringify(hostData)).digest('hex'), hostPermission.sha256);
+    const hostProjection = object(idopAuthorityValue(hostData));
+    assert.deepEqual(hostPermission.keys, Object.keys(hostProjection).sort());
+    for (const key of Object.keys(hostProjection)) {
+      assert.equal(Object.hasOwn(hostContext, key), true, `host original presence: ${key}`);
+      assert.deepEqual(hostProjection[key], hostContext[key as keyof typeof hostContext], `host original value: ${key}`);
+    }
+    assert.throws(() => originalHost.ports.resolveConfinement({ ...hostContext, uiClientId: 'uncaptured-owner' }),
+      /context was not captured/);
+    const hostLayers = ['host-envelope', 'argument-confinement'] as const;
+    const hostCases = hostLayers.map(layer => ({ id: `private-self-${layer}`,
+      input: { snapshotSha256: hostCapture.sha256 as string, layer, toolName: 'dev:telemetry',
+        args: { view: 'host-permission-inputs' } } }));
+    const hostManifest = readIdopP001ExpectedPermissionDifferences({ root, baselineRevision: baseline.base.commit,
+      scope: 'private-self-host-envelope-and-arguments' });
+    const evaluateHost = async (revision: string, id: string) => {
+      const input = hostCases.find(row => row.id === id);
+      assert.ok(input, 'comparison requested an uncaptured host layer');
+      // Independent rehydration for each arm prevents shared mutable contexts,
+      // flag values, role overrides or confinement objects between evaluations.
+      const { contexts, ports } = hostReplay();
+      const ctx = contexts[0]!;
+      const reader = loadIdopP001RolePermissionReader({ root, revision, testingFullAccess: 'off' });
+      if (input.input.layer === 'host-envelope') {
+        const verdict = await reader.createHostEnvelopePort(ports)({ toolName: input.input.toolName,
+          capabilities: ['intel:read'], ctx, args: input.input.args });
+        assert.ok(verdict === null || verdict.decision === 'allow', JSON.stringify(verdict));
+        return verdict;
+      }
+      const confinement = await ports.resolveConfinement(ctx);
+      const verdict = reader.evaluateArguments({ toolName: input.input.toolName, args: input.input.args, confinement });
+      assert.equal(verdict.allowed, true, JSON.stringify(verdict));
+      return JSON.parse(JSON.stringify(verdict));
+    };
+    const hostComparison = await runIdopP001PermissionComparison({ population: () => hostCases.map(row => row.id),
+      enumerate: () => hostCases, before: (_input, id) => evaluateHost(baseline.base.commit, id),
+      after: (_input, id) => evaluateHost('working-tree', id), manifest: hostManifest.differences });
+    assert.equal(hostComparison.passed, true, JSON.stringify(hostComparison));
     const evidenceDir = env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR!;
     writeFileSync(resolve(evidenceDir, 'idop-kernel-capture.json'), JSON.stringify(capture), { flag: 'wx', mode: 0o600 });
     writeFileSync(resolve(evidenceDir, 'idop-kernel-comparison.json'), JSON.stringify(comparison), { flag: 'wx', mode: 0o600 });
     writeFileSync(resolve(evidenceDir, 'idop-original-invocation.json'), JSON.stringify(invocation), { flag: 'wx', mode: 0o600 });
+    writeFileSync(resolve(evidenceDir, 'idop-host-capture.json'), JSON.stringify(hostCapture), { flag: 'wx', mode: 0o600 });
+    writeFileSync(resolve(evidenceDir, 'idop-host-comparison.json'), JSON.stringify({ ...hostComparison,
+      manifest: { path: hostManifest.path, sha256: hostManifest.sha256, scope: hostManifest.id } }), { flag: 'wx', mode: 0o600 });
+    writeFileSync(resolve(evidenceDir, 'idop-host-original-invocation.json'), JSON.stringify(hostInvocation), { flag: 'wx', mode: 0o600 });
     console.info('IDOP_KERNEL_CAPTURE_HTTP_PASS ' + JSON.stringify({ workspace, snapshotSha256: capture.sha256,
       boundary: request.boundary, runtime: provenance.runtime, comparisonPassed: comparison.passed }));
   } finally {

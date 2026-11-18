@@ -16,6 +16,12 @@ const captureSources = [
   'packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts',
   'packages/operator-core/lib/connected-apps/enforce.ts',
   'packages/operator-core/lib/governance-policy/enforce.ts',
+  'packages/operator-core/lib/capability-envelope/session-confinement-port.ts',
+  'packages/operator-core/lib/capability-envelope/session-confinement.ts',
+  'packages/operator-core/lib/capability-envelope/policy.ts',
+  'packages/operator-core/lib/capability-envelope/audit-mode-guard.ts',
+  'packages/operator-core/lib/capability-envelope-overrides.ts',
+  'docs/evidence/idop-p001-expected-permission-differences.json',
 ];
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 
@@ -72,6 +78,21 @@ it('captures authenticated original kernel inputs on a containing private host a
       expect(comparison).toMatchObject({ passed: true, unexpected: [], unusedManifest: [], differences: [] });
       expect(comparison.population).toEqual(['private-self-inner-kernel', 'private-self-outer-kernel']);
       expect(comparison.checked.map((row: { id: string }) => row.id)).toEqual(comparison.population);
+      const hostCapture = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-host-capture.json'), 'utf8'));
+      expect(hostCapture).toMatchObject({ ok: true, scope: 'original-host-self-permission-inputs',
+        snapshot: { workspaceId: receipt.workspace }, provenance: { workspaceId: receipt.workspace,
+          ownerId: capture.provenance.ownerId, runtime: capture.provenance.runtime } });
+      const hostInvocation = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-host-original-invocation.json'), 'utf8'));
+      expect(hostInvocation).toMatchObject({ status: 'ok', ownerId: capture.provenance.ownerId,
+        metadata: { originalInvocation: { runtime: capture.provenance.runtime,
+          permissionContext: { status: 'captured' } } } });
+      expect(hostInvocation.id).not.toBe(invocation.id);
+      const hostComparison = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-host-comparison.json'), 'utf8'));
+      expect(hostComparison).toMatchObject({ passed: true, unexpected: [], unusedManifest: [], differences: [],
+        manifest: { path: 'docs/evidence/idop-p001-expected-permission-differences.json',
+          scope: 'private-self-host-envelope-and-arguments', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+      expect(hostComparison.population).toEqual(['private-self-host-envelope', 'private-self-argument-confinement']);
+      expect(hostComparison.checked.map((row: { id: string }) => row.id)).toEqual(hostComparison.population);
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

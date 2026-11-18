@@ -315,7 +315,9 @@ function idopHostContextKey(ctx: UnifiedToolContext, workspaceId: string) {
   for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(ctx))) {
     if (idopContextServices.has(key)) continue;
     if (!('value' in descriptor)) throw new Error('IDOP host snapshot context has an unreadable accessor');
-    if (descriptor.value !== undefined) data[key] = descriptor.value;
+    // Presence is part of the original authority input. The shared codec has
+    // an explicit undefined tag; dropping it here aliases two distinct callers.
+    data[key] = descriptor.value;
   }
   return comparisonJson(idopAuthorityData(data));
 }
