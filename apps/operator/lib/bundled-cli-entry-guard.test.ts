@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { build } from 'esbuild';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -18,6 +20,42 @@ function repositoryRoot(): string {
 }
 
 describe('check-bundled-cli-entry-guards', () => {
+  it('admits the actual dependency verifier without a raw entry guard or top-level await', async () => {
+    const root = repositoryRoot();
+    const temporary = mkdtempSync(join(tmpdir(), 'dependency-verifier-guard-'));
+    try {
+      const metafilePath = join(temporary, 'inputs.json');
+      writeFileSync(metafilePath, JSON.stringify({ inputs: {
+        'apps/operator/bin/release/dependency-generation-verifier.mjs': {},
+      } }));
+      expect(findBundledCliEntryGuards({ metafilePath, baseDir: root })).toEqual([]);
+      expect(await findBundledTopLevelAwaits({ metafilePath, baseDir: root })).toEqual([]);
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])('keeps dependency verifier CLI behavior correct with bundled=%s', async (bundled) => {
+    const temporary = mkdtempSync(join(tmpdir(), 'dependency-verifier-entry-'));
+    try {
+      const entry = join(temporary, 'verifier.mjs');
+      await build({
+        entryPoints: [join(repositoryRoot(), 'apps/operator/bin/release/dependency-generation-verifier.mjs')],
+        outfile: entry, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent',
+        define: { __PAPERCUSP_BUNDLED_SIDECAR__: String(bundled) },
+      });
+      const result = spawnSync(process.execPath, [entry, 'unknown-command'], {
+        encoding: 'utf8', timeout: 10_000, env: { ...process.env, NODE_OPTIONS: '' },
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(bundled ? 0 : 74);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe(bundled ? '' : 'verifier-generation:unknown-command\n');
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
   it('resolves the repository root when Vitest is launched from the repository root', () => {
     const originalCwd = process.cwd();
     const root = repositoryRoot();
