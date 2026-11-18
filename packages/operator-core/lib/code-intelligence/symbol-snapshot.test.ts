@@ -70,6 +70,8 @@ describe('precomputed symbol snapshot', () => {
       'missing.ts': 'import { target } from "./absent"; target();',
       'ambiguous.ts': 'import { target } from "./barrel"; target();',
       'dynamic.ts': 'getTarget()();',
+      'duplicate.ts': 'export function duplicate() {} export function duplicate() {} duplicate();',
+      'duplicate-use.ts': 'import { duplicate } from "./duplicate"; duplicate();',
     };
     const collect = (input: Record<string, string>) => {
       const files = Object.keys(input), rows: Array<{ target: string | null; declaration: unknown }> = [];
@@ -83,7 +85,7 @@ describe('precomputed symbol snapshot', () => {
       return { rows, snapshot };
     };
     const unresolved = collect(sources);
-    expect(unresolved.rows).toHaveLength(5);
+    expect(unresolved.rows).toHaveLength(7);
     expect(unresolved.rows.every(row => row.target === null && row.declaration === null)).toBe(true);
     for (const depth of [31, 32, 33]) {
       const name = (index: number) => `chain-${String(index).padStart(3, '0')}`;

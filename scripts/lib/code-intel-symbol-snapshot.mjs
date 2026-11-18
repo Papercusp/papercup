@@ -27,10 +27,18 @@ const add = (map, name, values) => {
 const identifiers = node => ts.isIdentifier(node) ? [node.text] : ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)
   ? node.elements.flatMap(part => ts.isBindingElement(part) ? identifiers(part.name) : []) : [];
 
+/** Exact syntax declaration, not proof of runtime dispatch or effects.
+ * Keep columns in this identity: two exports on one line still differ.
+ * @typedef {{ id: string, path: string, name: string, line: number, column: number }} SymbolDeclaration
+ */
+
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
  * `censusOnly` retains resolution and completeness guards while omitting brief
  * proof objects that the source-population collector does not consume.
- * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean, censusOnly?: boolean, callCensusSink?: (call: {path: string, line: number, column: number}, targetPath: string | null, index: number) => void }} input
+ * The sink's fourth argument supplies exact declaration identity only when
+ * the complete export resolution converged. Existing three-argument sinks
+ * and packed file-level call rows keep their existing contract.
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]>, includeCallCensus?: boolean, censusOnly?: boolean, callCensusSink?: (call: {path: string, line: number, column: number}, targetPath: string | null, index: number, declaration: SymbolDeclaration | null) => void }} input
  */
 export function parseSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [], includeCallCensus = false, censusOnly = false }) {
   includeCallCensus ||= censusOnly;
@@ -100,8 +108,13 @@ export function parseSymbolSnapshot({ files, readSource, resolveModule, workspac
         const name = decl.name.text;
         const location = site(decl.name);
         const id = `${path}:${location.line}:${name}`;
-        const symbol = censusOnly ? { id, path, callerCount: 0 }
-          : { id, name, ...location, signature: text.slice(decl.getStart(ast), decl.body?.getStart(ast) ?? Math.min(decl.end, decl.getStart(ast) + 300)).slice(0, 300), callers: [], aliases: [], sources: new Map([[path, { path, sha256 }]]) };
+        const declaration = { id: JSON.stringify([path, location.line, location.column, name]),
+          path, name, line: location.line, column: location.column };
+        // The existing brief id omits columns. Repeated declarations on the
+        // same line must not collapse into one supposedly unambiguous target.
+        const ambiguous = symbols.has(id);
+        const symbol = censusOnly ? { id, path, declaration, ambiguous, callerCount: 0 }
+          : { id, name, ...location, declaration, ambiguous, signature: text.slice(decl.getStart(ast), decl.body?.getStart(ast) ?? Math.min(decl.end, decl.getStart(ast) + 300)).slice(0, 300), callers: [], aliases: [], sources: new Map([[path, { path, sha256 }]]) };
         symbols.set(id, symbol);
         add(unit.locals, name, [id]);
         if (exported) add(unit.exports, isDefault ? 'default' : name, [id]);
@@ -128,7 +141,7 @@ export function parseSymbolSnapshot({ files, readSource, resolveModule, workspac
 
 /** Resolve only after the complete, ordered file population is assembled.
  * Parsing can run in bounded threads without resolving against partial exports.
- * @param {Parameters<typeof parseSymbolSnapshot>[0] & { callCensusSink?: (call: {path: string, line: number, column: number}, targetPath: string | null, index: number) => void, parsed?: ReturnType<typeof parseSymbolSnapshot> }} input
+ * @param {Parameters<typeof parseSymbolSnapshot>[0] & { parsed?: ReturnType<typeof parseSymbolSnapshot> }} input
  */
 export function buildSymbolSnapshot(input) {
   const { censusOnly = false, callCensusSink } = input;
@@ -139,7 +152,8 @@ export function buildSymbolSnapshot(input) {
   const recordCall = (call, target) => {
     if (!includeCallCensus) return;
     const index = censusCount++;
-    if (callCensusSink) callCensusSink(call, target?.path ?? null, index);
+    if (callCensusSink) callCensusSink(call, target?.path ?? null, index,
+      stats.callCensusTruncated ? null : target?.declaration ?? null);
     else callCensus.push({ id: `${call.path}:${call.line}:${call.column}:${index}`,
       from: call.path, to: target?.path ?? null, resolved: !!target });
   };
@@ -187,6 +201,7 @@ export function buildSymbolSnapshot(input) {
         : unit.locals.get(call.local) ?? imported(binding);
       if (!values || values.size !== 1) { stats.unresolvedCalls++; recordCall(call, null); continue; }
       const symbol = symbols.get([...values][0]);
+      if (symbol?.ambiguous) { stats.unresolvedCalls++; recordCall(call, null); continue; }
       recordCall(call, symbol);
       if (!symbol || !visible.has(symbol.id)) continue;
       if (censusOnly) {
