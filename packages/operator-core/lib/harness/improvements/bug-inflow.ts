@@ -227,11 +227,11 @@ export interface R11ScoreboardReceipt {
     ref: string; sha256: string; complete: boolean; totalRows: number; rowsRead: number;
     omitted: number; nextCursor: string | null; cohortSize: number;
   };
-  writerQueryHash: string; metrics: R11Metrics;
+  writerQueryHash: string; writerAggregateRefs: string[]; metrics: R11Metrics;
   independent?: {
     artifactRef: string; authorId: string;
     lineage: { eligible: boolean; checkedAgainst: string[]; receiptRef: string };
-    sourceHash: string; registryHash: string; queryHash: string; closure: R11Closure;
+    sourceHash: string; registryHash: string; queryHash: string; aggregateRefs: string[]; closure: R11Closure;
     originalClockHash: string; complete: boolean; omitted: number; metrics: R11Metrics;
   };
 }
@@ -313,6 +313,30 @@ function r11MetricComplete(key: R11MetricKey, value: unknown): value is Record<s
     value.population === Number(value.count) + Number(value.protected) + Number(value.held) + Number(value.blocked));
 }
 
+/** The retained denominator and original row clocks are an additional witness,
+ * so two equal but incorrectly redefined aggregates cannot certify each other. */
+function r11CohortAgrees(metrics: R11Metrics, r: R11ScoreboardReceipt): boolean {
+  const filed = metrics.filedPerDayBySource!, reviewed = metrics.shareReviewed!;
+  const bypassed = metrics.shareBypassed!, wait = metrics.reviewerWait!;
+  if (!r11Counts(filed.countsBySource) || !Array.isArray(wait.rows)) return false;
+  const totalFiled = Object.values(filed.countsBySource).reduce((a, b) => a + b, 0);
+  const cohort = r.source.cohortSize;
+  if (!Number.isSafeInteger(totalFiled) || totalFiled !== cohort || reviewed.denominator !== cohort ||
+      reviewed.onTimeDenominator !== cohort || bypassed.denominator !== cohort || wait.rows.length !== cohort) return false;
+  let decided = 0, onTime = 0;
+  for (const raw of wait.rows) {
+    if (!r11Record(raw) || typeof raw.filedAt !== 'string') return false;
+    const filedAt = r11Time(raw.filedAt);
+    if (filedAt < r11Time(r.windowStart) || filedAt >= r11Time(r.windowEnd)) return false;
+    if (raw.decidedAt !== null) {
+      if (typeof raw.decidedAt !== 'string' || r11Time(raw.decidedAt) > r11Time(r.measuredAt)) return false;
+      decided++;
+      if (Number(raw.waitMs) <= DAY_MS) onTime++;
+    } else if (typeof raw.rightCensoredAt !== 'string' || r11Time(raw.rightCensoredAt) > r11Time(r.measuredAt)) return false;
+  }
+  return reviewed.numerator === decided && reviewed.onTimeNumerator === onTime;
+}
+
 /** Assess host-resolved retained evidence. All seven UTC windows and all seven
  * metrics are checked. Historical epochs and every input receipt keep recovery
  * references even when a current run is missing, corrupt or outside its window. */
@@ -344,6 +368,7 @@ export function assessBugInflowScoreboard(
     unknown.push('duplicate epoch identity');
   if (!r11Text(cadence.routineId) || cadence.intervalMs !== DAY_MS || !Number.isFinite(first) ||
       first % DAY_MS !== 0 || first < r11Time(epoch.activatedAt) ||
+      !Number.isFinite(new Date(first + 8 * DAY_MS).getTime()) ||
       !r11Count(cadence.maxDelayMs) || !r11Count(cadence.maxRuntimeMs)) {
     out.reasons.push(...unknown, 'daily UTC cadence is not qualified');
     return out;
@@ -405,7 +430,10 @@ export function assessBugInflowScoreboard(
       independent.sourceHash === r.source.sha256 && independent.registryHash === R11_METRIC_REGISTRY_HASH &&
       r11Same(independent.closure, epoch.closure) && independent.originalClockHash === epoch.originalClockHash &&
       independent.complete && independent.omitted === 0 && r11Hash(independent.queryHash) &&
-      r11Hash(r.writerQueryHash) && independent.queryHash !== r.writerQueryHash;
+      r11Hash(r.writerQueryHash) && independent.queryHash !== r.writerQueryHash &&
+      r.writerAggregateRefs.length > 0 && r.writerAggregateRefs.every(r11Text) &&
+      independent.aggregateRefs.length > 0 && independent.aggregateRefs.every(r11Text) &&
+      !independent.aggregateRefs.some(ref => r.writerAggregateRefs.includes(ref));
     if (!independentReady) independentlyUnknown.push(`independent artifact/currentness/lineage unqualified: ${r.id}`);
     const keys = R11_METRIC_REGISTRY.metrics.map(m => m.key);
     if (Object.keys(r.metrics).length !== keys.length ||
@@ -421,6 +449,11 @@ export function assessBugInflowScoreboard(
           independentlyBroken.push(`numeric discrepancy for ${key}: ${r.id}`);
       }
     }
+    if (keys.every(key => r11MetricComplete(key, r.metrics[key])) && !r11CohortAgrees(r.metrics, r))
+      broken.push(`frozen cohort arithmetic or original row clocks disagree: ${r.id}`);
+    if (independentReady && independent && keys.every(key => r11MetricComplete(key, independent.metrics[key])) &&
+        !r11CohortAgrees(independent.metrics, r))
+      independentlyBroken.push(`independent cohort arithmetic or original row clocks disagree: ${r.id}`);
   }
   const lastMeasured = input.receipts.reduce((last, r) => Math.max(last, r11Time(r.measuredAt)), 0);
   if (!Number.isFinite(lastMeasured) || now.getTime() - lastMeasured > DAY_MS + cadence.maxDelayMs + cadence.maxRuntimeMs)

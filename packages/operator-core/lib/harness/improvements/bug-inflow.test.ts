@@ -203,11 +203,11 @@ function scoreboardFixture(): BugInflowScoreboardInput {
         ref: `fixture-source-${i}`, sha256: sourceHash, complete: true,
         totalRows: 20, rowsRead: 20, omitted: 0, nextCursor: null, cohortSize: 2,
       },
-      writerQueryHash: 'd'.repeat(64), metrics,
+      writerQueryHash: 'd'.repeat(64), writerAggregateRefs: ['fixture:writer-aggregate'], metrics,
       independent: {
         artifactRef: `fixture-independent-${i}`, authorId: 'assessor-external',
         lineage: { eligible: true, checkedAgainst: authors, receiptRef: `fixture-lineage-${i}` },
-        sourceHash, registryHash: R11_REGISTRY_HASH, queryHash: 'e'.repeat(64),
+        sourceHash, registryHash: R11_REGISTRY_HASH, queryHash: 'e'.repeat(64), aggregateRefs: ['fixture:independent-aggregate'],
         closure, originalClockHash: 'c'.repeat(64), complete: true, omitted: 0,
         metrics: structuredClone(metrics),
       },
@@ -257,6 +257,13 @@ describe('R11 retained scoreboard assessment', () => {
     const shared = scoreboardFixture();
     shared.receipts[3].independent!.queryHash = shared.receipts[3].writerQueryHash;
     expect(assessScoreboard(shared).independentVerdict).toBe('unknown');
+    const sharedAggregate = scoreboardFixture();
+    sharedAggregate.receipts[2].independent!.aggregateRefs = sharedAggregate.receipts[2].writerAggregateRefs;
+    expect(assessScoreboard(sharedAggregate).independentVerdict).toBe('unknown');
+    const equallyWrong = scoreboardFixture();
+    equallyWrong.receipts[5].metrics.shareReviewed!.denominator = 3;
+    equallyWrong.receipts[5].independent!.metrics.shareReviewed!.denominator = 3;
+    expect(assessScoreboard(equallyWrong).verdict).toBe('broken');
     const invalidWindow = scoreboardFixture();
     invalidWindow.cadence.firstWindowStart = 'not-an-instant';
     expect(assessScoreboard(invalidWindow).verdict).toBe('unknown');
