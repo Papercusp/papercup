@@ -244,8 +244,8 @@ describe('maintained run deadlines and retained artifacts', () => {
     identity: { workspace: string; harness: string; runId: string }, selected: string[]) {
     const directory = join(packet.paths.directory, `native-router-${name}`);
     mkdirSync(directory, { mode: 0o700 });
-    const expected = selected.map((file, n) => ({ id: `group-${n}`, attempt: 'primary' as const,
-      selected: [file], runner: 'unsupported' as const, armed: false, out: null }));
+    const expected = selected.map((file, groupIndex) => ({ id: `group-${groupIndex}`, attempt: 'primary' as const,
+      selected: [file], runner: 'unsupported' as const, armed: false, out: null, auxiliary: [] }));
     writeFileSync(join(directory, 'expected.json'), JSON.stringify({ identity, expected }));
     const retained = await retainNativeProofPacketAsync(directory, { identity, expected,
       observations: expected.map(group => ({ id: group.id, out: null })), execution: 'router-settled' });
@@ -265,12 +265,43 @@ describe('maintained run deadlines and retained artifacts', () => {
     const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
     expect(manifest.nativeCustody, JSON.stringify(manifest.nativeCustody)).toMatchObject({ byteCustody: 'complete',
       nestedRouters: [{ identity: child.identity, selectedFiles: [selected[0]], custody: 'complete' }] });
+    expect(() => verifyNativeProofPacket(child.directory, child.locator, { identity: parentIdentity, expected: child.expected }))
+      .toThrow('custody identity or expected population mismatch');
     expect(verifyNativeProofPacket(child.directory, child.locator, child).status).toBe('complete');
     const locator = manifest.nativeCustody.locator;
     const retained = JSON.parse(readFileSync(join(packet.paths.nativeProof, 'objects', locator.manifest.ref), 'utf8'));
     const outer = verifyNativeProofPacket(packet.paths.nativeProof, locator, { identity: parentIdentity, expected: retained.expected });
     expect(outer.status).toBe('complete');
     expect(outer.manifest.groups[0].auxiliary.some(row => row.role === `native-router-${name}/expected.json`)).toBe(true);
+  });
+  it.each([0, 1, 2, 12])('preserves the parent population with %s nested routers', async childCount => {
+    const { packet, source } = nativePacket(); await packet.flush();
+    const selected = join(source, 'subject.test.ts');
+    const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
+    await sealedRouter(packet, 'parent', identity, [selected]);
+    for (let childIndex = 0; childIndex < childCount; childIndex++) await sealedRouter(packet, `child-${childIndex}`,
+      { ...identity, workspace: `test-runtime-child-${childIndex}` }, [selected]);
+    packet.childState = 'closed'; await packet.finish({ cleanup: { complete: true } });
+    const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
+    expect(manifest.nativeCustody, JSON.stringify(manifest.nativeCustody)).toMatchObject({ byteCustody: 'complete' });
+    expect(manifest.nativeCustody.nestedRouters).toHaveLength(childCount);
+    expect(manifest.nativeCustody.routerCustody).toHaveLength(childCount + 1);
+  });
+  it('seals a nested interrupted router under its own identity without recapturing producers', async () => {
+    const { packet, source } = nativePacket(); await packet.flush();
+    const selected = join(source, 'subject.test.ts');
+    const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
+    await sealedRouter(packet, 'parent', identity, [selected]);
+    const child = await sealedRouter(packet, 'child', { ...identity, workspace: 'test-runtime-child' }, [selected]);
+    writeFileSync(join(child.directory, 'pending-locator.json'), JSON.stringify(child.locator));
+    rmSync(join(child.directory, 'locator.json'));
+    rmSync(selected);
+    packet.childState = 'closed'; await packet.finish({ cleanup: { complete: true } });
+    const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
+    expect(manifest.nativeCustody, JSON.stringify(manifest.nativeCustody)).toMatchObject({ byteCustody: 'complete',
+      nestedRouters: [{ identity: child.identity, selectedFiles: [selected], custody: 'complete' }] });
+    expect(JSON.parse(readFileSync(join(child.directory, 'locator.json'), 'utf8'))).toEqual(child.locator);
+    expect(verifyNativeProofPacket(child.directory, child.locator, child).status).toBe('complete');
   });
   it.each(['missing-parent', 'wrong-parent', 'duplicate-parent', 'foreign-run', 'foreign-harness',
     'tampered-identity', 'tampered-population'] as const)('refuses nested router custody with %s', async fault => {

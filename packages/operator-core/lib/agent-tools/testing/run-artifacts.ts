@@ -297,9 +297,13 @@ export class TestRunArtifactPacket {
     const routers = (await readdir(this.paths.directory)).filter(name => name.startsWith('native-router-')).sort();
     const routerGroups: NativeCustodyGroup[] = [];
     const routerVerdicts = [];
+    const nestedRouters = [];
     for (const name of routers) {
       const directory = join(this.paths.directory, name);
       const declaration = JSON.parse(await readFile(join(directory, 'expected.json'), 'utf8'));
+      const routerIdentity: NativeCustodyIdentity = declaration.identity;
+      if (!routerIdentity || routerIdentity.runId !== identity.runId || routerIdentity.harness !== identity.harness)
+        throw new Error('packet router identity mismatch');
       let locator: NativeCustodyLocator;
       try {
         locator = JSON.parse(await readFile(join(directory, 'locator.json'), 'utf8'));
@@ -309,13 +313,16 @@ export class TestRunArtifactPacket {
         // cutoff. Seal that exact packet within the parent's existing reserve;
         // never recapture producers or change the original execution verdict.
         const pending = JSON.parse(await readFile(join(directory, 'pending-locator.json'), 'utf8'));
-        const recovered = await retainNativeProofPacketAsync(directory, { identity, expected: declaration.expected,
+        const recovered = await retainNativeProofPacketAsync(directory, { identity: routerIdentity, expected: declaration.expected,
           retainedLocator: pending, deadlineAtMs: this.deadline.taskDeadlineAtMs });
         locator = recovered.locator;
         await writeFile(join(directory, 'locator.json'), JSON.stringify(locator), { mode: 0o600, flag: 'wx' });
       }
-      const verified = verifyNativeProofPacket(directory, locator, { identity, expected: declaration.expected });
-      routerGroups.push(...declaration.expected);
+      const verified = verifyNativeProofPacket(directory, locator, { identity: routerIdentity, expected: declaration.expected });
+      if (routerIdentity.workspace === identity.workspace) routerGroups.push(...declaration.expected);
+      else nestedRouters.push({ identity: routerIdentity,
+        selectedFiles: (declaration.expected as NativeCustodyGroup[]).filter(group => group.attempt === 'primary')
+          .flatMap(group => group.selected), custody: verified.status });
       routerVerdicts.push(verified.status);
       await inventory(directory, name);
     }
@@ -333,7 +340,7 @@ export class TestRunArtifactPacket {
       cleanup: detail.cleanup ?? null, ...(this.nativeLocator ? { predecessor: this.nativeLocator } : {}) });
     this.nativeLocator = saved.locator;
     return { directory: saved.directory, locator: saved.locator, byteCustody: saved.status,
-      writerState: pending ? 'pending' : 'settled', routerCustody: routerVerdicts,
+      writerState: pending ? 'pending' : 'settled', routerCustody: routerVerdicts, nestedRouters,
       nativeProof: 'unqualified', acceptance: 'unmeasured', producerRetirement: 'not-performed' };
   }
   async finish(detail: Record<string, unknown>): Promise<void> {
