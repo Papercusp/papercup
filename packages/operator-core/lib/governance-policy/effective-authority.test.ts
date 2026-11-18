@@ -23,6 +23,39 @@ function fixture(): AuthoritySnapshot {
 }
 
 describe('effective authority contract (P-024)', () => {
+  it('preserves a declaring authority exception until expiry without lifting another authority', () => {
+    const snapshot = fixture();
+    const department = snapshot.policies.find(policy => policy.kind === 'department')!;
+    department.rules = { tools: { deny: [request.tool] } };
+    department.exceptions = [{ category: 'tools', pattern: request.tool, reason: 'temporary stored exception',
+      expiresAt: '2030-01-01T00:00:00.000Z' }];
+    const permitted = evaluateEffectivePermission(snapshot, request, new Date('2029-12-31T23:59:59Z'));
+    expect(permitted.allowed).toBe(true);
+    expect(permitted.trace).toContainEqual(expect.objectContaining({
+      authority: expect.objectContaining({ kind: 'department' }), outcome: 'excepted',
+    }));
+    expect(evaluateEffectivePermission(snapshot, request, new Date('2030-01-01T00:00:00Z')))
+      .toMatchObject({ allowed: false, decidingAuthority: { kind: 'department' } });
+    snapshot.policies.find(policy => policy.kind === 'organization')!.rules = { tools: { deny: [request.tool] } };
+    expect(evaluateEffectivePermission(snapshot, request, new Date('2029-12-31T23:59:59Z')))
+      .toMatchObject({ allowed: false, decidingAuthority: { kind: 'organization' } });
+  });
+
+  it('refuses exceptions carried on a verified absent authority', () => {
+    const snapshot = fixture();
+    const department = snapshot.policies.find(policy => policy.kind === 'department')!;
+    department.state = 'not-applicable';
+    delete department.rules;
+    department.exceptions = [];
+    expect(evaluateEffectivePermission(snapshot, request)).toMatchObject({ allowed: false, code: 'authority-malformed' });
+  });
+
+  it('refuses malformed exception collections without throwing at the adapter boundary', () => {
+    const snapshot = fixture();
+    snapshot.policies[0].exceptions = {} as AuthorityPolicy['exceptions'];
+    expect(evaluateEffectivePermission(snapshot, request)).toMatchObject({ allowed: false, code: 'authority-malformed' });
+  });
+
   it.each(AUTHORITY_KINDS)('each independent %s authority can decide refusal despite all other grants', kind => {
     const snapshot = fixture();
     expect(evaluateEffectivePermission(snapshot, request).allowed).toBe(true);

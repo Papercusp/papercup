@@ -23,6 +23,7 @@ import {
   GovernancePolicyWriteError,
   listVersions,
   loadChainForWorkspace,
+  loadPolicyAuthoritiesForWorkspace,
   upsertLayer,
   type UpsertLayerInput,
 } from './store';
@@ -36,6 +37,87 @@ import {
 const MIGRATION = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/1497-governance-policy-layers.sql', import.meta.url),
 );
+
+describe('canonical policy authority adapter for identity edits (P-002)', () => {
+  it('loads every stored ancestor and preserves an exception at the shared evaluator', async () => {
+    await seedTree();
+    await upsertLayer(layer({ layerId: 'dept-eng', level: 'department', scopeRef: 'acme/eng',
+      parentLayerId: 'org-acme', rules: { tools: { deny: ['identity:edit'] } },
+      exceptions: [{ category: 'tools', pattern: 'identity:edit', reason: 'bounded owner exception',
+        expiresAt: '2030-01-01T00:00:00.000Z' }], expectedVersion: 1 }), sql);
+    const loaded = await loadPolicyAuthoritiesForWorkspace('ws-1', sql);
+    expect(loaded.status).toBe('ok');
+    if (loaded.status !== 'ok') throw new Error('canonical policy population missing');
+    expect(loaded.policies.map(policy => [policy.kind, policy.id])).toEqual([
+      ['organization', 'org-acme'], ['department', 'dept-eng'], ['workspace', 'ws-1'],
+    ]);
+    const policies: AuthorityPolicy[] = [
+      { kind: 'identity', id: 'identity', revision: 'identity:1', state: 'present',
+        rules: { tools: { allow: ['identity:edit'] }, actions: { allow: ['edit'] }, resources: { allow: ['*'] } } },
+      { kind: 'user', id: 'user', revision: 'user:1', state: 'present', rules: {} },
+      { kind: 'platform', id: 'platform', revision: 'platform:1', state: 'present', rules: {} },
+      ...loaded.policies,
+    ];
+    const snapshot: AuthoritySnapshot = { required: policies.map(({ kind, id }) => ({ kind, id })),
+      policies, contextRevision: 'fixture-no-vault', contextVaultIds: [] };
+    const request: PermissionRequest = { tool: 'identity:edit', action: 'edit',
+      resource: { kind: 'store', operation: 'write', target: 'launch-spec' } };
+    expect(evaluateEffectivePermission(snapshot, request, new Date('2029-01-01T00:00:00Z')).allowed).toBe(true);
+    expect(evaluateEffectivePermission(snapshot, request, new Date('2030-01-01T00:00:00Z')))
+      .toMatchObject({ allowed: false, decidingAuthority: { kind: 'department', id: 'dept-eng' } });
+  });
+
+  it('derives no-department only from a complete valid chain and keeps absent chains unavailable', async () => {
+    expect(await loadPolicyAuthoritiesForWorkspace('missing', sql)).toEqual({ status: 'none' });
+    await seedTree();
+    await upsertLayer(layer({ layerId: 'ws-1', level: 'workspace', scopeRef: 'ws-1',
+      parentLayerId: 'org-acme', expectedVersion: 1 }), sql);
+    const loaded = await loadPolicyAuthoritiesForWorkspace('ws-1', sql);
+    expect(loaded).toMatchObject({ status: 'ok', policies: expect.arrayContaining([
+      { kind: 'department', id: 'no-department:ws-1', revision: expect.any(String), state: 'not-applicable' },
+    ]) });
+    await sql`UPDATE harness_shared.governance_policy_layers SET rules = '{"tools":42}'::jsonb WHERE layer_id = 'org-acme'`;
+    expect(await loadPolicyAuthoritiesForWorkspace('ws-1', sql)).toMatchObject({ status: 'malformed' });
+  });
+
+  it('refuses content that no longer matches the canonical writer hash', async () => {
+    await seedTree();
+    await sql`UPDATE harness_shared.governance_policy_layers SET rules = '{}'::jsonb WHERE layer_id = 'dept-eng'`;
+    expect(await loadPolicyAuthoritiesForWorkspace('ws-1', sql))
+      .toMatchObject({ status: 'malformed', reason: expect.stringContaining('content hash') });
+  });
+
+  it.each(['null-rules', 'object-exceptions', 'null-exceptions'] as const)(
+    'preserves %s as malformed instead of manufacturing unrestricted policy', async fault => {
+      await seedTree();
+      if (fault === 'null-rules')
+        await sql`UPDATE harness_shared.governance_policy_layers SET rules = 'null'::jsonb WHERE layer_id = 'dept-eng'`;
+      else if (fault === 'object-exceptions')
+        await sql`UPDATE harness_shared.governance_policy_layers SET exceptions = '{}'::jsonb WHERE layer_id = 'dept-eng'`;
+      else await sql`UPDATE harness_shared.governance_policy_layers SET exceptions = 'null'::jsonb WHERE layer_id = 'dept-eng'`;
+      expect(await loadChainForWorkspace('ws-1', sql)).toMatchObject({ status: 'malformed' });
+      expect(await loadPolicyAuthoritiesForWorkspace('ws-1', sql)).toMatchObject({ status: 'malformed' });
+    },
+  );
+
+  it('requires a transaction for the pinned effect-boundary read and refuses a moved before-image', async () => {
+    await seedTree();
+    const before = await loadPolicyAuthoritiesForWorkspace('ws-1', sql);
+    if (before.status !== 'ok') throw new Error('baseline not loaded');
+    await expect(loadPolicyAuthoritiesForWorkspace('ws-1', sql, before.revision)).rejects.toThrow('existing transaction');
+    const unchanged = await sql.begin(tx => loadPolicyAuthoritiesForWorkspace('ws-1', tx as unknown as postgres.Sql, before.revision));
+    expect(unchanged).toEqual(before);
+    await upsertLayer(layer({ layerId: 'dept-eng', level: 'department', scopeRef: 'acme/eng',
+      parentLayerId: 'org-acme', rules: { tools: { deny: ['identity:edit'] } }, expectedVersion: 1 }), sql);
+    const guarded = await sql.begin(async tx => {
+      const current = await loadPolicyAuthoritiesForWorkspace('ws-1', tx as unknown as postgres.Sql, before.revision);
+      if (current.status === 'ok') await tx`INSERT INTO harness_shared.idop_test_effects VALUES ('guarded')`;
+      return current;
+    });
+    expect(guarded).toMatchObject({ status: 'stale' });
+    expect(await sql`SELECT * FROM harness_shared.idop_test_effects`).toEqual([]);
+  });
+});
 
 let sql: postgres.Sql;
 

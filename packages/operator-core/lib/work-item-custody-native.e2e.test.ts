@@ -7,6 +7,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -49,6 +50,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
     expect(new URL(url).port).not.toBe('5432');
     const env = { ...process.env };
     delete env.PAPERCUSP_SCRATCH_ROOT;
+    expect(await realpath(process.env.PAPERCUSP_HOME!)).not.toBe(resolve(homedir(), '.papercusp'));
     const tool = async (name: string, args: object) => {
       const result = await execute(process.execPath, [resolve(ROOT, 'scripts/mcp-call.mjs'), name,
         '--port', port, '--client', owner, '--workspace', workspace, '--harness', 'papercusp',
@@ -71,7 +73,16 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
       assertNativeRuntimeLiveness(ROOT, receipt.sourceCommit);
       const response = await tool('work_items:get', { id, harness: 'papercusp', detail: true,
         threadLimit: 0, payloadTier: 'full', projection: { pick: NATIVE_CUSTODY_LIFECYCLE_PICK } });
-      return readNativeCustodyLifecycle(response, id);
+      // Match the CLI/operator's owned home: Vitest redirects this worker's
+      // scratch root independently. Restore it immediately after the sync read.
+      const scratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+      try {
+        delete process.env.PAPERCUSP_SCRATCH_ROOT;
+        return readNativeCustodyLifecycle(response, id);
+      } finally {
+        if (scratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+        else process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+      }
     };
     const captures = (value: Lifecycle) => value.events
       .filter(event => event.action === 'work_items:custody:capture');

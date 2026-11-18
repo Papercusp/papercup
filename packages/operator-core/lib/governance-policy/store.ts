@@ -17,6 +17,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { workScopeExceptionExpirySchema } from '../work-scope-policy';
+import type { AuthorityPolicy } from './effective-authority';
 import { CUSTOMER_DATA_CLASSES, DATA_CLASS_USE_PREFIX, dataClassUseLabel, isCustomerDataClass } from '../auth/hosted/customer-data-map';
 import {
   GOVERNED_CATEGORIES,
@@ -152,6 +153,53 @@ export async function lockPolicyChainForWorkspace(workspaceId: string, tx: Sql):
     return { status: 'malformed', reason: 'policy chain changed while acquiring root-first locks', chain: current.chain };
   }
   return current;
+}
+
+export type PolicyAuthorityLoad =
+  | { status: 'none' }
+  | { status: 'malformed'; reason: string }
+  | { status: 'stale'; revision: string }
+  | { status: 'ok'; revision: string; policies: AuthorityPolicy[] };
+
+/** Canonical organization/department/workspace portion of an authority snapshot.
+ * This is not the editor, owner census, identity, user, vault or platform loader.
+ * An absent chain is never promoted to an ungoverned permission grant.
+ *
+ * Supplying the previously read revision selects the effect-boundary read: it
+ * requires the caller's transaction, reuses the root-first chain locks, and
+ * refuses a changed before-image. Locks remain held through the caller's effect.
+ * No cached chain or caller-authored policy participates in this adapter. */
+export async function loadPolicyAuthoritiesForWorkspace(
+  workspaceId: string, sql: Sql, expectedRevision?: string,
+): Promise<PolicyAuthorityLoad> {
+  const loaded = expectedRevision === undefined
+    ? await loadChainForWorkspace(workspaceId, sql)
+    : await lockPolicyChainForWorkspace(workspaceId, sql);
+  if (loaded.status !== 'ok') return loaded.status === 'none'
+    ? { status: 'none' } : { status: 'malformed', reason: loaded.reason };
+  for (const row of loaded.chain) {
+    if (row.contentHash !== policyContentHash({ ...row, exceptions: row.exceptions ?? [] }))
+      return { status: 'malformed', reason: `policy ${row.layerId} does not match its canonical content hash` };
+  }
+  // Include lineage and scope as well as content/version: a reparent or a
+  // different workspace binding must invalidate the exact before-image too.
+  const source = loaded.chain.map(({ layerId, level, scopeRef, parentLayerId,
+    version, contentHash, rules, exceptions }) => ({
+    layerId, level, scopeRef, parentLayerId, version, contentHash, rules, exceptions,
+  }));
+  const revision = createHash('sha256').update(canonicalJson({ workspaceId, source })).digest('hex');
+  if (expectedRevision !== undefined && expectedRevision !== revision) return { status: 'stale', revision };
+  const policies: AuthorityPolicy[] = loaded.chain.map(row => ({
+    kind: row.level, id: row.layerId, revision: `${row.version}:${row.contentHash}`,
+    state: 'present', rules: structuredClone(row.rules), exceptions: structuredClone(row.exceptions ?? []),
+  }));
+  // Only a complete, valid organization-to-workspace chain can establish that
+  // no department applies. Missing/unreadable data above never reaches here.
+  if (!policies.some(policy => policy.kind === 'department')) policies.push({
+    kind: 'department', id: `no-department:${workspaceId}`, revision,
+    state: 'not-applicable',
+  });
+  return { status: 'ok', revision, policies };
 }
 
 export async function loadLayer(layerId: string, sql?: Sql): Promise<StoredPolicyLayer | null> {

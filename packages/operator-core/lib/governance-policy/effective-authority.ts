@@ -17,6 +17,7 @@ import {
   type GovernedCategory,
   type GovernedRequest,
   type PolicyLayer,
+  type PolicyException,
   type PolicyTraceStep,
 } from './inherited-policy';
 
@@ -31,6 +32,8 @@ export interface AuthorityPolicy extends AuthorityRef {
   /** Verified absence is explicit; unreadable is never the same as absent. */
   state: 'present' | 'not-applicable' | 'unavailable';
   rules?: Partial<Record<GovernedCategory, CategoryRule>>;
+  /** Canonical, expiring exceptions belong only to the authority declaring them. */
+  exceptions?: readonly PolicyException[];
 }
 export interface AuthoritySnapshot {
   /** Complete, host-derived policy population, including absent optional levels. */
@@ -99,7 +102,8 @@ export function resourcePermissionValue(resource: ScopedResource): string {
 function policyLayer(policy: AuthorityPolicy): PolicyLayer {
   // PolicyLevel is the organization-store hierarchy, not a new authority type.
   // Use its leaf rule adapter; outward traces always identify the real authority.
-  return { layerId: keyOf(policy), level: 'workspace', version: 1, rules: policy.rules! };
+  return { layerId: keyOf(policy), level: 'workspace', version: 1, rules: policy.rules!,
+    ...(policy.exceptions !== undefined ? { exceptions: [...policy.exceptions] } : {}) };
 }
 
 function snapshotProblem(snapshot: AuthoritySnapshot): { code: 'authority-unavailable' | 'authority-malformed'; reason: string } | null {
@@ -124,9 +128,10 @@ function snapshotProblem(snapshot: AuthoritySnapshot): { code: 'authority-unavai
   for (const ref of snapshot.required) {
     const policy = snapshot.policies.find(entry => keyOf(entry) === keyOf(ref));
     if (!policy || !validText(policy.revision) || policy.state === 'unavailable') return unavailable(`unreadable authority ${keyOf(ref)}`);
+    if (policy.exceptions !== undefined && !Array.isArray(policy.exceptions)) return malformed('invalid authority exceptions');
     if (policy.state === 'not-applicable') {
       if (['identity', 'user', 'vault', 'platform'].includes(ref.kind)) return unavailable(`required authority cannot be absent: ${keyOf(ref)}`);
-      if (policy.rules !== undefined) return malformed('absent authority carries rules');
+      if (policy.rules !== undefined || policy.exceptions !== undefined) return malformed('absent authority carries rules or exceptions');
     } else if (policy.state !== 'present' || !isWellFormedLayer(policyLayer(policy))) {
       return malformed(`invalid authority policy ${keyOf(ref)}`);
     }
