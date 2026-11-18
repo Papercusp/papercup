@@ -198,8 +198,27 @@ async function census(helper, donor, destination, scratch, deadline, generation,
     for (const path of sourcePaths.filter(path => !targets.has(path))) {
       directoryIdentity(join(donor, path));
       if (progress) Object.assign(progress, { phase: 'materialize-missing', currentTree: path });
-      await readCensus('copy:' + path, [join(donor, path), join(destination, path)],
-        'DEPENDENCY_GENERATION_ALLOW_HARDLINK=0\ndependency_generation_materialize_tree "$2" "$3" verifier');
+      // Keep incomplete bytes separate from retained dependency roots. The
+      // ordinary materializer reaps its PID-named scratch copy on the next
+      // attempt; a bounded verification would otherwise recopy a large root
+      // forever. Reuse the maintained checksum copier, admission and child
+      // cancellation. This stage is untrusted until the FULL verifier below.
+      const partialParent = privateDirectory(join(destination, '.git',
+        'committed-dependency-partials', digest(path)), []);
+      const partial = join(partialParent, 'tree');
+      if (lstatSync(partial, { throwIfNoEntry: false })) directoryIdentity(partial);
+      if (lstatSync(partialParent).dev !== lstatSync(dirname(join(destination, path))).dev)
+        fail('partial dependency copy must share its destination filesystem');
+      await readCensus('copy:' + path, [join(donor, path), partial], [
+        'dependency_generation_acquire_copy_lock "retained dependency resume"',
+        'trap dependency_generation_release_copy_lock EXIT',
+        'dependency_generation_check_headroom "$2" "$3"',
+        'dependency_generation_copy_with_progress "$2" "$3" --rsync-checksum',
+      ].join('\n'));
+      directoryIdentity(partial);
+      if (lstatSync(join(destination, path), { throwIfNoEntry: false }))
+        fail('missing dependency destination appeared during copy');
+      renameSync(partial, join(destination, path));
       if (progress) progress.materializedTrees++;
     }
     destinationPaths = await enumerate(destination, 'destination-roots-after-copy');
