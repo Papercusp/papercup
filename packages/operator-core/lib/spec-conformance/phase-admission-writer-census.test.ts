@@ -24,6 +24,68 @@ const write = 'async function exampleWrite(tx) { await tx`UPDATE harness_shared.
 
 describe('phase binding writer census', () => {
 
+  it('retains actual postgres query-context effects before lazy queries reach a socket', async () => {
+    const { default: postgres } = await import('postgres');
+    const { createPgDiagnosticHooks, setPgDiagnosticContextResolver, resetPgDiagnosticContextResolver } = await import(
+      '../../../../libs/papercusp/libs/db/src/acquire-registry');
+    // buildClient passes these real hooks to the installed driver. Its Query
+    // constructor invokes the registered resolver synchronously, even when the
+    // query is never awaited. A disconnected pool is not an effect exemption.
+    const content = `
+      setResolver(() => {
+        effect('query-context');
+        if (fail) throw new Error('resolver failure');
+        return null;
+      });
+      const client = postgres('postgres://census:census@127.0.0.1:1/census', {
+        ...hooks('phase-census-context'), max: 1,
+        socket: () => { effect('socket'); throw new Error('unexpected connection'); },
+      });
+      const queries = [client\`SELECT 1\`, client.unsafe('SELECT 2'), client.file('/never-read-phase-census.sql')];
+      return { client, queries };
+    `;
+    const root = mkdtempSync(join(tmpdir(), 'phase-postgres-context-'));
+    try {
+      for (const fail of [false, true]) {
+        const effects: string[] = [];
+        const { client, queries } = new Function('postgres', 'hooks', 'setResolver', 'effect', 'fail', content)(
+          postgres, createPgDiagnosticHooks, setPgDiagnosticContextResolver,
+          (effect: string) => { effects.push(effect); }, fail,
+        ) as { client: ReturnType<typeof postgres>; queries: object[] };
+        try {
+          expect(effects).toEqual(['query-context', 'query-context', 'query-context']);
+          for (const query of queries) {
+            expect(Reflect.get(query, 'executed')).toBe(false);
+            expect(Reflect.get(query, 'diagnosticContext')).toEqual({ state: fail ? 'unknown' : 'unobserved' });
+          }
+        } finally {
+          resetPgDiagnosticContextResolver();
+          await client.end({ timeout: 0 });
+        }
+        expect(effects).toEqual(['query-context', 'query-context', 'query-context']);
+      }
+
+      mkdirSync(join(root, 'packages'));
+      writeFileSync(join(root, 'packages/context.ts'), content);
+      const inventory = inventoryPhaseWriterTree(root);
+      const callbacks = inventory.sites.filter(site => site.statement === "effect('query-context')"
+        && site.unresolved.includes('call-target-declaration-unresolved'));
+      expect(callbacks).toHaveLength(1);
+      const callback = callbacks[0]!;
+      let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, inventory.sites.filter(site => site.id !== callback.id).map(site => review(site))); }
+      catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+      expect(report?.ready).toBe(false);
+      expect(report?.census.coverage.residue).toEqual([callback.id]);
+      expect(report?.census.problems).toEqual([{ id: callback.id, reasons: ['unclassified-writer'] }]);
+    } finally {
+      resetPgDiagnosticContextResolver();
+      rmSync(root, { recursive: true, force: true });
+    }
+    // This proves the actual callback path and its refusal control. Arbitrary
+    // callers, connected pools and the complete repository remain unreviewed.
+  });
+
   it('observes real Drizzle constructor callbacks and refuses an unreviewed callback effect', async () => {
     const { drizzle } = await import('drizzle-orm/postgres-js');
     const { pgTable, integer } = await import('drizzle-orm/pg-core');
