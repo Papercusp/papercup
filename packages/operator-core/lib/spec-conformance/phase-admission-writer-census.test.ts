@@ -161,6 +161,61 @@ describe('phase binding writer census', () => {
     // pool, arbitrary callers and repository census remain unapproved.
   });
 
+  it('classifies only inspected serializer intrinsics while retaining actual iterator and property effects', async () => {
+    const path = 'libs/papercusp/libs/db/src/raw-serializers.ts';
+    const root = new URL('../../../../', import.meta.url);
+    const { numericArrayElementOid, restoreRawJsonbSerializer } = await import(
+      '../../../../libs/papercusp/libs/db/src/raw-serializers');
+    const inspected = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviews: PhaseWriterReview[];
+      };
+    const inventory = inventoryPhaseWriters([{ path, content: readFileSync(new URL(path, root), 'utf8') }]);
+    const sourceIds = new Set(inventory.sites.map(site => site.id));
+    const reviews = inspected.reviews.filter(row => sourceIds.has(row.siteId));
+    const statements = ["Symbol.for('papercusp.db.numericArrayTyping')", 'Symbol.for',
+      'Number.isSafeInteger(el)', 'Number.isSafeInteger'];
+    const intrinsicSites = inventory.sites.filter(site => statements.includes(site.statement));
+    expect(intrinsicSites.map(site => site.statement).sort()).toEqual([...statements].sort());
+    for (const [receiver, key] of [[Symbol, 'for'], [Number, 'isSafeInteger']] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(receiver, key);
+      expect(typeof descriptor?.value).toBe('function');
+      expect(descriptor?.get).toBeUndefined();
+    }
+    expect(reviews.map(row => row.siteId).sort()).toEqual(intrinsicSites.map(site => site.id).sort());
+    const report = reconcilePhaseWriterCensus(inventory, reviews);
+    expect(report.ready).toBe(false);
+    expect(report.coverage.checked.sort()).toEqual(intrinsicSites.map(site => site.id).sort());
+
+    const effects: string[] = [];
+    const value = { [Symbol.toPrimitive]() { throw new Error('numeric predicate coerced an object'); } };
+    expect(numericArrayElementOid([value])).toBeUndefined();
+    expect(numericArrayElementOid([Number.MAX_SAFE_INTEGER])).toBe(20);
+    expect(numericArrayElementOid([Number.MAX_SAFE_INTEGER + 1])).toBe(701);
+    const elements = [1];
+    elements[Symbol.iterator] = function* () { effects.push('iterator'); yield 1; };
+    expect(numericArrayElementOid(elements)).toBe(20);
+    restoreRawJsonbSerializer(new Proxy({}, {
+      get(_target, key) { effects.push(`property:${String(key)}`); return undefined; },
+    }) as Parameters<typeof restoreRawJsonbSerializer>[0]);
+    expect(effects).toEqual(['iterator', 'property:options']);
+
+    // The real functions execute these caller-provided effects before any SQL.
+    // Reviewing their intrinsics cannot approve either enclosing invocation.
+    const frontiers = inventory.sites.filter(site =>
+      (site.operation === 'numericArrayElementOid' && site.statement.startsWith('for (const el of elements)'))
+      || (site.operation === 'restoreRawJsonbSerializer' && site.statement.includes('?.options'))
+      || site.statement === 'serializer(unwrapped)');
+    expect(frontiers.some(site => site.unresolved.includes('implicit-dispatch-requires-review'))).toBe(true);
+    expect(frontiers.some(site => site.unresolved.includes('property-dispatch-requires-review'))).toBe(true);
+    expect(frontiers.some(site => site.unresolved.includes('indirect-call-target-requires-review'))).toBe(true);
+    for (const site of frontiers) expect(report.coverage.residue).toContain(site.id);
+    for (const site of intrinsicSites) {
+      const omitted = reconcilePhaseWriterCensus(inventory, reviews.filter(row => row.siteId !== site.id));
+      expect(omitted.problems).toContainEqual({ id: site.id, reasons: ['unclassified-writer'] });
+    }
+  });
+
   it('retains canonical claim read and release reviews without accepting advancing writes', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(
