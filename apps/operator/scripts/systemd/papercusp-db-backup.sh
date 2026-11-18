@@ -480,6 +480,8 @@ run_bounded_watched() {
   local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
   local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed space_abort_reason
   local last_bytes=0 last_progress_epoch=0 current_bytes=0 progress_path_seen=0
+  local measurement_output measurement_rc measurement_detail measurement_stage
+  local measurement_started_epoch measurement_finished_epoch
   local last_diagnostic_epoch
   local backup_diagnostic_last_path='' backup_diagnostic_last_snapshot='' backup_diagnostic_last_elapsed=''
   start_epoch=$(date +%s)
@@ -518,13 +520,32 @@ run_bounded_watched() {
         current_bytes=0
       else
         progress_path_seen=1
-        measurement_output=$(timeout --kill-after=1s 4s sudo -n -u postgres du -sb "$progress_path" 2>&1)
+        # The marker proves only that the post-sudo shell started; its absence
+        # cannot locate a delay inside sudo/PAM. Keep it in the bounded capture,
+        # strip the exact frame before parsing du, and retain the same deadline.
+        measurement_stage=post-sudo-unobserved
+        measurement_started_epoch=${EPOCHREALTIME:-unknown}
+        measurement_output=$(timeout --kill-after=1s 4s sudo -n -u postgres sh -c '
+          printf "%s\n" "papercusp-progress-probe:post-sudo" >&2
+          exec du -sb -- "$1"
+        ' papercusp-progress-probe "$progress_path" 2>&1)
         measurement_rc=$?
+        measurement_finished_epoch=${EPOCHREALTIME:-unknown}
+        case "$measurement_output" in
+          papercusp-progress-probe:post-sudo)
+            measurement_stage=post-sudo-entered
+            measurement_output=''
+            ;;
+          papercusp-progress-probe:post-sudo$'\n'*)
+            measurement_stage=post-sudo-entered
+            measurement_output=${measurement_output#*$'\n'}
+            ;;
+        esac
         current_bytes=${measurement_output%%$'\t'*}
         if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
           measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
           measurement_detail=${measurement_detail:0:240}
-          log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc output=${measurement_detail:-<empty>}); terminating bounded producer"
+          log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc probe_stage=$measurement_stage probe_started_epoch=$measurement_started_epoch probe_finished_epoch=$measurement_finished_epoch output=${measurement_detail:-<empty>}); terminating bounded producer"
           log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" progress-unreadable
           kill -TERM "$dump_pid" 2>/dev/null
           sleep "$KILL_GRACE_SEC"
