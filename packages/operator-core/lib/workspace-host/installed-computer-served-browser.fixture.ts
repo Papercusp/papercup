@@ -616,7 +616,10 @@ export async function runInstalledComputerServedBrowser(input: Input) {
         value: hosted.plane.components.sessionCookieCodec.encode(session.id), domain: new URL(origin).hostname,
         path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' }], origins: [] }), { mode: 0o600 });
       await stage('installed-portal-browser-prerequisites');
-      browser = await chromium.launch({ channel: 'chrome', headless: true });
+      // Preserve the browser's network-change source if local ESM imports
+      // fail before the Portal journey. Default capture omits credentials.
+      browser = await chromium.launch({ channel: 'chrome', headless: true,
+        args: [`--log-net-log=${evidence}-browser-netlog.json`] });
       const preflight = await browser.newContext({ storageState: storageStatePath, ignoreHTTPSErrors: true });
       try {
         await stage('installed-local-consent-browser-prerequisite');
@@ -686,7 +689,8 @@ export async function runInstalledComputerServedBrowser(input: Input) {
         liveRosterIndex, linkedWorkspaceCount: rows.length, fixturePath,
         limitations: ['One private live display plus synthetic inventory; no owner account pairing', 'Mutation/BAR proof remains separate'] };
     }
-    browser = await chromium.launch({ channel: 'chrome', headless: true });
+    browser = await chromium.launch({ channel: 'chrome', headless: true,
+      args: [`--log-net-log=${evidence}-browser-netlog.json`] });
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     await context.addCookies([{ name: HOSTED_SESSION_COOKIE,
       value: hosted.plane.components.sessionCookieCodec.encode(session.id), url: origin,
