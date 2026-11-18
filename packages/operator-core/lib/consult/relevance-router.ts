@@ -622,8 +622,11 @@ export function expertiseSubject(question: string): string | null {
   const path = extractPathTokens(primary, 1)[0] ?? null;
   const planRef = primary.match(/\bplan:[a-z0-9][a-z0-9._-]*\b/i)?.[0] ?? null;
   // Dated plan/campaign refs are exact historical subjects when the question
-  // explicitly frames one as existing work. Bare date slugs remain ordinary prose.
-  const plan = primary.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1] ?? null;
+  // frames one as existing work, including a following explicit plan number.
+  // Bare date slugs remain ordinary prose; delivery instructions stay excluded.
+  const plan = primary.match(/\b(?:existing|plan|campaign)\s+([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b/i)?.[1]
+    ?? primary.match(/\b([a-z][a-z0-9-]*-\d{4}-\d{2}-\d{2})\b(?=\s+plan\s*[:#=]?\s*\d+\b)/i)?.[1]
+    ?? null;
   return tool ?? path ?? planRef ?? plan;
 }
 

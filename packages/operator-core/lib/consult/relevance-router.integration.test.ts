@@ -32,6 +32,7 @@ import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { resolveProseProfileSelection } from '../search/prose-vector-dims';
 import {
   routeConsult,
+  expertiseSubject,
   extractPathTokens,
   DEFAULT_SIM_FLOOR,
   DEFAULT_RELEVANCE_FLOOR,
@@ -393,6 +394,33 @@ describe('bounded subject evidence against real transcript SQL', () => {
     }
     await rootSql`UPDATE harness_shared.session_turns SET text = ${text}, chunked_at = NULL WHERE owner = ${owner}`;
   }
+
+  it('fences a versioned benchmark review from unrelated parking-review history', async () => {
+    const plan = 'benchmark-coverage-frontierswe-v2-2026-10-10';
+    const reviewQuestion = `Review the affected implementation assumptions in ${plan} plan192/hashabc1234. ` +
+      'Check nativeScenario and privateMcpPreflightOnlyScenario. Does this preserve current-build acceptance?';
+    const parking = 'Reviewed acceptance-consult-backed-parking-2026-10-12: independent current-build ' +
+      'acceptance, implementation assumptions, and canonical plan activation.';
+    const benchmark = `Reviewed ${plan}: nativeScenario and privateMcpPreflightOnlyScenario preserve ` +
+      'native/carry, metering, denominators and independent current-build acceptance.';
+    await passage('subject-parking-review', parking, 0);
+    await passage('subject-benchmark-review', benchmark, 0.1);
+    // acceptFeedbackRequestProd persists this inferred source as an explicit
+    // subject ref. Even a permissive semantic score cannot replace its anchor.
+    const subject = expertiseSubject(reviewQuestion);
+    expect(subject).toBe(plan);
+    const scored: string[] = [];
+    const result = await routeConsult({ ...baseParams, question: reviewQuestion, subjectRefs: [subject!] }, deps(0, {
+      scoreSubjectEvidence: async (_subject, texts) => {
+        scored.push(...texts);
+        return texts.map(() => 1);
+      },
+    }));
+    expect(result.snapshot.subjectRefs).toEqual([plan]);
+    expect(result.qualified.map(c => c.ownerId)).toEqual(['subject-benchmark-review']);
+    expect(scored).toContain(benchmark);
+    expect(scored).not.toContain(parking);
+  });
 
   it('invalidates a previous chunk marker when replacing fixture transcript text', async () => {
     await passage('subject-chunk-marker', 'replacement transcript', 0, true);
