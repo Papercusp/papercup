@@ -4674,6 +4674,523 @@
           ]
         }
       ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot\",\"helper-edge\",\"9c34866f61b38a03ae65a0cf4ec27933e234080ba8f2c2b35bf5ebb7422177f6\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "9c34866f61b38a03ae65a0cf4ec27933e234080ba8f2c2b35bf5ebb7422177f6",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Array.from",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "active",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "([hopId, hop]) =>\n            Object.freeze({\n              hopId,\n              stage: hop.stage,\n              boundary: hop.boundary,\n            })",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "call-target-declaration-unresolved",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot\",\"helper-edge\",\"b2c25fc10a321159590aa705de9494dff6851e152ddd6d27ba60e5f8e127e592\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "b2c25fc10a321159590aa705de9494dff6851e152ddd6d27ba60e5f8e127e592",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Object.freeze",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "Array.from(active, ([hopId, hop]) =>\n            Object.freeze({\n              hopId,\n              stage: hop.stage,\n              boundary: hop.boundary,\n            }),\n          )",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "call-target-declaration-unresolved",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot\",\"helper-edge\",\"b60e6e59bdc9601363ca2268839a4bbf94ebf19fd3034c055517defc82ca54e8\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "b60e6e59bdc9601363ca2268839a4bbf94ebf19fd3034c055517defc82ca54e8",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Object.freeze",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "{\n        context,\n        status,\n        unobservedHops,\n        activeHops: Object.freeze(\n          Array.from(active, ([hopId, hop]) =>\n            Object.freeze({\n              hopId,\n              stage: hop.stage,\n              boundary: hop.boundary,\n            }),\n          ),\n        ),\n      }",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "call-target-declaration-unresolved",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot\",\"unresolved\",\"2bbb3c54a145ccc36198b5292862cd9107d2ec63a27a3b03186fbd68b9ceed07\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "2bbb3c54a145ccc36198b5292862cd9107d2ec63a27a3b03186fbd68b9ceed07",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Object",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "freeze",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot\",\"unresolved\",\"2bbb3c54a145ccc36198b5292862cd9107d2ec63a27a3b03186fbd68b9ceed07\"]#2",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "2bbb3c54a145ccc36198b5292862cd9107d2ec63a27a3b03186fbd68b9ceed07",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Object",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "freeze",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot\",\"unresolved\",\"f059635e99acab26ef197f48a0329404c1140e52c22720d46fb5f016629ae07f\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "f059635e99acab26ef197f48a0329404c1140e52c22720d46fb5f016629ae07f",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Array",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "from",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot::<callback>\",\"helper-edge\",\"777179056b9adbf194cf8508f676a335ef76c4cfdb18452fc72fd6b58527025d\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "777179056b9adbf194cf8508f676a335ef76c4cfdb18452fc72fd6b58527025d",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Object.freeze",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "{\n              hopId,\n              stage: hop.stage,\n              boundary: hop.boundary,\n            }",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "call-target-declaration-unresolved",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot::<callback>\",\"unresolved\",\"2bbb3c54a145ccc36198b5292862cd9107d2ec63a27a3b03186fbd68b9ceed07\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "2bbb3c54a145ccc36198b5292862cd9107d2ec63a27a3b03186fbd68b9ceed07",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Object",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "freeze",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot::<callback>\",\"unresolved\",\"2de70afd4e6e4aad083275d44ea72c74520daf44a33918f829d32a42a589614a\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "2de70afd4e6e4aad083275d44ea72c74520daf44a33918f829d32a42a589614a",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "hop",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "boundary",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot::<callback>\",\"unresolved\",\"4cc504f7185168b427449da6318b6ea6361589e032ccc16de5bfe9b7974903d1\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "4cc504f7185168b427449da6318b6ea6361589e032ccc16de5bfe9b7974903d1",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "[hopId, hop]",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "implicit-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts\",\"createStageAttempt::snapshot::<callback>\",\"unresolved\",\"4cc5b928265a9ce3d0a8590e60eb11367b4822cef204551416b7d95a5b838c9b\"]#1",
+      "sourceSha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490",
+      "statementSha256": "4cc5b928265a9ce3d0a8590e60eb11367b4822cef204551416b7d95a5b838c9b",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "hop",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "stage",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected createStageAttempt and its complete snapshot body. active is a private native Map, written only with module-created data records after exact stage/boundary validation; it is never returned. Native Map iteration supplies plain entry arrays, so the mapper's destructuring and hop.stage/hop.boundary reads cannot call a supplied getter or iterator. The mapper copies primitive fields into fresh object literals. Array.from and Object.freeze are intrinsic data properties, and the resulting arrays/records are source-created. snapshot copies the already-created context by reference and never calls emit, sink, SQL, append or a caller callback. This exact source-owned body is metadata-only; invoking an arbitrary StageAttempt.snapshot or spreading a supplied attempt.context remains unreviewed.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts#createStageAttempt",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies source-owned stage snapshots while retaining supplied snapshot and context effects"
+          ]
+        }
+      ]
     }
   ],
   "pendingAdvancing": [
