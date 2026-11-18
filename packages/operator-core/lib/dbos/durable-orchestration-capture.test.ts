@@ -87,7 +87,7 @@ afterEach(() => {
 });
 
 describe('source-reviewed DBOS nonpersisting SQL', () => {
-  const crashFixtureHash = '66ade3b1450e5573957875cb21131f24038de472faa8623a57aeb172cb30004e';
+  const crashFixtureHash = 'a4b1bc623d29fbd30fa950357b79c8770fa5abbb955767cba9f34848cd61f904';
   const sources = {
     systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
     databaseUtils: 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4',

@@ -198,6 +198,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
       .map((row: { column_name: string }) => row.column_name)])) as
     Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
   const serverValues = reviewedDurableServerValues({ systemDatabase: sdkSourceHashes.systemDatabase!, serverMessageSourceRef,
+    retainCommittedRows: setup.retainCommittedRows === true,
     marker: createHash('sha256').update(JSON.stringify({ scope, mode, runKey, pid: setup.producerPid })).digest('hex'),
     columns, catalogSourceRef: setupPath + '#catalog@sha256:' + digest(Buffer.from(JSON.stringify(setup.catalog))) });
   if (!serverValues || !isDeepStrictEqual(setup.columns, columns) || !isDeepStrictEqual(setup.fixture, serverValues))

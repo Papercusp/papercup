@@ -92,6 +92,52 @@ const { runChild, calls, stepNames, crashThenRecover } = createDurableCrashHarne
 
 const key = (label: string) => label + '-' + randomBytes(4).toString('hex');
 
+describe('GEC committed-row retention across real producer death', () => {
+  it.each(['C5', 'C6'] as const)('%s independently retains committed values without qualifying missing costs', async caseId => {
+    const runKey = key('committed-rows-' + caseId);
+    const scope: GroundedMeasurementScope = { workspaceId: 'ws-p019-crash', harness: 'receipt-control',
+      potId: 'receipt-control', runId: runKey, ownerId: 'durable-crash-caller', caseId, arm: 'pre', iteration: 1,
+      manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: 'measurement-control',
+      sourceFingerprint: 'current-source-control', testFingerprint: 'committed-row-retention',
+      runtimeFingerprint: process.versions.node, configFingerprint: 'private-pg-deterministic' };
+    const scenario: Scenario = { runKey, gecScope: scope, retainCommittedRows: true,
+      crashTarget: caseId === 'C5' ? 'before:items:put' : 'mail:send',
+      script: caseId === 'C5'
+        ? "const a = await tools.call('items:get', { k: 1 }); return await tools.call('items:put', { k: 1, prior: a.tool });"
+        : "await tools.call('items:get', { k: 2 }); return await tools.call('mail:send', { k: 2 });" };
+    const result = await crashThenRecover(scenario);
+    const captures = (['crash', 'recover'] as const).map(mode => {
+      expect(result.committedRows[mode]).toBeTruthy();
+      const retained = JSON.parse(readFileSync(result.committedRows[mode]!, 'utf8'));
+      const setup = JSON.parse(readFileSync(join(gecArtifacts, `${runKey}-${mode}.server-values.json`), 'utf8'));
+      expect(retained).toMatchObject({ kind: 'dbos-independent-committed-server-values', scope, mode, runKey,
+        accountingScope: 'committed-server-values-only', acceptance: 'unmeasured', missingReceipt: 'unknown',
+        queryComplete: true, operationCensus: 'unmeasured', storageBytes: null,
+        parameters: [setup.fixture.committedRows.marker] });
+      expect(retained.child.pid).not.toBe(retained.producerPid);
+      expect(retained.child).toMatchObject(mode === 'crash'
+        ? { status: null, signal: 'SIGKILL' } : { status: 0, signal: null });
+      expect(retained.rows.length).toBeGreaterThan(0);
+      for (const row of retained.rows) {
+        expect(row.sequence).toMatch(/^[1-9][0-9]*$/);
+        expect(row.receipt.marker).toBe(retained.marker);
+        expect(row.receipt.backend).not.toBe(retained.readerBackendPid);
+      }
+      return retained;
+    });
+    expect(captures[0].marker).not.toBe(captures[1].marker);
+    const committedRead = captures[0].rows.filter((row: { receipt: { table: string; values: Array<{ column: string; hex: string | null }> } }) =>
+      row.receipt.table === 'operation_outputs' && row.receipt.values.some(value =>
+        value.column === 'function_name' && value.hex === Buffer.from('tool:0:items:get').toString('hex')));
+    expect(committedRead.length).toBeGreaterThan(0);
+    const originalCalls = await calls(runKey);
+    expect(originalCalls.map(row => [row.tool, row.mode])).toEqual(caseId === 'C5'
+      ? [['items:get', 'crash'], ['items:put', 'recover']]
+      : [['items:get', 'crash'], ['mail:send', 'crash']]);
+    expect(result.outcome.status).toBe(caseId === 'C5' ? 'succeeded' : 'needs-reconciliation');
+  }, 400_000);
+});
+
 describe('GEC frozen B durable consumer captures', () => {
   for (const caseId of ['C3', 'C5', 'C6'] as const) it.each([1, 2, 3])(`${caseId} retains actual crash/replay step tapes iteration %i`, async iteration => {
     const materialized = materializeGroundedFixture(`durable-${caseId}-${iteration}-${randomBytes(4).toString('hex')}`);

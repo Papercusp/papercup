@@ -17,6 +17,8 @@ export interface DurableCrashScenario {
   revoke?: string;
   inputs?: Record<string, string>;
   gecScope?: GroundedMeasurementScope;
+  /** Independent measurement only; absence never proves zero writes. */
+  retainCommittedRows?: boolean;
 }
 
 interface DurableChildCapture {
@@ -53,6 +55,7 @@ export function createDurableCrashHarness(config: {
       Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
     const sourceRef = join(config.artifacts, `${scenario.runKey}-${mode}.server-values.json`);
     const fixture = reviewedDurableServerValues({ systemDatabase, serverMessageSourceRef, columns,
+      retainCommittedRows: scenario.retainCommittedRows === true,
       marker: digest(JSON.stringify({ scope: scenario.gecScope, mode, runKey: scenario.runKey, pid: process.pid })),
       catalogSourceRef: sourceRef + '#catalog@sha256:' + digest(JSON.stringify(catalog)) });
     if (!fixture) throw new Error('GEC unreviewed installed DBOS server-value writer or protocol');
@@ -60,7 +63,45 @@ export function createDurableCrashHarness(config: {
     writeFileSync(sourceRef, JSON.stringify({ kind: 'dbos-server-value-setup', scope: scenario.gecScope,
       mode, runKey: scenario.runKey, producerPid: process.pid, databaseHash: digest(config.dsn()),
       systemDatabase, serverMessageSourceRef, query, catalog, columns, fixture,
+      retainCommittedRows: scenario.retainCommittedRows === true,
       complete: true, exclusive: true }), { flag: 'wx', mode: 0o600 });
+  }
+  async function retainCommittedRows(mode: 'crash' | 'recover', scenario: DurableCrashScenario,
+    child: ReturnType<typeof spawnSync>) {
+    if (!scenario.retainCommittedRows) return null;
+    const setupPath = join(config.artifacts, `${scenario.runKey}-${mode}.server-values.json`);
+    const setupBytes = readFileSync(setupPath);
+    const setup = JSON.parse(setupBytes.toString('utf8')) as {
+      mode: string; runKey: string; databaseHash: string; retainCommittedRows: boolean;
+      fixture: NonNullable<ReturnType<typeof reviewedDurableServerValues>>;
+    };
+    const enrollment = setup.fixture.committedRows;
+    const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+    if (setup.mode !== mode || setup.runKey !== scenario.runKey || !setup.retainCommittedRows
+      || setup.databaseHash !== digest(config.dsn()) || !enrollment)
+      throw new Error('GEC missing matching committed-row enrollment');
+    // This connection exists in the parent after the child has exited. Query
+    // only this launch's marker; recovery never inherits the crash population.
+    const admittedAt = new Date().toISOString();
+    const reader = await config.sql().reserve();
+    try {
+      const [identity] = await reader.unsafe('SELECT pg_backend_pid() AS backend_pid');
+      if (!identity || !Number.isSafeInteger(identity.backend_pid) || identity.backend_pid <= 0)
+        throw new Error('GEC missing independent receipt reader identity');
+      const rows = [...await reader.unsafe(enrollment.query, [enrollment.marker])];
+      const sourceRef = join(config.artifacts, `${scenario.runKey}-${mode}.committed-rows.json`);
+      writeFileSync(sourceRef, JSON.stringify({ kind: 'dbos-independent-committed-server-values',
+        scope: scenario.gecScope, mode, runKey: scenario.runKey, producerPid: process.pid,
+        databaseHash: setup.databaseHash, setupSourceRef: setupPath + '@sha256:' + digest(setupBytes),
+        admittedAt, settledAt: new Date().toISOString(), readerBackendPid: identity.backend_pid,
+        child: { pid: child.pid, status: child.status, signal: child.signal, error: child.error?.message ?? null },
+        ...enrollment, parameters: [enrollment.marker], rows,
+        // A successful query proves visibility of these rows, not operation,
+        // transaction or storage-cost completeness. Missing receipts stay unknown.
+        queryComplete: true, operationCensus: 'unmeasured', storageBytes: null,
+      }), { flag: 'wx', mode: 0o600 });
+      return sourceRef;
+    } finally { reader.release(); }
   }
   async function retainInitialKeys(mode: 'crash' | 'recover', scenario: DurableCrashScenario) {
     if (!scenario.gecScope) return;
@@ -133,22 +174,28 @@ export function createDurableCrashHarness(config: {
     return rows.map(row => String(row.function_name));
   }
   async function crashThenRecover(scenario: DurableCrashScenario) {
+    if (scenario.retainCommittedRows && !scenario.gecScope)
+      throw new Error('GEC committed-row enrollment requires an explicit measurement scope');
     await retainInitialKeys('crash', scenario);
     const crashed = runChild('crash', scenario);
+    const crashCommittedRows = await retainCommittedRows('crash', scenario, crashed);
     expect(crashed.signal, 'crash child stdout: ' + crashed.stdout + '\nstderr: ' + crashed.stderr).toBe('SIGKILL');
     const afterCrash = await calls(scenario.runKey);
     await retainInitialKeys('recover', scenario);
     const recovered = runChild('recover', scenario);
+    const recoveryCommittedRows = await retainCommittedRows('recover', scenario, recovered);
     expect(recovered.status, 'recovery stdout: ' + recovered.stdout + '\nstderr: ' + recovered.stderr).toBe(0);
     const line = recovered.stdout.split('\n').find(candidate => candidate.startsWith('DURABLE_OUTCOME '));
     expect(line, 'recovery stdout: ' + recovered.stdout).toBeDefined();
     const parsed = JSON.parse(line!.slice('DURABLE_OUTCOME '.length)) as {
       outcome: Record<string, unknown>; status: { status: string; steps: Array<{ name: string }> };
     };
-    return { afterCrash, ...parsed };
+    return { afterCrash, ...parsed, committedRows: { crash: crashCommittedRows, recover: recoveryCommittedRows } };
   }
-  async function groundedStage(caseId: 'C3' | 'C5' | 'C6', scope: GroundedMeasurementScope) {
+  async function groundedStage(caseId: 'C3' | 'C5' | 'C6', scope: GroundedMeasurementScope,
+    options: Pick<DurableCrashScenario, 'retainCommittedRows'> = {}) {
     const scenario: DurableCrashScenario = { runKey: `${scope.runId}-${caseId}-${scope.iteration}`, gecScope: scope,
+      ...options,
       crashTarget: caseId === 'C3' ? 'before:items:get' : caseId === 'C5' ? 'before:items:put' : 'mail:send',
       ...(caseId === 'C3' ? { revoke: 'items:put' } : {}),
       script: caseId === 'C3'
