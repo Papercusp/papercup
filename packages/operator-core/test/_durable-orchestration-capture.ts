@@ -16,6 +16,10 @@ const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939
 export function reviewedDurableServerValues(input: {
   systemDatabase: string; serverMessageSourceRef: string; marker: string; catalogSourceRef: string;
   columns: Record<'workflow_status' | 'operation_outputs' | 'application_versions', string[]>;
+  /** Exclusive private fixture only. Receipt rows commit atomically with NEW;
+   * a different connection must read them after the observed process settles.
+   * Missing rows never prove a no-op, rollback, or an operation terminal. */
+  retainCommittedRows?: boolean;
 }) {
   const writer = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
   const driver = 'source:pg/lib/client.js@4d8f863700d5a94c443edf9186f546c555486a66d0575806a2fe792c43911a46#NoticeResponse+ReadyForQuery';
@@ -35,6 +39,16 @@ export function reviewedDurableServerValues(input: {
   ];
   const serverSqlWrites: NonNullable<Parameters<typeof observeGroundedStoreOperations>[0]['serverSqlWrites']>[number][] = [];
   const ddl: string[] = [];
+  const committedRows = input.retainCommittedRows ? {
+    accountingScope: 'committed-server-values-only' as const,
+    acceptance: 'unmeasured' as const,
+    missingReceipt: 'unknown' as const,
+    marker: input.marker,
+    // Sequence gaps include rolled-back inserts and are never a row census.
+    query: "SELECT sequence::text, receipt FROM dbos.gec_committed_server_values WHERE receipt->>'marker' = $1 ORDER BY sequence",
+  } : null;
+  if (committedRows) ddl.push(`CREATE TABLE IF NOT EXISTS dbos.gec_committed_server_values (
+    sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, receipt json NOT NULL)`);
   for (const table of ['workflow_status', 'operation_outputs', 'application_versions'] as const) {
     const columns = input.columns[table];
     if (!Array.isArray(columns) || !columns.length || new Set(columns).size !== columns.length
@@ -44,7 +58,7 @@ export function reviewedDurableServerValues(input: {
           'hex', encode(convert_to(NEW."${column}"::text, 'UTF8'), 'hex'),
           'changed', TG_OP = 'INSERT' OR OLD."${column}" IS DISTINCT FROM NEW."${column}")`).join(',\n        ');
     const functionName = `gec_server_values_${table}`;
-    const trigger = `CREATE OR REPLACE FUNCTION dbos.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
+    let trigger = `CREATE OR REPLACE FUNCTION dbos.${functionName}() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         RAISE NOTICE USING MESSAGE = 'GEC-SERVER-VALUES-v1', DETAIL = json_build_object(
           'marker', '${input.marker}', 'backend', pg_backend_pid(),
@@ -54,6 +68,14 @@ export function reviewedDurableServerValues(input: {
           'values', json_build_array(${values}))::text;
         RETURN NEW;
       END $$`;
+    if (committedRows) {
+      // Reuse the exact original server serialization for both channels. The
+      // receipt INSERT is in the writer's transaction; NOTICE alone is not.
+      trigger = trigger.replace('      BEGIN', '      DECLARE receipt json;\n      BEGIN')
+        .replace("RAISE NOTICE USING MESSAGE = 'GEC-SERVER-VALUES-v1', DETAIL = json_build_object(",
+          'receipt := json_build_object(')
+        .replace('))::text;', ")) ;\n        INSERT INTO dbos.gec_committed_server_values (receipt) VALUES (receipt);\n        RAISE NOTICE USING MESSAGE = 'GEC-SERVER-VALUES-v1', DETAIL = receipt::text;");
+    }
     ddl.push(trigger, `DROP TRIGGER IF EXISTS ${functionName} ON dbos.${table}`,
       `CREATE TRIGGER ${functionName} AFTER INSERT OR UPDATE ON dbos.${table} FOR EACH ROW EXECUTE FUNCTION dbos.${functionName}()`);
     for (const statement of statements.filter(row => row.table === table)) serverSqlWrites.push({
@@ -63,7 +85,7 @@ export function reviewedDurableServerValues(input: {
       serverMessageSourceRef: driver, marker: input.marker, schema: 'dbos', table, columns: [...columns], exclusive: true,
     });
   }
-  return { ddl, serverSqlWrites };
+  return { ddl, serverSqlWrites, committedRows };
 }
 
 /** The fixture stores its already-serialized effect payload in args TEXT.
