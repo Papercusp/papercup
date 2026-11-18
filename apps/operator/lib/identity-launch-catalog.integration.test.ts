@@ -49,13 +49,17 @@ async function writeBlueprint(dir: string, source: Record<string, unknown>) {
 async function routeFetch(input: string | URL | Request): Promise<Response> {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
   requested.push(`${url.pathname}${url.search}`);
+  console.info('[identity-catalog-phase]', JSON.stringify({ phase: 'route-import-start', path: url.pathname }));
   const { default: routes } = await import('@papercusp/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su');
+  console.info('[identity-catalog-phase]', JSON.stringify({ phase: 'route-imported', path: url.pathname }));
   const route = (routes as Array<{ method: string; path?: string; handler: (r: Request, c: unknown) => Promise<Response> }>)
     .find((entry) => entry.method === 'GET' && entry.path === '/agent-mcp/console/bootstrap-su/options');
   if (!route) throw new Error('bootstrap-su options route is not registered');
   // Real principal gate: a loopback Host resolves the loopback principal.
-  return route.handler(new Request(`http://127.0.0.1:3070${url.pathname}${url.search}`,
+  const response = await route.handler(new Request(`http://127.0.0.1:3070${url.pathname}${url.search}`,
     { headers: { host: '127.0.0.1:3070' } }), { log() {} });
+  console.info('[identity-catalog-phase]', JSON.stringify({ phase: 'route-result', path: url.pathname, status: response.status }));
+  return response;
 }
 
 async function readAllPages(): Promise<Page[]> {
@@ -172,6 +176,9 @@ describe('R-9 identity launch catalog (integration)', () => {
     const { resolveNamedIdentityCompositionSelection } =
       await import('@papercusp/operator-core/lib/agent-identities/source');
     const input = { id: NAMED, repoDir: home, componentRefs: [`domain:${INSTALLED}`, `practice:${PRACTICE}`] };
+    const { getIdentitySource } = await import('@papercusp/operator-core/lib/agent-identities/source');
+    const selected = await getIdentitySource(INSTALLED, { repoDir: home });
+    expect(selected, JSON.stringify(selected)).toMatchObject({ ok: true });
     const preview = await previewNamedIdentityComposition(input);
     expect(preview.preview.launchCompatibility).toMatchObject({ eligible: true });
     expect((await saveNamedIdentityComposition(input)).ok).toBe(true);
