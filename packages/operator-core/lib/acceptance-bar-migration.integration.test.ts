@@ -17,6 +17,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 import { runAcceptanceBarMigrationInDatabase } from './acceptance-bar-migration';
+import { rubricTemplateDataAuthoringSchema } from './agent-tools/plans/rubric-template';
 
 const WORKSPACE = 'acceptance-bar-migration-test';
 const HARNESS = 'papercusp';
@@ -161,6 +162,62 @@ async function insertPlan(slug: string, content: string, status: string) {
 }
 
 describe('runAcceptanceBarMigrationInDatabase', () => {
+  it.each([
+    { label: 'legacy manual layer', layers: ['manual-provenance'], valid: false },
+    { label: 'unrecorded layer', layers: ['unrecorded-layer'], valid: false },
+    { label: 'explicit manual check', layers: [], valid: true },
+  ])('validates projected layers in both preview and apply: $label', async ({ layers, valid }) => {
+    const slug = 'legacy-manual-layers';
+    const content = validContent(slug, 'active').replace('| R-1 | P-001 | tree |', '| R-1 | P-001 | live |');
+    await insertPlan(slug, content, 'active');
+    const legacy = {
+      kind: 'acceptance', subjectPlan: slug, characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'degraded', 'broken', 'unknown'], criteria: [{
+        key: 'manual-outcome', title: 'Canonical outcome', model: 'The migration writes one canonical BAR.',
+        barKey: 'R-1', barHash: 'a'.repeat(64), role: 'outcome', mandatory: true,
+        requiredScope: ['selected-wager'], passRatings: ['healthy'],
+        method: 'Inspect the installed runtime and retain its exact artifact receipt.',
+        replication: 'EXPLICIT MANUAL CHECK: compare the installed artifact with its signed shipment receipt.',
+        driftMarkers: 'The installed artifact differs from the accepted shipment.',
+        evidencePlane: 'live', evidenceRuntime: 'desktop-shell', requiredTestLayers: layers,
+        check: { kind: 'instrument', instrumentKey: 'none' },
+      }],
+    };
+    const parsed = rubricTemplateDataAuthoringSchema.safeParse(legacy);
+    expect(parsed.success, parsed.success ? '' : parsed.error.message).toBe(true);
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,title,status,content,content_hash,version,template,template_data)
+      VALUES (${WORKSPACE},${HARNESS},'acceptance-manual-layers','Manual acceptance','active',
+        'legacy body',md5('legacy body'),3,'rubric',${JSON.stringify(legacy)}::text::jsonb)`;
+    const outcomes = [];
+    for (const dryRun of [true, false]) {
+      const result = await runAcceptanceBarMigrationInDatabase({
+        workspaceId: WORKSPACE, harnessSlug: HARNESS, actorId: 'su-migration-test',
+        planSlug: slug, dryRun, legacyCriterionMap: { 'R-1': 'manual-outcome' },
+      });
+      outcomes.push(result.outcomes[0]!);
+    }
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(valid ? ['dry-run', 'applied'] : ['refused', 'failed']);
+    const [rubric] = await db.sql`SELECT version,template_data FROM harness_shared.harness_plans
+      WHERE workspace_id=${WORKSPACE} AND plan_slug='acceptance-manual-layers'`;
+    const clauses = await db.sql`SELECT r.required_test_layers FROM harness_shared.plan_spec_clause_revisions r
+      WHERE r.workspace_id=${WORKSPACE} AND r.plan_slug=${slug}`;
+    if (valid) {
+      expect(Number(rubric.version)).toBe(4);
+      expect(clauses).toHaveLength(1);
+      expect(clauses[0]!.required_test_layers).toEqual([]);
+      const { barHash: _oldHash, requiredScope: _oldScope, ...preserved } = legacy.criteria[0]!;
+      expect(rubric.template_data.criteria[0]).toMatchObject(preserved);
+      expect(rubric.template_data.criteria[0].requiredScope).toEqual(['live']);
+      expect(rubric.template_data.criteria[0].barHash).toMatch(/^[a-f0-9]{64}$/);
+    } else {
+      for (const outcome of outcomes) expect(outcome.detail).toContain('test_layers_invalid');
+      expect(Number(rubric.version)).toBe(3);
+      expect(rubric.template_data).toEqual(legacy);
+      expect(clauses).toHaveLength(0);
+    }
+  });
+
   it('adopts a complete explicit legacy-criterion map through the canonical transaction', async () => {
     await insertPlan('legacy-identity', validContent('legacy-identity', 'active'), 'active');
     const legacy = { kind: 'acceptance', subjectPlan: 'legacy-identity', characteristic: 'plan-acceptance',
