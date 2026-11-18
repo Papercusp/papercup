@@ -3214,6 +3214,16 @@ export function runCapturedTestProcess(command, args, options = {}) {
   const runPayload = (admissionContext, governedEnv, { inherited = false } = {}, scopeSupport = null) => new Promise((resolveRun) => {
     const startedAt = Date.now();
     const childEnv = startupTraceEnv(governedEnv ?? env);
+    const explicitCutoffAtMs = readTaskDeadlineEpochMs({
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: childEnv.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS,
+    });
+    const taskDeadlineAtMs = readTaskDeadlineEpochMs(childEnv);
+    // A routed caller owns its reserve. Standalone callers need the shared
+    // admission reserve for the router's own proof and receipt settlement.
+    const childCutoffAtMs = explicitCutoffAtMs !== null
+      ? Math.min(explicitCutoffAtMs, taskDeadlineAtMs ?? Infinity)
+      : taskDeadlineAtMs === null ? null
+        : admitTaskDeadline({ env: childEnv, nowMs: startedAt }).childCutoffEpochMs;
     // EI-21903376339103215: snapshot BEFORE spawning so the close handler below can diff against
     // it and attribute only THIS run's own freeze time, not freeze time from an earlier group
     // sharing the same pc-heavy admission.
@@ -3258,6 +3268,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let settled = false;
     let terminationStarted = false;
     let forceTimer = null;
+    let childDeadlineTimer = null;
     let progressWatchdog = null;
     let allFilesCompleteObserved = false;
     let processDiagnostic = null;
@@ -3343,7 +3354,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
         emitProgress('reaping');
         killOwned('SIGKILL');
         stopOwnedScope(state);
-      }, killGraceMs);
+      }, childCutoffAtMs === null ? killGraceMs
+        : Math.max(0, Math.min(killGraceMs, childCutoffAtMs - Date.now())));
       forceTimer.unref?.();
     };
     const removeSignalForwarders = () => {
@@ -3519,6 +3531,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
       onExtend: () => emitProgress('watchdog-extended'),
       onKill: () => terminate('timeout'),
     });
+    // Active-time progress can extend a file watchdog, but cannot move the
+    // caller's wall clock. Include TERM/KILL grace inside the child cutoff.
+    if (childCutoffAtMs !== null) {
+      childDeadlineTimer = setTimeout(() => terminate('timeout'),
+        Math.max(0, childCutoffAtMs - killGraceMs - Date.now()));
+      childDeadlineTimer.unref?.();
+    }
     child.stdout?.on('data', capture('stdout', stdout));
     child.stderr?.on('data', capture('stderr', stderr));
     child.once('error', (error) => { spawnError = error; });
@@ -3547,6 +3566,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
       removeSignalForwarders();
       if (progressTimer) clearTimeout(progressTimer);
       progressWatchdog?.stop();
+      if (childDeadlineTimer) clearTimeout(childDeadlineTimer);
       if (forceTimer) clearTimeout(forceTimer);
       // The finalization marker is deliberately NOT released here — nor anywhere
       // else in this function; see the marker-ownership note above `runChild`.

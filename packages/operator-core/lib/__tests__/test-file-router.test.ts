@@ -2348,6 +2348,105 @@ describe('collection child identity evidence (WI-10007991)', () => {
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it.each(['standalone', 'explicit', 'earlier-task', 'governed'] as const)(
+    'enforces the inherited wall deadline before custody settlement (%s)', async mode => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1_800_000_000_000);
+      const now = Date.now();
+      const child = Object.assign(new EventEmitter(), {
+        pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+      });
+      const kill = vi.fn(() => 'group');
+      const deadlineEnv = mode === 'standalone'
+        ? { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + 120_100) }
+        : { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + (mode === 'earlier-task' ? 100 : 360_000)),
+            PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(now + (mode === 'earlier-task' ? 200 : 100)) };
+      const env = { PATH: '/usr/bin', PAPERCUSP_TEST_ARTIFACT_DIR: tmpdir(),
+        ...(mode === 'governed' ? {} : deadlineEnv) };
+      const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        env, files: ['a.test.ts'], timeoutMs: 10_000, killGraceMs: 20,
+        systemdRunPath: null, setsidPath: '/usr/bin/setsid', spawnImpl: () => child,
+        readProcessDiagnosticImpl: null, killProcessImpl: kill, onProgress: () => {},
+        governedProcessImpl: (_opts: unknown, run: Function) =>
+          run(undefined, mode === 'governed' ? { ...env, ...deadlineEnv } : env, { inherited: true }),
+      });
+      try {
+        child.stdout.write('retained before cutoff\n');
+        await vi.advanceTimersByTimeAsync(79);
+        expect(kill).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(kill).toHaveBeenCalledExactlyOnceWith(child, 'SIGTERM', true);
+        child.stdout.write('progress cannot extend the caller clock\n');
+        await vi.advanceTimersByTimeAsync(19);
+        expect(kill).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(kill.mock.calls).toEqual([[child, 'SIGTERM', true], [child, 'SIGKILL', true]]);
+        child.emit('close', null, 'SIGKILL');
+        expect(await pending).toMatchObject({ timedOut: true,
+          stdout: 'retained before cutoff\nprogress cannot extend the caller clock\n',
+          rawStreams: { complete: true } });
+        await vi.advanceTimersByTimeAsync(1);
+        expect(kill).toHaveBeenCalledTimes(2);
+      } finally {
+        child.emit('close', null, 'SIGKILL');
+        await pending;
+        vi.useRealTimers();
+      }
+    });
+
+  it.each([1, 19, 20, 21])('fits child termination grace inside %i remaining milliseconds', async remainingMs => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_800_000_000_000);
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const kill = vi.fn(() => 'group');
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env: { PATH: '/usr/bin', PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(Date.now() + remainingMs) },
+      timeoutMs: 10_000, killGraceMs: 20, systemdRunPath: null, setsidPath: '/usr/bin/setsid',
+      spawnImpl: () => child, readProcessDiagnosticImpl: null, killProcessImpl: kill, onProgress: () => {},
+      governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(remainingMs - 1);
+      expect(kill.mock.calls).toEqual([[child, 'SIGTERM', true]]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(kill.mock.calls).toEqual([[child, 'SIGTERM', true], [child, 'SIGKILL', true]]);
+      child.emit('close', null, 'SIGKILL');
+      expect(await pending).toMatchObject({ timedOut: true });
+    } finally {
+      child.emit('close', null, 'SIGKILL');
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
+  it('clears the inherited wall deadline when the child closes normally', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_800_000_000_000);
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const kill = vi.fn(() => 'group');
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      env: { PATH: '/usr/bin', PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 120_100) },
+      timeoutMs: 10_000, killGraceMs: 20, systemdRunPath: null, setsidPath: '/usr/bin/setsid',
+      spawnImpl: () => child, readProcessDiagnosticImpl: null, killProcessImpl: kill, onProgress: () => {},
+      governedProcessImpl: (_opts: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(79);
+      child.emit('close', 0, null);
+      expect(await pending).toMatchObject({ status: 0, timedOut: false });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      child.emit('close', 0, null);
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
   it.each([false, true])('preserves the active collection budget after scheduler suspension (record disappears: %s)', async (removeRecord) => {
     const admissionDir = mkdtempSync(join(tmpdir(), 'router-freeze-clock-'));
     const state = join(admissionDir, 'test.state');
