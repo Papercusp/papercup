@@ -9,7 +9,7 @@ import ts from 'typescript';
 import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
 import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
-import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
+import { buildSymbolSnapshot, relativeSymbolModule, type SymbolDeclaration } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 
 export const PHASE_WRITER_ROOTS = ['packages/', 'apps/', 'libs/', 'scripts/'] as const;
 export const PHASE_WRITER_RELATIONS = new Set([
@@ -50,6 +50,8 @@ export interface PhaseWriterSite {
   /** A maintained syntax-bound module resolution supplies review evidence,
    * never runtime reachability or a reason to exempt the call. */
   helperTarget?: { path: string; sha256: string; basis: 'syntax-bound-module-target-not-runtime-closure' };
+  /** Exact syntax target, never callback binding or an effect exemption. */
+  helperDeclaration?: SymbolDeclaration;
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
@@ -213,11 +215,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const sourceHashes = new Map(input.map(source => [source.path, digest(source.content)]));
   const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; spelling: string; statement: string;
-    line: number; column: number; importedName?: string; importedCall: boolean; argumentNames: string[] }> = [];
+    line: number; column: number; importedName?: string; importedCall: boolean; argumentNames: string[];
+    argumentTexts: string[]; hasDirectSite: boolean }> = [];
   const aliases: Array<{ name: string; target: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
     kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
-      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget'>> = {}) => {
+      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget' | 'helperDeclaration'>> = {}) => {
     const statementSha256 = digest(statement), sourceSha256 = sourceHashes.get(source.path)!;
     // Identical statements in the same operation are separate source occurrences.
     const base = JSON.stringify([source.path, operation, kind, statementSha256]);
@@ -364,11 +367,14 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const bindingSite = ts.isPropertyAccessExpression(target)
             && ts.isIdentifier(target.expression) ? target.name : target;
           const rootName = ts.isIdentifier(root) ? root.text : root.getText(unit.ast);
-          calls.push({ path: source.path, operation: operation(node), callee, spelling: targetName(target) ?? callee,
+          const directSiteStart = sites.length;
+          const call = { path: source.path, operation: operation(node), callee, spelling: targetName(target) ?? callee,
             statement: node.getText(unit.ast), line: unit.span(bindingSite).line, column: unit.span(bindingSite).column,
             importedCall: importedLocals.has(rootName),
             argumentNames: args.map(targetName).filter((name): name is string => name !== undefined),
-            ...(bindings.get(node)?.imported ? { importedName: bindings.get(node)!.imported } : {}) });
+            argumentTexts: args.map(argument => argument.getText(unit.ast)), hasDirectSite: false,
+            ...(bindings.get(node)?.imported ? { importedName: bindings.get(node)!.imported } : {}) };
+          calls.push(call);
           let parameterCall = false;
           if (ts.isIdentifier(root)) {
             for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
@@ -401,6 +407,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
             add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
               'authority-append', { dynamicEdges: args.map(arg => arg.getText(unit.ast)) });
           }
+          call.hasDirectSite = sites.length !== directSiteStart;
         } else if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) {
           // A dormant/indirect SQL literal is still in the population. Looking
           // only at .unsafe/query calls would miss a newly introduced wrapper.
@@ -434,12 +441,14 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   // an edge requiring review, not an assertion of a resolved callee.
   const writers = new Set(sites.map(site => site.operation.split('::')[0]!));
   const writerPaths = new Set(sites.map(site => site.path));
-  const targets = new Map<string, string | null>();
+  const targets = new Map<string, { path: string; declaration: SymbolDeclaration | null }>();
   const fileSet = new Set(input.map(source => source.path));
   const helperSymbols = buildSymbolSnapshot({ files: [...fileSet].sort(compare), censusOnly: true,
     readSource: path => byPath.get(path)?.content ?? null,
     resolveModule: (importer, specifier) => relativeSymbolModule(importer, specifier, fileSet),
-    callCensusSink: (call, target) => targets.set(JSON.stringify([call.path, call.line, call.column]), target) });
+    callCensusSink: (call, target, _index, declaration) => {
+      if (target) targets.set(JSON.stringify([call.path, call.line, call.column]), { path: target, declaration });
+    } });
   // A partially propagated barrel can appear singular before another export
   // reaches it. Keep the full candidates but decline every such target proof.
   if (helperSymbols.stats.callCensusTruncated) targets.clear();
@@ -454,20 +463,29 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
     }
     for (const call of calls) {
       const name = call.importedName ?? call.spelling;
-      const key = JSON.stringify([call.path, call.operation, call.statement, call.line]);
+      const key = JSON.stringify([call.path, call.operation, call.statement, call.line, call.column]);
       const target = targets.get(JSON.stringify([call.path, call.line, call.column]));
+      // An opaque local/global call can write without any imported name,
+      // known SQL spelling or previously seeded writer. Preserve that call and
+      // every positional/spread argument; target identity alone cannot prove
+      // which effects a callback or an argument will have. Existing explicit
+      // SQL/indirect/append sites already retain their own frontiers.
+      const opaqueCall = !target?.declaration && !call.hasDirectSite;
       if ((!writers.has(name) && !call.argumentNames.some(argument => writers.has(argument))
-        && !(target && writerPaths.has(target)) && !call.importedCall) || added.has(key)) continue;
+        && !(target && writerPaths.has(target.path)) && !call.importedCall && !opaqueCall) || added.has(key)) continue;
       added.add(key);
       const source = byPath.get(call.path)!;
       const helperTarget: PhaseWriterSite['helperTarget'] = target ? {
-        path: target, sha256: sourceHashes.get(target)!, basis: 'syntax-bound-module-target-not-runtime-closure',
+        path: target.path, sha256: sourceHashes.get(target.path)!, basis: 'syntax-bound-module-target-not-runtime-closure',
       } : undefined;
       add(source, call.operation, call.statement, call.line, 'helper-edge', {
         callees: [call.callee], dynamicEdges: [call.callee,
+          ...(opaqueCall ? call.argumentTexts : []),
           ...(helperTarget ? [`source:${helperTarget.path}#${helperTarget.sha256}`] : [])],
         ...(helperTarget ? { helperTarget } : {}),
+        ...(target?.declaration ? { helperDeclaration: target.declaration } : {}),
         unresolved: [...(!helperTarget && call.importedCall ? ['imported-call-target-requires-review'] : []),
+          ...(opaqueCall ? ['call-target-declaration-unresolved'] : []),
           ...(helperSymbols.stats.callCensusTruncated ? ['helper-symbol-export-resolution-incomplete'] : [])],
       });
       if (!writerPaths.has(source.path)) { writerPaths.add(source.path); changed = true; }
