@@ -7,7 +7,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, createReadStream, closeSync, fsyncSync, lstatSync, mkdirSync,
-  mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+  mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { withFsMutex, withFsMutexRead } from './fs-mutex.mjs';
 import { installLockNameForRoot } from './install-lock-name.mjs';
+import { dependencyCopyGroups } from '../../apps/operator/bin/release/dependency-generation-verifier.mjs';
 
 const digest = value => createHash('sha256').update(value).digest('hex');
 const schemaVersion = 'committed-dependency-resume-v1';
@@ -145,6 +146,83 @@ async function selectGeneration(helper, donor, destination, deadline, environmen
   return { root, tree, lease, identity, token };
 }
 
+// These receipts cache COPY work only. They cannot authorize dependency bytes;
+// the complete retained-tree verifier below still runs after publication.
+async function copyMetadata(helper, root, names, parent, deadline, environment) {
+  const records = join(parent, 'metadata-' + randomUUID());
+  try {
+    const value = (await command(helper, [root, records, ...names], [
+      'entries=(); missing=()',
+      'for entry in "${@:4}"; do',
+      '  if [ -e "$2/$entry" ] || [ -L "$2/$entry" ]; then entries+=("./$entry"); else missing+=("$entry"); fi',
+      'done',
+      'if [ "${#entries[@]}" -gt 0 ]; then dependency_generation_source_records "$2" "$3" "${entries[@]}"; else : > "$3"; fi',
+      'if [ "${#missing[@]}" -gt 0 ]; then printf "missing:%s\\n" "${missing[@]}" >> "$3"; fi',
+      'dependency_generation_sha256 < "$3"',
+    ].join('\n'), deadline, environment)).trim();
+    if (!/^[a-f0-9]{64}$/.test(value)) fail('invalid copy metadata fingerprint');
+    return value;
+  } finally {
+    rmSync(records, { force: true });
+    rmSync(records + '.unsorted', { force: true });
+  }
+}
+
+async function copyMissingTree(helper, source, partial, parent, deadline, environment, progress) {
+  let groups;
+  try { groups = dependencyCopyGroups(source, Math.max(1, deadline - Date.now())); }
+  catch (error) { if (error.code === 'ETIMEDOUT') throw new Incomplete(); throw error; }
+  const names = groups.flat();
+  for (const name of names) safeRelative(name);
+  mkdirSync(partial, { recursive: true, mode: 0o700 });
+  // --delete is scoped to each chunk, so prune obsolete top-level entries too.
+  const wanted = new Set(names);
+  for (const name of readdirSync(partial)) if (!wanted.has(name)) rmSync(join(partial, name), { recursive: true, force: true });
+  const binding = digest(JSON.stringify({ verifierFingerprint, helper: digest(readFileSync(helper)),
+    source, partial, sourceIdentity: directoryIdentity(source), targetIdentity: directoryIdentity(partial) }));
+  const chunks = [];
+  let chunk = [];
+  for (const group of groups) {
+    // A hardlink-connected component must stay in one rsync invocation.
+    if (chunk.length && chunk.length + group.length > 64) { chunks.push(chunk); chunk = []; }
+    chunk.push(...group);
+  }
+  if (chunk.length) chunks.push(chunk);
+  Object.assign(progress, { copyChunks: chunks.length, copiedChunks: 0, reusedCopyChunks: 0 });
+  for (const entries of chunks) {
+    const receipt = join(parent, 'copy-' + digest(JSON.stringify(entries)) + '.json');
+    const before = await copyMetadata(helper, source, entries, parent, deadline, environment);
+    const target = await copyMetadata(helper, partial, entries, parent, deadline, environment);
+    const cached = readJournal(receipt);
+    if (cached?.binding === binding && cached.source === before && cached.target === target) {
+      progress.reusedCopyChunks++;
+      continue;
+    }
+    const selection = join(parent, 'files-' + randomUUID());
+    const fd = openSync(selection, 'wx', 0o600);
+    try { writeFileSync(fd, entries.join('\0') + '\0'); } finally { closeSync(fd); }
+    try {
+      await command(helper, [source, partial, selection], [
+        'dependency_generation_acquire_copy_lock "retained dependency resume"',
+        'trap dependency_generation_release_copy_lock EXIT',
+        'dependency_generation_check_headroom "$2" "$3"',
+        'mapfile -d "" -t filters < <(dependency_generation_prune_ephemeral --rsync-filters)',
+        'dependency_generation_copy_with_progress "$2" "$3" --rsync-checksum "${filters[@]}" --from0 --recursive --files-from="$4"',
+      ].join('\n'), deadline, environment);
+      const after = await copyMetadata(helper, source, entries, parent, deadline, environment);
+      // A copy is untrusted preparation. Cache churn may alter directory
+      // metadata; only the full byte/census verifier decides readiness.
+      if (before === after) writeJournal(receipt, { schemaVersion, binding, source: after,
+        target: await copyMetadata(helper, partial, entries, parent, deadline, environment) });
+      else rmSync(receipt, { force: true });
+      progress.copiedChunks++;
+      console.error('COMMITTED_DEPENDENCY_COPY ' + JSON.stringify({ copiedChunks: progress.copiedChunks,
+        reusedCopyChunks: progress.reusedCopyChunks, copyChunks: progress.copyChunks }));
+    } finally { rmSync(selection, { force: true }); }
+  }
+  await command(helper, [partial], 'dependency_generation_prune_ephemeral "$2"', deadline, environment);
+}
+
 async function census(helper, donor, destination, scratch, deadline, generation, workspaceDirs, progress, materializeMissing = false) {
   if (progress) Object.assign(progress, { phase: 'tree-census', scannedTrees: 0, totalTrees: 0 });
   const readCensus = async (stage, args, script) => {
@@ -209,12 +287,11 @@ async function census(helper, donor, destination, scratch, deadline, generation,
       if (lstatSync(partial, { throwIfNoEntry: false })) directoryIdentity(partial);
       if (lstatSync(partialParent).dev !== lstatSync(dirname(join(destination, path))).dev)
         fail('partial dependency copy must share its destination filesystem');
-      await readCensus('copy:' + path, [join(donor, path), partial], [
-        'dependency_generation_acquire_copy_lock "retained dependency resume"',
-        'trap dependency_generation_release_copy_lock EXIT',
-        'dependency_generation_check_headroom "$2" "$3"',
-        'dependency_generation_copy_with_progress "$2" "$3" --rsync-checksum',
-      ].join('\n'));
+      progress.censusStage = 'copy:' + path;
+      const started = Date.now();
+      try { await copyMissingTree(helper, join(donor, path), partial, partialParent,
+        deadline, process.env, progress); }
+      finally { (progress.censusDurationsMs ??= {})['copy:' + path] = Date.now() - started; }
       directoryIdentity(partial);
       if (lstatSync(join(destination, path), { throwIfNoEntry: false }))
         fail('missing dependency destination appeared during copy');

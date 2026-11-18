@@ -38,11 +38,7 @@ const fail = message => { throw new Error('verifier-generation:' + message); };
 // hundreds of thousands of independent reflinks through one metadata walker.
 // Cross-package hardlinks must travel in the SAME cp invocation: splitting them
 // between workers would silently change the install's aliasing semantics.
-export async function copyDependencyTree(source, destination, reflink) {
-  source = realpathSync(source);
-  destination = resolve(destination);
-  if (destination === source || destination.startsWith(source + sep)) fail('copy-inside-source');
-  if (!['--reflink=always', '--reflink=auto'].includes(reflink)) fail('invalid-copy-mode');
+export function dependencyCopyGroups(source, timeout) {
   const names = readdirSync(source).sort();
   const parents = new Map(names.map(name => [name, name]));
   const root = name => {
@@ -52,7 +48,8 @@ export async function copyDependencyTree(source, destination, reflink) {
   };
   const owners = new Map();
   const links = execFileSync('find', [source, '-type', 'f', '-links', '+1',
-    '-printf', '%D:%i\\0%P\\0'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }).split('\0');
+    '-printf', '%D:%i\\0%P\\0'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
+      ...(timeout === undefined ? {} : { timeout, killSignal: 'SIGKILL' }) }).split('\0');
   links.pop();
   if (links.length % 2) fail('invalid-copy-link-census');
   for (let i = 0; i < links.length; i += 2) {
@@ -68,8 +65,17 @@ export async function copyDependencyTree(source, destination, reflink) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(name);
   }
-  const batches = Array.from({ length: Math.min(8, groups.size) }, () => []);
-  for (const group of [...groups.values()].sort((a, b) => b.length - a.length)) {
+  return [...groups.values()];
+}
+
+export async function copyDependencyTree(source, destination, reflink) {
+  source = realpathSync(source);
+  destination = resolve(destination);
+  if (destination === source || destination.startsWith(source + sep)) fail('copy-inside-source');
+  if (!['--reflink=always', '--reflink=auto'].includes(reflink)) fail('invalid-copy-mode');
+  const groups = dependencyCopyGroups(source);
+  const batches = Array.from({ length: Math.min(8, groups.length) }, () => []);
+  for (const group of groups.sort((a, b) => b.length - a.length)) {
     const batch = batches.reduce((smallest, next) => next.length < smallest.length ? next : smallest);
     batch.push(...group);
   }
