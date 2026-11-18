@@ -2264,7 +2264,7 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     // The separate racy-window control below exercises conservative rehashing.
     process.env.DEPENDENCY_GENERATION_RACY_WINDOW_SEC = '0';
     const diagnostics = vi.spyOn(console, 'error').mockImplementation((line, ...args) => {
-      if (typeof line !== 'string' || !/^COMMITTED_DEPENDENCY_(PHASE|VERIFICATION) /.test(line) || args.length)
+      if (typeof line !== 'string' || !/^COMMITTED_DEPENDENCY_(PHASE|VERIFICATION|COPY) /.test(line) || args.length)
         throw new Error('Unexpected retained-verification diagnostic: ' + String(line));
     });
     const options = (maxBatches = 64) => ({
@@ -3096,6 +3096,99 @@ fs.writeFileSync('public/runtime-ready', asset);
       expect(readFileSync(join(f.workRoot, 'node_modules/beta.txt'), 'utf8')).toBe('payload-v1');
       expect(existsSync(join(f.workRoot, 'node_modules/extra.txt'))).toBe(false);
       expect(existsSync(partial)).toBe(false);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['unchanged', 'source', 'stage'])('resumes completed copy chunks and rechecks %s bytes before full verification', async changed => {
+    const f = retainedFixture();
+    const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+    const helper = join(f.parent, 'interrupt-second-chunk.sh');
+    const first = join(f.parent, 'first-chunk');
+    const interrupted = join(f.parent, 'interrupted');
+    const copied = join(f.parent, 'copied-entries');
+    const partial = join(f.workRoot, '.git/committed-dependency-partials',
+      createHash('sha256').update('node_modules').digest('hex'), 'tree');
+    for (let index = 0; index < 90; index++)
+      writeFileSync(join(f.root, 'node_modules', 'chunk-' + String(index).padStart(3, '0')), 'small dependency');
+    linkSync(join(f.root, 'node_modules/alpha.txt'), join(f.root, 'node_modules/zzz-alias'));
+    writeFileSync(helper, [
+      'source ' + JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')),
+      'rsync() {',
+      '  local arg selection=""',
+      '  for arg in "$@"; do case "$arg" in --files-from=*) selection="${arg#--files-from=}" ;; esac; done',
+      '  if [ -f ' + JSON.stringify(first) + ' ] && [ ! -f ' + JSON.stringify(interrupted) + ' ]; then',
+      '    touch ' + JSON.stringify(interrupted),
+      '    sleep 10',
+      '  else',
+      '    command rsync "$@" || return $?',
+      '    cat "$selection" >> ' + JSON.stringify(copied),
+      '    touch ' + JSON.stringify(first),
+      '  fi',
+      '}',
+    ].join('\n'));
+    rmSync(join(f.workRoot, 'node_modules'), { recursive: true });
+    const context = { sourceCommit: f.head, materializer: helper, verifySource: () => {} };
+    try {
+      const paused = await verifyRetainedDependencies(f.root, f.workRoot, {
+        ...f.options().resumeVerification, materializeMissing: true, maxDurationMs: 3000,
+      }, context);
+      expect(paused.status).toBe('incomplete');
+      expect(paused.progress.copiedChunks).toBe(1);
+      expect(existsSync(interrupted)).toBe(true);
+      expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+      expectUnpreparedRetainedMarker(f);
+      const target = changed === 'source' ? join(f.root, 'node_modules/alpha.txt') : join(partial, 'alpha.txt');
+      if (changed !== 'unchanged') {
+        const before = statSync(target);
+        writeFileSync(target, 'payload-v2');
+        utimesSync(target, before.atime, before.mtime);
+      }
+      const complete = await verifyRetainedDependencies(f.root, f.workRoot, {
+        ...f.options().resumeVerification, materializeMissing: true,
+      }, context);
+      expect(complete.status).toBe('complete');
+      expect(complete.progress.hashedFiles).toBeGreaterThan(0);
+      expect(complete.progress.reusedCopyChunks).toBe(changed === 'unchanged' ? 1 : 0);
+      expect(readFileSync(copied, 'utf8').split('\0').filter(name => name === 'alpha.txt'))
+        .toHaveLength(changed === 'unchanged' ? 1 : 2);
+      expect(readFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'utf8'))
+        .toBe(changed === 'source' ? 'payload-v2' : 'payload-v1');
+      expect(statSync(join(f.workRoot, 'node_modules/alpha.txt')).ino)
+        .toBe(statSync(join(f.workRoot, 'node_modules/zzz-alias')).ino);
+      expect(existsSync(partial)).toBe(false);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it.each(['.cache', '.vite', '.verdict-data', 'runtime-file'])('uses maintained pruning for %s churn while preserving byte verification', async kind => {
+    const f = retainedFixture();
+    const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+    // A nested regular file named .cache remains runtime data; only cache
+    // directories are excluded at this depth by the maintained policy.
+    const path = kind === 'runtime-file' ? 'leaf/.cache' : 'leaf/' + kind + '/live';
+    const source = join(f.root, 'node_modules', path);
+    mkdirSync(dirname(source), { recursive: true });
+    writeFileSync(source, 'payload-v1');
+    const helper = join(f.parent, 'mutate-after-copy.sh');
+    writeFileSync(helper, [
+      'source ' + JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')),
+      'rsync() {',
+      '  command rsync "$@" || return $?',
+      '  printf payload-v2 > ' + JSON.stringify(source),
+      '}',
+    ].join('\n'));
+    rmSync(join(f.workRoot, 'node_modules'), { recursive: true });
+    try {
+      const result = verifyRetainedDependencies(f.root, f.workRoot, {
+        ...f.options().resumeVerification, materializeMissing: true,
+      }, { sourceCommit: f.head, materializer: helper, verifySource: () => {} });
+      if (kind === 'runtime-file') {
+        await expect(result).rejects.toThrow('dependency bytes differ: node_modules/leaf/.cache');
+        expectUnpreparedRetainedMarker(f);
+      } else {
+        expect((await result).status).toBe('complete');
+        expect(existsSync(join(f.workRoot, 'node_modules', path))).toBe(false);
+        expect(readFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'utf8')).toBe('payload-v1');
+      }
     } finally { f.cleanup(); }
   }, 60_000);
 

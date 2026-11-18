@@ -3233,17 +3233,23 @@ dependency_generation_source_records() {
 }
 
 dependency_generation_source_records_impl() {
-  local root="$1" out="$2" rc=0
+  local root="$1" out="$2" rc=0 depth=1 path_format='%P'
+  local -a starts=(.)
+  if [ "$#" -gt 2 ]; then
+    starts=("${@:3}")
+    depth=0
+    path_format='%p'
+  fi
   [ -d "$root" ] || return 1
   (
     cd "$root" || exit 1
-    LC_ALL=C find . -xdev -mindepth 1 \
+    LC_ALL=C find "${starts[@]}" -xdev -mindepth "$depth" \
       \( \( -path ./.cache -o -path ./.package-lock.json \
         -o -path ./.papercusp-isolated-snapshot \
         -o \( -type d \( -name .cache -o -name .bun-cache -o -name .astro -o -name .vite -o -name .vite-temp -o -name .verdict-data \) \) \) \
         -prune \) -o \
       \( \( -name '*[[:cntrl:]]*' -o -lname '*[[:cntrl:]]*' \) -printf '\001\n' \) -o \
-      -printf '%P\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n'
+      -printf "${path_format}\t%y\t%m\t%U\t%G\t%s\t%T@\t%i\t%C@\t%l\n"
   ) > "$out.unsorted" || rc=1
   if [ "$rc" -eq 0 ] && LC_ALL=C grep -q $'^\001' "$out.unsorted"; then
     rc=2
@@ -3518,6 +3524,14 @@ dependency_generation_copy_changed_tree() {
 
 dependency_generation_prune_ephemeral() {
   local root="$1"
+  # The retained copier uses the same policy before traversal, so live caches
+  # cannot hold a bounded copy open or invalidate its progress receipts.
+  if [ "$root" = --rsync-filters ]; then
+    printf '%s\0' --exclude=/.package-lock.json --exclude=/.papercusp-isolated-snapshot \
+      --exclude=/.cache --exclude=/.bun-cache --exclude=.cache/ --exclude=.bun-cache/ \
+      --exclude=.astro/ --exclude=.vite/ --exclude=.vite-temp/ --exclude=.verdict-data/
+    return
+  fi
   [ -d "$root" ] || return 0
   # npm rewrites node_modules/.package-lock.json during install bookkeeping. It
   # is internal metadata, not a runtime dependency, and older hardlink-based
