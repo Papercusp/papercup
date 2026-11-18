@@ -240,6 +240,43 @@ describe('mutation-probe.sh — TypeScript mutant syntax', () => {
 });
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it.each([
+    { location: 'subject', dependencyMode: undefined },
+    { location: 'cwd', dependencyMode: undefined },
+    { location: 'subject', dependencyMode: 'unrecognized' },
+    { location: 'cwd', dependencyMode: 'unrecognized' },
+  ])('refuses incomplete retained $location dependencies ($dependencyMode) before baseline', ({ location, dependencyMode }) => {
+    const repo = join(dir, 'papercusp-lint-as-committed-incomplete');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    const file = join(repo, 'subject.txt');
+    writeFileSync(file, ORIGINAL);
+    git(repo, ['add', 'subject.txt']);
+    git(repo, ['commit', '-qm', 'committed source with interrupted dependencies']);
+    // Root copying can finish before a workspace-local package is copied.
+    // A clean Git tree and this directory did not establish preparation in
+    // EI-28825003081944948; only the materializer's published mode does.
+    mkdirSync(join(repo, 'node_modules'));
+    const ownerMarker = join(repo, '.git', 'lint-as-committed-owner.json');
+    const ownerBytes = JSON.stringify({ pid: process.pid, sha: git(repo, ['rev-parse', 'HEAD']),
+      keep: true, createdAtMs: Date.now(), dependencyMode });
+    writeFileSync(ownerMarker, ownerBytes);
+    const started = join(dir, 'guard-started');
+    const selectedSubject = location === 'subject' ? file : subject;
+    const { code, out } = runProbeIO([
+      '--file', selectedSubject, '--mutate', 's/beta/BROKEN/',
+      '--test', `printf started > ${JSON.stringify(started)}; grep -q beta {}`,
+    ], process.env, location === 'cwd' ? repo : dir);
+    expect(code, out).toBe(2);
+    expect(out).toContain('reason=committed-dependencies-incomplete');
+    expect(out).not.toContain('running baseline guard');
+    expect(existsSync(started)).toBe(false);
+    expect(readFileSync(selectedSubject, 'utf8')).toBe(ORIGINAL);
+    expect(readFileSync(ownerMarker, 'utf8')).toBe(ownerBytes);
+  });
+
   it('retains a committed source across guard legs when a cleanup scan cannot see its reader', () => {
     const repo = join(dir, 'papercusp-lint-as-committed-probe');
     mkdirSync(repo);
@@ -253,7 +290,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     git(repo, ['commit', '-qm', 'committed probe source']);
     const marker = join(repo, '.git', 'lint-as-committed-owner.json');
     writeFileSync(marker, JSON.stringify({ pid: process.pid, sha: git(repo, ['rev-parse', 'HEAD']),
-      keep: true, createdAtMs: Date.now() }));
+      keep: true, createdAtMs: Date.now(), dependencyMode: 'independent-copy-v1' }));
     const retentionModule = new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href;
     const guard = join(dir, 'retained-source-guard.mjs');
     writeFileSync(guard, [
