@@ -174,6 +174,43 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
     expect(text).toMatch(/^Refused by identity safe-coder rule no-rm: tool input exceeds/);
   });
 
+  it.each([999, 1000, 1001])('attributes a plan permit completing at %ims to the plan deadline', async duration => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    let releasePlan!: (value: null) => void;
+    planExecutionGuard.mockImplementationOnce(() => new Promise<null>(resolve => { releasePlan = resolve; }));
+    let identityFinished!: () => void;
+    const identityDone = new Promise<void>(resolve => { identityFinished = resolve; });
+    const read = vi.fn(async () => { now = 426; return null; });
+    try {
+      const pending = toolGuardText(input('touch fixture'), read, phase => {
+        if (phase === 'identity') identityFinished();
+      });
+      await identityDone;
+      now = duration;
+      // Complete the promise before the real timeout callback runs, as happens
+      // when a delayed event loop drains promise reactions before its timers.
+      releasePlan(null);
+      const text = await pending;
+      expect(text).toBe(duration < 1000 ? ''
+        : 'plan_execution_not_ready: Native plan execution authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.');
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('preserves a late explicit plan refusal instead of replacing its reason with a timeout', async () => {
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    planExecutionGuard.mockImplementationOnce(async () => {
+      now = 1001;
+      return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
+    });
+    try {
+      expect(await toolGuardText(input('touch fixture'), async () => null))
+        .toBe('plan_execution_not_ready: Bound plan is draft');
+    } finally { clock.mockRestore(); }
+  });
+
   it('bounds a stalled identity read, aborts its queue budget, and requires fresh authority on retry', async () => {
     vi.useFakeTimers();
     try {
@@ -412,12 +449,14 @@ describe('POST /agent-mcp/tool-guard', () => {
     const controller = new AbortController();
     planExecutionGuard.mockImplementation(async () => { now += 1600; controller.abort(); return null; });
     try {
-      await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
+      const response = await route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
         method: 'POST', signal: controller.signal,
         body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit', input: { secret: NEVER_EMIT_MARKER } }),
       }));
+      expect((await response.json()).text).toMatch(/^plan_execution_not_ready:/);
+      expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
       expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
-        totalMs: 1600, setupMs: 0, planMs: 1600, identityMs: 0, aborted: true,
+        totalMs: 1600, setupMs: 0, planMs: 1600, identityMs: null, aborted: true,
       }));
       expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
     } finally { clock.mockRestore(); log.mockRestore(); }
