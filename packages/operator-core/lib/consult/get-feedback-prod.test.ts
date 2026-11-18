@@ -478,6 +478,22 @@ describe('getFeedbackProd expert-routing settings', () => {
     }
   });
 
+  it('persists the versioned benchmark plan as an exact historical expertise source', async () => {
+    const { expertiseSubject } = await vi.importActual<typeof import('./relevance-router')>('./relevance-router');
+    const plan = 'benchmark-coverage-frontierswe-v2-2026-10-10';
+    const request = { workspaceId: 'workspace-1', requesterId: 'requester',
+      question: `Review the affected implementation assumptions in ${plan} plan192/hashabc1234. ` +
+        'Check nativeScenario and privateMcpPreflightOnlyScenario. Does this preserve current-build acceptance?' };
+    await h.expertiseSubject.withImplementation(expertiseSubject, async () => {
+      await acceptFeedbackRequestProd(request, { ownerId: 'requester' } as never,
+        { harnessSlug: 'papercusp', allowDispatch: false });
+    });
+    expect(h.expandSubjectRefs).toHaveBeenCalledWith([plan]);
+    expect(h.acceptFeedbackRequestCore.mock.calls[0]?.[0]).toMatchObject({
+      resolvedSubjectRefs: [plan], unresolvedSubjectRefs: [],
+    });
+  });
+
   it.each(['bar-critique', 'rubric-vetting'] as const)('does not require prior transcript expertise for a new %s target', async (policy) => {
     const planSlug = 'rubric-grading-diagnostics-evidence-and-author-handoff-2026-11-02';
     const question = `Review plan ${planSlug} against its acceptance bars`;

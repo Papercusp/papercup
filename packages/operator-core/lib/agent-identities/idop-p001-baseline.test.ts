@@ -12,7 +12,8 @@ import type { ToolDefinition } from '@papercusp/plugin-sdk';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { defaultCensusRoot, SU_RENDER_PARITY_BASELINE } from './identity-surface-census';
 import { IDOP_P001_BASELINE_REL, IDOP_P001_PROMPT_REL, inspectIdopP001Coverage,
-  runIdopP001PermissionComparison, loadIdopP001RolePermissionReader, loadIdopP001DispatchPermissionReader,
+  runIdopP001PermissionComparison, runIdopP001PopulationPermissionComparison,
+  loadIdopP001RolePermissionReader, loadIdopP001DispatchPermissionReader,
   readIdopP001ExpectedPermissionDifferences, IDOP_P001_DIFFERENCES_REL,
   readIdopP001CurrentBuiltinPopulation,
   readIdopP001CurrentLibraryPopulation, readIdopP001AppliedStackPopulation,
@@ -1719,6 +1720,78 @@ describe('IDOP D-043 applied stack source population', () => {
       { payloads: 'invalid' as 'digests-only' })).rejects.toThrow(/payload retention/);
   });
 
+  it('awaits original readable and refused payload capture before reading another member', async () => {
+    const events: string[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const capturing = new Promise<void>(resolve => { entered = resolve; });
+    const result = readIdopP001AppliedStackPopulation('fixture-workspace', {
+      anchors: async () => [anchor, { ownerId: 'refused-owner', applied: revision }],
+      record: async owner => { events.push(`read:${owner}`); return owner === ownerId ? record : null; },
+    }, { payloads: 'digests-only', visit: async member => {
+      events.push(`capture:${member.ownerId}`);
+      expect(member.recordSha256).toBe(sha256(JSON.stringify(member.launchRecord)));
+      if (member.kind === 'stack') {
+        expect(member.launchRecord).toEqual(record);
+        expect(member.artifact).toEqual(applied);
+        expect(member.artifactSha256).toBe(sha256(JSON.stringify(applied)));
+        entered();
+        await blocked;
+      } else {
+        expect(member.launchRecord).toBeNull();
+        expect(member.resolution).toEqual({ kind: 'stale-artifact', reason: 'receipt-missing' });
+      }
+      events.push(`finished:${member.ownerId}`);
+    } });
+    await capturing;
+    expect(events).toEqual([`read:${ownerId}`, `capture:${ownerId}`]);
+    release();
+    const population = await result;
+    expect(events).toEqual([`read:${ownerId}`, `capture:${ownerId}`, `finished:${ownerId}`,
+      'read:refused-owner', 'capture:refused-owner', 'finished:refused-owner']);
+    expect(population.stacks[0]).not.toHaveProperty('launchRecord');
+    expect(population.refused[0]).not.toHaveProperty('launchRecord');
+  });
+
+  it.each(['retained', 'digests-only'] as const)('isolates visitor mutation from %s population evidence and original inputs', async payloads => {
+    const original = structuredClone(record);
+    const result = await readIdopP001AppliedStackPopulation('fixture-workspace', {
+      anchors: async () => [anchor], record: async () => original,
+    }, { payloads, visit: async member => {
+      member.applied.stateRevision = 'mutated';
+      if (member.kind !== 'stack') throw new Error('fixture must be readable');
+      member.explicitStack.push('mutated');
+      Object.assign(member.artifact, { compilerVersion: 'mutated' });
+      (member.launchRecord as typeof record).role = 'mutated';
+    } });
+    expect(original).toEqual(record);
+    expect(result.stacks[0]).toMatchObject({ applied: revision, role: 'judge',
+      explicitStack: ['domain:applied-agent'], recordSha256: sha256(JSON.stringify(record)),
+      artifactSha256: sha256(JSON.stringify(applied)) });
+    if (payloads === 'retained') expect(result.stacks[0].artifact).toEqual(applied);
+  });
+
+  it('aborts at a failed member capture without reading the rest or returning prefix success', async () => {
+    const reads: string[] = [];
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', {
+      anchors: async () => [anchor, { ownerId: 'z-later-owner', applied: revision }],
+      record: async owner => { reads.push(owner); return record; },
+    }, { payloads: 'digests-only', visit: async () => { throw new Error('original authority capture failed'); } }))
+      .rejects.toThrow('original authority capture failed');
+    expect(reads).toEqual([ownerId]);
+  });
+
+  it('still checks the complete anchor set after the final visitor finishes', async () => {
+    let changed = false;
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', {
+      anchors: async () => changed ? [] : [anchor], record: async () => record,
+    }, { payloads: 'digests-only', visit: async () => { changed = true; } }))
+      .rejects.toThrow(/changed during enumeration/);
+    await expect(readIdopP001AppliedStackPopulation('fixture-workspace', deps(),
+      { payloads: 'digests-only', visit: null as never })).rejects.toThrow(/callable member visitor/);
+  });
+
   it.each(['37b21f82cba4d206174fa104', 'native-state-v1'])(
     'preserves an opaque nonempty applied state revision: %s', async stateRevision => {
       const pair = { ...revision, stateRevision };
@@ -1836,6 +1909,91 @@ describe('IDOP D-043 applied stack source population', () => {
       .toMatchObject({ passed: false, unexpected: ['stack:fixture-applied-owner', 'stack:refused-owner'] });
     // This is detector calibration only; these fixture outcomes are not a
     // permission comparison of the source/anchor population itself.
+  });
+
+  const populationComparison = async () => {
+    const sources = await comparisonInputs();
+    return { inventory: joinIdopP001ComparisonPopulation(sources), sources,
+      applied: { dependencies: {
+        anchors: async () => [anchor, { ownerId: 'refused-owner', applied: revision }],
+        record: async (owner: string) => owner === ownerId ? structuredClone(record) : null,
+      } },
+      capture: async () => ({ originalAuthority: true }),
+      before: () => ({ allowed: false }), after: () => ({ allowed: false }), manifest: [],
+    } satisfies Parameters<typeof runIdopP001PopulationPermissionComparison>[0];
+  };
+
+  it('runs source, shadowed library refusal and original applied members through both arms before capture advances', async () => {
+    const options = await populationComparison();
+    const order: string[] = [];
+    const inputs = new Map<string, unknown>();
+    const result = await runIdopP001PopulationPermissionComparison({ ...options,
+      capture: async (member, original) => {
+        order.push(`capture:${member.id}`);
+        expect(member).toEqual(options.inventory.members.find(row => row.id === member.id));
+        if (member.id === `stack:${ownerId}`) {
+          expect(original?.launchRecord).toEqual(record);
+          expect(original?.kind).toBe('stack');
+          if (original?.kind === 'stack') expect(original.artifact).toEqual(applied);
+        } else if (member.id === 'stack:refused-owner') {
+          expect(original).toMatchObject({ kind: 'refused', launchRecord: null,
+            resolution: { kind: 'stale-artifact', reason: 'receipt-missing' } });
+        } else expect(original).toBeNull();
+        member.sources.length = 0;
+        if (original) original.applied.stateRevision = 'capture-mutation';
+        return { originalAuthority: member.id };
+      },
+      before: (input, id) => {
+        order.push(`before:${id}`);
+        inputs.set(id, structuredClone(input));
+        if (input && typeof input === 'object' && !Array.isArray(input)) input.authority = null;
+        return { allowed: false };
+      },
+      after: (input, id) => {
+        order.push(`after:${id}`);
+        expect(input).toEqual(inputs.get(id));
+        const row = input as { member: { sources: unknown[] }; applied: { applied: typeof revision } | null };
+        expect(row.member.sources.length).toBeGreaterThan(0);
+        if (row.applied) expect(row.applied.applied).toEqual(revision);
+        return { allowed: false };
+      },
+    });
+    expect(result).toMatchObject({ passed: true, population: options.inventory.population });
+    expect(order).toEqual(options.inventory.members.map(member => member.id).flatMap(id =>
+      [`capture:${id}`, `before:${id}`, `after:${id}`]));
+  });
+
+  it.each(['omitted', 'added', 'record-changed', 'source-changed', 'late-read-failed', 'capture-failed'])(
+    'refuses complete-population capture on %s instead of certifying a prefix', async defect => {
+      const options = await populationComparison();
+      if (defect === 'omitted') options.applied.dependencies.anchors = async () => [anchor];
+      if (defect === 'added') options.applied.dependencies.anchors = async () => [anchor,
+        { ownerId: 'refused-owner', applied: revision }, { ownerId: 'new-owner', applied: revision }];
+      if (defect === 'record-changed') options.applied.dependencies.record = async () => ({ ...record, changed: true });
+      if (defect === 'source-changed') options.sources.builtin.roles.push('new-source-role');
+      if (defect === 'late-read-failed') options.applied.dependencies.record = async owner => {
+        if (owner !== ownerId) throw new Error('late original read failed');
+        return record;
+      };
+      if (defect === 'capture-failed') options.capture = async () => { throw new Error('capture failed'); };
+      await expect(runIdopP001PopulationPermissionComparison(options)).rejects.toThrow(
+        /population changed|unenumerated member|late original read failed|capture failed/);
+    });
+
+  it('rejects a corrupted independent census before capturing any authority', async () => {
+    const options = await populationComparison();
+    options.inventory.members[0].sources.length = 0;
+    const capture = vi.fn(options.capture);
+    await expect(runIdopP001PopulationPermissionComparison({ ...options, capture }))
+      .rejects.toThrow(/inventory digest mismatch/);
+    expect(capture).not.toHaveBeenCalled();
+  });
+
+  it('still reports an unauthorized same-input permission delta from the complete case adapter', async () => {
+    const options = await populationComparison();
+    expect(await runIdopP001PopulationPermissionComparison({ ...options,
+      after: (_input, id) => ({ allowed: id === 'stack:refused-owner' }),
+    })).toMatchObject({ passed: false, unexpected: ['stack:refused-owner'] });
   });
 });
 

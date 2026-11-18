@@ -71,6 +71,14 @@ const ids = (s: SelectedResponder[]) => s.map((x) => x.candidate.ownerId);
 const vias = (s: SelectedResponder[]) => s.map((x) => x.via);
 
 describe('problem-specific expertise qualification', () => {
+  it.each(['plan192/hashabc1234', 'plan 192', 'revision: 192'])('recognizes a dated source plan before its revision: %s', revision => {
+    const plan = 'benchmark-coverage-frontierswe-v2-2026-10-10';
+    const question = `Review the affected implementation assumptions in ${plan} ${revision}. ` +
+      'Check nativeScenario, privateMcpPreflightOnlyScenario and currentBenchmarkProtocolSchema. ' +
+      'Does this preserve native/carry and current-build acceptance? Then call plans:start.';
+    expect(expertiseSubject(question)).toBe(plan);
+  });
+
   it.each([
     'Close the critique so plans:start can consume it.',
     'Save the answer in docs/review/security.md.',

@@ -43,7 +43,7 @@ import type { FlagAttestation } from '@papercusp/flags/server';
 import type { EnforceAppKeyScopeDeps } from '../connected-apps/enforce';
 import type { EnforceInheritedPolicyDeps } from '../governance-policy/enforce';
 import type { KernelEnforcementPort } from '@papercusp/tooldef';
-import type { checkIdentityGrantKernel } from '../capability-envelope/identity-grants-port';
+import type { checkIdentityGrantKernel, IdentityArtifactResolution } from '../capability-envelope/identity-grants-port';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord,
   type LazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from '../capability-envelope/lazy-launch-record';
 import type { PlanExecutionGuardDeps } from '../agent-tools/plans/plan-execution-guard';
@@ -1754,6 +1754,20 @@ type AppliedStackDependencies = {
   anchors: () => Promise<Array<{ ownerId: string; applied: unknown }>>;
   record: (ownerId: string, workspaceId: string, revision: AppliedStackRevision) => Promise<unknown>;
 };
+type AppliedStackCapture = { ownerId: string; applied: AppliedStackRevision; recordSha256: string; launchRecord: unknown } & (
+  { kind: 'stack'; role: string; explicitStack: string[]; artifactSha256: string;
+    artifact: ReturnType<typeof replayAgentSpecification>;
+    layers: Array<{ ref: string; revision: string; contentHash: string; sourceKind: string }> } |
+  { kind: 'refused'; resolution: Extract<IdentityArtifactResolution, { kind: 'stale-artifact' }> }
+);
+type AppliedStackOptions = {
+  payloads: 'retained' | 'digests-only';
+  sql?: import('postgres').Sql;
+  /** Await capture/replay of one ORIGINAL member before reading the next. The
+   * isolated payload is supplied even in digest-only mode, within the same SQL
+   * snapshot. A failed capture aborts enumeration; no prefix receipt escapes. */
+  visit?: (member: AppliedStackCapture) => Promise<void>;
+};
 
 /** Snapshot every persisted applied anchor in this workspace, including parked
  * or ended wearers. Use the SAME gate-selected launch-record/receipt resolver as
@@ -1771,12 +1785,20 @@ type AppliedStackDependencies = {
 export async function readIdopP001AppliedStackPopulation(
   workspaceId: string,
   dependencies?: AppliedStackDependencies,
-  options: { payloads: 'retained' | 'digests-only'; sql?: import('postgres').Sql } = { payloads: 'retained' },
+  options: AppliedStackOptions = { payloads: 'retained' },
 ) {
   if (!workspaceId.trim() || workspaceId !== workspaceId.trim()) throw new Error('IDOP applied stacks require a workspace');
   if (options.payloads !== 'retained' && options.payloads !== 'digests-only') {
     throw new Error('IDOP applied stacks require an explicit payload retention mode');
   }
+  if (options.visit !== undefined && typeof options.visit !== 'function') {
+    throw new Error('IDOP applied stacks require a callable member visitor');
+  }
+  const visit = async (member: AppliedStackCapture) => {
+    // The resolver uses a pinned VM realm. JSON also isolates the visitor's
+    // working copy from retained evidence, reader caches and the next member.
+    if (options.visit) await options.visit(JSON.parse(JSON.stringify(member)) as AppliedStackCapture);
+  };
   const receiptSource = loadIdopP001RolePermissionReader({ root,
     revision: 'working-tree', testingFullAccess: 'off' });
   const { appliedOrCurrentIdentityArtifact, selectAppliedReceipt, resolveIdentityArtifact, identityWearerRole } =
@@ -1808,6 +1830,7 @@ export async function readIdopP001AppliedStackPopulation(
       if (resolution.kind === 'stale-artifact') {
         refused.push({ ...anchor, resolution, recordSha256,
           ...(options.payloads === 'retained' ? { launchRecord } : {}) });
+        await visit({ kind: 'refused', ...anchor, resolution, recordSha256, launchRecord });
         continue;
       }
       const artifact = appliedOrCurrentIdentityArtifact(raw, anchor.applied);
@@ -1817,12 +1840,13 @@ export async function readIdopP001AppliedStackPopulation(
       if (stack !== undefined && (!Array.isArray(stack) || stack.some(ref => typeof ref !== 'string' || !ref.trim()))) {
         throw new Error(`IDOP malformed applied stack: ${anchor.ownerId}`);
       }
-      stacks.push({ ...anchor, role: identityWearerRole(raw), recordSha256,
+      const member = { ...anchor, role: identityWearerRole(raw), recordSha256,
         explicitStack: (stack ?? []) as string[],
         artifactSha256: sha256(JSON.stringify(artifact)),
         layers: artifact.inputs.filter(input => input.kind === 'blueprint-layer')
-          .map(({ ref, revision, contentHash, sourceKind }) => ({ ref, revision, contentHash, sourceKind })),
-        ...(options.payloads === 'retained' ? { launchRecord, artifact } : {}) });
+          .map(({ ref, revision, contentHash, sourceKind }) => ({ ref, revision, contentHash, sourceKind })) };
+      stacks.push({ ...member, ...(options.payloads === 'retained' ? { launchRecord, artifact } : {}) });
+      await visit({ kind: 'stack', ...member, launchRecord, artifact });
     }
     if (comparisonJson(anchors) !== comparisonJson(await snapshot())) {
       throw new Error('IDOP applied anchors changed during enumeration');
@@ -2107,6 +2131,59 @@ export type IdopPermissionDifference = {
   afterSha256: string;
   authorityRefs: string[];
 };
+type IdopPermissionCase = { id: string; input: ComparisonJson };
+type IdopPermissionArms = {
+  before: (input: ComparisonJson, id: string) => ComparisonJson | Promise<ComparisonJson>;
+  after: (input: ComparisonJson, id: string) => ComparisonJson | Promise<ComparisonJson>;
+  manifest: readonly IdopPermissionDifference[];
+};
+
+/** Bind the independently joined census to executable original-input cases.
+ * Source-only members and canonical receipt refusals are cases too. Authority
+ * capture must use the caller's explicit original read ports, never dispatch or
+ * authenticate as a wearer. Raw payloads survive only for one awaited case;
+ * the final independently joined metadata must match before any success receipt
+ * is returned. This adapter does not supply or certify the capture's host ports.
+ */
+export async function runIdopP001PopulationPermissionComparison(options: IdopPermissionArms & {
+  inventory: ReturnType<typeof joinIdopP001ComparisonPopulation>;
+  sources: Pick<Parameters<typeof joinIdopP001ComparisonPopulation>[0], 'builtin' | 'library'>;
+  applied?: { dependencies?: AppliedStackDependencies; sql?: import('postgres').Sql };
+  capture: (member: ReturnType<typeof joinIdopP001ComparisonPopulation>['members'][number],
+    applied: AppliedStackCapture | null) => Promise<ComparisonJson>;
+}) {
+  const clone = <T,>(value: T): T => JSON.parse(comparisonJson(value as unknown as ComparisonJson)) as T;
+  const { sha256: expectedHash, ...body } = clone(options.inventory);
+  if (sha256(comparisonJson(body as unknown as ComparisonJson)) !== expectedHash) {
+    throw new Error('IDOP comparison population inventory digest mismatch');
+  }
+  const sources = clone({ builtin: options.sources.builtin, library: options.sources.library });
+  const inventory = { ...body, sha256: expectedHash };
+  const members = new Map(inventory.members.map(member => [member.id, member]));
+  return runIdopP001PermissionComparison({ ...options, population: () => inventory.population,
+    produce: async visit => {
+      const capture = async (id: string, original: AppliedStackCapture | null) => {
+        const member = members.get(id);
+        if (!member) throw new Error('IDOP comparison population acquired an unenumerated member');
+        const applied = original === null ? null : idopAuthorityData(original);
+        const authority = await options.capture(clone(member), original === null ? null : clone(original));
+        // Preserve the complete original receipt as well as the separately
+        // captured authority. The capture cannot mutate either source pin.
+        await visit({ id, input: { member: clone(member) as unknown as ComparisonJson,
+          applied, authority: idopAuthorityData(authority) } });
+      };
+      for (const member of inventory.members) if (member.kind !== 'stack') await capture(member.id, null);
+      const applied = await readIdopP001AppliedStackPopulation(inventory.workspaceId, options.applied?.dependencies, {
+        payloads: 'digests-only', sql: options.applied?.sql,
+        visit: member => capture(`stack:${member.ownerId}`, member),
+      });
+      if (comparisonJson(joinIdopP001ComparisonPopulation({ ...sources, applied }) as unknown as ComparisonJson) !==
+          comparisonJson(inventory as unknown as ComparisonJson)) {
+        throw new Error('IDOP comparison population changed between inventory and original-input capture');
+      }
+    },
+  });
+}
 
 export const IDOP_P001_DIFFERENCES_REL = 'docs/evidence/idop-p001-expected-permission-differences.json';
 const idopPlanSlug = 'identity-definitions-own-policy-2026-10-17';
@@ -2177,21 +2254,14 @@ function comparisonJson(value: ComparisonJson): string {
  * launch corpus. No result is returned until the stream ends with exact coverage.
  * Evaluators must remain read-only: a later enumeration failure invalidates the
  * entire comparison, including any cases already evaluated. */
-export async function runIdopP001PermissionComparison(options: {
+export async function runIdopP001PermissionComparison(options: IdopPermissionArms & {
   population: () => readonly string[];
-  enumerate: () => readonly { id: string; input: ComparisonJson }[] |
-    AsyncIterable<{ id: string; input: ComparisonJson }>;
-  before: (input: ComparisonJson, id: string) => ComparisonJson | Promise<ComparisonJson>;
-  after: (input: ComparisonJson, id: string) => ComparisonJson | Promise<ComparisonJson>;
-  manifest: readonly IdopPermissionDifference[];
-}) {
+} & ({ enumerate: () => readonly IdopPermissionCase[] | AsyncIterable<IdopPermissionCase>; produce?: never } |
+  { produce: (visit: (row: IdopPermissionCase) => Promise<void>) => Promise<void>; enumerate?: never })) {
   const population = [...options.population()].sort();
-  const cases = options.enumerate();
   const unique = (ids: readonly string[]) => ids.every(id => id.trim() === id && id.length > 0) &&
     new Set(ids).size === ids.length;
-  if (!population.length || !unique(population) || Array.isArray(cases) &&
-      (!unique(cases.map(row => row.id)) ||
-        comparisonJson(population) !== comparisonJson(cases.map(row => row.id).sort()))) {
+  if (!population.length || !unique(population) || options.enumerate && options.produce) {
     throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
   }
   const expected = new Set(population);
@@ -2209,26 +2279,42 @@ export async function runIdopP001PermissionComparison(options: {
   const unexpected: string[] = [];
   const used = new Set<string>();
   const seen = new Set<string>();
-  const ordered = Array.isArray(cases) ? [...cases].sort((a, b) => a.id.localeCompare(b.id)) : cases;
-  for await (const row of ordered) {
-    if (typeof row.id !== 'string' || !expected.has(row.id) || seen.has(row.id)) {
+  let evaluating = false;
+  const evaluate = async (row: IdopPermissionCase) => {
+    if (evaluating) throw new Error('IDOP comparison requires sequential awaited case visits');
+    evaluating = true;
+    try {
+      if (typeof row.id !== 'string' || !expected.has(row.id) || seen.has(row.id)) {
+        throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
+      }
+      seen.add(row.id);
+      const input = comparisonJson(row.input);
+      // Each reader gets its own copy of the same bytes. Mutation by the old
+      // implementation must not contaminate the candidate's input or the census.
+      const before = comparisonJson(await options.before(JSON.parse(input), row.id));
+      const after = comparisonJson(await options.after(JSON.parse(input), row.id));
+      const result = { id: row.id, inputSha256: sha256(input), beforeSha256: sha256(before), afterSha256: sha256(after) };
+      checked.push(result);
+      if (before === after) return;
+      const allowed = manifest.get(row.id);
+      const authorized = allowed && allowed.inputSha256 === result.inputSha256 &&
+        allowed.beforeSha256 === result.beforeSha256 && allowed.afterSha256 === result.afterSha256;
+      differences.push({ ...result, authorityRefs: authorized ? [...allowed.authorityRefs] : [] });
+      if (authorized) used.add(row.id);
+      else unexpected.push(row.id);
+    } finally { evaluating = false; }
+  };
+  if (options.produce) {
+    await options.produce(evaluate);
+    if (evaluating) throw new Error('IDOP comparison requires sequential awaited case visits');
+  } else {
+    const cases = options.enumerate();
+    if (Array.isArray(cases) && (!unique(cases.map(row => row.id)) ||
+        comparisonJson(population) !== comparisonJson(cases.map(row => row.id).sort()))) {
       throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
     }
-    seen.add(row.id);
-    const input = comparisonJson(row.input);
-    // Each reader gets its own copy of the same bytes. Mutation by the old
-    // implementation must not contaminate the candidate's input or the census.
-    const before = comparisonJson(await options.before(JSON.parse(input), row.id));
-    const after = comparisonJson(await options.after(JSON.parse(input), row.id));
-    const result = { id: row.id, inputSha256: sha256(input), beforeSha256: sha256(before), afterSha256: sha256(after) };
-    checked.push(result);
-    if (before === after) continue;
-    const allowed = manifest.get(row.id);
-    const authorized = allowed && allowed.inputSha256 === result.inputSha256 &&
-      allowed.beforeSha256 === result.beforeSha256 && allowed.afterSha256 === result.afterSha256;
-    differences.push({ ...result, authorityRefs: authorized ? [...allowed.authorityRefs] : [] });
-    if (authorized) used.add(row.id);
-    else unexpected.push(row.id);
+    const ordered = Array.isArray(cases) ? [...cases].sort((a, b) => a.id.localeCompare(b.id)) : cases;
+    for await (const row of ordered) await evaluate(row);
   }
   if (seen.size !== population.length) {
     throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
