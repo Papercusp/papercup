@@ -84,6 +84,128 @@ describe('phase binding writer census', () => {
       .map(row => row.siteId).sort());
   });
 
+  it('pins local serializer installation without approving constructors or deferred delegation', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const connection = 'libs/papercusp/libs/db/src/connection.ts';
+    const serializers = 'libs/papercusp/libs/db/src/raw-serializers.ts';
+    const paths = [...new Set([...reviewed.reviewedSourcePaths, serializers])];
+    const sources = paths.map(path => ({ path, content: readFileSync(new URL(path, root), 'utf8') }));
+    const inventory = inventoryPhaseWriters(sources);
+    const names = ['restoreRawDateSerializers', 'restoreRawJsonbSerializer', 'seedBuiltinArrayTypes'];
+    const installers = inventory.sites.filter(site => site.path === connection && site.operation === 'buildClient'
+      && site.kind === 'helper-edge' && names.includes(site.callees[0] ?? ''));
+    expect(installers.map(site => site.statement).sort()).toEqual(names.map(name => `${name}(client)`).sort());
+    const current = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    for (const site of installers) {
+      expect(current.coverage.checked).toContain(site.id);
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+      for (const path of [connection, serializers]) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+        path, sha256: inventory.sources.find(row => row.path === path)!.sha256,
+      });
+    }
+    // Change only the imported body. Caller identity must survive while its
+    // source approval fails, and the newly introduced writer stays visible.
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === serializers
+      ? { ...source, content: source.content + '\nexport function changedSerializerEffect(sql: any) {'
+        + ' return sql`UPDATE harness_shared.plan_item_claims SET owner=\'changed\'`; }\n' }
+      : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    for (const site of installers) {
+      expect(changed.sites.some(row => row.id === site.id)).toBe(true);
+      expect(stale.coverage.checked).not.toContain(site.id);
+      expect(stale.problems.find(row => row.id === site.id)?.reasons)
+        .toContain('stale-source-proof:' + serializers);
+      expect(stale.coverage.residue).toContain(site.id);
+    }
+    const newWriters = changed.sites.filter(site => site.path === serializers
+      && site.operation === 'changedSerializerEffect' && site.kind === 'sql');
+    expect(newWriters.length).toBeGreaterThan(0);
+    for (const site of newWriters) expect(stale.problems).toContainEqual({
+      id: site.id, reasons: ['unclassified-writer'],
+    });
+    const unresolved = inventory.sites.filter(site => site.path === connection && site.kind === 'helper-edge'
+      && ['postgres', 'drizzle', 'installNumericArrayTyping', 'adminStatementTimeoutMs', 'getOrgPg']
+        .includes(site.callees[0] ?? ''));
+    for (const name of ['postgres', 'drizzle', 'installNumericArrayTyping', 'adminStatementTimeoutMs']) {
+      expect(unresolved.some(site => site.callees[0] === name)).toBe(true);
+    }
+    for (const site of unresolved) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(current.coverage.residue).toContain(site.id);
+    }
+    expect(current.ready).toBe(false);
+    for (const { siteId } of reviewed.pendingAdvancing) expect(current.problems).toContainEqual({
+      id: siteId, reasons: ['unclassified-writer'],
+    });
+  });
+
+  it('invalidates diagnostic hook reviews when installed context or build dependencies change', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const connection = 'libs/papercusp/libs/db/src/connection.ts';
+    const dependencies = [
+      'libs/papercusp/libs/db/src/acquire-registry.ts',
+      'libs/papercusp/libs/db/src/build-stamp.ts',
+      'packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts',
+      'packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts',
+      'packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts',
+      'packages/operator-core/lib/build-info.ts',
+      'libs/generic/module-singleton/src/index.ts',
+    ];
+    // Include the inspected dependency sources independently of the review
+    // manifest: a missing dependency pin must fail, not shrink this test's scope.
+    const paths = [...new Set([...reviewed.reviewedSourcePaths, ...dependencies])];
+    const sources = paths.map(path => ({ path, content: readFileSync(new URL(path, root), 'utf8') }));
+    const inventory = inventoryPhaseWriters(sources);
+    const callers = inventory.sites.filter(site => site.path === connection && site.operation === 'buildClient'
+      && site.kind === 'helper-edge' && ['recordPoolMax', 'createPgDiagnosticHooks'].includes(site.callees[0] ?? ''));
+    expect(callers.map(site => site.statement).sort()).toEqual([
+      'createPgDiagnosticHooks(label)', 'recordPoolMax(label, poolMax)',
+    ]);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    const current = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    for (const site of callers) {
+      expect(current.coverage.checked).toContain(site.id);
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+      for (const path of [connection, ...dependencies]) expect(byId.get(site.id)?.sourceProofs)
+        .toContainEqual({ path, sha256: inventory.sources.find(row => row.path === path)!.sha256 });
+    }
+    for (const dependency of dependencies) {
+      const changed = inventoryPhaseWriters(sources.map(source => source.path === dependency
+        ? { ...source, content: source.content + '\nexport function changedDiagnosticEffect(sql: any) {'
+          + ' return sql`UPDATE harness_shared.plan_item_claims SET owner=\'changed\'`; }\n' }
+        : source));
+      const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+      for (const site of callers) {
+        expect(changed.sites.some(row => row.id === site.id)).toBe(true);
+        expect(stale.coverage.checked).not.toContain(site.id);
+        expect(stale.coverage.residue).toContain(site.id);
+        expect(stale.problems.find(row => row.id === site.id)?.reasons)
+          .toContain('stale-source-proof:' + dependency);
+      }
+    }
+    expect(current.ready).toBe(false);
+    for (const site of inventory.sites.filter(site => site.kind === 'helper-edge'
+      && ['getOrgPg', 'getClaim', 'notifyAgentOrdersChanged', 'buildClient',
+        'adminStatementTimeoutMs'].includes(site.callees[0] ?? ''))) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(current.coverage.residue).toContain(site.id);
+    }
+    for (const { siteId } of reviewed.pendingAdvancing) {
+      expect(current.problems).toContainEqual({ id: siteId, reasons: ['unclassified-writer'] });
+    }
+  });
+
   it('pins identity helper reviews while leaving database and notification closure unresolved', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(
