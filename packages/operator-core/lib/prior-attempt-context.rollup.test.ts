@@ -440,8 +440,9 @@ describe('GEC immutable atomic baseline', () => {
       && row.originalSha256 === null && row.observation === null)).toBe(true);
     expect(result.state).toBe('failure'); expect(result.complete).toBe(false);
     const scope = { workspaceId: 'census-workspace', harnessSlug: 'census-harness', runGroupId: 'census-run' };
+    const baseDetails = persisted(input)[0]!.executionDetails;
     const rows = result.ledgerResults.map((row, index) => ({ id: index + 1, status: row.verdict,
-      executionDetails: { ...persisted(input)[0]!.executionDetails, ...scope, check: row.check } }));
+      executionDetails: { ...baseDetails, ...scope, check: row.check } }));
     expect(result.ledgerResults.every(row => parseRecordedRubricCheck(row.check) !== null)).toBe(true);
     const absent = rows.find(row => JSON.parse(row.executionDetails.check.provenance!.procedure.snapshot).row.pin === null)!;
     expect(absent.status).toBe('error'); expect(absent.executionDetails.check.value).toBeNull();
