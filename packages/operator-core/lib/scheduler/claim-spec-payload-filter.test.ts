@@ -95,6 +95,7 @@ describe('summary-scoped member wakes (EI-27692065520622700)', () => {
 
   it.each([
     ['body-only lane', { summary: `Plan ${plan}: independent source preparation` }, true],
+    ['multiline body-only lane', { summary: `Evidence\n\nPlan ${plan}\nNext action` }, true],
     ['case-insensitive body', { summary: plan.toUpperCase() }, true],
     ['plan linkage', { plan }, true],
     ['known id', { id: 'WI-PREP' }, true],
@@ -103,6 +104,7 @@ describe('summary-scoped member wakes (EI-27692065520622700)', () => {
     ['null summary', { summary: null }, false],
     ['empty summary', { summary: '' }, false],
     ['excluded body match', { id: 'WI-HELD', summary: plan }, false],
+    ['excluded multiline body match', { id: 'WI-HELD', summary: `Evidence\n${plan}\nNext action` }, false],
     ['excluded plan match', { id: 'WI-GATE', plan }, false],
   ] as const)('%s', (_label, item, expected) => {
     expect(matchesClaimSpecFilter(subjectOf(item), filter)).toBe(expected);
@@ -115,6 +117,8 @@ describe('summary-scoped member wakes (EI-27692065520622700)', () => {
       { field: 'summary', op: '!=', value: 'lane' },
       { field: 'summary', op: 'in', value: ['lane', ''] },
       { field: 'summary', op: 'glob', value: '*LANE*' },
+      { field: 'summary', op: 'glob', value: 'before?lane?after' },
+      { not: { field: 'summary', op: 'glob', value: '*LANE*' } },
       { field: 'summary', op: 'contains', value: 'lane.[x]' },
       { field: 'summary', op: 'word', value: 'lane' },
       { not: { field: 'summary', op: 'contains', value: 'LANE' } },
@@ -124,7 +128,8 @@ describe('summary-scoped member wakes (EI-27692065520622700)', () => {
       const translated = claimSpecFilterToClaimablePayloadFilter(current);
       expect(translated).toBeDefined();
       for (const item of [{}, { summary: null }, { summary: '' }, { summary: 'lane' },
-        { summary: 'LANE.[x]' }, { summary: 'lane_prep' }, { summary: 'airplane' }]) {
+        { summary: 'LANE.[x]' }, { summary: 'lane_prep' }, { summary: 'airplane' },
+        { summary: 'before\nlane\nafter' }, { summary: 'before\r\nlane\r\nafter' }]) {
         expect(payloadMatchesFilter(translated, payloadOf(item)), JSON.stringify({ current, item }))
           .toBe(matchesClaimSpecFilter(subjectOf(item), current));
       }
@@ -197,7 +202,7 @@ describe('claimSpecFilterToClaimablePayloadFilter — translated shapes', () => 
   it('NOT title glob → { not: { title: { matches } } } mirroring the spec globRegex', () => {
     const f: FilterNode = { not: { field: 'title', op: 'glob', value: '*p2p*' } };
     expect(claimSpecFilterToClaimablePayloadFilter(f)).toEqual({
-      not: { title: { matches: { source: '^.*p2p.*$', flags: 'i' } } },
+      not: { title: { matches: { source: '^.*p2p.*$', flags: 'is' } } },
     });
   });
 

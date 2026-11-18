@@ -245,7 +245,8 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
 
 function globRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-  return new RegExp(`^${escaped}$`, 'i');
+  // SQL ILIKE wildcards span line breaks, including multiline work-item summaries.
+  return new RegExp(`^${escaped}$`, 'is');
 }
 
 /** Escape a literal string for safe interpolation into a JS regex. */

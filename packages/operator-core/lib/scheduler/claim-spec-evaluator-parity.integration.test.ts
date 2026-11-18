@@ -213,6 +213,14 @@ const ROWS: SeedRow[] = [
     createdTs: 9000,
   },
   {
+    id: 'F-multiline-summary',
+    why: 'EI-29089884309945006: SQL glob wildcards include line breaks; the post-claim JS '
+      + 'check must preserve both admission and exclusion for multiline issue bodies.',
+    title: 'Scheduler repair',
+    summary: 'before\nfederation\nP-205\nafter',
+    createdTs: 9500,
+  },
+  {
     id: 'F-p2p-plan-column',
     why: 'P-207 regression: a neutral issue title and summary still carry structured P2P source_plan_slug.',
     title: 'Neutral plan-scoped bug title',
@@ -302,6 +310,7 @@ const GLOB_PROBES: Array<{ field: FilterLeaf['field']; value: string }> = [
   { field: 'title', value: '*replication*' },
   { field: 'summary', value: '*federation*' },
   { field: 'summary', value: '*P-205*' },
+  { field: 'summary', value: 'before?federation?P-205?after' },
   { field: 'plan', value: 'plan-*' },
   { field: 'tags', value: '*infra*' },
   { field: 'paths', value: 'libs/generic/*' },

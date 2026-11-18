@@ -50,6 +50,31 @@ function issueItem(overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'title'>
   } as WorkItem;
 }
 
+describe('multiline summary glob admission', () => {
+  it.each(['\n', '\r', '\r\n', '\u2028', '\u2029'])('matches * across line separator %j', (separator) => {
+    const subject = claimSpecSubjectFromWorkItem(issueItem({
+      id: 'EI-multiline-summary',
+      title: 'Scheduler repair',
+      summary: `Evidence${separator}main-greening-progress${separator}Next action`,
+    }));
+    const filter: FilterNode = { field: 'summary', op: 'glob', value: '*main-greening-progress*' };
+    expect(matchesClaimSpecFilter(subject, filter)).toBe(true);
+    expect(matchesClaimSpecFilter(subject, { not: filter })).toBe(false);
+    expect(matchesClaimSpecFilter(subject, { ...filter, value: '*unrelated-plan*' })).toBe(false);
+  });
+
+  it.each(['\n', '\r', '\u2028', '\u2029'])('matches ? against one line separator %j', (separator) => {
+    const subject = claimSpecSubjectFromWorkItem(issueItem({
+      id: 'EI-single-separator',
+      title: 'Scheduler repair',
+      summary: `before${separator}federation${separator}after`,
+    }));
+    expect(matchesClaimSpecFilter(subject, {
+      field: 'summary', op: 'glob', value: 'before?federation?after',
+    })).toBe(true);
+  });
+});
+
 // EI-25503081061868211: compilation cost must depend on filter predicates,
 // rather than the size of the complete fleet-metric population.
 describe('text predicates over complete census cohorts', () => {

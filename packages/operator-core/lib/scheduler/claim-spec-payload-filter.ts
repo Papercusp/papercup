@@ -34,7 +34,7 @@
  * of the EI-15185 fix).
  *
  * The `glob` → regex translation mirrors claim-spec-match.ts's `globRegex`
- * byte-for-byte (case-insensitive, anchored) so a translated glob leaf matches
+ * byte-for-byte (case-insensitive, anchored, including line breaks) so a translated glob leaf matches
  * exactly what the spec evaluator would; `contains` maps to a case-insensitive
  * literal-substring regex, matching the spec's case-insensitive `includes` — EXCEPT
  * on the array-valued `tags` field, where claim-spec-match.ts's array leaf branch
@@ -81,7 +81,7 @@ const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 't
  *  admits) — unsound. See leafToCondition. */
 const ARRAY_VALUED_FIELDS = new Set<FilterLeaf['field']>(['tags']);
 
-/** Mirror claim-spec-match.ts `globRegex` EXACTLY (anchored, case-insensitive). */
+/** Mirror claim-spec-match.ts `globRegex` EXACTLY (anchored, case-insensitive, dot-all). */
 function globToRegexSource(pattern: string): string {
   return `^${pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')}$`;
 }
@@ -125,7 +125,7 @@ function leafToCondition(leaf: FilterLeaf): DataCondition | null {
     case 'in':
       return { [field]: { in: Array.isArray(value) ? value : [value] } };
     case 'glob':
-      return { [field]: { matches: { source: globToRegexSource(String(value)), flags: 'i' } } };
+      return { [field]: { matches: { source: globToRegexSource(String(value)), flags: 'is' } } };
     case 'word':
       // Word-boundary literal match — sound on both scalar and array-valued fields
       // (mingo's implicit per-element matching applies to `matches` too, same as
