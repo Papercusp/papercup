@@ -392,6 +392,31 @@ async function seedItem(input: {
             ${input.vector === null ? null : (input.embeddingProfile ?? null)})`;
 }
 
+it.each([null, 'su-assignee'])('R4 queued bypass review completes without changing admission or custody: %s', async takenBy => {
+  const id = 'WI-bypass-review';
+  const enteredAt = new Date(NOW - 10_000).toISOString();
+  await seedItem({ id, admission: 'auto', takenBy, payload: {
+    keep: 'source evidence', admissionReview: { state: 'pending', enteredAt, retryAttempts: 0 },
+  } });
+  await db.sql`UPDATE harness_shared.work_items
+     SET admitted_by = 'bypass:explicit-assignment', admitted_at = to_timestamp(${NOW - 10_000} / 1000.0)
+     WHERE feature_id = ${id}`;
+  const [before] = await db.sql`SELECT admitted_at, admitted_by, taken_by, status FROM harness_shared.work_items WHERE feature_id = ${id}`;
+  expect((await readPendingBatch(db.sql, WS, HARNESS, 10, [id])).map(row => row.id)).toEqual([id]);
+  const result = await runWorkItemAdmissionPromoter({
+    workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, runId: 'bypass-review',
+    targetItemIds: [id], noModel: true, now: () => NOW,
+  });
+  expect(result).toMatchObject({ promoted: 0, reviewed: 1, merged: 0, held: 0, guardRefusals: [] });
+  const [after] = await db.sql`SELECT admission, admitted_at, admitted_by, taken_by, status, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+  expect(after).toMatchObject({ ...before, admission: 'auto', payload: {
+    keep: 'source evidence', admissionReview: { state: 'reviewed', enteredAt, reviewedAt: new Date(NOW).toISOString() },
+  } });
+  const [receipt] = await db.sql`SELECT detail FROM harness_shared.admission_runs WHERE id = 'bypass-review'`;
+  expect(receipt.detail.reviewedItemIds).toEqual([id]);
+  expect(await readPendingBatch(db.sql, WS, HARNESS, 10, [id])).toEqual([]);
+});
+
 function judgementCall(verdict: 'r-finding-merge' | 'r-remedy-keep') {
   return vi.fn(async (input: { messages: Array<{ content: string }> }) => {
     const keys = [...input.messages[0]!.content.matchAll(/^## (.+)$/gm)].map((match) => match[1]!);
