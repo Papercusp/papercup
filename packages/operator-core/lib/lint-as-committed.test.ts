@@ -549,6 +549,8 @@ const {
     forwardAmbiguous?: boolean;
     workspaceDirs?: string[];
     checkErrors?: string[];
+    resumeRoot?: string;
+    resumeVerification?: { checkpointDir: string; maxBatches?: number; maxDurationMs?: number; batchSize?: number; generation?: boolean; materializeMissing?: boolean };
   };
   detectorPathsFromCommand: (command: unknown) => string[];
   parseGitmodules: (text: unknown) => { name: string; path: string; url: string | null }[];
@@ -799,6 +801,29 @@ describe('isolated clone module identity (EI-24824919200711849)', () => {
 });
 
 describe('parseArgs', () => {
+  it('accepts bounded retained-root verification without consuming command operands', () => {
+    const resumeVerification = { checkpointDir: '/private/journal', maxBatches: 1, maxDurationMs: 1000,
+      batchSize: 2, generation: true, materializeMissing: true };
+    expect(parseArgs(['test:file', '--any', '--resume-root=/retained',
+      '--resume-verification=' + JSON.stringify(resumeVerification), '--', '--resume-root=operand']))
+      .toMatchObject({ resumeRoot: '/retained', resumeVerification, keep: true,
+        forward: ['--resume-root=operand'], unknown: [] });
+  });
+
+  it.each([
+    ['--resume-root=/retained'],
+    ['--resume-verification={"checkpointDir":"/journal"}'],
+    ['--resume-root=relative', '--resume-verification={"checkpointDir":"/journal"}'],
+    ['--resume-root=/retained', '--resume-verification={"checkpointDir":"relative"}'],
+    ['--resume-root=/retained', '--resume-verification={"checkpointDir":"/journal","maxBatches":0}'],
+    ['--resume-root=/retained', '--resume-verification={"checkpointDir":"/journal","maxDurationMs":3600001}'],
+    ['--resume-root=/retained', '--resume-verification={"checkpointDir":"/journal","batchSize":4097}'],
+    ['--resume-root=/retained', '--resume-verification={"checkpointDir":"/journal","generation":"yes"}'],
+    ['--resume-root=/retained', '--resume-verification={"checkpointDir":"/journal","trust":true}'],
+  ])('rejects incomplete or unsafe retained-root options (%j)', (...flags) => {
+    expect(parseArgs(['lint:probe', ...flags]).checkErrors?.length).toBeGreaterThan(0);
+  });
+
   it('normalizes explicit dependency workspace flags without changing command forwarding', () => {
     const args = parseArgs(['test:file', '--any', '--workspace-dir=libs/runtime',
       '--workspace-dir=apps/operator', '--workspace-dir=libs/runtime', '--', '--workspace-dir=forwarded']);
@@ -1925,10 +1950,24 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       mkdirSync(join(f.root, 'node_modules/transitive'), { recursive: true });
       writeFileSync(join(f.root, 'node_modules/transitive/package.json'), '{"name":"transitive","version":"1.0.0"}');
       writeFileSync(join(f.root, 'node_modules/transitive/index.cjs'), 'module.exports = require("@fixture/runtime");\n');
+      const nestedDependency = 'libs/runtime/node_modules/only-local/index.cjs';
+      mkdirSync(dirname(join(f.root, nestedDependency)), { recursive: true });
+      writeFileSync(join(f.root, dirname(nestedDependency), 'package.json'),
+        '{"name":"only-local","version":"1.0.0","main":"index.cjs"}');
+      writeFileSync(join(f.root, nestedDependency), 'module.exports = "workspace-local-source";\n');
       const head = snapshot(f.root, {
+        'package.json': JSON.stringify({ ...JSON.parse(readFileSync(join(f.root, 'package.json'), 'utf8')),
+          workspaces: ['libs/*'] }),
+        'libs/runtime/package.json': JSON.stringify({
+          ...JSON.parse(readFileSync(join(f.root, 'libs/runtime/package.json'), 'utf8')),
+          dependencies: { 'only-local': '1.0.0' },
+        }),
         'package-lock.json': JSON.stringify({ lockfileVersion: 3, packages: {
+          '': { workspaces: ['libs/*'] },
+          'libs/runtime': { name: '@fixture/runtime', dependencies: { 'only-local': '1.0.0' } },
           'node_modules/transitive': { version: '1.0.0' },
           'node_modules/@fixture/runtime': { resolved: 'libs/runtime', link: true },
+          'libs/runtime/node_modules/only-local': { version: '1.0.0' },
         } }),
       }, f.head);
       const published = spawnSync('bash', [helper, '--integration', f.root, '--generation-root', store,
@@ -1960,6 +1999,7 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       }
       // A mutable donor cannot supply these bytes or even be enumerated now.
       rmSync(join(f.root, 'node_modules'), { recursive: true });
+      rmSync(join(f.root, 'libs/runtime/node_modules'), { recursive: true });
       const prepared = await mod.materializeIndependentDependencies(f.root, workRoot, { workspaceDirs });
       expect(phases().map(({ phase, state }) => [phase, state])).toEqual([
         ['generation-selection-and-copy', 'started'],
@@ -1975,6 +2015,12 @@ fs.appendFileSync(${JSON.stringify(received)}, JSON.stringify({ root: process.cw
       const requireClone = createRequire(join(workRoot, 'package.json'));
       expect(requireClone('transitive/index.cjs')).toBe('pinned-source');
       expect(realpathSync(requireClone.resolve('@fixture/runtime'))).toBe(join(workRoot, 'libs/runtime/dist/index.cjs'));
+      const requireWorkspace = createRequire(join(workRoot, 'libs/runtime/package.json'));
+      expect(requireWorkspace('only-local')).toBe('workspace-local-source');
+      expect(realpathSync(requireWorkspace.resolve('only-local'))).toBe(join(workRoot, nestedDependency));
+      expect(() => requireClone.resolve('only-local')).toThrow();
+      expect(statSync(join(workRoot, nestedDependency)).ino)
+        .not.toBe(statSync(join(generation, 'tree', nestedDependency)).ino);
       writeFileSync(clonedDependency, 'module.exports = "clone-only";\n');
       expect(readFileSync(join(generation, 'tree', dependency), 'utf8')).toContain('require("@fixture/runtime")');
       const artifact = join(parent, 'artifact');
@@ -2390,6 +2436,149 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
         .toBe(realpathSync(f.root));
     } finally {
       for (const root of roots) rmSync(root, { recursive: true, force: true });
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  }, 75_000);
+
+  it.each(['compatible', 'mismatched'] as const)
+    ('uses a %s full-scope retained donor only through bounded CLI resume', state => {
+      const f = retainedFixture();
+      const donor = join(f.parent, 'prepared-donor');
+      try {
+        cpSync(f.root, donor, { recursive: true, verbatimSymlinks: true });
+        writeFileSync(join(donor, mod.OWNER_MARKER), JSON.stringify({ ...f.marker,
+          pid: 2147483647, keep: true, createdAtMs: Date.now(),
+          dependencyMode: 'independent-copy-v1', dependencyScope: { mode: 'full', workspaceDirs: [] },
+        }));
+        gitFixture(f.workRoot, ['update-ref', 'refs/heads/main', f.main]);
+        // The canonical install has moved; an explicitly chosen retained donor
+        // must still match the original destination's complete frozen inputs.
+        writeFileSync(join(f.root, 'package-lock.json'), '{"lockfileVersion":3}');
+        if (state === 'mismatched') writeFileSync(join(donor, 'package-lock.json'), '{"lockfileVersion":2}');
+        const result = spawnSync(process.execPath, [scriptPath, 'lint:probe', '--ref=' + f.head,
+          '--resume-root=' + f.workRoot, '--dependency-donor=' + donor,
+          '--resume-verification=' + JSON.stringify({ checkpointDir: f.checkpointDir, maxDurationMs: 20_000 }),
+        ], { cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+        const output = result.stdout + result.stderr;
+        expect(result.status, output).toBe(state === 'compatible' ? 0 : 1);
+        expect(output).not.toContain('materialised committed tree in');
+        if (state === 'compatible') {
+          expect(output).toContain('All 1 check(s) pass AS COMMITTED');
+          expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toMatchObject({
+            dependencyMode: 'independent-copy-v1', dependencyScope: { mode: 'full', workspaceDirs: [] },
+          });
+        } else {
+          expect(output).toContain('dependency inputs differ');
+          expectUnpreparedRetainedMarker(f);
+        }
+      } finally { f.cleanup(); }
+    }, 40_000);
+
+  it('resumes bounded verification through the CLI without replacing copied roots or publishing early', () => {
+    const f = retainedFixture();
+    const retained = join(f.workRoot, 'node_modules/alpha.txt');
+    const inode = statSync(retained).ino;
+    const missing = 'libs/runtime/node_modules/leaf/index.cjs';
+    mkdirSync(dirname(join(f.root, missing)), { recursive: true });
+    writeFileSync(join(f.root, missing), 'module.exports = "recovered-leaf";');
+    gitFixture(f.workRoot, ['update-ref', 'refs/heads/main', f.main]);
+    const environment = commandEnvironment({ DEPENDENCY_GENERATION_RACY_WINDOW_SEC: '0' });
+    const run = (maxBatches: number) => spawnSync(process.execPath, [scriptPath, 'lint:probe',
+      '--ref=' + f.head, '--resume-root=' + f.workRoot, '--workspace-dir=libs/runtime',
+      '--resume-verification=' + JSON.stringify({ checkpointDir: f.checkpointDir,
+        batchSize: 2, maxBatches, maxDurationMs: 30_000, materializeMissing: true }),
+    ], { cwd: f.root, env: environment, encoding: 'utf8', timeout: 40_000, killSignal: 'SIGKILL' });
+    try {
+      const paused = run(1);
+      const output = paused.stdout + paused.stderr;
+      expect(paused.status, output).toBe(75);
+      expect(output).toContain('COMMITTED_DEPENDENCY_RESUME {"status":"incomplete"');
+      expect(output).not.toContain('check(s) pass AS COMMITTED');
+      expect(output).not.toContain('Committed source prepared at');
+      expect(output).not.toContain('COMMITTED_DEPENDENCY_COPY state=started mode=donor path=node_modules');
+      expect(existsSync(join(f.workRoot, 'libs/runtime/dist'))).toBe(false);
+      expectUnpreparedRetainedMarker(f);
+      expect(existsSync(join(f.checkpointDir, 'manifest.json'))).toBe(true);
+      const leafInode = statSync(join(f.workRoot, missing)).ino;
+      const complete = run(64);
+      const completedOutput = complete.stdout + complete.stderr;
+      expect(complete.status, completedOutput).toBe(0);
+      expect(completedOutput).toContain('All 1 check(s) pass AS COMMITTED');
+      expect(completedOutput).toMatch(/"reusedBatches":[1-9]/);
+      expect(completedOutput).not.toContain('materialised committed tree in');
+      expect(statSync(retained).ino).toBe(inode);
+      expect(statSync(join(f.workRoot, missing)).ino).toBe(leafInode);
+      expect(leafInode).not.toBe(statSync(join(f.root, missing)).ino);
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toMatchObject({
+        dependencyMode: 'independent-copy-v1',
+        dependencyScope: { mode: 'selected', workspaceDirs: ['libs/runtime'] },
+      });
+    } finally { f.cleanup(); }
+  }, 90_000);
+
+  it.each(['source', 'dependency', 'commit', 'owner', 'scope'] as const)
+    ('refuses retained CLI %s drift before commands or prepared publication', defect => {
+      const f = retainedFixture();
+      try {
+        if (defect === 'source') writeFileSync(join(f.workRoot, 'probe.cjs'), 'throw Error("changed");');
+        if (defect === 'dependency') writeFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'changed');
+        if (defect === 'owner') writeFileSync(f.markerPath, JSON.stringify({ ...f.marker, pid: process.pid }));
+        if (defect === 'scope') writeFileSync(f.markerPath, JSON.stringify({ ...f.marker,
+          dependencyScope: { mode: 'full', workspaceDirs: [] } }));
+        const result = spawnSync(process.execPath, [scriptPath, 'lint:probe',
+          '--ref=' + (defect === 'commit' ? f.main : f.head), '--resume-root=' + f.workRoot,
+          '--workspace-dir=libs/runtime', '--resume-verification=' + JSON.stringify({
+            checkpointDir: f.checkpointDir, maxDurationMs: 20_000 }),
+        ], { cwd: f.root, env: commandEnvironment(), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+        const output = result.stdout + result.stderr;
+        expect(result.status, output).toBe(1);
+        expect(output).toMatch(/retained source|retained dependency|retained root owner/);
+        expect(output).not.toContain('check(s) pass AS COMMITTED');
+        expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).not.toHaveProperty('dependencyMode');
+        expect(existsSync(f.workRoot)).toBe(true);
+      } finally { f.cleanup(); }
+    }, 40_000);
+
+  it('retains interrupted CLI preparation and resumes it without a second clone', async () => {
+    const f = fixture('node build.cjs');
+    const environment = commandEnvironment({ DEPENDENCY_GENERATION_RACY_WINDOW_SEC: '0' });
+    const { withFsMutex } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href);
+    const { installLockNameForRoot } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
+    let root: string | undefined;
+    try {
+      await withFsMutex(installLockNameForRoot(f.root), async () => {
+        const child = spawn(process.execPath, [scriptPath, 'lint:probe'], {
+          cwd: f.root, env: environment, timeout: 20_000, killSignal: 'SIGKILL',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let output = '';
+        child.stdout.on('data', data => {
+          output += data;
+          const match = output.match(/materialised committed tree in [^\n]+ -> (.+)\n/);
+          if (!root && match) { root = match[1]; child.kill('SIGTERM'); }
+        });
+        child.stderr.on('data', data => { output += data; });
+        const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
+          child.once('error', reject);
+          child.once('close', (code, signal) => resolveExit({ code, signal }));
+        });
+        expect(exit, output).toEqual({ code: 143, signal: null });
+        expect(root).toBeTruthy();
+        expect(existsSync(root!)).toBe(true);
+        expect(JSON.parse(readFileSync(join(root!, '.git/lint-as-committed-owner.json'), 'utf8')))
+          .not.toHaveProperty('dependencyMode');
+        expect(output).not.toContain('check(s) pass AS COMMITTED');
+      }, { lockRootDir: environment.PAPERCUSP_FS_MUTEX_LOCK_DIR });
+      const result = spawnSync(process.execPath, [scriptPath, 'lint:probe', '--ref=' + f.head,
+        '--resume-root=' + root, '--resume-verification=' + JSON.stringify({
+          checkpointDir: join(environment.TMPDIR!, 'journal'), materializeMissing: true, maxDurationMs: 30_000 }),
+      ], { cwd: f.root, env: environment, encoding: 'utf8', timeout: 40_000, killSignal: 'SIGKILL' });
+      const output = result.stdout + result.stderr;
+      expect(result.status, output).toBe(0);
+      expect(output).toContain('All 1 check(s) pass AS COMMITTED');
+      expect(output).not.toContain('materialised committed tree in');
+    } finally {
+      if (root) rmSync(root, { recursive: true, force: true });
       rmSync(f.root, { recursive: true, force: true });
     }
   }, 75_000);
@@ -3786,7 +3975,7 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
       const settled = await Promise.allSettled(artifacts.map(artifact => new Promise<void>((resolveChild, reject) => {
         const code = `const {retainCommittedWorkRoot}=await import(${JSON.stringify(pathToFileURL(scriptPath).href)}); await retainCommittedWorkRoot(${JSON.stringify(source)},${JSON.stringify(sha)},${JSON.stringify(artifact)});`;
         const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], {
-          cwd: repoRoot, stdio: ['ignore', 'ignore', 'pipe'],
+          cwd: repoRoot, env: currentRunnerEnvironment(), stdio: ['ignore', 'ignore', 'pipe'],
         });
         let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
         child.once('error', reject);
@@ -3808,7 +3997,9 @@ describe('extracted-tree lifecycle (WI-10005705)', () => {
     expect(mod.parseArgs(['--materialize-only', '--ref=recorded', '--retain-for=/tmp/release'])).toMatchObject({
       materializeOnly: true, keep: true, ref: 'recorded', retainFor: '/tmp/release', scripts: [],
     });
-    const run = spawnSync('node', [scriptPath, '--materialize-only', 'test:file'], { encoding: 'utf8' });
+    const run = spawnSync('node', [scriptPath, '--materialize-only', 'test:file'], {
+      env: currentRunnerEnvironment(), encoding: 'utf8',
+    });
     expect(run.status).toBe(2);
     expect(run.stderr).toContain('cannot run or forward a command');
   });
