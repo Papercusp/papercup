@@ -9,6 +9,7 @@ import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
 import { sessionPackageDependentId } from '../blueprint/session-package-resources';
 import { upsertLayer, upsertLayerInTx, upsertScopedPolicyAuthority } from '../governance-policy/store';
+import { readPersonalAuthorityPopulation } from '../personal-vault/store';
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -44,6 +45,20 @@ beforeAll(async () => {
     const body = readFileSync(existsSync(path) ? path : new URL(path.href + '.DRAFT'), 'utf8');
     await sql.unsafe(body.replace(/GRANT[\s\S]*?;/g, ''));
   }
+  // Reuse the canonical vault table definitions without their user FK: this
+  // pre-existing session fixture uses deliberately malformed text user IDs.
+  // Vault rows below still use the production UUID columns and constraints.
+  for (const [migration, tables] of [
+    ['874-personal-vault.sql', ['personal_vault_settings', 'personal_grants']],
+    ['1302-personal-disclosure-labels.sql', ['personal_privacy_rules', 'personal_disclosures']],
+  ] as const) {
+    const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8');
+    for (const table of tables) {
+      const statement = body.match(new RegExp(`CREATE TABLE IF NOT EXISTS harness_shared\\.${table} \\([\\s\\S]*?\\n\\);`))?.[0];
+      if (!statement) throw new Error(`canonical vault fixture missing ${table}`);
+      await sql.unsafe(statement.replace('REFERENCES harness_shared.users(id) ON DELETE CASCADE', ''));
+    }
+  }
 }, 60_000);
 afterAll(async () => { await sql?.end({ timeout: 5 }); });
 beforeEach(async () => {
@@ -51,6 +66,8 @@ beforeEach(async () => {
     harness_shared.blueprint_package_dependents, harness_shared.blueprint_package_resources,
     harness_shared.blueprint_package_installations, harness_shared.users, harness_shared.user_sessions,
     harness_shared.governance_host_authority_bindings,
+    harness_shared.personal_vault_settings, harness_shared.personal_grants,
+    harness_shared.personal_privacy_rules, harness_shared.personal_disclosures,
     harness_shared.governance_policy_layer_versions, harness_shared.governance_policy_layers`);
 });
 async function seed() {
@@ -64,6 +81,191 @@ async function seed() {
     ('ws', 'orphan', '{}'), ('foreign', 'foreign-anchor', '{}')`;
 }
 const txSql = (tx: postgres.TransactionSql) => tx as unknown as postgres.Sql;
+
+describe('P-002 vault stored-source join', () => {
+  const joined = { includeVaultSources: true };
+  const human = '11111111-1111-4111-8111-111111111111';
+  const otherHuman = '22222222-2222-4222-8222-222222222222';
+  async function seedVault() {
+    await sql`INSERT INTO harness_shared.personal_vault_settings
+      (workspace_id, user_id, enabled, updated_by) VALUES ('ws', ${human}, false, 'editor-not-owner')`;
+    await sql`INSERT INTO harness_shared.personal_grants
+      (workspace_id, user_id, principal_type, principal_id, scopes, granted_by, revoked_at, metadata)
+      VALUES ('ws', ${human}, 'agent-role', 'su', ARRAY['personal:gmail'], 'grantor-not-owner', now(), '{"audit":"old"}'),
+        ('ws', ${otherHuman}, 'binding', 'unmatched-binding', ARRAY['personal:calendar'], 'grantor-not-owner', NULL, '{}'),
+        ('foreign', ${human}, 'agent-role', 'su', ARRAY['personal:foreign'], 'foreign-grantor', NULL, '{}')`;
+    await sql`INSERT INTO harness_shared.personal_privacy_rules
+      (workspace_id, user_id, match_kind, match_value, level, created_by, updated_by)
+      VALUES ('ws', ${human}, 'source', 'gmail', 'sender-only', 'rule-author-not-owner', 'rule-author-not-owner')`;
+    await sql`INSERT INTO harness_shared.personal_disclosures
+      (workspace_id, user_id, agent_owner_id, document_id, source, level, reader_set, delivered_via, released_at, release_ref)
+      VALUES ('ws', ${human}, 'wearer', ${human}, 'gmail', 'sender-only', ARRAY['reader@example.test'], 'fixture', NULL, NULL),
+        ('ws', ${otherHuman}, 'orphan-context', ${otherHuman}, 'calendar', 'participants', ARRAY[]::text[], 'fixture', now(), 'owner-directive:fixture')`;
+  }
+
+  it('joins canonical vault settings, revoked grants and released windows without inferring context or ownership from authors', async () => {
+    await seedVault();
+    const result = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(result).toMatchObject({ status: 'ok', vaultSources: {
+      settings: [{ userId: human, enabled: false }],
+      grants: [{ userId: human, principalId: 'su', revokedAt: expect.any(String) },
+        { userId: otherHuman, principalId: 'unmatched-binding', revokedAt: null }],
+      privacyRules: [{ userId: human, matchKind: 'source', matchValue: 'gmail', level: 'sender-only' }],
+      disclosures: [{ userId: human, agentOwnerId: 'wearer', releasedAt: null },
+        { userId: otherHuman, agentOwnerId: 'orphan-context', releasedAt: expect.any(String) }],
+    } });
+    expect(result).not.toHaveProperty('contextVaultIds');
+    expect(JSON.stringify(result)).not.toContain('not-owner');
+    expect(JSON.stringify(result)).not.toContain('personal:foreign');
+    expect(await readIdentityPermissionPopulation(sql, 'ws')).not.toHaveProperty('vaultSources');
+    expect(await readIdentityPermissionPopulation(sql, 'ws', joined)).toEqual(result);
+  });
+
+  it('represents empty storage without claiming retained context is empty', async () => {
+    const result = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(result).toMatchObject({ status: 'ok', vaultSources: {
+      settings: [], grants: [], privacyRules: [], disclosures: [],
+    } });
+    expect(result).not.toHaveProperty('contextVaultIds');
+    expect(result).not.toHaveProperty('complete');
+    expect(result.revision).not.toBe((await readIdentityPermissionPopulation(sql, 'ws')).revision);
+  });
+
+  const changes = [
+    ['personal_vault_settings', "enabled = NOT enabled"],
+    ['personal_grants', "metadata = '{\"audit\":\"changed\"}'::jsonb"],
+    ['personal_privacy_rules', "level = 'participants'"],
+    ['personal_disclosures', "reader_set = ARRAY['changed@example.test']"],
+  ] as const;
+  it.each(changes)('invalidates the aggregate for %s changes before any effect', async (table, set) => {
+    await seedVault();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    await sql.unsafe(`UPDATE harness_shared.${table} SET ${set} WHERE workspace_id = 'ws'`);
+    const checked = await sql.begin(async tx => {
+      const result = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined, expectedRevision: before.revision });
+      if (result.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+      return result;
+    });
+    expect(checked).toMatchObject({ status: 'stale' });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it('reads vault inputs in the session snapshot, including changes to unreturned audit metadata', async () => {
+    await seed(); await seedVault();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    let changed = false;
+    const during = await readIdentityPermissionPopulation(sql, 'ws', { ...joined, visit: async () => {
+      if (changed) return;
+      changed = true;
+      await sql`UPDATE harness_shared.personal_grants SET metadata = '{"audit":"changed"}' WHERE workspace_id = 'ws'`;
+    } });
+    expect(changed).toBe(true);
+    expect(during).toEqual(before);
+    expect((await readIdentityPermissionPopulation(sql, 'ws', joined)).revision).not.toBe(before.revision);
+  });
+
+  it('keeps full-row revisions stable across connection timezone and date formatting', async () => {
+    await seedVault();
+    const before = await readPersonalAuthorityPopulation(sql, 'ws');
+    const elsewhere = await sql.begin('isolation level repeatable read read only', async tx => {
+      await tx`SET LOCAL TIME ZONE 'Pacific/Honolulu'`;
+      await tx`SET LOCAL DateStyle = 'German, DMY'`;
+      return readPersonalAuthorityPopulation(txSql(tx), 'ws');
+    });
+    expect(elsewhere).toEqual(before);
+  });
+
+  it.each(changes)('holds %s rows and empty insertion gaps through the effect', async (table, set) => {
+    for (const seeded of [false, true]) {
+      if (seeded) await seedVault();
+      const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+      await sql.begin(async tx => {
+        expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined, expectedRevision: before.revision })).toEqual(before);
+        await expect(sql.begin(async peer => {
+          await peer`SET LOCAL lock_timeout = '80ms'`;
+          if (seeded) await peer.unsafe(`UPDATE harness_shared.${table} SET ${set} WHERE workspace_id = 'ws'`);
+          // INSERT must acquire RowExclusive even when its SELECT is empty.
+          else await peer.unsafe(`INSERT INTO harness_shared.${table} SELECT * FROM harness_shared.${table} WHERE false`);
+        })).rejects.toMatchObject({ code: '55P03' });
+        await tx`INSERT INTO harness_shared.population_effects VALUES (${`${table}:${seeded}`})`;
+      });
+    }
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toHaveLength(2);
+  });
+
+  it('refuses old snapshots, plain clients and malformed revisions for vault effect reads', async () => {
+    await expect(readPersonalAuthorityPopulation(sql, 'ws', { pinForEffect: true })).rejects.toThrow('existing transaction');
+    await expect(readPersonalAuthorityPopulation(sql, ' ws')).rejects.toThrow('exact workspace');
+    await expect(readPersonalAuthorityPopulation(sql, 'ws', { expectedRevision: '' })).rejects.toThrow('exact workspace and revision');
+    await sql.begin(async tx => {
+      await expect(readPersonalAuthorityPopulation(txSql(tx), 'ws')).rejects.toThrow('repeatable read');
+    });
+    await sql.begin('isolation level repeatable read', async tx => {
+      await expect(readPersonalAuthorityPopulation(txSql(tx), 'ws', { pinForEffect: true })).rejects.toThrow('read committed');
+    });
+  });
+
+  it('refuses nullable scope and reader entries instead of inventing permissive inputs', async () => {
+    await seedVault();
+    await sql`UPDATE harness_shared.personal_grants SET scopes = ARRAY[NULL]::text[] WHERE workspace_id = 'ws'`;
+    await expect(readIdentityPermissionPopulation(sql, 'ws', joined)).rejects.toThrow('malformed authority inputs');
+    await sql`UPDATE harness_shared.personal_grants SET scopes = ARRAY['personal:gmail'] WHERE workspace_id = 'ws'`;
+    await sql`UPDATE harness_shared.personal_disclosures SET reader_set = ARRAY[NULL]::text[] WHERE workspace_id = 'ws'`;
+    await expect(readIdentityPermissionPopulation(sql, 'ws', joined)).rejects.toThrow('malformed authority inputs');
+  });
+
+  it('invalidates an empty source revision on the first vault enrollment', async () => {
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    await seedVault();
+    expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', {
+      ...joined, expectedRevision: before.revision,
+    }))).toMatchObject({ status: 'stale' });
+  });
+
+  it.each(changes)('rechecks %s changes committed while waiting for its source lease', async (table, set) => {
+    await seedVault();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    let pending: Promise<unknown> | undefined;
+    await sql.begin(async writer => {
+      await writer.unsafe(`UPDATE harness_shared.${table} SET ${set} WHERE workspace_id = 'ws'`);
+      pending = sql.begin(async reader => {
+        const current = await readIdentityPermissionPopulation(txSql(reader), 'ws', { ...joined, expectedRevision: before.revision });
+        if (current.status === 'ok') await reader`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+        return current;
+      }).catch(error => error);
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (!waiting && Date.now() < deadline) {
+        const [row] = await writer`SELECT EXISTS(SELECT 1 FROM pg_locks
+          WHERE relation = to_regclass(${`harness_shared.${table}`})
+            AND mode = 'ShareLock' AND NOT granted) AS waiting`;
+        waiting = row.waiting;
+        if (!waiting) await writer`SELECT pg_sleep(0.01)`;
+      }
+      expect(waiting).toBe(true);
+    });
+    expect(await pending).toMatchObject({ status: 'stale' });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it.each(changes)('refuses RLS-hidden %s even with a matching workspace setting', async table => {
+    await seedVault();
+    const role = `vault_source_reader_${randomBytes(5).toString('hex')}`;
+    await sql.unsafe(`CREATE ROLE "${role}"; GRANT USAGE ON SCHEMA harness_shared TO "${role}";
+      GRANT SELECT ON ALL TABLES IN SCHEMA harness_shared TO "${role}";
+      ALTER TABLE harness_shared.${table} ENABLE ROW LEVEL SECURITY`);
+    try {
+      await sql.begin('isolation level repeatable read read only', async tx => {
+        await tx.unsafe(`SET LOCAL ROLE "${role}"`);
+        await tx`SELECT set_config('app.workspace_id', 'ws', true)`;
+        await expect(readIdentityPermissionPopulation(txSql(tx), 'ws', joined)).rejects.toThrow('vault population is not fully visible');
+      });
+    } finally {
+      await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE ROW LEVEL SECURITY;
+        DROP OWNED BY "${role}"; DROP ROLE "${role}"`);
+    }
+  });
+});
 
 describe('P-002 canonical session identity population', () => {
   it('retains latest desired and applied sources, ended wearers, unknown rows and orphan anchors', async () => {

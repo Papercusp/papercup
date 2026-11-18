@@ -426,6 +426,99 @@ export async function listPersonalGrants(sql: Sql, workspaceId: string, userId: 
      ORDER BY granted_at DESC`;
 }
 
+/** P-002 stored vault authority inputs, never document contents or a retained-
+ * context census. An unrestricted read is not recorded in personal_disclosures;
+ * neither an empty ledger nor a released row proves a context contains no vault
+ * data. user_id is the stored vault owner, never granted_by/updated_by or the
+ * technical agent identity. Keep disabled settings, revoked/expired grants,
+ * unmatched principals and released windows for conservative host admission.
+ *
+ * Compose this read with other sources in ONE snapshot. At effect, hold these
+ * tables (including insertion gaps) in the caller's READ COMMITTED transaction.
+ * No pool-based vault writer may be called while that transaction holds SHARE.
+ * These rows are evidence only; they do not synthesize policy or authorize use.
+ */
+export async function readPersonalAuthorityPopulation(sql: Sql, workspaceId: string,
+  options: { expectedRevision?: string; pinForEffect?: boolean } = {}) {
+  options = { ...options };
+  const text = (value: unknown): value is string => typeof value === 'string' &&
+    !!value.trim() && value === value.trim();
+  if (!text(workspaceId) || (options.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedRevision)))
+    throw new Error('vault population requires an exact workspace and revision');
+  const pinned = options.pinForEffect === true || options.expectedRevision !== undefined;
+  const transaction = typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function';
+  if (pinned && !transaction) throw new Error('pinned vault population requires an existing transaction');
+  const read = async (tx: Sql) => {
+    const [isolation] = await tx`SELECT current_setting('transaction_isolation') AS isolation`;
+    if (pinned) {
+      if (isolation?.isolation !== 'read committed') throw new Error('pinned vault population requires read committed isolation');
+      await tx`LOCK TABLE harness_shared.personal_vault_settings, harness_shared.personal_grants,
+        harness_shared.personal_privacy_rules, harness_shared.personal_disclosures IN SHARE MODE`;
+    } else if (!['repeatable read', 'serializable'].includes(isolation?.isolation ?? ''))
+      throw new Error('vault population snapshot requires repeatable read or serializable isolation');
+    const [visibility] = await tx`SELECT
+      (row_security_active('harness_shared.personal_vault_settings') OR
+       row_security_active('harness_shared.personal_grants') OR
+       row_security_active('harness_shared.personal_privacy_rules') OR
+       row_security_active('harness_shared.personal_disclosures')) AS restricted`;
+    // A matching workspace GUC cannot establish that an arbitrary RLS policy
+    // did not hide same-workspace owners, grants or disclosure windows.
+    if (!visibility || visibility.restricted) throw new Error('vault population is not fully visible');
+    type Ref = { userId: string; sourceRevision: string };
+    type Dated = { expiresAt: string | null; revokedAt: string | null };
+    // record_send covers EVERY stored column (including audit/metadata fields)
+    // without returning those fields, and encodes timestamps independently of
+    // the connection's TimeZone/DateStyle. Returned times are epoch microseconds.
+    // JSON arrays preserve SQL NULL elements; the text-array decoder can expose
+    // the literal string "NULL", which is a different reader/scope value.
+    const settings = await tx<Array<Ref & { enabled: boolean }>>`SELECT user_id::text AS "userId", enabled,
+      encode(sha256(record_send(v)), 'hex') AS "sourceRevision"
+      FROM harness_shared.personal_vault_settings v WHERE workspace_id = ${workspaceId} ORDER BY user_id`;
+    const grants = await tx<Array<Ref & Dated & { id: string; principalType: PersonalPrincipalType;
+      principalId: string; scopes: string[] }>>`SELECT id::text, user_id::text AS "userId",
+      principal_type AS "principalType", principal_id AS "principalId", to_jsonb(scopes) AS scopes,
+      floor(extract(epoch FROM expires_at) * 1000000)::text AS "expiresAt",
+      floor(extract(epoch FROM revoked_at) * 1000000)::text AS "revokedAt",
+      encode(sha256(record_send(v)), 'hex') AS "sourceRevision"
+      FROM harness_shared.personal_grants v WHERE workspace_id = ${workspaceId} ORDER BY user_id, id`;
+    const privacyRules = await tx<Array<Ref & { id: string; matchKind: string; matchValue: string; level: string }>>`
+      SELECT id::text, user_id::text AS "userId", match_kind AS "matchKind", match_value AS "matchValue", level,
+        encode(sha256(record_send(v)), 'hex') AS "sourceRevision"
+      FROM harness_shared.personal_privacy_rules v WHERE workspace_id = ${workspaceId} ORDER BY user_id, id`;
+    const disclosures = await tx<Array<Ref & { id: string; agentOwnerId: string; documentId: string;
+      source: string; level: string; readerSet: string[]; deliveredAt: string; releasedAt: string | null }>>`
+      SELECT id::text, user_id::text AS "userId", agent_owner_id AS "agentOwnerId", document_id::text AS "documentId",
+        source, level, to_jsonb(reader_set) AS "readerSet",
+        floor(extract(epoch FROM delivered_at) * 1000000)::text AS "deliveredAt",
+        floor(extract(epoch FROM released_at) * 1000000)::text AS "releasedAt",
+        encode(sha256(record_send(v)), 'hex') AS "sourceRevision"
+      FROM harness_shared.personal_disclosures v WHERE workspace_id = ${workspaceId} ORDER BY user_id, id`;
+    const timestamp = (value: unknown): value is string => typeof value === 'string' && /^-?\d+$/.test(value);
+    if ([...settings, ...grants, ...privacyRules, ...disclosures].some(row => !UUID_RE.test(row.userId) ||
+        !/^[a-f0-9]{64}$/.test(row.sourceRevision)) || settings.some(row => typeof row.enabled !== 'boolean') ||
+        grants.some(row => !UUID_RE.test(row.id) || !text(row.principalId) ||
+          !['plan-template', 'binding', 'agent-role'].includes(row.principalType) ||
+          !Array.isArray(row.scopes) || !row.scopes.length || row.scopes.some(scope => !text(scope) || personalScope(scope) !== scope) ||
+          row.expiresAt !== null && !timestamp(row.expiresAt) || row.revokedAt !== null && !timestamp(row.revokedAt)) ||
+        privacyRules.some(row => !UUID_RE.test(row.id) || !text(row.matchValue) ||
+          !['source', 'sender', 'sender-domain'].includes(row.matchKind) ||
+          !['unrestricted', 'participants', 'sender-only'].includes(row.level)) ||
+        disclosures.some(row => !UUID_RE.test(row.id) || !UUID_RE.test(row.documentId) ||
+          !text(row.agentOwnerId) || !text(row.source) || !['participants', 'sender-only'].includes(row.level) ||
+          !Array.isArray(row.readerSet) || row.readerSet.some(reader => !text(reader)) ||
+          !timestamp(row.deliveredAt) || row.releasedAt !== null && !timestamp(row.releasedAt)))
+      throw new Error('vault population contains malformed authority inputs');
+    const refs = (rows: Ref[]) => rows.map(row => row.sourceRevision);
+    const revision = createHash('sha256').update(JSON.stringify({ workspaceId,
+      settings: refs(settings), grants: refs(grants), privacyRules: refs(privacyRules), disclosures: refs(disclosures),
+    })).digest('hex');
+    return options.expectedRevision !== undefined && revision !== options.expectedRevision
+      ? { status: 'stale' as const, revision }
+      : { status: 'ok' as const, revision, settings, grants, privacyRules, disclosures };
+  };
+  return transaction ? read(sql) : sql.begin('isolation level repeatable read read only', tx => read(tx as unknown as Sql));
+}
+
 export async function personalVaultStats(sql: Sql, workspaceId: string, userId: string) {
   const [counts, unembedded] = await Promise.all([
     sql<Array<{

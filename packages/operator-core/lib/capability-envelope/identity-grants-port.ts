@@ -539,8 +539,12 @@ export interface IdentityPermissionSessionSource {
  * Package selection also reconciles exact applied/desired session revisions
  * with the runtime's attempt decision and explicit installation ownership.
  * Unprovisioned/control-only revisions remain unknown; retained prior pins
- * stay in the package census. Library, external backend and vault ownership
- * still need joins. These source joins do not authorize a permission change.
+ * stay in the package census. includeVaultSources joins existing vault settings,
+ * grants, privacy rules and the FULL disclosure ledger, including released
+ * windows. That stored source does not establish retained context (unrestricted
+ * reads are not logged), synthesize vault policy, or prove external backend
+ * state. Library still needs its guarded source join. These source joins do not
+ * authorize a permission change.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -550,6 +554,8 @@ export interface IdentityPermissionSessionSource {
  * protected effect that does not call the journal through another connection.
  * includeWorkspaceUsers also pins auth storage: resolve retained credentials
  * before this lease, since getSessionUser may write last_seen_at through the pool.
+ * includeVaultSources also pins the four vault authority tables: use the caller
+ * transaction for any protected vault write, never a separate pool connection.
  *
  * Return compact source references; optionally visit receipt-narrowed bodies in
  * bounded batches. Visitors only collect/read evidence, never perform effects:
@@ -559,7 +565,7 @@ export interface IdentityPermissionSessionSource {
 export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: string,
   options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
     includeWorkspaceUsers?: boolean; includeHostAuthorities?: boolean; includeScopedPolicies?: boolean;
-    includeInheritedPolicies?: boolean;
+    includeInheritedPolicies?: boolean; includeVaultSources?: boolean;
     visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
   options = { ...options };
   if (!workspaceId || workspaceId !== workspaceId.trim() ||
@@ -723,13 +729,23 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
     const inheritedPolicyOwners = inheritedPolicies?.policies.filter(policy => policy.state === 'present')
       .map(({ kind, id, revision }) => ({ authority: { kind, id, revision },
         ownerId: hostAuthorities!.bindings.find(binding => binding.kind === kind && binding.subjectId === id)?.humanOwnerId ?? null }));
+    let vaultSources: Extract<Awaited<ReturnType<typeof import('../personal-vault/store').readPersonalAuthorityPopulation>>,
+      { status: 'ok' }> | undefined;
+    if (options.includeVaultSources) {
+      const { readPersonalAuthorityPopulation } = await import('../personal-vault/store');
+      const population = await readPersonalAuthorityPopulation(tx, workspaceId, { pinForEffect: pinned });
+      if (population.status !== 'ok') throw new Error('vault source population is unavailable');
+      vaultSources = population;
+      hash.update('\n').update(canonicalJson({ vaultSourceRevision: vaultSources.revision }));
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
       : { status: 'ok' as const, revision, sessions, ...(packages ? { packages, sessionPackageOwners } : {}),
         ...(workspaceUsers ? { workspaceUsers } : {}), ...(hostAuthorities ? { hostAuthorities } : {}),
         ...(scopedPolicies ? { scopedPolicies } : {}),
-        ...(inheritedPolicies ? { inheritedPolicies, inheritedPolicyOwners } : {}) };
+        ...(inheritedPolicies ? { inheritedPolicies, inheritedPolicyOwners } : {}),
+        ...(vaultSources ? { vaultSources } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));
