@@ -658,6 +658,46 @@ describe('separate local desktop consent', () => {
     expect(managedSetInterval).toHaveBeenCalledTimes(1);
   });
 
+  it('restarts the elected connector before approval returns without waiting for the periodic tick', async () => {
+    const w = await linked();
+    startPortalRelayReconciler(w.deps);
+    await reconcilePortalRelay(w.deps);
+    w.connectorBinds();
+    expect((await portalRelayStatus(w.deps)).connector?.bound).toBe(true);
+    const starts = w.connectorStarts.length;
+    // Request handlers can have the default non-owner dependency composition;
+    // the boot-elected singleton must still restart the production connector.
+    const requestDeps = { ...w.deps, isConnectorOwner: () => false };
+    await approvePortalRelayDesktop(input, requestDeps);
+    expect(w.connectorStarts).toHaveLength(starts + 1);
+    expect(w.connectorStarts.at(-1)?.desktopGrant?.id).toBe(w.row!.desktopGrant!.id);
+    expect((await portalRelayStatus(w.deps)).connector?.running).toBe(true);
+  });
+
+  it('refreshes the grant after a pre-approval reconciliation is still publishing status', async () => {
+    const w = await linked();
+    await reconcilePortalRelay(w.deps);
+    let entered!: () => void, release!: () => void;
+    const publishing = new Promise<void>(resolve => { entered = resolve; });
+    const resume = new Promise<void>(resolve => { release = resolve; });
+    const read = w.deps.store.read;
+    let reads = 0;
+    vi.spyOn(w.deps.store, 'read').mockImplementation(async () => {
+      const row = await read();
+      if (++reads === 2) { entered(); await resume; }
+      return row;
+    });
+    const previous = reconcilePortalRelay(w.deps);
+    await publishing;
+    const save = vi.spyOn(w.deps.store, 'saveDesktopGrant');
+    const approval = approvePortalRelayDesktop(input, w.deps);
+    await vi.waitFor(() => expect(save).toHaveResolvedWith(true));
+    release();
+    await Promise.all([previous, approval]);
+    expect(w.connectorStarts.at(-1)?.desktopGrant?.id).toBe(w.row!.desktopGrant!.id);
+    expect((await portalRelayStatus(w.deps)).connector?.running).toBe(true);
+  });
+
   it('app/link approval alone grants no desktop access; the account comes from the approved token', async () => {
     const w = await linked();
     const status = await portalRelayStatus(w.deps);
@@ -732,6 +772,7 @@ describe('separate local desktop consent', () => {
     await reconcilePortalRelay(w.deps);
     w.connectorBinds();
     const stops = w.connectorStops;
+    const starts = w.connectorStarts.length;
     const result = await revokePortalRelayDesktop(w.deps);
     expect(result.desktop.grant).toBeNull();
     expect(result.state).toBe('linked');
@@ -739,7 +780,9 @@ describe('separate local desktop consent', () => {
     expect(w.secrets.connectorBearer).toBe('connector-bearer');
     expect(w.connectorStops).toBe(stops + 1);
     expect(w.portal.unlink).not.toHaveBeenCalled();
-    expect((await reconcilePortalRelay(w.deps)).action).toBe('started');
+    expect(w.connectorStarts).toHaveLength(starts + 1);
+    expect(w.connectorStarts.at(-1)?.desktopGrant).toBeNull();
+    expect((await reconcilePortalRelay(w.deps)).action).toBe('running');
     expect(w.row?.desktopGrant).toBeNull();
   });
 

@@ -182,7 +182,7 @@ describe('persisted installed Portal connection', () => {
       await ensurePortalRelayRow({ installId, portalOrigin }, opts);
       await recordPortalRelayConsent({ noticeVersion: PORTAL_RELAY_NOTICE_VERSION, by: userId }, opts);
       await savePortalRelayLinked({ userId, organizationId, customerWorkspaceId: identity.customerWorkspaceId,
-        appBaseUrl: `${portalOrigin}/apps/${identity.customerWorkspaceId}`, connectorUrl: url,
+        appBaseUrl: `${portalOrigin}/apps/${identity.customerWorkspaceId}`, connectorUrl: `${url}?peer=host`,
         connectorBearer: 'private-integration-connector', operatorPort: 3070 }, opts);
       const desktop = await registerDesktopSession({ workspaceId: localWorkspaceId, kind: 'xvfb-local',
         scope: 'agent', scopeRef: 'integration-agent', name: 'private-persisted-desktop',
@@ -203,7 +203,11 @@ describe('persisted installed Portal connection', () => {
       const consent = await request('approve', { approval });
       expect(consent.grant).toMatchObject({ installId, userId, organizationId, localWorkspaceId,
         browserPublicKey: approval.browserPublicKey, view: true, control: false, id: expect.any(String) });
-      const linked = await request('start', { url: `${url}?peer=host` });
+      // Approval must restart the connector itself. An explicit fixture start
+      // here used to conceal the production gap until the next five-second tick.
+      expect(consent.connector.running).toBe(true);
+      await vi.waitFor(async () => expect((await request('status')).connector.bound).toBe(true));
+      const linked = consent;
       const connection = await connect(linked.machinePublicKey);
       await connection.noise.send({ type: 'desktop.roster', requestId: 'before-restart' });
       await vi.waitFor(() => expect(connection.frames).toContainEqual(expect.objectContaining({ type: 'desktop.roster.result',

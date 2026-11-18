@@ -652,26 +652,29 @@ export async function approvePortalRelayDesktop(
     if (!await locked.store.saveDesktopGrant(grant)) {
       throw new PortalRelayError('desktop_binding_changed', 'The link changed while recording desktop consent');
     }
-    // Close old channels before the new key/scope can be used. Reconciliation restarts once.
+    // Close old channels before the new key/scope can be used.
     locked.connector.stop();
     state.lastConnectorStartAt = 0;
     changed = true;
     return { ...await portalRelayStatus(locked), machinePublicKey };
   });
-  if (changed) deps.notifyChanged();
-  return result;
+  if (changed) {
+    await refreshDesktopConnector(deps);
+    deps.notifyChanged();
+  }
+  return { ...await portalRelayStatus(deps), machinePublicKey: result.machinePublicKey };
 }
 
 /** Drop only desktop authority. The existing app relay remains approved. */
 export async function revokePortalRelayDesktop(deps: PortalRelayDeps = defaultPortalRelayDeps()): Promise<PortalRelayStatus> {
-  const result = await withRelayLinkLock(deps, async (locked) => {
+  await withRelayLinkLock(deps, async (locked) => {
     await locked.store.clearDesktopGrant();
     locked.connector.stop();
     state.lastConnectorStartAt = 0;
-    return portalRelayStatus(locked);
   });
+  await refreshDesktopConnector(deps);
   deps.notifyChanged();
-  return result;
+  return portalRelayStatus(deps);
 }
 
 // ── reconciler ─────────────────────────────────────────────────────────────────────────────────
@@ -685,6 +688,18 @@ const state = pinModuleState('@papercusp/operator-core.remote-access.relay-opt-i
   lastLoggedError: null as string | null,
   lastFingerprint: null as string | null,
 }));
+
+/** A local authority change must not leave the connector down until the next
+ * sampling tick. Reuse the boot-elected composition, including isolated hosts'
+ * explicit owner election. Wait outside the link lock for any older pass before
+ * requesting one against the newly persisted grant. Workers leave this to their
+ * singleton rather than starting a second connector. */
+async function refreshDesktopConnector(deps: PortalRelayDeps): Promise<void> {
+  const owner = state.reconcilerDeps ?? deps;
+  if (!owner.isConnectorOwner()) return;
+  if (state.reconcileInFlight) await state.reconcileInFlight;
+  await reconcilePortalRelay(owner);
+}
 
 export interface PortalRelayReconcileResult {
   readonly action:

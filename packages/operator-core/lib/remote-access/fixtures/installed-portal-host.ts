@@ -9,7 +9,7 @@ import { portalRelayConnectorStatus, startPortalRelayConnector, stopPortalRelayC
 import { loadOrCreateHostedMachineNoiseKeyPair } from '../../workspace-host/hosted-machine-noise-key';
 
 const workspaceRoot = process.env.PAPERCUSP_INSTALLED_INTEGRATION_ROOT!;
-const deps = defaultPortalRelayDeps({ env: {}, notifyChanged: () => {},
+const deps = defaultPortalRelayDeps({ env: { PAPERCUSP_HOME: workspaceRoot }, isConnectorOwner: () => true, notifyChanged: () => {},
   localWorkspaceExists: async id => {
     if (id !== 'installed-integration-workspace') return false;
     await access(join(workspaceRoot, id)); return true;
