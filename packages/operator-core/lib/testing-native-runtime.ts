@@ -12,6 +12,18 @@ import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/executio
 
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
 
+/** The launcher pin is deliberately scrubbed by Vitest's hermetic worker setup.
+ * Keep the canonical isolated workspace and reject a conflicting surviving pin. */
+export function assertNativeIsolatedWorkspace(env: NodeJS.ProcessEnv = process.env): string {
+  const workspace = env.PAPERCUSP_WORKSPACE;
+  if (!/^verify-tauri-isolated-[0-9]+$/.test(workspace ?? '')
+    || env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1'
+    || env.PAPERCUSP_SKIP_PG_DISCOVERY !== '1'
+    || (env.PAPERCUSP_WORKSPACE_ID !== undefined && env.PAPERCUSP_WORKSPACE_ID !== workspace))
+    throw new Error('Native fixture requires the owned isolated workspace');
+  return workspace!;
+}
+
 /** Name the failed condition, in the original evaluation order: one shared
  * message for all of them made every recurrence undiagnosable and cost a full
  * verifier run per guess. */

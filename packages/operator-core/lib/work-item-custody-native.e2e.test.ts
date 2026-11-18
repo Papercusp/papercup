@@ -13,7 +13,7 @@ import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { captureOwnedDatabaseSchema } from '@papercusp/test-config/pg';
 import { describe, expect, inject, it } from 'vitest';
-import { assertNativeRuntimeLiveness } from './testing-native-runtime';
+import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
 import type { WorkItemLifecycleCoverage, WorkItemLifecycleEvent } from './work-item-lifecycle-history';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -35,11 +35,9 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
     expect(receipt.sourceCommit).toBe(process.env.VERIFY_TAURI_SOURCE_REF);
     const runtimeBefore = assertNativeRuntimeLiveness(ROOT, receipt.sourceCommit);
     const owner = process.env.PAPERCUSP_SID!;
-    const workspace = process.env.PAPERCUSP_WORKSPACE!;
+    const workspace = assertNativeIsolatedWorkspace();
     const port = process.env.VERIFY_TAURI_PORT!;
     expect(owner).toBeTruthy();
-    expect(workspace).toMatch(/^verify-tauri-isolated-\d+$/);
-    expect(process.env.PAPERCUSP_WORKSPACE_ID).toBe(workspace);
     expect(port).toMatch(/^[1-9][0-9]*$/);
     expect(['3070', '3170', '3270', '3271']).not.toContain(port);
     const origin = `http://127.0.0.1:${port}`;

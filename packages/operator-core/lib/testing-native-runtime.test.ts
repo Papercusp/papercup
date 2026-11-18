@@ -3,11 +3,39 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { assertNativeIsolatedWorkspace } from './testing-native-runtime';
 
 const root = resolve(import.meta.dirname, '../../..');
 const modulePath = join(root, 'packages/operator-core/lib/testing-native-runtime.ts');
 const bwrap = spawnSync('bwrap', ['--unshare-user', '--dev-bind', '/', '/', '--die-with-parent', '--', 'true']);
+
+it('preserves native fixture isolation through actual hermetic worker setup', async () => {
+  const previous = { ...process.env };
+  try {
+    Object.assign(process.env, {
+      PAPERCUSP_WORKSPACE: 'verify-tauri-isolated-90',
+      PAPERCUSP_WORKSPACE_ID: 'verify-tauri-isolated-90',
+      PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+    });
+    expect(assertNativeIsolatedWorkspace()).toBe('verify-tauri-isolated-90');
+    vi.resetModules();
+    await import('../../../libs/test-config/src/setup-hermetic-env');
+    expect(process.env.PAPERCUSP_WORKSPACE_ID).toBeUndefined();
+    expect(assertNativeIsolatedWorkspace()).toBe('verify-tauri-isolated-90');
+    for (const override of [
+      { PAPERCUSP_WORKSPACE: 'papercusp-workspace' },
+      { PAPERCUSP_WORKSPACE: undefined },
+      { PAPERCUSP_WORKSPACE_ID: 'verify-tauri-isolated-91' },
+      { PAPERCUSP_VERIFY_TAURI_ISOLATED: undefined },
+      { PAPERCUSP_SKIP_PG_DISCOVERY: '0' },
+    ]) expect(() => assertNativeIsolatedWorkspace({ ...process.env, ...override }))
+      .toThrow('Native fixture requires the owned isolated workspace');
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+  }
+});
 
 it.skipIf(bwrap.status !== 0)('keeps native custody outside a mutation overlay and rejects source mismatch and process exit', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'native-runtime-wrapper-test-'));
