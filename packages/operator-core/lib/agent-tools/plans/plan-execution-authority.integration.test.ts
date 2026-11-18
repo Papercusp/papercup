@@ -418,6 +418,31 @@ describe('canonical successful-start revision authority (real PG)', () => {
     }
   });
 
+  it('compares timestamp projections in one catalog read without admitting changed or malformed instants', async () => {
+    await db.sql`UPDATE harness_shared.harness_plans SET created_at='2026-11-05T18:19:03.691104Z'`;
+    await issue();
+    let catalogReads = 0;
+    connection.sql = new Proxy(db.sql, { apply(target, thisArg, args) {
+      const text = Array.isArray(args[0]) ? args[0].join('') : '';
+      if (text.includes('AS normalized')) catalogReads++;
+      return Reflect.apply(target, thisArg, args);
+    } });
+    try {
+      await db.sql`UPDATE harness_shared.plan_revisions SET content_snapshot=jsonb_set(content_snapshot::jsonb,
+        '{inputs,created_at}', '"2026-11-05T13:19:03.691104-05:00"')::text`;
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual([]);
+      expect(catalogReads).toBe(1);
+      await db.sql`UPDATE harness_shared.plan_revisions SET content_snapshot=jsonb_set(content_snapshot::jsonb,
+        '{inputs,created_at}', '"2026-11-05T13:19:03.691105-05:00"')::text`;
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_start_revision_stale']);
+      expect(catalogReads).toBe(2);
+      await db.sql`UPDATE harness_shared.plan_revisions SET content_snapshot=jsonb_set(content_snapshot::jsonb,
+        '{inputs,created_at}', '"invalid instant"')::text`;
+      expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_start_revision_invalid']);
+      expect(catalogReads).toBe(3);
+    } finally { connection.sql = db.sql; }
+  });
+
   it('does not clear an immutable start on a dependency bookkeeping replay', async () => {
     await seedLine('P-001'); await seedLine('P-002', 1);
     await db.sql`INSERT INTO harness_shared.work_item_deps VALUES ('default','blocks','feature','project#P-002','feature','project#P-001')`;

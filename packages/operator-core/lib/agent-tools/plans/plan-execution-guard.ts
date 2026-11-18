@@ -557,7 +557,7 @@ export function selectExecutionPlanBindings(
   return uniquePlanBindings(selected);
 }
 
-async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
+export async function readExecutionPlanGoal(ownerId: string, workspaceId: string,
   observe?: PlanExecutionTimingObserver, signal?: AbortSignal): Promise<ExecutionPlanGoalResolution> {
   return runWithWorkspace(workspaceId, async () => {
     const { resolveOwnerGoalForAuthority } = await measurePlanStage('goal_module', observe,

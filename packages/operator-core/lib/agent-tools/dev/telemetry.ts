@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, type KernelEnforcementRequest } from '@papercusp/agent-mcp';
 import { trackPhase } from '@papercusp/tooldef';
 import { flagPollSuspects, handlerPhaseRollup, telemetryRollup } from '../../dev-data';
 import { readRuntimeSecurityCensus, runtimeObservabilityHealth } from '../../observability/runtime';
@@ -33,8 +33,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
-    view: z.enum(['rollup', 'security-census', 'host-permission-inputs']).optional()
-      .describe('security-census reads serving-host discovery; host-permission-inputs captures only the authenticated superuser caller\'s original host read inputs. Neither is a permission or source-containment verdict. Default rollup.'),
+    view: z.enum(['rollup', 'security-census', 'host-permission-inputs', 'kernel-permission-inputs']).optional()
+      .describe('security-census reads serving-host discovery; host-permission-inputs and kernel-permission-inputs capture only the authenticated superuser caller\'s original read inputs. Neither is a permission or source-containment verdict. Default rollup.'),
     capture: z.boolean().optional()
       .describe('security-census only: persist the full host snapshot and signed authenticated producer receipt in immutable artifacts. No qualification or closure approval.'),
     harness: z.string().min(1).max(120).optional().describe('Concrete harness for authenticated security-census capture; defaults to the transport scope.'),
@@ -53,7 +53,7 @@ export default defineTool({
       .describe('Tool name: also return its per-phase timing (handlerPhases) and phase coverage of wall time.'),
   }),
   async handler(args, ctx) {
-    if (args.view === 'host-permission-inputs') {
+    if (args.view === 'host-permission-inputs' || args.view === 'kernel-permission-inputs') {
       if (Object.entries(args).some(([key, value]) => key !== 'view' && value !== undefined)) {
         throw Error('host_permission_inputs_requires_self_only');
       }
@@ -65,6 +65,45 @@ export default defineTool({
       const identity = resolveAgentIdentity(ctx);
       if (identity.ownerId !== ctx.uiClientId || identity.workspaceId !== ctx.workspaceId) {
         throw Error('host_permission_inputs_requires_matching_identity');
+      }
+      if (args.view === 'kernel-permission-inputs') {
+        const [kernel, grants, plan, apps, organization, mcp, capture] = await Promise.all([
+          import('../../projected-tool-deps'), import('../../capability-envelope/identity-grants-port'),
+          import('../plans/plan-execution-guard'), import('../../connected-apps/enforce'),
+          import('../../governance-policy/enforce'), import('@papercusp/agent-mcp'),
+          import('../../agent-identities/idop-p001-baseline'),
+        ]);
+        const startedAt = new Date().toISOString();
+        const runtime = getServingHostIdentity();
+        // Preserve the host's dispatch-stack kernel request fields. In
+        // particular an indirect call or requested revision is not a direct
+        // call with no revision just because this handler is observing it.
+        const request: KernelEnforcementRequest = { phase: 'enforce',
+          boundary: ctx.kernelBoundary ?? ctx.dispatchBoundary ?? (ctx.reactionCause ? 'reaction'
+            : ctx.codeMode || ctx.telemetrySurface === 'tools:invoke' ? 'indirect-dispatch' : 'dispatch'),
+          toolName: 'dev:telemetry', capabilities: ['intel:read'], args, ctx,
+          callId: ctx.dispatchCallId, operation: 'dev:telemetry',
+          appliedRevision: ctx.appliedExecutionRevision ?? ctx.kernelState?.appliedRevision ?? ctx.kernelState?.activation?.applied ?? null,
+          requestedRevision: ctx.requestedExecutionRevision ?? ctx.kernelState?.requestedRevision ?? null,
+          ownership: ctx.kernelOwnership ?? ctx.kernelState?.ownership };
+        const app = apps.appPrincipalRefOfSlug(ctx.principal?.slug);
+        const result = await trackPhase(ctx.phases, 'dev:telemetry:kernel-permission-inputs', () =>
+          capture.captureIdopP001KernelPermissionPorts({ workspaceId, requests: [{ request }],
+            policyInputs: [], operationClaims: [], toolNames: [request.toolName],
+            apps: app ? [{ appId: app.appId, tokenIds: app.tokenId ? [app.tokenId] : [] }] : [],
+            convergence: [], captureIdentityDependencies: true,
+          }, { inner: { readState: kernel.readControlAnchorKernelState, resolveIdentity: resolveAgentIdentity,
+            readPolicy: grants.readIdentityGrantPolicy, readOperationEffectClaim: grants.readCurrentOperationEffectClaim,
+            resolveTool: mcp.resolveMcpName, runtime: { pid: process.pid, processId: runtime.processId },
+            plan: { readBindings: plan.readExecutionPlanBindings, resolveGoal: plan.readExecutionPlanGoal,
+              checkPlan: plan.checkExecutionPlan } },
+          app: apps.getAppKeyScopeReadPorts(), organization: organization.getInheritedPolicyReadPorts() }));
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true,
+          scope: 'original-host-self-kernel-permission-inputs', snapshot: result.snapshot, sha256: result.sha256,
+          provenance: { schemaVersion: 1, ownerId: identity.ownerId, workspaceId, runtime,
+            artifact: runtimeObservabilityHealth().artifact ?? { status: 'unknown', reason: 'boot-artifact-not-measured' },
+            startedAt, completedAt: new Date().toISOString() },
+        }) }] };
       }
       // Resolve only on this view: normal telemetry must not load the comparison
       // graph. Read the same host ports/cache as dispatch; never force a refresh.

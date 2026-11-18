@@ -25,10 +25,10 @@ export function executionPlanInputs(row: ExecutionPlanRow): Record<string, unkno
 /** Normalize only catalog-typed timestamps, including pre-normalization receipts.
  * PostgreSQL keeps microseconds; Date.parse/toISOString would discard authority
  * inputs below a millisecond. Nested JSON and timestamp-looking text stay opaque. */
-async function normalizeExecutionTimestamps(sql: PlanRevisionSql, input: Record<string, unknown>): Promise<ExecutionPlanRow> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('invalid_execution_inputs');
-  const [result] = await sql<{ normalized: ExecutionPlanRow }[]>`
-    SELECT COALESCE(jsonb_object_agg(e.key, CASE
+async function normalizeExecutionTimestamps(sql: PlanRevisionSql, inputs: Record<string, unknown>[]): Promise<ExecutionPlanRow[]> {
+  if (inputs.some(input => !input || typeof input !== 'object' || Array.isArray(input))) throw new Error('invalid_execution_inputs');
+  const results = await sql<{ normalized: ExecutionPlanRow }[]>`
+    SELECT (SELECT COALESCE(jsonb_object_agg(e.key, CASE
       WHEN a.atttypid='timestamptz'::regtype AND jsonb_typeof(e.value)='string' THEN
         CASE WHEN isfinite((e.value #>> '{}')::timestamptz) THEN
           to_jsonb(to_char((e.value #>> '{}')::timestamptz AT TIME ZONE 'UTC',
@@ -36,11 +36,13 @@ async function normalizeExecutionTimestamps(sql: PlanRevisionSql, input: Record<
         ELSE to_jsonb((e.value #>> '{}')::timestamptz) END
       WHEN a.atttypid='timestamp'::regtype AND jsonb_typeof(e.value)='string'
         THEN to_jsonb((e.value #>> '{}')::timestamp)
-      ELSE e.value END), '{}'::jsonb) AS normalized
-      FROM jsonb_each(${JSON.stringify(input)}::text::jsonb) e
+      ELSE e.value END), '{}'::jsonb)
+      FROM jsonb_each(i.input) e
       LEFT JOIN pg_attribute a ON a.attrelid='harness_shared.harness_plans'::regclass
-        AND a.attname=e.key AND a.attnum>0 AND NOT a.attisdropped`;
-  return result!.normalized;
+        AND a.attname=e.key AND a.attnum>0 AND NOT a.attisdropped) AS normalized
+      FROM jsonb_array_elements(${JSON.stringify(inputs)}::text::jsonb) WITH ORDINALITY AS i(input, ordinal)
+      ORDER BY i.ordinal`;
+  return results.map(result => result.normalized);
 }
 
 export async function readExecutionPlanRow(scope: ExecutionStartScope): Promise<ExecutionPlanRow | null> {
@@ -63,7 +65,8 @@ async function readExecutionSnapshot(sql: PlanRevisionSql, scope: ExecutionStart
     { ...scope, slug: scope.planSlug },
     { items: row.items, content: row.content },
   );
-  return { ...await normalizeExecutionTimestamps(sql, row), rendered_content: renderPlanLines(row.content, items) };
+  const [normalized] = await normalizeExecutionTimestamps(sql, [row]);
+  return { ...normalized!, rendered_content: renderPlanLines(row.content, items) };
 }
 
 /** Canonical start calls this after its final promotion, admission and binding legs. */
@@ -129,9 +132,13 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
       { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug },
       { items: row.items, content: row.content },
     );
-    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, items))
-      || !isDeepStrictEqual(executionPlanInputs(await normalizeExecutionTimestamps(sql, receipt.inputs)),
-        executionPlanInputs(await normalizeExecutionTimestamps(sql, row)))) return ['plan_start_revision_stale'];
+    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, items)))
+      return ['plan_start_revision_stale'];
+    // Compare both fresh projections in one catalog query. Serial round trips here
+    // consume the native guard's deadline even when its continuation verdict is warm.
+    const [stored, current] = await normalizeExecutionTimestamps(sql, [receipt.inputs, row]);
+    if (!isDeepStrictEqual(executionPlanInputs(stored!), executionPlanInputs(current!)))
+      return ['plan_start_revision_stale'];
     return [];
   } catch { return ['plan_start_revision_invalid']; }
 }
