@@ -37,7 +37,7 @@ const workspaceId = 'p003-original-invocation-pg';
 const ownerId = 'su-original-invocation-pg';
 
 beforeAll(async () => {
-  db = await createOrgTestDb();
+  db = await createOrgTestDb({ adminPoolMax: 4 });
   connection.sql = db.adminSql;
   await db.adminSql.unsafe(`CREATE TABLE harness_shared.original_invocation_probe_effects (
     call_id text PRIMARY KEY, value integer NOT NULL
@@ -271,6 +271,57 @@ describe('original invocation ledger (real Postgres)', () => {
     await Promise.all([reservation.settle('release'), reservation.settle('release')]);
     expect((await read(reservation.invocationRef!)).metadata_json.quotaReservation.state).toBe('released');
   });
+
+  it.each(['cancel', 'deadline'] as const)('disposes a quota lock waiter on %s without persisting a claim', async mode => {
+    const req = request();
+    const windowKey = randomUUID();
+    const abort = new AbortController();
+    const holder = await db.adminSql.reserve();
+    let pending: Promise<unknown> | undefined;
+    let waiterPid: number | undefined;
+    try {
+      await holder`SELECT pg_advisory_lock(hashtextextended(${JSON.stringify([
+        'tool-quota', workspaceId, req.toolName, req.ctx.role, windowKey,
+      ])}, 0))`;
+      pending = PROJECTED_DEPS.reserveQuota!({ ...req, windowKey, limit: 1,
+        ctx: { ...req.ctx, ...(mode === 'deadline' ? { deadlineAtMs: Date.now() + 700 } : {}) },
+        signal: abort.signal });
+      const outcome = pending.then(value => ({ value }), error => ({ error }));
+      // Observe a real server lock wait before abandoning the caller. This
+      // distinguishes cancellation disposal from merely refusing before BEGIN.
+      await vi.waitFor(async () => {
+        const rows = await db.adminSql<{ pid: number }[]>`SELECT a.pid FROM pg_stat_activity a
+          WHERE a.datname=${db.dbName} AND a.wait_event='advisory'
+            AND a.query LIKE 'SELECT pg_advisory_xact_lock(hashtextextended%'
+        `;
+        expect(rows).toHaveLength(1);
+        waiterPid = rows[0].pid;
+      }, { timeout: 600, interval: 10 });
+      if (mode === 'cancel') abort.abort(new Error('quota admission cancelled by fixture'));
+      let settled = false;
+      void outcome.then(() => { settled = true; });
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2_000 });
+      expect(await outcome).toHaveProperty('error');
+      // The blocking connection is STILL held: a released waiter must have
+      // rolled back and returned its connection, without waiting for this lock.
+      await vi.waitFor(async () => {
+        const rows = await db.adminSql`SELECT pid FROM pg_stat_activity
+          WHERE pid=${waiterPid!} AND xact_start IS NOT NULL`;
+        expect(rows).toHaveLength(0);
+      }, { timeout: 2_000 });
+      expect(await db.adminSql`SELECT id FROM harness_shared.tool_invocations
+        WHERE workspace_id=${workspaceId} AND window_key=${windowKey}`).toHaveLength(0);
+    } finally {
+      abort.abort();
+      await holder`SELECT pg_advisory_unlock_all()`;
+      holder.release();
+      await pending?.then(async value => {
+        if (value && typeof value === 'object' && 'allowed' in value && value.allowed && 'settle' in value) {
+          await (value as { settle(outcome: 'release'): Promise<void> }).settle('release');
+        }
+      }).catch(() => undefined);
+    }
+  }, 10_000);
 
   it('commits the original audience and budgets before returning a recoverable reference', async () => {
     const req = request();
