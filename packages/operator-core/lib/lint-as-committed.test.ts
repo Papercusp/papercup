@@ -3099,26 +3099,42 @@ fs.writeFileSync('public/runtime-ready', asset);
     } finally { f.cleanup(); }
   }, 60_000);
 
-  it.each(['unchanged', 'source', 'stage'])('resumes completed copy chunks and rechecks %s bytes before full verification', async changed => {
+  it.each(['unchanged', 'source', 'stage', 'source-ctime', 'stage-ctime'])('resumes completed copy chunks and rechecks %s bytes before full verification', async changed => {
     const f = retainedFixture();
     const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
     const helper = join(f.parent, 'interrupt-second-chunk.sh');
     const first = join(f.parent, 'first-chunk');
     const interrupted = join(f.parent, 'interrupted');
     const copied = join(f.parent, 'copied-entries');
+    const scans = join(f.parent, 'chunk-scans');
+    const scanOrder = join(f.parent, 'scan-order');
     const partial = join(f.workRoot, '.git/committed-dependency-partials',
       createHash('sha256').update('node_modules').digest('hex'), 'tree');
     for (let index = 0; index < 90; index++)
       writeFileSync(join(f.root, 'node_modules', 'chunk-' + String(index).padStart(3, '0')), 'small dependency');
     linkSync(join(f.root, 'node_modules/alpha.txt'), join(f.root, 'node_modules/zzz-alias'));
+    // Keep an exactly representable mtime so restoring it below cannot hide a
+    // weak byte comparator behind an unrelated timestamp mismatch.
+    utimesSync(join(f.root, 'node_modules/alpha.txt'), 946684800, 946684800);
     writeFileSync(helper, [
       'source ' + JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')),
+      'eval "$(declare -f dependency_generation_source_records | sed \'1s/dependency_generation_source_records/original_source_records/\')"',
+      'dependency_generation_source_records() {',
+      '  local entry',
+      '  if [ "$#" -gt 2 ]; then printf "%s\\n" "$3" >> ' + JSON.stringify(scanOrder) + '; fi',
+      '  for entry in "${@:3}"; do',
+      '    if [ "$entry" = ./alpha.txt ]; then printf "%s\\n" "$1" >> ' + JSON.stringify(scans) + '; fi',
+      '  done',
+      '  original_source_records "$@"',
+      '}',
       'rsync() {',
       '  local arg selection=""',
       '  for arg in "$@"; do case "$arg" in --files-from=*) selection="${arg#--files-from=}" ;; esac; done',
       '  if [ -f ' + JSON.stringify(first) + ' ] && [ ! -f ' + JSON.stringify(interrupted) + ' ]; then',
       '    touch ' + JSON.stringify(interrupted),
-      '    sleep 10',
+      // Use the command's typed incomplete exit after the first chunk, rather
+      // than racing the full metadata/copy setup against a three-second timer.
+      '    return 124',
       '  else',
       '    command rsync "$@" || return $?',
       '    cat "$selection" >> ' + JSON.stringify(copied),
@@ -3130,27 +3146,52 @@ fs.writeFileSync('public/runtime-ready', asset);
     const context = { sourceCommit: f.head, materializer: helper, verifySource: () => {} };
     try {
       const paused = await verifyRetainedDependencies(f.root, f.workRoot, {
-        ...f.options().resumeVerification, materializeMissing: true, maxDurationMs: 3000,
+        ...f.options().resumeVerification, materializeMissing: true, maxDurationMs: 20_000,
       }, context);
       expect(paused.status).toBe('incomplete');
       expect(paused.progress.copiedChunks).toBe(1);
       expect(existsSync(interrupted)).toBe(true);
       expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
       expectUnpreparedRetainedMarker(f);
-      const target = changed === 'source' ? join(f.root, 'node_modules/alpha.txt') : join(partial, 'alpha.txt');
-      if (changed !== 'unchanged') {
-        const before = statSync(target);
+      const target = changed.startsWith('source') ? join(f.root, 'node_modules/alpha.txt') : join(partial, 'alpha.txt');
+      if (changed.endsWith('-ctime')) {
+        const before = statSync(target, { bigint: true });
+        const bytes = readFileSync(target);
+        const sibling = join(f.parent, 'snapshot-link');
+        linkSync(target, sibling);
+        rmSync(sibling);
+        expect(statSync(target, { bigint: true }).ctimeNs).not.toBe(before.ctimeNs);
+        expect(statSync(target, { bigint: true }).mtimeNs).toBe(before.mtimeNs);
+        expect(readFileSync(target)).toEqual(bytes);
+      } else if (changed !== 'unchanged') {
+        const before = statSync(target, { bigint: true });
         writeFileSync(target, 'payload-v2');
-        utimesSync(target, before.atime, before.mtime);
+        utimesSync(target, Number(before.atimeNs) / 1e9, Number(before.mtimeNs) / 1e9);
+        expect(statSync(target, { bigint: true }).size).toBe(before.size);
+        expect(statSync(target, { bigint: true }).mtimeNs).toBe(before.mtimeNs);
       }
+      rmSync(scans, { force: true });
+      rmSync(scanOrder, { force: true });
       const complete = await verifyRetainedDependencies(f.root, f.workRoot, {
         ...f.options().resumeVerification, materializeMissing: true,
       }, context);
       expect(complete.status).toBe('complete');
       expect(complete.progress.hashedFiles).toBeGreaterThan(0);
-      expect(complete.progress.reusedCopyChunks).toBe(changed === 'unchanged' ? 1 : 0);
+      const reusable = changed === 'unchanged' || changed.endsWith('-ctime');
+      expect(complete.progress.reusedCopyChunks).toBe(reusable ? 1 : 0);
+      expect(complete.progress.contentMatchedCopyChunks).toBe(changed.endsWith('-ctime') ? 1 : 0);
+      // A COPY metadata miss needs one capture per tree before checking bytes
+      // and one afterward. The comparator must reuse those initial records.
+      const scannedRoots = readFileSync(scans, 'utf8').trim().split('\n');
+      for (const root of [join(f.root, 'node_modules'), partial])
+        expect(scannedRoots.filter(path => path === root)).toHaveLength(changed === 'unchanged' ? 1 : 2);
+      // Resume must reach the uncopied chunk before spending its bounded
+      // budget on the completed prefix. The prefix's tamper checks still run.
+      const firstScan = readFileSync(scanOrder, 'utf8').trim().split('\n')[0];
+      expect(firstScan).not.toBe('./.bin');
+      expect(firstScan).toMatch(/^\.\/chunk-/);
       expect(readFileSync(copied, 'utf8').split('\0').filter(name => name === 'alpha.txt'))
-        .toHaveLength(changed === 'unchanged' ? 1 : 2);
+        .toHaveLength(reusable ? 1 : 2);
       expect(readFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'utf8'))
         .toBe(changed === 'source' ? 'payload-v2' : 'payload-v1');
       expect(statSync(join(f.workRoot, 'node_modules/alpha.txt')).ino)
