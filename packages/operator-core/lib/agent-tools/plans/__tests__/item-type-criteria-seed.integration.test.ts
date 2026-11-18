@@ -192,13 +192,22 @@ describe('R-11: activation seeds acceptance bars from item-type criteria', () =>
   // neutral post-activation write (here an item status change, as plans:set-status makes)
   // rebuilds the seed with preserveExistingBars; without the item-type bars that rebuild
   // refuses bar_rubric_conflict and the contract's subject-revision pin never advances.
-  it('a neutral plan write after activation keeps the item-type bars and advances the contract pin', async () => {
-    const planSlug = `${NS}-neutral-write-plan`;
+  it.each([HARNESS, 'independent-rubric-harness'])('a neutral plan write keeps item-type bars with the rubric in %s', async (rubricHarness) => {
+    const planSlug = `${NS}-neutral-write-${rubricHarness}`;
     const before = contentFor(planSlug, [SOURCED, REVIEWED]);
     await insertSubject(planSlug, before, 2);
     const seeded = await seed(planSlug, before, 'su-seeder');
     expect(seeded.ok, JSON.stringify(seeded)).toBe(true);
     if (!seeded.ok) throw new Error(JSON.stringify(seeded));
+
+    if (rubricHarness !== HARNESS) {
+      const moved = await db.adminSql`
+        UPDATE harness_shared.harness_plans SET harness_slug = ${rubricHarness}
+         WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+           AND plan_slug = ${seeded.rubricSlug}
+        RETURNING plan_slug`;
+      expect(moved).toHaveLength(1);
+    }
 
     const after = before.replace('- **P-001** `todo`', '- **P-001** `wip`');
     expect(after).not.toBe(before);
@@ -215,7 +224,8 @@ describe('R-11: activation seeds acceptance bars from item-type criteria', () =>
 
     const [rubric] = await db.adminSql<{ template_data: { barContract?: { subjectPlanRevision?: number }; criteria?: Array<{ barKey?: string }> } }[]>`
       SELECT template_data FROM harness_shared.harness_plans
-       WHERE workspace_id = ${WORKSPACE} AND plan_slug = ${seeded.rubricSlug} AND template = 'rubric'`;
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${rubricHarness}
+         AND plan_slug = ${seeded.rubricSlug} AND template = 'rubric'`;
     expect(rubric?.template_data.barContract?.subjectPlanRevision).toBe(2);
     const typeBars = (rubric?.template_data.criteria ?? []).map((criterion) => criterion.barKey).filter((key) => key?.startsWith('T-'));
     expect(typeBars.sort()).toEqual([
