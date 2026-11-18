@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { join } from 'node:path';
+import type { Sql, TransactionSql } from 'postgres';
 import {
   loadBlueprintFromFile,
   layerSourceDocument,
@@ -52,6 +53,7 @@ import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds
 import { isHookReleasedOperationContinuationCall } from '../released-operation-continuation-door';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { identityWearerRole } from '../agent-identities/wearer-authority';
+import { narrowedLaunchSpecToAppliedPairSql } from './identity-receipt-narrowing';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -503,6 +505,98 @@ export async function readIdentityPermissionSources(
   if (expectedRevision !== undefined && revision !== expectedRevision)
     return { status: 'stale' as const, revision };
   return { status: 'ok' as const, revision, role, applied, layers, policy };
+}
+
+export interface IdentityPermissionSessionSource {
+  ownerId: string | null;
+  sessionId: string | null;
+  anchorPresent: boolean;
+  /** Full stored bodies, including history excluded from the streamed view. */
+  sourceRevision: string;
+  launchSpec: unknown;
+  controlState: unknown;
+}
+
+/** Complete stored session slice for P-002. Reuse the execution door's latest
+ * launch-row ordering and readIdentityPermissionSources for each record. This
+ * is source evidence, not permission or human ownership: null/malformed bodies,
+ * inactive wearers, unowned launch rows and orphaned control anchors stay in the
+ * population so an admission caller cannot silently discard an unknown scope.
+ * Library/install/resource sources must still be joined independently.
+ *
+ * A pinned read serializes effect leases and holds both tables against updates
+ * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
+ * transactions write the package journal, not these tables. Do not acquire the
+ * package journal's SHARE locks before calling its pool-based provisioners.
+ *
+ * Return compact source references; optionally visit receipt-narrowed bodies in
+ * bounded batches. Visitors only collect/read evidence, never perform effects:
+ * the final revision check happens AFTER traversal. The full un-narrowed body
+ * hash still detects edits to excluded history. No raw artifact array is kept
+ * by this adapter, including for the inactive population. */
+export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: string,
+  options: { expectedRevision?: string; pinForEffect?: boolean;
+    visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
+  options = { ...options };
+  if (!workspaceId || workspaceId !== workspaceId.trim() ||
+      (options.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedRevision)))
+    throw new Error('identity population requires an exact workspace and revision');
+  const pinned = options.pinForEffect === true || options.expectedRevision !== undefined;
+  const transaction = typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function';
+  if (pinned && !transaction) throw new Error('pinned identity population requires an existing transaction');
+  const read = async (tx: Sql) => {
+    const [isolation] = await tx<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS isolation`;
+    if (pinned) {
+      if (isolation?.isolation !== 'read committed')
+        throw new Error('pinned identity population requires read committed isolation');
+      // These effects update the launch/anchor tables themselves. A plain
+      // SHARE would admit two readers whose later write upgrades deadlock.
+      await tx`LOCK TABLE harness_shared.adv_sessions, harness_shared.session_briefs IN SHARE ROW EXCLUSIVE MODE`;
+    } else if (!['repeatable read', 'serializable'].includes(isolation?.isolation ?? ''))
+      throw new Error('identity population snapshot requires repeatable read or serializable isolation');
+    const [visibility] = await tx<Array<{ workspace: string | null; restricted: boolean }>>`
+      SELECT current_setting('app.workspace_id', true) AS workspace,
+        (row_security_active('harness_shared.adv_sessions') OR
+         row_security_active('harness_shared.session_briefs')) AS restricted`;
+    if (!visibility || (visibility.restricted && visibility.workspace !== workspaceId))
+      throw new Error('identity population workspace is not visible to this connection');
+    const sessions: Array<Omit<IdentityPermissionSessionSource, 'launchSpec' | 'controlState'>> = [];
+    const hash = createHash('sha256').update(canonicalJson({ workspaceId }));
+    const query = tx<IdentityPermissionSessionSource[]>`
+      WITH launches AS (
+        SELECT a.id, a.coord_owner_id, to_jsonb(a)->'launch_spec' AS launch_spec,
+          row_number() OVER (PARTITION BY a.coord_owner_id ORDER BY a.id DESC) AS ordinal
+          FROM harness_shared.adv_sessions a WHERE a.workspace_id = ${workspaceId}
+      ), latest AS (
+        SELECT * FROM launches WHERE ordinal = 1 OR coord_owner_id IS NULL
+      ), anchors AS (
+        SELECT owner_id, control_state FROM harness_shared.session_briefs
+          WHERE workspace_id = ${workspaceId}
+      ), joined AS (
+        SELECT coalesce(a.coord_owner_id, b.owner_id) AS owner_id, a.id,
+          a.launch_spec, b.control_state, b.owner_id IS NOT NULL AS anchor_present,
+          b.control_state->'activation'->'applied' AS applied_pair
+          FROM latest a FULL OUTER JOIN anchors b ON b.owner_id = a.coord_owner_id
+      )
+      SELECT n.owner_id AS "ownerId", n.id::text AS "sessionId", n.anchor_present AS "anchorPresent",
+        encode(sha256(convert_to(jsonb_build_array(n.launch_spec, n.control_state)::text, 'UTF8')), 'hex') AS "sourceRevision",
+        CASE WHEN ${options.visit !== undefined} THEN ${narrowedLaunchSpecToAppliedPairSql(tx)} ELSE NULL::jsonb END AS "launchSpec",
+        CASE WHEN ${options.visit !== undefined} THEN n.control_state ELSE NULL::jsonb END AS "controlState"
+        FROM joined n ORDER BY n.owner_id NULLS LAST, n.id NULLS LAST`;
+    for await (const batch of query.cursor(8)) {
+      for (const { launchSpec, controlState, ...ref } of batch) {
+        sessions.push(ref);
+        hash.update('\n').update(canonicalJson(ref));
+        await options.visit?.({ ...ref, launchSpec, controlState });
+      }
+    }
+    const revision = hash.digest('hex');
+    return options.expectedRevision !== undefined && revision !== options.expectedRevision
+      ? { status: 'stale' as const, revision }
+      : { status: 'ok' as const, revision, sessions };
+  };
+  return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
+    tx => read(tx as unknown as Sql));
 }
 
 /** The pot/role ceiling an identity reaction's capability is narrowed to (P-018, D-027 §4). */
