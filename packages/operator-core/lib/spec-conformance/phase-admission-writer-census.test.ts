@@ -84,6 +84,71 @@ describe('phase binding writer census', () => {
       .map(row => row.siteId).sort());
   });
 
+  it('pins sealing scope reads and pure splitting while retaining write and driver frontiers', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const sealing = 'packages/operator-core/lib/personal-vault/sealed-contents.ts';
+    const split = 'packages/operator-core/lib/personal-vault/coord-seal.ts';
+    const dependencies = [sealing, split,
+      'packages/operator-core/lib/agent-tools/coordination/cue-authority.ts',
+      'packages/operator-core/lib/agent-tools/coordination/scope-broadcast.ts',
+      'libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql',
+      'libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql',
+      'libs/papercusp/libs/db/sql/1307-personal-sealed-contents.sql',
+      'libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql'];
+    const sources = [...new Set([...reviewed.reviewedSourcePaths, ...dependencies])]
+      .map(path => ({ path, content: readFileSync(new URL(path, root), 'utf8') }));
+    const inventory = inventoryPhaseWriters(sources);
+    const callers = inventory.sites.filter(site => site.path === sealing && (
+      site.operation === 'snapshotActiveLabels' && site.kind === 'sql'
+      || site.operation === 'sealCoordEnvelope::<callback>' && (
+        site.kind === 'sql' && site.statement.includes('set_config')
+        || site.kind === 'helper-edge' && site.callees[0] === 'splitForSeal')));
+    expect(callers.map(site => [site.operation, site.kind]).sort()).toEqual([
+      ['sealCoordEnvelope::<callback>', 'helper-edge'],
+      ['sealCoordEnvelope::<callback>', 'sql'], ['snapshotActiveLabels', 'sql'],
+    ]);
+    const current = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    for (const site of callers) {
+      expect(current.coverage.checked).toContain(site.id);
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+      for (const path of dependencies) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+        path, sha256: inventory.sources.find(row => row.path === path)!.sha256,
+      });
+    }
+    // A changed trigger/policy source or imported splitter body cannot inherit
+    // approval just because the SQL/call statement itself is unchanged.
+    for (const dependency of dependencies.filter(path => path !== sealing)) {
+      const changed = inventoryPhaseWriters(sources.map(source => source.path === dependency
+        ? { ...source, content: source.content + '\n// changed sealing dependency\n' } : source));
+      const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+      for (const site of callers) {
+        expect(changed.sites.some(row => row.id === site.id)).toBe(true);
+        expect(stale.coverage.residue).toContain(site.id);
+        expect(stale.problems.find(row => row.id === site.id)?.reasons)
+          .toContain('stale-source-proof:' + dependency);
+      }
+    }
+    const unresolved = inventory.sites.filter(site => site.path === sealing && (
+      site.kind === 'unresolved' && /sql\.(begin|json)/.test(site.statement)
+      || site.operation === 'storeSealedContent' && site.kind === 'sql'
+      || site.operation === 'sealCoordEnvelope::<callback>' && site.callees[0] === 'storeSealedContent'));
+    expect(unresolved.length).toBeGreaterThanOrEqual(5);
+    for (const site of unresolved) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(current.coverage.residue).toContain(site.id);
+    }
+    expect(current.ready).toBe(false);
+    for (const { siteId } of reviewed.pendingAdvancing) expect(current.problems).toContainEqual({
+      id: siteId, reasons: ['unclassified-writer'],
+    });
+  });
+
   it('pins local serializer installation without approving constructors or deferred delegation', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(
