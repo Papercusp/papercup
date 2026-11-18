@@ -44,7 +44,11 @@ describe('phase binding writer census', () => {
       drizzle(client, { schema: { table, links } });
     `;
     const effects: string[] = [], clientAccesses: string[] = [];
-    const client = new Proxy({ options: { parsers: {}, serializers: {} } }, {
+    // postgres-js supplies a callable client. Drizzle's overload discriminator
+    // reads .constructor on object-shaped inputs before it reaches construct.
+    const client = new Proxy(Object.assign(() => {
+      throw new Error('unexpected query-client invocation');
+    }, { options: { parsers: {}, serializers: {} } }), {
       get(target, key, receiver) {
         clientAccesses.push(String(key));
         if (key !== 'options') throw new Error(`unexpected query-client access: ${String(key)}`);
