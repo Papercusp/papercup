@@ -2,6 +2,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { z } from 'zod';
 import Ajv2020 from 'ajv/dist/2020';
 import {
@@ -15,6 +18,9 @@ import { runBulk as compatibilityRunBulk } from '@papercusp/agent-mcp/_bulk';
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { buildCgroupLimits, buildUlimitFloor } from '../p2p/sandbox/cgroup-limits';
 import { runBulk } from './_bulk';
+import { applyResultDoorAsync, resetResultDoorAggregatesForTests } from '../result-door';
+import { _resetScratchUsageForTests } from '../scratch-gc';
+import { capabilityReadDefinition } from './capability/read-handler';
 
 afterEach(() => { _resetCatalogForTests(); _resetProjectionRegistryForTests(); });
 
@@ -41,6 +47,81 @@ function data(result: Awaited<ReturnType<typeof call>>): BatchResult {
 }
 
 describe('universal batching in the operator', () => {
+  it.each([20, 100])('recovers original caller-bound outputs and receipts after projecting %i dispatched children', async count => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'batch-recovery-'));
+    vi.stubEnv('PAPERCUSP_SCRATCH_ROOT', join(sandbox, 'scratch'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(sandbox, 'locks'));
+    vi.stubEnv('PAPERCUSP_DOORS_CONFIG_OFF', '1');
+    vi.stubEnv('PAPERCUSP_FORBID_REAL_PG', '1');
+    vi.stubEnv('PAPERCUSP_RESULT_DOOR_OFF', '');
+    resetResultDoorAggregatesForTests();
+    _resetScratchUsageForTests();
+    try {
+      const effects: string[] = [];
+      defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+        handler: async value => {
+          effects.push(value.key);
+          if (Number(value.key) % 5 === 0) throw Object.assign(new Error('nested operation refused'), {
+            dispatchMetadata: { abortCompletionReceipt: { status: 'recorded', callId: 'durable-' + value.key } },
+          });
+          return { data: { key: value.key, body: 'original-é-output-'.repeat(80) } };
+        } });
+      const items = Array.from({ length: count }, (_, index) =>
+        item(String(index), (count === 100 ? 'é'.repeat(60) : 'request-') + index));
+      const response = await call({ _batch: 1, items });
+      const original = data(response);
+      expect(original.results).toHaveLength(count);
+      expect(original.results[0].receipt).toEqual({ status: 'recorded', callId: 'durable-0' });
+      const caller = { projectDir: sandbox, workspaceId: 'universal-batch-fixture', ownerId: 'batch-caller',
+        isSuperuser: true, uiClientId: 'batch-caller' };
+      const out = await applyResultDoorAsync(response, { ...caller, toolName: name, effect: 'write',
+        runId: '11111111-2222-4333-8444-555555555555' });
+      const text = (out.content[0] as { text: string }).text;
+      const projected = JSON.parse(text);
+      const shown = projected.results as BatchResult['results'];
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(6_000);
+      expect(shown.length).toBeGreaterThan(0);
+      expect(shown).toEqual(original.results.slice(0, shown.length).map(({ itemId, ok, status }) => ({ itemId, ok, status })));
+      if (count === 20) expect(shown).toHaveLength(count);
+      else expect(projected._projection.arrayTruncations).toEqual([{ path: '$.results',
+        shownCount: shown.length, renderedCount: shown.length, omittedCount: count - shown.length }]);
+      type PageArgs = { file_path?: string; uri?: string; byte_offset: number; byte_limit: number };
+      const cursor = projected._projection.cursor;
+      expect(cursor.bodyOffsetInPayload).toEqual(expect.any(Number));
+      const initial = cursor.args as PageArgs;
+      const read = async (args: PageArgs, ctx = caller) => {
+        const result = await capabilityReadDefinition.handler(args as never, ctx as never);
+        return JSON.parse((result.content[0] as { text: string }).text);
+      };
+      expect(await read(initial)).toMatchObject({ ok: true, encoding: 'base64' });
+      for (const foreign of [{ ...caller, ownerId: 'another-caller', uiClientId: 'another-caller' },
+        { ...caller, workspaceId: 'another-workspace' }]) {
+        const denied = await read(initial, foreign);
+        expect(denied.ok).toBe(false);
+        expect(denied).not.toHaveProperty('data');
+        expect(JSON.stringify(denied)).not.toContain('original-é-output-');
+      }
+      const chunks: Buffer[] = [];
+      let next: PageArgs | null = initial;
+      let pages = 0;
+      while (next) {
+        expect(++pages).toBeLessThan(200);
+        const page = await read(next);
+        expect(page, JSON.stringify(page)).toMatchObject({ ok: true, encoding: 'base64' });
+        chunks.push(Buffer.from(page.data, 'base64'));
+        next = page.next_cursor?.args ?? null;
+      }
+      const recovered = Buffer.concat(chunks).subarray(cursor.bodyOffsetInPayload).toString('utf8');
+      expect(JSON.parse(recovered)).toEqual(original);
+      expect(effects).toEqual(Array.from({ length: count }, (_, index) => String(index)));
+    } finally {
+      vi.unstubAllEnvs();
+      resetResultDoorAggregatesForTests();
+      _resetScratchUsageForTests();
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
   it('refuses an over-byte-budget request before child gates or effects', async () => {
     const input = { _batch: 1, items: [item('éé', 'one')] };
     const bytes = new TextEncoder().encode(JSON.stringify(input)).byteLength;
