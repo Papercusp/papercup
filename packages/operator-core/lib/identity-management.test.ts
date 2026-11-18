@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
 import { appendFile, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -53,6 +53,19 @@ function record(over: Partial<SuLaunchSpecRecord> = {}): SuLaunchSpecRecord {
 }
 
 describe('identity management service', () => {
+  let isolatedHome: string;
+  let previousHome: string | undefined;
+  beforeEach(async () => {
+    previousHome = process.env.PAPERCUSP_HOME;
+    isolatedHome = await mkdtemp(join(tmpdir(), 'identity-management-home-'));
+    process.env.PAPERCUSP_HOME = isolatedHome;
+  });
+  afterEach(async () => {
+    if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = previousHome;
+    await rm(isolatedHome, { recursive: true, force: true });
+  });
+
   it('launches an attested installed identity at the catalog source revision', async () => {
     const root = await mkdtemp(join(tmpdir(), 'installed-launch-selection-'));
     const priorHome = process.env.PAPERCUSP_HOME;
@@ -61,7 +74,7 @@ describe('identity management service', () => {
       process.env.PAPERCUSP_HOME = root;
       const dir = join(root, 'blueprints', id);
       await mkdir(join(dir, 'prompts'), { recursive: true });
-      const identity = { id, extends: 'base', version: '1.0.0',
+      const identity = { id, extends: 'identity-root', version: '1.0.0',
         slots: [{ slot: 'domain' }] };
       await writeFile(join(dir, 'blueprint.yaml'), stringifyYaml({ ...identity,
         attestation: { contentHash: layerContentHash(identity), signedBy: 'approved-publisher' } }));
@@ -96,7 +109,7 @@ describe('identity management service', () => {
         const dir = join(root, '.papercusp', 'blueprints', componentId!);
         await mkdir(join(dir, 'prompts'), { recursive: true });
         await writeFile(join(dir, 'blueprint.yaml'), stringifyYaml({ id: componentId,
-          extends: 'base', version: '1.0.0', slots: [{ slot }] }));
+          extends: 'identity-root', version: '1.0.0', slots: [{ slot }] }));
         await writeFile(join(dir, 'prompts', `${slot}.md`), `COMPOSE ${slot}\n`);
       }
       const input = { id, repoDir: root,
@@ -122,7 +135,7 @@ describe('identity management service', () => {
         .find((entry) => entry.id === id);
       expect(listed?.sourceRevision).toBe(selected.sourceRevision);
       await writeFile(join(root, '.papercusp', 'blueprints', domainId, 'blueprint.yaml'),
-        stringifyYaml({ id: domainId, extends: 'base', version: '1.0.1', slots: [{ slot: 'domain' }] }));
+        stringifyYaml({ id: domainId, extends: 'identity-root', version: '1.0.1', slots: [{ slot: 'domain' }] }));
       expect((await resolveNamedIdentityCompositionSelection(id, root)).sourceRevision)
         .not.toBe(selected.sourceRevision);
       const providerDir = join(root, '.papercusp', 'blueprints', 'zz-provider-parent');
@@ -130,7 +143,7 @@ describe('identity management service', () => {
       await mkdir(providerDir, { recursive: true });
       await mkdir(providerChildDir, { recursive: true });
       await writeFile(join(providerDir, 'blueprint.yaml'), stringifyYaml({
-        id: 'zz-provider-parent', extends: 'base', version: '1.0.0',
+        id: 'zz-provider-parent', extends: 'identity-root', version: '1.0.0',
         slots: [{ slot: 'domain' }], contributions: [{ id: 'current-brief',
           purpose: 'operational', source: 'provider', refresh: 'launch', inputKind: 'setting',
           ref: 'current-brief', producerRef: 'papercusp.fleet-leader-brief@1', verb: 'read' }],
@@ -299,9 +312,10 @@ describe('identity management service', () => {
   });
 
   it('projects authoritative slot cardinality for the UI instead of making the client restate the registry', async () => {
-    const catalog = await listIdentitySources({ repoDir, limit: 100 });
+    const catalog = await listIdentitySources({ after: 'papercusp-enginee', limit: 1 });
     const engineer = catalog.identities.find((identity) => identity.id === 'papercusp-engineer');
 
+    expect(catalog.unreadable).toEqual([]);
     expect(engineer?.slots).toContainEqual({ slot: 'domain', cardinality: 'exclusive' });
   });
 
