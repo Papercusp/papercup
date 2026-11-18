@@ -10,6 +10,8 @@ const options = isolatedWorkerOptions(600_000);
 const captureSources = [
   'packages/operator-core/lib/agent-tools/dev/telemetry.ts',
   'packages/operator-core/lib/agent-identities/idop-p001-baseline.ts',
+  'packages/operator-core/lib/agent-identities/permission-input-data.ts',
+  'packages/operator-core/lib/projected-tool-deps.ts',
   'packages/operator-core/lib/capability-envelope/identity-grants-port.ts',
   'packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts',
   'packages/operator-core/lib/connected-apps/enforce.ts',
@@ -58,6 +60,14 @@ it('captures authenticated original kernel inputs on a containing private host a
       const capture = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-kernel-capture.json'), 'utf8'));
       expect(capture).toMatchObject({ ok: true, scope: 'original-host-self-kernel-permission-inputs',
         snapshot: { workspaceId: receipt.workspace }, provenance: { workspaceId: receipt.workspace } });
+      const invocation = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-original-invocation.json'), 'utf8'));
+      expect(invocation).toMatchObject({ id: expect.stringMatching(/^\d+$/), status: 'ok',
+        ownerId: capture.provenance.ownerId, metadata: { originalInvocation: {
+          workspaceId: receipt.workspace, ownerId: capture.provenance.ownerId,
+          runtime: capture.provenance.runtime,
+          permissionContext: { scope: 'original-dispatch-context-projection', status: 'captured',
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        } } });
       const comparison = JSON.parse(readFileSync(resolve(evidenceDir, 'idop-kernel-comparison.json'), 'utf8'));
       expect(comparison).toMatchObject({ passed: true, unexpected: [], unusedManifest: [], differences: [] });
       expect(comparison.population).toEqual(['private-self-inner-kernel', 'private-self-outer-kernel']);

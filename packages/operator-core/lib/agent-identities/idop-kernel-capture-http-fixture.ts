@@ -6,8 +6,10 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { getOrgPg } from '@papercusp/db-org';
 import { IDOP_P001_BASELINE_REL, loadIdopP001DispatchPermissionReader, loadIdopP001RolePermissionReader,
   replayIdopP001KernelPermissionSnapshot, runIdopP001PermissionComparison } from './idop-p001-baseline';
+import { idopAuthorityData, idopAuthorityValue, type PermissionInputJson } from './permission-input-data';
 
 function object(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === 'object' && !Array.isArray(value));
@@ -32,6 +34,8 @@ async function main() {
   assert.match(workspace, /^test-runtime-/);
   assert.equal(env.PAPERCUSP_BACKGROUND_WORKERS, '0');
   assert.equal(env.PAPERCUSP_DBOS_ENABLE, '0');
+  assert.ok(env.PAPERCUSP_PG_PORT && env.PAPERCUSP_PG_PORT !== '5432');
+  assert.equal(new URL(env.HARNESS_ADMIN_DATABASE_URL!).port, env.PAPERCUSP_PG_PORT);
   assert.ok(!['3055', '3070', '3170', '3271'].includes(new URL(base).port));
   const url = new URL(env.PAPERCUSP_OPERATOR_MCP_URL!);
   assert.equal(url.origin, base);
@@ -88,6 +92,46 @@ async function main() {
     assert.deepEqual(request.args, { view: 'kernel-permission-inputs' });
     assert.equal(object(provenance.runtime).processId, original.inner.runtime.processId);
     assert.notEqual(original.inner.runtime.pid, process.pid);
+    // Read the actual mandatory ledger row, rather than deriving caller
+    // privilege from a launch record or from this fixture's credentials.
+    // The injected database and the queried workspace are both private.
+    const { sql } = getOrgPg();
+    const [server] = await sql`SELECT inet_server_port() AS port`;
+    assert.equal(Number(server.port), Number(env.PAPERCUSP_PG_PORT));
+    assert.equal(typeof request.callId, 'string');
+    const invocations = await sql<{ id: string; invokedAt: string; status: string;
+      ownerId: string; metadata: Record<string, unknown> }[]>`
+      SELECT id::text, invoked_at::text AS "invokedAt", status,
+        coord_owner_id AS "ownerId", metadata_json AS metadata
+      FROM harness_shared.tool_invocations
+      WHERE workspace_id=${workspace} AND coord_owner_id=${provenance.ownerId as string}
+        AND tool_name='dev:telemetry'
+        AND metadata_json->'originalInvocation'->>'callId'=${request.callId!}
+      ORDER BY id LIMIT 2`;
+    assert.equal(invocations.length, 1, 'kernel capture must bind one original invocation');
+    const invocation = invocations[0]!;
+    assert.equal(invocation.status, 'ok');
+    assert.ok(Number.isFinite(Date.parse(invocation.invokedAt)));
+    const observed = object(invocation.metadata.originalInvocation);
+    assert.equal(observed.callId, request.callId);
+    assert.equal(observed.ownerId, provenance.ownerId);
+    assert.equal(observed.workspaceId, workspace);
+    assert.deepEqual(observed.runtime, { pid: original.inner.runtime.pid, ...object(provenance.runtime) });
+    const permission = object(observed.permissionContext);
+    assert.equal(permission.scope, 'original-dispatch-context-projection');
+    assert.equal(permission.status, 'captured');
+    const data = permission.data as PermissionInputJson;
+    assert.equal(createHash('sha256').update(JSON.stringify(data)).digest('hex'), permission.sha256);
+    const context = object(idopAuthorityValue(data));
+    assert.deepEqual(idopAuthorityData(context), data);
+    assert.deepEqual(permission.keys, Object.keys(context).sort());
+    for (const key of ['workspaceId', 'uiClientId', 'isSuperuser', 'isPowerUser', 'role',
+      'principal', 'gateBypass', 'advSessionId', 'requestedExecutionRevision', 'appliedExecutionRevision'] as const) {
+      assert.equal(Object.hasOwn(context, key), Object.hasOwn(request.ctx, key), `original presence: ${key}`);
+      assert.deepEqual(context[key], request.ctx[key], `original value: ${key}`);
+    }
+    assert.equal(Object.hasOwn(context, 'kernelState'), false);
+    assert.equal(Object.hasOwn(context, 'headers'), false);
     const root = resolve(import.meta.dirname, '../../../..');
     const baseline = JSON.parse(readFileSync(resolve(root, IDOP_P001_BASELINE_REL), 'utf8'));
     const evaluate = async (revision: string, layer: 'inner' | 'outer') => {
@@ -126,9 +170,13 @@ async function main() {
     const evidenceDir = env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR!;
     writeFileSync(resolve(evidenceDir, 'idop-kernel-capture.json'), JSON.stringify(capture), { flag: 'wx', mode: 0o600 });
     writeFileSync(resolve(evidenceDir, 'idop-kernel-comparison.json'), JSON.stringify(comparison), { flag: 'wx', mode: 0o600 });
+    writeFileSync(resolve(evidenceDir, 'idop-original-invocation.json'), JSON.stringify(invocation), { flag: 'wx', mode: 0o600 });
     console.info('IDOP_KERNEL_CAPTURE_HTTP_PASS ' + JSON.stringify({ workspace, snapshotSha256: capture.sha256,
       boundary: request.boundary, runtime: provenance.runtime, comparisonPassed: comparison.passed }));
-  } finally { await client.close(); }
+  } finally {
+    await client.close();
+    await getOrgPg().sql.end({ timeout: 1 });
+  }
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
