@@ -8,8 +8,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import Ajv2020 from 'ajv/dist/2020';
 import {
-  _resetCatalogForTests, _resetProjectionRegistryForTests, defineTool, listMcpProjections,
-  lookupByMcpName, runDispatchStack, setJsonSchemaAdapter, zodJsonSchemaAdapter,
+  _resetCatalogForTests, _resetProjectionRegistryForTests, clearEntityResolvers, defineTool, entityRef, listMcpProjections,
+  lookupByMcpName, runDispatchStack, setEntityResolver, setJsonSchemaAdapter, zodJsonSchemaAdapter,
   type BatchResult, type DispatchProjectedDeps, type StandardSchemaV1,
   type ToolBatchDeclaration, type UnifiedToolContext,
 } from '@papercusp/tooldef';
@@ -22,7 +22,7 @@ import { applyResultDoorAsync, resetResultDoorAggregatesForTests } from '../resu
 import { _resetScratchUsageForTests } from '../scratch-gc';
 import { capabilityReadDefinition } from './capability/read-handler';
 
-afterEach(() => { _resetCatalogForTests(); _resetProjectionRegistryForTests(); });
+afterEach(() => { _resetCatalogForTests(); _resetProjectionRegistryForTests(); clearEntityResolvers(); });
 
 const name = 'universal_batch_fixture:operate';
 const operation = z.strictObject({ key: z.string(), amount: z.number().int().optional() });
@@ -47,6 +47,239 @@ function data(result: Awaited<ReturnType<typeof call>>): BatchResult {
 }
 
 describe('universal batching in the operator', () => {
+  it('authorizes each resource independently before its business effect', async () => {
+    const effects: string[] = [];
+    const authorize = vi.fn(async ({ input }: { input: unknown }) => ({
+      allow: (input as { key: string }).key === 'allowed', reason: 'resource ownership',
+    }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      authorize, handler: async value => { effects.push(value.key); return { data: value }; } });
+    const result = data(await call({ _batch: 1, items: [item('denied', 'denied'), item('allowed', 'allowed')] }));
+    expect(effects).toEqual(['allowed']);
+    expect(authorize.mock.calls.map(([request]) => (request.input as { key: string }).key)).toEqual(['denied', 'allowed']);
+    expect(result.results[0]).toMatchObject({ itemId: 'denied', ok: false, error: { code: 'authorization_denied' } });
+    expect(result.results[1]).toMatchObject({ itemId: 'allowed', ok: true });
+  });
+
+  it('atomically admits only one concurrent child when one quota slot remains', async () => {
+    const effects: string[] = [];
+    let occupied = 0;
+    const settle = vi.fn(async (_outcome: 'commit' | 'release') => {});
+    const reserveQuota = vi.fn<NonNullable<DispatchProjectedDeps['reserveQuota']>>(async request => {
+      expect(request.limit).toBe(1);
+      if (occupied === 1) return { allowed: false as const, count: occupied };
+      occupied++;
+      return { allowed: true as const, settle };
+    });
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      rolesQuota: { operator: { perRun: 1 } }, batch: { maxConcurrency: 3, independent: true },
+      handler: async value => { effects.push(value.key); await Promise.resolve(); return { data: value }; } });
+    const result = data(await call({ _batch: 1, items: ['a', 'b', 'c'].map(key => item(key, key)) }, {
+      deps: { reserveQuota },
+    }));
+    expect(result.counts).toEqual({ ok: 1, failed: 2 });
+    expect(result.results.filter(row => !row.ok)).toMatchObject([
+      { error: { code: 'quota_exceeded' } }, { error: { code: 'quota_exceeded' } },
+    ]);
+    expect(effects).toHaveLength(1);
+    expect(settle.mock.calls).toEqual([['commit']]);
+    expect(reserveQuota).toHaveBeenCalledTimes(3);
+  });
+
+  it('settles each child quota reservation once and counts operations independently of the parent', async () => {
+    const effects: string[] = [];
+    const reservations: string[] = [];
+    const settlements: Array<[string, string]> = [];
+    const records: Array<{ callId?: string; status: string }> = [];
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      rolesQuota: { operator: { perRun: 3 } },
+      authorize: async ({ input }) => ({ allow: input.key !== 'denied' }),
+      handler: async value => { effects.push(value.key); return { data: value }; } });
+    const result = data(await call({ _batch: 1, items: ['denied', 'a', 'b'].map(key => item(key, key)) }, {
+      deps: {
+        reserveQuota: async ({ callId }) => {
+          reservations.push(callId);
+          return { allowed: true, settle: async outcome => { settlements.push([callId, outcome]); } };
+        },
+        recordInvocation: async record => { records.push(record); },
+      },
+    }));
+    expect(result.counts).toEqual({ ok: 2, failed: 1 });
+    expect(effects).toEqual(['a', 'b']);
+    expect(reservations).toHaveLength(3);
+    expect(new Set(reservations).size).toBe(3);
+    expect(settlements).toEqual([[reservations[0], 'release'], [reservations[1], 'commit'], [reservations[2], 'commit']]);
+    expect(records.filter(record => record.status === 'ok').map(record => record.callId)).toEqual(reservations.slice(1));
+  });
+
+  it('enforces declarative child preconditions before invoking an effect', async () => {
+    const effects: string[] = [];
+    const state = vi.fn(async (args: Record<string, unknown>) => ({ ready: args.key === 'ready' }));
+    const auditAuth = vi.fn();
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      requires: [{ id: 'resource-ready', state, when: { 'state.ready': true } }],
+      handler: async value => { effects.push(value.key); return { data: value }; } });
+    const result = data(await call({ _batch: 1, items: [item('not-ready', 'denied'), item('ready', 'allowed')] }, {
+      deps: { auditAuth },
+    }));
+    expect(effects).toEqual(['ready']);
+    expect(state.mock.calls.map(([args]) => args.key)).toEqual(['not-ready', 'ready']);
+    expect(result.results[0]).toMatchObject({ ok: false, error: { code: 'precondition_failed' } });
+    expect(result.results[1].ok).toBe(true);
+    expect(auditAuth).toHaveBeenCalledWith(expect.objectContaining({ gate: 'precondition', decision: 'deny' }));
+  });
+
+  it.each([false, true])('checks singleton and child entity references for requirePrincipal=%s', async requirePrincipal => {
+    const effects: string[] = [];
+    setEntityResolver('batch-fixture-target', async values => ({ unknown: values.filter(value => value !== 'exists') }));
+    const args = z.strictObject({ key: entityRef('batch-fixture-target') });
+    const definition = { name, capability: 'test:write' as const, effect: 'write' as const, args,
+      handler: async (value: z.infer<typeof args>) => { effects.push(value.key); return { data: value }; } };
+    if (requirePrincipal) defineTool(definition);
+    else defineTool({ ...definition, requirePrincipal: false });
+    const ctx: Partial<UnifiedToolContext> = { principal: { kind: 'system', slug: 'entity-caller',
+      workspaceId: 'universal-batch-fixture', capabilities: new Set(['test:write']) } };
+    const tool = lookupByMcpName(name)!;
+    const ordinary = await runDispatchStack({ ...tool, batchContract: undefined }, name,
+      { key: 'missing' }, { ...context(), ...ctx }, {});
+    const result = data(await call({ _batch: 1, items: [item('missing', 'denied'), item('exists', 'allowed')] }, { ctx }));
+    expect(effects).toEqual(['exists']);
+    expect(ordinary).toMatchObject({ ok: false, error: { code: 'invalid_input' } });
+    expect(result.results[0]).toMatchObject({ itemId: 'denied', ok: false,
+      error: { code: 'invalid_input', message: expect.stringContaining('missing') } });
+    expect(result.results[1]).toMatchObject({ itemId: 'allowed', ok: true });
+  });
+
+  it('rejects malformed and unconfirmed child premises before irreversible effects', async () => {
+    const effects: string[] = [];
+    const resolvePremises = vi.fn<NonNullable<DispatchProjectedDeps['resolvePremises']>>(async refs =>
+      refs.map(ref => ({ ref, status: ref === 'confirmed-fact' ? 'confirmed' as const : 'unknown' as const })));
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      irreversible: true, handler: async value => { effects.push(value.key); return { data: value }; } });
+    const result = data(await call({ _batch: 1, items: [
+      { itemId: 'malformed', args: { key: 'malformed', premises: [7] } },
+      { itemId: 'unconfirmed', args: { key: 'unconfirmed', premises: ['unknown-fact'] } },
+      { itemId: 'allowed', args: { key: 'allowed', premises: ['confirmed-fact'] } },
+    ] }, { deps: { resolvePremises } }));
+    expect(effects).toEqual(['allowed']);
+    expect(result.results).toMatchObject([
+      { itemId: 'malformed', ok: false, error: { code: 'invalid_input' } },
+      { itemId: 'unconfirmed', ok: false, error: { code: 'premise_unconfirmed' } },
+      { itemId: 'allowed', ok: true },
+    ]);
+    expect(resolvePremises).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['lock', 'confirmation', 'irreversible'] as const)(
+    'retains the ordinary host %s requirement for each child', async requirement => {
+      const effects: string[] = [];
+      const args = z.strictObject({ key: z.string(), confirm: z.boolean() });
+      const peerLocks = new Set(['denied']);
+      const approvedIrreversibleTargets = new Set(['allowed']);
+      defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args,
+        irreversible: requirement === 'irreversible',
+        authorize: async ({ input }) => ({ allow: true, obligations: { target: input.key } }),
+        handler: async value => { effects.push(value.key); return { data: value }; } });
+      const deps: DispatchProjectedDeps = { aroundInvoke: async ({ tool, input, authorization, invoke }) => {
+        const value = input as z.infer<typeof args>;
+        expect(authorization).toMatchObject({ status: 'allowed', decision: { obligations: { target: value.key } } });
+        const allowed = requirement === 'lock' ? !peerLocks.has(value.key)
+          : requirement === 'confirmation' ? value.confirm
+          : tool.irreversible === true && approvedIrreversibleTargets.has(value.key);
+        if (!allowed) return { content: [], isError: true,
+          structuredContent: { ok: false, error: { code: 'host_' + requirement + '_required', target: value.key } } };
+        return invoke();
+      } };
+      const inputs = [{ key: 'denied', confirm: false }, { key: 'allowed', confirm: true }];
+      const tool = lookupByMcpName(name)!;
+      const ordinary = [];
+      for (const input of inputs) ordinary.push(await runDispatchStack({ ...tool, batchContract: undefined }, name,
+        input, context(), deps));
+      expect(effects).toEqual(['allowed']);
+      effects.length = 0;
+      const result = data(await call({ _batch: 1, items: inputs.map(args => ({ itemId: args.key, args })) }, { deps }));
+      expect(result.results.map(row => row.output)).toEqual(ordinary.map(row => row.result));
+      expect(result.results[0]).toMatchObject({ ok: false, output: { structuredContent: {
+        error: { code: 'host_' + requirement + '_required', target: 'denied' },
+      } } });
+      expect(result.results[1].ok).toBe(true);
+      expect(effects).toEqual(['allowed']);
+    },
+  );
+
+  it('checks each same-record CAS revision at the ordinary host invocation seam', async () => {
+    let revision = 1;
+    const effects: number[] = [];
+    const args = z.strictObject({ key: z.string(), expectedRevision: z.number().int() });
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args,
+      handler: async () => { effects.push(++revision); return { data: { revision } }; } });
+    const deps: DispatchProjectedDeps = { aroundInvoke: async ({ input, invoke }) => {
+      const expected = (input as z.infer<typeof args>).expectedRevision;
+      if (expected !== revision) return { content: [], isError: true, structuredContent: {
+        ok: false, error: { code: 'revision_conflict', expected, actual: revision },
+      } };
+      return invoke();
+    } };
+    const inputs = [1, 1, 2].map(expectedRevision => ({ key: 'same-record', expectedRevision }));
+    const tool = lookupByMcpName(name)!;
+    const ordinary = [];
+    for (const input of inputs) ordinary.push(await runDispatchStack({ ...tool, batchContract: undefined }, name,
+      input, context(), deps));
+    expect(effects).toEqual([2, 3]);
+    revision = 1; effects.length = 0;
+    const result = data(await call({ _batch: 1, items: inputs.map((args, index) => ({ itemId: String(index), args })) }, { deps }));
+    expect(result.results.map(row => row.output)).toEqual(ordinary.map(row => row.result));
+    expect(result.results.map(row => row.ok)).toEqual([true, false, true]);
+    expect(result.results[1].output?.structuredContent).toMatchObject({
+      error: { code: 'revision_conflict', expected: 1, actual: 2 },
+    });
+    expect(effects).toEqual([2, 3]);
+    expect(revision).toBe(3);
+  });
+
+  it('rechecks native revocation at effect time without reserving or settling a child twice', async () => {
+    const effects: string[] = [];
+    const enforcements = new Map<string, number>();
+    const reservations: string[] = [];
+    const settlements: Array<[string, string]> = [];
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    const execute = vi.fn<NonNullable<ToolBatchDeclaration<{ key: string }>['execute']>>(async items => items.map(child => {
+      effects.push(child.args.key);
+      return { itemId: child.itemId, response: { data: child.args } };
+    }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read', args: operation,
+      rolesQuota: { operator: { perRun: 2 } }, batch: { execute }, handler });
+    const result = data(await call({ _batch: 1, items: [item('revoked', 'revoked'), item('allowed', 'allowed')] }, {
+      deps: {
+        reserveQuota: async ({ callId }) => {
+          reservations.push(callId);
+          return { allowed: true, settle: async outcome => { settlements.push([callId, outcome]); } };
+        },
+        kernelEnforcement: request => {
+          if (request.phase === 'enforce') {
+            const key = (request.args as { key: string }).key;
+            const count = (enforcements.get(key) ?? 0) + 1;
+            enforcements.set(key, count);
+            if (key === 'revoked' && count === 2) return { decision: 'deny', reason: 'revoked while group waited' };
+          }
+          return { decision: 'allow' };
+        },
+      },
+    }));
+    expect(effects).toEqual(['allowed']);
+    expect(result.results[0]).toMatchObject({ itemId: 'revoked', ok: false, error: { code: 'authorization_denied' } });
+    expect(result.results[1]).toMatchObject({ itemId: 'allowed', ok: true });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(handler).not.toHaveBeenCalled();
+    expect(enforcements.get('revoked')).toBe(2);
+    expect(enforcements.get('allowed')).toBe(2);
+    expect(reservations).toHaveLength(2);
+    expect(new Set(reservations).size).toBe(2);
+    // D-012 conservatively charges entry into the potentially effectful
+    // prepareInvocation seam, even when native revalidation later revokes it.
+    expect(settlements).toEqual([[reservations[0], 'commit'], [reservations[1], 'commit']]);
+  });
+
   it('caps active child deadlines at the parent deadline and leaves expired siblings unstarted', async () => {
     vi.useFakeTimers();
     try {
