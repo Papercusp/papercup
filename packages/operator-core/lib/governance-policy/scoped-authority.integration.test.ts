@@ -149,6 +149,97 @@ describe('canonical user/platform authority storage (P-002)', () => {
       .toMatchObject({ status: 'stale' });
   });
 
+  it('enumerates stored workspace floors without an editor-supplied subset', async () => {
+    await seed();
+    await upsertScopedPolicyAuthority(policy('platform', { subjectId: 'restrictive-floor', rules: { actions: { deny: ['edit'] } } }), sql);
+    await upsertScopedPolicyAuthority(policy('platform', { workspaceId: 'foreign', subjectId: 'foreign-floor' }), sql);
+    const loaded = await loadScopedPolicyAuthorities({ ...scope, platformIds: 'workspace' }, sql);
+    if (loaded.status !== 'ok') throw new Error('canonical population missing');
+    expect(loaded.policies).toHaveLength(3);
+    expect(loaded.policies.filter(row => row.kind === 'platform')).toHaveLength(2);
+    expect(loaded.policies).toContainEqual(expect.objectContaining({ kind: 'platform', rules: { actions: { deny: ['edit'] } } }));
+    const exact = await loadScopedPolicyAuthorities({ ...scope, platformIds: ['fixed-floor', 'restrictive-floor'] }, sql);
+    if (exact.status !== 'ok') throw new Error('explicit population missing');
+    expect(loaded.policies).toEqual(exact.policies);
+    // A narrower explicit-set read is never a census revision, even if the
+    // supplied IDs happen to equal the current stored population.
+    expect(loaded.revision).not.toBe(exact.revision);
+    expect(await sql.begin(tx => loadScopedPolicyAuthorities({ ...scope, platformIds: 'workspace' }, tx as unknown as postgres.Sql, loaded.revision)))
+      .toEqual(loaded);
+  });
+
+  it('refuses an absent workspace floor rather than treating an empty census as permission', async () => {
+    await upsertScopedPolicyAuthority(policy('user'), sql);
+    await upsertScopedPolicyAuthority(policy('platform', { workspaceId: 'foreign' }), sql);
+    expect(await loadScopedPolicyAuthorities({ ...scope, platformIds: 'workspace' }, sql)).toMatchObject({ status: 'unavailable' });
+  });
+
+  it.each(['add', 'remove'] as const)('invalidates the before-image when the stored platform population changes: %s', async change => {
+    await seed();
+    const population = { ...scope, platformIds: 'workspace' as const };
+    const before = await loadScopedPolicyAuthorities(population, sql);
+    if (before.status !== 'ok') throw new Error('canonical population missing');
+    if (change === 'add') await upsertScopedPolicyAuthority(policy('platform', { subjectId: 'new-floor' }), sql);
+    else {
+      await sql`DELETE FROM harness_shared.governance_policy_layer_versions WHERE level = 'platform'`;
+      await sql`DELETE FROM harness_shared.governance_policy_layers WHERE level = 'platform'`;
+    }
+    const result = await sql.begin(async tx => {
+      const current = await loadScopedPolicyAuthorities(population, tx as unknown as postgres.Sql, before.revision);
+      if (current.status === 'ok') await tx`INSERT INTO harness_shared.scoped_test_effects VALUES ('stale-census-effect')`;
+      return current;
+    });
+    expect(result).toMatchObject({ status: change === 'add' ? 'stale' : 'unavailable' });
+    expect(await sql`SELECT * FROM harness_shared.scoped_test_effects`).toEqual([]);
+  });
+
+  it.each(['scope_ref', 'layer_id', 'content_hash'] as const)('does not silently omit a malformed stored platform %s', async field => {
+    await seed();
+    if (field === 'layer_id') await sql`DELETE FROM harness_shared.governance_policy_layer_versions WHERE level = 'platform'`;
+    await sql.unsafe(`UPDATE harness_shared.governance_policy_layers SET ${field} = $1 WHERE level = 'platform'`, ['invalid']);
+    expect(await loadScopedPolicyAuthorities({ ...scope, platformIds: 'workspace' }, sql)).toMatchObject({ status: 'malformed' });
+  });
+
+  it('holds the platform population through its effect, including direct-SQL phantom insertion', async () => {
+    await seed();
+    const population = { ...scope, platformIds: 'workspace' as const };
+    const before = await loadScopedPolicyAuthorities(population, sql);
+    if (before.status !== 'ok') throw new Error('canonical population missing');
+    await expect(loadScopedPolicyAuthorities(population, sql, before.revision)).rejects.toThrow('existing transaction');
+    await sql.begin(async reader => {
+      expect(await loadScopedPolicyAuthorities(population, reader as unknown as postgres.Sql, before.revision)).toEqual(before);
+      await expect(sql.begin(async writer => {
+        await writer`SET LOCAL lock_timeout = '150ms'`;
+        await upsertScopedPolicyAuthorityInTx(writer as unknown as postgres.Sql, policy('platform', { subjectId: 'new-floor' }));
+      })).rejects.toMatchObject({ code: '55P03' });
+      await expect(sql.begin(async writer => {
+        await writer`SET LOCAL lock_timeout = '150ms'`;
+        await writer`INSERT INTO harness_shared.governance_policy_layers
+          (layer_id, level, scope_ref, version, rules, exceptions, content_hash, updated_by)
+          SELECT 'raw-new-floor', level, '["ws","raw-floor"]', version, rules, exceptions, content_hash, updated_by
+          FROM harness_shared.governance_policy_layers WHERE level = 'platform'`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      await reader`INSERT INTO harness_shared.scoped_test_effects VALUES ('held-census-effect')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.scoped_test_effects`).toEqual([{ target: 'held-census-effect' }]);
+    await expect(upsertScopedPolicyAuthority(policy('platform', { subjectId: 'new-floor' }), sql)).resolves.toMatchObject({ kind: 'platform' });
+  });
+
+  it('refuses an old transaction snapshot that cannot see a newly committed floor', async () => {
+    await seed();
+    const population = { ...scope, platformIds: 'workspace' as const };
+    const before = await loadScopedPolicyAuthorities(population, sql);
+    if (before.status !== 'ok') throw new Error('canonical population missing');
+    await expect(sql.begin('isolation level repeatable read', async reader => {
+      // Establish the caller's historical snapshot BEFORE the new floor lands.
+      await reader`SELECT count(*) FROM harness_shared.governance_policy_layers`;
+      await upsertScopedPolicyAuthority(policy('platform', { subjectId: 'new-floor' }), sql);
+      const result = await loadScopedPolicyAuthorities(population, reader as unknown as postgres.Sql, before.revision);
+      if (result.status === 'ok') await reader`INSERT INTO harness_shared.scoped_test_effects VALUES ('old-snapshot-effect')`;
+    })).rejects.toThrow('read committed');
+    expect(await sql`SELECT * FROM harness_shared.scoped_test_effects`).toEqual([]);
+  });
+
   it('shares the caller transaction and rolls policy and history back with its effect', async () => {
     await expect(sql.begin(async tx => {
       await upsertScopedPolicyAuthorityInTx(tx as unknown as postgres.Sql, policy('user'));
