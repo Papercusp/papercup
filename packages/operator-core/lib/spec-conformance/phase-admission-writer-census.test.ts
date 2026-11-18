@@ -1104,8 +1104,16 @@ describe('phase binding writer census', () => {
       expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
       const reviewed = inventory.sites.map(site => review(site));
       expect(assertPhaseWriterTreeCensus(root, reviewed).ready).toBe(true);
-      writeFileSync(join(root, path), content.replace('SELECT 1', 'SELECT 2'));
+      writeFileSync(join(root, path), content + '\n// source changed; statement unchanged');
       expect(() => assertPhaseWriterTreeCensus(root, reviewed)).toThrow('stale-review');
+      writeFileSync(join(root, path), content.replace('SELECT 1', 'SELECT 2'));
+      let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, reviewed); }
+      catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+      const replacement = report!.inventory.sites.find(site => site.statement === 'callback`SELECT 2`')!;
+      expect(report!.ready).toBe(false);
+      expect(report!.census.problems).toContainEqual({ id: replacement.id, reasons: ['unclassified-writer'] });
+      expect(report!.census.problems).toContainEqual({ id: `orphan-review:${site.id}`, reasons: ['reviewed-writer-missing'] });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -1150,6 +1158,35 @@ describe('phase binding writer census', () => {
       expect(frontier.unresolved).toContain('indirect-call-target-requires-review');
       expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(frontier.id);
       expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(helper.id);
+    }
+  });
+
+  it('retains every same-line tagged invocation and its arguments through stream recovery', async () => {
+    for (const count of [1, 2, 3, 499, 500, 501]) {
+      const content = `function entry(tag) { ${'tag`SELECT 1`;'.repeat(count)} }`;
+      const sources = [source(content, 'packages/tags.ts'), source('const unrelated = 1;', 'packages/other.ts')];
+      const inventory = inventoryPhaseWriters(sources);
+      expect(inventoryPhaseWriters([...sources].reverse())).toEqual(inventory);
+      expect(inventory.sites).toHaveLength(count);
+      expect(new Set(inventory.sites.map(site => site.id)).size).toBe(count);
+      const decisive = inventory.sites.find(site => site.invocation?.column === content.lastIndexOf('tag`') + 1)!;
+      expect(decisive).toBeDefined();
+      const reviews = inventory.sites.filter(site => site.id !== decisive.id).map(site => review(site));
+      const lines: string[] = [];
+      const footer = await writePhaseWriterCensus(inventory, reviews, line => { lines.push(line); });
+      const recovered: PhaseWriterSite[] = [];
+      async function* batches() {
+        for (let offset = 0; offset < lines.length; offset += 2) {
+          yield* lines.slice(offset, offset + 2);
+          await Promise.resolve();
+        }
+      }
+      expect(await readPhaseWriterCensus(batches(), row => {
+        if (row.kind === 'site') recovered.push(row.value as PhaseWriterSite);
+      })).toEqual(footer);
+      expect(recovered).toEqual(inventory.sites);
+      expect(footer.ready).toBe(false);
+      expect(reconcilePhaseWriterCensus(inventory, reviews).coverage.residue).toEqual([decisive.id]);
     }
   });
 
