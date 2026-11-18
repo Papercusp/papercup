@@ -200,8 +200,15 @@ test('bounded source census preserves bytes, modes, links and membership through
       assert.equal(row.executable, row.path === 'src/file-0.js');
     }
   }
-  buildWorkspace(root, 'packages/cli', [process.execPath, '-e',
-    'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/cli.cjs","dist/cli.cjs");']);
+  // Exercise the real producer in a fresh process too: a large Git census
+  // launches this helper recursively, unlike the small in-process fixtures.
+  const helper = new URL('../apps/operator/bin/release/dependency-generation-verifier.mjs', import.meta.url);
+  const run = spawnSync(process.execPath, [fileURLToPath(helper), 'build', root, 'packages/cli', '--',
+    process.execPath, '-e',
+    'const fs=require("node:fs");fs.mkdirSync("dist");fs.copyFileSync("src/cli.cjs","dist/cli.cjs");'],
+  { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stderr, /verifier census progress:/);
   assert.equal(captureClosure(root).complete, true);
   // Same-length bytes and a new input must each invalidate producing custody.
   write(root, 'src/file-1.js', 'export default 9;\n');

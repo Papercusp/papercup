@@ -8,6 +8,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
   realpathSync, renameSync, rmSync, writeFileSync, cpSync, chmodSync } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '../../../../packages/operator-core/lib/util/cli-entry.ts';
 import { readVerifierSourceReceiptSync } from '../../../../libs/test-config/src/verifier-source.ts';
 import { presentOnDisk } from '../../../../libs/test-config/src/tracked-files.mjs';
