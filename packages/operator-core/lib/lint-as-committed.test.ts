@@ -3047,6 +3047,79 @@ fs.writeFileSync('public/runtime-ready', asset);
     } finally { f.cleanup(); }
   }, 60_000);
 
+  it('resumes an interrupted missing-root copy by checksum before full verification', async () => {
+    const f = retainedFixture();
+    const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+    const helper = join(f.parent, 'interrupt-copy.sh');
+    const started = join(f.parent, 'copy-started');
+    const partial = join(f.workRoot, '.git/committed-dependency-partials',
+      createHash('sha256').update('node_modules').digest('hex'), 'tree');
+    writeFileSync(helper, [
+      'source ' + JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')),
+      'rsync() {',
+      '  local target="${@: -1}" source="${@: -2:1}"',
+      '  if [ ! -f ' + JSON.stringify(started) + ' ]; then',
+      '    mkdir -p "$target"',
+      '    cp -p "$source/alpha.txt" "$target/alpha.txt"',
+      '    touch ' + JSON.stringify(started),
+      '    sleep 10',
+      '  else',
+      '    command rsync "$@"',
+      '  fi',
+      '}',
+    ].join('\n'));
+    rmSync(join(f.workRoot, 'node_modules'), { recursive: true });
+    const context = { sourceCommit: f.head, materializer: helper, verifySource: () => {} };
+    try {
+      const paused = await verifyRetainedDependencies(f.root, f.workRoot, {
+        ...f.options().resumeVerification, materializeMissing: true, maxDurationMs: 3000,
+      }, context);
+      expect(paused.status).toBe('incomplete');
+      expect(paused.progress).toMatchObject({ phase: 'materialize-missing', censusStage: 'copy:node_modules' });
+      expect(existsSync(started)).toBe(true);
+      expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+      expectUnpreparedRetainedMarker(f);
+      const retainedInode = statSync(join(partial, 'alpha.txt')).ino;
+      // Same length and timestamp cannot authorize reuse of untrusted bytes.
+      writeFileSync(join(partial, 'beta.txt'), 'payload-v2');
+      const sourceStat = statSync(join(f.root, 'node_modules/beta.txt'));
+      utimesSync(join(partial, 'beta.txt'), sourceStat.atime, sourceStat.mtime);
+      writeFileSync(join(partial, 'extra.txt'), 'not in donor');
+      const complete = await verifyRetainedDependencies(f.root, f.workRoot, {
+        ...f.options().resumeVerification, materializeMissing: true,
+      }, context);
+      expect(complete.status).toBe('complete');
+      expect(complete.progress.materializedTrees).toBe(1);
+      expect(complete.progress.hashedFiles).toBeGreaterThan(0);
+      expect(statSync(join(f.workRoot, 'node_modules/alpha.txt')).ino).toBe(retainedInode);
+      expect(retainedInode).not.toBe(statSync(join(f.root, 'node_modules/alpha.txt')).ino);
+      expect(readFileSync(join(f.workRoot, 'node_modules/beta.txt'), 'utf8')).toBe('payload-v1');
+      expect(existsSync(join(f.workRoot, 'node_modules/extra.txt'))).toBe(false);
+      expect(existsSync(partial)).toBe(false);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
+  it('refuses a symlinked missing-root stage without writing through it', async () => {
+    const f = retainedFixture();
+    const partialParent = join(f.workRoot, '.git/committed-dependency-partials',
+      createHash('sha256').update('node_modules').digest('hex'));
+    const outside = join(f.parent, 'outside');
+    rmSync(join(f.workRoot, 'node_modules'), { recursive: true });
+    mkdirSync(partialParent, { recursive: true, mode: 0o700 });
+    mkdirSync(outside);
+    writeFileSync(join(outside, 'sentinel'), 'preserved');
+    symlinkSync(outside, join(partialParent, 'tree'));
+    try {
+      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), resumeVerification: { ...f.options().resumeVerification, materializeMissing: true },
+      })).rejects.toThrow('dependency root must be physical');
+      expect(readdirSync(outside)).toEqual(['sentinel']);
+      expect(readFileSync(join(outside, 'sentinel'), 'utf8')).toBe('preserved');
+      expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 60_000);
+
   it('finishes an interrupted two-root copy without replacing the completed root or publishing early', async () => {
     const f = retainedFixture();
     const retained = join(f.workRoot, 'node_modules/alpha.txt');
