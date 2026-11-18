@@ -436,11 +436,13 @@ describe('served Portal prerequisite and document readiness', () => {
   it('refuses stale, foreign and unidentified Portal artifacts before starting a runtime', () => {
     const digest = 'a'.repeat(64), portal = '/tmp/private-portal', root = '/tmp/releases/build-one';
     const identity = { schemaVersion: 2, buildId: 'build', release: 'build-one', sourceRoot: portal,
-      sourceRootDigest: digest, publishedAt: '2026-11-15T00:00:00Z', buildProvenance: { schemaVersion: 1 } };
+      sourceRootDigest: digest, publishedAt: '2026-11-15T00:00:00Z',
+      buildProvenance: { schemaVersion: 1, linkedSourceManifest: [] } };
     expect(validateInstalledPortalRelease(portal, root, identity, digest)).toMatchObject({ releasesDir: '/tmp/releases' });
     for (const patch of [{ schemaVersion: 1 }, { sourceRoot: '/tmp/other-portal' },
       { release: 'another-release' }, { buildId: '' }, { publishedAt: 'invalid' },
-      { sourceRootDigest: 'b'.repeat(64) }, { buildProvenance: null }]) {
+      { sourceRootDigest: 'b'.repeat(64) }, { buildProvenance: null },
+      { buildProvenance: { schemaVersion: 1 } }]) {
       expect(() => validateInstalledPortalRelease(portal, root, { ...identity, ...patch }, digest)).toThrow();
     }
   });
