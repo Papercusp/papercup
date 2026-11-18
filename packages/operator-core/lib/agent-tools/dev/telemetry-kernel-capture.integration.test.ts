@@ -22,7 +22,7 @@ it('captures authenticated original kernel inputs on a containing private host a
   const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
     minimumFileRunTimeoutMs: options.testTimeoutMs,
     filePath: 'packages/operator-core/lib/agent-tools/dev/telemetry-kernel-capture.integration.test.ts',
-    sourcePaths: [...captureSources, 'packages/operator-core/test/idop-kernel-capture-http-fixture.ts',
+    sourcePaths: [...captureSources, 'packages/operator-core/lib/agent-identities/idop-kernel-capture-http-fixture.ts',
       'scripts/operator-api-working-tree.mjs', 'packages/operator-core/test/working-tree-operator-api-fixture.ts'],
     execute: async (observe, evidenceDir) => {
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -30,7 +30,7 @@ it('captures authenticated original kernel inputs on a containing private host a
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(resolve(root, 'scripts/operator-api-working-tree.mjs'), [
-        '--', process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/idop-kernel-capture-http-fixture.ts'),
+        '--', process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/lib/agent-identities/idop-kernel-capture-http-fixture.ts'),
       ], { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, { ...options, signal: context.signal });
@@ -41,14 +41,17 @@ it('captures authenticated original kernel inputs on a containing private host a
       const receipt = JSON.parse(line!.slice('WORKING_TREE_OPERATOR_API_RECEIPT '.length));
       expect(receipt).toMatchObject({ workspace: expect.stringMatching(/^test-runtime-/),
         bundleSha256: expect.stringMatching(/^[a-f0-9]{64}$/), callerExit: 0, hostStopped: true,
-        sourceSnapshot: { sha: expect.stringMatching(/^[a-f0-9]{40}$/) },
+        sourceSnapshot: { sha: expect.stringMatching(/^[a-f0-9]{7,40}$/) },
         probe: { calledToolOk: true } });
       expect(['3055', '3070', '3170', '3271']).not.toContain(new URL(receipt.base).port);
       // The maintained runner fences every compiler input against this exact
       // source snapshot. Also bind each capture dependency to the bytes accepted
       // before this run, rather than trusting a commit label or a later HEAD.
+      const sourceCommit = execFileSync('git', ['rev-parse', '--verify', `${receipt.sourceSnapshot.sha}^{commit}`],
+        { cwd: root, encoding: 'utf8', timeout: 15_000 }).trim();
+      expect(sourceCommit).toMatch(/^[a-f0-9]{40}$/);
       for (const source of expected) {
-        const bytes = execFileSync('git', ['show', `${receipt.sourceSnapshot.sha}:${source.path}`],
+        const bytes = execFileSync('git', ['show', `${sourceCommit}:${source.path}`],
           { cwd: root, maxBuffer: 2 * 1024 * 1024, timeout: 15_000 });
         expect(sha256(bytes), source.path).toBe(source.sha256);
       }

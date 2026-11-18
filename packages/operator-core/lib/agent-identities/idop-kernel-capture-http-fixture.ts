@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { IDOP_P001_BASELINE_REL, loadIdopP001RolePermissionReader,
-  replayIdopP001KernelPermissionSnapshot, runIdopP001PermissionComparison } from '../lib/agent-identities/idop-p001-baseline';
+  replayIdopP001KernelPermissionSnapshot, runIdopP001PermissionComparison } from './idop-p001-baseline';
 
 function object(value: unknown): Record<string, unknown> {
   assert.ok(value !== null && typeof value === 'object' && !Array.isArray(value));
@@ -88,13 +88,14 @@ async function main() {
     assert.deepEqual(request.args, { view: 'kernel-permission-inputs' });
     assert.equal(object(provenance.runtime).processId, original.inner.runtime.processId);
     assert.notEqual(original.inner.runtime.pid, process.pid);
-    const root = resolve(import.meta.dirname, '../../..');
+    const root = resolve(import.meta.dirname, '../../../..');
     const baseline = JSON.parse(readFileSync(resolve(root, IDOP_P001_BASELINE_REL), 'utf8'));
     const evaluate = async (revision: string) => {
       const ports = replay.createPorts();
       const reader = loadIdopP001RolePermissionReader({ root, revision, testingFullAccess: 'off' });
       const inner = await reader.createInnerKernelReader(ports.inner);
       const verdict = await inner.evaluate(ports.requests[0]!);
+      assert.ok(verdict, 'canonical kernel returned no verdict');
       assert.equal(verdict.decision, 'allow', JSON.stringify(verdict));
       return JSON.parse(JSON.stringify(verdict));
     };
@@ -110,4 +111,4 @@ async function main() {
   } finally { await client.close(); }
 }
 
-await main();
+main().catch(error => { console.error(error); process.exitCode = 1; });
