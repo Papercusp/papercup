@@ -33,6 +33,9 @@ import {
 /** Deepest chain walked. organization → departments → workspace never needs more. */
 export const MAX_CHAIN_DEPTH = 8;
 
+export type ScopedAuthorityKind = 'user' | 'platform';
+type StoredPolicyLevel = PolicyLevel | ScopedAuthorityKind;
+
 export interface StoredPolicyLayer extends PolicyLayer {
   scopeRef: string;
   parentLayerId: string | null;
@@ -209,7 +212,8 @@ export async function loadPolicyAuthoritiesForWorkspace(
 export async function loadLayer(layerId: string, sql?: Sql): Promise<StoredPolicyLayer | null> {
   const db = sqlOf(sql);
   const rows = await db<RawLayerRow[]>`
-    SELECT ${db.unsafe(LAYER_COLUMNS)} FROM harness_shared.governance_policy_layers WHERE layer_id = ${layerId}
+    SELECT ${db.unsafe(LAYER_COLUMNS)} FROM harness_shared.governance_policy_layers
+     WHERE layer_id = ${layerId} AND level = ANY(${POLICY_LEVELS}::text[])
   `;
   return rows[0] ? layerOf(rows[0]) : null;
 }
@@ -218,6 +222,7 @@ export async function listLayers(sql?: Sql): Promise<StoredPolicyLayer[]> {
   const db = sqlOf(sql);
   const rows = await db<RawLayerRow[]>`
     SELECT ${db.unsafe(LAYER_COLUMNS)} FROM harness_shared.governance_policy_layers
+     WHERE level = ANY(${POLICY_LEVELS}::text[])
      ORDER BY CASE level WHEN 'organization' THEN 0 WHEN 'department' THEN 1 ELSE 2 END, layer_id
   `;
   return rows.map(layerOf);
@@ -274,7 +279,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export function policyContentHash(content: {
-  level: PolicyLevel;
+  level: StoredPolicyLevel;
   scopeRef: string;
   parentLayerId: string | null;
   rules: PolicyLayer['rules'];
@@ -368,11 +373,114 @@ export async function upsertLayer(input: UpsertLayerInput, sql?: Sql): Promise<S
 export async function upsertLayerInTx(tx: Sql, input: UpsertLayerInput): Promise<StoredPolicyLayer> {
   const problem = validateLayerInput(input);
   if (problem) throw new GovernancePolicyWriteError('invalid', problem);
+  return layerOf(await upsertCanonicalLayerInTx(tx, input));
+}
+
+type CanonicalLayerInput = Omit<UpsertLayerInput, 'level'> & { level: StoredPolicyLevel };
+
+export interface UpsertScopedAuthorityInput {
+  kind: ScopedAuthorityKind;
+  workspaceId: string;
+  /** Host-resolved user/platform identity; not human binding-owner proof. */
+  subjectId: string;
+  rules: UpsertLayerInput['rules'];
+  exceptions?: PolicyException[];
+  actor: string;
+  reason: string;
+  expectedVersion: number;
+}
+
+function scopedAuthorityKey(kind: ScopedAuthorityKind, workspaceId: string, subjectId: string) {
+  const scopeRef = JSON.stringify([workspaceId, subjectId]);
+  return { scopeRef, layerId: `authority:${kind}:${createHash('sha256').update(scopeRef).digest('hex')}` };
+}
+
+const exactScopeText = (value: unknown): value is string => typeof value === 'string' &&
+  !!value.trim() && value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value);
+
+/** Reuse canonical rows, hashes, CAS and history; no separate authoring door.
+ * The caller must authorize the edit before this storage seam. */
+export async function upsertScopedPolicyAuthority(input: UpsertScopedAuthorityInput, sql?: Sql): Promise<AuthorityPolicy> {
+  const detached = structuredClone(input);
+  return (await sqlOf(sql).begin(tx => upsertScopedPolicyAuthorityInTx(tx as unknown as Sql, detached))) as AuthorityPolicy;
+}
+
+export async function upsertScopedPolicyAuthorityInTx(tx: Sql, original: UpsertScopedAuthorityInput): Promise<AuthorityPolicy> {
+  if (typeof (tx as unknown as Partial<TransactionSql>).savepoint !== 'function')
+    throw new GovernancePolicyWriteError('invalid', 'scoped authority writer requires an existing transaction');
+  const input = structuredClone(original);
+  if (!['user', 'platform'].includes(input.kind) || !exactScopeText(input.workspaceId) ||
+      !exactScopeText(input.subjectId) || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0) {
+    throw new GovernancePolicyWriteError('invalid', 'scoped authority requires exact kind, workspace, subject and nonnegative expectedVersion');
+  }
+  const candidate: UpsertLayerInput = { ...scopedAuthorityKey(input.kind, input.workspaceId, input.subjectId),
+    level: 'organization', parentLayerId: null, rules: input.rules, exceptions: input.exceptions,
+    actor: input.actor, reason: input.reason, expectedVersion: input.expectedVersion };
+  const problem = validateLayerInput(candidate);
+  if (problem) throw new GovernancePolicyWriteError('invalid', problem);
+  const row = await upsertCanonicalLayerInTx(tx, { ...candidate, level: input.kind });
+  return { kind: input.kind, id: row.layer_id, revision: `${row.version}:${row.content_hash}`,
+    state: 'present', rules: structuredClone(row.rules) as AuthorityPolicy['rules'],
+    exceptions: structuredClone(row.exceptions) as PolicyException[] };
+}
+
+/** User/platform slice only: the host determines the required platform IDs.
+ * Missing rows refuse. A pinned read requires an outer transaction and holds
+ * SHARE locks through its effect. This cannot prove an omitted ID is inapplicable. */
+export async function loadScopedPolicyAuthorities(
+  input: { workspaceId: string; userId: string; platformIds: readonly string[] },
+  sql: Sql, expectedRevision?: string,
+): Promise<Exclude<PolicyAuthorityLoad, { status: 'none' }> | { status: 'unavailable'; reason: string }> {
+  const scope = structuredClone(input);
+  if (!exactScopeText(scope.workspaceId) || !exactScopeText(scope.userId) ||
+      !Array.isArray(scope.platformIds) || !scope.platformIds.length ||
+      scope.platformIds.some(id => !exactScopeText(id)) || new Set(scope.platformIds).size !== scope.platformIds.length)
+    return { status: 'unavailable', reason: 'complete scoped authority identities are unavailable' };
+  if (expectedRevision !== undefined && typeof (sql as unknown as Partial<TransactionSql>).savepoint !== 'function')
+    throw new GovernancePolicyWriteError('invalid', 'pinned scoped authority read requires an existing transaction');
+  const required = [
+    { kind: 'user' as const, ...scopedAuthorityKey('user', scope.workspaceId, scope.userId) },
+    ...scope.platformIds.map(id => ({ kind: 'platform' as const, ...scopedAuthorityKey('platform', scope.workspaceId, id) })),
+  ].sort((a, b) => a.layerId.localeCompare(b.layerId));
+  const rows = await sql<RawLayerRow[]>`
+    SELECT ${sql.unsafe(LAYER_COLUMNS)} FROM harness_shared.governance_policy_layers
+     WHERE layer_id = ANY(${required.map(ref => ref.layerId)}::text[])
+     ORDER BY layer_id ${sql.unsafe(expectedRevision === undefined ? '' : 'FOR SHARE')}
+  `;
+  if (rows.length !== required.length) return { status: 'unavailable', reason: 'a required scoped authority policy is missing' };
+  const policies: AuthorityPolicy[] = [];
+  for (const ref of required) {
+    const row = rows.find(entry => entry.layer_id === ref.layerId);
+    if (!row || row.level !== ref.kind || row.scope_ref !== ref.scopeRef || row.parent_layer_id !== null ||
+        !isWellFormedLayer({ layerId: row.layer_id, level: 'workspace', version: Number(row.version), rules: row.rules, exceptions: row.exceptions }) ||
+        row.content_hash !== policyContentHash({ level: ref.kind, scopeRef: ref.scopeRef, parentLayerId: null,
+          rules: row.rules as UpsertLayerInput['rules'], exceptions: row.exceptions as PolicyException[] }))
+      return { status: 'malformed', reason: `scoped authority ${ref.layerId} does not match its canonical policy` };
+    policies.push({ kind: ref.kind, id: ref.layerId, revision: `${row.version}:${row.content_hash}`,
+      state: 'present', rules: structuredClone(row.rules) as AuthorityPolicy['rules'],
+      exceptions: structuredClone(row.exceptions) as PolicyException[] });
+  }
+  const revision = createHash('sha256').update(canonicalJson({ scope: { ...scope, platformIds: [...scope.platformIds].sort() }, policies })).digest('hex');
+  if (expectedRevision !== undefined && revision !== expectedRevision) return { status: 'stale', revision };
+  return { status: 'ok', revision, policies };
+}
+
+/** Shared storage/version writer; independent authorities never join the org tree. */
+async function upsertCanonicalLayerInTx(tx: Sql, original: CanonicalLayerInput): Promise<RawLayerRow> {
+  const input = structuredClone(original);
   const exceptions = input.exceptions ?? [];
   {
-    const current = await tx<Array<{ version: number }>>`
-      SELECT version FROM harness_shared.governance_policy_layers WHERE layer_id = ${input.layerId} FOR UPDATE
+    // Serialize creators too: row locks cannot lock an absent key.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`governance-policy:${input.layerId}`}, 0))`;
+    const current = await tx<Array<{ version: number; level: string; scope_ref: string }>>`
+      SELECT version, level, scope_ref FROM harness_shared.governance_policy_layers WHERE layer_id = ${input.layerId} FOR UPDATE
     `;
+    const scoped = input.level === 'user' || input.level === 'platform';
+    if (current[0] && (scoped
+      ? current[0].level !== input.level || current[0].scope_ref !== input.scopeRef
+      : !POLICY_LEVELS.includes(current[0].level as PolicyLevel))) {
+      throw new GovernancePolicyWriteError('conflict', 'an independent authority cannot be replaced through another policy scope');
+    }
     const currentVersion = current[0] ? Number(current[0].version) : 0;
     if (input.expectedVersion !== undefined && input.expectedVersion !== currentVersion) {
       throw new GovernancePolicyWriteError('conflict', `layer ${input.layerId} is at v${currentVersion}, not v${input.expectedVersion}`);
@@ -392,7 +500,7 @@ export async function upsertLayerInTx(tx: Sql, input: UpsertLayerInput): Promise
       `;
       if (ancestors.length === 0) throw new GovernancePolicyWriteError('parent', `parent layer ${input.parentLayerId} does not exist`);
       const parentLevel = ancestors[0].level;
-      if (parentLevel === 'workspace') throw new GovernancePolicyWriteError('parent', 'a workspace layer cannot be a parent');
+      if (!['organization', 'department'].includes(parentLevel)) throw new GovernancePolicyWriteError('parent', 'only an organization or department layer can be a parent');
       if (input.level === 'department' && parentLevel !== 'organization' && parentLevel !== 'department') {
         throw new GovernancePolicyWriteError('parent', 'a department must sit under an organization or department');
       }
@@ -428,6 +536,6 @@ export async function upsertLayerInTx(tx: Sql, input: UpsertLayerInput): Promise
       VALUES (${input.layerId}, ${version}, ${input.level}, ${input.scopeRef}, ${input.parentLayerId},
               ${JSON.stringify(input.rules)}::text::jsonb, ${JSON.stringify(exceptions)}::text::jsonb, ${contentHash}, ${input.actor}, ${input.reason})
     `;
-    return layerOf(rows[0] as RawLayerRow);
+    return rows[0] as RawLayerRow;
   }
 }

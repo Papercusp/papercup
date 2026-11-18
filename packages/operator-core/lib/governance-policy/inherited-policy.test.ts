@@ -34,6 +34,12 @@ const ws = (rules: PolicyLayer['rules'], exceptions?: PolicyLayer['exceptions'])
 });
 
 describe('evaluateInheritedPolicy — inherited org/department/workspace policy (P-005)', () => {
+  it.each([{ rule: [] }, { rule: ['*'] }])('refuses an array-shaped category rule %j', ({ rule }) => {
+    const verdict = evaluateInheritedPolicy([{ layerId: 'invalid', level: 'organization',
+      version: 1, rules: { tools: rule } }], { tools: ['identity:edit'] }, NOW);
+    expect(verdict).toMatchObject({ allow: false, code: 'org_policy:malformed' });
+  });
+
   it('legitimate inherited permission works: an org allow-list value passes every layer', () => {
     const chain = [org({ tools: { allow: ['coord:*', 'work_items:*'] } }), dept({}), ws({})];
     const v = evaluateInheritedPolicy(chain, { tools: ['coord:send'] }, NOW);

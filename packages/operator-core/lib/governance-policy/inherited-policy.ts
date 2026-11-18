@@ -93,7 +93,7 @@ export function isWellFormedLayer(layer: unknown): layer is PolicyLayer {
   if (!l.rules || typeof l.rules !== 'object' || Array.isArray(l.rules)) return false;
   for (const [cat, rule] of Object.entries(l.rules)) {
     if (!GOVERNED_CATEGORIES.includes(cat as GovernedCategory)) return false;
-    if (!rule || typeof rule !== 'object') return false;
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return false;
     if (rule.allow !== undefined && !isStringArray(rule.allow)) return false;
     if (rule.deny !== undefined && !isStringArray(rule.deny)) return false;
   }
