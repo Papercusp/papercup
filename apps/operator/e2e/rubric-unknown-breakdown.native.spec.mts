@@ -238,14 +238,22 @@ test('rubric unknown reasons, coverage and pinned procedures match the current n
     status: 'active', by: 'native-fixture' });
   target.searchParams.set('rrubric', coverageRef);
   await native('navigate', target.href);
-  const historyQuery = `/api/zero-harness/rest-query?name=scorecards.list&args=${encodeURIComponent(JSON.stringify({ rubricRef: coverageRef, limit: 50 }))}`;
+  // Match the panel's history mode: the default list excludes diagnostic cards.
+  const historyArgs = { rubricRef: coverageRef, mode: 'review-history', limit: 50 };
+  const historyQuery = `/api/zero-harness/rest-query?name=scorecards.list&args=${encodeURIComponent(JSON.stringify(historyArgs))}`;
   let history: any;
-  await expect.poll(async () => {
-    history = await evaluate(`fetch(${JSON.stringify(historyQuery)}, {
-      headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
-    }).then(async response => ({status: response.status, body: await response.json()}))`);
-    return history?.status === 200 && history.body.rows.some((row: any) => row.issueId === card.id);
-  }, { timeout: 60_000 }).toBe(true);
+  try {
+    await expect.poll(async () => {
+      history = await evaluate(`fetch(${JSON.stringify(historyQuery)}, {
+        headers: {'x-papercusp-workspace': ${JSON.stringify(workspace)}}
+      }).then(async response => ({status: response.status, body: await response.json()}))`);
+      return history?.status === 200 && history.body.rows.some((row: any) => row.issueId === card.id);
+    }, { timeout: 60_000, message: 'Review history must expose the diagnostic coverage fixture' }).toBe(true);
+  } finally {
+    const historyPath = info.outputPath('rubric-history-precondition.json');
+    await writeFile(historyPath, JSON.stringify({ issueId: card.id, args: historyArgs, history: history ?? null }, null, 2));
+    await info.attach('native rubric history precondition', { path: historyPath, contentType: 'application/json' });
+  }
   const persisted = history.body.rows.find((row: any) => row.issueId === card.id);
   expect(persisted.coverage.denominator).toBe(26);
   expect(persisted.coverage.record.present).toBe(26);
