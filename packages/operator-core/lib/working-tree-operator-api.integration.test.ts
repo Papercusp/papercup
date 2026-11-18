@@ -61,10 +61,12 @@ const CALLER_SCRIPT = [
 ].join('\n');
 
 async function runPrivateCaller(context: TestContext, callerScript = CALLER_SCRIPT,
-  extraSources: string[] = [], verify?: (rows: string[]) => void) {
+  extraSources: string[] = [], verify?: (rows: string[]) => void,
+  responseArtifact = 'r11-mcp-responses.jsonl') {
   const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
     minimumFileRunTimeoutMs: workerOptions.testTimeoutMs,
     filePath: 'packages/operator-core/lib/working-tree-operator-api.integration.test.ts',
+    ...(extraSources.length ? { retainedArtifacts: [`phases/execute/${responseArtifact}`] } : {}),
     sourcePaths: ['scripts/operator-api-working-tree.mjs', 'scripts/with-test-pg.mjs',
       'scripts/lib/with-test-pg-env.mjs', 'scripts/lib/with-test-pg-cleanup.mjs',
       'scripts/test-files.mjs', 'scripts/lib/batch-watchdog.mjs',
@@ -123,6 +125,61 @@ it('runs a caller against an operator bundled from the working tree on private p
   await runPrivateCaller(context);
 }, workerOptions.testTimeoutMs);
 
+it('audit preparation reaches the native private MCP contract without dispatching an unrelated target', async context => {
+  const caller = CALLER_SCRIPT + '\n' + [
+    "import assert from 'node:assert/strict';",
+    "import { appendFileSync } from 'node:fs';",
+    "import { join } from 'node:path';",
+    "import { Client } from '@modelcontextprotocol/sdk/client/index.js';",
+    "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
+    "const client = new Client({ name: 'audit-preparation-private-contract', version: '1' });",
+    'try {',
+    '  await client.connect(new StreamableHTTPClientTransport(new URL(mcp), { requestInit: { headers: { Authorization: `Bearer ${bearer}`, origin: base } } }), { timeout: 30000 });',
+    '  let listing = await client.listTools(undefined, { timeout: 30000 });',
+    "  let tool = listing.tools.find(t => ['scorecards:repair', 'scorecards_repair'].includes(t.name));",
+    '  if (!tool) {',
+    "    const finder = listing.tools.find(t => ['tools:find', 'tools_find'].includes(t.name));",
+    "    assert.ok(finder, 'Private MCP must support deferred tool discovery');",
+    "    await client.callTool({ name: finder.name, arguments: { query: 'scorecards:repair', limit: 1 }, _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } }, undefined, { timeout: 30000 });",
+    '    listing = await client.listTools(undefined, { timeout: 30000 });',
+    "    tool = listing.tools.find(t => ['scorecards:repair', 'scorecards_repair'].includes(t.name));",
+    '  }',
+    "  assert.ok(tool, 'Private operator must list scorecards:repair');",
+    '  const decode = ' + decodePrivateToolResponse.toString() + ';',
+    '  const request = async args => {',
+    '    let response;',
+    "    try { response = await client.callTool({ name: tool.name, arguments: args, _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } }, undefined, { timeout: 30000 }); }",
+    "    catch (error) { const refusal = { error: String(error) }; appendFileSync(join(process.env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR, 'audit-preparation-mcp-responses.jsonl'), JSON.stringify({ args, refusal }) + '\\n'); return refusal; }",
+    "    appendFileSync(join(process.env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR, 'audit-preparation-mcp-responses.jsonl'), JSON.stringify({ args, response }) + '\\n');",
+    '    return decode(response);',
+    '  };',
+    "  const sourcePreparation = { sourceRoot: '/private-contract/source', receiptPath: '/private-contract/receipt.json', receiptSha256: 'a'.repeat(64), outputDir: '/private-contract/output' };",
+    '  const unscoped = await request({ sourcePreparation });',
+    "  assert.match(JSON.stringify(unscoped), /Prepared audit source requires explicit targetIds/);",
+    "  const targetIds = ['EI-native-private-absent-audit-target'];",
+    "  const mixed = await request({ targetIds, sourcePreparation, preparedSource: { sourceRoot: sourcePreparation.sourceRoot, bundlePath: '/private-contract/hono-host.mjs' } });",
+    "  assert.match(JSON.stringify(mixed), /Choose existing output or source preparation/);",
+    '  const accepted = await request({ targetIds, sourcePreparation });',
+    '  assert.deepEqual(accepted.requestedTargetIds, targetIds, JSON.stringify(accepted));',
+    '  assert.equal(accepted.receipts.length, 1, JSON.stringify(accepted));',
+    "  assert.equal(accepted.receipts[0].state, 'skipped', JSON.stringify(accepted));",
+    "  assert.match(accepted.receipts[0].reason, /no longer.*pending/);",
+    "  console.log('AUDIT_PREPARATION_PRIVATE_CONTRACT ' + JSON.stringify({ explicitTargetRequired: true, exclusiveSourceMode: true, accepted: true, dispatched: false }));",
+    '} finally { await client.close(); }',
+  ].join('\n');
+  await runPrivateCaller(context, caller, [
+    'packages/operator-core/lib/agent-tools/scorecards/repair.ts',
+    'packages/operator-core/lib/grading-integrity.ts',
+    'packages/operator-core/lib/release/grading-audit-runtime.ts',
+  ], rows => {
+    const line = rows.find(row => row.startsWith('AUDIT_PREPARATION_PRIVATE_CONTRACT '));
+    expect(line).toBeTruthy();
+    expect(JSON.parse(line!.slice('AUDIT_PREPARATION_PRIVATE_CONTRACT '.length))).toEqual({
+      explicitTargetRequired: true, exclusiveSourceMode: true, accepted: true, dispatched: false,
+    });
+  }, 'audit-preparation-mcp-responses.jsonl');
+}, workerOptions.testTimeoutMs);
+
 it('R11 prepared operational rubric reaches public propose and complete readback on a private current-source operator without activation', async context => {
   // Exact prepared PG artifact, not a second operational contract. Its schedule
   // is retained for identity only; this private test never ratifies or arms it.
@@ -132,6 +189,8 @@ it('R11 prepared operational rubric reaches public propose and complete readback
   const preparedSha256 = createHash('sha256').update(preparedText).digest('hex');
   const caller = CALLER_SCRIPT + '\n' + [
     "import assert from 'node:assert/strict';",
+    "import { appendFileSync } from 'node:fs';",
+    "import { join } from 'node:path';",
     "import { Client } from '@modelcontextprotocol/sdk/client/index.js';",
     "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
     'const prepared = JSON.parse(' + JSON.stringify(preparedText) + ');',
@@ -139,21 +198,31 @@ it('R11 prepared operational rubric reaches public propose and complete readback
     "assert.equal(prepared.status, 'prepared-only-not-proposed-not-ratified-not-armed');",
     "const client = new Client({ name: 'r11-private-proposal', version: '1' });",
     'try {',
-    '  await client.connect(new StreamableHTTPClientTransport(new URL(mcp), { requestInit: { headers: { Authorization: `Bearer ${bearer}`, origin: base } } }), { timeout: 30000 });',
+    '  const transport = new StreamableHTTPClientTransport(new URL(mcp), { requestInit: { headers: { Authorization: `Bearer ${bearer}`, origin: base } } });',
+    '  await client.connect(transport, { timeout: 30000 });',
     '  const listing = await client.listTools(undefined, { timeout: 30000 });',
+    '  let pendingTool = null;',
+    '  const receive = transport.onmessage;',
+    '  transport.onmessage = (message, extra) => {',
+    "    if (pendingTool && 'result' in message) appendFileSync(join(process.env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR, 'r11-mcp-responses.jsonl'), JSON.stringify({ tool: pendingTool, response: message.result }) + '\\n');",
+    '    receive?.(message, extra);',
+    '  };',
     '  const decode = ' + decodePrivateToolResponse.toString() + ';',
     '  const request = async (name, args) => {',
     "    const tool = listing.tools.find(t => t.name === name || t.name === name.replaceAll(':', '_'));",
     "    assert.ok(tool, 'Private operator must list ' + name);",
-    "    const response = await client.callTool({ name: tool.name, arguments: args, _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } }, undefined, { timeout: 30000 });",
-    '    return decode(response);',
+    '    pendingTool = name;',
+    '    try {',
+    "      const response = await client.callTool({ name: tool.name, arguments: args, _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } }, undefined, { timeout: 30000 });",
+    '      return decode(response);',
+    '    } finally { pendingTool = null; }',
     '  };',
-    "  const proposed = await request('rubrics:propose', { ...prepared.rubric, projection: { pick: ['ok', 'rubric.status', 'rubric.kind', 'rubric.ratifiedBy'] } });",
+    "  const proposed = await request('rubrics:propose', prepared.rubric);",
     '  assert.equal(proposed.ok, true, JSON.stringify(proposed));',
     "  assert.equal(proposed.rubric.status, 'proposed');",
     '  assert.equal(proposed.rubric.ratifiedBy, null);',
     "  assert.equal(proposed.rubric.kind, 'standard');",
-    "  const loaded = await request('rubrics:get', { rubricRef: prepared.rubric.rubricRef, detail: 'full', projection: { pick: ['ok', 'results[].ok', 'results[].rubricRef', 'results[].rubric.criteria', 'results[].rubric.status', 'results[].rubric.ratifiedBy'] } });",
+    "  const loaded = await request('rubrics:get', { rubricRef: prepared.rubric.rubricRef, detail: 'full' });",
     '  assert.equal(loaded.ok, true, JSON.stringify(loaded));',
     '  const persisted = loaded.results.find(r => r.rubricRef === prepared.rubric.rubricRef);',
     '  assert.equal(persisted.ok, true);',
