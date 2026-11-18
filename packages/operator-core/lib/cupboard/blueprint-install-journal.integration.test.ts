@@ -7,8 +7,9 @@
  * nothing but the crash, which is simulated by stopping a lifecycle between
  * its steps exactly where a process death would.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
@@ -30,6 +31,11 @@ import {
   uninstallBlueprintRelease,
 } from './blueprint-release';
 import { blueprintInstallJournal, type BlueprintJournalPlan, type InstallProviderBinding } from './blueprint-install-journal';
+import { readPackageInstallation, declarePackageInstallationHumanOwner } from '../blueprint/package-resource-receipts';
+import { retainRequestPrincipal } from '../auth/require-principal';
+import type { Principal } from '@papercusp/agent-mcp';
+let ownershipPrincipal: Principal | null = null;
+vi.mock('../auth/principal/from-cookie', () => ({ principalFromCookie: vi.fn(async () => ownershipPrincipal) }));
 
 const WS = 'ws-p014-journal';
 const CLASS = { id: 'crm.email', version: '1.0.0' };
@@ -46,6 +52,8 @@ let installedDir = '';
 
 beforeAll(async () => {
   db = await createOrgTestDb();
+  const ownership = new URL('../../../../libs/papercusp/libs/db/sql/1645-blueprint-installation-human-ownership.sql.DRAFT', import.meta.url);
+  if (existsSync(ownership)) await db.adminSql.unsafe(readFileSync(ownership, 'utf8'));
   root = await fs.mkdtemp(join(tmpdir(), 'p014-journal-'));
   const defined = await defineCapabilityClass(db.adminSql, {
     workspaceId: WS, ...CLASS, title: 'CRM email', description: 'Send customer email.',
@@ -118,6 +126,28 @@ const adminBind = (potSlug: string, provider: { pkg: string; version: string }) 
 });
 
 describe('P-014 pot binding journal (real PG + real release lifecycle)', () => {
+  it('keeps explicit human ownership on the original attempt and rollback without inferring it for upgrades', async () => {
+    const id = 'ident-human-history';
+    const potSlug = 'pot-human-history';
+    const release = await source(id, '1.0.0');
+    ownershipPrincipal = { kind: 'user', trust: 'verified', authMethod: 'cookie-session', slug: 'pot-human',
+      workspaceId: WS, capabilities: new Set() };
+    const resolvePrincipal = await retainRequestPrincipal(new Headers(), WS);
+    const humanOwner = await declarePackageInstallationHumanOwner({ workspaceId: WS, resolvePrincipal },
+      { declaration: 'self', userId: 'pot-human', ownerId: 'pot:' + potSlug, specificationRevision: release.contentHash });
+    const first = await commitBlueprintRelease({ installedDir, sourceDir: release.dir, id, version: '1.0.0',
+      source: 'repo', pins: [release.pin], journal: journal(id, { operation: 'install', potSlug, bindings: [], humanOwner }) });
+    const firstId = first.journal!.pots[0]!.dependentId!;
+    const original = (await readPackageInstallation(db.adminSql, WS, firstId))!.human_ownership;
+    expect(original?.userId).toBe('pot-human');
+    ownershipPrincipal = null;
+    const upgraded = await install(id, '2.0.0', potSlug, []);
+    expect((await readPackageInstallation(db.adminSql, WS, upgraded.journal!.pots[0]!.dependentId!))!.human_ownership).toBeNull();
+    const rollback = await rollbackBlueprintRelease({ installedDir, id, target: '1.0.0', journal: journal(id, { operation: 'rollback' }) });
+    expect((await readPackageInstallation(db.adminSql, WS, rollback.journal!.pots[0]!.dependentId!))!.human_ownership).toEqual(original);
+    expect((await readPackageInstallation(db.adminSql, WS, firstId))!.human_ownership).toEqual(original);
+  });
+
   it('writes the binding with the install and removes exactly its own write on uninstall', async () => {
     const installed = await install('ident-basic', '1.0.0', 'pot-basic', [binding(ACME)]);
     expect(installed.journal).toMatchObject({ recovered: [], residue: [],

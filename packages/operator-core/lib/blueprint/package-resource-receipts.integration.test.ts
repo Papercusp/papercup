@@ -8,14 +8,31 @@ import {
   readPackageResourceReceipt, releasePackageResource,
   beginPackageInstallation, readPackageInstallation, beginPackageInstallationRelease, finishPackageInstallationRelease,
   carryAppliedPackageInstallation,
+  declarePackageInstallationHumanOwner, type PackageInstallationHumanOwnerProof,
   type PackageResourceAddress, type PackageResourceDriver,
 } from './package-resource-receipts';
+import { retainRequestPrincipal } from '../auth/require-principal';
+import type { Principal } from '@papercusp/agent-mcp';
+let cookiePrincipal: Principal | null = null;
+vi.mock('../auth/principal/from-cookie', () => ({ principalFromCookie: vi.fn(async () => cookiePrincipal) }));
+
+async function humanOwner(input: { workspaceId: string; ownerId: string; specificationRevision: string }, userId = 'human-one') {
+  cookiePrincipal = { kind: 'user', trust: 'verified', authMethod: 'cookie-session', slug: userId,
+    workspaceId: input.workspaceId, capabilities: new Set(['tasks:read']) };
+  const resolvePrincipal = await retainRequestPrincipal(new Headers(), input.workspaceId);
+  const declaration = { declaration: 'self' as const, userId, ownerId: input.ownerId,
+    specificationRevision: input.specificationRevision };
+  return { proof: await declarePackageInstallationHumanOwner({ ...input, resolvePrincipal }, declaration),
+    declaration, resolvePrincipal };
+}
 
 let db: OrgTestDb;
 beforeAll(async () => {
   db = await createOrgTestDb();
   const draft = new URL('../../../../libs/papercusp/libs/db/sql/1232-blueprint-package-installations.sql.DRAFT', import.meta.url);
   if (existsSync(draft)) await db.adminSql.unsafe(readFileSync(draft, 'utf8'));
+  const ownership = new URL('../../../../libs/papercusp/libs/db/sql/1645-blueprint-installation-human-ownership.sql.DRAFT', import.meta.url);
+  if (existsSync(ownership)) await db.adminSql.unsafe(readFileSync(ownership, 'utf8'));
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -54,6 +71,138 @@ function externalStore() {
 }
 
 describe('blueprint package resource journal (real Postgres)', () => {
+  const emptyInstall = (name: string) => ({ workspaceId: 'human-ownership', ownerId: 'wearer-' + name,
+    dependentId: name, specificationRevision: hash(name), stateRevision: hash('state'), expectedResources: new Map<string, string>() });
+
+  it('snapshots the explicit ownership declaration before asynchronous authentication', async () => {
+    const input = emptyInstall('declaration-snapshot');
+    const { resolvePrincipal } = await humanOwner(input);
+    const request = { workspaceId: input.workspaceId, resolvePrincipal };
+    const declaration = { declaration: 'self' as const, userId: 'human-one', ownerId: input.ownerId,
+      specificationRevision: input.specificationRevision };
+    const pending = declarePackageInstallationHumanOwner(request, declaration);
+    declaration.ownerId = 'mutated-after-call';
+    request.workspaceId = 'mutated-after-call';
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: await pending });
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId))?.human_ownership)
+      .toMatchObject({ ownerId: input.ownerId, workspaceId: input.workspaceId });
+  });
+
+  it('rejects malformed provenance at the SQL boundary, including numeric scope lookalikes', async () => {
+    const input = { ...emptyInstall('sql-shape'), workspaceId: '123', ownerId: '456' };
+    const { proof } = await humanOwner(input);
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof });
+    const original = (await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId))!.human_ownership!;
+    for (const [n, changed] of [{ workspaceId: 123 }, { ownerId: 456 }, { schemaVersion: '1' },
+      { userId: 1 }, { userId: null }, { principalRevision: null }, { extra: true }].entries()) {
+      await expect(db.adminSql`INSERT INTO harness_shared.blueprint_package_installations
+        (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources, human_ownership)
+        VALUES (${input.workspaceId}, ${input.dependentId + '-' + n}, ${input.ownerId}, ${input.specificationRevision},
+          ${input.stateRevision}, '{}'::jsonb, ${db.adminSql.json({ ...original, ...changed })})`)
+        .rejects.toThrow(/human_ownership_shape/);
+    }
+  });
+
+  it('records explicit authenticated human ownership, preserves it on replay, and refuses reattribution', async () => {
+    const input = emptyInstall('declared');
+    const evidence = await humanOwner(input);
+    evidence.declaration.userId = 'changed-after-declaration';
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: evidence.proof });
+    const first = await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId);
+    expect(first?.human_ownership).toMatchObject({ userId: 'human-one', ownerId: input.ownerId,
+      workspaceId: input.workspaceId, specificationRevision: input.specificationRevision, declaration: 'self',
+      principalRevision: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    await beginPackageInstallation(db.adminSql, input); // recovery does not erase or manufacture evidence
+    expect(await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId)).toEqual(first);
+    const other = await humanOwner(input, 'human-two');
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: other.proof })).rejects.toThrow(/immutable per attempt/);
+    await expect(db.adminSql`UPDATE harness_shared.blueprint_package_installations SET human_ownership = NULL
+      WHERE workspace_id = ${input.workspaceId} AND dependent_id = ${input.dependentId}`).rejects.toThrow(/immutable per attempt/);
+    await expect(beginPackageInstallation(db.adminSql, { ...input, dependentId: 'forged',
+      humanOwner: JSON.parse(JSON.stringify(evidence.proof)) as PackageInstallationHumanOwnerProof })).rejects.toThrow(/original host-local evidence/);
+    expect(await readPackageInstallation(db.adminSql, input.workspaceId, 'forged')).toBeNull();
+  });
+
+  it('leaves legacy ownership unknown and refuses both application and direct-SQL backfill', async () => {
+    const input = emptyInstall('legacy');
+    await beginPackageInstallation(db.adminSql, input);
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId))?.human_ownership).toBeNull();
+    const { proof } = await humanOwner(input);
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof })).rejects.toThrow(/immutable per attempt/);
+    await expect(db.adminSql`UPDATE harness_shared.blueprint_package_installations SET human_ownership = '{}'::jsonb
+      WHERE workspace_id = ${input.workspaceId} AND dependent_id = ${input.dependentId}`).rejects.toThrow(/immutable per attempt/);
+    await beginPackageInstallation(db.adminSql, { ...input, dependentId: 'new-explicit-attempt', humanOwner: proof });
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, 'new-explicit-attempt'))?.human_ownership?.userId).toBe('human-one');
+  });
+
+  it('refuses forwarded resolvers, non-human principals, foreign self declarations and mismatched targets', async () => {
+    const input = emptyInstall('scope');
+    const { proof, resolvePrincipal } = await humanOwner(input);
+    const declaration = { declaration: 'self' as const, userId: 'somebody-else', ownerId: input.ownerId,
+      specificationRevision: input.specificationRevision };
+    await expect(declarePackageInstallationHumanOwner({ ...input, resolvePrincipal }, declaration)).rejects.toThrow(/authenticated self/);
+    await expect(declarePackageInstallationHumanOwner({ ...input, resolvePrincipal: async () => cookiePrincipal },
+      { ...declaration, userId: 'human-one' })).rejects.toThrow(/authenticated self/);
+    for (const kind of ['device', 'service', 'system'] as const) {
+      cookiePrincipal = { ...cookiePrincipal!, kind };
+      const nonHuman = await retainRequestPrincipal(new Headers(), input.workspaceId);
+      await expect(declarePackageInstallationHumanOwner({ ...input, resolvePrincipal: nonHuman },
+        { ...declaration, userId: 'human-one' })).rejects.toThrow(/authenticated self/);
+    }
+    await humanOwner(input); // restore cookie principal for the original retained closure
+    for (const changed of [{ ownerId: 'other-wearer' }, { specificationRevision: hash('other-spec') }, { workspaceId: 'foreign' }]) {
+      await expect(beginPackageInstallation(db.adminSql, { ...input, ...changed, humanOwner: proof }))
+        .rejects.toThrow(/ownership scope mismatch|credentials changed/);
+    }
+    expect(await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId)).toBeNull();
+  });
+
+  it('rechecks revoked and changed human credentials after waiting for the installation lock', async () => {
+    const input = emptyInstall('revoked-after-wait');
+    const { proof } = await humanOwner(input);
+    let pending: Promise<unknown> | undefined;
+    try {
+      await db.adminSql.begin(async tx => {
+        const [holder] = await tx`SELECT pg_backend_pid() AS pid`;
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
+          'blueprint-package-resource', input.workspaceId, 'dependent:' + input.dependentId])}, 0))`;
+        // Use the real public writer on another connection; observe its exact lock waiter.
+        pending = beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof })
+          .catch(error => error);
+        await vi.waitFor(async () => {
+          const [row] = await tx`SELECT count(*)::int AS n FROM pg_locks WHERE locktype='advisory' AND NOT granted
+            AND ${holder.pid} = ANY(pg_blocking_pids(pid))`;
+          expect(row.n).toBe(1);
+        }, { timeout: 5000 });
+        cookiePrincipal = null;
+      });
+      expect(await pending).toMatchObject({ message: expect.stringMatching(/credentials changed or were revoked/) });
+    } finally { await pending; }
+    expect(await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId)).toBeNull();
+    const { proof: changed } = await humanOwner(input);
+    cookiePrincipal = { ...cookiePrincipal!, capabilities: new Set() };
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: changed })).rejects.toThrow(/credentials changed/);
+  });
+
+  it.each([false, true])('preserves recorded ownership through applied carry, rollback and release (known=%s)', async known => {
+    const input = emptyInstall('history-' + known);
+    const proof = known ? (await humanOwner(input)).proof : undefined;
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof });
+    await db.adminSql.begin(tx => applyPackageResourceDependent(tx, input.workspaceId, input.dependentId, new Map()));
+    const original = (await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId))!.human_ownership;
+    cookiePrincipal = null; // recovery uses the retained durable evidence, not new authentication
+    const next = { ...input, fromDependentId: input.dependentId, dependentId: input.dependentId + '-carried', stateRevision: hash('next') };
+    await db.adminSql.begin(tx => carryAppliedPackageInstallation(tx, next));
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, next.dependentId))!.human_ownership).toEqual(original);
+    await beginPackageInstallationRelease(db.adminSql, input.workspaceId, input.dependentId);
+    await finishPackageInstallationRelease(db.adminSql, input.workspaceId, input.dependentId);
+    const rollback = { ...input, dependentId: input.dependentId + '-rollback', ownershipFromDependentId: input.dependentId };
+    await beginPackageInstallation(db.adminSql, rollback);
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, rollback.dependentId))!.human_ownership).toEqual(original);
+    await expect(beginPackageInstallation(db.adminSql, { ...rollback, dependentId: 'foreign-history', ownerId: 'foreign' }))
+      .rejects.toThrow(/same wearer, specification and manifest/);
+  });
+
   it('carries unchanged applied resources across state revisions atomically and keeps independent release ownership', async () => {
     const store = externalStore();
     const resource = address('control-state-carry');

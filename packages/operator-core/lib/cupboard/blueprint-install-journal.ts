@@ -22,6 +22,7 @@ import {
   beginPackageInstallationReleaseInTransaction,
   readPackageInstallation,
   type PackageResourceAddress,
+  type PackageInstallationHumanOwnerProof,
 } from '../blueprint/package-resource-receipts';
 import { releasePackageInstallation } from '../blueprint/package-knowledge-resources';
 import {
@@ -56,7 +57,7 @@ export interface InstallProviderBinding {
 export type BlueprintJournalPlan =
   | { operation: 'install'; potSlug: string; bindings: readonly InstallProviderBinding[];
       /** D-042: the release's bundled event keys, claimed for the workspace. */
-      eventKeys?: readonly BundledEventKey[] }
+      eventKeys?: readonly BundledEventKey[]; humanOwner?: PackageInstallationHumanOwnerProof }
   | { operation: 'rollback' }
   | { operation: 'uninstall' };
 
@@ -99,6 +100,8 @@ interface PlannedPotInstall {
   /** Claimed through the full driver on install; a rollback re-depends on the live key only. */
   eventKeys: Array<{ key: BundledEventKey } | { address: PackageResourceAddress }>;
   expected: Map<string, string>;
+  humanOwner?: PackageInstallationHumanOwnerProof;
+  ownershipFromDependentId?: string;
 }
 
 export function blueprintInstallJournal(
@@ -172,7 +175,8 @@ export function blueprintInstallJournal(
       for (const install of installs) {
         const dependentId = await attemptId(install.potSlug, contentHash, install.expected);
         await beginPackageInstallation(sql, { workspaceId, dependentId, ownerId: blueprintInstallOwner(install.potSlug),
-          specificationRevision: contentHash, stateRevision: state, expectedResources: install.expected });
+          specificationRevision: contentHash, stateRevision: state, expectedResources: install.expected,
+          humanOwner: install.humanOwner, ownershipFromDependentId: install.ownershipFromDependentId });
         enrolled.push(dependentId);
         for (const binding of install.bindings) await prepareProviderBindingResource(sql, { workspaceId, binding, dependentId });
         for (const entry of install.eventKeys) {
@@ -241,7 +245,8 @@ export function blueprintInstallJournal(
       expected.set(planned.resourceKey, planned.address.installedHash);
     }
     const eventKeys = keys.map((key) => ({ key }));
-    const prepared = await prepareAttempts(contentHash, [{ potSlug, bindings, eventKeys, expected }], (error) =>
+    const prepared = await prepareAttempts(contentHash, [{ potSlug, bindings, eventKeys, expected,
+      humanOwner: plan.operation === 'install' ? plan.humanOwner : undefined }], (error) =>
       message(error).includes('event-key-held:')
         ? new BlueprintLifecycleError('bundled event key could not be claimed before blueprint install: ' + message(error),
           409, 'event_key_held')
@@ -262,8 +267,8 @@ export function blueprintInstallJournal(
     const notes: PotReport[] = [];
     for (const { owner_id: ownerId } of pots) {
       const potSlug = potOf(ownerId);
-      const [receipt] = await sql<Array<{ expected_resources: Record<string, string> }>>`
-        SELECT expected_resources FROM harness_shared.blueprint_package_installations
+      const [receipt] = await sql<Array<{ dependent_id: string; expected_resources: Record<string, string> }>>`
+        SELECT dependent_id, expected_resources FROM harness_shared.blueprint_package_installations
          WHERE workspace_id = ${workspaceId} AND owner_id = ${ownerId} AND state_revision = ${state}
            AND specification_revision = ${contentHash}
          ORDER BY updated_at DESC LIMIT 1`;
@@ -294,7 +299,8 @@ export function blueprintInstallJournal(
       // already released cannot be re-claimed from its address and refuses below.
       const eventKeys = addresses.filter((address) => address.resourceKind === EVENT_KEY_RESOURCE_KIND)
         .map((address) => ({ address }));
-      installs.push({ potSlug, bindings, eventKeys, expected: new Map(Object.entries(receipt.expected_resources)) });
+      installs.push({ potSlug, bindings, eventKeys, expected: new Map(Object.entries(receipt.expected_resources)),
+        ownershipFromDependentId: receipt.dependent_id });
     }
     const prepared = await prepareAttempts(contentHash, installs, (error) =>
       new BlueprintLifecycleError(`blueprint ${blueprintId} rollback would restore a binding a later owner changed: ${message(error)}`,

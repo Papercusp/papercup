@@ -3,7 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { replayAgentSpecification, type SessionActivation, type CompiledAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { trackDetached } from '../detached-imports';
 import { applyPackageResourceDependent, beginPackageInstallation, beginPackageInstallationReleaseInTransaction,
-  carryAppliedPackageInstallation } from './package-resource-receipts';
+  carryAppliedPackageInstallation, type PackageInstallationHumanOwnerProof } from './package-resource-receipts';
 import { blueprintPackageProvisioners, provisionBlueprintPackages } from './compile-packages';
 import { planKnowledgePackageResources, releasePackageInstallation } from './package-knowledge-resources';
 import { planRecipePackageResource } from './package-recipe-resources';
@@ -101,6 +101,7 @@ async function expectedPackageResources(artifact: CompiledAgentSpecification, wo
 export async function provisionSessionPackageResources(sql: Sql, input: {
   ownerId: string; revision: SessionActivation['desired']; artifacts: readonly CompiledAgentSpecification[];
   attemptId?: string;
+  humanOwner?: PackageInstallationHumanOwnerProof;
 }): Promise<{ dependentId: string }> {
   // A crash between an activation's commit and its cleanup leaves fenced
   // installations; they resume here, at the wearer's next provisioning.
@@ -126,7 +127,7 @@ export async function provisionSessionPackageResources(sql: Sql, input: {
   try {
     for (const [workspaceId, expectedResources] of manifests) {
       await beginPackageInstallation(sql, { workspaceId, dependentId, ownerId: input.ownerId,
-        ...input.revision, expectedResources });
+        ...input.revision, expectedResources, humanOwner: input.humanOwner });
       enrolled.push(workspaceId);
     }
     const provisioners = blueprintPackageProvisioners(sql, { dependentId });

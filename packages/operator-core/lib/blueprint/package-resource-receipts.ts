@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
+import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 
 export interface PackageResourceAddress {
   workspaceId: string;
@@ -62,11 +63,67 @@ type Db = Sql | TransactionSql;
 
 export interface PackageInstallationReceipt {
   owner_id: string;
+  /** owner_id is a technical wearer/pot, never evidence of a human owner. */
+  human_ownership: PackageInstallationHumanOwnership | null;
   specification_revision: string;
   state_revision: string;
   expected_resources: Record<string, string>;
   phase: 'preparing' | 'applied' | 'releasing' | 'released' | 'cleanup_failed';
   error: string | null;
+}
+
+export interface PackageInstallationHumanOwnership {
+  schemaVersion: 1;
+  declaration: 'self';
+  authMethod: 'cookie-session';
+  workspaceId: string;
+  ownerId: string;
+  userId: string;
+  specificationRevision: string;
+  principalRevision: string;
+}
+declare const humanOwnerProof: unique symbol;
+/** Host-local evidence, not an HTTP payload or serialized Principal. */
+export interface PackageInstallationHumanOwnerProof { readonly [humanOwnerProof]: true }
+const humanOwnerProofs = new WeakMap<PackageInstallationHumanOwnerProof, {
+  ownership: PackageInstallationHumanOwnership; resolvePrincipal: HostRequestPrincipalResolver;
+}>();
+
+/** Authentication alone is NOT ownership. The human explicitly declares their
+ * ownership of this wearer + specification. This grants no edit authority or
+ * permission-change consent; it is only one input to the existing guard. */
+export async function declarePackageInstallationHumanOwner(request: {
+  workspaceId: string; resolvePrincipal: HostRequestPrincipalResolver | undefined;
+}, declaration: { declaration: 'self'; userId: string; ownerId: string; specificationRevision: string }):
+Promise<PackageInstallationHumanOwnerProof> {
+  // Retain the actual declaration before dynamic import or credential I/O.
+  request = { ...request };
+  declaration = { ...declaration };
+  const { readRetainedRequestPrincipal } = await import('../auth/require-principal');
+  const read = await readRetainedRequestPrincipal(request.resolvePrincipal, request.workspaceId);
+  if (read.status !== 'ok' || read.principal.kind !== 'user' || read.principal.trust !== 'verified' ||
+      read.principal.authMethod !== 'cookie-session' || declaration.declaration !== 'self' ||
+      declaration.userId !== read.principal.slug) throw new Error('human ownership requires an explicit authenticated self declaration');
+  const ownership = validateHumanOwnership({ schemaVersion: 1, declaration: 'self', authMethod: 'cookie-session',
+    workspaceId: request.workspaceId, ownerId: declaration.ownerId, userId: declaration.userId,
+    specificationRevision: declaration.specificationRevision, principalRevision: read.revision });
+  const proof = Object.freeze({}) as PackageInstallationHumanOwnerProof;
+  humanOwnerProofs.set(proof, { ownership, resolvePrincipal: request.resolvePrincipal! });
+  return proof;
+}
+
+function validateHumanOwnership(value: unknown): PackageInstallationHumanOwnership {
+  const v = value as PackageInstallationHumanOwnership;
+  const keys = ['schemaVersion', 'declaration', 'authMethod', 'workspaceId', 'ownerId', 'userId',
+    'specificationRevision', 'principalRevision'];
+  if (!v || typeof v !== 'object' || Array.isArray(v) || Object.keys(v).length !== keys.length ||
+      keys.some(key => !Object.hasOwn(v, key)) || v.schemaVersion !== 1 || v.declaration !== 'self' ||
+      v.authMethod !== 'cookie-session' || [v.workspaceId, v.ownerId, v.userId].some(s =>
+        typeof s !== 'string' || !s.trim() || s === '*') ||
+      [v.specificationRevision, v.principalRevision].some(s => typeof s !== 'string' || !/^[a-f0-9]{64}$/.test(s)))
+    throw new Error('invalid package installation human ownership provenance');
+  return { schemaVersion: 1, declaration: 'self', authMethod: 'cookie-session', workspaceId: v.workspaceId,
+    ownerId: v.ownerId, userId: v.userId, specificationRevision: v.specificationRevision, principalRevision: v.principalRevision };
 }
 
 export function packageResourceKey(address: PackageResourceAddress): string {
@@ -87,9 +144,15 @@ async function lock(sql: TransactionSql, workspaceId: string, key: string): Prom
 }
 
 export async function readPackageInstallation(sql: Db, workspaceId: string, dependentId: string): Promise<PackageInstallationReceipt | null> {
-  const [row] = await sql<PackageInstallationReceipt[]>`SELECT owner_id, specification_revision, state_revision,
+  const [row] = await sql<PackageInstallationReceipt[]>`SELECT owner_id, human_ownership, specification_revision, state_revision,
       expected_resources, phase, error FROM harness_shared.blueprint_package_installations
     WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
+  if (row?.human_ownership !== null && row?.human_ownership !== undefined) {
+    row.human_ownership = validateHumanOwnership(row.human_ownership);
+    if (row.human_ownership.workspaceId !== workspaceId || row.human_ownership.ownerId !== row.owner_id ||
+        row.human_ownership.specificationRevision !== row.specification_revision)
+      throw new Error('package installation human ownership scope mismatch');
+  }
   return row ?? null;
 }
 
@@ -98,13 +161,18 @@ export async function readPackageInstallation(sql: Db, workspaceId: string, depe
 interface PackageInstallationInput {
   workspaceId: string; dependentId: string; ownerId: string;
   specificationRevision: string; stateRevision: string; expectedResources: ReadonlyMap<string, string>;
+  humanOwner?: PackageInstallationHumanOwnerProof;
+  /** Copy recorded provenance (including unknown) for carry/rollback. */
+  ownershipFromDependentId?: string;
 }
 
 export async function beginPackageInstallation(sql: Sql, input: PackageInstallationInput): Promise<void> {
+  input = { ...input, expectedResources: new Map(input.expectedResources) };
   await sql.begin((tx) => beginPackageInstallationInTransaction(tx, input));
 }
 
 async function beginPackageInstallationInTransaction(tx: TransactionSql, input: PackageInstallationInput): Promise<void> {
+  input = { ...input, expectedResources: new Map(input.expectedResources) };
   for (const value of [input.workspaceId, input.dependentId, input.ownerId, input.specificationRevision, input.stateRevision]) {
     if (!value?.trim()) throw new Error('package installation requires exact wearer and revision');
   }
@@ -112,12 +180,43 @@ async function beginPackageInstallationInTransaction(tx: TransactionSql, input: 
   if (Object.entries(expected).some(([key, hash]) => !/^[a-f0-9]{64}$/.test(key) || !/^[a-f0-9]{64}$/.test(hash))) {
     throw new Error('package installation requires exact resource keys and hashes');
   }
-  await lock(tx, input.workspaceId, 'dependent:' + input.dependentId);
+  if (input.humanOwner !== undefined && input.ownershipFromDependentId !== undefined)
+    throw new Error('human ownership cannot replace carried provenance');
+  if (input.ownershipFromDependentId !== undefined && !input.ownershipFromDependentId.trim())
+    throw new Error('human ownership requires an exact source installation');
+  for (const id of [...new Set([input.dependentId, ...(input.ownershipFromDependentId === undefined ? [] :
+    [input.ownershipFromDependentId])])].sort()) await lock(tx, input.workspaceId, 'dependent:' + id);
+  let ownership: PackageInstallationHumanOwnership | null = null;
+  let ownershipSpecified = false;
+  if (input.ownershipFromDependentId !== undefined) {
+    const source = await readPackageInstallation(tx, input.workspaceId, input.ownershipFromDependentId);
+    if (!source || source.owner_id !== input.ownerId || source.specification_revision !== input.specificationRevision ||
+        Object.keys(source.expected_resources).length !== Object.keys(expected).length ||
+        Object.entries(expected).some(([key, hash]) => source.expected_resources[key] !== hash))
+      throw new Error('human ownership source requires the same wearer, specification and manifest');
+    ownership = source.human_ownership;
+    ownershipSpecified = true;
+  } else if (input.humanOwner !== undefined) {
+    const evidence = humanOwnerProofs.get(input.humanOwner);
+    if (!evidence) throw new Error('human ownership requires original host-local evidence');
+    const { readRetainedRequestPrincipal } = await import('../auth/require-principal');
+    const read = await readRetainedRequestPrincipal(evidence.resolvePrincipal, input.workspaceId, evidence.ownership.principalRevision);
+    if (read.status !== 'ok' || read.principal.kind !== 'user' || read.principal.slug !== evidence.ownership.userId)
+      throw new Error('human ownership credentials changed or were revoked');
+    ownership = validateHumanOwnership(evidence.ownership);
+    if (ownership.workspaceId !== input.workspaceId || ownership.ownerId !== input.ownerId ||
+        ownership.specificationRevision !== input.specificationRevision)
+      throw new Error('package installation human ownership scope mismatch');
+    ownershipSpecified = true;
+  }
   await tx`INSERT INTO harness_shared.blueprint_package_installations
-    (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources)
+    (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources, human_ownership)
     VALUES (${input.workspaceId}, ${input.dependentId}, ${input.ownerId}, ${input.specificationRevision},
-      ${input.stateRevision}, ${tx.json(expected)}) ON CONFLICT (workspace_id, dependent_id) DO NOTHING`;
+      ${input.stateRevision}, ${tx.json(expected)}, ${ownership === null ? null : tx.json({ ...ownership })})
+    ON CONFLICT (workspace_id, dependent_id) DO NOTHING`;
   const row = (await readPackageInstallation(tx, input.workspaceId, input.dependentId))!;
+  if (ownershipSpecified && JSON.stringify(row.human_ownership) !== JSON.stringify(ownership))
+    throw new Error('package installation human ownership is immutable per attempt');
   if (row.owner_id !== input.ownerId || row.specification_revision !== input.specificationRevision ||
       row.state_revision !== input.stateRevision || Object.keys(row.expected_resources).length !== Object.keys(expected).length ||
       Object.entries(expected).some(([key, hash]) => row.expected_resources[key] !== hash)) {
@@ -133,6 +232,7 @@ async function beginPackageInstallationInTransaction(tx: TransactionSql, input: 
 export async function carryAppliedPackageInstallation(tx: TransactionSql, input: PackageInstallationInput & {
   fromDependentId: string;
 }): Promise<void> {
+  input = { ...input, expectedResources: new Map(input.expectedResources) };
   if (!input.fromDependentId.trim()) throw new Error('package carry requires an applied source');
   for (const id of [...new Set([input.fromDependentId, input.dependentId])].sort()) {
     await lock(tx, input.workspaceId, 'dependent:' + id);
@@ -145,7 +245,8 @@ export async function carryAppliedPackageInstallation(tx: TransactionSql, input:
   // Reuses the locked exact-set validation, including current resource readiness.
   // No target rows are written if the source is incomplete or the pins changed.
   await applyPackageResourceDependent(tx, input.workspaceId, input.fromDependentId, input.expectedResources);
-  await beginPackageInstallationInTransaction(tx, input);
+  if (input.humanOwner !== undefined) throw new Error('human ownership cannot replace carried provenance');
+  await beginPackageInstallationInTransaction(tx, { ...input, ownershipFromDependentId: input.fromDependentId });
   await tx`INSERT INTO harness_shared.blueprint_package_dependents
     (workspace_id, dependent_id, resource_key)
     SELECT workspace_id, ${input.dependentId}, resource_key

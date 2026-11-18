@@ -16,7 +16,11 @@ import { compileBlueprintWithPackages } from './compile-packages';
 import { applySessionPackageResources, carrySessionPackageResources, provisionSessionPackageResources,
   releaseSupersededSessionPackages, sessionPackageDependentId, type SessionPackageFence } from './session-package-resources';
 import { getRecipe } from '../code-recipes-store';
-import { readPackageInstallation } from './package-resource-receipts';
+import { readPackageInstallation, declarePackageInstallationHumanOwner } from './package-resource-receipts';
+import { retainRequestPrincipal } from '../auth/require-principal';
+import type { Principal } from '@papercusp/agent-mcp';
+let ownershipPrincipal: Principal | null = null;
+vi.mock('../auth/principal/from-cookie', () => ({ principalFromCookie: vi.fn(async () => ownershipPrincipal) }));
 import { provisionLaunchIdentityResources } from '../role-launch-spec';
 import { preparePackageResource, releasePackageResource, type PackageResourceAddress } from './package-resource-receipts';
 import { createTextCollector } from '../child-output';
@@ -42,6 +46,8 @@ beforeAll(async () => {
   if (existsSync(draft)) await db.adminSql.unsafe(readFileSync(draft, 'utf8'));
   const installations = new URL('../../../../libs/papercusp/libs/db/sql/1232-blueprint-package-installations.sql.DRAFT', import.meta.url);
   if (existsSync(installations)) await db.adminSql.unsafe(readFileSync(installations, 'utf8'));
+  const ownership = new URL('../../../../libs/papercusp/libs/db/sql/1645-blueprint-installation-human-ownership.sql.DRAFT', import.meta.url);
+  if (existsSync(ownership)) await db.adminSql.unsafe(readFileSync(ownership, 'utf8'));
   pool = new Pool({ connectionString: db.adminDsn });
 }, 180_000);
 afterAll(async () => {
@@ -89,8 +95,16 @@ describe('real canonical backend package resources', () => {
     const attemptId = randomUUID();
     const embed = vi.fn(async () => vector);
     selectedBackend = backend(writes(embed));
-    await provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact], attemptId });
+    ownershipPrincipal = { kind: 'user', trust: 'verified', authMethod: 'cookie-session', slug: 'session-human',
+      workspaceId, capabilities: new Set() };
+    const resolvePrincipal = await retainRequestPrincipal(new Headers(), workspaceId);
+    const humanOwner = await declarePackageInstallationHumanOwner({ workspaceId, resolvePrincipal },
+      { declaration: 'self', userId: 'session-human', ownerId, specificationRevision: revision.specificationRevision });
+    await provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact], attemptId, humanOwner });
     const priorId = sessionPackageDependentId(ownerId, revision, attemptId);
+    const originalOwnership = (await readPackageInstallation(db.adminSql, workspaceId, priorId))!.human_ownership;
+    expect(originalOwnership?.userId).toBe('session-human');
+    ownershipPrincipal = null;
     const next = { ownerId, workspaceId, from: { revision, attemptId }, artifact,
       revision: { ...revision, stateRevision: hash('after') }, attemptId: randomUUID() };
     const nextId = sessionPackageDependentId(ownerId, next.revision, next.attemptId);
@@ -116,6 +130,7 @@ describe('real canonical backend package resources', () => {
       from: { revision, attemptId: randomUUID() } }))).rejects.toThrow(/applied specification/);
     await carry();
     await carry(); // recovery reuses the persisted source and target attempts
+    expect((await readPackageInstallation(db.adminSql, workspaceId, nextId))!.human_ownership).toEqual(originalOwnership);
     expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toMatchObject({ phase: 'preparing' });
     await releasePackageInstallation(db.adminSql, workspaceId, priorId);
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
@@ -124,6 +139,7 @@ describe('real canonical backend package resources', () => {
     expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toMatchObject({ phase: 'applied' });
     expect(embed).toHaveBeenCalledTimes(empty ? 0 : 1);
     await releasePackageInstallation(db.adminSql, workspaceId, nextId);
+    expect((await readPackageInstallation(db.adminSql, workspaceId, nextId))!.human_ownership).toEqual(originalOwnership);
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
       WHERE payload->>'user_id' = ${'harness:' + target}`).toHaveLength(0);
     await expect(carry()).rejects.toThrow(/applied specification/);
