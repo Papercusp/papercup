@@ -524,7 +524,9 @@ export interface IdentityPermissionSessionSource {
  * population so an admission caller cannot silently discard an unknown scope.
  * With includePackageResources, read the existing installation/resource journal
  * in the SAME snapshot, including unknown human owners and legacy dependents.
- * Library, host policy and external backend sources still need their own join.
+ * includeWorkspaceUsers joins the canonical host workspace claims without
+ * treating claims as human ownership. Library, host policy and external backend
+ * sources still need their own join.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -532,6 +534,8 @@ export interface IdentityPermissionSessionSource {
  * package journal's SHARE locks before calling its pool-based provisioners.
  * includePackageResources pins those journal tables too: it is suitable for a
  * protected effect that does not call the journal through another connection.
+ * includeWorkspaceUsers also pins auth storage: resolve retained credentials
+ * before this lease, since getSessionUser may write last_seen_at through the pool.
  *
  * Return compact source references; optionally visit receipt-narrowed bodies in
  * bounded batches. Visitors only collect/read evidence, never perform effects:
@@ -540,6 +544,7 @@ export interface IdentityPermissionSessionSource {
  * by this adapter, including for the inactive population. */
 export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: string,
   options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
+    includeWorkspaceUsers?: boolean;
     visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
   options = { ...options };
   if (!workspaceId || workspaceId !== workspaceId.trim() ||
@@ -606,10 +611,20 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       packages = population;
       hash.update('\n').update(canonicalJson({ packageResourceRevision: packages.revision }));
     }
+    let workspaceUsers: Extract<Awaited<ReturnType<typeof import('../auth').readWorkspaceUserBindings>>,
+      { status: 'ok' }> | undefined;
+    if (options.includeWorkspaceUsers) {
+      const { readWorkspaceUserBindings } = await import('../auth');
+      const population = await readWorkspaceUserBindings(tx, workspaceId, { pinForEffect: pinned });
+      if (population.status !== 'ok') throw new Error('workspace user population is unavailable');
+      workspaceUsers = population;
+      hash.update('\n').update(canonicalJson({ workspaceUserRevision: workspaceUsers.revision }));
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
-      : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}) };
+      : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}),
+        ...(workspaceUsers ? { workspaceUsers } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));

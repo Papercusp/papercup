@@ -26,6 +26,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.session_briefs (
       workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
       PRIMARY KEY (workspace_id, owner_id));
+    CREATE TABLE harness_shared.users (id text PRIMARY KEY, is_active boolean,
+      username text, password_hash text);
+    CREATE TABLE harness_shared.user_sessions (token text PRIMARY KEY, user_id text,
+      workspace_id text, capabilities text[], expires_at timestamptz, last_seen_at timestamptz);
     CREATE TABLE harness_shared.population_effects (target text NOT NULL)`);
   for (const migration of ['1230-blueprint-package-resource-receipts.sql',
     '1232-blueprint-package-installations.sql', '1645-blueprint-installation-human-ownership.sql']) {
@@ -39,7 +43,7 @@ afterAll(async () => { await sql?.end({ timeout: 5 }); });
 beforeEach(async () => {
   await sql.unsafe(`TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs, harness_shared.population_effects,
     harness_shared.blueprint_package_dependents, harness_shared.blueprint_package_resources,
-    harness_shared.blueprint_package_installations`);
+    harness_shared.blueprint_package_installations, harness_shared.users, harness_shared.user_sessions`);
 });
 async function seed() {
   await sql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
@@ -268,6 +272,131 @@ describe('P-002 canonical session identity population', () => {
     await seedPackages();
     await sql`UPDATE harness_shared.blueprint_package_installations SET expected_resources = '{"bad":"not-a-hash"}'`;
     await expect(readIdentityPermissionPopulation(sql, 'ws', joined)).rejects.toThrow('malformed installation');
+  });
+
+  const hostJoined = { ...joined, includeWorkspaceUsers: true };
+  async function seedUsers() {
+    await sql`INSERT INTO harness_shared.users VALUES
+      ('alice', true, 'Alice', 'secret-password'), ('inactive', false, 'Inactive', NULL),
+      ('unclaimed', true, 'Unclaimed', NULL), ('foreign', true, 'Foreign', NULL)`;
+    await sql`INSERT INTO harness_shared.user_sessions (token, user_id, workspace_id, capabilities, expires_at) VALUES
+      ('secret-current', 'alice', 'ws', ARRAY['identity:edit'], '2099-01-01'),
+      ('secret-expired', 'alice', 'ws', ARRAY['*'], '2000-01-01'),
+      ('secret-inactive', 'inactive', 'ws', ARRAY['*'], '2099-01-01'),
+      ('secret-orphan', 'missing', 'ws', NULL, NULL),
+      ('secret-unowned', NULL, 'ws', ARRAY['*'], '2099-01-01'),
+      ('secret-foreign', 'foreign', 'foreign', ARRAY['*'], '2099-01-01')`;
+  }
+
+  it('joins redacted host user claims without inferring human ownership or session membership', async () => {
+    await seedUsers();
+    await seedPackages();
+    const result = await readIdentityPermissionPopulation(sql, 'ws', hostJoined);
+    expect(result).toMatchObject({ status: 'ok', sessions: [], workspaceUsers: { status: 'ok', users: [
+      { userId: 'alice', userPresent: true, active: true, claimRevisions: [expect.any(String), expect.any(String)] },
+      { userId: 'inactive', userPresent: true, active: false, claimRevisions: [expect.any(String)] },
+      { userId: 'missing', userPresent: false, active: null, claimRevisions: [expect.any(String)] },
+      { userId: null, userPresent: false, active: null, claimRevisions: [expect.any(String)] },
+    ] }, packages: { installations: [{ human_ownership: null }] } });
+    expect(JSON.stringify(result)).not.toMatch(/secret|password|unclaimed|foreign/);
+    const packagesOnly = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(packagesOnly).not.toHaveProperty('workspaceUsers');
+    expect(result.revision).not.toBe(packagesOnly.revision);
+    expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', {
+      ...hostJoined, expectedRevision: packagesOnly.revision,
+    }))).toMatchObject({ status: 'stale' });
+    expect(await readIdentityPermissionPopulation(sql, 'ws', hostJoined)).toEqual(result);
+  });
+
+  it('keeps an empty host claim slice explicit and independently selectable', async () => {
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeWorkspaceUsers: true });
+    expect(result).toMatchObject({ status: 'ok', sessions: [], workspaceUsers: { status: 'ok', users: [] } });
+    expect(result).not.toHaveProperty('packages');
+    expect(result.revision).not.toBe((await readIdentityPermissionPopulation(sql, 'ws')).revision);
+  });
+
+  it('uses one MVCC snapshot across session, package and host-user discovery', async () => {
+    await seed();
+    let inserted = false;
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { ...hostJoined, visit: async () => {
+      if (!inserted) { inserted = true; await seedPackages(); await seedUsers(); }
+    } });
+    expect(inserted).toBe(true);
+    expect(before).toMatchObject({ status: 'ok', workspaceUsers: { users: [] },
+      packages: { installations: [], resources: [], dependents: [] } });
+    const after = await readIdentityPermissionPopulation(sql, 'ws', hostJoined);
+    expect(after.revision).not.toBe(before.revision);
+    expect(after).toMatchObject({ workspaceUsers: { users: expect.arrayContaining([{ userId: 'alice',
+      userPresent: true, active: true, claimRevisions: [expect.any(String), expect.any(String)] }]) },
+    packages: { installations: [expect.anything()] } });
+  });
+
+  it.each(['active', 'capability', 'expiry', 'workspace', 'orphan', 'claim-add', 'claim-remove'] as const)(
+    'refuses a changed host %s source before a protected effect', async change => {
+      await seedUsers();
+      const before = await readIdentityPermissionPopulation(sql, 'ws', hostJoined);
+      if (change === 'active') await sql`UPDATE harness_shared.users SET is_active = false WHERE id = 'alice'`;
+      if (change === 'capability') await sql`UPDATE harness_shared.user_sessions SET capabilities = ARRAY['*'] WHERE token = 'secret-current'`;
+      if (change === 'expiry') await sql`UPDATE harness_shared.user_sessions SET expires_at = '2000-01-01' WHERE token = 'secret-current'`;
+      if (change === 'workspace') await sql`UPDATE harness_shared.user_sessions SET workspace_id = 'foreign' WHERE token = 'secret-current'`;
+      if (change === 'orphan') await sql`DELETE FROM harness_shared.users WHERE id = 'alice'`;
+      if (change === 'claim-add') await sql`INSERT INTO harness_shared.user_sessions (token, user_id, workspace_id)
+        VALUES ('new', 'unclaimed', 'ws')`;
+      if (change === 'claim-remove') await sql`DELETE FROM harness_shared.user_sessions WHERE token = 'secret-current'`;
+      const result = await sql.begin(async tx => {
+        const current = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...hostJoined, expectedRevision: before.revision });
+        if (current.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+        return current;
+      });
+      expect(result.status).toBe('stale');
+      expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+    });
+
+  it.each(['users', 'user_sessions'] as const)('pins joined host %s updates and insertion gaps through the effect', async table => {
+    await seedUsers();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', hostJoined);
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...hostJoined, expectedRevision: before.revision })).toEqual(before);
+      for (const action of ['update', 'insert']) {
+        await expect(sql.begin(async peer => {
+          await peer`SET LOCAL lock_timeout = '80ms'`;
+          if (table === 'users') {
+            if (action === 'update') await peer`UPDATE harness_shared.users SET is_active = false WHERE id = 'alice'`;
+            else await peer`INSERT INTO harness_shared.users (id, is_active) VALUES ('new', true)`;
+          } else if (action === 'update') await peer`UPDATE harness_shared.user_sessions SET capabilities = ARRAY['*'] WHERE token = 'secret-current'`;
+          else await peer`INSERT INTO harness_shared.user_sessions (token, user_id, workspace_id) VALUES ('new', 'unclaimed', 'ws')`;
+        })).rejects.toMatchObject({ code: '55P03' });
+      }
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('current')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
+  });
+
+  it('keeps last-seen writes outside the authorization revision', async () => {
+    await seedUsers();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', hostJoined);
+    await sql`UPDATE harness_shared.user_sessions SET last_seen_at = now()`;
+    expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', {
+      ...hostJoined, expectedRevision: before.revision,
+    }))).toEqual(before);
+  });
+
+  it.each(['users', 'user_sessions'] as const)('refuses filtered host %s with a matching workspace setting', async table => {
+    await seedUsers();
+    const role = `population_auth_reader_${randomBytes(5).toString('hex')}`;
+    await sql.unsafe(`CREATE ROLE "${role}"; GRANT USAGE ON SCHEMA harness_shared TO "${role}";
+      GRANT SELECT ON ALL TABLES IN SCHEMA harness_shared TO "${role}";
+      ALTER TABLE harness_shared.${table} ENABLE ROW LEVEL SECURITY`);
+    try {
+      await sql.begin('isolation level repeatable read', async tx => {
+        await tx.unsafe(`SET LOCAL ROLE "${role}"`);
+        await tx`SET LOCAL app.workspace_id = 'ws'`;
+        await expect(readIdentityPermissionPopulation(txSql(tx), 'ws', hostJoined)).rejects.toThrow('not visible');
+      });
+    } finally {
+      await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE ROW LEVEL SECURITY;
+        DROP OWNED BY "${role}"; DROP ROLE "${role}"`);
+    }
   });
 
   it.each(['sessions', 'packages'] as const)('refuses hidden %s instead of reporting a filtered empty population', async domain => {
