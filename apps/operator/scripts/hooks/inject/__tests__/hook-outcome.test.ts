@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ENVELOPE_RE, unwrapWholePaste } from '../../../../../../packages/operator-core/lib/turn-provenance/envelope-grammar';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { postInjection, runInjection, hookOutcomeTracer } = await import(path.join(HERE, '..', 'core.mjs'));
@@ -294,7 +295,7 @@ describe('loop checkpoint freshness fallback (EI-29085562648598777)', () => {
   const warning = '⚠ TURN-START LOOP CHECKPOINT FRESHNESS UNPROVEN';
   const checkpoint = '🔄 TURN-START LOOP CHECKPOINT RE-CHECK (owner=su-loop-fallback, harness=papercusp, readAt=now).\nCurrent checkpoint';
   const adapter = { client: 'codex', portForEvent: () => 'turn-start',
-    parse: (eventPort: string, event: { prompt: string }) => ({ prompt: event.prompt }),
+    parse: (_port: string, event: { prompt: string }) => ({ prompt: event.prompt }),
     render: (_port: string, text: string) => text };
   const response = (payload: (request: Record<string, unknown>) => unknown) =>
     vi.fn(async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify(payload(JSON.parse(String(init?.body)))), {
@@ -358,6 +359,19 @@ describe('loop checkpoint freshness fallback (EI-29085562648598777)', () => {
     expect(out).toContain(warning);
   });
 
+  it('does not use another owner checkpoint as freshness proof', async () => {
+    expect(await run(response(request => ({ text: checkpoint.replace('su-loop-fallback', 'su-another'),
+      turnStartOutcome: modern(request),
+    })))).toContain(warning);
+  });
+
+  it.each([7, 8, 16, 64, 65])('agrees with the canonical envelope grammar for a %i-character nonce', async length => {
+    const text = prompt.replace('767aab1bab29c578', 'a'.repeat(length));
+    const isLoop = ENVELOPE_RE.exec(unwrapWholePaste(text))?.[1] === 'loop-fire';
+    const out = await run(response(() => ({ text: 'Context' })), text);
+    expect(out.includes(warning)).toBe(isLoop);
+  });
+
   it.each([
     'Please continue', `The last wake said: ${prompt}`, prompt.replace('loop-fire', 'self-compaction'),
     prompt.replace('loop-fire', 'wake-pump'), prompt.replace('767aab1bab29c578', 'invalid'),
@@ -390,6 +404,13 @@ describe('loop checkpoint freshness fallback (EI-29085562648598777)', () => {
     expect(out).toContain(warning);
     expect(ledger.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ serverOutcome: 'missing' }));
     expect(ledger.offer).toHaveBeenCalledWith('token', expect.objectContaining({ payload: `${out}\n` }));
+  });
+
+  it('still renders the fallback when the optional outcome recorder throws', async () => {
+    const out = await run(response(() => ({ text: 'Context' })), prompt, {
+      openDeliveryLedger: () => ({ confirmed: () => null, recordOutcome: () => { throw new Error('recorder failed'); } }),
+    });
+    expect(out).toContain(warning);
   });
 });
 

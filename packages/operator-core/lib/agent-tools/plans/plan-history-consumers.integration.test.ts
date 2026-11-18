@@ -2065,7 +2065,10 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             const started = performance.now(), dispatchStart = dispatches.length;
             activeDurable = undefined;
             if (['C3', 'C5', 'C6'].includes(stageId)) {
-              activeDurable = await harness.groundedStage(stageId as 'C3' | 'C5' | 'C6', measurementScope);
+              // Retain independent committed values for new captures. These
+              // receipts do not repair the interrupted operation populations.
+              activeDurable = await harness.groundedStage(stageId as 'C3' | 'C5' | 'C6', measurementScope,
+                { retainCommittedRows: true });
               durableStages.push(activeDurable);
               // Persist independent DBOS outcomes before a consumer or assertion can fail.
               await writeFile(`${recorderRef}.${stageId}-durable.json`, canonicalJson(activeDurable));
@@ -2185,7 +2188,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
           const tape = canonicalJson({ kind: observedTransportControl ? 'composed-durable-observed-transport-control'
             : journeyControl ? 'composed-durable-transport-control' : 'composed-durable-model-capture',
             acceptance: 'unmeasured',
-            limitation: 'Original parent/child populations retained; interrupted drains, write bytes and serving closure remain unqualified. Scripted controls do not qualify models or scalar baselines.',
+            limitation: 'Original parent/child populations and independent committed-row receipts retained; interrupted drains, complete write bytes and serving closure remain unqualified. Scripted controls do not qualify models or scalar baselines.',
             stageIds, stages, oracles, controlRequests, parentStorage, parentInvocations, input, measured,
             sendFailures, models, observedModels, model, routes, providerTapes, contractsBefore, contractsAfter, contractCapture, ledgerRows,
             runtimeClosure, modelSourceHashes, fixtureProofQualification, journeyPassed });
@@ -2205,6 +2208,20 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
             expect(body.input.some(entry => entry.role === 'assistant' || entry.type === 'function_call_output')).toBe(false);
           }
           for (const stage of durableStages) {
+            const receipts = await Promise.all((['crash', 'recover'] as const).map(async mode => {
+              const path = stage.result.committedRows[mode];
+              expect(path, 'composed durable stage must retain independent committed rows').toBeTruthy();
+              const retained = JSON.parse(await readFile(path!, 'utf8'));
+              expect(retained).toMatchObject({ kind: 'dbos-independent-committed-server-values',
+                scope: measurementScope, mode, runKey: stage.scenario.runKey,
+                accountingScope: 'committed-server-values-only', acceptance: 'unmeasured',
+                missingReceipt: 'unknown', operationCensus: 'unmeasured', storageBytes: null, queryComplete: true });
+              expect(retained.rows.length).toBeGreaterThan(0);
+              expect(retained.rows.every((row: { receipt: { marker: string; backend: number } }) =>
+                row.receipt.marker === retained.marker && row.receipt.backend !== retained.readerBackendPid)).toBe(true);
+              return retained;
+            }));
+            expect(receipts[0].marker).not.toBe(receipts[1].marker);
             expect(stage.crash.census.complete).toBe(false);
             expect(stage.crash.boundary).toBeNull();
             expect(stage.recovered.census.scope).toEqual(measurementScope);
