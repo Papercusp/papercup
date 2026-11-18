@@ -10,8 +10,11 @@
  * against the private host rather than a live operator port.
  */
 import { fork } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { expect, it } from 'vitest';
+import { expect, it, type TestContext } from 'vitest';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
 
 const root = resolve(import.meta.dirname, '../../..');
@@ -28,7 +31,8 @@ const CALLER_SCRIPT = [
   "console.log('WORKING_TREE_CALLER_SAW ' + JSON.stringify({ service: health.service ?? null, port: new URL(base).port }));",
 ].join('\n');
 
-it('runs a caller against an operator bundled from the working tree on private ports, then tears it down', async context => {
+async function runPrivateCaller(context: TestContext, callerScript = CALLER_SCRIPT,
+  extraSources: string[] = [], verify?: (rows: string[]) => void) {
   const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
     minimumFileRunTimeoutMs: workerOptions.testTimeoutMs,
     filePath: 'packages/operator-core/lib/working-tree-operator-api.integration.test.ts',
@@ -41,7 +45,7 @@ it('runs a caller against an operator bundled from the working tree on private p
       'packages/operator-core/lib/endpoint-route/routes/misc/health.ts',
       'packages/operator-core/lib/superuser-token.ts',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
-      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts', ...extraSources],
     execute: async (observe, evidenceDir) => {
       // The CLI owns the evidence dir layout (tmp/, node_modules symlink) when
       // WORKING_TREE_OPERATOR_API_EVIDENCE_DIR is set, so nothing is pre-created here.
@@ -50,7 +54,7 @@ it('runs a caller against an operator bundled from the working tree on private p
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(resolve(root, 'scripts/operator-api-working-tree.mjs'), [
-        '--', process.execPath, '--input-type=module', '-e', CALLER_SCRIPT,
+        '--', process.execPath, '--input-type=module', '-e', callerScript,
       ], { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, { ...workerOptions, signal: context.signal });
@@ -78,8 +82,79 @@ it('runs a caller against an operator bundled from the working tree on private p
       expect(JSON.parse(sawLine!.slice('WORKING_TREE_CALLER_SAW '.length))).toEqual({
         service: 'papercusp-operator', port: new URL(receipt.base).port,
       });
+      verify?.(rows);
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('WORKING_TREE_OPERATOR_API_PROOF_RUN ' + runId);
+  return runId;
+}
+
+it('runs a caller against an operator bundled from the working tree on private ports, then tears it down', async context => {
+  await runPrivateCaller(context);
+}, workerOptions.testTimeoutMs);
+
+it('R11 prepared operational rubric reaches public propose and complete readback on a private current-source operator without activation', async context => {
+  // Exact prepared PG artifact, not a second operational contract. Its schedule
+  // is retained for identity only; this private test never ratifies or arms it.
+  const fixture = 'packages/operator-core/test/bug-scoreboard-operational-bindings.fixture.json';
+  const preparedText = readFileSync(resolve(root, fixture), 'utf8').trimEnd();
+  expect(preparedText.length).toBe(4039);
+  const preparedSha256 = createHash('sha256').update(preparedText).digest('hex');
+  const caller = CALLER_SCRIPT + '\n' + [
+    "import assert from 'node:assert/strict';",
+    "import { Client } from '@modelcontextprotocol/sdk/client/index.js';",
+    "import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';",
+    'const prepared = JSON.parse(' + JSON.stringify(preparedText) + ');',
+    "assert.match(process.env.PAPERCUSP_WORKSPACE_ID ?? '', /^test-runtime-/);",
+    "assert.equal(prepared.status, 'prepared-only-not-proposed-not-ratified-not-armed');",
+    "const client = new Client({ name: 'r11-private-proposal', version: '1' });",
+    'try {',
+    '  await client.connect(new StreamableHTTPClientTransport(new URL(mcp), { requestInit: { headers: { Authorization: `Bearer ${bearer}`, origin: base } } }), { timeout: 30000 });',
+    '  const listing = await client.listTools(undefined, { timeout: 30000 });',
+    "  const invoke = listing.tools.find(t => ['tools:invoke', 'tools_invoke'].includes(t.name));",
+    "  assert.ok(invoke, 'private public MCP tools:invoke must be advertised');",
+    '  const request = async (name, args) => {',
+    '    const response = await client.callTool({ name: invoke.name, arguments: { name, args } }, undefined, { timeout: 30000 });',
+    "    assert.notEqual(response.isError, true, JSON.stringify(response));",
+    '    return response.structuredContent ?? JSON.parse(response.content.find(c => c.type === "text" && c.text.trim().startsWith("{")).text);',
+    '  };',
+    "  const proposed = await request('rubrics:propose', prepared.rubric);",
+    '  assert.equal(proposed.ok, true, JSON.stringify(proposed));',
+    "  assert.equal(proposed.rubric.status, 'proposed');",
+    '  assert.equal(proposed.rubric.ratifiedBy, null);',
+    "  assert.equal(proposed.rubric.kind, 'standard');",
+    "  const loaded = await request('rubrics:get', { rubricRef: prepared.rubric.rubricRef, detail: 'full' });",
+    '  assert.equal(loaded.ok, true, JSON.stringify(loaded));',
+    '  const persisted = loaded.results.find(r => r.rubricRef === prepared.rubric.rubricRef);',
+    '  assert.equal(persisted.ok, true);',
+    "  assert.equal(persisted.rubric.status, 'proposed');",
+    '  assert.equal(persisted.rubric.ratifiedBy, null);',
+    '  assert.equal(persisted.rubric.criteria.length, prepared.rubric.criteria.length);',
+    '  for (const [key, value] of Object.entries(prepared.rubric.criteria[0])) assert.deepEqual(persisted.rubric.criteria[0][key], value, key);',
+    // An unregistered binding must still fail at the same public proposal door.
+    "  const rejected = await request('rubrics:propose', { ...prepared.rubric, rubricRef: 'r11-private-unregistered-control', criteria: [{ ...prepared.rubric.criteria[0], instrumentKey: 'bugs:r11-unregistered-control', check: { kind: 'instrument', instrumentKey: 'bugs:r11-unregistered-control' } }] });",
+    '  assert.equal(rejected.ok, false, JSON.stringify(rejected));',
+    "  assert.match(rejected.code, /unregistered.*instrument|instrument.*unregistered/);",
+    "  const absent = await request('rubrics:get', { rubricRef: 'r11-private-unregistered-control', detail: 'full' });",
+    '  assert.equal(absent.results[0].ok, false, JSON.stringify(absent));',
+    "  console.log('R11_PRIVATE_PROPOSAL ' + JSON.stringify({ workspace: process.env.PAPERCUSP_WORKSPACE_ID, rubricRef: prepared.rubric.rubricRef, preparedSha256: " + JSON.stringify(preparedSha256) + ", criteria: persisted.rubric.criteria.length, status: persisted.rubric.status, rejectedBinding: rejected.code, durableCanonicalProposal: false, activated: false }));",
+    '} finally { await client.close(); }',
+  ].join('\n');
+  const runId = await runPrivateCaller(context, caller, [fixture,
+    'packages/operator-core/lib/agent-tools/rubrics/propose.ts',
+    'packages/operator-core/lib/agent-tools/rubrics/get.ts',
+    'packages/operator-core/lib/rubric-instrument-registry.ts',
+    'packages/operator-core/lib/harness/improvements/bug-scoreboard-instrument.ts',
+  ], rows => {
+    const proof = rows.find(row => row.startsWith('R11_PRIVATE_PROPOSAL '));
+    expect(proof).toBeTruthy();
+    expect(JSON.parse(proof!.slice('R11_PRIVATE_PROPOSAL '.length))).toMatchObject({
+      workspace: expect.stringMatching(/^test-runtime-/), rubricRef: 'bug-scoreboard-daily-operations',
+      preparedSha256, criteria: 1, status: 'proposed', durableCanonicalProposal: false, activated: false,
+    });
+  });
+  const observation = JSON.parse(readFileSync(resolve(defaultEvidenceRoot('isolated-integration'), runId,
+    'phases/execute/lifecycle-observation.json'), 'utf8'));
+  expect(observation.ended).toMatchObject({ exitCode: 0, signal: null, runtimeRemoved: true, pgDataRemoved: true });
 }, workerOptions.testTimeoutMs);
