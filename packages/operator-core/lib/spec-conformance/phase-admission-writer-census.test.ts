@@ -1062,6 +1062,48 @@ describe('phase binding writer census', () => {
     expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toHaveLength(4);
   });
 
+  it('retains unseeded opaque calls and their complete arguments before claiming declaration closure', () => {
+    const opaque = source(`
+      const connection = acquireConnection();
+      const send = connection.send;
+      const statement = ['UP', "DATE work_items SET status='open'"].join('');
+      function hidden() { return send(statement, ...parameters); }
+      function entry() { return hidden(); }
+    `, 'packages/opaque.ts');
+    const inventory = inventoryPhaseWriters([opaque]);
+    const call = inventory.sites.find(site => site.statement === 'send(statement, ...parameters)');
+    expect(call).toBeDefined();
+    expect(call!.unresolved).toContain('call-target-declaration-unresolved');
+    expect(call!.dynamicEdges).toEqual(['send', 'statement', '...parameters']);
+    expect(inventory.sites.some(site => site.statement === 'hidden()' && site.kind === 'helper-edge')).toBe(true);
+    const report = reconcilePhaseWriterCensus(inventory, []);
+    expect(report.ready).toBe(false);
+    expect(report.coverage.residue).toContain(call!.id);
+    const inspected = inventory.sites.map(site => review(site));
+    expect(assertPhaseWriterCensus(inventory, inspected).ready).toBe(true);
+    expect(() => assertPhaseWriterCensus(inventory, inspected.map(row => ({ ...row, resolvedEdges: [] }))))
+      .toThrow('unresolved-edge');
+  });
+
+  it('pins exact helper declarations while keeping opaque callback arguments unproved', () => {
+    const sources = [
+      source('export function unrelated() {} export function mutate(tx) { return tx(payload); }', 'packages/targets.ts'),
+      source('export { mutate as execute } from "./targets";', 'packages/barrel.ts'),
+      source('import { execute } from "./barrel"; function entry(callback) { return execute(callback); }', 'packages/entry.ts'),
+    ];
+    for (const input of [sources, [...sources].reverse()]) {
+      const inventory = inventoryPhaseWriters(input);
+      const helper = inventory.sites.find(site => site.statement === 'execute(callback)' && site.kind === 'helper-edge')!;
+      const nameAt = sources[0]!.content.indexOf('mutate') + 1;
+      expect(helper.helperDeclaration).toEqual({ id: JSON.stringify(['packages/targets.ts', 1, nameAt, 'mutate']),
+        path: 'packages/targets.ts', name: 'mutate', line: 1, column: nameAt });
+      const frontier = inventory.sites.find(site => site.statement === 'tx(payload)')!;
+      expect(frontier.unresolved).toContain('indirect-call-target-requires-review');
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(frontier.id);
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(helper.id);
+    }
+  });
+
   it('retains aliased callbacks computed dispatch and returned helpers as unresolved candidates', () => {
     const inventory = inventoryPhaseWriters([
       source(write),
