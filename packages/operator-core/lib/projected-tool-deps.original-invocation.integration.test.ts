@@ -75,6 +75,12 @@ const settle = (req: Begin, ref: string, changes: Partial<Settle> = {}) => obser
   ...req, invocationRef: ref, result: { content: [] }, receipt: null, error: null, refusal: null, ...changes,
 });
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('original invocation ledger (real Postgres)', () => {
   it('UTB-forbidden-effects admits the allowed sibling without writing the forbidden record', async () => {
     const name = 'example:p003_forbidden';
@@ -98,8 +104,8 @@ describe('original invocation ledger (real Postgres)', () => {
     const name = 'example:p003_cancel';
     const abort = new AbortController();
     const keys = [randomUUID(), randomUUID()];
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const entered = deferred();
+    const release = deferred();
     const handler = vi.fn(async ({ key }: { key: string }) => {
       await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
       entered.resolve();
@@ -203,7 +209,7 @@ describe('original invocation ledger (real Postgres)', () => {
       args: z.object({ key: z.string() }), handler });
     const tool = lookupByMcpName(name)!;
     tool.rolesQuota = { worker: { perRun: 1 } };
-    const admissions = Promise.withResolvers<void>();
+    const admissions = deferred();
     let waiting = 0;
     const deps: DispatchProjectedDeps = { reserveQuota: async input => {
       if (++waiting === 2) admissions.resolve();
