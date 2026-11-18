@@ -41,6 +41,20 @@ function data(result: Awaited<ReturnType<typeof call>>): BatchResult {
 }
 
 describe('universal batching in the operator', () => {
+  it('refuses an over-byte-budget request before child gates or effects', async () => {
+    const input = { _batch: 1, items: [item('éé', 'one')] };
+    const bytes = new TextEncoder().encode(JSON.stringify(input)).byteLength;
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    const authorize = vi.fn(async () => ({ allow: true }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', args: operation,
+      batch: { maxInputBytes: bytes - 1 }, authorize, handler });
+    expect(await call(input)).toMatchObject({ isError: true });
+    expect(authorize).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+    expect(data(await call({ key: 'ok' })).counts).toEqual({ ok: 1, failed: 0 });
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it('reuses the schema-neutral bulk executor through both compatibility imports', async () => {
     expect(runBulk).toBe(frameworkRunBulk);
     expect(compatibilityRunBulk).toBe(frameworkRunBulk);
