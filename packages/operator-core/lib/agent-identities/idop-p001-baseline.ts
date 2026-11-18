@@ -2172,10 +2172,15 @@ function comparisonJson(value: ComparisonJson): string {
 /** D-043 comparison mechanism. Adapters must independently enumerate the current
  * population and load the pinned old/current permission readers. This mechanism
  * cannot establish either adapter's source provenance or full plan acceptance.
- * Exact input/output digests make an allowance incapable of hiding another delta. */
+ * Exact input/output digests make an allowance incapable of hiding another delta.
+ * A streamed enumeration retains only the current replay payload, not the whole
+ * launch corpus. No result is returned until the stream ends with exact coverage.
+ * Evaluators must remain read-only: a later enumeration failure invalidates the
+ * entire comparison, including any cases already evaluated. */
 export async function runIdopP001PermissionComparison(options: {
   population: () => readonly string[];
-  enumerate: () => readonly { id: string; input: ComparisonJson }[];
+  enumerate: () => readonly { id: string; input: ComparisonJson }[] |
+    AsyncIterable<{ id: string; input: ComparisonJson }>;
   before: (input: ComparisonJson, id: string) => ComparisonJson | Promise<ComparisonJson>;
   after: (input: ComparisonJson, id: string) => ComparisonJson | Promise<ComparisonJson>;
   manifest: readonly IdopPermissionDifference[];
@@ -2184,10 +2189,12 @@ export async function runIdopP001PermissionComparison(options: {
   const cases = options.enumerate();
   const unique = (ids: readonly string[]) => ids.every(id => id.trim() === id && id.length > 0) &&
     new Set(ids).size === ids.length;
-  if (!population.length || !unique(population) || !unique(cases.map(row => row.id)) ||
-      comparisonJson(population) !== comparisonJson(cases.map(row => row.id).sort())) {
+  if (!population.length || !unique(population) || Array.isArray(cases) &&
+      (!unique(cases.map(row => row.id)) ||
+        comparisonJson(population) !== comparisonJson(cases.map(row => row.id).sort()))) {
     throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
   }
+  const expected = new Set(population);
   const manifest = new Map<string, IdopPermissionDifference>();
   for (const entry of options.manifest) {
     if (manifest.has(entry.id) || !population.includes(entry.id) ||
@@ -2201,7 +2208,13 @@ export async function runIdopP001PermissionComparison(options: {
   const differences: IdopPermissionDifference[] = [];
   const unexpected: string[] = [];
   const used = new Set<string>();
-  for (const row of [...cases].sort((a, b) => a.id.localeCompare(b.id))) {
+  const seen = new Set<string>();
+  const ordered = Array.isArray(cases) ? [...cases].sort((a, b) => a.id.localeCompare(b.id)) : cases;
+  for await (const row of ordered) {
+    if (typeof row.id !== 'string' || !expected.has(row.id) || seen.has(row.id)) {
+      throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
+    }
+    seen.add(row.id);
     const input = comparisonJson(row.input);
     // Each reader gets its own copy of the same bytes. Mutation by the old
     // implementation must not contaminate the candidate's input or the census.
@@ -2217,6 +2230,12 @@ export async function runIdopP001PermissionComparison(options: {
     if (authorized) used.add(row.id);
     else unexpected.push(row.id);
   }
+  if (seen.size !== population.length) {
+    throw new Error('IDOP comparison population is empty, duplicated or incompletely enumerated');
+  }
+  checked.sort((a, b) => a.id.localeCompare(b.id));
+  differences.sort((a, b) => a.id.localeCompare(b.id));
+  unexpected.sort();
   const unusedManifest = [...manifest.keys()].filter(id => !used.has(id)).sort();
   return { passed: !unexpected.length && !unusedManifest.length, population, checked, differences, unexpected, unusedManifest };
 }

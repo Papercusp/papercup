@@ -1998,6 +1998,66 @@ describe('IDOP P-001 current-population comparison controls (D-043)', () => {
     await expect(runIdopP001PermissionComparison({ ...options(), population: () => [id, id] }))
       .rejects.toThrow(/duplicated/);
   });
+  it('finishes both isolated source arms before requesting the next streamed payload', async () => {
+    const calls: string[] = [];
+    const shared = { limit: 1 };
+    const result = await runIdopP001PermissionComparison({ ...options(),
+      population: () => ['role:a', 'role:b'],
+      enumerate: async function* () {
+        yield { id: 'role:b', input: shared };
+        expect(calls).toEqual(['before:role:b', 'after:role:b']);
+        expect(shared).toEqual({ limit: 1 });
+        yield { id: 'role:a', input: shared };
+      },
+      before: (value, caseId) => {
+        calls.push(`before:${caseId}`);
+        (value as { limit: number }).limit = 99;
+        return before;
+      },
+      after: (value, caseId) => {
+        calls.push(`after:${caseId}`);
+        expect(value).toEqual({ limit: 1 });
+        return before;
+      } });
+    expect(result).toMatchObject({ passed: true, population: ['role:a', 'role:b'] });
+    expect(result.checked.map(row => row.id)).toEqual(['role:a', 'role:b']);
+  });
+  it.each(['omitted', 'substituted', 'duplicated'])(
+    'refuses a %s streamed member and closes its iterator', async defect => {
+      let closed = false;
+      const enumerate = async function* () {
+        try {
+          if (defect === 'omitted') return;
+          yield { id: defect === 'substituted' ? 'role:other' : id, input };
+          yield { id, input };
+        } finally { closed = true; }
+      };
+      await expect(runIdopP001PermissionComparison({ ...options(), enumerate }))
+        .rejects.toThrow(/incompletely enumerated/);
+      expect(closed).toBe(true);
+    });
+  it('propagates a late capture failure instead of certifying a completed prefix', async () => {
+    let evaluated = 0;
+    await expect(runIdopP001PermissionComparison({ ...options(),
+      enumerate: async function* () {
+        yield { id, input };
+        throw new Error('original snapshot read failed');
+      },
+      after: () => { evaluated++; return before; } }))
+      .rejects.toThrow('original snapshot read failed');
+    expect(evaluated).toBe(1);
+  });
+  it('preserves exact and stale difference checks for streamed cases', async () => {
+    const enumerate = async function* () { yield { id, input }; };
+    const run = { ...options(), enumerate, after: () => after, manifest: [allowance()] };
+    expect(await runIdopP001PermissionComparison(run))
+      .toMatchObject({ passed: true, differences: [allowance()], unusedManifest: [] });
+    expect(await runIdopP001PermissionComparison({ ...run, after: () => before }))
+      .toMatchObject({ passed: false, unusedManifest: [id] });
+    expect(await runIdopP001PermissionComparison({ ...run,
+      after: () => ({ tools: { read: { limit: 3 } } }) }))
+      .toMatchObject({ passed: false, unexpected: [id] });
+  });
   it('detects an argument-scope change even when the tool names are unchanged', async () => {
     expect(await runIdopP001PermissionComparison({ ...options(), after: () => after }))
       .toMatchObject({ passed: false, unexpected: [id] });
