@@ -2165,12 +2165,12 @@ export async function runIdopP001PopulationPermissionComparison(options: IdopPer
       const capture = async (id: string, original: AppliedStackCapture | null) => {
         const member = members.get(id);
         if (!member) throw new Error('IDOP comparison population acquired an unenumerated member');
-        const applied = original === null ? null : idopAuthorityData(original);
+        const applied = original === null ? null : clone(original) as unknown as ComparisonJson;
         const authority = await options.capture(clone(member), original === null ? null : clone(original));
         // Preserve the complete original receipt as well as the separately
         // captured authority. The capture cannot mutate either source pin.
         await visit({ id, input: { member: clone(member) as unknown as ComparisonJson,
-          applied, authority: idopAuthorityData(authority) } });
+          applied, authority: clone(authority) } });
       };
       for (const member of inventory.members) if (member.kind !== 'stack') await capture(member.id, null);
       const applied = await readIdopP001AppliedStackPopulation(inventory.workspaceId, options.applied?.dependencies, {
