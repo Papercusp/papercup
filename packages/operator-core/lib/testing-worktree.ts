@@ -185,18 +185,18 @@ export async function captureWorktreeSnapshotAsync(root: string): Promise<Worktr
   try {
     const { execFileViaSidecar } = await import('./fleet/git-via-sidecar');
     const failures: string[] = [];
-    const read = async (args: string[]): Promise<string | null> => {
+    const read = async (args: string[], gitRoot = snapshotRoot, timeoutMs = 30_000): Promise<string | null> => {
       const started = Date.now();
       try {
         const result = await execFileViaSidecar('git', ['--no-optional-locks', ...args], {
-          cwd: snapshotRoot, timeoutMs: 30_000, subsystem: 'test-source-provenance',
+          cwd: gitRoot, timeoutMs, subsystem: 'test-source-provenance',
           env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
           maxBuffer: WORKTREE_STATUS_MAX_BUFFER_BYTES,
         });
         return result.stdout.trim();
       } catch (error) {
         failures.push(`git ${args.join(' ')} failed after ${Date.now() - started}ms `
-          + `(budget=30000ms): ${error instanceof Error ? error.message : String(error)}`);
+          + `(budget=${timeoutMs}ms): ${error instanceof Error ? error.message : String(error)}`);
         return null;
       }
     };
@@ -205,7 +205,18 @@ export async function captureWorktreeSnapshotAsync(root: string): Promise<Worktr
     const after = await read(['rev-parse', 'HEAD']);
     if (head && after && head !== after) failures.push('Git HEAD changed during provenance capture');
     if (porcelain && isMutationProbeRun()) {
-      const exemption = await resolveProbeSubjectExemption(snapshotRoot);
+      // The reporter's default reader needs a sibling worker that is absent in
+      // compiled testing cores. Keep every read on this governed runner, including
+      // the shared policy's nested-repository and pinned-gitlink checks.
+      const exemption = await resolveProbeSubjectExemption(snapshotRoot, (cmd, gitRoot, budget) => {
+        if (cmd === 'git rev-parse --show-toplevel') return read(['rev-parse', '--show-toplevel'], gitRoot, budget);
+        if (cmd === 'git rev-parse HEAD') return read(['rev-parse', 'HEAD'], gitRoot, budget);
+        if (cmd === 'git status --porcelain --untracked-files=all') {
+          return read(['status', '--porcelain', '--untracked-files=all'], gitRoot, budget);
+        }
+        const pinned = cmd.match(/^git rev-parse '(HEAD:[^']+)'$/);
+        return pinned ? read(['rev-parse', pinned[1]], gitRoot, budget) : Promise.resolve(null);
+      });
       if (exemption) porcelain = exemptProbeSubject(porcelain, exemption);
     }
     return {

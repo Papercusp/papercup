@@ -169,6 +169,95 @@ describe('synchronous reporter snapshot policy', () => {
 });
 
 describe('async worktree snapshots', () => {
+  it.each(['subject only', 'unrelated source', 'missing subject', 'relative subject', 'outside subject',
+    'unknown subject repository', 'untracked subject', 'renamed subject'])(
+    'qualifies only the declared in-place mutation through governed Git: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'testing-git-source-'));
+      roots.push(root);
+      const subject = join(root, 'source.ts');
+      writeFileSync(subject, 'intentional mutant');
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', root);
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE_SUBJECT', scenario === 'missing subject' ? ''
+        : scenario === 'relative subject' ? 'source.ts'
+          : scenario === 'outside subject' ? join(root, '..', 'outside.ts') : subject);
+      const porcelain = scenario === 'unrelated source' ? ' M source.ts\n M unrelated.ts'
+        : scenario === 'untracked subject' ? '?? source.ts'
+          : scenario === 'renamed subject' ? 'R  original.ts -> source.ts' : ' M source.ts';
+      asyncGit.mockImplementation(async (_command: string, args: string[], options: { cwd: string }) => {
+        if (args.includes('--show-toplevel')) {
+          if (scenario === 'unknown subject repository') throw new Error('subject repository unreadable');
+          return { stdout: scenario === 'outside subject' ? join(root, '..') : root, stderr: '' };
+        }
+        expect(options.cwd).toBe(root);
+        return { stdout: args.includes('status') ? porcelain : 'a'.repeat(40), stderr: '' };
+      });
+
+      const snapshot = await captureWorktreeSnapshotAsync('/compiled-bundle');
+      expect(snapshot.commit).toBe('a'.repeat(40));
+      expect(computeWorktreeDirty({ commit: 'a'.repeat(40), porcelain: '' }, snapshot))
+        .toBe(scenario !== 'subject only');
+      if (scenario === 'unrelated source') expect(snapshot.porcelain).toBe(' M unrelated.ts');
+      if (!['missing subject', 'relative subject'].includes(scenario)) {
+        const lookups = asyncGit.mock.calls.filter(([, args]) => args.includes('--show-toplevel'));
+        expect(lookups.length).toBe(scenario === 'unknown subject repository' ? 2 : 1);
+        expect(lookups[0][2]).toMatchObject({
+          cwd: scenario === 'outside subject' ? join(root, '..') : root,
+          timeoutMs: WORKTREE_SNAPSHOT_GIT_BUDGETS_MS[0],
+          env: { GIT_OPTIONAL_LOCKS: '0' },
+        });
+        if (scenario === 'unknown subject repository') expect(lookups[1][2].timeoutMs)
+          .toBe(WORKTREE_SNAPSHOT_GIT_BUDGETS_MS[1]);
+      }
+      expect(gitProbe).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['subject only', 'unrelated source', 'moved gitlink', 'unknown status', 'unknown HEAD', 'unknown gitlink'])(
+    'retains nested-repository provenance when the mutation has %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'testing-git-nested-'));
+      roots.push(root);
+      const nested = join(root, 'packages/nested');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, 'source.ts'), 'intentional mutant');
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', root);
+      vi.stubEnv('PAPERCUSP_MUTATION_PROBE_SUBJECT', join(nested, 'source.ts'));
+      asyncGit.mockImplementation(async (_command: string, args: string[], options: { cwd: string }) => {
+        if (args.includes('--show-toplevel')) return { stdout: nested, stderr: '' };
+        if (args.includes('status')) {
+          if (options.cwd === root) return { stdout: ' m packages/nested', stderr: '' };
+          if (scenario === 'unknown status') throw new Error('nested status unreadable');
+          expect(args).toContain('--untracked-files=all');
+          return { stdout: scenario === 'unrelated source' ? ' M source.ts\n?? unrelated.ts' : ' M source.ts', stderr: '' };
+        }
+        if (args.includes('HEAD:packages/nested')) {
+          expect(options.cwd).toBe(root);
+          if (scenario === 'unknown gitlink') throw new Error('gitlink unreadable');
+          return { stdout: (scenario === 'moved gitlink' ? 'c' : 'b').repeat(40), stderr: '' };
+        }
+        if (options.cwd === nested && scenario === 'unknown HEAD') throw new Error('nested HEAD unreadable');
+        return { stdout: (options.cwd === nested ? 'b' : 'a').repeat(40), stderr: '' };
+      });
+
+      const snapshot = await captureTestSourceSnapshotAsync(root);
+      expect(snapshot.commit).toBe('a'.repeat(40));
+      expect(computeWorktreeDirty({ commit: 'a'.repeat(40), porcelain: '' }, snapshot))
+        .toBe(scenario !== 'subject only');
+      const nestedReads = asyncGit.mock.calls.filter(([, , options]) => options.cwd === nested);
+      expect(nestedReads.length).toBeGreaterThanOrEqual(3);
+      for (const [command, args, options] of asyncGit.mock.calls) {
+        expect(command).toBe('git');
+        expect(args[0]).toBe('--no-optional-locks');
+        expect(options).toMatchObject({ maxBuffer: 2 * 1024 * 1024,
+          env: { GIT_OPTIONAL_LOCKS: '0' } });
+        const snapshotRead = options.cwd === root && (args.at(-1) === 'HEAD' || args.includes('status'));
+        expect(snapshotRead ? [30_000] : WORKTREE_SNAPSHOT_GIT_BUDGETS_MS).toContain(options.timeoutMs);
+      }
+      expect(gitProbe).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps independent archive custody and refuses changed source without ambient Git', async () => {
     const { root, receipt } = archive();
     await expect(captureTestSourceSnapshotAsync(root)).resolves.toEqual({ commit: receipt.sourceCommit, porcelain: '' });
