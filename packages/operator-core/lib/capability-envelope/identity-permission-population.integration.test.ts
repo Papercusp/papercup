@@ -2,9 +2,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
+import { packageResourceKey } from '../blueprint/package-resource-receipts';
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -25,10 +27,19 @@ beforeAll(async () => {
       workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
       PRIMARY KEY (workspace_id, owner_id));
     CREATE TABLE harness_shared.population_effects (target text NOT NULL)`);
+  for (const migration of ['1230-blueprint-package-resource-receipts.sql',
+    '1232-blueprint-package-installations.sql', '1645-blueprint-installation-human-ownership.sql']) {
+    // These private database fixtures use the real storage contract; global
+    // app-role grants belong to the cluster bootstrap, not this isolated DB.
+    const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8');
+    await sql.unsafe(body.replace(/GRANT[\s\S]*?;/g, ''));
+  }
 }, 60_000);
 afterAll(async () => { await sql?.end({ timeout: 5 }); });
 beforeEach(async () => {
-  await sql.unsafe('TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs, harness_shared.population_effects');
+  await sql.unsafe(`TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs, harness_shared.population_effects,
+    harness_shared.blueprint_package_dependents, harness_shared.blueprint_package_resources,
+    harness_shared.blueprint_package_installations`);
 });
 async function seed() {
   await sql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
@@ -166,6 +177,90 @@ describe('P-002 canonical session identity population', () => {
     });
     expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', { expectedRevision: before.revision })))
       .toMatchObject({ status: 'stale' });
+  });
+
+  const joined = { includePackageResources: true };
+  async function seedPackages() {
+    const digest = 'a'.repeat(64);
+    const address = { workspaceId: 'ws', memoryScope: 'hive:test', packageKind: 'knowledge-pack',
+      packageRef: 'shared', packageVersion: '1', packageHash: digest, resourceKind: 'memory',
+      itemKey: 'item', installedHash: digest };
+    const key = packageResourceKey(address);
+    await sql`INSERT INTO harness_shared.blueprint_package_installations
+      (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources)
+      VALUES ('ws', 'empty-install', 'wearer', ${digest}, 'state', '{}')`;
+    await sql`INSERT INTO harness_shared.blueprint_package_resources
+      (workspace_id, resource_key, memory_scope, package_kind, package_ref, package_version,
+       package_hash, resource_kind, item_key, installed_hash)
+      VALUES ('ws', ${key}, ${address.memoryScope}, ${address.packageKind}, ${address.packageRef},
+        ${address.packageVersion}, ${digest}, ${address.resourceKind}, ${address.itemKey}, ${digest})`;
+    await sql`INSERT INTO harness_shared.blueprint_package_dependents
+      (workspace_id, dependent_id, resource_key, phase)
+      VALUES ('ws', 'legacy', ${key}, 'applied'), ('ws', 'old-shared', ${key}, 'released')`;
+    return key;
+  }
+
+  it('joins empty installs, unknown owners and shared legacy resources without inventing session membership', async () => {
+    const key = await seedPackages();
+    const result = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(result).toMatchObject({ status: 'ok', sessions: [], packages: {
+      installations: [{ dependent_id: 'empty-install', human_ownership: null }],
+      resources: [{ resource_key: key }],
+      dependents: [{ dependent_id: 'legacy', phase: 'applied' }, { dependent_id: 'old-shared', phase: 'released' }],
+    } });
+    const sessionsOnly = await readIdentityPermissionPopulation(sql, 'ws');
+    expect(result.revision).not.toBe(sessionsOnly.revision);
+    expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', {
+      ...joined, expectedRevision: sessionsOnly.revision,
+    }))).toMatchObject({ status: 'stale' });
+  });
+
+  it('uses one MVCC snapshot across session traversal and package discovery', async () => {
+    await seed();
+    let inserted = false;
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { ...joined, visit: async () => {
+      if (!inserted) { inserted = true; await seedPackages(); }
+    } });
+    expect(inserted).toBe(true);
+    expect(before).toMatchObject({ status: 'ok', packages: { installations: [], resources: [], dependents: [] } });
+    const after = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(after.revision).not.toBe(before.revision);
+    expect(after).toMatchObject({ status: 'ok', packages: { installations: [expect.anything()] } });
+  });
+
+  it.each(['session', 'installation', 'resource', 'dependent'] as const)
+    ('refuses a changed joined %s before a protected effect', async domain => {
+      await seed();
+      await seedPackages();
+      const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+      if (domain === 'session') await sql`INSERT INTO harness_shared.session_briefs VALUES ('ws', 'new', '{}')`;
+      if (domain === 'installation') await sql`DELETE FROM harness_shared.blueprint_package_installations`;
+      if (domain === 'resource') await sql`UPDATE harness_shared.blueprint_package_resources SET phase = 'detached'`;
+      if (domain === 'dependent') await sql`DELETE FROM harness_shared.blueprint_package_dependents WHERE dependent_id = 'legacy'`;
+      const result = await sql.begin(async tx => {
+        const current = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined, expectedRevision: before.revision });
+        if (current.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+        return current;
+      });
+      expect(result.status).toBe('stale');
+      expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+    });
+
+  it('holds the joined package insertion gap through a protected effect', async () => {
+    await seed();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined, expectedRevision: before.revision })).toEqual(before);
+      await expect(sql.begin(async peer => {
+        await peer`SET LOCAL lock_timeout = '80ms'`;
+        await peer`INSERT INTO harness_shared.blueprint_package_installations
+          (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources)
+          VALUES ('ws', 'new', 'wearer', ${'a'.repeat(64)}, 'state', '{}')`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('current')`;
+    });
+    await seedPackages();
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
   });
 
   it('refuses a hidden workspace rather than reporting a filtered empty population', async () => {

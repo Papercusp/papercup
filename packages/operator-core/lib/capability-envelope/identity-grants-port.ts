@@ -522,12 +522,16 @@ export interface IdentityPermissionSessionSource {
  * is source evidence, not permission or human ownership: null/malformed bodies,
  * inactive wearers, unowned launch rows and orphaned control anchors stay in the
  * population so an admission caller cannot silently discard an unknown scope.
- * Library/install/resource sources must still be joined independently.
+ * With includePackageResources, read the existing installation/resource journal
+ * in the SAME snapshot, including unknown human owners and legacy dependents.
+ * Library, host policy and external backend sources still need their own join.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
  * transactions write the package journal, not these tables. Do not acquire the
  * package journal's SHARE locks before calling its pool-based provisioners.
+ * includePackageResources pins those journal tables too: it is suitable for a
+ * protected effect that does not call the journal through another connection.
  *
  * Return compact source references; optionally visit receipt-narrowed bodies in
  * bounded batches. Visitors only collect/read evidence, never perform effects:
@@ -535,7 +539,7 @@ export interface IdentityPermissionSessionSource {
  * hash still detects edits to excluded history. No raw artifact array is kept
  * by this adapter, including for the inactive population. */
 export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: string,
-  options: { expectedRevision?: string; pinForEffect?: boolean;
+  options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
     visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
   options = { ...options };
   if (!workspaceId || workspaceId !== workspaceId.trim() ||
@@ -590,10 +594,22 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
         await options.visit?.({ ...ref, launchSpec, controlState });
       }
     }
+    // Do not compose independently committed source snapshots into one census.
+    // The journal reader reuses this transaction and its visibility checks;
+    // its revision covers empty installs, shared/released links and ownership.
+    let packages: Extract<Awaited<ReturnType<typeof import('../blueprint/package-resource-receipts').readPackageResourcePopulation>>,
+      { status: 'ok' }> | undefined;
+    if (options.includePackageResources) {
+      const { readPackageResourcePopulation } = await import('../blueprint/package-resource-receipts');
+      const population = await readPackageResourcePopulation(tx, workspaceId, { pinForEffect: pinned });
+      if (population.status !== 'ok') throw new Error('package population is unavailable');
+      packages = population;
+      hash.update('\n').update(canonicalJson({ packageResourceRevision: packages.revision }));
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
-      : { status: 'ok' as const, revision, sessions };
+      : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));
