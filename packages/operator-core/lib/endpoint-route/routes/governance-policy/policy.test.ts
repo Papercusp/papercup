@@ -225,7 +225,7 @@ describe('D011 HTTP stored adoption dispatch', () => {
 });
 
 describe('/api/governance-policy/* — the admin pane doors (P-005)', () => {
-  it('declares ten loopback POST doors at the documented paths', () => {
+  it('declares the loopback POST doors at the documented paths', () => {
     expect(routes.map((r) => [r.method, r.path, r.auth])).toEqual([
       ['POST', '/governance-policy/explain', 'loopback'],
       ['POST', '/governance-policy/simulate', 'loopback'],
@@ -237,6 +237,7 @@ describe('/api/governance-policy/* — the admin pane doors (P-005)', () => {
       ['POST', '/governance-policy/delegate', 'loopback'],
       ['POST', '/governance-policy/revoke-delegation', 'loopback'],
       ['POST', '/governance-policy/authority', 'loopback'],
+      ['POST', '/governance-policy/enroll-authority', 'loopback'],
     ]);
   });
 
