@@ -7262,13 +7262,13 @@ export function resumeAccountPlan(args) {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null, launchedBy?: string | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null, launchedBy?: string | null, operatorTarget?: {url: string, source?: string} | null}} [options]
  */
 export function buildResumeEnv(
   session,
-  { fork = false, brain = false, accountEnv = null, ownerId = null, launchedBy = null } = {},
+  { fork = false, brain = false, accountEnv = null, ownerId = null, launchedBy = null, operatorTarget = null } = {},
 ) {
-  return prepareSuLaunchEnvironment({
+  const env = prepareSuLaunchEnvironment({
     ...resumeEnvFor(session, { fork, ownerId }),
     ...(session?.agent === 'codex' && session.codexHome ? { CODEX_HOME: session.codexHome } : {}),
     // Anything launched/resumed through psu is an agent session for hook
@@ -7302,6 +7302,11 @@ export function buildResumeEnv(
         }
       : {}),
   }, {});
+  // Resume identity starts from an empty environment. Carry the launcher's
+  // selected runtime separately so profile repair cannot rediscover an older
+  // default host and replace a restricted role home with an SU profile.
+  if (operatorTarget) applyLauncherOperatorUrlEnv(env, operatorTarget);
+  return env;
 }
 
 /** Restore the per-session OMP store a tracked launch created. Fresh OMP
@@ -15525,7 +15530,8 @@ async function launchResume(
     // the inference-gateway account (spawn-env only, otherwise lost on resume); the
     // agent-session marker arms the hook-level scheduler guard (bash gate / omp
     // coord-hook) for the brain only — never the owner's own sessions (D-003).
-    const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId, launchedBy });
+    const env = buildResumeEnv(session, { fork, brain, accountEnv, ownerId, launchedBy,
+      operatorTarget: launcherOperatorTarget() });
     const restoredClaudeToolRefs = addClaudeResumeToolReferencesToEnv(session, env, { neutralizeNative: !fork });
     if (restoredClaudeToolRefs.nativeNeutralized?.rewritten > 0) {
       console.error(

@@ -20,6 +20,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { stringify as yaml } from 'yaml';
 import { layerContentHash } from '@papercusp/orchestrator/blueprint';
+import { retainRequestPrincipal } from '@papercusp/operator-core/lib/auth/require-principal';
+import { installModuleRunnerDebug } from '../../../libs/test-config/src/executed-inputs-capture';
+vi.mock('@papercusp/operator-core/lib/auth/principal/from-cookie', () => ({ principalFromCookie: async () => ({
+  kind: 'user', slug: 'identity-test-editor', workspaceId: WORKSPACE,
+  authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['*']),
+}) }));
 
 const WORKSPACE = `r9-identity-catalog-${process.pid}`;
 const INSTALLED = 'zz-r9-installed-domain';
@@ -50,7 +56,21 @@ async function routeFetch(input: string | URL | Request): Promise<Response> {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
   requested.push(`${url.pathname}${url.search}`);
   console.info('[identity-catalog-phase]', JSON.stringify({ phase: 'route-import-start', path: url.pathname }));
-  const { default: routes } = await import('@papercusp/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su');
+  const restoreDebug = installModuleRunnerDebug(
+    (globalThis as { __vitest_mocker__?: unknown }).__vitest_mocker__,
+    (...args) => {
+      if (typeof args[0] === 'string' && args[0].startsWith('[module runner] module '))
+        console.info('[identity-catalog-pending-import]', ...args);
+    });
+  if (!restoreDebug) console.info('[identity-catalog-phase]', JSON.stringify({
+    phase: 'route-import-diagnostics-unavailable', path: url.pathname,
+  }));
+  let routes: unknown;
+  try {
+    ({ default: routes } = await import('@papercusp/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su'));
+  } finally {
+    restoreDebug?.();
+  }
   console.info('[identity-catalog-phase]', JSON.stringify({ phase: 'route-imported', path: url.pathname }));
   const route = (routes as Array<{ method: string; path?: string; handler: (r: Request, c: unknown) => Promise<Response> }>)
     .find((entry) => entry.method === 'GET' && entry.path === '/agent-mcp/console/bootstrap-su/options');
@@ -93,22 +113,22 @@ beforeAll(async () => {
   _resetPapercuspRootForTests();
 
   // Installed tier: one attested (eligible) component and one unsigned (broken).
-  const installed = { id: INSTALLED, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }] };
+  const installed = { id: INSTALLED, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }] };
   await writeBlueprint(join(home, 'blueprints', INSTALLED), { ...installed,
     attestation: { contentHash: layerContentHash(installed), signedBy: 'r9-integration-fixture' } });
   const installedPrompts = join(home, 'blueprints', INSTALLED, 'prompts');
   await mkdir(installedPrompts, { recursive: true });
   await writeFile(join(installedPrompts, 'agent-base-overlay.md'), '# Installed integration domain\n');
   await writeBlueprint(join(home, 'blueprints', UNSIGNED),
-    { id: UNSIGNED, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }] });
+    { id: UNSIGNED, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }] });
   // Local library: an abstract practice component and a provider-bound (incompatible) one.
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PRACTICE),
-    { id: PRACTICE, extends: 'base', version: '1.0.0', slots: [{ slot: 'practice' }] });
+    { id: PRACTICE, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'practice' }] });
   const practicePrompts = join(home, '.papercusp', 'blueprints', PRACTICE, 'prompts');
   await mkdir(practicePrompts, { recursive: true });
   await writeFile(join(practicePrompts, 'practice.md'), '# Integration practice\n');
   await writeBlueprint(join(home, '.papercusp', 'blueprints', PROVIDER), {
-    id: PROVIDER, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
+    id: PROVIDER, extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
     contributions: [{ id: 'current-brief', purpose: 'operational', source: 'provider', refresh: 'launch',
       inputKind: 'setting', ref: 'current-brief', producerRef: 'papercusp.fleet-leader-brief@1', verb: 'read' }],
   });
@@ -181,7 +201,8 @@ describe('R-9 identity launch catalog (integration)', () => {
     expect(selected, JSON.stringify(selected)).toMatchObject({ ok: true });
     const preview = await previewNamedIdentityComposition(input);
     expect(preview.preview.launchCompatibility).toMatchObject({ eligible: true });
-    expect((await saveNamedIdentityComposition(input)).ok).toBe(true);
+    expect((await saveNamedIdentityComposition(input, { workspaceId: WORKSPACE,
+      resolvePrincipal: await retainRequestPrincipal(new Headers(), WORKSPACE) })).ok).toBe(true);
     const selection = await resolveNamedIdentityCompositionSelection(NAMED, home);
     expect(selection.stack).toEqual(input.componentRefs);
     const previewLayers = preview.preview.layers.map((layer: { id: string }) => layer.id);

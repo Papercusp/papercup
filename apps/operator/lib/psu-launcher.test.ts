@@ -6132,6 +6132,33 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
+  it.each([
+    ["http://127.0.0.1:3271", "env"],
+    ["http://127.0.0.1:9171", "managed-env"],
+    ["http://127.0.0.1:43127", "env"],
+  ])("buildResumeEnv: preserves selected repair runtime %s", async (url, source) => {
+    const session = { agent: "codex", id: 62539, coordOwnerId: "su-resume-route",
+      workspaceId: "ws1", role: "fixture-analyst" };
+    const env = buildResumeEnv(session, { operatorTarget: { url, source } });
+    const requests: string[] = [];
+    const probes: string[] = [];
+    const result = await ensureCodexHomeViaOperator(session.coordOwnerId,
+      join(homedir(), ".papercusp", "su-codex-homes", "session-62539"), session.id, {
+        env, token: "fixture-only",
+        probe: async (candidate: string) => { probes.push(candidate); return false; },
+        fetchImpl: async (target: string) => {
+          requests.push(target);
+          return { ok: false, status: 409, json: async () => ({ ok: false }) };
+        },
+      });
+    expect(requests).toEqual([`${url}/api/adv/sessions/ensure-codex-home`]);
+    expect(probes).toEqual([]);
+    expect(result).toBeNull();
+    expect(env.PAPERCUSP_AGENT_ROLE).toBe(session.role);
+    expect(env.PAPERCUSP_SID).toBe(session.coordOwnerId);
+    expect(env.PAPERCUSP_HONO_PORT).toBeUndefined();
+  });
+
   it("buildResumeEnv: the context-trimming trio is re-stamped on a resume (WI-2140943 lane 2)", () => {
     // A resume spawns a NEW CLI — without ENABLE_TOOL_SEARCH / PAPERCUSP_TOOLS /
     // PAPERCUSP_CONTEXT_TIER a gateway-routed claude boots with the whole catalog
