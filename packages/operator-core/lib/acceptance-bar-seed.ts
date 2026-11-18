@@ -28,6 +28,7 @@ import {
 } from './agent-tools/plans/plan-lock-key';
 import {
   setSpecClause,
+  specClauseWriteIssues,
   type SpecBehaviorClass,
   type SpecClauseSql,
   type SpecClauseWrite,
@@ -1360,6 +1361,17 @@ export async function seedAcceptanceBarsInTransaction(
     };
   });
   if (citationProblems.length > 0) return refusal(citationProblems) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
+
+  // Preview and apply must reject the same immutable clause-schema defects
+  // before either can persist rubric or projection changes.
+  const projectionProblems = built.projections.flatMap((projection) =>
+    specClauseWriteIssues(projection).map((issue): AcceptanceBarSeedProblem => ({
+      code: 'bar_projection_conflict',
+      barKey: projection.sourceBar?.barKey,
+      detail: `projection '${projection.specId}' refused with ${issue.status}`,
+    })),
+  );
+  if (projectionProblems.length > 0) return refusal(projectionProblems) as Exclude<AcceptanceBarSeedBuildResult, { ok: true }>;
 
   const date = input.now.toISOString().slice(0, 10);
   const title = existing?.title ?? `Acceptance BAR — ${input.planTitle ?? input.planSlug}`;
