@@ -4187,6 +4187,16 @@ export async function main(
         return TEST_FILE_EXIT_NOT_MEASURED;
       }
       if (inputs) {
+        // EI-29085984078347165: a historical child duration is not the
+        // enclosing file contract. Require that contract explicitly and make
+        // the forecast cover it before allocating PG or copying dependencies.
+        if (verifierBudget) {
+          if (!process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS?.trim())
+            throw new Error('private verifier forecasts require explicit PAPERCUSP_TEST_FILE_TIMEOUT_MS');
+          const fileTimeoutMs = testFileRunTimeoutMs(process.env, testFiles.length);
+          if (verifierBudget.childEstimateMs < fileTimeoutMs)
+            throw new Error('--child-estimate-ms must cover PAPERCUSP_TEST_FILE_TIMEOUT_MS=' + fileTimeoutMs);
+        }
         assertPrivateIntegrationEvidence();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();

@@ -697,6 +697,7 @@ describe('test-files router', () => {
     const oldPrivatePgReleaseToken = process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN;
     const oldAdminDatabaseUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
     const oldTestPgAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+    const oldFileTimeout = process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
     const preflight = vi.fn(async () => {
@@ -712,6 +713,7 @@ describe('test-files router', () => {
       process.env.PAPERCUSP_PRIVATE_TEST_PG_RELEASE_TOKEN = 'parent-release-token';
       process.env.HARNESS_ADMIN_DATABASE_URL = 'postgresql://ambient:test-only@127.0.0.1:54321/parent';
       process.env.PAPERCUSP_TEST_PG_ADMIN_URL = 'postgresql://test_admin:test-only@127.0.0.1:54321/papercusp';
+      process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = '2585000';
       delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
         stages.push('verifier-dependencies-ready');
@@ -722,7 +724,7 @@ describe('test-files router', () => {
         stages.push('child-environment-ready'); receiptDir = join(options.receiptPath, '..'); return 7;
       });
       const budgetFrom = join(tmpdir(), 'saved-private-verifier-phases.jsonl');
-      const result = await main([`--budget-from=${budgetFrom}`, '--child-estimate-ms=197058',
+      const result = await main([`--budget-from=${budgetFrom}`, '--child-estimate-ms=2585000',
         resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
         preflightPrivateIntegrationPgImpl: preflight,
         restrictedHoldPreflightImpl: restricted,
@@ -735,11 +737,12 @@ describe('test-files router', () => {
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
-        budgetFrom, childEstimateMs: 197058,
+        budgetFrom, childEstimateMs: 2585000,
         releaseParentPrivatePg: true, prepareChildEnv: expect.any(Function),
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
-        env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router' }),
+        env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router',
+          PAPERCUSP_TEST_FILE_TIMEOUT_MS: '2585000' }),
       }));
       expect(frozen.mock.calls[0][0].env).not.toHaveProperty('HARNESS_ADMIN_DATABASE_URL');
     } finally {
@@ -752,7 +755,41 @@ describe('test-files router', () => {
       else process.env.HARNESS_ADMIN_DATABASE_URL = oldAdminDatabaseUrl;
       if (oldTestPgAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
       else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = oldTestPgAdminUrl;
+      if (oldFileTimeout === undefined) delete process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = oldFileTimeout;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { fileTimeout: undefined, reason: 'require explicit PAPERCUSP_TEST_FILE_TIMEOUT_MS' },
+    { fileTimeout: '', reason: 'require explicit PAPERCUSP_TEST_FILE_TIMEOUT_MS' },
+    { fileTimeout: 'invalid', reason: 'must be a positive integer number of milliseconds' },
+    { fileTimeout: '2585000', reason: '--child-estimate-ms must cover PAPERCUSP_TEST_FILE_TIMEOUT_MS=2585000' },
+  ])('refuses private verifier budget $fileTimeout before PG admission or source preparation', async ({ fileTimeout, reason }) => {
+    const file = 'packages/operator-core/lib/rubric-coverage-http.integration.test.ts';
+    const keys = ['NODE_OPTIONS', 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT', 'PAPERCUSP_TEST_FILE_TIMEOUT_MS'];
+    const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    const frozen = vi.fn(), preflight = vi.fn(), list = vi.fn(), run = vi.fn();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      if (fileTimeout === undefined) delete process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = fileTimeout;
+      expect(await main(['--budget-from=/tmp/saved-verifier-phases.jsonl', '--child-estimate-ms=381465', file], {
+        restrictedHoldPreflightImpl: () => ({ verdict: 'admit' }),
+        preflightPrivateIntegrationPgImpl: preflight,
+        runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+      })).toBe(2);
+      expect(warning).toHaveBeenLastCalledWith(expect.stringContaining(reason));
+      expect(preflight).not.toHaveBeenCalled(); expect(frozen).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      warning.mockRestore();
     }
   });
 
