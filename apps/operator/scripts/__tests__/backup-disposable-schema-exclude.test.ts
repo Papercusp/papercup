@@ -55,6 +55,7 @@ function pgDumpArgv(calls: ReadonlyArray<readonly string[]>): string[][] {
       `PGOUT='${dir}'; JOBS=4; TIMEOUT_SEC=60; TIMEOUT_MAX_SEC=120; BACKUP_USER=nobody`,
       'PC_BACKUP_SPACE_SAFETY=150; PC_BACKUP_MIN_FREE_GB=5',
       'HOST_BACKUP_APPLICATION_NAME=pcbackup',
+      src.match(/^readonly BACKUP_PGOPTIONS=.*$/m)![0],
       // dump_one records the database identity before launching pg_dump. Keep
       // that real boundary in the fixture without probing the host database.
       'PSQL=backup_fixture_psql',
