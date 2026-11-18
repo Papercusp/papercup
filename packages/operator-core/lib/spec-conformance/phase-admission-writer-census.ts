@@ -18,10 +18,8 @@ export const PHASE_WRITER_RELATIONS = new Set([
 ]);
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-const relationText = /\b(?:plan_item_claims|work_items|engineer_issues|harness_features(?:_consolidated)?|harness_plans|feature_claims)\b/i;
 const mutationText = /\b(?:insert\s+into|update|delete\s+from|merge\s+into|create\s+(?:or\s+replace\s+)?(?:function|trigger))\b/i;
 const sqlMethod = /(?:^|\.)(?:unsafe|query|execute|exec)$/;
-const sqlInvocationText = /\b(?:query|execute|executemany|executescript|unsafe)\s*\(/i;
 const sqlReadText = /^\s*(?:select|with|call|do|execute)\b/i;
 // A builder call need not contain SQL or a known writer's name. These are
 // syntax frontiers only: even a same-spelled non-database method stays in the
@@ -628,8 +626,10 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         || facts.unresolved.length || mutationText.test(source.content)) {
         add(source, '<sql-module>', source.content, 1, facts.functions.length ? 'sql-function' : 'sql', facts);
       }
-    } else if (relationText.test(source.content) || mutationText.test(source.content)
-      || sqlInvocationText.test(source.content)) {
+    } else {
+      // An unsupported language/configuration can delegate a statement supplied
+      // at runtime without containing a recognizable SQL word. Lack of a parser
+      // is a review frontier, never evidence that the source cannot write.
       add(source, '<unparsed-source>', source.content, 1, 'unresolved', {
         unresolved: ['source-language-requires-review'],
       });
@@ -730,7 +730,6 @@ function readPhaseWriterTree(root: string) {
     files.push(path);
   }
   const generated = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'coverage', '.next', '.turbo']);
-  const sourceExtension = /\.(?:[cm]?[jt]sx?|sql|py|rs|sh|bash|ps1|json|ya?ml|toml)$/;
   for (const path of [...new Set(files)].sort(compare)) {
     if (!PHASE_WRITER_ROOTS.some(prefix => path.startsWith(prefix))) {
       excluded.push({ path, reason: 'outside-declared-runtime-roots' }); continue;
@@ -738,9 +737,9 @@ function readPhaseWriterTree(root: string) {
     if (path.split('/').some(part => generated.has(part))) {
       excluded.push({ path, reason: 'generated-or-vendor-output' }); continue;
     }
-    if (!sourceExtension.test(path)) {
-      excluded.push({ path, reason: 'non-runtime-source-extension' }); continue;
-    }
+    // File extensions do not establish whether a runtime-root file can execute
+    // or configure a writer. Keep unfamiliar and extensionless text for review;
+    // unreadable/binary inputs remain explicit gaps below.
     try {
       const fullPath = join(root, path), stat = lstatSync(fullPath);
       if (!stat.isFile()) { gaps.push({ id: `source:${path}`, reason: 'non-regular-source' }); continue; }

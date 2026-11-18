@@ -1197,6 +1197,11 @@ describe('phase binding writer census', () => {
       source('{"adapter":"runtime-provider","argument":"from-environment"}\n', 'apps/runtime.json'),
       source('adapter: runtime-provider\nargument: from-environment\n', 'apps/runtime.yml'),
       source('adapter = "runtime-provider"\nargument = "from-environment"\n', 'apps/runtime.toml'),
+      source('driver.Dispatch(payload)\n', 'apps/runtime.go'),
+      source('driver.dispatch(payload)\n', 'apps/runtime.kt'),
+      source('export const invoke = () => driver.dispatch(payload)\n', 'apps/runtime.mdx'),
+      source('#!/bin/sh\n"$runner" "$payload"\n', 'scripts/runner'),
+      source('runtime-provider from-environment\n', 'packages/runtime.custom'),
     ];
     try {
       for (const input of inputs) {
@@ -1228,6 +1233,25 @@ describe('phase binding writer census', () => {
       }
       expect(assertPhaseWriterTreeCensus(root,
         inventory.sites.map(row => review(row, 'isolated-fixture'))).ready).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains unreadable runtime bytes as gaps regardless of filename extension', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-unknown-runtime-bytes-'));
+    try {
+      mkdirSync(join(root, 'apps'));
+      const path = 'apps/runtime.unknown';
+      writeFileSync(join(root, path), Buffer.from([0xff, 0xfe]));
+      const inventory = inventoryPhaseWriterTree(root);
+      expect(inventory.sources).toEqual([]);
+      expect(inventory.excluded).toEqual([]);
+      expect(inventory.gaps).toEqual([{ id: `source:${path}`, reason: 'source-not-utf8' }]);
+      let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, []); }
+      catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+      expect(report?.ready).toBe(false);
+      expect(report?.census.coverage.residue).toEqual([`gap:source:${path}`]);
+      expect(report?.freshness.coverage.residue).toEqual([`gap:source:${path}`]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
