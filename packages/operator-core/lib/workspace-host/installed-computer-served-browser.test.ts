@@ -11,7 +11,7 @@ import { chromium } from 'playwright-core';
 import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crossOriginIsolationHeaders } from '../../../../libs/generic/desktop-ipc/src/csp-policy';
-import { assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledLocalConsent, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { assertInstalledPortalCaseEvidence, assertInstalledPortalExecutor, INSTALLED_PORTAL_CASES, INSTALLED_PORTAL_SPEC, type InstalledPortalCaseEvidence, assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledLocalConsent, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -24,6 +24,54 @@ vi.mock('node:fs/promises', async importOriginal => {
 
 let child: ChildProcess | undefined, server: Server | undefined;
 let nativeRoot: string | undefined;
+
+describe('installed Portal exact browser evidence', () => {
+  const portal = '/private/portal', file = join(portal, INSTALLED_PORTAL_SPEC);
+  const identity = { runId: 'private-run', buildId: 'private-build', sourceRootDigest: 'd'.repeat(64) };
+  const executor = () => ({ ok: true, root: portal, runId: identity.runId, files: 1, passed: 3, failed: 0, skipped: 0,
+    byFile: { [INSTALLED_PORTAL_SPEC]: { passed: 3, failed: 0, skipped: 0, collectionFailed: false } },
+    failures: [], failuresTruncated: false, durationMs: 10, testRunIds: [123], testRunIdsByFile: { [file]: [123] },
+    casesByFile: { [file]: INSTALLED_PORTAL_CASES.map(caseKey => ({ caseKey, occurrence: 0, status: 'pass' as const, durationMs: 1 })) } });
+  const receipts = (): InstalledPortalCaseEvidence[] => (['stopped', 'unsupported', 'consent'] as const).map((scenario, index) => ({
+    ...identity, scenario, caseKey: INSTALLED_PORTAL_CASES[index]!, downloads: 0,
+    ...(scenario === 'consent' ? {} : { codePreserved: true, pending: true, approvalSaved: false, localWrites: 0,
+      stimulus: scenario === 'stopped' ? 'connection-refused' as const : 'legacy-http-404' as const }),
+  }));
+  it('accepts exact case identities, spec ledger and semantic evidence from one run', () => {
+    expect(() => assertInstalledPortalExecutor(executor(), portal)).not.toThrow();
+    expect(() => assertInstalledPortalCaseEvidence(receipts(), identity)).not.toThrow();
+  });
+  it('rejects unrelated passing cases even when aggregate counts match', () => {
+    const value = executor();
+    value.casesByFile[file]![0]!.caseKey = 'unrelated passing smoke';
+    value.casesByFile[file]![1]!.caseKey = 'another unrelated passing smoke';
+    expect(() => assertInstalledPortalExecutor(value, portal)).toThrow('different browser cases');
+  });
+  it('rejects a substituted ledger row and a different spec file', () => {
+    const value = executor(); value.testRunIdsByFile[file] = [456];
+    expect(() => assertInstalledPortalExecutor(value, portal)).toThrow('exact spec ledger receipt');
+    const wrongFile = executor();
+    wrongFile.casesByFile['/private/portal/e2e/unrelated.spec.ts'] = wrongFile.casesByFile[file]!;
+    delete wrongFile.casesByFile[file];
+    expect(() => assertInstalledPortalExecutor(wrongFile, portal)).toThrow('case receipts are incomplete');
+  });
+  it.each(['runId', 'buildId', 'sourceRootDigest'] as const)('rejects semantic receipts with stale %s', key => {
+    const value = receipts(); value[0]![key] = 'other';
+    expect(() => assertInstalledPortalCaseEvidence(value, identity)).toThrow('another run or artifact');
+  });
+  it.each(['codePreserved', 'pending', 'approvalSaved', 'localWrites', 'downloads', 'stimulus'] as const)(
+    'rejects a fallback receipt whose %s falsifies R2', key => {
+      const value = receipts();
+      Object.assign(value[0]!, { [key]: { codePreserved: false, pending: false, approvalSaved: true,
+        localWrites: 1, downloads: 1, stimulus: 'legacy-http-404' }[key] });
+      expect(() => assertInstalledPortalCaseEvidence(value, identity)).toThrow();
+    });
+  it('requires the reachable older-app case in addition to the stopped case', () => {
+    const value = receipts(); value[1]!.stimulus = 'connection-refused';
+    expect(() => assertInstalledPortalCaseEvidence(value, identity)).toThrow('stimulus was not observed');
+    expect(() => assertInstalledPortalCaseEvidence(value.slice(0, 2), identity)).toThrow('every semantic case');
+  });
+});
 afterEach(async () => {
   if (child && child.exitCode === null && child.signalCode === null) {
     const exited = once(child, 'exit'); child.kill(); await exited;

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
-import { assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedPortalRelease, installedPortalSource, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
+import { assertInstalledPortalCaseEvidence, assertInstalledPortalExecutor, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedPortalRelease, installedPortalSource, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
 
 describe('served Portal installed-computer consent', () => {
   it('uses the real Portal and local app to persist view-only consent and reuse browser/install identity', async () => {
@@ -56,7 +56,11 @@ describe('served Portal installed-computer consent', () => {
       expect(receipt.status).toBe('passed');
       expect(receipt.installedBrowser).toMatchObject({ status: 'passed', portalEngine: 'Next/Playwright',
         desktopRegistryCount: 193, linkedWorkspaceCount: 1, liveRosterIndex: 192,
-        executor: { ok: true, passed: 2, failed: 0, skipped: 0 } });
+        executor: { ok: true, passed: 3, failed: 0, skipped: 0 } });
+      assertInstalledPortalExecutor(receipt.installedBrowser.executor, portal!);
+      assertInstalledPortalCaseEvidence(receipt.installedBrowser.caseEvidence, {
+        runId: receipt.installedBrowser.executor.runId, buildId: receipt.installedBrowser.artifact.buildId,
+        sourceRootDigest: receipt.installedBrowser.artifact.sourceRootDigest });
       expect(receipt.installedBrowser.artifact.sourceRootDigest).toMatch(/^[a-f0-9]{64}$/);
       expect(receipt.installedBrowser.executor.testRunIds.length).toBeGreaterThan(0);
       expect(receipt.installedBrowser.installedHost).toMatchObject({ pid: receipt.installedBrowser.operatorPid,

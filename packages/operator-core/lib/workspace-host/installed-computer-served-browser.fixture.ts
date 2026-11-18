@@ -9,11 +9,13 @@ import { access, cp, copyFile, mkdir, readFile, realpath, symlink, writeFile } f
 import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { createServer as createHttpServer, type Server } from 'node:http';
 import { chromium, request as playwrightRequest, type Browser, type Page } from 'playwright-core';
 import type { HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
 import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_SESSION } from '../auth/hosted/fake-provider';
 import { HOSTED_PRINCIPAL_DENIAL_REASONS } from '../auth/hosted-principal-resolver';
 import type { CreateHostedSessionInput } from '../auth/hosted-session';
+import type { PortalPlaywrightResult } from '../rubrics-playwright-checks';
 
 type Input = {
   repo: string; privateRoot: string; evidence: string; control: string; config: NodeJS.ProcessEnv;
@@ -28,6 +30,58 @@ type Input = {
 export const INSTALLED_FIXTURE_DESKTOP_NAME = 'served-0192-live';
 const INSTALLED_FIXTURE_SESSION_ID = 'inst-private-served-browser';
 const INSTALLED_FIXTURE_PROVIDER_ID = 'private-installed-browser';
+
+export const INSTALLED_PORTAL_SPEC = 'e2e/portal-existing-local-connection.spec.ts';
+export const INSTALLED_PORTAL_CASES = [
+  'BROWSER-STOPPED-UNSUPPORTED-FALLBACK: opening a stopped app preserves the code and honest pending state',
+  'BROWSER-UNSUPPORTED-VERSION-FALLBACK: a reachable older app preserves the code and honest pending state',
+  'BROWSER-OPEN-LOOPBACK/SAME-ORIGIN-CONSENT/NOISE-ROSTER-FRAME/VIEW-INPUT-DENIED/STATUS-NAVIGATION',
+].map(title => `existing installed computer on the served Portal > ${title}`);
+
+/** Consume the maintained executor's exact file/case/ledger identities. Counts
+ * alone would accept two unrelated passing cases in place of R2's detectors. */
+export function assertInstalledPortalExecutor(executor: PortalPlaywrightResult, portal: string) {
+  assert(executor.ok && executor.error === undefined && executor.passed === INSTALLED_PORTAL_CASES.length
+    && executor.failed === 0 && executor.skipped === 0, 'Installed Portal executor did not pass the required cases');
+  const file = join(portal, INSTALLED_PORTAL_SPEC);
+  const cases = executor.casesByFile?.[file];
+  assert(cases && cases.length === INSTALLED_PORTAL_CASES.length
+    && cases.every(item => item.status === 'pass' && item.occurrence === 0), 'Installed Portal case receipts are incomplete');
+  assert.deepEqual(cases.map(item => item.caseKey).sort(), [...INSTALLED_PORTAL_CASES].sort(),
+    'Installed Portal executed different browser cases');
+  const ids = executor.testRunIdsByFile?.[file];
+  assert(ids?.length === 1 && Number.isSafeInteger(ids[0]) && ids[0]! > 0
+    && executor.testRunIds?.length === 1 && executor.testRunIds[0] === ids[0],
+  'Installed Portal requires the exact spec ledger receipt');
+  assert.deepEqual(Object.keys(executor.casesByFile ?? {}), [file], 'Installed Portal case file identity changed');
+  assert.deepEqual(Object.keys(executor.testRunIdsByFile ?? {}), [file], 'Installed Portal ledger file identity changed');
+}
+
+export type InstalledPortalCaseEvidence = {
+  caseKey: string; runId: string; buildId: string; sourceRootDigest: string;
+  scenario: 'stopped' | 'unsupported' | 'consent'; downloads: number;
+  codePreserved?: boolean; pending?: boolean; approvalSaved?: boolean; localWrites?: number;
+  stimulus?: 'connection-refused' | 'legacy-http-404';
+};
+
+export function assertInstalledPortalCaseEvidence(receipts: InstalledPortalCaseEvidence[],
+  expected: { runId: string; buildId: string; sourceRootDigest: string }) {
+  assert.equal(receipts.length, 3, 'Installed Portal requires every semantic case receipt');
+  for (const [index, scenario] of (['stopped', 'unsupported', 'consent'] as const).entries()) {
+    const receipt = receipts[index];
+    assert(receipt && receipt.scenario === scenario && receipt.caseKey === INSTALLED_PORTAL_CASES[index],
+      'Installed Portal semantic case identity changed');
+    assert(Object.entries(expected).every(([key, value]) => receipt[key as keyof typeof expected] === value),
+      'Installed Portal semantic receipt belongs to another run or artifact');
+    assert.equal(receipt.downloads, 0, 'Installed Portal must not download an installer');
+    if (scenario !== 'consent') {
+      assert(receipt.codePreserved === true && receipt.pending === true && receipt.approvalSaved === false
+        && receipt.localWrites === 0, 'Installed Portal fallback must preserve code without approval or local writes');
+      assert.equal(receipt.stimulus, scenario === 'stopped' ? 'connection-refused' : 'legacy-http-404',
+        'Installed Portal fallback stimulus was not observed');
+    }
+  }
+}
 
 /** Use the maintained provider contract with a current, private upstream session. */
 export function installedHostedIdentityProvider(nowMs = Date.now()) {
@@ -482,7 +536,7 @@ export async function runInstalledComputerServedBrowser(input: Input) {
   let nextError: Error | undefined;
   next.on('error', error => { nextError = error; });
   closeSync(fd);
-  let browser: Browser | undefined, gui: import('vite').ViteDevServer | undefined;
+  let browser: Browser | undefined, gui: import('vite').ViteDevServer | undefined, legacy: Server | undefined;
   try {
     await stage('installed-portal-document-ready');
     const nextOrigin = `http://127.0.0.1:${nextPort}`;
@@ -539,7 +593,21 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       } finally { await preflight.close(); await browser.close(); browser = undefined; }
       const fixturePath = `${evidence}-portal-fixture.json`;
       const stoppedOrigin = `http://127.0.0.1:${await input.freePort()}`;
+      // A real reachable HTTP legacy-client stimulus, distinct from refused TCP.
+      const legacyServer = createHttpServer((_, response) => {
+        response.writeHead(404, { 'content-type': 'text/html' });
+        response.end('<html><title>Legacy Papercusp</title><body>This installed version lacks desktop access.</body></html>');
+      });
+      legacy = legacyServer;
+      await new Promise<void>((resolve, reject) => {
+        legacyServer.once('error', reject);
+        legacyServer.listen(0, '127.0.0.1', resolve);
+      });
+      const unsupportedOrigin = `http://127.0.0.1:${(legacyServer.address() as { port: number }).port}`;
+      const runId = `installed-portal-${basename(privateRoot)}-${Date.now()}`;
+      const caseEvidencePath = `${evidence}-portal-case`;
       await writeFile(fixturePath, JSON.stringify({ portalOrigin: origin, localOrigin: guiOrigin, stoppedOrigin,
+        unsupportedOrigin, runId, caseEvidencePath,
         controlWorkspaceId: control, workspaceId: linked.customerWorkspaceId, hostId: linked.hostId,
         hostName: 'Private installed computer', installedHostPid: local.pid,
         desktopNameAfterFirstPage: hostReceipt.name, desktopCount: desktopIds.length,
@@ -552,8 +620,7 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       try {
         await stage('installed-maintained-portal-playwright');
         executor = await runPortalPlaywrightChecks({ root: portal,
-          files: ['e2e/portal-existing-local-connection.spec.ts'],
-          runId: `installed-portal-${basename(privateRoot)}-${Date.now()}`,
+          files: [INSTALLED_PORTAL_SPEC], runId,
           actorId: argument('--portal-actor-id'), workspaceId: argument('--portal-ledger-workspace'),
           harnessSlug: argument('--portal-ledger-harness'), timeoutMs: 7 * 60_000,
           artifactDirectory: dirname(evidence) });
@@ -562,8 +629,11 @@ export async function runInstalledComputerServedBrowser(input: Input) {
         else process.env.PORTAL_LOCAL_CONNECTION_FIXTURE = previousFixture;
       }
       await writeFile(`${evidence}-portal-executor.json`, JSON.stringify(executor, null, 2));
-      assert(executor.ok && executor.passed === 2 && executor.failed === 0 && executor.skipped === 0
-        && executor.testRunIds?.length, `Maintained Portal executor failed: ${JSON.stringify(executor)}`);
+      assertInstalledPortalExecutor(executor, portal);
+      const caseEvidence = await Promise.all(['stopped', 'unsupported', 'consent'].map(async scenario =>
+        JSON.parse(await readFile(`${caseEvidencePath}-${scenario}.json`, 'utf8')) as InstalledPortalCaseEvidence));
+      assertInstalledPortalCaseEvidence(caseEvidence, { runId, buildId: release.buildId,
+        sourceRootDigest: release.sourceRootDigest });
       const state = await (await fetch(`${localOrigin}/api/remote-access/portal-relay`)).json();
       assert.equal(state.relay.desktop.grant, null, 'Portal executor must revoke its private grant');
       assert(state.relay.linked, 'Desktop revocation must preserve the installation link');
@@ -572,7 +642,7 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       assert.equal(rows.length, 1, 'Maintained Portal journey must reuse the linked installation');
       return { status: 'passed', portalEngine: 'Next/Playwright', portalDocument,
         artifact: { buildId: release.buildId, sourceRootDigest: release.sourceRootDigest, releaseRoot: release.releaseRoot },
-        executor, installedHost: hostReceipt, operatorPid: local.pid, desktopRegistryCount: desktopIds.length,
+        executor, caseEvidence, installedHost: hostReceipt, operatorPid: local.pid, desktopRegistryCount: desktopIds.length,
         liveRosterIndex, linkedWorkspaceCount: rows.length, fixturePath,
         limitations: ['One private live display plus synthetic inventory; no owner account pairing', 'Mutation/BAR proof remains separate'] };
     }
@@ -675,6 +745,12 @@ export async function runInstalledComputerServedBrowser(input: Input) {
       limitations: ['Synthetic inventory plus one private live display; no owner account pairing', 'Mutation/BAR proof remains separate'] };
   } finally {
     await browser?.close(); await gui?.close();
+    legacy?.closeAllConnections();
+    if (legacy?.listening) await new Promise<void>((resolve, reject) => legacy!.close(error => error ? reject(error) : resolve()));
+    if (legacy) {
+      legacy.closeAllConnections();
+      await new Promise<void>(resolve => legacy!.close(() => resolve()));
+    }
     if (local.connected && local.exitCode === null && local.signalCode === null) {
       await new Promise<void>((resolve, reject) => {
         const done = (message: unknown) => {
