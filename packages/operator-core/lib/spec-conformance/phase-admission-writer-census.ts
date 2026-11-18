@@ -306,6 +306,42 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         }
         return { root: node, computed: false };
       };
+      // A local alias does not close a parameter frontier: e.g. copying
+      // client.array into original must retain original.call/apply as unknown.
+      // Collect every possible origin before inspecting calls so declaration
+      // order, reassignment and cycles cannot silently drop a candidate. This
+      // conservative relation supplies no binding or reachability proof.
+      const receiverOrigins = new Map<string, Set<string>>();
+      const addReceiverOrigin = (name: ts.BindingName, origin: string): void => {
+        if (ts.isIdentifier(name)) {
+          const origins = receiverOrigins.get(name.text) ?? new Set<string>();
+          origins.add(origin); receiverOrigins.set(name.text, origins);
+        } else for (const element of name.elements) if (ts.isBindingElement(element)) {
+          addReceiverOrigin(element.name, origin);
+        }
+      };
+      const collectReceiverOrigins = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && node.initializer) {
+          const { root } = targetRoot(node.initializer);
+          if (ts.isIdentifier(root)) addReceiverOrigin(node.name, root.text);
+        } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          && ts.isIdentifier(node.left)) {
+          const { root } = targetRoot(node.right);
+          if (ts.isIdentifier(root)) addReceiverOrigin(node.left, root.text);
+        }
+        ts.forEachChild(node, collectReceiverOrigins);
+      };
+      collectReceiverOrigins(unit.ast);
+      const parameterOrigin = (root: string, parameters: ts.NodeArray<ts.ParameterDeclaration>): boolean => {
+        const pending = new Set([root]), seen = new Set<string>();
+        for (const name of pending) {
+          if (seen.has(name)) continue;
+          seen.add(name);
+          if (parameters.some(parameter => bindingIncludes(parameter.name, name))) return true;
+          for (const origin of receiverOrigins.get(name) ?? []) pending.add(origin);
+        }
+        return false;
+      };
       const visit = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
           const target = targetName(node.initializer);
@@ -336,8 +372,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           let parameterCall = false;
           if (ts.isIdentifier(root)) {
             for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
-              if (ts.isFunctionLike(parent) && parent.parameters.some(parameter =>
-                bindingIncludes(parameter.name, root.text))) parameterCall = true;
+              if (ts.isFunctionLike(parent) && parameterOrigin(root.text, parent.parameters)) parameterCall = true;
             }
           }
           // Syntax wrappers do not establish a target. Destructured callbacks,
