@@ -61,7 +61,11 @@ export async function readHostAuthorityBindings(sql: Sql, workspaceId: string,
     const revision = createHash('sha256').update(canonicalJson({ workspaceId, bindings })).digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
-      : { status: 'ok' as const, revision, bindings };
+      : { status: 'ok' as const, revision, bindings,
+        // Required subjects come only from independent enrollment. Do not
+        // derive them from the set of policy rows that happens to exist.
+        requiredUserIds: bindings.filter(row => row.kind === 'user').map(row => row.subjectId).sort(),
+        requiredPlatformIds: bindings.filter(row => row.kind === 'platform').map(row => row.subjectId).sort() };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only', tx => read(tx as unknown as Sql));
 }

@@ -7,6 +7,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
+import { upsertScopedPolicyAuthority } from '../governance-policy/store';
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -32,7 +33,9 @@ beforeAll(async () => {
       workspace_id text, capabilities text[], expires_at timestamptz, last_seen_at timestamptz);
     CREATE TABLE harness_shared.population_effects (target text NOT NULL)`);
   for (const migration of ['1230-blueprint-package-resource-receipts.sql',
-    '1232-blueprint-package-installations.sql', '1645-blueprint-installation-human-ownership.sql']) {
+    '1232-blueprint-package-installations.sql', '1645-blueprint-installation-human-ownership.sql',
+    '1646-governance-host-authority-bindings.sql', '1497-governance-policy-layers.sql',
+    '1644-governance-scoped-authority-levels.sql']) {
     // These private database fixtures use the real storage contract; global
     // app-role grants belong to the cluster bootstrap, not this isolated DB.
     const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8');
@@ -43,7 +46,9 @@ afterAll(async () => { await sql?.end({ timeout: 5 }); });
 beforeEach(async () => {
   await sql.unsafe(`TRUNCATE harness_shared.adv_sessions, harness_shared.session_briefs, harness_shared.population_effects,
     harness_shared.blueprint_package_dependents, harness_shared.blueprint_package_resources,
-    harness_shared.blueprint_package_installations, harness_shared.users, harness_shared.user_sessions`);
+    harness_shared.blueprint_package_installations, harness_shared.users, harness_shared.user_sessions,
+    harness_shared.governance_host_authority_bindings,
+    harness_shared.governance_policy_layer_versions, harness_shared.governance_policy_layers`);
 });
 async function seed() {
   await sql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
@@ -399,17 +404,200 @@ describe('P-002 canonical session identity population', () => {
     }
   });
 
-  it.each(['sessions', 'packages'] as const)('refuses hidden %s instead of reporting a filtered empty population', async domain => {
+  const authorityJoined = { ...hostJoined, includeHostAuthorities: true };
+  async function seedAuthorities() {
+    // Storage fixtures only: neither claims nor policy roots enroll subjects.
+    await sql`INSERT INTO harness_shared.governance_host_authority_bindings
+      (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+      VALUES ('ws', 'user', 'enrolled-human', 'enrolled-human', ${'a'.repeat(64)}, 'explicit user fixture'),
+        ('ws', 'platform', 'missing-policy-floor', 'enrolled-human', ${'b'.repeat(64)}, 'explicit floor fixture'),
+        ('foreign', 'platform', 'foreign-floor', 'foreign-human', ${'c'.repeat(64)}, 'foreign fixture')`;
+  }
+
+  it('joins independent required subjects without relying on policy roots, claims or session wearers', async () => {
+    await seed(); await seedUsers(); await seedPackages(); await seedAuthorities();
+    const result = await readIdentityPermissionPopulation(sql, 'ws', authorityJoined);
+    expect(result).toMatchObject({ status: 'ok', hostAuthorities: { status: 'ok',
+      bindings: [
+        { kind: 'platform', subjectId: 'missing-policy-floor', humanOwnerId: 'enrolled-human' },
+        { kind: 'user', subjectId: 'enrolled-human', humanOwnerId: 'enrolled-human' },
+      ], requiredUserIds: ['enrolled-human'], requiredPlatformIds: ['missing-policy-floor'] } });
+    expect(await sql`SELECT count(*)::int AS policies FROM harness_shared.governance_policy_layers`)
+      .toEqual([{ policies: 0 }]);
+    const unjoined = await readIdentityPermissionPopulation(sql, 'ws', hostJoined);
+    expect(unjoined).not.toHaveProperty('hostAuthorities');
+    expect(result.revision).not.toBe(unjoined.revision);
+    expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', {
+      ...authorityJoined, expectedRevision: unjoined.revision,
+    }))).toMatchObject({ status: 'stale' });
+    expect(await readIdentityPermissionPopulation(sql, 'ws', authorityJoined)).toEqual(result);
+    expect(JSON.stringify(result)).not.toContain('foreign-floor');
+  });
+
+  it('keeps empty enrollment explicit and selectable without claims or package readers', async () => {
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeHostAuthorities: true });
+    expect(result).toMatchObject({ status: 'ok', hostAuthorities: { bindings: [],
+      requiredUserIds: [], requiredPlatformIds: [] } });
+    expect(result).not.toHaveProperty('workspaceUsers');
+    expect(result).not.toHaveProperty('packages');
+    expect(result.revision).not.toBe((await readIdentityPermissionPopulation(sql, 'ws')).revision);
+  });
+
+  it('uses one MVCC snapshot for sessions, packages, host claims and independent enrollment', async () => {
+    await seed();
+    let inserted = false;
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { ...authorityJoined, visit: async () => {
+      if (!inserted) {
+        inserted = true; await seedUsers(); await seedPackages(); await seedAuthorities();
+      }
+    } });
+    expect(inserted).toBe(true);
+    expect(before).toMatchObject({ status: 'ok', hostAuthorities: { bindings: [],
+      requiredUserIds: [], requiredPlatformIds: [] }, workspaceUsers: { users: [] },
+    packages: { installations: [], resources: [], dependents: [] } });
+    const after = await readIdentityPermissionPopulation(sql, 'ws', authorityJoined);
+    expect(after.revision).not.toBe(before.revision);
+    expect(after).toMatchObject({ hostAuthorities: { requiredPlatformIds: ['missing-policy-floor'] } });
+  });
+
+  it.each(['owner', 'principal-revision', 'reason', 'timestamp', 'insert', 'delete'] as const)(
+    'refuses changed enrollment %s before the protected effect', async change => {
+      await seedAuthorities();
+      const before = await readIdentityPermissionPopulation(sql, 'ws', authorityJoined);
+      if (change === 'owner') await sql`UPDATE harness_shared.governance_host_authority_bindings
+        SET human_owner_id = 'other-human' WHERE workspace_id = 'ws' AND kind = 'platform'`;
+      if (change === 'principal-revision') await sql`UPDATE harness_shared.governance_host_authority_bindings
+        SET request_principal_revision = ${'d'.repeat(64)} WHERE workspace_id = 'ws'`;
+      if (change === 'reason') await sql`UPDATE harness_shared.governance_host_authority_bindings SET reason = 'changed' WHERE workspace_id = 'ws'`;
+      if (change === 'timestamp') await sql`UPDATE harness_shared.governance_host_authority_bindings SET recorded_at = '2030-01-01' WHERE workspace_id = 'ws'`;
+      if (change === 'insert') await sql`INSERT INTO harness_shared.governance_host_authority_bindings
+        (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+        VALUES ('ws', 'platform', 'new-required', 'human', ${'e'.repeat(64)}, 'new fixture')`;
+      if (change === 'delete') await sql`DELETE FROM harness_shared.governance_host_authority_bindings WHERE workspace_id = 'ws'`;
+      const result = await sql.begin(async tx => {
+        const current = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...authorityJoined,
+          expectedRevision: before.revision });
+        if (current.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+        return current;
+      });
+      expect(result.status).toBe('stale');
+      expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+    });
+
+  it.each([false, true])('pins enrollment edits and insertion gaps through effect commit (seeded=%s)', async seeded => {
+    if (seeded) await seedAuthorities();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', authorityJoined);
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...authorityJoined,
+        expectedRevision: before.revision })).toEqual(before);
+      for (const action of seeded ? ['update', 'delete', 'insert'] : ['insert']) {
+        await expect(sql.begin(async peer => {
+          await peer`SET LOCAL lock_timeout = '80ms'`;
+          if (action === 'update') await peer`UPDATE harness_shared.governance_host_authority_bindings SET reason = 'changed'`;
+          else if (action === 'delete') await peer`DELETE FROM harness_shared.governance_host_authority_bindings`;
+          else await peer`INSERT INTO harness_shared.governance_host_authority_bindings
+            (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+            VALUES ('ws', 'platform', 'new-required', 'human', ${'e'.repeat(64)}, 'new fixture')`;
+        })).rejects.toMatchObject({ code: '55P03' });
+      }
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('current')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
+    expect(await readIdentityPermissionPopulation(sql, 'ws', authorityJoined)).toEqual(before);
+  });
+
+  async function seedScopedPolicy(kind: 'user' | 'platform', subjectId = kind === 'user'
+    ? 'enrolled-human' : 'missing-policy-floor', expectedVersion = 0) {
+    return upsertScopedPolicyAuthority({ kind, workspaceId: 'ws', subjectId,
+      rules: { actions: { allow: [expectedVersion === 0 ? 'edit' : 'inspect'] } },
+      actor: 'technical-author-is-not-owner', reason: 'scoped policy fixture', expectedVersion }, sql);
+  }
+
+  it('joins the stored scoped policies using required subjects from independent enrollment', async () => {
+    await seedAuthorities(); await seedScopedPolicy('user'); await seedScopedPolicy('platform');
+    await seedScopedPolicy('user', 'stored-user-without-claims');
+    await seedScopedPolicy('platform', 'additional-stored-floor');
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeScopedPolicies: true });
+    if (result.status !== 'ok') throw new Error('population unavailable');
+    expect(result.hostAuthorities).toMatchObject({ requiredUserIds: ['enrolled-human'],
+      requiredPlatformIds: ['missing-policy-floor'] });
+    expect(result.scopedPolicies?.policies).toHaveLength(4);
+    expect(result.scopedPolicies?.policies.map(policy => policy.kind).sort())
+      .toEqual(['platform', 'platform', 'user', 'user']);
+    expect(result).not.toHaveProperty('workspaceUsers');
+    expect(result).not.toHaveProperty('packages');
+    expect(result.revision).not.toBe((await readIdentityPermissionPopulation(sql, 'ws', {
+      includeHostAuthorities: true,
+    })).revision);
+  });
+
+  it.each(['enrollment', 'user', 'platform'] as const)(
+    'refuses missing %s instead of deriving required IDs from the remaining stored policies', async missing => {
+      if (missing !== 'enrollment') await seedAuthorities();
+      if (missing !== 'user') await seedScopedPolicy('user');
+      if (missing !== 'platform') await seedScopedPolicy('platform');
+      await seedScopedPolicy('user', 'unrelated-user');
+      await seedScopedPolicy('platform', 'unrelated-floor');
+      await expect(readIdentityPermissionPopulation(sql, 'ws', { includeScopedPolicies: true }))
+        .rejects.toThrow('scoped policy population is unavailable');
+    });
+
+  it('reads enrolled subjects and their policy in the same MVCC snapshot as the session source', async () => {
+    await seed(); await seedAuthorities(); await seedScopedPolicy('user'); await seedScopedPolicy('platform');
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { includeScopedPolicies: true });
+    let changed = false;
+    const during = await readIdentityPermissionPopulation(sql, 'ws', { includeScopedPolicies: true, visit: async () => {
+      if (!changed) { changed = true; await seedScopedPolicy('platform', 'missing-policy-floor', 1); }
+    } });
+    expect(changed).toBe(true);
+    expect(during).toEqual(before);
+    expect((await readIdentityPermissionPopulation(sql, 'ws', { includeScopedPolicies: true })).revision)
+      .not.toBe(before.revision);
+    expect(await sql.begin(tx => readIdentityPermissionPopulation(txSql(tx), 'ws', {
+      includeScopedPolicies: true, expectedRevision: before.revision,
+    }))).toMatchObject({ status: 'stale' });
+  });
+
+  it('holds scoped policies and new authority roots through the protected effect', async () => {
+    await seedAuthorities(); await seedScopedPolicy('user'); await seedScopedPolicy('platform');
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { includeScopedPolicies: true });
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', {
+        includeScopedPolicies: true, expectedRevision: before.revision,
+      })).toEqual(before);
+      for (const action of ['update', 'delete', 'insert']) {
+        await expect(sql.begin(async peer => {
+          await peer`SET LOCAL lock_timeout = '80ms'`;
+          if (action === 'update') await peer`UPDATE harness_shared.governance_policy_layers SET rules = '{}'`;
+          else if (action === 'delete') await peer`DELETE FROM harness_shared.governance_policy_layers`;
+          else await peer`INSERT INTO harness_shared.governance_policy_layers SELECT
+            'new-root', level, scope_ref || 'extra', parent_layer_id, version, rules,
+            exceptions, content_hash, updated_by, updated_at
+            FROM harness_shared.governance_policy_layers LIMIT 1`;
+        })).rejects.toMatchObject({ code: '55P03' });
+      }
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('current')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
+  });
+
+  it.each(['sessions', 'packages', 'host-authorities', 'scoped-policies'] as const)('refuses hidden %s instead of reporting a filtered empty population', async domain => {
     const role = `population_reader_${randomBytes(5).toString('hex')}`;
-    const table = domain === 'sessions' ? 'adv_sessions' : 'blueprint_package_installations';
+    const table = domain === 'sessions' ? 'adv_sessions' : domain === 'packages'
+      ? 'blueprint_package_installations' : domain === 'host-authorities'
+        ? 'governance_host_authority_bindings' : 'governance_policy_layers';
     await sql.unsafe(`CREATE ROLE "${role}"; GRANT USAGE ON SCHEMA harness_shared TO "${role}";
       GRANT SELECT ON ALL TABLES IN SCHEMA harness_shared TO "${role}";
       ALTER TABLE harness_shared.${table} ENABLE ROW LEVEL SECURITY`);
     try {
       await sql.begin('isolation level repeatable read', async tx => {
         await tx.unsafe(`SET LOCAL ROLE "${role}"`);
-        await tx`SET LOCAL app.workspace_id = 'foreign'`;
-        await expect(readIdentityPermissionPopulation(txSql(tx), 'ws', domain === 'packages' ? joined : {})).rejects.toThrow('not visible');
+        const workspace = ['host-authorities', 'scoped-policies'].includes(domain) ? 'ws' : 'foreign';
+        expect(await tx`SELECT set_config('app.workspace_id', ${workspace}, true) AS workspace`)
+          .toEqual([{ workspace }]);
+        await expect(readIdentityPermissionPopulation(txSql(tx), 'ws', domain === 'packages' ? joined
+          : domain === 'host-authorities' ? { includeHostAuthorities: true }
+            : domain === 'scoped-policies' ? { includeScopedPolicies: true } : {})).rejects.toThrow(/not (fully )?visible/);
       });
     } finally {
       await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE ROW LEVEL SECURITY;

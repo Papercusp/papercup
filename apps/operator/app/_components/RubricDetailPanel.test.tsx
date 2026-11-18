@@ -14,7 +14,7 @@ import RubricDetailPanel, {
 import ScorecardDetail, { type ScorecardRow } from './ScorecardDetail';
 
 const procedureRead = vi.hoisted(() => vi.fn());
-vi.mock('@papercusp/operator-core/lib/call-tool', () => ({ callTool: procedureRead }));
+vi.mock('@papercusp/operator-core/lib/call-tool', () => ({ callRoute: procedureRead }));
 
 const sync = vi.hoisted(() => {
   const trendData = [
@@ -342,7 +342,12 @@ describe('scorecard coverage and pinned procedure presentation', () => {
     expect(JSON.stringify(card)).toBe(before);
   });
 
-  it('uses the pinned read reference and refuses a newer definition instead of displaying its procedure', async () => {
+  it.each([
+    ['newer revision', 'coverage-ui', 4, 'new-hash'],
+    ['older revision', 'coverage-ui', 2, 'original-hash'],
+    ['changed hash', 'coverage-ui', 3, 'wrong-hash'],
+    ['different rubric', 'another-rubric', 3, 'original-hash'],
+  ])('uses the pinned read reference and refuses a %s', async (_case, rubricId, revision, criteriaHash) => {
     const card = fixture();
     card.evidenceActions = [{ criterionKey: keys[0]!, category: 'recover-historical', reason: 'historical-missing',
       sourceRefs: ['binding:original'], nextEvidenceAction: 'Recover original records.', snapshot: 'resolved', readiness: 'manual',
@@ -354,21 +359,38 @@ describe('scorecard coverage and pinned procedure presentation', () => {
       definitionRead: { tool: 'rubrics:get', args: { rubricRef: 'coverage-ui', revision: 3, detail: 'full' } },
       finishCondition: 'Retain original sources and apply ordinary acceptance checks.' }];
     card.omittedActionCount = 25;
-    procedureRead.mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true,
-      rubric: { rubricId: 'coverage-ui', revision: 4, criteriaHash: 'new-hash', criteria: [{ key: keys[0], method: 'WRONG CURRENT PROCEDURE' }] } }] }) }] });
+    procedureRead.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true,
+      rubric: { rubricId, revision, criteriaHash, criteria: [{ key: keys[0], method: 'WRONG CURRENT PROCEDURE' }] } }] }) }] } })));
     render(<ScorecardDetail scorecard={card} />);
     fireEvent.click(screen.getByText('Procedure context'));
     fireEvent.click(screen.getByRole('button', { name: `Read full procedure for ${keys[0]}` }));
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('could not be verified'));
-    expect(procedureRead).toHaveBeenCalledWith('rubrics:get', { rubricRef: 'coverage-ui', revision: 3, detail: 'full' });
+    expect(procedureRead).toHaveBeenCalledWith('/api/agent-mcp/run-tool', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'rubrics:get', args: { rubricRef: 'coverage-ui', revision: 3, detail: 'full' } }),
+    });
     expect(screen.queryByText('WRONG CURRENT PROCEDURE')).toBeNull();
     expect(screen.getByText('25 more criterion actions in the full evidence read.')).toBeTruthy();
-    procedureRead.mockResolvedValueOnce({ content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true,
+    procedureRead.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: { content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true,
       rubric: { rubricId: 'coverage-ui', revision: 3, criteriaHash: 'original-hash', criteria: [
         { key: keys[0], method: 'Read original archive; literal $(never-execute).', replication: 'Retain exact inputs.' },
-      ] } }] }) }] });
+      ] } }] }) }] } })));
     fireEvent.click(screen.getByRole('button', { name: `Read full procedure for ${keys[0]}` }));
     await waitFor(() => expect(screen.getByText(/Read original archive; literal/).textContent).toContain('$(never-execute)'));
+    expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Fulfillment unknown');
+    procedureRead.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, error: 'forbidden' }), { status: 403 }));
+    fireEvent.click(screen.getByRole('button', { name: `Read full procedure for ${keys[0]}` }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('HTTP 403'));
+    expect(screen.queryByText(/Read original archive; literal/)).toBeNull();
+    procedureRead.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: { isError: true,
+      content: [{ type: 'text', text: JSON.stringify({ results: [{ ok: true, rubric: {
+        rubricId: 'coverage-ui', revision: 3, criteriaHash: 'original-hash',
+        criteria: [{ key: keys[0], method: 'ERROR PAYLOAD MUST NOT DISPLAY' }],
+      } }] }) }],
+    } })));
+    fireEvent.click(screen.getByRole('button', { name: `Read full procedure for ${keys[0]}` }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Pinned procedure unavailable.'));
+    expect(screen.queryByText('ERROR PAYLOAD MUST NOT DISPLAY')).toBeNull();
     expect(screen.getByLabelText('Assessment coverage').textContent).toContain('Fulfillment unknown');
   });
 });

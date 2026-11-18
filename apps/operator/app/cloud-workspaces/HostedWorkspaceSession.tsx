@@ -174,7 +174,7 @@ function downloadFile(path: string, data: string): void {
 }
 
 export function HostedWorkspaceSession({
-  linkedInstallation,
+  linkedInstallation: installationSnapshot,
   hostId,
   routeLabel,
   workspaceName,
@@ -187,6 +187,14 @@ export function HostedWorkspaceSession({
   onDesktopStarted,
   onDesktopQueryStateChange,
 }: HostedWorkspaceSessionProps) {
+  // Liveness observations do not change the identity authorized by the local
+  // grant. A new observation must not dispose a live discovery connection.
+  const isInstalled = Boolean(installationSnapshot);
+  const installId = installationSnapshot?.installId ?? "";
+  const customerWorkspaceId = installationSnapshot?.customerWorkspaceId ?? "";
+  const linkedInstallation = useMemo(() => isInstalled
+    ? { installId, customerWorkspaceId } : undefined,
+  [isInstalled, installId, customerWorkspaceId]);
   const terminalContainerRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<import("@xterm/xterm").Terminal | null>(null);
   const fitRef = useRef<import("@xterm/addon-fit").FitAddon | null>(null);

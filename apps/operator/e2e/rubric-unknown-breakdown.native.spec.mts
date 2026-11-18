@@ -273,6 +273,20 @@ test('rubric unknown reasons, coverage and pinned procedures match the current n
   expect(coverage).toContain('26 unresolved');
   expect(coverage).toContain('Requested scope unknown');
   expect(coverage).toContain('Fulfillment unknown');
+  const definitionRead = persisted.evidenceActions.find((action: any) => action.criterionKey === 'criterion-0')?.definitionRead;
+  expect(definitionRead).toEqual({ tool: 'rubrics:get', args: { rubricRef: coverageRef,
+    revision: definition.revision, detail: 'full' } });
+  const pinnedRead = await evaluate(`fetch('/api/agent-mcp/run-tool', {
+    method: 'POST', headers: {'Content-Type': 'application/json', 'x-papercusp-workspace': ${JSON.stringify(workspace)}},
+    body: ${JSON.stringify(JSON.stringify({ name: definitionRead.tool, args: definitionRead.args }))}
+  }).then(async response => ({status: response.status, body: await response.text()}))`);
+  const pinnedReadPath = info.outputPath('rubric-pinned-procedure-precondition.json');
+  await writeFile(pinnedReadPath, JSON.stringify({ definitionRead, pinnedRead }, null, 2));
+  await info.attach('native pinned procedure precondition', { path: pinnedReadPath, contentType: 'application/json' });
+  expect(pinnedRead.status).toBe(200);
+  const pinnedEnvelope = JSON.parse(pinnedRead.body);
+  expect(pinnedEnvelope.ok).toBe(true);
+  expect(pinnedEnvelope.result.isError).not.toBe(true);
   await evaluate(`document.querySelector('[aria-label="Next evidence actions"] summary').click()`);
   await evaluate(`Array.from(document.querySelectorAll('button')).find(button => button.textContent === 'Read full procedure for criterion-0')?.click()`);
   await wait(`document.querySelector('[aria-label="Next evidence actions"] pre')?.textContent.includes(${JSON.stringify(originalMethod)}) === true`);

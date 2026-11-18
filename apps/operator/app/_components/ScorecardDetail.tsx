@@ -10,7 +10,7 @@
 import { Table, type TableColumn } from '../harness/Table';
 import { useLexicon } from '@/lib/useLexicon';
 import { useState } from 'react';
-import { callTool } from '@papercusp/operator-core/lib/call-tool';
+import { callRoute } from '@papercusp/operator-core/lib/call-tool';
 import type { ScorecardRow as StoredScorecardRow, ScorecardEvidenceAction } from '@papercusp/operator-core/lib/scorecards';
 import type { Rubric } from '@papercusp/operator-core/lib/rubrics';
 import type { ObservationLedgerResult } from '@papercusp/operator-core/lib/harness/improvements/observation-types';
@@ -78,8 +78,17 @@ function EvidenceActionDetail({ action }: { action: ScorecardEvidenceAction }) {
     if (!action.definitionRead) return;
     setRead({ loading: true });
     try {
-      const response = await callTool(action.definitionRead.tool, action.definitionRead.args);
-      const block = response.content.find(item => item.type === 'text' && typeof item.text === 'string');
+      const response = await callRoute('/api/agent-mcp/run-tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: action.definitionRead.tool, args: action.definitionRead.args }),
+      });
+      if (!response.ok) throw new Error(`Pinned procedure unavailable (HTTP ${response.status}).`);
+      const envelope = await response.json() as { ok?: boolean; result?: {
+        isError?: boolean; content?: Array<{ type: string; text?: string }>;
+      } };
+      if (envelope.ok !== true || envelope.result?.isError) throw new Error('Pinned procedure unavailable.');
+      const block = envelope.result?.content?.find(item => item.type === 'text' && typeof item.text === 'string');
       if (!block) throw new Error('Pinned procedure unavailable.');
       const result = JSON.parse(block.text as string) as { results?: Array<{ ok?: boolean; rubric?: Rubric }> };
       const rubric = result.results?.find(item => item.ok && item.rubric?.rubricId === action.context.rubricRef)?.rubric;

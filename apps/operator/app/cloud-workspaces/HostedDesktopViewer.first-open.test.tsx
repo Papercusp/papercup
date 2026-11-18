@@ -20,6 +20,7 @@ import {
   type HostedDesktopViewerMode,
 } from "./hosted-desktop-viewer-protocol";
 import * as kasmvnc from "./kasmvnc-rfb";
+import * as installed from "./installed-computer-connection";
 
 const H = vi.hoisted(() => {
   class FakeSocket {
@@ -259,3 +260,50 @@ it.each([
     expect(firstState).toHaveBeenLastCalledWith("connected");
   },
 );
+
+it("keeps the verified installed viewer when a refreshed machine row has the same identity", async () => {
+  const linkedInstallation = {
+    installId: "install-1",
+    customerWorkspaceId: "customer-workspace-1",
+    connection: "online" as const,
+  };
+  const receipt = {
+    type: "papercusp.local-desktop-approved" as const,
+    version: 1 as const,
+    requestId: "request-1",
+    machinePublicKey: btoa("m".repeat(32)),
+    grant: { version: 1 as const, id: "grant-1", installId: "install-1",
+      portalOrigin: location.origin, userId: "user-1", organizationId: "org-1",
+      customerWorkspaceId: "customer-workspace-1", localWorkspaceId: "local-1",
+      browserPublicKey: btoa("b".repeat(32)), view: true as const, control: false,
+      grantedAt: "2026-11-18T00:00:00.000Z" },
+  };
+  vi.spyOn(installed, "installedComputerApproval").mockResolvedValue(receipt);
+  const dial = vi.spyOn(installed, "installedComputerSocket").mockImplementation(async url =>
+    new H.FakeSocket(url) as unknown as WebSocket,
+  );
+  const onStateChange = vi.fn();
+  const props = { workspaceId: "customer-workspace-1", hostId: "host-1",
+    routeLabel: "workspace-relay", desktopSessionId: "desktop-1", onStateChange };
+  const viewer = render(<HostedDesktopViewer {...props} linkedInstallation={linkedInstallation} />);
+  await waitFor(() => expect(H.AttachingRFB.instances).toHaveLength(1));
+  const socket = H.sockets[0]!;
+  act(() => {
+    socket.emit("message", { data: JSON.stringify({ type: "desktop.ready", action: "watch", inputAllowed: false }) });
+    socket.emit("message", { data: buildDesktopDataRelay(new TextEncoder().encode("RFB 003.008\n")) });
+  });
+  await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith("connected"));
+  viewer.rerender(<HostedDesktopViewer {...props}
+    linkedInstallation={{ ...linkedInstallation, connection: "unknown" }} />);
+  await act(async () => {});
+  expect(socket.close).not.toHaveBeenCalled();
+  expect(dial).toHaveBeenCalledTimes(1);
+  expect(onStateChange).toHaveBeenLastCalledWith("connected");
+  viewer.rerender(<HostedDesktopViewer {...props}
+    linkedInstallation={{ ...linkedInstallation, installId: "different-install" }} />);
+  await waitFor(() => expect(dial).toHaveBeenCalledTimes(2));
+  expect(socket.close).toHaveBeenCalledWith(1000, "viewer_detached");
+  expect(installed.installedComputerApproval).toHaveBeenLastCalledWith(
+    expect.objectContaining({ installId: "different-install" }), "customer-workspace-1",
+  );
+});

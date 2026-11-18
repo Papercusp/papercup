@@ -525,8 +525,13 @@ export interface IdentityPermissionSessionSource {
  * With includePackageResources, read the existing installation/resource journal
  * in the SAME snapshot, including unknown human owners and legacy dependents.
  * includeWorkspaceUsers joins the canonical host workspace claims without
- * treating claims as human ownership. Library, host policy and external backend
- * sources still need their own join.
+ * treating claims as human ownership. includeHostAuthorities joins explicit
+ * host enrollment independently of policy roots and login claims. Its required
+ * IDs remain present even when their policy is missing; an empty enrollment
+ * source does not establish that no host authority is required.
+ * includeScopedPolicies also joins the canonical user/platform policy census,
+ * requiring those independently enrolled subjects even if other roots exist.
+ * Library, inherited policy and external backend sources still need their join.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -544,7 +549,7 @@ export interface IdentityPermissionSessionSource {
  * by this adapter, including for the inactive population. */
 export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: string,
   options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
-    includeWorkspaceUsers?: boolean;
+    includeWorkspaceUsers?: boolean; includeHostAuthorities?: boolean; includeScopedPolicies?: boolean;
     visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
   options = { ...options };
   if (!workspaceId || workspaceId !== workspaceId.trim() ||
@@ -620,11 +625,39 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       workspaceUsers = population;
       hash.update('\n').update(canonicalJson({ workspaceUserRevision: workspaceUsers.revision }));
     }
+    let hostAuthorities: Extract<Awaited<ReturnType<typeof import('../governance-policy/host-authority-bindings').readHostAuthorityBindings>>,
+      { status: 'ok' }> | undefined;
+    if (options.includeHostAuthorities || options.includeScopedPolicies) {
+      const { readHostAuthorityBindings } = await import('../governance-policy/host-authority-bindings');
+      const population = await readHostAuthorityBindings(tx, workspaceId, { pinForEffect: pinned });
+      if (population.status !== 'ok') throw new Error('host authority population is unavailable');
+      hostAuthorities = population;
+      hash.update('\n').update(canonicalJson({ hostAuthorityRevision: hostAuthorities.revision }));
+    }
+    let scopedPolicies: Extract<Awaited<ReturnType<typeof import('../governance-policy/store').loadScopedPolicyAuthorities>>,
+      { status: 'ok' }> | undefined;
+    if (options.includeScopedPolicies) {
+      if (pinned) await tx`LOCK TABLE harness_shared.governance_policy_layers IN SHARE MODE`;
+      const [visibility] = await tx<Array<{ restricted: boolean }>>`
+        SELECT row_security_active('harness_shared.governance_policy_layers') AS restricted`;
+      if (!visibility || visibility.restricted) throw new Error('scoped policy population is not fully visible');
+      const { loadScopedPolicyAuthorities } = await import('../governance-policy/store');
+      const population = await loadScopedPolicyAuthorities({ workspaceId,
+        userIds: 'workspace', platformIds: 'workspace',
+        requiredUserIds: hostAuthorities!.requiredUserIds,
+        requiredPlatformIds: hostAuthorities!.requiredPlatformIds }, tx);
+      // Empty enrollment fails the loader's required-ID validation. A nonempty
+      // policy census cannot substitute for the independent required source.
+      if (population.status !== 'ok') throw new Error(`scoped policy population is unavailable: ${population.status}`);
+      scopedPolicies = population;
+      hash.update('\n').update(canonicalJson({ scopedPolicyRevision: scopedPolicies.revision }));
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
       : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}),
-        ...(workspaceUsers ? { workspaceUsers } : {}) };
+        ...(workspaceUsers ? { workspaceUsers } : {}), ...(hostAuthorities ? { hostAuthorities } : {}),
+        ...(scopedPolicies ? { scopedPolicies } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));

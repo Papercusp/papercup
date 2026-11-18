@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Expand,
   Eye,
@@ -64,7 +64,7 @@ export interface HostedDesktopViewerProps {
 }
 
 export function HostedDesktopViewer({
-  linkedInstallation,
+  linkedInstallation: installationSnapshot,
   workspaceId,
   hostId,
   routeLabel,
@@ -75,6 +75,14 @@ export function HostedDesktopViewer({
   onModeChange,
   canTakeControl = true,
 }: HostedDesktopViewerProps) {
+  // Machine observations are fresh objects on every control-plane refresh.
+  // Only the selected installation's identity can replace an authorized stream.
+  const isInstalled = Boolean(installationSnapshot);
+  const installId = installationSnapshot?.installId ?? "";
+  const customerWorkspaceId = installationSnapshot?.customerWorkspaceId ?? "";
+  const linkedInstallation = useMemo(() => isInstalled
+    ? { installId, customerWorkspaceId } : undefined,
+  [isInstalled, installId, customerWorkspaceId]);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const channelRef = useRef<HostedDesktopRelayChannel | null>(null);

@@ -660,7 +660,24 @@ async function declaredPotWorkerRoleCapabilities(
     const { blueprintWorkerRoleCapabilities } = await import('../../../capability-envelope/blueprint-envelopes');
     const potSlug = (await potHomeSlugForHarness(workspaceId, harnessSlug)) ?? harnessSlug;
     const { stateDir } = await resolveHarnessPaths(potSlug, workspaceId);
-    return blueprintWorkerRoleCapabilities(stateDir, roleName) ?? [];
+    const potCapabilities = blueprintWorkerRoleCapabilities(stateDir, roleName);
+    if (potCapabilities !== undefined) return potCapabilities;
+    // An installed app can declare its role in the app blueprint while its
+    // federated pot has no local role file. Read that same installed contract
+    // used by the role allowlist; never infer grants from a base role or an
+    // uninstalled source file. Provisioned/platform roles are excluded above.
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { getEffectiveBlueprint } = await import('../../../blueprint/project-to-pg');
+    for (const scope of new Set([harnessSlug, potSlug])) {
+      const blueprint = await getEffectiveBlueprint(getOrgPg().sql, { workspaceId, harnessSlug: scope });
+      if (!blueprint) continue;
+      const roles = blueprint.roles.filter(role => role.id === roleName);
+      const workers = blueprint.fleet?.workerRoles?.filter(role => role.id === roleName) ?? [];
+      if (roles.length === 0 && workers.length === 0) continue;
+      if (roles.length !== 1 || workers.length !== 1) return [];
+      return workers[0]!.capabilities ?? [];
+    }
+    return [];
   } catch {
     return [];
   }

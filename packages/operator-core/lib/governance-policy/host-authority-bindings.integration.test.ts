@@ -16,9 +16,12 @@ beforeAll(async () => {
   const target = new URL(uri); target.pathname = `/${name}`;
   sql = postgres(target.toString(), { max: 4, onnotice: () => {} });
   await sql`CREATE SCHEMA harness_shared`;
+  await sql`GRANT USAGE ON SCHEMA harness_shared TO harness_app`;
   const migration = new URL('../../../../libs/papercusp/libs/db/sql/1646-governance-host-authority-bindings.sql', import.meta.url);
   const source = existsSync(migration) ? migration : new URL(migration.href + '.DRAFT');
-  await sql.unsafe(readFileSync(source, 'utf8').replace(/GRANT[\s\S]*?;/g, ''));
+  // Exercise the complete migration, including grants to the framework's real
+  // runtime role. Stripping grants hid a nonexistent-role typo before arming.
+  await sql.unsafe(readFileSync(source, 'utf8'));
   await sql`CREATE TABLE harness_shared.binding_effects (target text NOT NULL)`;
 }, 60_000);
 afterAll(async () => { await sql?.end({ timeout: 5 }); });
@@ -34,9 +37,26 @@ async function insert(kind = 'platform', subject = 'required-floor', workspace =
 }
 
 describe('P-002 independent host authority binding source', () => {
+  it('applies the complete migration and gives the application role SELECT only', async () => {
+    await sql.begin(async tx => {
+      await tx`SET LOCAL ROLE harness_app`;
+      expect(await tx`SELECT * FROM harness_shared.governance_host_authority_bindings`).toEqual([]);
+    });
+    for (const statement of [
+      "INSERT INTO harness_shared.governance_host_authority_bindings (workspace_id) VALUES ('forbidden')",
+      "UPDATE harness_shared.governance_host_authority_bindings SET reason = 'forbidden'",
+      'DELETE FROM harness_shared.governance_host_authority_bindings',
+    ]) {
+      await expect(sql.begin(async tx => {
+        await tx`SET LOCAL ROLE harness_app`;
+        await tx.unsafe(statement);
+      })).rejects.toMatchObject({ code: '42501' });
+    }
+  });
+
   it('keeps absence explicit, workspace-scoped and distinct from a required policy', async () => {
     const empty = await readHostAuthorityBindings(sql, 'ws');
-    expect(empty).toMatchObject({ status: 'ok', bindings: [] });
+    expect(empty).toMatchObject({ status: 'ok', bindings: [], requiredUserIds: [], requiredPlatformIds: [] });
     await insert();
     await insert('user', 'human', 'ws');
     await insert('platform', 'foreign-floor', 'foreign');
@@ -44,7 +64,7 @@ describe('P-002 independent host authority binding source', () => {
     expect(read).toMatchObject({ status: 'ok', bindings: [
       { kind: 'platform', subjectId: 'required-floor', humanOwnerId: 'human' },
       { kind: 'user', subjectId: 'human', humanOwnerId: 'human' },
-    ] });
+    ], requiredUserIds: ['human'], requiredPlatformIds: ['required-floor'] });
     expect(read.revision).not.toBe(empty.revision);
     expect(await sql`SELECT to_regclass('harness_shared.governance_policy_layers') AS policy`).toEqual([{ policy: null }]);
     expect((await readHostAuthorityBindings(sql, 'unregistered')).revision).not.toBe(empty.revision);
