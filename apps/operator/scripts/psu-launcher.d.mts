@@ -1772,9 +1772,9 @@ export function resumeAccountPlan(args: any): {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null, launchedBy?: string | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null, launchedBy?: string | null, operatorTarget?: {url: string, source?: string} | null}} [options]
  */
-export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId, launchedBy }?: {
+export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId, launchedBy, operatorTarget }?: {
     fork?: boolean;
     brain?: boolean;
     accountEnv?: {
@@ -1784,6 +1784,10 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId,
     } | null;
     ownerId?: string | null;
     launchedBy?: string | null;
+    operatorTarget?: {
+        url: string;
+        source?: string;
+    } | null;
 }): {
     [x: string]: string | undefined;
 };

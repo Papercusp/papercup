@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "bug-scoreboard-operational-bindings-v1",
+  "status": "prepared-only-not-proposed-not-ratified-not-armed",
+  "reason": "Maintained staging runtime8fe46573e3e does not contain bugs:daily-scoreboard; canonical proposal validates registered instrument bindings. Current-source native proofs do not grant runtime containment.",
+  "rubric": {
+    "rubricRef": "bug-scoreboard-daily-operations",
+    "kind": "standard",
+    "characteristic": "bug-scoreboard",
+    "title": "Daily bug scoreboard measurement integrity",
+    "description": "Operational measurement carrier for the approved backlog plan P-012. This does not replace or grade the unchanged R-11 acceptance contract, activate P-013, or substitute synthetic days for seven actual days.",
+    "stalenessWatched": true,
+    "criteria": [
+      {
+        "key": "daily-measurement",
+        "title": "Each daily producer and consumer retain a fresh complete authenticated seven-metric result",
+        "model": "The registered bugs:daily-scoreboard instrument creates an immutable source and cycle receipt, then consumes exactly that cycle. A healthy reading requires all seven registry metrics from qualified append-only event history, complete populations and original clocks, independently authenticated reconciliation, exact runtime closure and schedule provenance. Baseline, missing/partial/unqualified history, unknown expected-fire provenance and failed production cannot be healthy. The operational cadence is daily UTC; R-11 and P-013 retain their independent seven-real-day and final-maturation acceptance gates.",
+        "method": "Use the maintained registered platform instrument via the existing rubric-rescore action; retain each source/cycle artifact in the existing artifact store and its exact reportRef in the canonical test_runs results ledger. Grade through scorecards:emit fromLedger only after normal independent standard-rubric ratification. A new writer error supersedes an earlier pass as the current measurement; never read an old healthy cell as new proof.",
+        "driftMarkers": "Wrong-cycle, stale, forged, missing-source, unqualified history, absent independent reconciliation or missing runtime/cadence proof returns unknown/error or fails; no previous successful result may hide the new error.",
+        "replication": "Run maintained bug-scoreboard-instrument.test.ts and bug-inflow.integration.test.ts with npm run test:file. Unit cases distinguish every raw metric and original clock; real PostgreSQL cases retain immutable source/receipt identity across restart, reject wrong/stale/forged/missing-source packets and record a new unknown measurement after an earlier synthetic healthy control. Production source qualification and actual scheduled runtime remain separate checks.",
+        "instrumentKey": "bugs:daily-scoreboard",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "bugs:daily-scoreboard",
+          "maxAgeMs": 87000000
+        }
+      }
+    ]
+  },
+  "schedule": {
+    "harness": "papercusp",
+    "slug": "bug-scoreboard-daily-operations",
+    "schedule": {
+      "kind": "rrule",
+      "rrule": "FREQ=DAILY;BYHOUR=0;BYMINUTE=5;BYSECOND=0",
+      "tzid": "UTC",
+      "concurrency": "skip",
+      "catchup": "skip-old",
+      "action": {
+        "system": "rubric-rescore",
+        "input": {
+          "rubricRef": "bug-scoreboard-daily-operations",
+          "maxRuntimeMs": 300000,
+          "maxSchedulingDelayMs": 300000
+        }
+      }
+    }
+  },
+  "authority": "Existing owner-approved P012/current plan113; keep acceptance R11 rubric17 unchanged.",
+  "remaining": [
+    "Canonical proposal on a containing runtime",
+    "Independent ratification by a distinct eligible identity",
+    "plans:set-schedule and separate plans:arm-schedule",
+    "Current-build background execution/cleanup receipt",
+    "Qualified P007/P009/P010 event histories and independent auth/lineage",
+    "P013 seven actual runs and final24h maturation; separate final exact-artifact shipment"
+  ]
+}
