@@ -561,7 +561,6 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
       workspaceId: input.workspaceId,
     });
   }
-  await provisionLaunchIdentityResources(rebuilt.artifact, sql, { ownerId: input.ownerId });
   const nextRecord: SuLaunchSpecRecord = {
     ...record,
     stack: rebuilt.artifact.stack,
@@ -573,6 +572,24 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
   };
   const anchor = await sql.begin(async (tx) => {
     const transaction = tx as unknown as Sql;
+    // Fence the actual before-image BEFORE the first package write. The UPDATE
+    // below alone is too late: a losing concurrent edit would already have
+    // provisioned its resources. Keep the row locked through desired activation.
+    const locked = await transaction<Array<{ id: number | string }>>`
+      SELECT id FROM harness_shared.adv_sessions
+       WHERE id = ${row.id}
+         AND workspace_id = ${input.workspaceId}
+         AND coord_owner_id = ${input.ownerId}
+         AND launch_spec = ${JSON.stringify(row.launch_spec)}::jsonb
+       FOR UPDATE
+    `;
+    if (locked.length !== 1)
+      throw new Error('The session identity changed concurrently; reload and review the new diff.');
+    // The package journal owns independent transactions and compensation, so it
+    // uses the pool, not this transaction. Its committed preparation receipts
+    // must survive an activation failure for recovery. The launch row remains
+    // locked while that preparation runs.
+    await provisionLaunchIdentityResources(rebuilt.artifact, sql, { ownerId: input.ownerId });
     const updated = await transaction<Array<{ id: number | string }>>`
       UPDATE harness_shared.adv_sessions
          SET launch_spec = ${JSON.stringify(nextRecord)}::jsonb

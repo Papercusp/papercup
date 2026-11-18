@@ -4486,6 +4486,194 @@
           ]
         }
       ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/raw-serializers.ts\",\"<module>\",\"helper-edge\",\"a8190c9cf25577dcfc3ae011bd934d0305d42c5c2ce3b44adcbb13075cd7aa27\"]#1",
+      "sourceSha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+      "statementSha256": "a8190c9cf25577dcfc3ae011bd934d0305d42c5c2ce3b44adcbb13075cd7aa27",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Symbol.for",
+          "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "'papercusp.db.numericArrayTyping'",
+          "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "call-target-declaration-unresolved",
+          "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/raw-serializers.ts\",\"<module>\",\"unresolved\",\"9c334b4c0399202bb65b598be7e9491dafee5c248fc02866645a449488fb1567\"]#1",
+      "sourceSha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+      "statementSha256": "9c334b4c0399202bb65b598be7e9491dafee5c248fc02866645a449488fb1567",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Symbol",
+          "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "for",
+          "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected this exact module initializer and its literal argument: the standard runtime Symbol.for intrinsic returns/registers one symbol for the fixed primitive string papercusp.db.numericArrayTyping. The Symbol.for property is an intrinsic data property, not a caller-supplied receiver or getter. Neither obtaining that function nor this literal invocation executes a SQL/append/claim/lifecycle operation. The native observer checks the intrinsic property descriptor. This site-only classification does not approve the module's client properties, user serializers, array iterators or enclosing callers.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/raw-serializers.ts\",\"numericArrayElementOid\",\"helper-edge\",\"d86a3a520a331e942523f78d2e16c537b3e6f7d259fed40b626a175f11f7a02e\"]#1",
+      "sourceSha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+      "statementSha256": "d86a3a520a331e942523f78d2e16c537b3e6f7d259fed40b626a175f11f7a02e",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Number.isSafeInteger",
+          "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "el",
+          "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "call-target-declaration-unresolved",
+          "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/raw-serializers.ts\",\"numericArrayElementOid\",\"unresolved\",\"5354c969bde2d8b868633a9b4c6cee2120065ce3e9c31c7c9d1aed4d87b64dd3\"]#1",
+      "sourceSha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+      "statementSha256": "5354c969bde2d8b868633a9b4c6cee2120065ce3e9c31c7c9d1aed4d87b64dd3",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "Number",
+          "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "isSafeInteger",
+          "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "Inspected numericArrayElementOid: immediately before this exact intrinsic call the loop rejects every element whose typeof is not number. Number.isSafeInteger is the standard runtime intrinsic data property; it examines the primitive number without coercing an object or invoking a supplied callback. Obtaining that data property and calling it with this primitive cannot mutate plan/claim/lifecycle state. The native observer exercises safe/unsafe integer boundaries and proves that the enclosing loop still invokes a custom iterator. The loop, caller argument provenance, property traps and serializer callbacks remain separately unreviewed.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts",
+            "work-item:WI-6554700010050108",
+            "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#classifies only inspected serializer intrinsics while retaining actual iterator and property effects"
+          ]
+        }
+      ]
     }
   ],
   "pendingAdvancing": [
