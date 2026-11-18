@@ -33,10 +33,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export default defineVitestConfig({
   layer: 'unit',
   laneSplit: true,
-  // Provider-capacity and cross-app served-engine checks use the explicit e2e
+  // Provider-capacity, served-engine and live delivery checks use the explicit e2e
   // route, which supplies their external app/runtime prerequisites.
   exclude: ['lib/blueprint/launch-blueprint-account-route.e2e.test.ts',
-    'lib/workspace-host/installed-computer-served-browser.e2e.test.ts'],
+    'lib/workspace-host/installed-computer-served-browser.e2e.test.ts',
+    'lib/endpoint-route/routes/adv/codex-home-repair-delivery.live.e2e.test.ts',
+    'lib/endpoint-route/routes/adv/codex-home-repair-final-delivery.live.e2e.test.ts'],
   setupFiles: [
     resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
     resolve(__dirname, 'lib/detached-imports/setup-vitest.ts'),

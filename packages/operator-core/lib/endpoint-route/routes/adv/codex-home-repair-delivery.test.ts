@@ -79,10 +79,18 @@ it('rejects substituted canonical receipt source artifact runtime and test ident
     f => { f.tests[0]!.testRunProvenance.commitSha = 'd'.repeat(40); },
     f => { f.tests[0]!.testRunProvenance.worktreeDirty = true; },
     f => { f.tests[0]!.testRunExecution.filePath = 'another.test.ts'; },
-    f => { f.tests[0]!.testRunExecution.testLayer = 'browser'; },
+    f => { f.tests[0]!.testRunExecution.testLayer = 'integration'; },
     f => { f.tests[0]!.testRunExecution.cases[0]!.caseKey = 'another passing case'; },
     f => { f.tests[0]!.testRunExecution.cases[0]!.occurrence = 2; },
-    f => { f.runtimeRead.mockImplementation(async () => ({ acceptedSource: { matches: true } }) as never); },
+    f => {
+      const observed = f.runtimeRead.getMockImplementation()!;
+      f.runtimeRead.mockImplementation(async (...args) => {
+        const value = await observed(...args);
+        // Deliberately remove the observed identity at the untrusted runtime boundary.
+        Reflect.deleteProperty(value, 'observingRuntime');
+        return value;
+      });
+    },
   ];
   for (const [index, change] of mutations.entries()) {
     const f = fixture(); change(f);
