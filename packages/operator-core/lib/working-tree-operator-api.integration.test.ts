@@ -21,6 +21,35 @@ const root = resolve(import.meta.dirname, '../../..');
 const workerOptions = isolatedWorkerOptions(600_000);
 const LIVE_OPERATOR_PORTS = ['3055', '3070', '3170'];
 
+// Keep the caller's decoder in the native suite so malformed/partial batches
+// fail before an expensive private build. It has no closure dependencies and
+// is serialized into the child below.
+function decodePrivateToolResponse(response: { structuredContent?: unknown }) {
+  const batch = response.structuredContent as {
+    results?: Array<{ status?: string; output?: { structuredContent?: unknown;
+      content?: Array<{ type: string; text?: string }> } }>;
+  } | undefined;
+  if (batch?.results?.length !== 1) throw new Error('Expected exactly one private MCP operation');
+  const operation = batch.results[0]!;
+  if (!['completed', 'failed'].includes(operation.status ?? '') || !operation.output)
+    throw new Error('Private MCP operation did not settle with a readable output');
+  if (operation.output.structuredContent) return operation.output.structuredContent;
+  const text = operation.output.content?.find(c => c.type === 'text' && c.text?.trim().startsWith('{'))?.text;
+  if (!text) throw new Error('Private MCP operation has no complete JSON body');
+  return JSON.parse(text);
+}
+
+it('R11 private caller decodes complete singleton results and refusals, rejecting omitted or ambiguous operations', () => {
+  for (const status of ['completed', 'failed']) {
+    const body = { ok: status === 'completed', code: status === 'failed' ? 'unregistered_instrument' : undefined };
+    for (const output of [{ structuredContent: body }, { content: [{ type: 'text', text: JSON.stringify(body) }] }])
+      expect(decodePrivateToolResponse({ structuredContent: { results: [{ status, output }] } })).toEqual(body);
+  }
+  for (const results of [[], [{ status: 'unknown-effect' }], [{ status: 'completed' }],
+    [{ status: 'completed', output: { content: [] } }], [{}, {}]])
+    expect(() => decodePrivateToolResponse({ structuredContent: { results } })).toThrow();
+});
+
 // Runs inside the private runtime as the CLI's caller command (`-- <caller>`).
 const CALLER_SCRIPT = [
   "const base = process.env.PAPERCUSP_OPERATOR_URL ?? '';",
@@ -112,19 +141,19 @@ it('R11 prepared operational rubric reaches public propose and complete readback
     'try {',
     '  await client.connect(new StreamableHTTPClientTransport(new URL(mcp), { requestInit: { headers: { Authorization: `Bearer ${bearer}`, origin: base } } }), { timeout: 30000 });',
     '  const listing = await client.listTools(undefined, { timeout: 30000 });',
-    "  const invoke = listing.tools.find(t => ['tools:invoke', 'tools_invoke'].includes(t.name));",
-    "  assert.ok(invoke, 'private public MCP tools:invoke must be advertised');",
+    '  const decode = ' + decodePrivateToolResponse.toString() + ';',
     '  const request = async (name, args) => {',
-    '    const response = await client.callTool({ name: invoke.name, arguments: { name, args } }, undefined, { timeout: 30000 });',
-    "    assert.notEqual(response.isError, true, JSON.stringify(response));",
-    '    return response.structuredContent ?? JSON.parse(response.content.find(c => c.type === "text" && c.text.trim().startsWith("{")).text);',
+    "    const tool = listing.tools.find(t => t.name === name || t.name === name.replaceAll(':', '_'));",
+    "    assert.ok(tool, 'Private operator must list ' + name);",
+    "    const response = await client.callTool({ name: tool.name, arguments: args, _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } }, undefined, { timeout: 30000 });",
+    '    return decode(response);',
     '  };',
-    "  const proposed = await request('rubrics:propose', prepared.rubric);",
+    "  const proposed = await request('rubrics:propose', { ...prepared.rubric, projection: { pick: ['ok', 'rubric.status', 'rubric.kind', 'rubric.ratifiedBy'] } });",
     '  assert.equal(proposed.ok, true, JSON.stringify(proposed));',
     "  assert.equal(proposed.rubric.status, 'proposed');",
     '  assert.equal(proposed.rubric.ratifiedBy, null);',
     "  assert.equal(proposed.rubric.kind, 'standard');",
-    "  const loaded = await request('rubrics:get', { rubricRef: prepared.rubric.rubricRef, detail: 'full' });",
+    "  const loaded = await request('rubrics:get', { rubricRef: prepared.rubric.rubricRef, detail: 'full', projection: { pick: ['ok', 'results[].ok', 'results[].rubricRef', 'results[].rubric.criteria', 'results[].rubric.status', 'results[].rubric.ratifiedBy'] } });",
     '  assert.equal(loaded.ok, true, JSON.stringify(loaded));',
     '  const persisted = loaded.results.find(r => r.rubricRef === prepared.rubric.rubricRef);',
     '  assert.equal(persisted.ok, true);',
