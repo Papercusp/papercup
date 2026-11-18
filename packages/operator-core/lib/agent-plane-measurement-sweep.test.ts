@@ -24,6 +24,7 @@ function coverage(over: Partial<DivergenceCoverage> = {}): DivergenceCoverage {
     failuresSeen: 0,
     transientFailuresExcluded: 0,
     rateLimitFailuresExcluded: 0,
+    deliveryOutcomesUnknown: 0,
     thrashRuns: 0,
     convergedRuns: 0,
     unsettledRuns: 0,

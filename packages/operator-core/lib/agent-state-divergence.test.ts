@@ -679,6 +679,36 @@ describe('the sampling leg — live without any stamp', () => {
     expect(out.coverage.samplingLegRan).toBe(true);
   });
 
+  it('does not infer failed test executions from the original post-handler abort receipts', () => {
+    // EI-29054509925158028: these RPCs lost their replies after returning;
+    // their independently retained test runs passed. The dispatch envelope
+    // alone cannot establish either execution failure or success.
+    const calls = [50421462, 50421981, 50422436].map((id, index) => call({
+      id, toolName: 'testing:run', status: 'error', errorCode: 'aborted',
+      errorMessage: 'tool "testing:run" was aborted by its parent signal after the handler returned',
+      invokedAt: new Date(T0 + index * 4 * 60_000).toISOString(),
+      args: { files: ['private-host-runtime.test.ts'] },
+    }));
+    const out = detectIntentActionDivergence(calls);
+
+    expect(out.divergences).toEqual([]);
+    expect(out.coverage.failuresSeen).toBe(0);
+    expect(out.coverage.deliveryOutcomesUnknown).toBe(3);
+    expect(out.coverage.convergedRuns).toBe(0);
+    expect(out.coverage.samplingLegRan).toBe(true);
+  });
+
+  it('keeps confirmed execution failures and ordinary caller aborts eligible', () => {
+    for (const errorCode of ['test_failed', 'aborted']) {
+      const out = detectIntentActionDivergence(flail(3, { sameArgs: true }).map(c => ({
+        ...c, toolName: 'testing:run', status: 'error', errorCode,
+        errorMessage: errorCode === 'test_failed' ? 'selected tests failed' : 'caller cancelled before dispatch',
+      })));
+      expect(out.divergences).toHaveLength(1);
+      expect(out.coverage.failuresSeen).toBe(3);
+    }
+  });
+
   it('filters transient and rate-limit calls out of a mixed retry run', () => {
     const base = (id: number, status: string, errorCode?: string, errorMessage?: string): DivergenceCall =>
       call({

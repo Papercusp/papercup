@@ -264,6 +264,14 @@ function isSuccessfulCodeRunDispatchWrapper(call: DivergenceCall): boolean {
   return metadata.effectiveStatus === 'ok' && metadata.childFailureCount === 0;
 }
 
+/** Dispatch emits this envelope only after a handler returned without an
+ * authoritative attempt receipt. Its reply was lost; its execution may have
+ * committed. Treat neither failure nor convergence as established by it. */
+function hasUnknownHandlerOutcome(call: DivergenceCall): boolean {
+  return call.errorCode === 'aborted'
+    && call.errorMessage === `tool "${call.toolName}" was aborted by its parent signal after the handler returned`;
+}
+
 /** The namespace half of a `group:verb` tool name; '' when unnamespaced. */
 export function toolNamespace(toolName: string): string {
   const i = toolName.indexOf(':');
@@ -366,6 +374,8 @@ export interface DivergenceCoverage {
   transientFailuresExcluded: number;
   /** Rate-limit failures excluded from retry and fallback evidence. */
   rateLimitFailuresExcluded: number;
+  /** Post-handler abort replies whose execution outcome remains unmeasured. */
+  deliveryOutcomesUnknown: number;
   /**
    * Runs that reached {@link RETRY_THRASH_THRESHOLD}.
    *
@@ -769,6 +779,7 @@ export function detectIntentActionDivergence(
   let launchFailuresReconciled = 0;
   let transientFailuresExcluded = 0;
   let rateLimitFailuresExcluded = 0;
+  let deliveryOutcomesUnknown = 0;
   for (const owned of byOwner.values()) {
     // A dispatch wrapper is an outer telemetry row for a deliberate schema
     // probe. Wrapper failures are expected negative-control evidence, not agent
@@ -786,6 +797,10 @@ export function detectIntentActionDivergence(
       const isFailure = isFailureStatus(c.status);
       if (!isFailure || hasCommittedLaunchOutcome(c) || isSuccessfulCodeRunDispatchWrapper(c)) return true;
       const errorClass = classifyToolError(c.errorCode, c.status, c.errorMessage);
+      if (hasUnknownHandlerOutcome(c)) {
+        deliveryOutcomesUnknown += 1;
+        return false;
+      }
       if (errorClass === 'transient') {
         transientFailuresExcluded += 1;
         return false;
@@ -957,6 +972,7 @@ export function detectIntentActionDivergence(
     failuresSeen,
     transientFailuresExcluded,
     rateLimitFailuresExcluded,
+    deliveryOutcomesUnknown,
     thrashRuns,
     convergedRuns,
     unsettledRuns,
@@ -965,7 +981,7 @@ export function detectIntentActionDivergence(
     // Same distinction as `comparableBuckets`: an agent whose every failure
     // self-corrected was genuinely examined and genuinely came back clean.
     samplingLegRan:
-      failuresSeen > 0 || transientFailuresExcluded > 0 || rateLimitFailuresExcluded > 0,
+      failuresSeen > 0 || transientFailuresExcluded > 0 || rateLimitFailuresExcluded > 0 || deliveryOutcomesUnknown > 0,
     terminalFilterApplied,
     terminalGoalCallsExcluded,
     bucketsCollapsedByTerminal,
