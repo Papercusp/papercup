@@ -500,6 +500,7 @@ async function supersedeSiblings(input: {
   bindings: ReadonlyArray<z.infer<typeof bindingSchema> | undefined>;
   results: ReadonlyArray<unknown>;
   harnessSlug: string | undefined;
+  workspaceId?: string;
   actorId: string;
 }): Promise<SupersessionOutcome[]> {
   const bound = input.results.map((result) => {
@@ -516,6 +517,7 @@ async function supersedeSiblings(input: {
   const persistedEvidence = keepBindingIds.length > 0
     ? await listSpecEvidence({
         harnessSlug: input.harnessSlug,
+        workspaceId: input.workspaceId,
         planSlugs: [...new Set(bound.flatMap((row) => (row ? [row.planSlug] : [])))],
         bindingIds: keepBindingIds,
       })
@@ -550,6 +552,7 @@ async function supersedeSiblings(input: {
   if (eligible.length > 0) {
     const batch = await supersedeSpecEvidenceAtRevisionBatch({
       harnessSlug: input.harnessSlug,
+      workspaceId: input.workspaceId,
       actorId: input.actorId,
       keepBindingIds,
       items: eligible.map(({ row, declared }) => ({
@@ -1091,7 +1094,7 @@ export interface BindSpecEvidenceItemsInput {
   harnessSlug: string;
   /** Who the binding is attributed to — an agent owner id, or a `system:` actor for a sweep. */
   actorId: string;
-  /** The caller's concrete workspace, used only for the vet-before-proof advisory. */
+  /** The caller's concrete workspace, preserved through measurement and storage. */
   workspaceId?: string;
   items: NonNullable<BindSpecEvidenceArgs['items']>;
   slug?: string;
@@ -1113,6 +1116,7 @@ export async function bindSpecEvidenceItems(
   timing: ReturnType<typeof bindingStageDiagnostics> = bindingStageDiagnostics(() => {}),
 ) {
       const { harnessSlug, actorId } = input;
+      const scopeOptions = { harnessSlug, workspaceId: input.workspaceId };
       const args = {
         slug: input.slug,
         harness: input.harnessArg,
@@ -1125,7 +1129,7 @@ export async function bindSpecEvidenceItems(
       // does (including the P-043 targeting check below). A failed expansion stays index-aligned
       // and is reported in the bulk envelope like any other refused item.
       const runScope = requested.some(isTestRunBinding)
-        ? await timing.phase('resolveRunScope', () => resolvePlanScope({ harnessSlug }))
+        ? await timing.phase('resolveRunScope', () => resolvePlanScope(scopeOptions))
         : null;
       const resolved: ResolvedBinding[] = await timing.phase('expandTestRuns', () =>
         Promise.all(
@@ -1154,7 +1158,7 @@ export async function bindSpecEvidenceItems(
       );
       const bindings = resolved.map((entry) => (entry.ok ? entry.binding : undefined));
       const measurementScope = bindings.some((binding) => binding?.measurement)
-        ? await timing.phase('resolveMeasurementScope', () => resolvePlanScope({ harnessSlug }))
+        ? await timing.phase('resolveMeasurementScope', () => resolvePlanScope(scopeOptions))
         : null;
       // P-022 / D-018: report the scope the binding ACTUALLY landed in, not the argument the
       // caller passed. An omitted `slug` resolves to the ad-hoc scope inside the store, and a
@@ -1165,7 +1169,7 @@ export async function bindSpecEvidenceItems(
         (instrumentDepsMemo ??=
           bindSpecEvidenceTestSeams.instrumentDeps?.(harnessSlug) ??
           defaultInstrumentProvenanceDeps(
-            async () => (measurementScope ?? (await resolvePlanScope({ harnessSlug }))).workspaceId,
+            async () => (measurementScope ?? (await resolvePlanScope(scopeOptions))).workspaceId,
             harnessSlug,
           ));
       let declaredConfigurationDepsMemo: DeclaredConfigurationBindDeps | undefined;
@@ -1173,7 +1177,7 @@ export async function bindSpecEvidenceItems(
         (declaredConfigurationDepsMemo ??=
           bindSpecEvidenceTestSeams.declaredConfigurationDeps?.(harnessSlug) ??
           defaultDeclaredConfigurationDeps(
-            async () => (measurementScope ?? (await resolvePlanScope({ harnessSlug }))).workspaceId,
+            async () => (measurementScope ?? (await resolvePlanScope(scopeOptions))).workspaceId,
           ));
       const env = await timing.phase('bindRows', () =>
         runBulk(
@@ -1274,6 +1278,7 @@ export async function bindSpecEvidenceItems(
                   : {}),
                 ...(args.slug ? { planSlug: args.slug } : {}),
                 harnessSlug,
+                workspaceId: input.workspaceId,
                 actorId,
               }, measured ?? undefined),
             );
@@ -1339,7 +1344,7 @@ export async function bindSpecEvidenceItems(
       );
       const supersession = args.supersedeAtRevision
         ? await timing.phase('supersedeSiblings', () =>
-            supersedeSiblings({ bindings, results: env.results, harnessSlug, actorId }),
+            supersedeSiblings({ bindings, results: env.results, ...scopeOptions, actorId }),
           )
         : undefined;
       const advisories = [advisory, gap].filter(Boolean);
