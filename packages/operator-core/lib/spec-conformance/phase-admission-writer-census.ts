@@ -32,6 +32,16 @@ const mutationBuilderMethods = new Set([
 ]);
 
 export interface PhaseWriterSource { path: string; content: string }
+/** Syntax evidence only. Tag arguments are the substitution expressions; the
+ * complete template is separate. No argument evaluation/binding is inferred. */
+export interface PhaseWriterInvocation {
+  form: 'call' | 'construct' | 'tag';
+  target: string;
+  arguments: string[];
+  template?: string;
+  line: number;
+  column: number;
+}
 export interface PhaseWriterSite {
   /** Complete path, enclosing operation and statement digest; no display truncation. */
   id: string;
@@ -52,6 +62,7 @@ export interface PhaseWriterSite {
   helperTarget?: { path: string; sha256: string; basis: 'syntax-bound-module-target-not-runtime-closure' };
   /** Exact syntax target, never callback binding or an effect exemption. */
   helperDeclaration?: SymbolDeclaration;
+  invocation?: PhaseWriterInvocation;
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
@@ -220,11 +231,11 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; spelling: string; statement: string;
     line: number; column: number; importedName?: string; importedCall: boolean; argumentNames: string[];
-    argumentTexts: string[]; hasDirectSite: boolean }> = [];
+    argumentTexts: string[]; hasDirectSite: boolean; invocation: PhaseWriterInvocation }> = [];
   const aliases: Array<{ name: string; target: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
     kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
-      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget' | 'helperDeclaration'>> = {}) => {
+      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget' | 'helperDeclaration' | 'invocation'>> = {}) => {
     const statementSha256 = digest(statement), sourceSha256 = sourceHashes.get(source.path)!;
     // Identical statements in the same operation are separate source occurrences.
     const base = JSON.stringify([source.path, operation, kind, statementSha256]);
@@ -377,7 +388,19 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         }
         if (ts.isTaggedTemplateExpression(node)) {
           const text = literal(node.template);
+          const start = sites.length;
           if (text) inspectSql(node, text.sql, text.edges);
+          const target = node.tag.getText(unit.ast);
+          // A successful non-mutating SQL parse says nothing about the tag
+          // function. It may implement a writer or invoke an opaque callback.
+          // Existing SQL sites keep their reviewed statement/frontiers intact;
+          // retain a new unresolved site when SQL inspection produced none.
+          if (sites.length === start) add(source, operation(node), node.getText(unit.ast), unit.span(node).line,
+            'unresolved', { callees: [target], dynamicEdges: [target, ...(text?.edges ?? [])],
+              unresolved: ['tagged-invocation-target-requires-review'] });
+          const invocation: PhaseWriterInvocation = { form: 'tag', target, arguments: text?.edges ?? [],
+            template: node.template.getText(unit.ast), ...unit.span(node.tag) };
+          for (let index = start; index < sites.length; index++) sites[index]!.invocation = invocation;
         } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           const callee = node.expression.getText(unit.ast);
           const target = unwrapTarget(node.expression);
@@ -387,11 +410,13 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
             && ts.isIdentifier(target.expression) ? target.name : target;
           const rootName = ts.isIdentifier(root) ? root.text : root.getText(unit.ast);
           const directSiteStart = sites.length;
+          const invocation: PhaseWriterInvocation = { form: ts.isNewExpression(node) ? 'construct' : 'call',
+            target: callee, arguments: args.map(argument => argument.getText(unit.ast)), ...unit.span(node.expression) };
           const call = { path: source.path, operation: operation(node), callee, spelling: targetName(target) ?? callee,
             statement: node.getText(unit.ast), line: unit.span(bindingSite).line, column: unit.span(bindingSite).column,
             importedCall: importedLocals.has(rootName),
             argumentNames: args.map(targetName).filter((name): name is string => name !== undefined),
-            argumentTexts: args.map(argument => argument.getText(unit.ast)), hasDirectSite: false,
+            argumentTexts: invocation.arguments, hasDirectSite: false, invocation,
             ...(bindings.get(node)?.imported ? { importedName: bindings.get(node)!.imported } : {}) };
           calls.push(call);
           let parameterCall = false;
@@ -427,6 +452,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
               'authority-append', { dynamicEdges: args.map(arg => arg.getText(unit.ast)) });
           }
           call.hasDirectSite = sites.length !== directSiteStart;
+          for (let index = directSiteStart; index < sites.length; index++) sites[index]!.invocation = invocation;
         } else if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node)) {
           // A dormant/indirect SQL literal is still in the population. Looking
           // only at .unsafe/query calls would miss a newly introduced wrapper.
@@ -504,6 +530,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           path: target.path, sha256: sourceHashes.get(target.path)!, basis: 'syntax-bound-module-target-not-runtime-closure',
         } : undefined;
         add(source, call.operation, call.statement, call.line, 'helper-edge', {
+          invocation: call.invocation,
           callees: [call.callee], dynamicEdges: [call.callee,
             ...(opaqueCall ? call.argumentTexts : []),
             ...(helperTarget ? [`source:${helperTarget.path}#${helperTarget.sha256}`] : [])],

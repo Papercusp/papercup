@@ -1087,6 +1087,53 @@ describe('phase binding writer census', () => {
       .toThrow('unresolved-edge');
   });
 
+  it('retains opaque tagged invocations even without SQL text through the native tree guard', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-tag-frontier-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/tag.ts';
+      const content = 'function entry(callback) { return callback`SELECT 1`; }';
+      writeFileSync(join(root, path), content);
+      const inventory = inventoryPhaseWriterTree(root);
+      const site = inventory.sites.find(site => site.statement === 'callback`SELECT 1`')!;
+      expect(site).toBeDefined();
+      expect(site.unresolved).toContain('tagged-invocation-target-requires-review');
+      expect(site.dynamicEdges).toEqual(['callback']);
+      expect(site.invocation).toEqual({ form: 'tag', target: 'callback', arguments: [],
+        template: '`SELECT 1`', line: 1, column: content.indexOf('callback`') + 1 });
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const reviewed = inventory.sites.map(site => review(site));
+      expect(assertPhaseWriterTreeCensus(root, reviewed).ready).toBe(true);
+      writeFileSync(join(root, path), content.replace('SELECT 1', 'SELECT 2'));
+      expect(() => assertPhaseWriterTreeCensus(root, reviewed)).toThrow('stale-review');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('preserves complete syntax arguments on seeded helper direct SQL and constructor sites', () => {
+    const inventory = inventoryPhaseWriters([
+      source('export function mutate(tx, ...args) { return tx(args); }', 'packages/target.ts'),
+      source(`import { mutate } from './target';
+        function entry(db, callback, values) {
+          mutate(db, callback, ...values);
+          db.unsafe('UPDATE work_items SET status=\\'open\\'', values, callback);
+          new Wrapper(callback, ...values);
+        }`, 'packages/entry.ts'),
+    ]);
+    for (const [statement, form, target, args] of [
+      ['mutate(db, callback, ...values)', 'call', 'mutate', ['db', 'callback', '...values']],
+      ["db.unsafe('UPDATE work_items SET status=\\'open\\'', values, callback)", 'call', 'db.unsafe',
+        ["'UPDATE work_items SET status=\\'open\\''", 'values', 'callback']],
+      ['new Wrapper(callback, ...values)', 'construct', 'Wrapper', ['callback', '...values']],
+    ] as const) {
+      const sites = inventory.sites.filter(site => site.statement === statement);
+      expect(sites.length, statement).toBeGreaterThan(0);
+      for (const site of sites) {
+        expect(site.invocation, statement).toMatchObject({ form, target, arguments: args });
+        expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(site.id);
+      }
+    }
+  });
+
   it('pins exact helper declarations while keeping opaque callback arguments unproved', () => {
     const sources = [
       source('export function unrelated() {} export function mutate(tx) { return tx(payload); }', 'packages/targets.ts'),
