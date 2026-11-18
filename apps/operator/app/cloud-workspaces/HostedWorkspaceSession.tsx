@@ -212,6 +212,11 @@ export function HostedWorkspaceSession({
   const pendingDesktopRequestsRef = useRef(
     new Map<string, HostedDesktopOperation>(),
   );
+  const thumbnailQueueRef = useRef(new Set<string>());
+  const thumbnailReadsRef = useRef(new Map<string, {
+    desktopSessionId: string; timer: ReturnType<typeof setTimeout>;
+  }>());
+  const flushThumbnailQueueRef = useRef<() => boolean>(() => false);
   const rosterReadRef = useRef<{
     requestId: string; generation: string | null; cursor: string | null;
     entries: Map<string, HostedDesktopRosterEntry>; cursors: Set<string>; resyncs: number; expectedTotal: number | null;
@@ -295,6 +300,46 @@ export function HostedWorkspaceSession({
     rosterTimerRef.current = null;
   }, []);
 
+  const finishThumbnailRead = useCallback((id: string) => {
+    const read = thumbnailReadsRef.current.get(id);
+    if (!read) return false;
+    clearTimeout(read.timer);
+    thumbnailReadsRef.current.delete(id);
+    pendingDesktopRequestsRef.current.delete(id);
+    return true;
+  }, []);
+
+  const clearThumbnailReads = useCallback(() => {
+    thumbnailQueueRef.current.clear();
+    for (const id of thumbnailReadsRef.current.keys()) finishThumbnailRead(id);
+  }, [finishThumbnailRead]);
+
+  // Roster continuation and pictures share authenticated, serialized output.
+  // Bound wire requests, coalesce refreshes, and release an unanswered slot.
+  const flushThumbnailQueue = useCallback(() => {
+    if (rosterReadRef.current) return true;
+    while (thumbnailReadsRef.current.size < 4 && thumbnailQueueRef.current.size) {
+      const desktopSessionId = thumbnailQueueRef.current.values().next().value!;
+      thumbnailQueueRef.current.delete(desktopSessionId);
+      const id = requestId("desktop-thumbnail");
+      if (!send({ type: "desktop.thumbnail", requestId: id, desktopSessionId })) {
+        thumbnailQueueRef.current.clear();
+        callbackRefs.current.onDesktopQueryStateChange?.("error", "thumbnail", "relay_unavailable");
+        return false;
+      }
+      const timer = setTimeout(() => {
+        if (!finishThumbnailRead(id)) return;
+        callbackRefs.current.onDesktopQueryStateChange?.("error", "thumbnail", "thumbnail_timeout");
+        flushThumbnailQueueRef.current();
+      }, 15_000);
+      thumbnailReadsRef.current.set(id, { desktopSessionId, timer });
+      pendingDesktopRequestsRef.current.set(id, "thumbnail");
+      callbackRefs.current.onDesktopQueryStateChange?.("loading", "thumbnail");
+    }
+    return true;
+  }, [finishThumbnailRead, send]);
+  flushThumbnailQueueRef.current = flushThumbnailQueue;
+
   const finishRosterRead = useCallback((code?: string) => {
     clearRosterRead();
     if (code) callbackRefs.current.onDesktopQueryStateChange?.("error", "roster", code);
@@ -309,6 +354,9 @@ export function HostedWorkspaceSession({
   const requestDesktopRoster = useCallback((resyncs = 0) => {
     // Periodic refresh must not continually replace an unfinished multi-page read.
     if (rosterReadRef.current) return true;
+    // Queued pictures belong to the previous inventory. The completed refresh
+    // will enqueue only desktops still present and visible in the grid.
+    thumbnailQueueRef.current.clear();
     const requestIdValue = requestId("desktop-roster");
     if (!send({ type: "desktop.roster", requestId: requestIdValue })) {
       callbackRefs.current.onDesktopQueryStateChange?.(
@@ -331,27 +379,14 @@ export function HostedWorkspaceSession({
   const requestDesktopThumbnail = useCallback(
     (desktopSessionId: string) => {
       const normalized = desktopSessionId.trim();
-      if (!normalized) return false;
-      const requestIdValue = requestId("desktop-thumbnail");
-      if (
-        !send({
-          type: "desktop.thumbnail",
-          requestId: requestIdValue,
-          desktopSessionId: normalized,
-        })
-      ) {
-        callbackRefs.current.onDesktopQueryStateChange?.(
-          "error",
-          "thumbnail",
-          "relay_unavailable",
-        );
-        return false;
+      if (!normalized || rosterReadRef.current) return false;
+      for (const read of thumbnailReadsRef.current.values()) {
+        if (read.desktopSessionId === normalized) return true;
       }
-      pendingDesktopRequestsRef.current.set(requestIdValue, "thumbnail");
-      callbackRefs.current.onDesktopQueryStateChange?.("loading", "thumbnail");
-      return true;
+      thumbnailQueueRef.current.add(normalized);
+      return flushThumbnailQueue();
     },
-    [send],
+    [flushThumbnailQueue],
   );
 
   const requestDesktopStart = useCallback((options?: { personal?: boolean }) => {
@@ -411,6 +446,7 @@ export function HostedWorkspaceSession({
     socketRef.current = null;
     pendingListPathsRef.current.clear();
     pendingDesktopRequestsRef.current.clear();
+    clearThumbnailReads();
     clearRosterRead();
     if (startTimerRef.current) clearTimeout(startTimerRef.current);
     startTimerRef.current = null;
@@ -436,7 +472,7 @@ export function HostedWorkspaceSession({
     terminalRef.current = null;
     fitRef.current = null;
     roleRef.current = null;
-  }, [clearRosterRead, linkedInstallation]);
+  }, [clearRosterRead, clearThumbnailReads, linkedInstallation]);
 
   useEffect(() => () => dispose(true), [dispose]);
 
@@ -583,7 +619,8 @@ export function HostedWorkspaceSession({
         return;
       }
       if (desktopEvent?.kind === "thumbnail") {
-        pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
+        if (thumbnailReadsRef.current.get(desktopEvent.requestId)?.desktopSessionId !== desktopEvent.desktopSessionId
+          || !finishThumbnailRead(desktopEvent.requestId)) return;
         callbackRefs.current.onDesktopThumbnailChange?.({
           desktopSessionId: desktopEvent.desktopSessionId,
           data: desktopEvent.data,
@@ -592,6 +629,7 @@ export function HostedWorkspaceSession({
             : {}),
         });
         callbackRefs.current.onDesktopQueryStateChange?.("ready", "thumbnail");
+        flushThumbnailQueue();
         return;
       }
       if (desktopEvent?.kind === "started") {
@@ -614,6 +652,10 @@ export function HostedWorkspaceSession({
             requestDesktopRoster(read.resyncs + 1);
           }
           return;
+        }
+        if (desktopEvent.operation === "desktop.thumbnail") {
+          if (!desktopEvent.requestId || !finishThumbnailRead(desktopEvent.requestId)) return;
+          flushThumbnailQueue();
         }
         if (desktopEvent.requestId) {
           pendingDesktopRequestsRef.current.delete(desktopEvent.requestId);
@@ -695,6 +737,7 @@ export function HostedWorkspaceSession({
           `\r\n\u001b[33m[process exited: ${event.code}, signal ${event.signal}]\u001b[0m`,
         );
         pendingDesktopRequestsRef.current.clear();
+        clearThumbnailReads();
         clearRosterRead();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
@@ -756,7 +799,7 @@ export function HostedWorkspaceSession({
         }
       }
     },
-    [armRosterDeadline, clearRosterRead, desktopBridge, finishRosterRead, hostId, listFiles, requestDesktopRoster, send, linkedInstallation],
+    [armRosterDeadline, clearRosterRead, clearThumbnailReads, desktopBridge, finishRosterRead, finishThumbnailRead, flushThumbnailQueue, hostId, listFiles, requestDesktopRoster, send, linkedInstallation],
   );
 
   const connect = useCallback(async () => {
@@ -852,6 +895,7 @@ export function HostedWorkspaceSession({
         ticketWorkspaceRef.current = null;
         callbackRefs.current.onWorkspaceBound?.(null);
         pendingDesktopRequestsRef.current.clear();
+        clearThumbnailReads();
         clearRosterRead();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
@@ -873,6 +917,7 @@ export function HostedWorkspaceSession({
         )
           return;
         pendingDesktopRequestsRef.current.clear();
+        clearThumbnailReads();
         clearRosterRead();
         callbackRefs.current.onDesktopBridgeChange?.(null);
         callbackRefs.current.onDesktopQueryStateChange?.("idle");
@@ -890,7 +935,7 @@ export function HostedWorkspaceSession({
       setError(cause instanceof Error ? cause.message : String(cause));
       setStatus("error");
     }
-  }, [clearRosterRead, dispose, handleMessage, hostId, initializeTerminal, routeLabel, linkedInstallation]);
+  }, [clearRosterRead, clearThumbnailReads, dispose, handleMessage, hostId, initializeTerminal, routeLabel, linkedInstallation]);
 
   const disconnect = useCallback(() => {
     dispose(true);

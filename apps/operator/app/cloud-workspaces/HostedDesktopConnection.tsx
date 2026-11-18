@@ -199,7 +199,9 @@ function DesktopConnection({
       }
     },
     DESKTOP_GRID_THUMBNAIL_REFRESH_MS,
-    gridVisible && roster.length > 0,
+    // Continuation pages share this channel with thumbnails. Finish discovery
+    // before asking for pictures, including when refreshing an existing roster.
+    gridVisible && rosterState === "ready" && roster.length > 0,
   );
   // A desktop an agent starts later must appear without a manual refresh.
   useVisibleRefresh(

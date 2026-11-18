@@ -97,6 +97,7 @@ import {
 import type { ReactElement } from "react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { HostedDesktopConnection } from "./HostedDesktopConnection";
+import { DESKTOP_GRID_THUMBNAIL_REFRESH_MS } from "@/app/_components/desktop-grid/desktop-grid-model";
 
 /**
  * The connection keeps the open desktop, pins and filter in the URL (P-006 grid
@@ -986,6 +987,50 @@ describe("HostedWorkspaceSession", () => {
     };
     type Sent = { type: string; requestId?: string; personal?: boolean };
 
+    it("defers thumbnail polling until the complete paginated roster arrives", async () => {
+      renderConnection(<HostedDesktopConnection workspace={desktopWorkspace} />);
+      const socket = await connected();
+      await ready(socket);
+      const sent = () => socket.send.mock.calls.map(([raw]) => JSON.parse(String(raw)));
+      const request = sent().find(message => message.type === "desktop.roster");
+      expect(request).toBeTruthy();
+      vi.useFakeTimers();
+      try {
+        const page = {
+          type: "desktop.roster.result", requestId: request.requestId,
+          desktops: Array.from({ length: 64 }, (_, i) => ({ desktopSessionId: `d-${i}`, state: "ready" })),
+          hostId: "host-1", generation: "stable", cursor: null,
+          nextCursor: "stable:64", hasMore: true, remaining: 1,
+        };
+        await act(async () => socket.emit("message", { data: JSON.stringify(page) }));
+        expect(sent().filter(message => message.type === "desktop.roster").at(-1)).toMatchObject({ cursor: "stable:64" });
+        expect(sent().filter(message => message.type === "desktop.thumbnail")).toHaveLength(0);
+        await act(async () => vi.advanceTimersByTime(DESKTOP_GRID_THUMBNAIL_REFRESH_MS));
+        expect(sent().filter(message => message.type === "desktop.thumbnail")).toHaveLength(0);
+
+        await act(async () => socket.emit("message", { data: JSON.stringify({
+          ...page, cursor: "stable:64", nextCursor: null, hasMore: false, remaining: 0,
+          desktops: [{ desktopSessionId: "d-64", state: "ready" }],
+        }) }));
+        const thumbnails = () => sent().filter(message => message.type === "desktop.thumbnail");
+        expect(thumbnails()).toHaveLength(4);
+        for (let i = 0; i < 65; i += 1) {
+          const next = thumbnails()[i];
+          expect(next?.desktopSessionId).toBe(`d-${i}`);
+          await act(async () => socket.emit("message", { data: JSON.stringify({
+            type: "desktop.thumbnail.result", requestId: next.requestId,
+            desktopSessionId: next.desktopSessionId, data: null,
+          }) }));
+          expect(thumbnails().length - i - 1).toBeLessThanOrEqual(4);
+        }
+        expect(thumbnails()).toHaveLength(65);
+        await act(async () => vi.advanceTimersByTime(DESKTOP_GRID_THUMBNAIL_REFRESH_MS));
+        expect(thumbnails()).toHaveLength(69);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     /** Connect, answer the roster with `desktops`, and optionally take the controller role. */
     async function openConnection(
       desktops: Array<Record<string, unknown>>,
@@ -1260,6 +1305,64 @@ describe("HostedWorkspaceSession", () => {
         bytes: 2,
       }),
     );
+  });
+
+  it.each(["result", "error"] as const)("bounds and deduplicates thumbnail reads while a %s releases the next queued read", async outcome => {
+    const onDesktopBridgeChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="workspace-relay" workspaceName="research-control"
+      onDesktopBridgeChange={onDesktopBridgeChange} />);
+    const socket = await connected();
+    await ready(socket);
+    const sent = () => socket.send.mock.calls.map(([raw]) => JSON.parse(String(raw)));
+    const roster = sent().find(message => message.type === "desktop.roster");
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "desktop.roster.result", requestId: roster.requestId, desktops: [] }) }));
+    const bridge = onDesktopBridgeChange.mock.calls.at(-1)![0];
+    for (let i = 0; i < 6; i += 1) expect(bridge.requestThumbnail(`d-${i}`)).toBe(true);
+    const thumbnails = () => sent().filter(message => message.type === "desktop.thumbnail");
+    expect(thumbnails()).toHaveLength(4);
+    expect(bridge.requestThumbnail("d-0")).toBe(true);
+    expect(bridge.requestThumbnail("d-5")).toBe(true);
+    expect(thumbnails()).toHaveLength(4);
+    const first = thumbnails()[0];
+    act(() => socket.emit("message", { data: JSON.stringify(outcome === "result"
+      ? { type: "desktop.thumbnail.result", requestId: first.requestId, desktopSessionId: "d-0", data: null }
+      : { type: "operation.error", requestId: first.requestId, operation: "desktop.thumbnail", code: "thumbnail_unavailable" }) }));
+    expect(thumbnails()).toHaveLength(5);
+    expect(thumbnails().at(-1)).toMatchObject({ desktopSessionId: "d-4" });
+  });
+
+  it("expires unanswered thumbnail reads, ignores late replies and cancels queued work on detach", async () => {
+    const onDesktopBridgeChange = vi.fn();
+    const onDesktopThumbnailChange = vi.fn();
+    const onDesktopQueryStateChange = vi.fn();
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="workspace-relay" workspaceName="research-control"
+      onDesktopBridgeChange={onDesktopBridgeChange} onDesktopThumbnailChange={onDesktopThumbnailChange}
+      onDesktopQueryStateChange={onDesktopQueryStateChange} />);
+    const socket = await connected();
+    await ready(socket);
+    const sent = () => socket.send.mock.calls.map(([raw]) => JSON.parse(String(raw)));
+    const roster = sent().find(message => message.type === "desktop.roster");
+    act(() => socket.emit("message", { data: JSON.stringify({ type: "desktop.roster.result", requestId: roster.requestId, desktops: [] }) }));
+    const bridge = onDesktopBridgeChange.mock.calls.at(-1)![0];
+    vi.useFakeTimers();
+    try {
+      for (let i = 0; i < 6; i += 1) bridge.requestThumbnail(`d-${i}`);
+      const thumbnails = () => sent().filter(message => message.type === "desktop.thumbnail");
+      expect(thumbnails()).toHaveLength(4);
+      const first = thumbnails()[0];
+      act(() => vi.advanceTimersByTime(15_000));
+      expect(onDesktopQueryStateChange).toHaveBeenCalledWith("error", "thumbnail", "thumbnail_timeout");
+      expect(thumbnails()).toHaveLength(6);
+      act(() => socket.emit("message", { data: JSON.stringify({ type: "desktop.thumbnail.result",
+        requestId: first.requestId, desktopSessionId: "d-0", data: null }) }));
+      expect(onDesktopThumbnailChange).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Detach" }));
+      onDesktopQueryStateChange.mockClear();
+      const sends = socket.send.mock.calls.length;
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(socket.send.mock.calls).toHaveLength(sends);
+      expect(onDesktopQueryStateChange).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it("follows roster continuation, ignores duplicate pages and reports ready only after exhaustion", async () => {
