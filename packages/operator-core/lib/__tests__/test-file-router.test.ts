@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { transformSync } from 'esbuild';
 import { mockImplementationTyped } from '../testing/typed-mock';
 import { stripVitestAnsi } from '../../../../scripts/lib/vitest-summary.mjs';
+import { readTaskDeadlineEpochMs } from '../../../../scripts/lib/task-deadline.mjs';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import AdminTestRunsReporter, {
   appendTestRunReceipts,
@@ -991,7 +993,7 @@ describe('test-files router', () => {
     },
   );
 
-  it('refuses unavailable private-proof PG after dependency preparation but before any test child', async () => {
+  it('refuses unavailable private-proof PG before dependency preparation or any test child', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
     const frozen = vi.fn(async options => { await options.prepareChildEnv(); return 7; });
@@ -1005,7 +1007,7 @@ describe('test-files router', () => {
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       })).toBe(2);
       expect(preflight).toHaveBeenCalledOnce();
-      expect(frozen).toHaveBeenCalledOnce();
+      expect(frozen).not.toHaveBeenCalled();
       expect(list).not.toHaveBeenCalled();
       expect(run).not.toHaveBeenCalled();
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('TEST SUBSTRATE STORAGE LOW'));
@@ -1041,7 +1043,9 @@ describe('test-files router', () => {
         if (!config?.config?.test) throw new Error('Actual operator config did not load');
         console.log('guarded-native-config-loaded');
       `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
-    expect(child.status, child.stderr).toBe(0);
+    expect(child.status, JSON.stringify({ configPath, status: child.status, signal: child.signal,
+      error: child.error && { ...child.error, message: child.error.message },
+      stderr: child.stderr, stdout: child.stdout })).toBe(0);
     expect(child.stdout).toContain('guarded-native-config-loaded');
   });
   it('runs only the selected Node case through the common router selector', async () => {
@@ -2046,9 +2050,44 @@ describe('Vitest main-process close timeout is a finalization error', () => {
     }
   }, 60_000);
 
-  it('focused source-preview export case group exits without server or worker teardown leaks', () => {
+  it('focused source-preview export case group exits without server or worker teardown leaks', async () => {
     const target = 'packages/operator-core/lib/source-preview-export.test.ts';
-    const run = spawnSync(process.execPath, [
+    const artifactBase = process.env.PAPERCUSP_TEST_ARTIFACT_DIR ?? join(REPO_ROOT, '.papercusp', 'test-artifacts');
+    mkdirSync(artifactBase, { recursive: true });
+    const directory = mkdtempSync(join(artifactBase, 'source-preview-router-'));
+    const receiptPath = join(directory, 'receipt.json');
+    const phasesPath = join(directory, 'phases.jsonl');
+    const runGroup = randomUUID();
+    const startedAtMs = Date.now();
+    const inheritedDeadlineAtMs = readTaskDeadlineEpochMs(process.env);
+    const inheritedChildCutoffAtMs = readTaskDeadlineEpochMs({
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: process.env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS,
+    });
+    const deadlineAtMs = Math.min(startedAtMs + 90_000, inheritedDeadlineAtMs ?? Infinity);
+    // Keep the existing 90s launch / 120s test ceilings. Custody must settle
+    // before this local launcher exits, even when the enclosing run has time left.
+    const childCutoffAtMs = Math.min(deadlineAtMs - 30_000, inheritedChildCutoffAtMs ?? Infinity);
+    const receipt = { target, runGroup, parentRunGroup: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+      startedAtMs, inheritedDeadlineAtMs, inheritedChildCutoffAtMs,
+      deadlineAtMs, childCutoffAtMs, stdout: join(directory, 'stdout.log'),
+      stderr: join(directory, 'stderr.log'), phases: phasesPath };
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, phase: 'before-launch' }, null, 2));
+    const diagnostic = `Nested source-preview router receipt: ${receiptPath}`;
+    expect(childCutoffAtMs, diagnostic).toBeGreaterThan(Date.now());
+    const env = { ...process.env, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_TEST_ARTIFACT_DIR: directory,
+      // This is an independent expected-file population. Sharing the outer
+      // run id adds this leaf to its ledger and invalidates exact coverage.
+      PAPERCUSP_TEST_RUN_GROUP: runGroup,
+      PAPERCUSP_TEST_RUN_RECEIPT_FILE: join(directory, 'test-run-receipts.jsonl'),
+      ...(process.env.PC_EXECUTED_SOURCE_MAP_OUT
+        ? { PC_EXECUTED_SOURCE_MAP_OUT: join(directory, 'executed-source-map.json') } : {}),
+      ...(process.env.PC_EXECUTED_SOURCE_MAP_RESULT
+        ? { PC_EXECUTED_SOURCE_MAP_RESULT: join(directory, 'executed-source-result.json') } : {}),
+      PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadlineAtMs),
+      PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(childCutoffAtMs) };
+    const timeoutMs = deadlineAtMs - Date.now();
+    const run = await runCapturedTestProcess(process.execPath, [
       join(REPO_ROOT, 'scripts/test-files.mjs'),
       target,
       '-t', 'source-preview export',
@@ -2056,18 +2095,36 @@ describe('Vitest main-process close timeout is a finalization error', () => {
       '--reporter=hanging-process',
     ], {
       cwd: REPO_ROOT,
-      env: { ...process.env, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp' },
-      encoding: 'utf8',
-      timeout: 90_000,
+      env,
+      // The nested router owns leaf completion and custody. Wait for router
+      // exit rather than treating its Vitest summary as terminal evidence.
+      files: [],
+      timeoutMs,
+      watchdogMaxMs: timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
+      onProgress: (line: string) => appendFileSync(phasesPath,
+        JSON.stringify({ atMs: Date.now(), line }) + '\n'),
+      governedProcessImpl: (_options: unknown, child: Function) =>
+        child(undefined, env, { inherited: true }),
     });
+    const retainError = (error: unknown) => error instanceof Error
+      ? { ...Object.fromEntries(Object.getOwnPropertyNames(error).map(key =>
+        [key, Reflect.get(error, key)])), name: error.name, message: error.message }
+      : error;
+    writeFileSync(receipt.stdout, run.rawStreams?.stdout ?? run.stdout);
+    writeFileSync(receipt.stderr, run.rawStreams?.stderr ?? run.stderr);
+    writeFileSync(receiptPath, JSON.stringify({ ...receipt, phase: 'returned', returnedAtMs: Date.now(),
+      status: run.status, signal: run.signal, timedOut: run.timedOut,
+      error: retainError(run.error), governedFinalizationError: retainError(run.governedFinalizationError),
+      streamsComplete: run.rawStreams?.complete ?? !run.error,
+      processDiagnostic: run.processDiagnostic }, null, 2));
     const output = `${run.stdout}\n${run.stderr}`;
-    expect(run.error, output).toBeUndefined();
-    expect(run.status, output).toBe(0);
-    expect(output).toMatch(/TEST_FILE_RESULT requested=\d+ executed=1 matched=1 status=passed\b/);
-    expect(output).not.toContain('TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR');
-    expect(output).not.toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
-    expect(output).not.toMatch(/Tests closed successfully but something prevents (?:Vite server|2 Vite servers|the main process) from exiting/);
+    expect(run, diagnostic).toMatchObject({ status: 0, signal: null, timedOut: false, error: null });
+    expect(run.governedFinalizationError, diagnostic).toBeUndefined();
+    expect(output, diagnostic).toMatch(/TEST_FILE_RESULT requested=\d+ executed=1 matched=1 status=passed\b/);
+    expect(output, diagnostic).not.toContain('TEST_FILE_CLOSE_TIMEOUT_FINALIZATION_ERROR');
+    expect(output, diagnostic).not.toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
+    expect(output, diagnostic).not.toMatch(/Tests closed successfully but something prevents (?:Vite server|2 Vite servers|the main process) from exiting/);
   }, 120_000);
 });
 
