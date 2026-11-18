@@ -80,6 +80,12 @@ export const scorecardRepairArgs = z
       sourceRoot: z.string().min(1).max(4096),
       bundlePath: z.string().min(1).max(4096),
     }).strict().optional().describe('Existing maintained external host output and its frozen Git source. The dispatcher verifies the manifest, compiler inputs and target evaluator before retention.'),
+    sourcePreparation: z.object({
+      sourceRoot: z.string().min(1).max(4096),
+      receiptPath: z.string().min(1).max(4096),
+      receiptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      outputDir: z.string().min(1).max(4096),
+    }).strict().optional().describe('Build a frozen exact evaluator through the maintained host builder before independent audit, including before plan start. Requires the original external verifier receipt and its SHA256, plus a new external output directory. Returns sourcePreparation task/log custody while building; repeat the identical call to qualify and dispatch after success. Failed attempts require an explicitly new outputDir.'),
     gradingLaunch: z
       .object({
         agent: z.literal('codex'),
@@ -91,8 +97,9 @@ export const scorecardRepairArgs = z
       .optional()
       .describe('Optional existing grading launch profile: pin independent auditors to codex/gpt-6.1-sol/xhigh through account auto, as in the acceptance-grading sweep.'),
   })
-  .strict().refine(args => !args.preparedSource || Boolean(args.targetIds?.length),
-    'Prepared audit source requires explicit targetIds');
+  .strict().refine(args => !(args.preparedSource || args.sourcePreparation) || Boolean(args.targetIds?.length),
+    'Prepared audit source requires explicit targetIds')
+  .refine(args => !(args.preparedSource && args.sourcePreparation), 'Choose existing output or source preparation');
 
 export default defineTool({
   name: 'scorecards:repair',
@@ -101,7 +108,7 @@ export default defineTool({
     'Dispatch pending grading-integrity audits to independent auditors through the bounded idempotent dispatcher. ' +
     `Pass targetIds for a refusal; omitting them dispatches ${SCORECARD_REPAIR_NO_TARGET_SELECTION}. ` +
     'For a generation-bound scorecard, use the operator-api runtime that serves its graded build; on local staging, use the current-build :3170 route selected by dev:pipeline_position. The same-or-descendant guard is fail-closed before reservation. ' +
-    'Pass gradingLaunch for the acceptance-sweep profile. This is the repair path behind scorecards:emit.',
+    'Pass sourcePreparation to create an exact frozen evaluator artifact through a managed build before plan start; repeat the identical call after its returned task succeeds. Pass gradingLaunch for the acceptance-sweep profile. This is the repair path behind scorecards:emit.',
   guidance: {
     when: 'Use when scorecards:emit or a completion gate requires reopening an audit, or a pending backlog needs an immediate bounded retry. For a generation-bound target, use dev:pipeline_position to select the operator-api runtime serving the graded build; older or unproven runtimes are refused before reservation.',
     notWhen: 'Dispatch only: do not settle an audit yourself or use this for ordinary same-rubric scorecard emission. The independent auditor re-reads the target and emits one grading-integrity card.',
@@ -131,6 +138,7 @@ export default defineTool({
           ...(args.targetIds ? { targetIds: args.targetIds } : {}),
           ...(args.harness ? { harness: args.harness } : {}),
           ...(args.preparedSource ? { preparedSource: args.preparedSource } : {}),
+          ...(args.sourcePreparation ? { sourcePreparation: args.sourcePreparation } : {}),
         };
         return reconcilePendingGradingAudits(input);
       },

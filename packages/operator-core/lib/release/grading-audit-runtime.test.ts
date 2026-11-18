@@ -16,8 +16,10 @@ import { ownerPidFromSocketPath, resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } 
 import { SPAWNER_SCOPE_ENV } from '../fleet/sidecar-exec-lifetime';
 import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { writeOperatorArtifactManifest } from './operator-artifact';
+import { verifierSourceFiles, verifierGitCheckoutSync } from '@papercusp/test-config/verifier-source';
 import { ensureGradingAuditRuntime, gradingAuditRuntimeChildEnv, retireUnusedGradingAuditRuntimes, recoverGradingAuditRuntimeSource,
-  qualifyRematerializedGradingAuditSource, qualifyPreparedGradingAuditSource, gradingAuditRuntimeSupervisorArgs, GradingAuditRuntimeReadinessError,
+  qualifyRematerializedGradingAuditSource, qualifyPreparedGradingAuditSource, prepareGradingAuditSource,
+  GradingAuditSourcePreparationError, gradingAuditRuntimeSupervisorArgs, GradingAuditRuntimeReadinessError,
   type GradingAuditRuntimeDeps, type GradingAuditRuntimeLocator } from './grading-audit-runtime';
 
 const spawnManaged = vi.hoisted(() => vi.fn());
@@ -101,6 +103,121 @@ async function rebuiltFixture(external = false) {
     ...(external ? { artifactRoot: dirname(bundlePath) } : {}) });
   return { root, sourceRoot, bundlePath, sourceSha, artifact, git, evaluatorBuild: { sha: sourceSha.slice(0, 10), version: '1.2.3' } };
 }
+
+describe('pre-start exact evaluator source preparation (EI-29076811994262641)', () => {
+  async function preparationFixture() {
+    const f = await rebuiltFixture(true);
+    // The maintained exporter seals a child checkout over the selected source.
+    f.git('-c', 'user.name=Runtime test', '-c', 'user.email=runtime@test.invalid',
+      'commit', '--quiet', '--allow-empty', '-m', 'sealed verifier checkout');
+    f.sourceSha = f.git('rev-parse', 'HEAD');
+    f.evaluatorBuild.sha = f.sourceSha.slice(0, 10);
+    const files = verifierSourceFiles(f.sourceRoot, { runtimeArtifacts: true, gitMetadataPaths: ['.git'] });
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: f.sourceSha, files,
+      testedInputs: files.map(({ path, sha256 }) => ({ path, sha256 })),
+      gitCheckout: verifierGitCheckoutSync(f.sourceRoot, f.sourceSha) };
+    const bytes = JSON.stringify(receipt);
+    const receiptPath = join(f.root, 'original.json');
+    writeFileSync(join(f.sourceRoot, '.verifier-source.json'), bytes);
+    writeFileSync(receiptPath, bytes);
+    const input = { workspaceId: 'ws', evaluatorBuild: f.evaluatorBuild, sourcePreparation: {
+      sourceRoot: f.sourceRoot, receiptPath,
+      receiptSha256: createHash('sha256').update(bytes).digest('hex'), outputDir: join(f.root, 'new-output'),
+    } };
+    let row: TaskRow | null = null;
+    const readTask = vi.fn(async () => row);
+    const unref = vi.fn();
+    const spawn = vi.fn<typeof import('../task-manager/managed-spawn').managedSpawn>(async (_command, _argv, spec, options) => {
+      row = { taskId: options!.taskId!, workspaceId: 'ws', state: 'running', detail: spec.detail!,
+        exitCode: null, logPath: spec.logPath } as TaskRow;
+      return { taskId: row.taskId, row, child: { unref }, confined: true } as never;
+    });
+    const qualify = vi.fn<typeof qualifyPreparedGradingAuditSource>().mockResolvedValue({
+      sourceSha: f.sourceSha, artifactManifestSha256: 'b'.repeat(64), source: {
+        schemaVersion: 1, sourceRoot: f.sourceRoot, bundlePath: join(input.sourcePreparation.outputDir, 'hono-host.mjs'),
+        evaluatorBuild: f.evaluatorBuild, bundleSha256: 'c'.repeat(64), ownerRef: '',
+      },
+    });
+    const deps = { readTask, spawn, qualify, logDir: join(f.root, 'logs') };
+    return { ...f, input, deps, receipt, unref, row: () => row! };
+  }
+
+  it('runs only the maintained builder with original receipt, bounded task custody and no inherited build overrides', async () => {
+    const f = await preparationFixture();
+    const { readVerifierSourceReceipt } = await import('@papercusp/test-config/verifier-source');
+    const receipt = await readVerifierSourceReceipt(f.sourceRoot, f.input.sourcePreparation.receiptPath);
+    vi.stubEnv('NODE_OPTIONS', '--import=untrusted');
+    vi.stubEnv('PAPERCUSP_BUNDLE_ALLOW_STALE_START', '1');
+    vi.stubEnv('BUNDLE_HOST_OPERATOR_DIR', '/mutable');
+    await expect(prepareGradingAuditSource(f.input, { ...f.deps,
+      readReceipt: vi.fn().mockResolvedValue(receipt) })).rejects.toBeInstanceOf(GradingAuditSourcePreparationError);
+    const [command, argv, spec, options] = f.deps.spawn.mock.calls[0]!;
+    expect(command).toBe('/bin/bash');
+    expect(argv).toEqual([join(f.sourceRoot, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts',
+      join(f.input.sourcePreparation.outputDir, 'hono-host.mjs'), 'development']);
+    expect(spec).toMatchObject({ class: 'build', runtimeMaxSec: 900, cwd: f.sourceRoot,
+      detail: { gradingAuditPreparation: { workspaceId: 'ws', receiptSha256: f.input.sourcePreparation.receiptSha256 } } });
+    expect(options).toMatchObject({ workspaceId: 'ws', requireRegistration: true, requireConfinement: true,
+      taskId: f.row().taskId, spawnOptions: { env: { VERIFY_TAURI_SOURCE_REF: f.sourceSha,
+        VERIFY_TAURI_SOURCE_RECEIPT: f.input.sourcePreparation.receiptPath } } });
+    expect(f.row().taskId).toMatch(/^[a-f0-9]{64}$/);
+    for (const key of ['NODE_OPTIONS', 'PAPERCUSP_BUNDLE_ALLOW_STALE_START', 'BUNDLE_HOST_OPERATOR_DIR'])
+      expect(options!.spawnOptions!.env).not.toHaveProperty(key);
+    expect(f.unref).toHaveBeenCalledOnce();
+    expect(f.deps.qualify).not.toHaveBeenCalled();
+  });
+
+  it('resumes the exact managed task across calls and qualifies only its successful original output', async () => {
+    const f = await preparationFixture();
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toMatchObject({ diagnostic: {
+      state: 'running', taskId: expect.any(String), logPath: expect.any(String),
+      taskRead: { tool: 'processes:list' }, preparedSource: { sourceRoot: f.sourceRoot },
+    } });
+    // PostgreSQL JSONB can reorder these keys; it must not create another build.
+    f.row().detail.gradingAuditPreparation = Object.fromEntries(
+      Object.entries(f.row().detail.gradingAuditPreparation as object).reverse());
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toMatchObject({ diagnostic: { state: 'running' } });
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+    f.row().state = 'exited'; f.row().exitCode = 0;
+    await expect(prepareGradingAuditSource(f.input, f.deps)).resolves.toMatchObject({ sourceSha: f.sourceSha });
+    expect(f.deps.qualify).toHaveBeenCalledWith({ sourceRoot: f.sourceRoot,
+      bundlePath: join(f.input.sourcePreparation.outputDir, 'hono-host.mjs') }, f.evaluatorBuild);
+    f.deps.qualify.mockRejectedValueOnce(new Error('original manifest missing'));
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('original manifest missing');
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+  });
+
+  it.each(['stranded', 'killed', 'unaccounted', 'timed_out'] as const)('retains %s custody without relaunch or qualification', async state => {
+    const f = await preparationFixture();
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toBeInstanceOf(GradingAuditSourcePreparationError);
+    f.row().state = state;
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toMatchObject({ diagnostic: { state } });
+    expect(f.deps.spawn).toHaveBeenCalledOnce(); expect(f.deps.qualify).not.toHaveBeenCalled();
+  });
+
+  it('refuses changed source, receipt, evaluator and unowned output before any builder launch', async () => {
+    const f = await preparationFixture();
+    await expect(prepareGradingAuditSource({ ...f.input, evaluatorBuild: { sha: 'a'.repeat(40), version: 'x' } }, f.deps))
+      .rejects.toThrow('exact evaluator');
+    await expect(prepareGradingAuditSource({ ...f.input, sourcePreparation: {
+      ...f.input.sourcePreparation, receiptSha256: '0'.repeat(64) } }, f.deps)).rejects.toThrow('receipt digest');
+    mkdirSync(f.input.sourcePreparation.outputDir);
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('EEXIST');
+    writeFileSync(join(f.sourceRoot, 'entry.ts'), 'tampered');
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('changed entry.ts');
+    expect(f.deps.spawn).not.toHaveBeenCalled(); expect(f.deps.qualify).not.toHaveBeenCalled();
+  });
+
+  it('refuses unknown task ownership and cancelled callers instead of retrying a launch', async () => {
+    const f = await preparationFixture();
+    f.deps.readTask.mockRejectedValueOnce(new Error('ledger unavailable'));
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('ledger unavailable');
+    const controller = new AbortController(); controller.abort();
+    await expect(prepareGradingAuditSource({ ...f.input, signal: controller.signal }, f.deps)).rejects.toThrow('budget exhausted');
+    await expect(prepareGradingAuditSource({ ...f.input, deadlineAtMs: 0 }, f.deps)).rejects.toThrow('budget exhausted');
+    expect(f.deps.spawn).not.toHaveBeenCalled();
+  });
+});
 
 describe('retained evaluator self-recycle supervision (EI-26950964476692806)', () => {
   async function launch(body: string, lifetimeSec = 60) {

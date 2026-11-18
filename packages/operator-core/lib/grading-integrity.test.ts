@@ -56,7 +56,7 @@ import {
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
 import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
-import { GradingAuditRuntimeReadinessError, type GradingAuditRuntimeReadinessDiagnostic,
+import { GradingAuditRuntimeReadinessError, GradingAuditSourcePreparationError, type GradingAuditRuntimeReadinessDiagnostic,
   type GradingAuditRuntimeLocator } from './release/grading-audit-runtime';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
@@ -1757,6 +1757,24 @@ describe('dispatchPendingGradingAudits', () => {
     expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining('bundle digest changed') });
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('returns preparation custody before any independent-auditor reservation or launch', async () => {
+    const d = deps();
+    const issueId = 'EI-prestart-source';
+    const sourcePreparation = { sourceRoot: '/frozen', receiptPath: '/original.json',
+      receiptSha256: 'a'.repeat(64), outputDir: '/external-output' };
+    const diagnostic = { taskId: 'b'.repeat(64), state: 'running', logPath: '/build.log',
+      preparedSource: { sourceRoot: '/frozen', bundlePath: '/external-output/hono-host.mjs' },
+      taskRead: { tool: 'processes:list' as const, args: { taskId: 'b'.repeat(64) } } };
+    d.listScorecards.mockResolvedValue([card(issueId, {
+      gradedGeneration: { deployedSha: '2222222' } as ScorecardRow['gradedGeneration'],
+    })]);
+    d.ensureRuntime.mockRejectedValueOnce(new GradingAuditSourcePreparationError(diagnostic));
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, sourcePreparation }, d);
+    expect(d.ensureRuntime).toHaveBeenCalledWith(expect.objectContaining({ issueId, sourcePreparation }));
+    expect(result.receipts[0]).toMatchObject({ state: 'failed', sourcePreparation: diagnostic });
+    expect(d.reserve).not.toHaveBeenCalled(); expect(d.launch).not.toHaveBeenCalled();
   });
 
   it.each([false, true])('preserves exact readiness diagnostics through the repair receipt (evaluator drift: %s)', async drift => {

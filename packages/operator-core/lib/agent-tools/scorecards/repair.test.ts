@@ -133,6 +133,22 @@ describe('scorecards:repair', () => {
     expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx, recertifyStranded: false });
   });
 
+  it('admits bounded pre-start source preparation only for explicit targets, without changing caller authority', async () => {
+    const ctx = makeContext();
+    const sourcePreparation = { sourceRoot: '/frozen/source', receiptPath: '/original.json',
+      receiptSha256: 'a'.repeat(64), outputDir: '/new-output' };
+    const args = scorecardRepairArgs.parse({ targetIds: ['EI-target'], sourcePreparation });
+    await repairTool.handler(args, ctx);
+    expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx, recertifyStranded: false,
+      targetIds: ['EI-target'], sourcePreparation });
+    for (const invalid of [
+      { sourcePreparation }, { targetIds: [], sourcePreparation },
+      { targetIds: ['EI-target'], sourcePreparation: { ...sourcePreparation, command: 'other-builder' } },
+      { targetIds: ['EI-target'], sourcePreparation: { ...sourcePreparation, receiptSha256: 'unknown' } },
+      { targetIds: ['EI-target'], sourcePreparation, preparedSource: { sourceRoot: '/x', bundlePath: '/y' } },
+    ]) expect(scorecardRepairArgs.safeParse(invalid).success).toBe(false);
+  });
+
   it('carries the requested model pin into exact-target audit repair without changing caller identity', async () => {
     const ctx = makeContext();
     const gradingLaunch = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };

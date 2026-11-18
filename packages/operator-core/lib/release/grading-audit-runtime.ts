@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { adminUrl, appUrl } from '@papercusp/db-org/connection';
 import { papercuspPath } from '@papercusp/host-platform/home';
@@ -13,6 +14,7 @@ import { SUBSTRATE_SOCKET_ENV } from '../sync/hyperbee/substrate-socket-path';
 import { acquireGradingAuditSubjectMutex } from '../scorecards';
 import { killTask } from '../task-manager/control';
 import { managedSpawn } from '../task-manager/managed-spawn';
+import { readVerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
 import { getTask, listTasks } from '../task-manager/store';
 import type { TaskRow } from '../task-manager/types';
 import { runWithWorkspaceIfConcrete } from '../workspace-als';
@@ -95,6 +97,108 @@ export class GradingAuditRuntimeReadinessError extends Error {
       `retained task ${diagnostic.taskId} at ${diagnostic.locator.baseUrl}`);
     this.name = 'GradingAuditRuntimeReadinessError';
   }
+}
+
+export interface GradingAuditSourcePreparation {
+  sourceRoot: string;
+  receiptPath: string;
+  receiptSha256: string;
+  outputDir: string;
+}
+
+export interface GradingAuditSourcePreparationDiagnostic {
+  taskId: string;
+  state: string;
+  logPath: string;
+  preparedSource: { sourceRoot: string; bundlePath: string };
+  taskRead: { tool: 'processes:list'; args: { taskId: string } };
+}
+
+export class GradingAuditSourcePreparationError extends Error {
+  constructor(readonly diagnostic: GradingAuditSourcePreparationDiagnostic) {
+    super(`Exact audit source preparation ${diagnostic.state}; retained task ${diagnostic.taskId}, log ${diagnostic.logPath}. Repeat the identical repair call after success; failed attempts require a new outputDir.`);
+    this.name = 'GradingAuditSourcePreparationError';
+  }
+}
+
+/** Reuse the task ledger as the restart-safe build receipt; never launch on an unknown read. */
+export async function prepareGradingAuditSource(input: {
+  workspaceId: string; evaluatorBuild: BuildInfo; sourcePreparation: GradingAuditSourcePreparation;
+  signal?: AbortSignal; deadlineAtMs?: number;
+}, deps: {
+  readReceipt?: typeof readVerifierSourceReceipt;
+  readTask?: typeof getTask;
+  spawn?: typeof managedSpawn;
+  qualify?: typeof qualifyPreparedGradingAuditSource;
+  logDir?: string;
+} = {}) {
+  const request = input.sourcePreparation;
+  if (input.signal?.aborted || Date.now() >= (input.deadlineAtMs ?? Infinity))
+    throw new Error('Audit source preparation caller budget exhausted');
+  for (const path of [request.sourceRoot, request.receiptPath, request.outputDir]) {
+    if (!isAbsolute(path) || resolve(path) !== path) throw new Error('Audit preparation paths must be absolute and canonical');
+  }
+  const sourceRoot = realpathSync(request.sourceRoot);
+  if (sourceRoot !== request.sourceRoot || realpathSync(request.receiptPath) !== request.receiptPath ||
+      realpathSync(dirname(request.outputDir)) !== dirname(request.outputDir))
+    throw new Error('Audit preparation paths must be physical');
+  const outputRelative = relative(sourceRoot, request.outputDir);
+  if (!outputRelative || (outputRelative !== '..' && !outputRelative.startsWith(`..${sep}`) && !isAbsolute(outputRelative)))
+    throw new Error('Audit preparation output must be outside frozen source');
+  const receiptDigest = () => createHash('sha256').update(readFileSync(request.receiptPath)).digest('hex');
+  if (!/^[a-f0-9]{64}$/.test(request.receiptSha256) || receiptDigest() !== request.receiptSha256)
+    throw new Error('Original audit source receipt digest differs');
+  const receipt = await (deps.readReceipt ?? readVerifierSourceReceipt)(sourceRoot, request.receiptPath, { signal: input.signal });
+  const sha = input.evaluatorBuild.sha;
+  if (!receipt.gitCheckout || !sha || !/^[a-f0-9]{7,40}$/.test(sha) || !receipt.sourceCommit.startsWith(sha))
+    throw new Error('Audit preparation source differs from the exact evaluator Git checkout');
+  if (receiptDigest() !== request.receiptSha256) throw new Error('Original audit source receipt changed during verification');
+  const bundlePath = join(request.outputDir, 'hono-host.mjs');
+  const identity = { workspaceId: input.workspaceId,
+    evaluatorBuild: { sha: input.evaluatorBuild.sha, version: input.evaluatorBuild.version },
+    sourceRoot, receiptPath: request.receiptPath, receiptSha256: request.receiptSha256, outputDir: request.outputDir };
+  // Full hash is a valid native task id. No capped list or new operation store is needed.
+  const taskId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+  let task = await (deps.readTask ?? getTask)(taskId);
+  const logDir = deps.logDir ?? papercuspPath('checkpoint-logs');
+  const logPath = join(logDir, `grading-audit-build-${taskId}.log`);
+  const diagnostic = (state: string): GradingAuditSourcePreparationDiagnostic => ({
+    taskId, state, logPath, preparedSource: { sourceRoot, bundlePath },
+    taskRead: { tool: 'processes:list', args: { taskId } },
+  });
+  if (task) {
+    if (task.workspaceId !== input.workspaceId || !isDeepStrictEqual(task.detail.gradingAuditPreparation, identity))
+      throw new Error('Audit preparation task identity differs');
+    if (task.state === 'exited' && task.exitCode === 0)
+      return (deps.qualify ?? qualifyPreparedGradingAuditSource)({ sourceRoot, bundlePath }, input.evaluatorBuild);
+    throw new GradingAuditSourcePreparationError(diagnostic(task.state));
+  }
+  // An unowned or partial directory is evidence, never something to overwrite.
+  mkdirSync(request.outputDir, { mode: 0o700 });
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  const fd = openSync(logPath, 'ax', 0o600);
+  try {
+    const builder = join(sourceRoot, 'apps/operator/bin/bundle-host.sh');
+    const args = [builder, 'bin/hono-host.ts', bundlePath, 'development'];
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (key === 'NODE_OPTIONS' || key === 'NODE_PATH' || key.startsWith('BUNDLE_HOST_') ||
+          key.startsWith('PAPERCUSP_BUNDLE_') || key.startsWith('PAPERCUSP_SCRIPT_SNAPSHOT') || key.startsWith('VERIFY_TAURI_')) delete env[key];
+    }
+    env.VERIFY_TAURI_SOURCE_RECEIPT = request.receiptPath;
+    env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
+    const spawned = await (deps.spawn ?? managedSpawn)('/bin/bash', args, {
+      class: 'build', title: `grading-audit-source:${taskId}`, argv: ['/bin/bash', ...args],
+      cwd: sourceRoot, launchedBy: 'system:grading-audit-dispatch', logPath,
+      runtimeMaxSec: 15 * 60, detail: { gradingAuditPreparation: identity },
+    }, { workspaceId: input.workspaceId, taskId, requireRegistration: true, requireConfinement: true,
+      signal: input.signal, deadlineEpochMs: input.deadlineAtMs,
+      spawnOptions: { cwd: sourceRoot, env, detached: true, stdio: ['ignore', fd, fd] },
+    });
+    spawned.child.unref();
+    task = spawned.row;
+  } finally { closeSync(fd); }
+  throw new GradingAuditSourcePreparationError(diagnostic(task.state));
 }
 
 /** A maintained exact-ref rebuild is a NEW artifact, never the old digest. */
@@ -493,6 +597,7 @@ export async function ensureGradingAuditRuntime(input: {
   recoverySourceRoot?: string;
   /** Independently qualify an already built exact-source host; no prior locator is fabricated. */
   preparedSource?: { sourceRoot: string; bundlePath: string };
+  sourcePreparation?: GradingAuditSourcePreparation;
   /** A claimed source work-item may still need conformance after its audit settles. */
   acceptanceRef?: string;
   /** Bound readiness waiting by the tool caller's response budget and cancellation. */
@@ -535,11 +640,15 @@ export async function ensureGradingAuditRuntime(input: {
       if (input.recoverySourceRoot && !previous?.locator) {
         throw new Error('Exact source recovery requires a registered prior runtime locator');
       }
-      if (input.preparedSource && input.recoverySourceRoot) throw new Error('Choose prepared source or prior-runtime recovery');
-      if (!input.preparedSource && !input.recoverySourceRoot && input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
+      if ([input.preparedSource, input.sourcePreparation, input.recoverySourceRoot].filter(Boolean).length > 1)
+        throw new Error('Choose prepared source, source preparation or prior-runtime recovery');
+      if (!input.preparedSource && !input.sourcePreparation && !input.recoverySourceRoot && input.allowSeed === false) throw new Error('No retained exact audit runtime source is available');
       const rebuilt = input.recoverySourceRoot
         ? await qualifyRematerializedGradingAuditSource(input.recoverySourceRoot, input.evaluatorBuild) : null;
-      const prepared = input.preparedSource ? await qualifyPreparedGradingAuditSource(input.preparedSource, input.evaluatorBuild) : null;
+      const prepared = input.sourcePreparation ? await prepareGradingAuditSource({ workspaceId: input.workspaceId,
+        evaluatorBuild: input.evaluatorBuild, sourcePreparation: input.sourcePreparation,
+        signal: input.signal, deadlineAtMs: input.deadlineAtMs })
+        : input.preparedSource ? await qualifyPreparedGradingAuditSource(input.preparedSource, input.evaluatorBuild) : null;
       const source = rebuilt?.source ?? prepared?.source ?? await (deps.currentSource ?? currentSource)(input.evaluatorBuild);
       locator = { ...source, ownerRef: label, issueIds: previous?.locator?.issueIds ?? [],
         ...(rebuilt && previous?.locator ? { sourceRecovery: {

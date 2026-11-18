@@ -19,7 +19,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { observeFallback } from './degradation/fallback-observations';
 import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL, INTERNAL_GRADING_AUDIT_RUNTIME } from './agent-tools/capability/launch-agent';
-import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, GradingAuditRuntimeReadinessError,
+import { ensureGradingAuditRuntime, retireUnusedGradingAuditRuntimes, GradingAuditRuntimeReadinessError, GradingAuditSourcePreparationError,
+  type GradingAuditSourcePreparation, type GradingAuditSourcePreparationDiagnostic,
   type GradingAuditRuntimeBinding, type GradingAuditRuntimeLocator,
   type GradingAuditRuntimeReadinessDiagnostic } from './release/grading-audit-runtime';
 import { GRADING_AUDIT_SOURCE_PIN_MAX_SEC, readGradingAuditSourcePin } from './release/grading-audit-source-pin';
@@ -657,6 +658,7 @@ export interface PendingGradingAuditDispatchReceipt {
   reason?: string;
   /** Failed readiness retains exact endpoint provenance and actionable diagnostic reads. */
   runtimeReadiness?: GradingAuditRuntimeReadinessDiagnostic;
+  sourcePreparation?: GradingAuditSourcePreparationDiagnostic;
   /** The first dispatcher phase that failed; present on failed receipts. */
   phase?: GradingAuditDispatchPhase;
   /** A failed release cannot establish whether the owned lease was cleared.
@@ -707,6 +709,7 @@ export interface StrandedRecertifyReceipt {
 export interface DispatchPendingGradingAuditsInput {
   /** Already built maintained artifact, independently checked against each target's evaluator. */
   preparedSource?: { sourceRoot: string; bundlePath: string };
+  sourcePreparation?: GradingAuditSourcePreparation;
   /**
    * Pending target issue ids surfaced by the completion gate. Omit or pass an
    * empty list to select the oldest current pending cards from scorecard
@@ -2513,7 +2516,8 @@ export async function dispatchPendingGradingAudits(
     },
   );
   const retainedRuntimes = new Map<string, GradingAuditRuntimeBinding>();
-  const runtimeFailures = new Map<string, { reason: string; runtimeReadiness?: GradingAuditRuntimeReadinessDiagnostic }>();
+  const runtimeFailures = new Map<string, { reason: string; runtimeReadiness?: GradingAuditRuntimeReadinessDiagnostic;
+    sourcePreparation?: GradingAuditSourcePreparationDiagnostic }>();
   const runtimeCandidates = cards.filter(card => currentPendingScorecard(card) &&
     !pausedOwners.has(card.createdBy ?? '') &&
     (explicitTargetIds.length === 0 || explicitTargetIds.includes(card.issueId)) &&
@@ -2532,6 +2536,7 @@ export async function dispatchPendingGradingAudits(
         workspaceId, issueId: card.issueId, evaluatorBuild: build,
         allowSeed: build.sha === liveEvaluatorBuild.sha && build.version === liveEvaluatorBuild.version,
         ...(input.preparedSource ? { preparedSource: input.preparedSource } : {}),
+        ...(input.sourcePreparation ? { sourcePreparation: input.sourcePreparation } : {}),
         signal: input.ctx.signal, deadlineAtMs: input.ctx.deadlineAtMs,
       });
       if (!build.sha || runtime.evaluatorBuild.sha !== build.sha || runtime.evaluatorBuild.version !== build.version ||
@@ -2543,6 +2548,7 @@ export async function dispatchPendingGradingAudits(
       evaluatorBuildDriftIds.delete(card.issueId);
     } catch (error) {
       runtimeFailures.set(card.issueId, { reason: error instanceof Error ? error.message : String(error),
+        ...(error instanceof GradingAuditSourcePreparationError ? { sourcePreparation: error.diagnostic } : {}),
         ...(error instanceof GradingAuditRuntimeReadinessError ? { runtimeReadiness: error.diagnostic } : {}) });
     }
   };
@@ -2769,10 +2775,11 @@ export async function dispatchPendingGradingAudits(
     // Readiness failure is actionable even when this host cannot admit the old
     // evaluator. Do not hide its exact locator behind a generic drift skip.
     const runtimeFailure = runtimeFailures.get(issueId);
-    if (runtimeFailure && (card || runtimeFailure.runtimeReadiness)) return {
+    if (runtimeFailure && (card || runtimeFailure.runtimeReadiness || runtimeFailure.sourcePreparation)) return {
       issueId, rubricRef: card?.rubricRef ?? runtimeCandidates.find(candidate => candidate.issueId === issueId)?.rubricRef,
       state: 'failed', reason: `exact audit endpoint unavailable: ${runtimeFailure.reason}`,
       ...(runtimeFailure.runtimeReadiness ? { runtimeReadiness: runtimeFailure.runtimeReadiness } : {}),
+      ...(runtimeFailure.sourcePreparation ? { sourcePreparation: runtimeFailure.sourcePreparation } : {}),
     };
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
