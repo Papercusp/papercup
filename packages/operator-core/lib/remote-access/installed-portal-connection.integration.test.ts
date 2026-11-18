@@ -12,17 +12,71 @@ import SecretStream from '@hyperswarm/secret-stream';
 import { WebSocket, WebSocketServer } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
+import * as dbOrg from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { drainDetached } from '../detached-imports';
 import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
-import { linkedWorkspaceIdentity } from '../endpoint-route/routes/hosted-cli/store';
+import { linkedWorkspaceIdentity, PostgresHostedCliStore } from '../endpoint-route/routes/hosted-cli/store';
 import { ByocSealedChannel, isByocSealedPacket } from '../workspace-host/byoc-sealed-channel';
 import { registerDesktopSession, markDesktopReady } from '../desktop/desktop-session-registry';
 import { ensurePortalRelayRow, recordPortalRelayConsent, savePortalRelayLinked, readPortalRelay, PORTAL_RELAY_DESKTOP_NOTICE_VERSION } from './portal-relay-store';
 import { PORTAL_RELAY_NOTICE_VERSION } from './relay-notice';
 
+// Classification reads the real persisted rows below. Runtime bootstrap is
+// unrelated and imports the entire route registry; fail if these reads use it.
+vi.mock('../endpoint-route/hosted-runtime', () => ({
+  createHostedRuntime: () => { throw new Error('classification_must_not_boot_hosted_runtime'); },
+  readHostedRuntimeConfiguration: () => { throw new Error('classification_must_not_read_runtime_environment'); },
+}));
+
 describe('persisted installed Portal connection', () => {
+  it('classifies a persisted linked install without provisioning rows and preserves its server-owned binding', async () => {
+    const db = await createOrgTestDb();
+    // Importing the real handler also loads process-wide database consumers.
+    // Bind those to this fixture before import, just like the socket runtime.
+    vi.stubEnv('HARNESS_ADMIN_DATABASE_URL', db.adminDsn);
+    vi.stubEnv('HARNESS_DATABASE_URL', db.appDsn);
+    vi.stubEnv('DATABASE_URL', db.adminDsn);
+    await dbOrg._resetForTests();
+    const control = 'linked-classification-control';
+    const runWorkspace = <T>(workspaceId: string, fn: (sql: Sql) => Promise<T>): Promise<T> =>
+      db.appSql.begin(async tx => {
+        await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
+        return fn(tx as unknown as Sql);
+      }) as Promise<T>;
+    const scope = vi.spyOn(dbOrg, 'withWorkspace').mockImplementation(runWorkspace as typeof dbOrg.withWorkspace);
+    try {
+      const store = new PostgresHostedCliStore(fn => fn(db.adminSql), fn => runWorkspace(control, fn), control);
+      const linked = await store.upsertLinkedWorkspace({ organizationId: 'linked-classification-org',
+        installId: 'inst-classification', displayName: 'Existing install', userId: 'linked-user', at: new Date() });
+      const { readHostedWorkspaceHosting, readCustomerWorkspaceHosting } = await import('../../../../apps/operator/bin/hosted-handler');
+      const binding: HostedConnectorBinding = { ...linked, controlPlaneWorkspaceId: control,
+        organizationId: 'linked-classification-org', generation: 1, transport: 'websocket', state: 'active' };
+      expect(await db.adminSql`SELECT id FROM harness_shared.workspace_hosts WHERE workspace_id = ${control}`).toHaveLength(0);
+      // Linked machines require the customer-owned, sealed route even without
+      // a cloud provisioning/delegation record. They never inherit vendor trust.
+      expect(await readHostedWorkspaceHosting(binding)).toBe('byoc');
+      expect(await readCustomerWorkspaceHosting(control, linked.customerWorkspaceId)).toBe('byoc');
+      expect(await readHostedWorkspaceHosting({ ...binding, organizationId: 'foreign-org' })).toBeNull();
+      expect(await readHostedWorkspaceHosting({ ...binding, hostId: 'foreign-host' })).toBeNull();
+      expect(await readHostedWorkspaceHosting({ ...binding, controlPlaneWorkspaceId: 'foreign-control' })).toBeNull();
+      expect(await readCustomerWorkspaceHosting('foreign-control', linked.customerWorkspaceId)).toBeNull();
+      expect(await readCustomerWorkspaceHosting(control, 'unknown-workspace')).toBeNull();
+      await store.unlinkLinkedWorkspace({ organizationId: binding.organizationId,
+        customerWorkspaceId: binding.customerWorkspaceId, at: new Date() });
+      expect(await readHostedWorkspaceHosting(binding)).toBeNull();
+      expect(await readCustomerWorkspaceHosting(control, linked.customerWorkspaceId)).toBeNull();
+    } finally {
+      scope.mockRestore();
+      await drainDetached();
+      await dbOrg._resetForTests();
+      vi.unstubAllEnvs();
+      await db.cleanup();
+    }
+  }, 120_000);
+
   it('enforces consent, account/install/browser identity, restart and revocation through the production local runtime', async () => {
     const db = await createOrgTestDb();
     // Registry writes also publish invalidations through the process-wide
