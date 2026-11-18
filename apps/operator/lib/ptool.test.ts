@@ -34,6 +34,8 @@ import {
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_CAPABILITY_BASH_TIMEOUT_MS,
+  PTOOL_PLAN_STATUS_TIMEOUT_MS,
   PTOOL_DB_MIGRATE_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_DEV_RESTART_TIMEOUT_MS,
@@ -90,6 +92,7 @@ describe('ptool parseArgs', () => {
       script: null,
       scriptFile: null,
       list: false,
+      stdio: false,
       listFilter: null,
       workspace: null,
       allWorkspaces: false,
@@ -148,6 +151,11 @@ describe('ptool parseArgs', () => {
   it('recognizes help flags', () => {
     expect(parseArgs(['-h']).help).toBe(true);
     expect(parseArgs(['--help']).help).toBe(true);
+  });
+
+  it('enables the stdio adapter only when requested', () => {
+    expect(parseArgs(['--stdio'])).toMatchObject({ stdio: true, tool: null });
+    expect(parseArgs(['harness:list']).stdio).toBe(false);
   });
 
   it('parses --json-file (EI-14958: quoting-free JSON source)', () => {
@@ -867,7 +875,6 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   const FOREGROUND_CAPABLE_TOOLS = [
     'testing:run',
     'build:typecheck',
-    'capability:bash',
     'capability:inspect',
     'code:run',
     'recipes:run',
@@ -901,6 +908,18 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
 
   it('the override genuinely covers the transport cap with real margin (not a bare inequality)', () => {
     expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS - MCP_TRANSPORT_CAP_MS).toBeGreaterThanOrEqual(3_000);
+  });
+});
+
+describe('ptool timeoutForTool — capability:bash preserves its dedicated dispatch budget', () => {
+  it.each([
+    ['capability:bash', {}],
+    ['tools:invoke', { name: 'capability:bash', args: {} }],
+  ])('keeps %s beyond dispatch and settlement', (name, args) => {
+    const timeout = timeoutForTool(name, args);
+    expect(timeout).toBe(PTOOL_CAPABILITY_BASH_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(65_000);
+    expect(timeout).toBeGreaterThan(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
   });
 });
 
@@ -1086,7 +1105,8 @@ describe('ptool timeoutForTool — plan lifecycle CAS outlives the flat client d
       status: 'shipped',
       expectedCurrent: 'ready',
     });
-    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(905_000);
     expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
     expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
@@ -1095,7 +1115,45 @@ describe('ptool timeoutForTool — plan lifecycle CAS outlives the flat client d
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
       args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_PLAN_STATUS_TIMEOUT_MS);
+  });
+});
+
+describe('ptool dedicated deadlines preserve late response receipts (EI-28326806090209791)', () => {
+  it.each([
+    { label: 'direct bash', name: 'capability:bash', args: {}, responseAfterMs: 65_000 },
+    { label: 'deferred bash', name: 'tools:invoke', args: { name: 'capability:bash', args: {} }, responseAfterMs: 65_000 },
+    { label: 'direct lifecycle', name: 'plans:set-plan-status', args: { slug: 'receipt-window', status: 'shipped' }, responseAfterMs: 905_000 },
+    { label: 'deferred lifecycle', name: 'tools:invoke', args: { name: 'plans:set-plan-status', args: { slug: 'receipt-window', status: 'shipped' } }, responseAfterMs: 905_000 },
+  ])('$label preserves a late receipt that the general deadline loses', async ({ name, args, responseAfterMs }) => {
+    vi.useFakeTimers();
+    try {
+      const receipt = { content: [{ type: 'text', text: '{"ok":true,"receiptId":"late-response"}' }] };
+      const client = {
+        callTool: vi.fn((_params, _schema, options) => new Promise((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error('client deadline expired')), options.timeout);
+          setTimeout(() => {
+            clearTimeout(deadline);
+            resolve(receipt);
+          }, responseAfterMs);
+        })),
+      };
+      const result = callToolWithPressureRetry(client, buildCallToolParams(name, args), {
+        timeoutMs: timeoutForTool(name, args),
+      }).catch((error) => error);
+
+      const expiredResult = callToolWithPressureRetry(client, buildCallToolParams(name, args), {
+        timeoutMs: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+      }).catch((error) => error);
+
+      await vi.advanceTimersByTimeAsync(responseAfterMs);
+
+      expect(await result).toEqual(receipt);
+      expect(await expiredResult).toEqual(new Error('client deadline expired'));
+      expect(client.callTool).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
