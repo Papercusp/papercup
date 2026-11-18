@@ -7,6 +7,9 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { enrollHostAuthorityBinding, readHostAuthorityBindings } from './host-authority-bindings';
 
 let sql: postgres.Sql;
+const inheritedMigration = new URL('../../../../libs/papercusp/libs/db/sql/1647-governance-inherited-human-ownership.sql', import.meta.url);
+const inheritedMigrationSource = () => readFileSync(existsSync(inheritedMigration)
+  ? inheritedMigration : new URL(inheritedMigration.href + '.DRAFT'), 'utf8');
 beforeAll(async () => {
   const uri = await getTestPg();
   const name = `hostbindings_${randomBytes(5).toString('hex')}`;
@@ -22,6 +25,7 @@ beforeAll(async () => {
   // Exercise the complete migration, including grants to the framework's real
   // runtime role. Stripping grants hid a nonexistent-role typo before arming.
   await sql.unsafe(readFileSync(source, 'utf8'));
+  await sql.unsafe(inheritedMigrationSource());
   await sql`CREATE TABLE harness_shared.binding_effects (target text NOT NULL)`;
   await sql`CREATE TABLE harness_shared.users (id uuid PRIMARY KEY, is_active boolean NOT NULL DEFAULT true)`;
   await sql`CREATE TABLE harness_shared.user_sessions (token text PRIMARY KEY, user_id uuid NOT NULL,
@@ -44,6 +48,33 @@ async function browser(capabilities = ['*'], workspace = 'ws') {
 const enrollment = { kind: 'platform' as const, subjectId: 'explicit-floor', reason: 'I explicitly own this platform floor' };
 
 describe('P-002 authenticated explicit host enrollment', () => {
+  it.each(['organization', 'department', 'workspace'] as const)(
+    'records an explicit %s human owner without creating policy or inferring ownership', async kind => {
+      const f = await browser();
+      // Exercise the runtime boundary before its TypeScript union is extended.
+      const input = JSON.parse(JSON.stringify({ kind, subjectId: `required-${kind}`, reason: 'I explicitly own this authority' }));
+      const result = await enrollHostAuthorityBinding(f.headers, 'ws', input, sql);
+      expect(result).toMatchObject({ status: 'enrolled', binding: { kind,
+        subjectId: `required-${kind}`, humanOwnerId: f.userId } });
+      expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ status: 'ok', bindings: [result.binding] });
+      expect(JSON.stringify(result)).not.toContain(f.token);
+      expect(await sql`SELECT to_regclass('harness_shared.governance_policy_layers') AS policy`).toEqual([{ policy: null }]);
+      await expect(enrollHostAuthorityBinding(f.headers, 'ws', input, sql)).rejects.toMatchObject({ code: 'conflict' });
+    },
+  );
+
+  it.each(['organization', 'department', 'workspace'] as const)(
+    'does not let a limited request, absent cookie or forged owner enroll %s', async kind => {
+      const f = await browser(['tools:read']);
+      const input = JSON.parse(JSON.stringify({ kind, subjectId: `required-${kind}`, reason: 'explicit request' }));
+      for (const headers of [f.headers, new Headers()])
+        await expect(enrollHostAuthorityBinding(headers, 'ws', input, sql)).rejects.toMatchObject({ code: 'forbidden' });
+      await expect(enrollHostAuthorityBinding(f.headers, 'ws', { ...input, humanOwnerId: 'forged' }, sql))
+        .rejects.toMatchObject({ code: 'invalid' });
+      expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [] });
+    },
+  );
+
   it('enrolls the exact browser human and named floor, without creating a policy or leaking credentials', async () => {
     const f = await browser();
     const self = await enrollHostAuthorityBinding(f.headers, 'ws',
@@ -174,6 +205,26 @@ async function insert(kind = 'platform', subject = 'required-floor', workspace =
 }
 
 describe('P-002 independent host authority binding source', () => {
+  it('upgrades the existing kind constraint without changing old receipts or permitting arbitrary kinds', async () => {
+    await sql.begin(async tx => {
+      await tx`ALTER TABLE harness_shared.governance_host_authority_bindings
+        DROP CONSTRAINT governance_host_authority_bindings_kind_check`;
+      await tx`ALTER TABLE harness_shared.governance_host_authority_bindings
+        ADD CONSTRAINT governance_host_authority_bindings_kind_check CHECK (kind IN ('user', 'platform'))`;
+      await tx`INSERT INTO harness_shared.governance_host_authority_bindings
+        (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+        VALUES ('ws', 'platform', 'original-floor', 'original-human', ${'a'.repeat(64)}, 'preserved receipt')`;
+      const original = await tx`SELECT * FROM harness_shared.governance_host_authority_bindings`;
+      await tx.unsafe(inheritedMigrationSource());
+      await tx.unsafe(inheritedMigrationSource());
+      expect(await tx`SELECT * FROM harness_shared.governance_host_authority_bindings`).toEqual(original);
+    });
+    await expect(insert('unsupported', 'invalid')).rejects.toMatchObject({ code: '23514' });
+    expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [
+      { kind: 'platform', subjectId: 'original-floor', humanOwnerId: 'original-human' },
+    ] });
+  });
+
   it('applies the complete migration and gives the application role SELECT only', async () => {
     await sql.begin(async tx => {
       await tx`SET LOCAL ROLE harness_app`;

@@ -532,9 +532,11 @@ export interface IdentityPermissionSessionSource {
  * includeScopedPolicies also joins the canonical user/platform policy census,
  * requiring those independently enrolled subjects even if other roots exist.
  * includeInheritedPolicies joins the canonical organization-to-workspace chain
- * in this same snapshot. An absent/malformed chain remains unavailable, and
- * policy editors are never promoted to human owners. Library and external
- * backend sources, and the remaining explicit owner bindings, still need joins.
+ * in this same snapshot, including explicit host ownership of its present
+ * authorities. Missing owners remain null, unmatched enrollments remain in the
+ * host census, and a proven inapplicable department needs no owner. An absent/
+ * malformed chain remains unavailable; policy editors never become owners.
+ * Library, external backend and identity/vault ownership still need joins.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -631,7 +633,7 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
     }
     let hostAuthorities: Extract<Awaited<ReturnType<typeof import('../governance-policy/host-authority-bindings').readHostAuthorityBindings>>,
       { status: 'ok' }> | undefined;
-    if (options.includeHostAuthorities || options.includeScopedPolicies) {
+    if (options.includeHostAuthorities || options.includeScopedPolicies || options.includeInheritedPolicies) {
       const { readHostAuthorityBindings } = await import('../governance-policy/host-authority-bindings');
       const population = await readHostAuthorityBindings(tx, workspaceId, { pinForEffect: pinned });
       if (population.status !== 'ok') throw new Error('host authority population is unavailable');
@@ -674,12 +676,21 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       inheritedPolicies = population;
       hash.update('\n').update(canonicalJson({ inheritedPolicyRevision: inheritedPolicies.revision }));
     }
+    // The policy's canonical layer id is the subject, not its editor, scope
+    // label or ancestor's owner. Retain unknowns so the eventual admission
+    // cannot authorize from a guessed human or a silently shortened census.
+    // Both sources were measured in this transaction and remain pinned through
+    // effect; the aggregate revision covers owner changes and first enrollment.
+    const inheritedPolicyOwners = inheritedPolicies?.policies.filter(policy => policy.state === 'present')
+      .map(({ kind, id, revision }) => ({ authority: { kind, id, revision },
+        ownerId: hostAuthorities!.bindings.find(binding => binding.kind === kind && binding.subjectId === id)?.humanOwnerId ?? null }));
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
       : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}),
         ...(workspaceUsers ? { workspaceUsers } : {}), ...(hostAuthorities ? { hostAuthorities } : {}),
-        ...(scopedPolicies ? { scopedPolicies } : {}), ...(inheritedPolicies ? { inheritedPolicies } : {}) };
+        ...(scopedPolicies ? { scopedPolicies } : {}),
+        ...(inheritedPolicies ? { inheritedPolicies, inheritedPolicyOwners } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));

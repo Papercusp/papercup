@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
@@ -34,11 +34,13 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.population_effects (target text NOT NULL)`);
   for (const migration of ['1230-blueprint-package-resource-receipts.sql',
     '1232-blueprint-package-installations.sql', '1645-blueprint-installation-human-ownership.sql',
-    '1646-governance-host-authority-bindings.sql', '1497-governance-policy-layers.sql',
+    '1646-governance-host-authority-bindings.sql', '1647-governance-inherited-human-ownership.sql',
+    '1497-governance-policy-layers.sql',
     '1644-governance-scoped-authority-levels.sql']) {
     // These private database fixtures use the real storage contract; global
     // app-role grants belong to the cluster bootstrap, not this isolated DB.
-    const body = readFileSync(new URL(`../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url), 'utf8');
+    const path = new URL(`../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url);
+    const body = readFileSync(existsSync(path) ? path : new URL(path.href + '.DRAFT'), 'utf8');
     await sql.unsafe(body.replace(/GRANT[\s\S]*?;/g, ''));
   }
 }, 60_000);
@@ -589,6 +591,114 @@ describe('P-002 canonical session identity population', () => {
     await upsertLayer({ ...common, layerId: 'workspace', level: 'workspace', scopeRef: 'ws',
       parentLayerId: department ? 'department' : 'organization' }, sql);
   }
+
+  async function inheritedOwner(kind: 'organization' | 'department' | 'workspace', workspace = 'ws') {
+    await sql`INSERT INTO harness_shared.governance_host_authority_bindings
+      (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+      VALUES (${workspace}, ${kind}, ${kind}, ${`human-${kind}`}, ${'a'.repeat(64)}, 'explicit ownership fixture')`;
+  }
+
+  it('joins inherited authority ownership only from explicit same-workspace enrollment', async () => {
+    await seedInherited();
+    const unknown = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    expect(unknown).toMatchObject({ inheritedPolicyOwners: [
+      { authority: { kind: 'organization', id: 'organization' }, ownerId: null },
+      { authority: { kind: 'department', id: 'department' }, ownerId: null },
+      { authority: { kind: 'workspace', id: 'workspace' }, ownerId: null },
+    ] });
+    await inheritedOwner('organization');
+    await inheritedOwner('department', 'foreign');
+    await inheritedOwner('workspace');
+    const current = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    expect(current).toMatchObject({ hostAuthorities: { status: 'ok' }, inheritedPolicyOwners: [
+      { authority: { kind: 'organization', id: 'organization', revision: expect.any(String) }, ownerId: 'human-organization' },
+      { authority: { kind: 'department', id: 'department' }, ownerId: null },
+      { authority: { kind: 'workspace', id: 'workspace' }, ownerId: 'human-workspace' },
+    ] });
+    expect(current.revision).not.toBe(unknown.revision);
+    expect(JSON.stringify(current)).not.toContain('editor-is-not-owner');
+    expect(await readIdentityPermissionPopulation(sql, 'ws')).not.toHaveProperty('inheritedPolicyOwners');
+  });
+
+  it('retains unmatched explicit owners while excluding a proven inapplicable department from ownership', async () => {
+    await seedInherited(false); await inheritedOwner('department');
+    expect(await readIdentityPermissionPopulation(sql, 'ws', inherited)).toMatchObject({
+      hostAuthorities: { bindings: [{ kind: 'department', subjectId: 'department', humanOwnerId: 'human-department' }] },
+      inheritedPolicyOwners: [
+        { authority: { kind: 'organization' }, ownerId: null },
+        { authority: { kind: 'workspace' }, ownerId: null },
+      ],
+    });
+  });
+
+  it('joins new inherited ownership in the session snapshot and invalidates the aggregate before effect', async () => {
+    await seed(); await seedInherited();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    let inserted = false;
+    const during = await readIdentityPermissionPopulation(sql, 'ws', { ...inherited, visit: async () => {
+      if (inserted) return;
+      inserted = true;
+      await inheritedOwner('organization');
+    } });
+    expect(inserted).toBe(true);
+    expect(during).toEqual(before);
+    expect((await readIdentityPermissionPopulation(sql, 'ws', inherited)).revision).not.toBe(before.revision);
+    const checked = await sql.begin(async tx => {
+      const current = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...inherited, expectedRevision: before.revision });
+      if (current.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+      return current;
+    });
+    expect(checked.status).toBe('stale');
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it('rechecks inherited ownership committed while the reader waits for the enrollment lease', async () => {
+    await seedInherited();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    let pending: Promise<unknown> | undefined;
+    await sql.begin(async writer => {
+      await writer`INSERT INTO harness_shared.governance_host_authority_bindings
+        (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+        VALUES ('ws', 'organization', 'organization', 'new-human', ${'b'.repeat(64)}, 'explicit ownership fixture')`;
+      pending = sql.begin(async reader => {
+        const current = await readIdentityPermissionPopulation(txSql(reader), 'ws', { ...inherited, expectedRevision: before.revision });
+        if (current.status === 'ok') await reader`INSERT INTO harness_shared.population_effects VALUES ('stale')`;
+        return current;
+      }).catch(error => error);
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (!waiting && Date.now() < deadline) {
+        const [row] = await writer`SELECT EXISTS(SELECT 1 FROM pg_locks
+          WHERE relation = 'harness_shared.governance_host_authority_bindings'::regclass
+            AND mode = 'ShareLock' AND NOT granted) AS waiting`;
+        waiting = row.waiting;
+        if (!waiting) await writer`SELECT pg_sleep(0.01)`;
+      }
+      expect(waiting, 'reader reached the actual inherited ownership lock wait').toBe(true);
+    });
+    expect(await pending).toMatchObject({ status: 'stale' });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it('holds inherited ownership edits and first enrollment gaps through effect', async () => {
+    await seedInherited(); await inheritedOwner('organization');
+    const before = await readIdentityPermissionPopulation(sql, 'ws', inherited);
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...inherited, expectedRevision: before.revision })).toEqual(before);
+      for (const action of ['insert', 'update', 'delete']) {
+        await expect(sql.begin(async peer => {
+          await peer`SET LOCAL lock_timeout = '80ms'`;
+          if (action === 'insert') await peer`INSERT INTO harness_shared.governance_host_authority_bindings
+            (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+            VALUES ('ws', 'department', 'department', 'new-human', ${'a'.repeat(64)}, 'new explicit owner')`;
+          else if (action === 'update') await peer`UPDATE harness_shared.governance_host_authority_bindings SET human_owner_id = 'changed-human'`;
+          else await peer`DELETE FROM harness_shared.governance_host_authority_bindings`;
+        })).rejects.toMatchObject({ code: '55P03' });
+      }
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('current')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([{ target: 'current' }]);
+  });
 
   it('joins the canonical inherited chain without turning its editor into a human owner', async () => {
     await seedInherited();

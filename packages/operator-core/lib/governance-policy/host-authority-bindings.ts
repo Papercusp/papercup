@@ -6,8 +6,11 @@ import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 
+const HOST_AUTHORITY_KINDS = ['user', 'platform', 'organization', 'department', 'workspace'] as const;
+type HostAuthorityKind = typeof HOST_AUTHORITY_KINDS[number];
+
 export interface HostAuthorityBinding {
-  kind: 'user' | 'platform';
+  kind: HostAuthorityKind;
   subjectId: string;
   humanOwnerId: string;
   requestPrincipalRevision: string;
@@ -23,7 +26,7 @@ export class HostAuthorityEnrollmentError extends Error {
 }
 
 export interface HostAuthorityEnrollment {
-  kind: 'user' | 'platform';
+  kind: HostAuthorityKind;
   subjectId: string;
   reason: string;
 }
@@ -41,7 +44,7 @@ export async function enrollHostAuthorityBinding(headers: Headers, workspaceId: 
   const credentials = new Headers(headers);
   input = { ...input };
   if (!exact(workspaceId) || workspaceId === '*' || !input ||
-      !['user', 'platform'].includes(input.kind) || !exact(input.subjectId) || input.subjectId === '*' ||
+      !HOST_AUTHORITY_KINDS.includes(input.kind) || !exact(input.subjectId) || input.subjectId === '*' ||
       !exact(input.reason) || Object.keys(input).some(key => !['kind', 'subjectId', 'reason'].includes(key)))
     throw new HostAuthorityEnrollmentError('invalid', 'exact enrollment subject and reason required');
   // Keep enrollment's auth graph out of read-only population scans.
@@ -143,7 +146,7 @@ export async function readHostAuthorityBindings(sql: Sql, workspaceId: string,
         to_char(recorded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "recordedAt"
         FROM harness_shared.governance_host_authority_bindings
        WHERE workspace_id = ${workspaceId} ORDER BY kind, subject_id`;
-    if (bindings.some(row => !['user', 'platform'].includes(row.kind) ||
+    if (bindings.some(row => !HOST_AUTHORITY_KINDS.includes(row.kind) ||
         ![row.subjectId, row.humanOwnerId, row.reason, row.recordedAt].every(exact) ||
         !/^[a-f0-9]{64}$/.test(row.requestPrincipalRevision) ||
         (row.kind === 'user' && row.subjectId !== row.humanOwnerId)))
