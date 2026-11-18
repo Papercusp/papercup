@@ -719,6 +719,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
  */
 function readPhaseWriterTree(root: string) {
   const enumeration = listFilesIncludingUntracked(root);
+  const scannedSubmodules = new Set(enumeration.scanned);
   const input: PhaseWriterSource[] = [];
   const gaps: PhaseWriterInventory['gaps'] = [];
   const excluded: Array<{ path: string; reason: string }> = [];
@@ -748,6 +749,13 @@ function readPhaseWriterTree(root: string) {
     // unreadable/binary inputs remain explicit gaps below.
     try {
       const fullPath = join(root, path), stat = lstatSync(fullPath);
+      // --cached emits the gitlink itself as well as the separately scanned
+      // child files. Only that exact, proven directory entry is structural;
+      // descendants and symlinks still pass through the ordinary source guard.
+      if (stat.isDirectory() && scannedSubmodules.has(path)) {
+        excluded.push({ path, reason: 'enumerated-submodule-directory:libs/test-config/src/tracked-files.mjs' });
+        continue;
+      }
       if (!stat.isFile()) { gaps.push({ id: `source:${path}`, reason: 'non-regular-source' }); continue; }
       const bytes = readFileSync(fullPath), content = bytes.toString('utf8');
       if (!Buffer.from(content).equals(bytes)) { gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' }); continue; }
