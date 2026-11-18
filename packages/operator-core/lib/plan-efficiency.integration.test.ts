@@ -382,7 +382,9 @@ describe('readPlanEfficiency (real PG)', () => {
     expect(result.recovery.status).toBe('complete');
   });
 
-  it.each(stages)('requires resync for changed unconsumed $stage observations without mixing old/new generations', async stage => {
+  it.each(stages)('requires resync for changed unconsumed %s observations without mixing old/new generations', async stage => {
+    // Persisted scenario bindings use Vitest's expanded case title as their identity.
+    expect(expect.getState().currentTestName).toContain(`changed unconsumed ${stage} observations`);
     const fixture = await paginationFixture(`changed-${stage}`);
     const first = await readWorkflowStepMeasurement(fixture.input);
     expect(first.recovery.status).toBe('continue');
