@@ -3,9 +3,29 @@
  * bulk-endpoint-standardization-2026-06-21.
  */
 import { describe, it, expect } from 'vitest';
-import { toList, mergeIds, runBulk, mergeBulkEnvelopes } from './_bulk';
+import { z } from 'zod';
+import { toList, mergeIds, runBulk, mergeBulkEnvelopes, scalarOrArray, bulkEnvelopeSchema } from './_bulk';
 
 describe('_bulk', () => {
+  it('preserves the legacy scalar-or-array schema adapter', () => {
+    const schema = scalarOrArray(z.string());
+    expect(schema.parse('a')).toBe('a');
+    expect(schema.parse(['a', 'b'])).toEqual(['a', 'b']);
+    expect(schema.safeParse(1).success).toBe(false);
+  });
+
+  it('preserves the legacy envelope schema adapter and its item validation', () => {
+    const envelope = {
+      ok: false,
+      results: [{ ok: false, id: 'a', error: 'denied' }],
+      counts: { ok: 0, failed: 1 },
+    };
+    expect(bulkEnvelopeSchema().parse(envelope)).toEqual(envelope);
+    const schema = bulkEnvelopeSchema(z.object({ ok: z.boolean(), id: z.string() }));
+    expect(schema.safeParse(envelope).success).toBe(true);
+    expect(schema.safeParse({ ...envelope, results: [{ ok: false }] }).success).toBe(false);
+  });
+
   it('toList normalizes scalar / array / nullish', () => {
     expect(toList(undefined)).toEqual([]);
     expect(toList(null)).toEqual([]);
