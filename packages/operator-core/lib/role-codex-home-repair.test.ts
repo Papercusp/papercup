@@ -3,10 +3,12 @@ import type { AdvSessionRow } from './adv-sessions';
 import { repairRoleCodexHome } from './role-codex-home-repair';
 
 const mocks = vi.hoisted(() => ({
-  record: vi.fn(), activate: vi.fn(), build: vi.fn(), write: vi.fn(), funding: vi.fn(),
+  record: vi.fn(), readLaunch: vi.fn(), activate: vi.fn(), build: vi.fn(), write: vi.fn(), funding: vi.fn(),
 }));
 
-vi.mock('./adv-sessions', () => ({ recordSuLaunchSpec: mocks.record }));
+vi.mock('./adv-sessions', () => ({
+  recordSuLaunchSpec: mocks.record, readAdvSessionLaunchRecordByOwner: mocks.readLaunch,
+}));
 vi.mock('./su-persona-render', () => ({ parseSuLaunchSpecRecord: () => null }));
 vi.mock('./model-context-budget.mjs', () => ({ CODEX_DEFAULT_MODEL: 'gpt-6.1-sol' }));
 vi.mock('./agent-tools/coordination/control-anchor', () => ({ requestSessionIdentityActivation: mocks.activate }));
@@ -46,6 +48,7 @@ function fixture(changes: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.record.mockResolvedValue(true);
+  mocks.readLaunch.mockResolvedValue(null);
   mocks.write.mockResolvedValue({ sqliteHome: '/original-state/session-123' });
   mocks.funding.mockResolvedValue({ ok: true });
   mocks.build.mockResolvedValue({ stack: ['domain:judge'], cwd: '/fixture/papercusp',
@@ -61,6 +64,50 @@ describe('featureless role repair after resume', () => {
       preserveExisting: true, recordedSqliteHome: '/original-state/session-123', model: 'gpt-5.6-sol:high' }));
     expect(mocks.record).toHaveBeenCalledWith(SESSION, OWNER, expect.objectContaining({ role: 'judge' }));
     expect(mocks.activate).toHaveBeenCalled();
+  });
+
+  const carriedCustody = {
+    workspaceId: 'papercusp-workspace', advSessionId: SESSION, ownerId: OWNER,
+    originalSessionId: 'original-native', currentSessionId: 'carried-native',
+    originalEventId: 'applied-original', reanchorEventId: 'applied-reanchor',
+  };
+
+  it('repairs a verified managed carry while retaining its immutable original launch', async () => {
+    const input = fixture();
+    input.sessionRow.sessionId = 'carried-native';
+    mocks.readLaunch.mockResolvedValue({ originalMemberNativeCustody: carriedCustody });
+    expect(await repairRoleCodexHome(input)).toMatchObject({ status: 200, body: { repaired: true } });
+    expect(mocks.readLaunch).toHaveBeenCalledWith(OWNER, 'papercusp-workspace', {
+      advSessionId: SESSION, sessionId: 'carried-native',
+    });
+    expect(mocks.build).toHaveBeenCalledWith(expect.objectContaining({
+      launchIdentity: { sid: OWNER, nativeSessionId: 'carried-native' },
+    }));
+    expect(mocks.record).toHaveBeenCalledWith(SESSION, OWNER, expect.objectContaining({
+      originalMemberLaunch: input.rawRecord.originalMemberLaunch,
+    }));
+  });
+
+  it.each([
+    { workspaceId: 'foreign-workspace' }, { advSessionId: SESSION + 1 }, { ownerId: 'foreign-owner' },
+    { originalSessionId: 'foreign-original' }, { currentSessionId: 'foreign-current' },
+    { originalEventId: '' }, { reanchorEventId: '' }, { reanchorEventId: 'applied-original' },
+  ])('refuses conflicting or incomplete carry custody %j before rendering', async (changes) => {
+    const input = fixture();
+    input.sessionRow.sessionId = 'carried-native';
+    mocks.readLaunch.mockResolvedValue({ originalMemberNativeCustody: { ...carriedCustody, ...changes } });
+    expect(await repairRoleCodexHome(input)).toMatchObject({ status: 409 });
+    expect(mocks.build).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.record).not.toHaveBeenCalled();
+  });
+
+  it('does not accept a carry witness supplied through mutable launch metadata', async () => {
+    const input = fixture();
+    input.sessionRow.sessionId = 'carried-native';
+    Object.assign(input.rawRecord, { originalMemberNativeCustody: carriedCustody });
+    expect(await repairRoleCodexHome(input)).toMatchObject({ status: 409 });
+    expect(mocks.write).not.toHaveBeenCalled();
   });
 
   it.each([
