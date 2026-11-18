@@ -13,6 +13,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+import { formatOptsFromCtx, serializeToolResponse, type BatchResult } from '@papercusp/tooldef';
 
 afterAll(() => {
   const rail = readRealPgRailBlocks();
@@ -153,6 +154,53 @@ afterEach(() => {
 });
 
 describe('result-door deferred spill (WI-10004533)', () => {
+  it.each([20, 100])('preserves a recoverable canonical batch disposition index for %i children', async (count) => {
+    const statuses = ['completed', 'failed', 'cancelled', 'not-started', 'unknown-effect'] as const;
+    const batch: BatchResult = {
+      ok: false, batchId: 'host-batch-recovery', counts: { ok: count / 5, failed: count * 4 / 5 },
+      results: Array.from({ length: count }, (_, index) => ({
+        itemId: (count === 100 ? 'é'.repeat(120) : 'request-') + index,
+        ok: index % 5 === 0, status: statuses[index % 5],
+        output: { content: [{ type: 'text' as const, text: 'original child output '.repeat(400) }] },
+        receipt: { callId: 'original-call-' + index, retrySafe: false },
+      })),
+    };
+    const original = JSON.stringify(batch);
+    const serialized = serializeToolResponse({ data: batch }, formatOptsFromCtx({
+      transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+    }, undefined));
+    const out = await applyResultDoorAsync(serialized, {
+      ...OPTS, toolName: 'batch-fixture:write', effect: 'write', ownerId: 'su-batch-caller',
+    });
+    const projected = JSON.parse((out.content[0] as { text: string }).text);
+    expect(projected).toMatchObject({ ok: false, batchId: batch.batchId, counts: batch.counts, _partial: true });
+    const shown = projected.results as BatchResult['results'];
+    expect(shown.length).toBeGreaterThan(0);
+    expect(shown).toEqual(batch.results.slice(0, shown.length).map(({ itemId, ok, status }) => ({ itemId, ok, status })));
+    if (count === 20) expect(shown).toHaveLength(count);
+    else {
+      expect(shown.length).toBeLessThan(count);
+      expect(projected._projection.arrayTruncations).toEqual([{ path: '$.results',
+        shownCount: shown.length, renderedCount: shown.length, omittedCount: count - shown.length }]);
+    }
+    expect(Buffer.byteLength((out.content[0] as { text: string }).text, 'utf8')).toBeLessThanOrEqual(BUDGET_CHARS);
+    const spillPath = projected._projection.cursor.args.file_path as string;
+    const reference = parseScratchReference(readFileSync(spillPath))!;
+    expect(reference.manifest).toMatchObject({ ownerId: 'su-batch-caller', audience: 'owner', workspaceId: 'ws-1' });
+    expect(() => scratchReference.authorizeScratchReference(reference.manifest, {
+      workspaceId: 'ws-1', ownerId: 'su-batch-caller',
+    })).not.toThrow();
+    expect(() => scratchReference.authorizeScratchReference(reference.manifest, {
+      workspaceId: 'ws-1', ownerId: 'another-caller',
+    })).toThrow(/restricted to its creating owner/);
+    expect(() => scratchReference.authorizeScratchReference(reference.manifest, {
+      workspaceId: 'another-workspace', ownerId: 'su-batch-caller',
+    })).toThrow();
+    const recovered = reference.payload.subarray(reference.manifest.bodyOffsetInPayload!).toString('utf8');
+    expect(JSON.parse(recovered)).toEqual(batch);
+    expect(JSON.stringify(batch)).toBe(original);
+  });
+
   it('runs without unit-layer PG refreshes or the durable database spool', () => {
     expect(process.env.PAPERCUSP_FORBID_REAL_PG).toBe('1');
     expect(process.env.PAPERCUSP_DOORS_CONFIG_OFF).toBe('1');
