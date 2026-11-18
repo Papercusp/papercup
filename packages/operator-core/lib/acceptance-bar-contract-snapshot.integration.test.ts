@@ -148,6 +148,101 @@ afterAll(async () => {
 }, 30_000);
 
 describe('acceptance BAR contract snapshot — real Postgres reuse preflight', () => {
+  it('selects reviewed phase files and exact final cases from real stored BAR and execution evidence', async () => {
+    const slug = 'acceptance-snapshot-owned-selectors';
+    const files = ['test/owned-prerequisite.integration.test.ts', 'test/owned-final.integration.test.ts'];
+    const titles = ['delivery > prerequisite passes', 'delivery > exact final pair passes'];
+    const owners = ['P-003', 'P-002'];
+    await Promise.all(files.map(file => writeFile(path.join(h.repoRoot, file), 'export const proof = true;\n')));
+    const ownedRequirement = { ...requirement,
+      verification: { ...requirement.verification, check: { kind: 'tests', files,
+        filesByPlanItem: Object.fromEntries(owners.map((owner, index) => [owner, [files[index]!]])),
+        cases: files.map((file, index) => ({ file, testName: titles[index]! })) } } };
+    const content = planContent.replaceAll(PLAN, slug)
+      .replace(JSON.stringify(requirement), JSON.stringify(ownedRequirement))
+      .replace(`| R-1 | ${ITEM} | tree |`, '| R-1 | P-003, P-002 | tree |')
+      .replace(`- **${ITEM}** \`done\` prove the existing acceptance snapshot reuse seam`,
+        '- **P-003** `done` prove prerequisites\n- **P-002** `done` prove exact final delivery');
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,
+       acceptance_bar_epoch,acceptance_bar_cohort)
+      VALUES (${WORKSPACE},${HARNESS},${slug},${content},${hashPlanContent(content)},1,
+        ${slug},'active','su-author',1,'post-epoch')`;
+    for (const [index, owner] of owners.entries()) {
+      await db.adminSql`INSERT INTO harness_shared.plan_items
+        (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
+        VALUES (${WORKSPACE},${HARNESS},${slug},${owner},${index + 1},'done',${owner})`;
+    }
+    const seeded = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
+      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug: slug, planContent: content,
+      planTitle: slug, planStatus: 'active', planVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch',
+      actorId: 'su-author', now: new Date(OBSERVED_AT), executor: tx as unknown as SpecClauseSql,
+    }));
+    expect(seeded.ok).toBe(true);
+    const clauses = await listSpecClauses({ harnessSlug: HARNESS, planSlug: slug });
+    expect(clauses).toHaveLength(2);
+    for (const draft of clauses) {
+      if (!draft.acceptanceRef || !draft.sourceBar) throw new Error('owned selector clause missing BAR');
+      expect(await setSpecClause({ harnessSlug: HARNESS, planSlug: slug, specId: draft.specId,
+        expectedRevision: draft.revision, sourceValId: draft.sourceValId ?? undefined,
+        planItemId: draft.planItemId, behavior: draft.behavior, behaviorClass: draft.behaviorClass,
+        requiredEvidence: draft.requiredEvidence, requiredTestLayers: draft.requiredTestLayers,
+        mutationRequired: draft.mutationRequired, lifecycleStatus: 'active',
+        falsifier: draft.falsifier ?? undefined, acceptanceRef: draft.acceptanceRef,
+        sourceBar: draft.sourceBar, actorId: 'su-independent-reviewer',
+      })).toMatchObject({ status: 'revised', revision: 2 });
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id,harness_slug,feature_id,title,status,item_kind,source_plan_slug,source_plan_item_ids,taken_by)
+        VALUES (${WORKSPACE},${HARNESS},${slug + '-' + draft.planItemId},${draft.specId},'done','feature',
+          ${slug},${[draft.planItemId!]}::text[],'su-impl')`;
+    }
+    const bindRun = async (index: number, state: 'pass' | 'fail' | 'skip' | 'running', title: string) => {
+      const file = files[index]!, owner = owners[index]!;
+      const details = { schemaVersion: 1, root: h.repoRoot, filePath: file, runGroupId: null,
+        workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null, testLayer: 'integration',
+        passed: state === 'pass' ? 1 : 0, failed: state === 'fail' ? 1 : 0,
+        skipped: state === 'skip' ? 1 : 0, collectionFailed: false, mutationPhase: null,
+        commitSha: null, worktreeDirty: false, passedCaseTitles: state === 'pass' ? [title] : [] };
+      expect(parseTestRunExecutionDetails(details)).toEqual(details);
+      const [run] = await db.adminSql<{ id: number }[]>`INSERT INTO harness_shared.test_runs
+        (workspace_id,harness_slug,file_path,framework,source,status,finished_at,worktree_dirty,execution_details)
+        VALUES (${WORKSPACE},${HARNESS},${file},'vitest','local',${state === 'skip' ? 'pass' : state},
+          ${OBSERVED_AT},false,${JSON.stringify(details)}::jsonb) RETURNING id`;
+      const measured = { ...measurement, testPaths: [file], fixturePaths: [file] };
+      const fingerprints = await measureRepoFilesEvidenceAtRoot(h.repoRoot, measured);
+      expect(await bindSpecEvidence({ harnessSlug: HARNESS, planSlug: slug,
+        workItemId: slug + '-' + owner, specId: 'AUTO-BAR-R-1-' + owner, evidenceKind: 'test',
+        evidenceRef: 'test-run:owned-selector:' + run!.id, ...fingerprints, testRunId: Number(run!.id),
+        details: { currentMeasurement: measured, evidencePlane: 'tree',
+          adequacy: { testLayer: 'integration', collected: true, executed: state !== 'running',
+            skipped: state === 'skip', outcome: state === 'pass' ? 'pass' : state, testCases: [title] } },
+        observedAt: OBSERVED_AT, actorId: 'su-impl',
+      })).toMatchObject({ status: 'created', specRevision: 2 });
+    };
+    await bindRun(0, 'pass', titles[0]!);
+    const read = async (finalPasses: boolean) => {
+      const snapshot = await readAcceptanceBarContractSnapshot(slug, {}, { harnessSlug: HARNESS });
+      const checks = snapshot.bars[0]!.proof.adequacy!.checks;
+      const prerequisite = checks.find(check => check.specId === 'AUTO-BAR-R-1-P-003')!;
+      const final = checks.find(check => check.specId === 'AUTO-BAR-R-1-P-002')!;
+      // Missing mutant proof remains a distinct obligation. Assert the selected
+      // file/case obligation without presenting these stored reporter fixtures as full acceptance.
+      expect(prerequisite.wouldBlock.filter(gap => gap.startsWith(files[0]! + ':'))).toEqual([]);
+      expect(prerequisite.wouldBlock.some(gap => gap.includes(files[1]!))).toBe(false);
+      expect(final.wouldBlock.some(gap => gap.startsWith(files[1]! + ':'))).toBe(!finalPasses);
+      expect(snapshot.bars[0]!.requirement?.verification.check).toEqual(ownedRequirement.verification.check);
+    };
+    await read(false); // A passing prerequisite cannot fill an absent final file.
+    for (const state of ['fail', 'skip', 'running'] as const) {
+      await bindRun(1, state, titles[1]!);
+      await read(false);
+    }
+    await bindRun(1, 'pass', 'delivery > another passing case');
+    await read(false);
+    await bindRun(1, 'pass', titles[1]!);
+    await read(true);
+  });
+
   it.each([49, 50, 51, 151].flatMap(count => ['healthy', 'broken'].flatMap(rating =>
     ['legacy', 'keyed'].flatMap(kind => ['forward', 'reverse'].map(order => ({ count, rating, kind, order }))))))(
     'R2 native default consumer exhausts $count cards before selecting the older $rating $kind grade ($order)', async ({ count, rating, kind, order }) => {
