@@ -2098,7 +2098,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, getRearmExpiryReason, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, stallReportEveryMs, now, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, getRearmExpiryReason, renewExpiredLoopFire, isSuperseded, isCancelled, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, stallReportEveryMs, now, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -2131,6 +2131,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     onSettlement?: ((_messages: any, _outcome: any) => void) | undefined;
     isStale?: (() => boolean) | undefined;
     getRearmExpiryReason?: ((_msg: any) => string | null) | undefined;
+    renewExpiredLoopFire?: ((message: any) => Promise<number | null>) | null | undefined;
     isSuperseded?: ((_msg: any) => boolean) | undefined;
     isCancelled?: ((_msg: any) => boolean) | undefined;
     readWakeMode?: (() => Promise<string>) | undefined;
@@ -2175,7 +2176,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "queued" | "superseded" | "closed" | "duplicate";
+    schedule(msg: any): "superseded" | "closed" | "duplicate" | "queued";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -5338,7 +5339,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "cancelled" | "pending" | "completed" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "cancelled" | "pending" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;
