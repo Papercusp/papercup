@@ -131,9 +131,12 @@ describe('phase binding writer census', () => {
       expect(refused.problems).toContainEqual({ id: replacement.id, reasons: ['unclassified-writer'] });
     }
     for (const { siteId } of reviewed.pendingAdvancing) expect(current.coverage.residue).toContain(siteId);
-    const append = inventory.sites.filter(site => site.path === pgLog
-      && site.operation === 'appendLine' && site.kind === 'sql');
-    expect(append).toHaveLength(1);
+    const append = inventory.sites.filter(site => site.path === pgLog && site.kind === 'sql'
+      && site.statement.includes('INSERT INTO harness_shared.coord_event_log'));
+    expect(append.map(site => site.operation).sort()).toEqual([
+      'appendLine::<callback>', 'appendLineIfAbsent::perform::append', 'putEvent',
+      'putEventIfAbsent', 'putEvents',
+    ]);
     for (const site of append) expect(current.coverage.residue).toContain(site.id);
     expect(current.ready).toBe(false);
   });

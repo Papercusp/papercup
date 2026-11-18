@@ -38,7 +38,17 @@
     "libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
     "libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
     "libs/papercusp/libs/db/sql/1307-personal-sealed-contents.sql",
-    "libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql"
+    "libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql",
+    "libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql",
+    "libs/papercusp/libs/db/sql/126-coordination-fanout.sql",
+    "libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql",
+    "libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql",
+    "libs/papercusp/libs/db/sql/813-contention-free-hlc-sequence.sql",
+    "libs/papercusp/libs/db/sql/1537-plan-verification-profile-row-clock-mask.sql",
+    "libs/papercusp/libs/db/sql/1590-cleanup-issue-family-kind.sql",
+    "libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql",
+    "libs/papercusp/libs/db/sql/1620-plan-execution-invalidation-reasons.sql",
+    "libs/papercusp/libs/db/sql/1636-fed-tombstones-hive-settings.sql"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -51,7 +61,273 @@
     "clockSchema": "pg_catalog",
     "runtimeAttestation": false
   },
+  "databaseTriggerObservation": {
+    "basis": "catalog-source-comparison-not-runtime-or-full-census-acceptance",
+    "observationDate": "2026-11-18",
+    "instrument": "dev:pg_query",
+    "rowCount": 7,
+    "truncated": false,
+    "runtimeAttestation": false,
+    "sourceProofs": [
+      {
+        "path": "libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql",
+        "sha256": "3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/126-coordination-fanout.sql",
+        "sha256": "f89b23669fd57cb5a04ddf39dc95a1a48976c031520e07e2e0de3df29d86f777"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql",
+        "sha256": "d41e92daaf30ff6d66e11bca2026ae9abb89bf0ce0fd4965b0810eab1a8cc501"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql",
+        "sha256": "e97a156bc4a6397dcb42c92493bd2d922f64a0c4e2c56fdd900a1319a1c711b6"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/813-contention-free-hlc-sequence.sql",
+        "sha256": "579180b6caf070592a1d18ba75c1e5b82c17869d45b091285660e4a09f63e437"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1537-plan-verification-profile-row-clock-mask.sql",
+        "sha256": "1905db28ef3c9be457f67214293feed8d41740ab5c2ef779e574cae1aa21f972"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1590-cleanup-issue-family-kind.sql",
+        "sha256": "7a0f76b3aaa4eb2d4224c8c42c02088417ebd3b6be1e0deb327f65abe8b28c89"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql",
+        "sha256": "200b9de921e360036f7772348d8688b6c1f4e0a5d152a0979bc799827172df25"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1620-plan-execution-invalidation-reasons.sql",
+        "sha256": "364b16eab34d7b7723a5f28fa253113d25aab8975ad9c5447f1ea43289cf4323"
+      },
+      {
+        "path": "libs/papercusp/libs/db/sql/1636-fed-tombstones-hive-settings.sql",
+        "sha256": "efeee7b2576396022246121dad4be67fb0fd6b75daa56d2040859d7d3a38759f"
+      }
+    ],
+    "functions": [
+      {
+        "identity": "capture_substrate_outbox()",
+        "bodyMd5": "4e3d2f93515fb197a3ac409051c7b0d3",
+        "bodyChars": 2396,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/1636-fed-tombstones-hive-settings.sql"
+        ]
+      },
+      {
+        "identity": "coord_open_escalations_maintain()",
+        "bodyMd5": "57b8e1cb340f4dcd9c4350062f583c05",
+        "bodyChars": 1670,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql"
+        ]
+      },
+      {
+        "identity": "emit_change_notify()",
+        "bodyMd5": "65a7e465cefa84576e7a80783384fa74",
+        "bodyChars": 3061,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql"
+        ]
+      },
+      {
+        "identity": "hlc_now()",
+        "bodyMd5": "750366e3bb58f343a7791691caa1b46f",
+        "bodyChars": 1392,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql"
+        ]
+      },
+      {
+        "identity": "hlc_recv(text)",
+        "bodyMd5": "31dbf195daf8884b090f1bc21aa2d81e",
+        "bodyChars": 1171,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql"
+        ]
+      },
+      {
+        "identity": "notify_coord_event_log()",
+        "bodyMd5": "60148e126f72807b620e06bfc408f62b",
+        "bodyChars": 134,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/126-coordination-fanout.sql"
+        ]
+      },
+      {
+        "identity": "stamp_local_federated_write()",
+        "bodyMd5": "84750f3f98e9fab7579b88e6dab27ad7",
+        "bodyChars": 6672,
+        "sourcePaths": [
+          "libs/papercusp/libs/db/sql/1537-plan-verification-profile-row-clock-mask.sql",
+          "libs/papercusp/libs/db/sql/1590-cleanup-issue-family-kind.sql",
+          "libs/papercusp/libs/db/sql/1613-plan-execution-start-revision.sql",
+          "libs/papercusp/libs/db/sql/1620-plan-execution-invalidation-reasons.sql"
+        ],
+        "composition": "Apply 1590's issue-kind extension to 1537's body, then the 1613 and 1620 BEGIN mask insertions in order. The resulting complete 6672-character body matched the catalog MD5; base1537 alone does not match."
+      }
+    ],
+    "downstreamTriggerObservation": {
+      "rowCount": 3,
+      "truncated": false,
+      "internalTriggersIncluded": true,
+      "positiveControl": {
+        "relation": "harness_shared.coord_event_log",
+        "rowCount": 1,
+        "truncated": false,
+        "status": "passed"
+      },
+      "relations": [
+        {
+          "relation": "harness_shared.hlc_clock",
+          "triggers": []
+        },
+        {
+          "relation": "harness_shared.substrate_outbox",
+          "triggers": []
+        },
+        {
+          "relation": "harness_shared.coord_open_escalations",
+          "triggers": [
+            {
+              "name": "emit_change_notify_trg",
+              "function": "harness_shared.emit_change_notify()",
+              "definition": "CREATE TRIGGER emit_change_notify_trg AFTER INSERT OR DELETE ON harness_shared.coord_open_escalations FOR EACH ROW EXECUTE FUNCTION emit_change_notify()"
+            }
+          ]
+        }
+      ]
+    },
+    "unresolved": [
+      "coord append/getSql/getWorkspaceId and runtime SQL provenance",
+      "capture_substrate_outbox canonical_harness_slug and asynchronous consumers",
+      "sql.begin/sql.json/sealed INSERT/store helper",
+      "getOrgPg timeout/notification/ESM constructors/schema callbacks",
+      "advancing lifecycle and claim writers"
+    ]
+  },
   "reviews": [
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql\",\"<sql-module>\",\"sql\",\"3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5\"]#1",
+      "sourceSha256": "3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5",
+      "statementSha256": "3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql",
+          "sha256": "3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/813-contention-free-hlc-sequence.sql",
+          "sha256": "579180b6caf070592a1d18ba75c1e5b82c17869d45b091285660e4a09f63e437"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected both complete PL/pgSQL bodies. hlc_now advances only the harness_shared.hlc_packed_seq clock and initializes hlc_clock.node_id; hlc_recv validates a remote clock then advances that same sequence. Both release their session advisory lock on success and query cancellation/error. Neither function grants a claim or changes plan/work-item lifecycle. The 813 source pins the sequence definition. The catalog comparison observed exact body matches and no hlc_clock triggers; this is a source classification, not runtime qualification or permission to execute DDL.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Manually inspected the complete module including every statement; unsupported PL/pgSQL/psql syntax is not an exemption. Inspected both complete PL/pgSQL bodies. hlc_now advances only the harness_shared.hlc_packed_seq clock and initializes hlc_clock.node_id; hlc_recv validates a remote clock then advances that same sequence. Both release their session advisory lock on success and query cancellation/error. Neither function grants a claim or changes plan/work-item lifecycle. The 813 source pins the sequence definition. The catalog comparison observed exact body matches and no hlc_clock triggers; this is a source classification, not runtime qualification or permission to execute DDL.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/126-coordination-fanout.sql\",\"<sql-module>\",\"sql\",\"f89b23669fd57cb5a04ddf39dc95a1a48976c031520e07e2e0de3df29d86f777\"]#1",
+      "sourceSha256": "f89b23669fd57cb5a04ddf39dc95a1a48976c031520e07e2e0de3df29d86f777",
+      "statementSha256": "f89b23669fd57cb5a04ddf39dc95a1a48976c031520e07e2e0de3df29d86f777",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/126-coordination-fanout.sql",
+          "sha256": "f89b23669fd57cb5a04ddf39dc95a1a48976c031520e07e2e0de3df29d86f777"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the entire migration including the transaction, partial unique index, trigger replacement and complete notify_coord_event_log body. The function only calls pg_notify with workspace/writer scope and returns NEW unchanged. The index supplies coordination fan-out idempotency; it does not admit execution or alter a phase claim/lifecycle. The matched catalog body is an observation only; the separate caller append and asynchronous consumers remain unapproved.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/126-coordination-fanout.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Manually inspected the complete module including every statement; unsupported PL/pgSQL/psql syntax is not an exemption. Inspected the entire migration including the transaction, partial unique index, trigger replacement and complete notify_coord_event_log body. The function only calls pg_notify with workspace/writer scope and returns NEW unchanged. The index supplies coordination fan-out idempotency; it does not admit execution or alter a phase claim/lifecycle. The matched catalog body is an observation only; the separate caller append and asynchronous consumers remain unapproved.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/126-coordination-fanout.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql\",\"<sql-module>\",\"sql\",\"d41e92daaf30ff6d66e11bca2026ae9abb89bf0ce0fd4965b0810eab1a8cc501\"]#1",
+      "sourceSha256": "d41e92daaf30ff6d66e11bca2026ae9abb89bf0ce0fd4965b0810eab1a8cc501",
+      "statementSha256": "d41e92daaf30ff6d66e11bca2026ae9abb89bf0ce0fd4965b0810eab1a8cc501",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql",
+          "sha256": "d41e92daaf30ff6d66e11bca2026ae9abb89bf0ce0fd4965b0810eab1a8cc501"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql",
+          "sha256": "e97a156bc4a6397dcb42c92493bd2d922f64a0c4e2c56fdd900a1319a1c711b6"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the full function and one-shot cleanup. Both derive coord_open_escalations membership from the latest resolve/reopen event by ordered id; LIMIT 1 selects that defined latest event and does not truncate the underlying lifecycle log. Writes are confined to the open-escalation projection. The observed sole projection trigger calls the source-pinned emit_change_notify, which returns the row unchanged. This does not approve coordination append, outbox/federation consumers, or any claim/lifecycle writer.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Manually inspected the complete module including every statement; unsupported PL/pgSQL/psql syntax is not an exemption. Inspected the full function and one-shot cleanup. Both derive coord_open_escalations membership from the latest resolve/reopen event by ordered id; LIMIT 1 selects that defined latest event and does not truncate the underlying lifecycle log. Writes are confined to the open-escalation projection. The observed sole projection trigger calls the source-pinned emit_change_notify, which returns the row unchanged. This does not approve coordination append, outbox/federation consumers, or any claim/lifecycle writer.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql\",\"<sql-module>\",\"sql\",\"e97a156bc4a6397dcb42c92493bd2d922f64a0c4e2c56fdd900a1319a1c711b6\"]#1",
+      "sourceSha256": "e97a156bc4a6397dcb42c92493bd2d922f64a0c4e2c56fdd900a1319a1c711b6",
+      "statementSha256": "e97a156bc4a6397dcb42c92493bd2d922f64a0c4e2c56fdd900a1319a1c711b6",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql",
+          "sha256": "e97a156bc4a6397dcb42c92493bd2d922f64a0c4e2c56fdd900a1319a1c711b6"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the complete replacement function: row/GUC workspace selection, resource-governor receipt suppression, transaction coalescing and ordinary payload construction. Each branch either returns the original OLD/NEW row or calls pg_notify before returning it unchanged. There are no relation mutations or execution-authority grants in this function. Source/body equality was measured for this catalog snapshot; listener behavior, calling writers and current runtime acceptance remain outside this review.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sql-parse-unresolved",
+          "reason": "Manually inspected the complete module including every statement; unsupported PL/pgSQL/psql syntax is not an exemption. Inspected the complete replacement function: row/GUC workspace selection, resource-governor receipt suppression, transaction coalescing and ordinary payload construction. Each branch either returns the original OLD/NEW row or calls pg_notify before returning it unchanged. There are no relation mutations or execution-authority grants in this function. Source/body equality was measured for this catalog snapshot; listener behavior, calling writers and current runtime acceptance remain outside this review.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"packages/operator-core/lib/personal-vault/sealed-contents.ts\",\"sealCoordEnvelope::<callback>\",\"helper-edge\",\"965e4b773dc9ea285b8b7e0b2874dc1c3b3e313c24f89020267de2bbea6e2d85\"]#1",
       "sourceSha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a",
