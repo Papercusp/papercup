@@ -109,8 +109,6 @@ export function readBlueprintSourcePopulation(opts: { localDirs?: string[]; expe
     if (!stat.isDirectory()) throw new Error(`unsupported blueprint population source: ${path}`);
     const children = new Map<string, { revision: string; file: boolean; declaration?: boolean }>();
     for (const name of readdirSync(path).sort()) {
-      // Git bookkeeping is not a blueprint source. Do not follow .git links.
-      if (name === '.git') continue;
       const child = scan(join(path, name));
       children.set(name, { revision: child.revision, file: child.children === undefined,
         ...(child.declaration !== undefined ? { declaration: child.declaration } : {}) });

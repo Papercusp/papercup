@@ -97,12 +97,13 @@ describe('complete blueprint library source inventory (P-002)', () => {
     expect(read().sources[tier].revision).not.toBe(before.sources[tier].revision);
   });
 
-  it.each(['add', 'remove', 'empty-directory', 'release-metadata'])('detects %s outside the currently selected declaration', change => {
+  it.each(['add', 'remove', 'empty-directory', 'release-metadata', 'dot-resource'])('detects %s outside the currently selected declaration', change => {
     const { dirs, options, read } = fixture();
     const before = read();
     if (change === 'add') writeFileSync(join(dirs[1], 'shared', 'new-resource.json'), '{}');
     if (change === 'remove') rmSync(join(dirs[0], 'shared', 'prompts', 'policy.md'));
     if (change === 'empty-directory') mkdirSync(join(dirs[2], 'empty-future-source'));
+    if (change === 'dot-resource') writeFileSync(join(dirs[0], 'shared', 'prompts', '.git'), 'also source bytes');
     if (change === 'release-metadata') {
       mkdirSync(join(dirs[1], '.releases', 'shared'), { recursive: true });
       writeFileSync(join(dirs[1], '.releases', 'shared', 'index.json'), '{}');
