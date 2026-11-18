@@ -174,6 +174,99 @@ describe('canonical user/platform authority storage (P-002)', () => {
     expect(await loadScopedPolicyAuthorities({ ...scope, platformIds: 'workspace' }, sql)).toMatchObject({ status: 'unavailable' });
   });
 
+  it('enumerates every stored user, including unbound users, without importing foreign authorities', async () => {
+    await seed();
+    const bob = await upsertScopedPolicyAuthority(policy('user', { subjectId: 'user:bob', rules: { actions: { deny: ['edit'] } } }), sql);
+    await upsertScopedPolicyAuthority(policy('user', { workspaceId: 'foreign', subjectId: 'user:foreign' }), sql);
+    const census = { workspaceId: 'ws', userIds: 'workspace' as const, platformIds: 'workspace' as const };
+    const loaded = await loadScopedPolicyAuthorities(census, sql);
+    if (loaded.status !== 'ok') throw new Error('full stored population unavailable');
+    expect(loaded.policies).toHaveLength(3);
+    expect(loaded.policies).toContainEqual(bob);
+    const explicit = await loadScopedPolicyAuthorities({ workspaceId: 'ws', userIds: ['user:bob', scope.userId], platformIds: scope.platformIds }, sql);
+    if (explicit.status !== 'ok') throw new Error('explicit population unavailable');
+    expect(explicit.policies).toEqual(loaded.policies);
+    expect(explicit.revision).not.toBe(loaded.revision);
+    expect(await loadScopedPolicyAuthorities({ workspaceId: 'ws', userIds: [scope.userId, 'user:bob'], platformIds: scope.platformIds }, sql)).toEqual(explicit);
+  });
+
+  it('requires independently host-bound users and floors even when other stored policies exist', async () => {
+    await seed();
+    const census = { workspaceId: 'ws', userIds: 'workspace' as const, platformIds: 'workspace' as const,
+      requiredUserIds: [scope.userId, 'user:bob'], requiredPlatformIds: ['fixed-floor', 'host-floor'] };
+    expect(await loadScopedPolicyAuthorities(census, sql)).toMatchObject({ status: 'unavailable' });
+    await upsertScopedPolicyAuthority(policy('user', { subjectId: 'user:bob' }), sql);
+    expect(await loadScopedPolicyAuthorities(census, sql)).toMatchObject({ status: 'unavailable' });
+    await upsertScopedPolicyAuthority(policy('platform', { subjectId: 'host-floor' }), sql);
+    const before = await loadScopedPolicyAuthorities(census, sql);
+    expect(before).toMatchObject({ status: 'ok', policies: expect.any(Array) });
+    expect(await loadScopedPolicyAuthorities({ ...census, requiredUserIds: [...census.requiredUserIds].reverse(),
+      requiredPlatformIds: [...census.requiredPlatformIds].reverse() }, sql)).toEqual(before);
+    const withoutBindings = await loadScopedPolicyAuthorities({ workspaceId: 'ws', userIds: 'workspace', platformIds: 'workspace' }, sql);
+    if (before.status !== 'ok' || withoutBindings.status !== 'ok') throw new Error('required sources missing');
+    expect(before.revision).not.toBe(withoutBindings.revision);
+  });
+
+  it.each(['scope_ref', 'layer_id', 'content_hash', 'rules'] as const)('refuses a malformed user census member: %s', async field => {
+    await seed();
+    const unbound = await upsertScopedPolicyAuthority(policy('user', { subjectId: 'user:unbound' }), sql);
+    if (field === 'layer_id') await sql`DELETE FROM harness_shared.governance_policy_layer_versions WHERE level = 'user'`;
+    await sql.unsafe(`UPDATE harness_shared.governance_policy_layers SET ${field} = $1 WHERE layer_id = $2`,
+      [field === 'rules' ? 'null' : 'invalid', unbound.id]);
+    expect(await loadScopedPolicyAuthorities({ workspaceId: 'ws', userIds: 'workspace', platformIds: 'workspace' }, sql))
+      .toMatchObject({ status: 'malformed' });
+  });
+
+  it.each(['add', 'edit', 'remove'] as const)('refuses a changed full user population before its effect: %s', async change => {
+    await seed();
+    const census = { workspaceId: 'ws', userIds: 'workspace' as const, platformIds: 'workspace' as const };
+    const before = await loadScopedPolicyAuthorities(census, sql);
+    if (before.status !== 'ok') throw new Error('full stored population unavailable');
+    if (change === 'add') await upsertScopedPolicyAuthority(policy('user', { subjectId: 'user:new' }), sql);
+    else if (change === 'edit') await upsertScopedPolicyAuthority(policy('user', { expectedVersion: 1, rules: {} }), sql);
+    else {
+      await sql`DELETE FROM harness_shared.governance_policy_layer_versions WHERE level = 'user'`;
+      await sql`DELETE FROM harness_shared.governance_policy_layers WHERE level = 'user'`;
+    }
+    const result = await sql.begin(async tx => {
+      const current = await loadScopedPolicyAuthorities(census, tx as unknown as postgres.Sql, before.revision);
+      if (current.status === 'ok') await tx`INSERT INTO harness_shared.scoped_test_effects VALUES ('stale-user-effect')`;
+      return current;
+    });
+    expect(result).toMatchObject({ status: change === 'remove' ? 'unavailable' : 'stale' });
+    expect(await sql`SELECT * FROM harness_shared.scoped_test_effects`).toEqual([]);
+  });
+
+  it('holds the user population against direct-SQL phantoms through the protected effect', async () => {
+    await seed();
+    const census = { workspaceId: 'ws', userIds: 'workspace' as const, platformIds: scope.platformIds };
+    const before = await loadScopedPolicyAuthorities(census, sql);
+    if (before.status !== 'ok') throw new Error('full stored population unavailable');
+    await sql.begin(async reader => {
+      expect(await loadScopedPolicyAuthorities(census, reader as unknown as postgres.Sql, before.revision)).toEqual(before);
+      await expect(sql.begin(async writer => {
+        await writer`SET LOCAL lock_timeout = '150ms'`;
+        await writer`INSERT INTO harness_shared.governance_policy_layers
+          (layer_id, level, scope_ref, version, rules, exceptions, content_hash, updated_by)
+          SELECT 'raw-new-user', level, '["ws","raw-user"]', version, rules, exceptions, content_hash, updated_by
+          FROM harness_shared.governance_policy_layers WHERE level = 'user'`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      await reader`INSERT INTO harness_shared.scoped_test_effects VALUES ('held-user-effect')`;
+    });
+    expect(await sql`SELECT * FROM harness_shared.scoped_test_effects`).toEqual([{ target: 'held-user-effect' }]);
+    await expect(loadScopedPolicyAuthorities(census, sql, before.revision)).rejects.toThrow('existing transaction');
+    await expect(sql.begin('isolation level repeatable read', tx =>
+      loadScopedPolicyAuthorities(census, tx as unknown as postgres.Sql, before.revision))).rejects.toThrow('read committed');
+  });
+
+  it.each([
+    {}, { userId: scope.userId, userIds: ['user:bob'] }, { userIds: [] }, { userIds: ['user:bob', 'user:bob'] },
+    { userIds: 'workspace' as const, requiredUserIds: [''] }, { userIds: 'workspace' as const, requiredPlatformIds: ['host-floor'] },
+  ])('refuses ambiguous or incomplete user/floor selectors %j', async selector => {
+    expect(await loadScopedPolicyAuthorities({ workspaceId: 'ws', platformIds: scope.platformIds, ...selector }, sql))
+      .toMatchObject({ status: 'unavailable' });
+  });
+
   it.each(['add', 'remove'] as const)('invalidates the before-image when the stored platform population changes: %s', async change => {
     await seed();
     const population = { ...scope, platformIds: 'workspace' as const };

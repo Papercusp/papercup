@@ -424,9 +424,10 @@ export async function upsertScopedPolicyAuthorityInTx(tx: Sql, original: UpsertS
     exceptions: structuredClone(row.exceptions) as PolicyException[] };
 }
 
-/** User/platform slice only. `workspace` enumerates every STORED platform root
- * for the workspace instead of trusting an editor's list. It cannot prove that
- * a required host floor was installed, or establish human binding ownership.
+/** User/platform slice only. `workspace` enumerates every STORED root of that
+ * kind, including users with no current wearer. Required IDs must come from the
+ * host's independent membership/floor bindings; a nonempty stored census alone
+ * cannot prove those bindings are complete or establish human ownership.
  * Explicit ID lists retain their narrower, exact-set semantics.
  *
  * A pinned census takes a table SHARE lock before discovery: row locks alone
@@ -435,14 +436,23 @@ export async function upsertScopedPolicyAuthorityInTx(tx: Sql, original: UpsertS
  * Historical transaction snapshots cannot discover later committed floors and
  * are refused. Keep the transaction short; no external I/O belongs inside it. */
 export async function loadScopedPolicyAuthorities(
-  input: { workspaceId: string; userId: string; platformIds: readonly string[] | 'workspace' },
+  input: { workspaceId: string; userId?: string; userIds?: readonly string[] | 'workspace';
+    platformIds: readonly string[] | 'workspace'; requiredUserIds?: readonly string[];
+    requiredPlatformIds?: readonly string[] },
   sql: Sql, expectedRevision?: string,
 ): Promise<Exclude<PolicyAuthorityLoad, { status: 'none' }> | { status: 'unavailable'; reason: string }> {
   const scope = structuredClone(input);
-  const census = scope.platformIds === 'workspace';
-  if (!exactScopeText(scope.workspaceId) || !exactScopeText(scope.userId) ||
-      (!census && (!Array.isArray(scope.platformIds) || !scope.platformIds.length ||
-        scope.platformIds.some(id => !exactScopeText(id)) || new Set(scope.platformIds).size !== scope.platformIds.length)))
+  const censusPlatforms = scope.platformIds === 'workspace';
+  const censusUsers = scope.userIds === 'workspace';
+  const census = censusPlatforms || censusUsers;
+  const validIds = (ids: unknown): ids is string[] => Array.isArray(ids) && ids.length > 0 &&
+    ids.every(exactScopeText) && new Set(ids).size === ids.length;
+  if (!exactScopeText(scope.workspaceId) ||
+      (scope.userId !== undefined ? !exactScopeText(scope.userId) || scope.userIds !== undefined :
+        !censusUsers && !validIds(scope.userIds)) ||
+      (!censusPlatforms && !validIds(scope.platformIds)) ||
+      (scope.requiredUserIds !== undefined && (!censusUsers || !validIds(scope.requiredUserIds))) ||
+      (scope.requiredPlatformIds !== undefined && (!censusPlatforms || !validIds(scope.requiredPlatformIds))))
     return { status: 'unavailable', reason: 'complete scoped authority identities are unavailable' };
   if (expectedRevision !== undefined && typeof (sql as unknown as Partial<TransactionSql>).savepoint !== 'function')
     throw new GovernancePolicyWriteError('invalid', 'pinned scoped authority read requires an existing transaction');
@@ -452,31 +462,41 @@ export async function loadScopedPolicyAuthorities(
       throw new GovernancePolicyWriteError('invalid', 'pinned scoped authority census requires read committed isolation');
     await sql`LOCK TABLE harness_shared.governance_policy_layers IN SHARE MODE`;
   }
-  const user = { kind: 'user' as const, ...scopedAuthorityKey('user', scope.workspaceId, scope.userId) };
+  const userIds = scope.userId !== undefined ? [scope.userId] : Array.isArray(scope.userIds) ? [...scope.userIds] : [];
+  const platformIds: string[] = Array.isArray(scope.platformIds) ? [...scope.platformIds] : [];
+  const explicitIds = [
+    ...userIds.map(id => scopedAuthorityKey('user', scope.workspaceId, id).layerId),
+    ...platformIds.map(id => scopedAuthorityKey('platform', scope.workspaceId, id).layerId),
+  ];
   // Global root validation is intentional. A malformed address must not make a
   // stored floor disappear from discovery by pretending to be another scope.
   const discovered = census ? await sql<RawLayerRow[]>`
     SELECT ${sql.unsafe(LAYER_COLUMNS)} FROM harness_shared.governance_policy_layers
-     WHERE level = 'platform' OR layer_id = ${user.layerId} ORDER BY layer_id
+     WHERE (${censusPlatforms} AND level = 'platform') OR (${censusUsers} AND level = 'user')
+        OR layer_id = ANY(${explicitIds}::text[]) ORDER BY layer_id
   ` : null;
-  const platformIds: string[] = Array.isArray(scope.platformIds) ? [...scope.platformIds] : [];
   if (discovered) {
-    for (const row of discovered.filter(entry => entry.layer_id !== user.layerId)) {
+    for (const row of discovered.filter(entry =>
+      (censusPlatforms && entry.level === 'platform') || (censusUsers && entry.level === 'user'))) {
+      const kind = row.level as ScopedAuthorityKind;
       let address: unknown;
       try { address = JSON.parse(row.scope_ref); } catch { /* Refused below. */ }
       if (!Array.isArray(address) || address.length !== 2 || !address.every(exactScopeText) ||
-          JSON.stringify(address) !== row.scope_ref || row.level !== 'platform' ||
-          scopedAuthorityKey('platform', address[0], address[1]).layerId !== row.layer_id || row.parent_layer_id !== null ||
+          JSON.stringify(address) !== row.scope_ref ||
+          scopedAuthorityKey(kind, address[0], address[1]).layerId !== row.layer_id || row.parent_layer_id !== null ||
           !isWellFormedLayer({ layerId: row.layer_id, level: 'workspace', version: Number(row.version), rules: row.rules, exceptions: row.exceptions }) ||
-          row.content_hash !== policyContentHash({ level: 'platform', scopeRef: row.scope_ref, parentLayerId: null,
+          row.content_hash !== policyContentHash({ level: kind, scopeRef: row.scope_ref, parentLayerId: null,
             rules: row.rules as UpsertLayerInput['rules'], exceptions: row.exceptions as PolicyException[] }))
-        return { status: 'malformed', reason: `stored platform authority ${row.layer_id} has no valid canonical scope or policy` };
-      if (address[0] === scope.workspaceId) platformIds.push(address[1]);
+        return { status: 'malformed', reason: `stored ${kind} authority ${row.layer_id} has no valid canonical scope or policy` };
+      if (address[0] === scope.workspaceId) (kind === 'user' ? userIds : platformIds).push(address[1]);
     }
-    if (!platformIds.length) return { status: 'unavailable', reason: 'no stored platform authority governs this workspace' };
   }
+  if (!userIds.length || !platformIds.length ||
+      scope.requiredUserIds?.some(id => !userIds.includes(id)) ||
+      scope.requiredPlatformIds?.some(id => !platformIds.includes(id)))
+    return { status: 'unavailable', reason: 'a required scoped authority policy is missing' };
   const required = [
-    user,
+    ...userIds.map(id => ({ kind: 'user' as const, ...scopedAuthorityKey('user', scope.workspaceId, id) })),
     ...platformIds.map(id => ({ kind: 'platform' as const, ...scopedAuthorityKey('platform', scope.workspaceId, id) })),
   ].sort((a, b) => a.layerId.localeCompare(b.layerId));
   const rows = discovered ? discovered.filter(row => required.some(ref => ref.layerId === row.layer_id)) : await sql<RawLayerRow[]>`
@@ -498,7 +518,13 @@ export async function loadScopedPolicyAuthorities(
       exceptions: structuredClone(row.exceptions) as PolicyException[] });
   }
   const revision = createHash('sha256').update(canonicalJson({
-    scope: { ...scope, platformIds: platformIds.sort(), ...(census ? { population: 'stored-workspace-platforms' } : {}) }, policies,
+    scope: { ...scope, platformIds: platformIds.sort(),
+      ...(scope.userIds !== undefined ? { userIds: userIds.sort() } : {}),
+      ...(scope.requiredUserIds !== undefined ? { requiredUserIds: [...scope.requiredUserIds].sort() } : {}),
+      ...(scope.requiredPlatformIds !== undefined ? { requiredPlatformIds: [...scope.requiredPlatformIds].sort() } : {}),
+      ...(censusPlatforms ? { population: 'stored-workspace-platforms' } : {}),
+      ...(censusUsers ? { userPopulation: 'stored-workspace-users' } : {}),
+    }, policies,
   })).digest('hex');
   if (expectedRevision !== undefined && revision !== expectedRevision) return { status: 'stale', revision };
   return { status: 'ok', revision, policies };
