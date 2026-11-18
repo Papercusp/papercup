@@ -228,6 +228,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   // body supplies the syntax whose outgoing calls this inventory has visited.
   // In particular `const send = connection.send` is not a closed callable.
   const callableDeclarations = new Set<string>();
+  const deferredEffectSiteIds = new Set<string>();
   const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; spelling: string; statement: string;
     line: number; column: number; importedName?: string; importedCall: boolean; argumentNames: string[];
@@ -375,7 +376,61 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         }
         return false;
       };
+      // These syntax forms can invoke user code without a CallExpression:
+      // getters/Proxy traps during binding or spread, iterator methods,
+      // ToPrimitive/ToPropertyKey hooks, and thenable assimilation. Retain the
+      // complete operation and operands, never a claim about their runtime
+      // value. Even a literal-looking operand needs source-bound disposition.
+      // Append after explicit sites so duplicate syntax cannot renumber any
+      // existing reviewed occurrence or discard an earlier opaque frontier.
+      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[] }> = [];
+      const isAsync = (node: ts.Node): boolean => ts.canHaveModifiers(node)
+        && !!ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword);
+      const captureImplicitEffect = (node: ts.Node): void => {
+        let expression = node, operands: ts.Node[] | undefined;
+        if (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) {
+          expression = node.parent;
+          const declaration = node.parent;
+          operands = [((ts.isVariableDeclaration(declaration) || ts.isParameter(declaration))
+            && declaration.initializer) || node];
+        } else if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
+          || ts.isAwaitExpression(node) || ts.isComputedPropertyName(node)) {
+          operands = [node.expression];
+        } else if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+          operands = [node.expression, node.initializer];
+        } else if (ts.isYieldExpression(node) && node.expression) {
+          // A delegated yield uses the iterator protocol; async generators
+          // additionally assimilate yielded values. Keep both conservatively.
+          operands = [node.expression];
+        } else if (ts.isTemplateExpression(node) && !ts.isTaggedTemplateExpression(node.parent)) {
+          operands = node.templateSpans.map(span => span.expression);
+        } else if (ts.isBinaryExpression(node)) {
+          const operator = node.operatorToken.kind;
+          const destructuring = operator === ts.SyntaxKind.EqualsToken
+            && (ts.isObjectLiteralExpression(node.left) || ts.isArrayLiteralExpression(node.left));
+          if (destructuring || !new Set([
+            ts.SyntaxKind.EqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+            ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.AmpersandAmpersandToken,
+            ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.CommaToken,
+            ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.BarBarEqualsToken,
+            ts.SyntaxKind.QuestionQuestionEqualsToken,
+          ]).has(operator)) operands = [node.left, node.right];
+        } else if (ts.isPrefixUnaryExpression(node) && node.operator !== ts.SyntaxKind.ExclamationToken
+          || ts.isPostfixUnaryExpression(node)) {
+          operands = [node.operand];
+        } else if (ts.isReturnStatement(node) && node.expression) {
+          for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+            if (!ts.isFunctionLike(parent)) continue;
+            if (isAsync(parent)) operands = [node.expression];
+            break;
+          }
+        } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body) && isAsync(node)) {
+          expression = node.body; operands = [node.body];
+        }
+        if (operands) implicitEffects.push({ node: expression, operands });
+      };
       const visit = (node: ts.Node): void => {
+        captureImplicitEffect(node);
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
           const target = targetName(node.initializer);
           if (target) aliases.push({ name: node.name.text, target });
@@ -414,6 +469,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           }
           add(source, operation(node), expression.getText(unit.ast), unit.span(expression).line,
             'unresolved', { dynamicEdges: edges, unresolved: ['property-dispatch-requires-review'] });
+          deferredEffectSiteIds.add(sites[sites.length - 1]!.id);
         }
         if (ts.isTaggedTemplateExpression(node)) {
           const text = literal(node.template);
@@ -498,6 +554,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         ts.forEachChild(node, visit);
       };
       visit(unit.ast);
+      for (const effect of implicitEffects) {
+        add(source, operation(effect.node), effect.node.getText(unit.ast), unit.span(effect.node).line,
+          'unresolved', { dynamicEdges: [...new Set(effect.operands.map(operand => operand.getText(unit.ast)))],
+            unresolved: ['implicit-dispatch-requires-review'] });
+        deferredEffectSiteIds.add(sites[sites.length - 1]!.id);
+      }
     } else if (/\.sql$/.test(source.path)) {
       const facts = sqlFacts(source.content);
       if (facts.relations.length || facts.functions.length || facts.callees.length
@@ -514,8 +576,9 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   // Fixed point over the full source population, not a prefix or a hop cap.
   // Name matching supplies candidates only; ambiguous/dynamic dispatch remains
   // an edge requiring review, not an assertion of a resolved callee.
-  const writers = new Set(sites.map(site => site.operation.split('::')[0]!));
-  const writerPaths = new Set(sites.map(site => site.path));
+  const originalSites = sites.filter(site => !deferredEffectSiteIds.has(site.id));
+  const writers = new Set(originalSites.map(site => site.operation.split('::')[0]!));
+  const writerPaths = new Set(originalSites.map(site => site.path));
   const targets = new Map<string, { path: string; declaration: SymbolDeclaration | null }>();
   const fileSet = new Set(input.map(source => source.path));
   const helperSymbols = buildSymbolSnapshot({ files: [...fileSet].sort(compare), censusOnly: true,
@@ -533,6 +596,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   // adds previously unseeded calls with their unresolved declaration/arguments;
   // it cannot re-label an old review or exempt any existing candidate.
   for (const includeOpaque of [false, true]) {
+    // A new implicit-effect candidate must not turn a previously opaque call
+    // into a bare path/name edge and discard its argument/declaration residue.
+    // Preserve the original frontiers first, then expand from property sites.
+    if (includeOpaque) for (const site of sites) if (deferredEffectSiteIds.has(site.id)) {
+      writers.add(site.operation.split('::')[0]!); writerPaths.add(site.path);
+    }
     let changed = true;
     while (changed) {
       changed = false;
