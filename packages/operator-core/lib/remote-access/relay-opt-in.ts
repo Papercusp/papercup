@@ -678,6 +678,7 @@ export async function revokePortalRelayDesktop(deps: PortalRelayDeps = defaultPo
 
 const state = pinModuleState('@papercusp/operator-core.remote-access.relay-opt-in', () => ({
   reconcilerArmed: false,
+  reconcilerDeps: undefined as PortalRelayDeps | undefined,
   reconcileInFlight: null as Promise<PortalRelayReconcileResult> | null,
   lastPollAt: 0,
   lastConnectorStartAt: 0,
@@ -865,14 +866,18 @@ export async function reconcilePortalRelay(deps: PortalRelayDeps = defaultPortal
 
 /** Arm the periodic reconciler (idempotent per process) and run one pass now. hono-host calls it on the primary. */
 export function startPortalRelayReconciler(deps?: PortalRelayDeps): void {
-  void reconcilePortalRelay(deps);
+  // Boot may arm the timer before an isolated host elects its connector owner.
+  // Keep one timer, but let an explicit composition update its dependencies.
+  // A later default boot call must not discard that explicit composition.
+  if (deps) state.reconcilerDeps = deps;
+  void reconcilePortalRelay(state.reconcilerDeps);
   if (state.reconcilerArmed) return;
   state.reconcilerArmed = true;
   managedSetInterval(
     'portal-relay-reconciler',
     PORTAL_RELAY_RECONCILE_INTERVAL_MS,
     async () => {
-      await reconcilePortalRelay(deps);
+      await reconcilePortalRelay(state.reconcilerDeps);
     },
     // must-sample: the portal grant poll, operator health and connector exits push nothing here.
     { category: 'watchdog', classification: 'must-sample' },
@@ -882,6 +887,7 @@ export function startPortalRelayReconciler(deps?: PortalRelayDeps): void {
 /** Test seam: forget module state between cases. */
 export function resetPortalRelayStateForTests(): void {
   state.reconcilerArmed = false;
+  state.reconcilerDeps = undefined;
   state.reconcileInFlight = null;
   state.lastPollAt = 0;
   state.lastConnectorStartAt = 0;
