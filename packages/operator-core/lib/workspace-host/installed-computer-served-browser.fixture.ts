@@ -6,8 +6,8 @@ import { createHash } from 'node:crypto';
 import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
 import { access, cp, copyFile, mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, join, relative } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { chromium, request as playwrightRequest, type Browser, type Page } from 'playwright-core';
@@ -227,6 +227,39 @@ type PortalReleaseIdentity = {
   sourceRootDigest: string; publishedAt: string; buildProvenance: unknown;
 };
 
+// Next compiles these linked inputs into its browser chunks. Checking only
+// Portal-owned files or the server prebundles cannot establish their freshness.
+export const INSTALLED_PORTAL_BROWSER_SOURCES = [
+  'apps/operator/app/cloud-workspaces/HostedDesktopConnection.tsx',
+  'apps/operator/app/cloud-workspaces/HostedWorkspaceSession.tsx',
+  'apps/operator/app/cloud-workspaces/HostedDesktopViewer.tsx',
+  'apps/operator/app/cloud-workspaces/hosted-desktop-viewer-protocol.ts',
+  'apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol.ts',
+  'apps/operator/app/cloud-workspaces/installed-computer-connection.ts',
+] as const;
+
+function linkedSourceManifest(provenance: unknown): { path: string; digest: string }[] {
+  assert(provenance && typeof provenance === 'object' && 'linkedSourceManifest' in provenance
+    && Array.isArray(provenance.linkedSourceManifest),
+  'Installed Portal release requires build-time linked browser source provenance');
+  return provenance.linkedSourceManifest;
+}
+
+export async function assertInstalledPortalBrowserSource(portal: string, repo: string, provenance: unknown) {
+  const manifest = linkedSourceManifest(provenance);
+  // Manifest paths refer to the build's linked checkout. Compare their hashes
+  // with the selected immutable test root, which may live at a different path.
+  const linkedRepo = dirname(dirname(await realpath(join(portal, 'node_modules/@papercusp/operator-ui'))));
+  for (const path of INSTALLED_PORTAL_BROWSER_SOURCES) {
+    const sourcePath = relative(portal, join(linkedRepo, path));
+    const records = manifest.filter(row => row?.path === sourcePath);
+    assert(records.length === 1 && /^[a-f0-9]{64}$/.test(records[0].digest),
+      `Installed Portal release lacks unambiguous browser source provenance: ${path}`);
+    const digest = createHash('sha256').update(await readFile(join(repo, path))).digest('hex');
+    assert.equal(records[0].digest, digest, `Installed Portal browser source is stale: ${path}`);
+  }
+}
+
 /** Bind the artifact to the source being tested, rather than fabricating a
  * release manifest for Next dev or silently accepting an older deployment. */
 export function validateInstalledPortalRelease(portal: string, releaseRoot: string,
@@ -239,10 +272,12 @@ export function validateInstalledPortalRelease(portal: string, releaseRoot: stri
   assert(/^[a-f0-9]{64}$/.test(identity.sourceRootDigest) && identity.sourceRootDigest === currentDigest,
     'Installed Portal release is stale relative to the current source');
   assert(identity.buildProvenance, 'Installed Portal release requires maintained build provenance');
+  linkedSourceManifest(identity.buildProvenance);
   return { ...identity, releaseRoot, releasesDir: dirname(releaseRoot), entry: join(releaseRoot, 'standalone-entry.mjs') };
 }
 
-export async function installedPortalRelease(portal: string, source?: string) {
+export async function installedPortalRelease(portal: string, source?: string,
+  repo = fileURLToPath(new URL('../../../..', import.meta.url))) {
   assert(source, 'Pass --portal-release-root for the maintained immutable Portal artifact');
   const root = await realpath(source);
   const identity = JSON.parse(await readFile(join(root, '.papercusp-release.json'), 'utf8')) as PortalReleaseIdentity;
@@ -256,6 +291,7 @@ export async function installedPortalRelease(portal: string, source?: string) {
   await access(release.entry);
   console.info('[installed-portal-release] artifact provenance start');
   await integrity.assertBuildProvenance(identity.buildProvenance, root, identity.sourceRootDigest);
+  await assertInstalledPortalBrowserSource(portal, repo, identity.buildProvenance);
   console.info('[installed-portal-release] artifact provenance complete');
   return release;
 }
@@ -426,7 +462,7 @@ export async function runInstalledComputerServedBrowser(input: Input) {
     : process.env.PAPERCUSP_PORTAL_SOURCE_ROOT);
   const binaries = await installedDesktopBinaries(argument('--kasmvnc-root'));
   const releaseRoot = argument('--portal-release-root');
-  const release = releaseRoot ? await installedPortalRelease(portal, releaseRoot) : undefined;
+  const release = releaseRoot ? await installedPortalRelease(portal, releaseRoot, repo) : undefined;
   const portalDatabase = input.config.HARNESS_ADMIN_DATABASE_URL;
   assert(portalDatabase && ['127.0.0.1', 'localhost'].includes(new URL(portalDatabase).hostname),
     'Portal requires the wrapper-owned private database');

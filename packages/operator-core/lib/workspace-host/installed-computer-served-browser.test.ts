@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createServer, type RequestListener, type Server } from 'node:http';
 import { gzipSync } from 'node:zlib';
@@ -11,7 +11,7 @@ import { chromium } from 'playwright-core';
 import { serve } from '@hono/node-server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crossOriginIsolationHeaders } from '../../../../libs/generic/desktop-ipc/src/csp-policy';
-import { assertInstalledPortalCaseEvidence, assertInstalledPortalExecutor, INSTALLED_PORTAL_CASES, INSTALLED_PORTAL_SPEC, type InstalledPortalCaseEvidence, assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledLocalConsent, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
+import { assertInstalledPortalBrowserSource, INSTALLED_PORTAL_BROWSER_SOURCES, assertInstalledPortalCaseEvidence, assertInstalledPortalExecutor, INSTALLED_PORTAL_CASES, INSTALLED_PORTAL_SPEC, type InstalledPortalCaseEvidence, assertInstalledPortalSession, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedHostFixtureScope, installedHostedIdentityProvider, installedPortalProxy, installedPortalSource, installedRuntimeNodeArgs, validateInstalledPortalRelease, waitForInstalledLocalConsent, waitForInstalledPortalSetup, waitForPortalDocument } from './installed-computer-served-browser.fixture';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -445,6 +445,33 @@ describe('served Portal prerequisite and document readiness', () => {
       { buildProvenance: { schemaVersion: 1 } }]) {
       expect(() => validateInstalledPortalRelease(portal, root, { ...identity, ...patch }, digest)).toThrow();
     }
+  });
+
+  it('compares linked browser inputs with the selected test root rather than unrelated linked changes', async () => {
+    nativeRoot = await mkdtemp(join(tmpdir(), 'installed-browser-provenance-'));
+    const portal = join(nativeRoot, 'portal'), linked = join(nativeRoot, 'canonical'), selected = join(nativeRoot, 'selected');
+    await mkdir(join(portal, 'node_modules/@papercusp'), { recursive: true });
+    await mkdir(join(linked, 'packages/operator-ui'), { recursive: true });
+    await symlink(join(linked, 'packages/operator-ui'), join(portal, 'node_modules/@papercusp/operator-ui'));
+    const manifest: { path: string; digest: string }[] = [];
+    for (const path of INSTALLED_PORTAL_BROWSER_SOURCES) {
+      await mkdir(join(selected, path, '..'), { recursive: true });
+      await writeFile(join(selected, path), `browser input ${path}`);
+      manifest.push({ path: relative(portal, join(linked, path)),
+        digest: createHash('sha256').update(`browser input ${path}`).digest('hex') });
+    }
+    // Unrelated files and the physical selected-root location do not invalidate
+    // these consumed inputs. No manifest-supplied path is opened by the guard.
+    manifest.push({ path: '../unrelated/private-input', digest: 'a'.repeat(64) });
+    await expect(assertInstalledPortalBrowserSource(portal, selected, { linkedSourceManifest: manifest })).resolves.toBeUndefined();
+    await expect(assertInstalledPortalBrowserSource(portal, selected, {})).rejects.toThrow('build-time linked browser');
+    await expect(assertInstalledPortalBrowserSource(portal, selected, { linkedSourceManifest: manifest.slice(1) }))
+      .rejects.toThrow('lacks unambiguous browser source');
+    await expect(assertInstalledPortalBrowserSource(portal, selected, { linkedSourceManifest: [...manifest, manifest[0]] }))
+      .rejects.toThrow('lacks unambiguous browser source');
+    await writeFile(join(selected, INSTALLED_PORTAL_BROWSER_SOURCES[0]), 'changed browser code');
+    await expect(assertInstalledPortalBrowserSource(portal, selected, { linkedSourceManifest: manifest }))
+      .rejects.toThrow('browser source is stale');
   });
 
   it('refuses fixture owner election outside the wrapper-owned private runtime', () => {
