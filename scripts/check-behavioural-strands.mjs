@@ -1407,6 +1407,130 @@ function exitAffectsLoopIterations(exitNode, loopNode) {
   return abruptFlowTarget(exitNode) === loopNode;
 }
 
+// A continue after a seam can change later invocations by skipping a break or a
+// state update. But skipping only an unescaped result array's push cannot do so.
+// Keep this exception narrow: unknown calls, mutations, aliases and control-flow
+// containers remain advisory risks rather than requiring a second execution engine.
+function localStringKind(node, functionNode, bindings, sourceFile, resolving = new Set()) {
+  if (ts.isParenthesizedExpression(node)) {
+    return localStringKind(node.expression, functionNode, bindings, sourceFile, resolving);
+  }
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return 'string';
+  if (ts.isIdentifier(node) && !resolving.has(node.text)) {
+    const binding = visibleConstBinding(node, bindings, sourceFile);
+    if (binding) {
+      return localStringKind(binding.initializer, functionNode, bindings, sourceFile, new Set([...resolving, node.text]));
+    }
+    return functionNode.parameters?.some(
+      (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === node.text && parameter.type?.kind === ts.SyntaxKind.StringKeyword,
+    ) ? 'string' : null;
+  }
+  if (ts.isElementAccessExpression(node)) {
+    return localStringKind(node.expression, functionNode, bindings, sourceFile, resolving) === 'string-array' ? 'string' : null;
+  }
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) {
+    const left = localStringKind(node.left, functionNode, bindings, sourceFile, resolving);
+    return left && left === localStringKind(node.right, functionNode, bindings, sourceFile, resolving) ? left : null;
+  }
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+    const { expression, name } = node.expression;
+    if (localStringKind(expression, functionNode, bindings, sourceFile, resolving) === 'string') {
+      if (name.text === 'split') return 'string-array';
+      if (name.text === 'trim' || name.text === 'slice') return 'string';
+    }
+  }
+  return null;
+}
+
+function isAccumulatedValue(node, functionNode, bindings, sourceFile) {
+  if (ts.isIdentifier(node) || ts.isLiteralExpression(node) || [ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword].includes(node.kind)) return true;
+  if (ts.isParenthesizedExpression(node)) return isAccumulatedValue(node.expression, functionNode, bindings, sourceFile);
+  if (ts.isBinaryExpression(node)) {
+    if (node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) return false;
+    return isAccumulatedValue(node.left, functionNode, bindings, sourceFile) && isAccumulatedValue(node.right, functionNode, bindings, sourceFile);
+  }
+  if (ts.isObjectLiteralExpression(node)) {
+    return node.properties.every((property) =>
+      ts.isPropertyAssignment(property) && !ts.isComputedPropertyName(property.name) && isAccumulatedValue(property.initializer, functionNode, bindings, sourceFile),
+    );
+  }
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+    return ['trim', 'slice'].includes(node.expression.name.text) &&
+      localStringKind(node.expression.expression, functionNode, bindings, sourceFile) === 'string' &&
+      isAccumulatedValue(node.expression.expression, functionNode, bindings, sourceFile) &&
+      node.arguments.every((argument) => isAccumulatedValue(argument, functionNode, bindings, sourceFile));
+  }
+  return false;
+}
+
+function isLocalResultPush(statement, loopNode, functionNode, bindings, sourceFile) {
+  if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression)) return false;
+  const call = statement.expression;
+  if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== 'push' || !ts.isIdentifier(call.expression.expression)) return false;
+  const receiver = call.expression.expression;
+  const binding = visibleConstBinding(receiver, bindings, sourceFile);
+  if (!binding || !ts.isArrayLiteralExpression(binding.initializer) || binding.initializer.elements.length !== 0) return false;
+  if (!call.arguments.every((argument) => isAccumulatedValue(argument, functionNode, bindings, sourceFile))) return false;
+
+  // Refuse an accumulator read by eligibility, aliased, captured or passed away.
+  // Returning the completed array outside this loop is its intended result use.
+  let confined = true;
+  const visit = (node, captured = false) => {
+    if (!confined) return;
+    const inClosure = captured || (node !== functionNode && isCallableNode(node));
+    if (ts.isIdentifier(node) && node.text === receiver.text && node !== binding.node.name) {
+      const parent = node.parent;
+      const resultReturn = ts.isReturnStatement(parent) && !isWithinNode(parent, loopNode);
+      const push = ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'push' &&
+        ts.isCallExpression(parent.parent) && parent.parent.expression === parent &&
+        isWithinNode(parent.parent, loopNode.statement);
+      if (inClosure || (!resultReturn && !push)) confined = false;
+    }
+    ts.forEachChild(node, (child) => visit(child, inClosure));
+  };
+  visit(functionNode);
+  return confined;
+}
+
+function hasContinueConditionEffect(node, functionNode, bindings, sourceFile) {
+  if (
+    ts.isPostfixUnaryExpression(node) || ts.isAwaitExpression(node) || ts.isYieldExpression(node) ||
+    ts.isDeleteExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node) ||
+    (ts.isPrefixUnaryExpression(node) && [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)) ||
+    (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+  ) return true;
+  if (ts.isCallExpression(node)) {
+    // The measured classifier uses string predicates. An arbitrary predicate
+    // can itself change loop state, even when the continue skips no statements.
+    if (!ts.isPropertyAccessExpression(node.expression) ||
+      !['startsWith', 'includes', 'trim', 'slice'].includes(node.expression.name.text) ||
+      localStringKind(node.expression.expression, functionNode, bindings, sourceFile) !== 'string') return true;
+  }
+  return Boolean(ts.forEachChild(node, (child) => hasContinueConditionEffect(child, functionNode, bindings, sourceFile) || undefined));
+}
+
+function continueOnlySkipsResult(exitNode, loopNode, functionNode, bindings, sourceFile) {
+  if (!ts.isContinueStatement(exitNode) || exitNode.label) return false;
+  let current = exitNode;
+  while (current !== loopNode.statement) {
+    const parent = current.parent;
+    if (ts.isBlock(parent)) {
+      const index = parent.statements.indexOf(current);
+      if (index < 0 || !parent.statements.slice(index + 1).every(
+        (statement) => isLocalResultPush(statement, loopNode, functionNode, bindings, sourceFile),
+      )) return false;
+    } else if (ts.isIfStatement(parent)) {
+      if (hasContinueConditionEffect(parent.expression, functionNode, bindings, sourceFile)) return false;
+    } else {
+      // In particular do not equate switch fallthrough, try/finally or a
+      // labelled/nested loop with reaching this loop's next iteration.
+      return false;
+    }
+    current = parent;
+  }
+  return true;
+}
+
 function invocationFlowToken(node, child, sourceFile, fileName, bindings) {
   if (ts.isIfStatement(node)) {
     const condition = canonicalFlowExpression(node.expression, sourceFile, fileName, bindings);
@@ -1471,6 +1595,7 @@ function seamInvocationContext(callNode, functionNode, flowNodes, sourceFile, fi
         continue;
       }
       const relation = exit.node.getStart(sourceFile) < callStart ? 'before' : 'after';
+      if (relation === 'after' && continueOnlySkipsResult(exit.node, loop.node, functionNode, bindings, sourceFile)) continue;
       const path = flowPathTokens(exit.node, loop.node, sourceFile, fileName, bindings);
       context.push(
         'loop-exit:' +

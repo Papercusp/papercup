@@ -374,6 +374,114 @@ describe('the trigger: a seam gained call sites', () => {
     ]);
   });
 
+  it('ignores a post-call continue that only skips local result accumulation', () => {
+    // Reduced detectUnparsedItemLines: classification changes the returned rows,
+    // while both imported VAL helpers still inspect exactly the same lines.
+    const before = String.raw`
+      import { isValAssertionFieldLine, isValAssertionHeaderLine } from './val-assertions';
+      export function detectUnparsedItemLines(writtenBody: string) {
+        const lines = writtenBody.split('\n');
+        const out = [];
+        let underPhase = false;
+        for (let i = 0; i < lines.length; i++) {
+          const real = lines[i] ?? '';
+          if (isValAssertionHeaderLine(real)) {
+            underPhase = true;
+            continue;
+          }
+          if (underPhase && isValAssertionFieldLine(real)) continue;
+          if (real.startsWith('P-')) continue;
+          out.push({ line: i + 1, text: real.trim().slice(0, 160) });
+        }
+        return out;
+      }
+    `;
+    const after = before.replace("real.startsWith('P-')", "real.startsWith('P-') && real.includes('todo')");
+    expect(changedSeamControlFlow(before, after, 'item-parse-feedback.ts')).toEqual([]);
+
+    // Measure the contract independently of the detector's AST summary: the
+    // classification result changes, but the complete collaborator trace does not.
+    const measure = (source: string) => {
+      const calls: string[] = [];
+      const callable = source.slice(source.indexOf('export function'))
+        .replace('export function', 'function').replace('writtenBody: string', 'writtenBody');
+      const run = new Function('isValAssertionFieldLine', 'isValAssertionHeaderLine', `return (${callable});`)(
+        (line: string) => { calls.push(`field:${line}`); return line.startsWith('field:'); },
+        (line: string) => { calls.push(`header:${line}`); return line === 'VAL'; },
+      ) as (body: string) => { line: number; text: string }[];
+      return { rows: run('VAL\nfield:one\nP-001 accepted\nP-002 todo\nother'), calls };
+    };
+    const prior = measure(before);
+    const current = measure(after);
+    expect(prior.calls).toEqual([
+      'header:VAL', 'header:field:one', 'field:field:one',
+      'header:P-001 accepted', 'field:P-001 accepted',
+      'header:P-002 todo', 'field:P-002 todo', 'header:other', 'field:other',
+    ]);
+    expect(current.calls).toEqual(prior.calls);
+    expect(prior.rows.map((row) => row.text)).toEqual(['other']);
+    expect(current.rows.map((row) => row.text)).toEqual(['P-001 accepted', 'other']);
+  });
+
+  it('ignores a terminal post-call continue in a fixed traversal', () => {
+    const before = `export function run(input, probe: Probe) {
+      for (const value of input.values) { probe(value); }
+    }`;
+    const after = before.replace('probe(value);', 'probe(value); if (value.skip) continue;');
+    expect(changedSeamControlFlow(before, after, 'terminal-continue.ts')).toEqual([]);
+  });
+
+  it('keeps VAL helper eligibility unchanged for the current plan-item classification guard', () => {
+    const file = 'packages/operator-core/lib/agent-tools/plans/item-parse-feedback.ts';
+    const after = readFileSync(resolve(REPO_ROOT, file), 'utf8');
+    const guard = 'misplacedSection ? !(hasItemRefPrefix && hasItemStatusPrefix)';
+    expect(after).toContain(guard);
+    const before = after.replace(guard, 'misplacedSection ? !hasItemRefPrefix');
+    expect(changedSeamControlFlow(before, after, file)).toEqual([]);
+  });
+
+  it.each([
+    ['before-call continue', 'if (value.skip) continue; probe(value);', 'if (value.skip || value.cancelled) continue; probe(value);'],
+    ['after-call break', 'probe(value);', 'probe(value); if (value.skip) break;'],
+    ['after-call return', 'probe(value);', 'probe(value); if (value.skip) return;'],
+    ['after-call throw', 'probe(value);', 'probe(value); if (value.skip) throw Error();'],
+    ['effectful continue condition', 'probe(value);', 'probe(value); if (advance()) continue;'],
+    ['condition state update', 'probe(value);', 'probe(value); if (index++) continue;'],
+    ['labelled continue', 'probe(value);', 'probe(value); if (value.skip) continue outer;'],
+    ['skipped loop-state update', 'probe(value); ready = value.ready;', 'probe(value); if (value.skip) continue; ready = value.ready;'],
+    ['skipped loop exit', 'probe(value); if (value.ready) break;', 'probe(value); if (value.skip) continue; if (value.ready) break;'],
+    ['skipped unknown effect', 'probe(value); advance();', 'probe(value); if (value.skip) continue; advance();'],
+    ['skipped argument mutation', 'probe(value); out.push(index++);', 'probe(value); if (value.skip) continue; out.push(index++);'],
+    ['skipped argument call', 'probe(value); out.push(advance());', 'probe(value); if (value.skip) continue; out.push(advance());'],
+    ['unproved string method', 'probe(value); out.push(value.trim());', 'probe(value); if (value.skip) continue; out.push(value.trim());'],
+    ['accumulator read by loop', 'probe(value); out.push(value);', 'probe(value); if (value.skip) continue; out.push(value);'],
+    ['escaped accumulator', 'probe(value); out.push(value);', 'probe(value); if (value.skip) continue; out.push(value);'],
+    ['captured accumulator', 'probe(value); out.push(value);', 'probe(value); if (value.skip) continue; out.push(value);'],
+  ])('retains the %s invocation warning', (kind, beforeBody, afterBody) => {
+    const prefix = kind === 'escaped accumulator' ? 'publish(out);' : kind === 'captured accumulator' ? 'publish(() => out);' : '';
+    const condition = kind === 'accumulator read by loop' ? 'if (out.length > 5) break;' : '';
+    const before = `export function run(input, probe: Probe) {
+      const out = []; let ready = true; let index = 0; ${prefix}
+      outer: for (const value of input.values) { ${condition} ${beforeBody} }
+      return out;
+    }`;
+    const after = before.replace(beforeBody, afterBody);
+    expect(changedSeamControlFlow(before, after, 'continue-controls.ts')).toMatchObject([
+      { function: 'run', seam: 'probe()', reason: 'control-flow-changed' },
+    ]);
+  });
+
+  it('retains a continue that skips the condition update of a data-dependent loop', () => {
+    const before = `export function run(input, probe: Probe) {
+      let ready = true;
+      while (ready) { probe(); ready = input.advance(); }
+    }`;
+    const after = before.replace('ready = input.advance();', 'if (input.skip) continue; ready = input.advance();');
+    expect(changedSeamControlFlow(before, after, 'while-state.ts')).toMatchObject([
+      { function: 'run', seam: 'probe()', reason: 'control-flow-changed' },
+    ]);
+  });
+
   it('ignores loop-body exits for a one-shot call in a for initializer', () => {
     const before = `
       export function run(source: Source) {
