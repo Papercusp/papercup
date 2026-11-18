@@ -22,7 +22,14 @@
     "packages/operator-core/lib/embedded-pg-discovery.ts",
     "packages/operator-core/lib/background-workers.ts",
     "libs/generic/embedded-pg-discovery/src/index.ts",
-    "libs/papercusp/libs/db/src/operator-db-env.ts"
+    "libs/papercusp/libs/db/src/operator-db-env.ts",
+    "libs/papercusp/libs/db/src/acquire-registry.ts",
+    "libs/papercusp/libs/db/src/build-stamp.ts",
+    "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+    "packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+    "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+    "packages/operator-core/lib/build-info.ts",
+    "libs/generic/module-singleton/src/index.ts"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -36,6 +43,174 @@
     "runtimeAttestation": false
   },
   "reviews": [
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"3d63ba68f59a2654e10117f793ac01456cc12ba7f1aafb9b2289d0c5b6f08890\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "3d63ba68f59a2654e10117f793ac01456cc12ba7f1aafb9b2289d0c5b6f08890",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+          "sha256": "594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+          "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+          "sha256": "78d78316643b7d72343d09c967c0f5b4168373bd0b14815b6212da73d092c7f3"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+          "sha256": "e0bb7ac5a8ad38b406a7b1b7bec78c247d6168bb439432c57f3db6c371503bba"
+        },
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        },
+        {
+          "path": "packages/operator-core/lib/build-info.ts",
+          "sha256": "b1b75dad6a70ed738485b9521d39b1d928a4d31af41acd23d686db9ce869b20f"
+        },
+        {
+          "path": "libs/generic/module-singleton/src/index.ts",
+          "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected this exact buildClient diagnostic helper call and the actual installed callback closure. recordPoolMax changes only the local pinned pool map. createPgDiagnosticHooks captures process/pool identity and returns onquerycontext/onresult callbacks; capture and result recording use scalar normalization, query-family memoization, local diagnostic rings/counters and WeakRef only. The installed context resolver reads REQUEST_CONTEXT and currentStageDiagnosticContext (AsyncLocalStorage and the local stage snapshot). The installed build resolver follows build-stamp -> getBuildInfo -> cached/baked/environment values or read-only git rev-parse --short HEAD on the cold development path. pinModuleState stores local realm state only. These inspected operations execute no SQL or lifecycle/claim write and start no timer. All eight source files, including callback installers and cold build resolution, are pinned. This source review does not establish runtime wiring identity or exempt getOrgPg, getClaim, buildClient as a whole, timeout-provider scheduling, discovery telemetry, notification or advancing SQL writes.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/acquire-registry.ts",
+        "source:libs/papercusp/libs/db/src/build-stamp.ts",
+        "source:packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+        "source:packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+        "source:packages/operator-core/lib/build-info.ts",
+        "source:libs/generic/module-singleton/src/index.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "createPgDiagnosticHooks",
+          "reason": "Resolved by inspection of the exact diagnostic construction/result/context/build closure above, with every inspected dependency pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/acquire-registry.ts",
+            "source:libs/papercusp/libs/db/src/build-stamp.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+            "source:packages/operator-core/lib/build-info.ts",
+            "source:libs/generic/module-singleton/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/acquire-registry.ts#594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166",
+          "reason": "Resolved by inspection of the exact diagnostic construction/result/context/build closure above, with every inspected dependency pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/acquire-registry.ts",
+            "source:libs/papercusp/libs/db/src/build-stamp.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+            "source:packages/operator-core/lib/build-info.ts",
+            "source:libs/generic/module-singleton/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"9ec6adae624143d8f2293d8665502c65d33f58dc0496bd5d140ef57899ed7cdc\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "9ec6adae624143d8f2293d8665502c65d33f58dc0496bd5d140ef57899ed7cdc",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+          "sha256": "594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+          "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+          "sha256": "78d78316643b7d72343d09c967c0f5b4168373bd0b14815b6212da73d092c7f3"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+          "sha256": "e0bb7ac5a8ad38b406a7b1b7bec78c247d6168bb439432c57f3db6c371503bba"
+        },
+        {
+          "path": "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+          "sha256": "cfc5387d6d07968d918c769014718d11f5c46ac71f406ce918b361e49c491490"
+        },
+        {
+          "path": "packages/operator-core/lib/build-info.ts",
+          "sha256": "b1b75dad6a70ed738485b9521d39b1d928a4d31af41acd23d686db9ce869b20f"
+        },
+        {
+          "path": "libs/generic/module-singleton/src/index.ts",
+          "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected this exact buildClient diagnostic helper call and the actual installed callback closure. recordPoolMax changes only the local pinned pool map. createPgDiagnosticHooks captures process/pool identity and returns onquerycontext/onresult callbacks; capture and result recording use scalar normalization, query-family memoization, local diagnostic rings/counters and WeakRef only. The installed context resolver reads REQUEST_CONTEXT and currentStageDiagnosticContext (AsyncLocalStorage and the local stage snapshot). The installed build resolver follows build-stamp -> getBuildInfo -> cached/baked/environment values or read-only git rev-parse --short HEAD on the cold development path. pinModuleState stores local realm state only. These inspected operations execute no SQL or lifecycle/claim write and start no timer. All eight source files, including callback installers and cold build resolution, are pinned. This source review does not establish runtime wiring identity or exempt getOrgPg, getClaim, buildClient as a whole, timeout-provider scheduling, discovery telemetry, notification or advancing SQL writes.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/acquire-registry.ts",
+        "source:libs/papercusp/libs/db/src/build-stamp.ts",
+        "source:packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+        "source:packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+        "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+        "source:packages/operator-core/lib/build-info.ts",
+        "source:libs/generic/module-singleton/src/index.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "recordPoolMax",
+          "reason": "Resolved by inspection of the exact diagnostic construction/result/context/build closure above, with every inspected dependency pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/acquire-registry.ts",
+            "source:libs/papercusp/libs/db/src/build-stamp.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+            "source:packages/operator-core/lib/build-info.ts",
+            "source:libs/generic/module-singleton/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/acquire-registry.ts#594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166",
+          "reason": "Resolved by inspection of the exact diagnostic construction/result/context/build closure above, with every inspected dependency pinned in sourceProofs.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/acquire-registry.ts",
+            "source:libs/papercusp/libs/db/src/build-stamp.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts",
+            "source:packages/operator-core/lib/agent-tools/db-diagnostic-stamp-wiring.ts",
+            "source:packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
+            "source:packages/operator-core/lib/build-info.ts",
+            "source:libs/generic/module-singleton/src/index.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"deriveResourceProfile\",\"helper-edge\",\"b7f33c44b6c523aa7ce202b0691280d7927488a46fa1dab9bd6fa9217b409295\"]#1",
       "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
