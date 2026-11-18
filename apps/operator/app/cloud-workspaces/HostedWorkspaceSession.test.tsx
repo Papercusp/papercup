@@ -176,6 +176,7 @@ async function connected() {
 
 describe("tutorial host binding receipts", () => {
   it('uses linked discovery without initializing a terminal, listing files or creating a desktop', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const onBound = vi.fn(); const onBridge = vi.fn();
     render(<HostedWorkspaceSession hostId="host-1" routeLabel="route-1" workspaceName="Linked computer"
       linkedInstallation={{ installId: 'install-1', customerWorkspaceId: 'ws-1', connection: 'online' }}
@@ -193,6 +194,29 @@ describe("tutorial host binding receipts", () => {
     expect(socket.send.mock.calls.map(([raw]) => JSON.parse(raw).type)).toEqual(['desktop.roster']);
     expect(onBound).toHaveBeenCalledWith('ws-1');
     expect(screen.queryByText('Claim control')).toBeNull();
+    const request = JSON.parse(socket.send.mock.calls[0]![0]);
+    act(() => socket.emit('message', { data: JSON.stringify({ type: 'desktop.roster.result', requestId: request.requestId,
+      hostId: 'host-1', generation: 'private-generation', cursor: null, nextCursor: null, hasMore: false, remaining: 0,
+      desktops: [{ desktopSessionId: 'private-desktop', state: 'ready', name: 'private-label' }] }) }));
+    const diagnostics = debug.mock.calls.filter(([tag]) => tag === '[installed-desktop-roster]')
+      .map(([, raw]) => JSON.parse(String(raw)));
+    expect(diagnostics).toEqual([
+      { phase: 'request', continuation: false },
+      { phase: 'response', parsed: 'roster', requestMatches: true, entries: 1, accumulated: 0,
+        hostMatches: true, cursorMatches: true, generationMatches: true, remaining: 0, hasMore: false },
+      { phase: 'finished', failed: false, count: 1 },
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toMatch(/private-|desktop-roster-/);
+    act(() => bridge.requestRoster());
+    const nextRequest = JSON.parse(socket.send.mock.calls.at(-1)![0]);
+    act(() => socket.emit('message', { data: JSON.stringify({ type: 'desktop.roster.result',
+      requestId: nextRequest.requestId, hostId: 'host-1', generation: 'private-generation', cursor: null,
+      nextCursor: null, hasMore: false, remaining: 0, desktops: [{ name: 'private-malformed' }] }) }));
+    expect(debug.mock.calls.filter(([tag]) => tag === '[installed-desktop-roster]')
+      .map(([, raw]) => JSON.parse(String(raw)))).toContainEqual({
+      phase: 'response', parsed: 'error', requestMatches: true,
+    });
+    debug.mockRestore();
   });
   it.each(["ticket pending", "connected"] as const)("isolates the selected machine when the previous connection is %s", async (previousState) => {
     const workspace = (id: string): WorkspaceHostControlRow => ({

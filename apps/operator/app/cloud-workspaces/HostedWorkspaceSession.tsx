@@ -287,6 +287,12 @@ export function HostedWorkspaceSession({
     if (!socket || socket.readyState !== WebSocket.OPEN) return false;
     try {
       socket.send(JSON.stringify(payload));
+      if (linkedInstallation && (payload as { type?: unknown }).type === "desktop.roster") {
+        // Protocol metadata only; identities, cursor bytes, labels and keys
+        // never enter the browser's diagnostic output.
+        console.debug("[installed-desktop-roster]", JSON.stringify({ phase: "request",
+          continuation: typeof (payload as { cursor?: unknown }).cursor === "string" }));
+      }
       return true;
     } catch {
       return false;
@@ -341,10 +347,13 @@ export function HostedWorkspaceSession({
   flushThumbnailQueueRef.current = flushThumbnailQueue;
 
   const finishRosterRead = useCallback((code?: string) => {
+    if (linkedInstallation) console.debug("[installed-desktop-roster]", JSON.stringify({
+      phase: "finished", failed: Boolean(code), count: rosterReadRef.current?.entries.size ?? 0,
+    }));
     clearRosterRead();
     if (code) callbackRefs.current.onDesktopQueryStateChange?.("error", "roster", code);
     else callbackRefs.current.onDesktopQueryStateChange?.("ready", "roster");
-  }, [clearRosterRead]);
+  }, [clearRosterRead, linkedInstallation]);
 
   const armRosterDeadline = useCallback(() => {
     if (rosterTimerRef.current) clearTimeout(rosterTimerRef.current);
@@ -572,6 +581,21 @@ export function HostedWorkspaceSession({
        * the selected desktop's pixel stream is opened separately by the
        * viewer, per D-017. */
       const desktopEvent = parseHostedDesktopProtocolMessage(value);
+      if (linkedInstallation && value && typeof value === "object"
+          && (value as { type?: unknown }).type === "desktop.roster.result") {
+        const read = rosterReadRef.current;
+        console.debug("[installed-desktop-roster]", JSON.stringify({ phase: "response",
+          parsed: desktopEvent?.kind ?? "ignored",
+          requestMatches: Boolean(read && desktopEvent && "requestId" in desktopEvent && read.requestId === desktopEvent.requestId),
+          ...(desktopEvent?.kind === "roster" ? {
+            entries: desktopEvent.desktops.length, accumulated: read?.entries.size ?? 0,
+            hostMatches: desktopEvent.page?.hostId === hostId,
+            cursorMatches: desktopEvent.page?.cursor === read?.cursor,
+            generationMatches: read?.generation === null || read?.generation === desktopEvent.page?.generation,
+            remaining: desktopEvent.page?.remaining, hasMore: desktopEvent.page?.hasMore,
+          } : {}),
+        }));
+      }
       if (desktopEvent?.kind === "roster") {
         const read = rosterReadRef.current;
         if (!read || read.requestId !== desktopEvent.requestId) return;
