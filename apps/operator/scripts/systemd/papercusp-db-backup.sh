@@ -222,12 +222,26 @@ PC_BACKUP_WATCH_SEC="${PC_BACKUP_WATCH_SEC:-15}"        # mid-flight free-space 
 # ITS OWN filesystem — a guard that measures the wrong volume is worse than no
 # guard, because it reports headroom that does not exist where we are writing.
 fs_avail_gb() {
-  local kb measurement
-  if ! measurement=$(timeout --kill-after=1s 4s df --output=avail -k "$PGOUT" 2>/dev/null); then
-    echo 0; return   # failed/timed-out df ⇒ report 0 ⇒ fail closed
+  local kb measurement measurement_rc measurement_detail measurement_outcome
+  if measurement=$(timeout --kill-after=1s 4s df --output=avail -k "$PGOUT" 2>&1); then
+    measurement_rc=0
+  else
+    measurement_rc=$?
   fi
   kb=$(printf '%s\n' "$measurement" | tail -1 | tr -d '[:space:]')
-  [[ "$kb" =~ ^[0-9]+$ ]] || { echo 0; return; }
+  if [ "$measurement_rc" -ne 0 ] || ! [[ "$kb" =~ ^[0-9]+$ ]]; then
+    case "$measurement_rc" in
+      0) measurement_outcome=invalid-output ;;
+      124) measurement_outcome=wall-timeout ;;
+      137) measurement_outcome=wall-timeout-kill ;;
+      *) measurement_outcome=failed ;;
+    esac
+    measurement_detail=$(printf '%s' "$measurement" | tr '\r\n' ' ')
+    measurement_detail=${measurement_detail:0:240}
+    log "SPACE MEASUREMENT FAILED: df_status=$measurement_rc probe_outcome=$measurement_outcome path=$PGOUT detail=${measurement_detail:-<empty>}"
+    # Unknown space still refuses a dump, but must not masquerade as measured 0.
+    return 1
+  fi
   echo $(( kb / 1048576 ))
 }
 
@@ -351,9 +365,12 @@ ionice -c3 -p $$ >/dev/null 2>&1 || true
 # leaving it stale is what makes a refused backup visible as an aging dump
 # rather than a fresh-looking success. Writing a "skipped" receipt here would
 # hide exactly the condition an operator needs to see.
-PC_FREE_GB=$(fs_avail_gb)
+if ! PC_FREE_GB=$(fs_avail_gb); then
+  log "REFUSED: unable to measure free space on $PGOUT; not dumping until headroom can be verified."
+  exit 1
+fi
 if [ "$PC_FREE_GB" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
-  log "REFUSED: only ${PC_FREE_GB} GiB free on $(df --output=target "$PGOUT" 2>/dev/null | tail -1) — below the ${PC_BACKUP_MIN_FREE_GB} GiB floor."
+  log "REFUSED: only ${PC_FREE_GB} GiB free on $PGOUT — below the ${PC_BACKUP_MIN_FREE_GB} GiB floor."
   log "REFUSED: not dumping. A -Fd dump writes a full second copy before its atomic swap, so starting here risks filling the volume."
   log "REFUSED: reclaim space (this volume also carries VM images and the offsite staging tree); do NOT just lower PC_BACKUP_MIN_FREE_GB."
   exit 1
@@ -461,7 +478,7 @@ log_backup_diagnostics() {
 # client alone proves nothing). Never a name/pattern kill: we hold the real PID.
 run_bounded_watched() {
   local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
-  local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed
+  local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed space_abort_reason
   local last_bytes=0 last_progress_epoch=0 current_bytes=0 progress_path_seen=0
   local last_diagnostic_epoch
   local backup_diagnostic_last_path='' backup_diagnostic_last_snapshot='' backup_diagnostic_last_elapsed=''
@@ -476,10 +493,16 @@ run_bounded_watched() {
       prioritize_backup_backends
       now_epoch=$(date +%s)
       elapsed=$(( now_epoch - start_epoch ))
-      now=$(fs_avail_gb)
-      if [ "$now" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
+      space_abort_reason=''
+      if ! now=$(fs_avail_gb); then
+        log "ABORTING DUMP: unable to measure free space on $PGOUT; killing this dump until headroom can be verified"
+        space_abort_reason=space-unreadable
+      elif [ "$now" -lt "$PC_BACKUP_MIN_FREE_GB" ]; then
         log "ABORTING DUMP: free space fell to ${now} GiB (floor ${PC_BACKUP_MIN_FREE_GB} GiB) while dumping — killing this dump to protect the volume"
-        log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" space-floor
+        space_abort_reason=space-floor
+      fi
+      if [ -n "$space_abort_reason" ]; then
+        log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" "$space_abort_reason"
         kill -TERM "$dump_pid" 2>/dev/null
         sleep 5
         kill -KILL "$dump_pid" 2>/dev/null
@@ -897,7 +920,10 @@ dump_one() {
     [ -n "$prev_kb" ] && prev_gb=$(( prev_kb / 1048576 ))
   fi
   need_gb=$(( prev_gb * PC_BACKUP_SPACE_SAFETY / 100 ))
-  avail_gb=$(fs_avail_gb)
+  if ! avail_gb=$(fs_avail_gb); then
+    log "$label FAILED — unable to measure free space on $PGOUT; previous dump left intact"
+    return 1
+  fi
   if [ "$prev_gb" -gt 0 ] && [ "$avail_gb" -lt $(( need_gb + PC_BACKUP_MIN_FREE_GB )) ]; then
     log "$label SKIPPED — needs ~${need_gb} GiB (last dump ${prev_gb} GiB x ${PC_BACKUP_SPACE_SAFETY}%) plus the ${PC_BACKUP_MIN_FREE_GB} GiB floor, but only ${avail_gb} GiB free; previous dump left intact"
     return 2
