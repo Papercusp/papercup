@@ -427,11 +427,22 @@ describe('GEC immutable atomic baseline', () => {
     expect(JSON.parse(result.ledgerResults[0]!.check.provenance!.procedure.snapshot).row.pin.observedAt)
       .toBe('invalid-original-clock');
   });
-  it('persists the entire frozen census without fabricating pins for missing originals', () => {
+  function fullCensusFixture() {
     const c = capture(); c.observations[0]!.value = false;
     c.observations.find(row => row.name === 'storageBytes')!.value = null;
     const { input, result: original } = classify(c);
     const result = classifyGroundedBaselineCensus('original', [input]);
+    const scope = { workspaceId: 'census-workspace', harnessSlug: 'census-harness', runGroupId: 'census-run' };
+    const baseDetails = persisted(input)[0]!.executionDetails;
+    const rows = result.ledgerResults.map((row, index) => ({ id: index + 1, status: row.verdict,
+      executionDetails: { ...baseDetails, ...scope, check: row.check } }));
+    const absent = rows.find(row => JSON.parse(row.executionDetails.check.provenance!.procedure.snapshot).row.pin === null)!;
+    return { input, original, result, scope, rows, absent };
+  }
+  let retainedCensus: ReturnType<typeof fullCensusFixture> | undefined;
+  const censusFixture = () => retainedCensus ??= fullCensusFixture();
+  it('persists the entire frozen census without fabricating pins for missing originals', () => {
+    const { input, original, result, scope, rows, absent } = censusFixture();
     expect(result.rows.map(row => row.key)).toEqual(groundedBaselineCensus());
     expect(result.rows.filter(row => row.pin)).toEqual(original.rows);
     const missing = result.rows.filter(row => !row.pin);
@@ -439,31 +450,40 @@ describe('GEC immutable atomic baseline', () => {
     expect(missing.every(row => row.state === 'unknown' && row.value === null
       && row.originalSha256 === null && row.observation === null)).toBe(true);
     expect(result.state).toBe('failure'); expect(result.complete).toBe(false);
-    const scope = { workspaceId: 'census-workspace', harnessSlug: 'census-harness', runGroupId: 'census-run' };
-    const baseDetails = persisted(input)[0]!.executionDetails;
-    const rows = result.ledgerResults.map((row, index) => ({ id: index + 1, status: row.verdict,
-      executionDetails: { ...baseDetails, ...scope, check: row.check } }));
     expect(result.ledgerResults.every(row => parseRecordedRubricCheck(row.check) !== null)).toBe(true);
-    const absent = rows.find(row => JSON.parse(row.executionDetails.check.provenance!.procedure.snapshot).row.pin === null)!;
     expect(absent.status).toBe('error'); expect(absent.executionDetails.check.value).toBeNull();
     expect(readGroundedBaselineCensusRows('original', [input], rows, scope).integrity).toBe(true);
-    for (const changed of [rows.slice(1), [...rows, rows[0]!], rows.map(row => row === absent
-      ? { ...row, status: 'pass' } : row)])
-      expect(readGroundedBaselineCensusRows('original', [input], changed, scope).integrity).toBe(false);
-    const substituted = structuredClone(rows);
-    substituted.find(row => row.id === absent.id)!.executionDetails.check.provenance = rows[0]!.executionDetails.check.provenance;
-    expect(readGroundedBaselineCensusRows('original', [input], substituted, scope).integrity).toBe(false);
   });
-  it('never uses recaptures or duplicate designations to complete an original census', () => {
+  it.each(['missing', 'duplicate', 'status', 'provenance'] as const)(
+    'rejects %s substitution in the entire persisted frozen census', mutation => {
+      const { input, scope, rows, absent } = censusFixture();
+      const changed = structuredClone(rows);
+      if (mutation === 'missing') changed.shift();
+      if (mutation === 'duplicate') changed.push(structuredClone(changed[0]!));
+      if (mutation === 'status') changed.find(row => row.id === absent.id)!.status = 'pass';
+      if (mutation === 'provenance') {
+        const present = rows.find(row => JSON.parse(row.executionDetails.check.provenance!.procedure.snapshot).row.pin !== null)!;
+        changed.find(row => row.id === absent.id)!.executionDetails.check.provenance = present.executionDetails.check.provenance;
+      }
+      expect(readGroundedBaselineCensusRows('original', [input], changed, scope).integrity).toBe(false);
+    });
+  it('never uses recaptures to complete an original census', () => {
     const { input, result } = classify();
     const newer = capture(); newer.pin.cohort = 'measurement-recapture'; newer.pin.scope.runId = 'recapture';
     const recapture = classify(newer).input;
     const separate = classifyGroundedBaselineCensus('original', [input, recapture]);
     expect(separate.rows.filter(row => row.pin)).toEqual(result.rows);
     expect(separate.gaps).toContain('C3/1:foreign-cohort');
+  });
+  it('leaves duplicate original designations unknown across the frozen census', () => {
+    const { input } = classify();
     const duplicated = classifyGroundedBaselineCensus('original', [input, input]);
     expect(duplicated.rows.every(row => row.pin === null && row.value === null)).toBe(true);
     expect(duplicated.gaps.some(gap => gap.endsWith(':duplicate-designated-immutable-original'))).toBe(true);
+  });
+  it('requires an explicit recapture cohort before admitting recaptured rows', () => {
+    const newer = capture(); newer.pin.cohort = 'measurement-recapture'; newer.pin.scope.runId = 'recapture';
+    const recapture = classify(newer).input;
     const alone = classifyGroundedBaselineCensus('original', [recapture]);
     expect(alone.rows.every(row => row.pin === null)).toBe(true);
     expect(classifyGroundedBaselineCensus('measurement-recapture', [recapture]).rows
