@@ -384,6 +384,70 @@ export const PAPERWORK_ORDINARY_INPUT_PREPARATION = {
     }
   ],
   "workerSurfaceSourceManifestSha256": "80298623d745931d8d8792b218c013a991430eeed78db60a954ff61769c49f44",
+  "rootContractInventory": {
+    "status": "partial-source-preparation-not-acceptance",
+    "artifact": {
+      "tool": "artifacts:load",
+      "slug": "papercusp",
+      "rel_path": "checkpoints/WI-6554700010045883/r23-root-contract-inventory-0960f8194f2b.json",
+      "sha256": "0960f8194f2b4af951cc8ab71869e7989d9ed264d062e126ce793d11f514d331",
+      "bytes": 1050104,
+      "readback": "complete-byte-equal"
+    },
+    "scope": "The declared22 roots at the two frozen commits, composed root fields and variant alternatives, local contract/prompt spans, source-diff classes, and literal one-hop relative import targets. Candidate membership is not an exhaustive worker population.",
+    "requiredness": {
+      "method": "Resolve local schema aliases, preprocessing wrappers, object spreads and union alternatives. Preserve unresolved imported helpers and dynamic aliases instead of guessing requiredness. Root optionality does not prove nested or handler compatibility.",
+      "addedOptionalRootFields": [
+        "plans:get.discoveryAudit",
+        "plans:get.planItemStartReadiness",
+        "plans:set-status.noteKind",
+        "plans:set-status.blockerDecision",
+        "plans:start.owner_review",
+        "testing:run.privatePgSetupTimeoutMs",
+        "work_items:complete.blockerDecision",
+        "work_items:get.adoptionSnapshot"
+      ],
+      "changedExistingRootFields": [
+        "coord:orient.mode",
+        "plans:get.activationReadiness",
+        "plans:get.executionReadiness",
+        "scorecards:emit.rerunRecipe",
+        "scorecards:emit.subject",
+        "testing:run.background",
+        "testing:run.timeoutMs"
+      ],
+      "unresolved": [
+        "work_items:complete derives legacy completion aliases through Object.fromEntries; the static root shape leaves this dynamic field population unresolved.",
+        "Imported schema helpers, nested completion/binding/scorecard fields, refinements and handler gates need explicit requiredness dispositions at both frozen commits.",
+        "Optional owner_review/blockerDecision/proof fields may become conditionally required in handler gates. No old ordinary input was replayed by this inventory.",
+        "Internal adapters, source-preview CLI inputs and gates have no defineTool root schema here; their entrypoint signatures and downstream conditions remain separate inventory work."
+      ]
+    },
+    "sourceDiffDispositions": [
+      {
+        "kind": "byte-identical-root-only",
+        "paths": [
+          "packages/operator-core/lib/agent-tools/memory/remember.ts",
+          "packages/operator-core/lib/agent-tools/plan-items/claim.ts",
+          "packages/operator-core/lib/agent-tools/plan-items/convert.ts"
+        ],
+        "meaning": "Root bytes match; dependencies, prompts and runtime acceptance are not qualified."
+      },
+      {
+        "kind": "changed-needs-semantic-and-replay-disposition",
+        "meaning": "Every remaining declared root has a source delta. The artifact retains added/removed syntax classes and first-hop import hashes; no change is waived as harmless or counted as a new paperwork requirement from syntax alone."
+      }
+    ],
+    "remaining": [
+      "Close recursive import/package/dispatch and actual worker prompt/hook membership without dropping unresolved or removed paths.",
+      "Disposition every changed refinement, handler refusal and required call, including completion outcome/native-proof and blocker-decision gates, against the historical ordinary-input boundary.",
+      "Freeze complete ordinary input/helper/mock identities and a separately reviewed expected-output manifest, then run eligible replay and six prohibited-paperwork controls."
+    ],
+    "independentReview": "unknown",
+    "runtimeReplay": "not-run",
+    "fullClosureQualified": false,
+    "executionAdmitted": false
+  },
   "historicalBaseline": {
     "status": "candidate-not-independent-review-qualified",
     "sourceCommit": "2531675c144198acfa435f5cbd883d7208c3eaf8",
