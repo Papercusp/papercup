@@ -30,6 +30,13 @@ const mutationBuilderMethods = new Set([
   'insert', 'insertInto', 'update', 'updateTable', 'delete', 'deleteFrom',
   'merge', 'mergeInto', 'upsert', 'replaceInto',
 ]);
+const nonCoerciveBinaryOperators = new Set([
+  ts.SyntaxKind.EqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+  ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.AmpersandAmpersandToken,
+  ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.CommaToken,
+  ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.BarBarEqualsToken,
+  ts.SyntaxKind.QuestionQuestionEqualsToken,
+]);
 
 export interface PhaseWriterSource { path: string; content: string }
 /** Syntax evidence only. Tag arguments are the substitution expressions; the
@@ -408,13 +415,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const operator = node.operatorToken.kind;
           const destructuring = operator === ts.SyntaxKind.EqualsToken
             && (ts.isObjectLiteralExpression(node.left) || ts.isArrayLiteralExpression(node.left));
-          if (destructuring || !new Set([
-            ts.SyntaxKind.EqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
-            ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.AmpersandAmpersandToken,
-            ts.SyntaxKind.BarBarToken, ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.CommaToken,
-            ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.BarBarEqualsToken,
-            ts.SyntaxKind.QuestionQuestionEqualsToken,
-          ]).has(operator)) operands = [node.left, node.right];
+          if (destructuring || !nonCoerciveBinaryOperators.has(operator)) operands = [node.left, node.right];
         } else if (ts.isPrefixUnaryExpression(node) && node.operator !== ts.SyntaxKind.ExclamationToken
           || ts.isPostfixUnaryExpression(node)) {
           operands = [node.operand];
