@@ -873,9 +873,13 @@ async function dumpPg(opts: {
         await opts.log(`pg ${opts.host}:${opts.port} SKIP (${guardSkipReason})`);
         result = { ok: true, skipped: guardSkipReason };
       } else if (outputOk) {
+        let failureStage = 'stat';
         try {
           const s = await stat(tmp);
           if (s.size >= MIN_RESTORABLE_DUMP_BYTES) {
+            // Installation also acquires the host's retention lease. Its
+            // database failures must not masquerade as a failed file stat.
+            failureStage = 'install';
             await renameAtomic(tmp, opts.outPath);
             await opts.log(`pg ${opts.host}:${opts.port} ok (${s.size} bytes)`);
             result = { ok: true, bytes: s.size };
@@ -887,7 +891,7 @@ async function dumpPg(opts: {
             result = { ok: false, error };
           }
         } catch (e) {
-          const error = `stat: ${String(e)}`;
+          const error = `${failureStage}: ${String(e)}`;
           await unlink(tmp).catch(() => {});
           await opts.log(`pg ${opts.host}:${opts.port} FAIL ${error}`);
           result = { ok: false, error };

@@ -8,7 +8,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSy
   realpathSync, renameSync, rmSync, writeFileSync, cpSync, chmodSync } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isCliEntry } from '../../../../packages/operator-core/lib/util/cli-entry.ts';
 import { readVerifierSourceReceiptSync } from '../../../../libs/test-config/src/verifier-source.ts';
 import { presentOnDisk } from '../../../../libs/test-config/src/tracked-files.mjs';
 
@@ -453,7 +453,7 @@ function stageClosure(generation, sourceRoot) {
   verifyClosure(generation, sourceRoot);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+async function main() {
   const [command, root, dest] = process.argv.slice(2);
   try {
     if (command === 'capture') console.log(JSON.stringify(captureClosure(root)));
@@ -470,3 +470,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     else fail('unknown-command');
   } catch (error) { console.error(error.message); process.exitCode = 74; }
 }
+
+if (isCliEntry(import.meta.url)) void main();

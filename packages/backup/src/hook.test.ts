@@ -32,6 +32,8 @@ const h = vi.hoisted(() => ({
   }>,
   // Size returned by the mocked stat() of the temp dump — >=10KiB ⇒ success path.
   dumpSize: 16_384,
+  dumpStatError: null as Error | null,
+  retentionLeaseError: null as Error | null,
   closeCodes: { pg_dump: 0, gzip: 0 } as Record<string, number>,
   stdinWrites: [] as string[],
   ackWrites: [] as string[],
@@ -156,7 +158,10 @@ vi.mock('node:fs/promises', () => ({
   // differ here too.
   stat: vi.fn(async (p: string) => {
     h.statCalls.push(String(p));
-    if (String(p).endsWith('.tmp')) return { size: h.dumpSize };
+    if (String(p).endsWith('.tmp')) {
+      if (h.dumpStatError) throw h.dumpStatError;
+      return { size: h.dumpSize };
+    }
     if (h.previousDumpSize === null) {
       throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
     }
@@ -190,7 +195,12 @@ vi.mock('./host-dump-coverage', () => ({
 }));
 
 vi.mock('./config', () => ({
-  backupHost: () => ({ getHarnessAdminUrl: () => h.adminUrl }),
+  backupHost: () => ({
+    getHarnessAdminUrl: () => h.adminUrl,
+    withRetentionLease: h.retentionLeaseError
+      ? async () => { throw h.retentionLeaseError; }
+      : undefined,
+  }),
 }));
 
 import {
@@ -244,6 +254,8 @@ beforeEach(() => {
   h.adminUrl = { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' };
   h.spawnCalls = [];
   h.dumpSize = 16_384;
+  h.dumpStatError = null;
+  h.retentionLeaseError = null;
   h.closeCodes = { pg_dump: 0, gzip: 0 };
   h.stdinWrites = [];
   h.ackWrites = [];
@@ -782,6 +794,30 @@ describe('runPreSnapshotHook outcome logging', () => {
     expect(h.renameCalls[0].to).toContain('pg-embedded.sql.gz');
     expect(h.unlinkCalls).not.toContain('/work/ws-1/db-dumps/pg-embedded.sql.gz');
     expect(h.logLines.join('')).toMatch(/ok \(16384 bytes\)/);
+  });
+
+  it('reports a rejected retention lease as an install failure and refuses the dump', async () => {
+    h.retentionLeaseError = new Error('write CONNECT_TIMEOUT localhost:5432');
+
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({
+      ok: false,
+      error: 'install: Error: write CONNECT_TIMEOUT localhost:5432',
+    });
+    expect(h.statCalls).toContain(h.writeStreamPaths[0]);
+    expect(h.renameCalls).toHaveLength(0);
+    expect(h.logLines.join('')).toContain('FAIL install: Error: write CONNECT_TIMEOUT localhost:5432');
+    expect(h.logLines.join('')).not.toContain('ok (16384 bytes)');
+  });
+
+  it('preserves stat attribution when the dump size cannot be read', async () => {
+    h.dumpStatError = new Error('EIO: cannot read dump size');
+
+    await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({
+      ok: false,
+      error: 'stat: Error: EIO: cannot read dump size',
+    });
+    expect(h.renameCalls).toHaveLength(0);
+    expect(h.logLines.join('')).toContain('FAIL stat: Error: EIO: cannot read dump size');
   });
 
   it('waits for the temp-file writer to close before statting or installing the dump', async () => {
