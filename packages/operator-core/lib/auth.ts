@@ -90,7 +90,7 @@ export async function readWorkspaceUserBindings(sql: Sql, workspaceId: string,
   options: { expectedRevision?: string; pinForEffect?: boolean } = {}) {
   options = { ...options };
   if (!workspaceId || workspaceId === '*' || workspaceId !== workspaceId.trim() ||
-      /[\u0000-\u001f]/u.test(workspaceId) ||
+      /[\u0000-\u001f\uD800-\uDFFF]/u.test(workspaceId) ||
       (options.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedRevision)))
     throw new Error('workspace user bindings require an exact workspace and revision');
   const pinned = options.pinForEffect === true || options.expectedRevision !== undefined;
@@ -104,11 +104,12 @@ export async function readWorkspaceUserBindings(sql: Sql, workspaceId: string,
       await tx`LOCK TABLE harness_shared.users, harness_shared.user_sessions IN SHARE MODE`;
     } else if (!['repeatable read', 'serializable'].includes(isolation?.isolation ?? ''))
       throw new Error('workspace user binding snapshot requires repeatable read or serializable isolation');
-    const [visibility] = await tx<Array<{ workspace: string | null; restricted: boolean }>>`
-      SELECT current_setting('app.workspace_id', true) AS workspace,
-        (row_security_active('harness_shared.users') OR
+    const [visibility] = await tx<Array<{ restricted: boolean }>>`
+      SELECT (row_security_active('harness_shared.users') OR
          row_security_active('harness_shared.user_sessions')) AS restricted`;
-    if (!visibility || (visibility.restricted && visibility.workspace !== workspaceId))
+    // Local accounts are global. A matching app.workspace_id does not prove
+    // a user-level RLS policy exposed every account or claim in this workspace.
+    if (!visibility || visibility.restricted)
       throw new Error('workspace user bindings are not visible to this connection');
     const users = new Map<string | null, WorkspaceUserBindingSource>();
     // Hash only authorization inputs. last_seen_at, names and password hashes

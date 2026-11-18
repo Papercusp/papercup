@@ -146,8 +146,33 @@ describe('P-002 local host workspace user binding sources', () => {
     });
   });
 
-  it.each(['', '*', ' ws', 'ws\n'])('refuses an inexact workspace %j', async workspace => {
+  it.each(['', '*', ' ws', 'ws\n', 'ws\ud800'])('refuses an inexact workspace %j', async workspace => {
     await expect(readWorkspaceUserBindings(sql, workspace)).rejects.toThrow('exact workspace');
+  });
+
+  it('refuses invalid before-image pins', async () => {
+    for (const revision of ['', 'not-a-digest', 'A'.repeat(64)])
+      await expect(readWorkspaceUserBindings(sql, 'ws', { expectedRevision: revision })).rejects.toThrow('exact workspace and revision');
+  });
+
+  it.each(['users', 'user_sessions'] as const)('refuses a filtered %s census even with a matching workspace setting', async table => {
+    await seed();
+    const role = `auth_population_reader_${randomBytes(5).toString('hex')}`;
+    await sql.unsafe(`CREATE ROLE "${role}"; GRANT USAGE ON SCHEMA harness_shared TO "${role}";
+      GRANT SELECT ON ALL TABLES IN SCHEMA harness_shared TO "${role}";
+      ALTER TABLE harness_shared.${table} ENABLE ROW LEVEL SECURITY`);
+    try {
+      for (const workspace of ['ws', 'foreign']) {
+        await sql.begin('isolation level repeatable read', async tx => {
+          await tx.unsafe(`SET LOCAL ROLE "${role}"`);
+          await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+          await expect(readWorkspaceUserBindings(txSql(tx), 'ws')).rejects.toThrow('not visible');
+        });
+      }
+    } finally {
+      await sql.unsafe(`ALTER TABLE harness_shared.${table} DISABLE ROW LEVEL SECURITY;
+        DROP OWNED BY "${role}"; DROP ROLE "${role}"`);
+    }
   });
 
   it('does not turn unreadable auth storage into an empty population', async () => {

@@ -46,9 +46,18 @@ import { ALL_SUCCESSFUL_STATUSES, ALL_TERMINAL_STATUSES } from './work-item-bloc
 import { isSufficientEvidence } from './work-item-completion-authority';
 import {
   admissionFailOpenGuaranteedSec,
+  ADMISSION_REVIEW_ALERT_KEY,
+  ADMISSION_REVIEW_RETRY_OWNER,
+  DEFAULT_ADMISSION_REVIEW_SLO_MINUTES,
   DEFAULT_PROMOTER_TICK_MINUTES,
   failOpenDedupEligibleWhereSql,
   ownNodeAuthoredRemoteIds,
+  WORK_ITEM_ADMISSION_PROMOTER,
+} from './work-items-admission';
+export {
+  ADMISSION_REVIEW_ALERT_KEY, ADMISSION_REVIEW_RETRY_OWNER, buildAdmissionReviewMetadata,
+  DEFAULT_ADMISSION_REVIEW_SLO_MINUTES, WORK_ITEM_ADMISSION_PROMOTER,
+  type AdmissionReviewMetadata, type AdmissionReviewState,
 } from './work-items-admission';
 import {
   rescreenDegradedPendingRows,
@@ -106,7 +115,6 @@ async function announceNewlyAdmittedWorkItems(rows: readonly { id: string; harne
   }
 }
 
-export const WORK_ITEM_ADMISSION_PROMOTER = 'work-item-admission-promoter';
 export const WORK_ITEM_ADMISSION_FAIL_OPEN = 'work-item-admission-fail-open';
 export const PROMOTER_ACTOR = `system:${WORK_ITEM_ADMISSION_PROMOTER}`;
 export const FAIL_OPEN_ACTOR = `system:${WORK_ITEM_ADMISSION_FAIL_OPEN}`;
@@ -126,15 +134,6 @@ const scopeHeldHarnessesNoted = new Set<string>();
  */
 export { DEFAULT_PROMOTER_TICK_MINUTES };
 export const DEFAULT_PROMOTER_LIVENESS_MINUTES = 90;
-/**
- * Fail-open rows are review debt, not a second terminal admission path.  The
- * promoter gets two of its normal ticks to revisit a rescued row before the
- * owner-facing snapshot marks it overdue.  Keeping this beside the cadence
- * means the SLO cannot drift from the retry floor.
- */
-export const DEFAULT_ADMISSION_REVIEW_SLO_MINUTES = DEFAULT_PROMOTER_TICK_MINUTES * 2;
-export const ADMISSION_REVIEW_RETRY_OWNER = PROMOTER_ACTOR;
-export const ADMISSION_REVIEW_ALERT_KEY = 'work-item-admission-review-debt';
 export const DEFAULT_RECENT_TERMINAL_DAYS = 30;
 export const PROMOTER_COSINE_FLOOR = 0.85;
 export const PROMOTER_TOP_K = 8;
@@ -290,6 +289,8 @@ export interface AdmissionMergeGuardRefusal {
 
 export interface AdmissionPlanPersistenceResult {
   promotedIds: string[];
+  /** Already-admitted bugs whose queued review completed without re-admission. */
+  reviewedIds?: string[];
   mergedIds: string[];
   replayedIds: string[];
   held: Array<{ itemId: string; reason: string }>;
@@ -460,6 +461,7 @@ export interface PromoterRunResult {
   batchSize: number;
   flaggedPairs: number;
   promoted: number;
+  reviewed?: number;
   merged: number;
   held: number;
   modelCalled: boolean;
@@ -542,8 +544,6 @@ export interface FailOpenRunResult {
   dedupRescreen?: DedupRescreenSummary | { skipped: true } | { error: string };
 }
 
-export type AdmissionReviewState = 'pending' | 'reviewed' | 'terminal';
-
 /** Durable P-006 review-debt rollup projected by the owner snapshot. */
 export interface AdmissionReviewDebt {
   pending: number;
@@ -553,67 +553,6 @@ export interface AdmissionReviewDebt {
   terminal: number;
   oldestAgeMs: number | null;
   sloMs: number;
-}
-
-export interface AdmissionReviewMetadata {
-  state: AdmissionReviewState;
-  enteredAt: string;
-  reviewDueAt: string;
-  retryOwner: string;
-  retryAttempts: number;
-  lastRetryAt: string | null;
-  reviewedAt: string | null;
-  reviewedBy: string | null;
-  terminalAt: string | null;
-  terminalOutcome: string | null;
-  alert: {
-    key: string;
-    state: 'open' | 'cleared';
-    emittedAt: string;
-    reason: string;
-  };
-}
-
-/** Build the versioned payload fragment written for every fail-open/re-review transition. */
-export function buildAdmissionReviewMetadata(input: {
-  state: AdmissionReviewState;
-  nowMs: number;
-  retryOwner?: string;
-  retryAttempts?: number;
-  enteredAtMs?: number;
-  reviewDueAtMs?: number;
-  reviewedBy?: string | null;
-  terminalOutcome?: string | null;
-  alertState?: 'open' | 'cleared';
-  alertReason?: string;
-}): AdmissionReviewMetadata {
-  const now = new Date(input.nowMs).toISOString();
-  const enteredAt = new Date(input.enteredAtMs ?? input.nowMs).toISOString();
-  const dueAt = new Date(
-    input.reviewDueAtMs ?? input.nowMs + DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000,
-  ).toISOString();
-  const terminal = input.state === 'terminal';
-  const reviewed = input.state !== 'pending';
-  return {
-    state: input.state,
-    enteredAt,
-    reviewDueAt: dueAt,
-    retryOwner: input.retryOwner ?? ADMISSION_REVIEW_RETRY_OWNER,
-    retryAttempts: Math.max(0, Math.floor(input.retryAttempts ?? 0)),
-    lastRetryAt: input.state === 'pending' ? null : now,
-    reviewedAt: reviewed ? now : null,
-    reviewedBy: reviewed ? (input.reviewedBy ?? ADMISSION_REVIEW_RETRY_OWNER) : null,
-    terminalAt: terminal ? now : null,
-    terminalOutcome: terminal ? (input.terminalOutcome ?? 'terminal') : null,
-    alert: {
-      key: ADMISSION_REVIEW_ALERT_KEY,
-      state: input.alertState ?? (input.state === 'pending' ? 'open' : 'cleared'),
-      emittedAt: now,
-      reason:
-        input.alertReason ??
-        (input.state === 'pending' ? 'pending fail-open admission requires re-review' : 'review completed'),
-    },
-  };
 }
 
 export type AdmissionRunKind =
@@ -2440,7 +2379,8 @@ export async function readPendingBatch(
       LEFT JOIN rotated ON rotated.rotated_id = wi.feature_id
      WHERE workspace_id = ${workspaceId}
        AND harness_slug = ${harnessSlug}
-       AND admission IN ('pending', 'unreviewed')
+       AND (admission IN ('pending', 'unreviewed') OR
+            (admission = 'auto' AND item_kind = 'bug' AND payload #>> '{admissionReview,state}' = 'pending'))
        AND lane IS DISTINCT FROM 'observation'
        AND (${targets === undefined} OR wi.feature_id = ANY(${targets ?? []}::text[]))
      ORDER BY
@@ -2494,7 +2434,8 @@ async function readPromoterPairs(
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
          AND feature_id = ANY(${ids}::text[])
-         AND admission IN ('pending', 'unreviewed')
+         AND (admission IN ('pending', 'unreviewed') OR
+              (admission = 'auto' AND item_kind = 'bug' AND payload #>> '{admissionReview,state}' = 'pending'))
     )
     SELECT p.feature_id AS pending_id,
            c.feature_id AS candidate_id,
@@ -2772,7 +2713,8 @@ export function applyClaimedReReviewHolds(
     };
   }
   const claimed = new Set(
-    [...snapshots.values()].filter((snapshot) => isOverdueClaimedReReview(snapshot, nowMs)).map((s) => s.id),
+    [...snapshots.values()].filter((snapshot) => isOverdueClaimedReReview(snapshot, nowMs) ||
+      snapshot.assignee && isQueuedBypassReview(snapshot)).map((s) => s.id),
   );
   if (claimed.size === 0) return plan;
   const holder = (id: string) => snapshots.get(id)?.assignee ?? 'an agent';
@@ -4014,6 +3956,12 @@ const CLAIMED_REREVIEW_EXEMPT_ROLES: ReadonlySet<MergeEndpointRole> = new Set(['
  */
 export const CLAIMED_REREVIEW_TURN_BOUND_MINUTES = 24 * 60;
 
+/** Admission bypasses permit work to start; they never complete duplicate review. */
+function isQueuedBypassReview(snapshot: AdmissionMergeSnapshot): boolean {
+  return snapshot.kind === 'bug' && snapshot.admission === 'auto' &&
+    recordValue(recordValue(snapshot.payload).admissionReview).state === 'pending';
+}
+
 /**
  * A fail-open row whose admission re-review is overdue while an agent holds it
  * (WI-6554700010008443). Before this, endpointProtection refused every claimed row in every role,
@@ -4089,7 +4037,8 @@ export function endpointProtection(
   if (snapshot.origin === 'remote' && snapshot.ownNode !== true) {
     return { reason: 'remote-owned', detail: `${role} ${snapshot.id} is remote-owned` };
   }
-  if (role === 'promote' && snapshot.admission !== 'pending' && snapshot.admission !== 'unreviewed') {
+  if (role === 'promote' && snapshot.admission !== 'pending' && snapshot.admission !== 'unreviewed' &&
+      !isQueuedBypassReview(snapshot)) {
     return {
       reason: 'admission-state-ineligible',
       detail: `promote ${snapshot.id} has admission ${snapshot.admission ?? 'legacy'}; expected pending or unreviewed`,
@@ -4104,7 +4053,7 @@ export function endpointProtection(
   const terminalTwin = role !== 'promote' && ALL_TERMINAL_STATUSES.has(snapshot.state);
   const overdueClaimedReview = options.claimedReReviewAtMs !== undefined &&
     CLAIMED_REREVIEW_EXEMPT_ROLES.has(role) &&
-    isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs);
+    (isOverdueClaimedReReview(snapshot, options.claimedReReviewAtMs) || isQueuedBypassReview(snapshot));
   const explicitReview = options.admissionReview === true &&
     (role === 'promote' || role === 'hold' || role === 'reference') &&
     admissionReviewCustodyEligible(snapshot);
@@ -5201,7 +5150,8 @@ async function persistApprovedAdmissionMerge(
   };
   const eligibility = input.mergeAnyAdmission
     ? sql`(status IS NULL OR NOT (status = ANY(${terminal}::text[])))`
-    : sql`admission IN ('pending', 'unreviewed')`;
+    : sql`(admission IN ('pending', 'unreviewed') OR
+           (admission = 'auto' AND item_kind = 'bug' AND payload #>> '{admissionReview,state}' = 'pending'))`;
   // EI-28990041785851999: hand the loser's dependency edges to the canonical BEFORE the
   // loser is dropped. work_items_dependency_lifecycle_guard_trg is a non-deferrable
   // BEFORE UPDATE OF status row trigger, so it judges the loser's edges at the moment of
@@ -5784,8 +5734,10 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
       if (!promoteUnmerged) continue;
       await sql`
         UPDATE harness_shared.work_items
-           SET admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
-               payload = (CASE WHEN admission = 'unreviewed' THEN
+           SET admission = CASE WHEN admission = 'auto' THEN admission ELSE 'admitted' END,
+               admitted_at = CASE WHEN admission = 'auto' THEN admitted_at ELSE now() END,
+               admitted_by = CASE WHEN admission = 'auto' THEN admitted_by ELSE ${actor} END,
+               payload = (CASE WHEN admission = 'unreviewed' OR payload #>> '{admissionReview,state}' = 'pending' THEN
                  COALESCE(payload, '{}'::jsonb) || jsonb_build_object(
                    'admissionReview',
                    COALESCE(payload->'admissionReview', '{}'::jsonb) || jsonb_build_object(
@@ -5813,7 +5765,8 @@ async function persistAdmissionPlanUnchecked(sql: OrgSql, input: PersistAdmissio
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
            AND feature_id = ${disposition.itemId}
-           AND admission IN ('pending', 'unreviewed')`;
+           AND (admission IN ('pending', 'unreviewed') OR
+                (admission = 'auto' AND item_kind = 'bug' AND payload #>> '{admissionReview,state}' = 'pending'))`;
       continue;
     }
     const loserSnapshot = input.mergeSnapshots.get(disposition.itemId);
@@ -6194,6 +6147,7 @@ async function persistAdmissionPlanInTransaction(
     : [];
   const postById = new Map(postRows.map((row) => [row.feature_id, row]));
   const promotedIds: string[] = [];
+  const reviewedIds: string[] = [];
   const mergedIds: string[] = [];
   for (const disposition of safePlan.dispositions) {
     if (disposition.action === 'hold') continue;
@@ -6205,6 +6159,14 @@ async function persistAdmissionPlanInTransaction(
         if (before?.admission === 'pending' || before?.admission === 'unreviewed') {
           promotedIds.push(disposition.itemId);
         }
+        continue;
+      }
+      const before = liveById.get(disposition.itemId);
+      const review = recordValue(recordValue(post?.payload).admissionReview);
+      if (before && isQueuedBypassReview(before) && post?.admission === 'auto' &&
+          review.state === 'reviewed' && review.reviewedAt === new Date(input.nowMs).toISOString() &&
+          review.reviewedBy === actor) {
+        reviewedIds.push(disposition.itemId);
         continue;
       }
       throw new Error(`admission merge guard conditional-write-miss: promotion ${disposition.itemId}`);
@@ -6245,6 +6207,7 @@ async function persistAdmissionPlanInTransaction(
 
   return {
     promotedIds: promotedIds.sort(),
+    ...(reviewedIds.length ? { reviewedIds: reviewedIds.sort() } : {}),
     mergedIds: mergedIds.sort(),
     replayedIds: [...replayedIds].sort(),
     held: [...heldById.entries()]
@@ -6253,7 +6216,7 @@ async function persistAdmissionPlanInTransaction(
     adjudications,
     adjudicationsInserted: adjudicationRows.filter((row) => row.run_id === input.runId).length,
     guardRefusals: guardRefusals.sort((a, b) => a.itemId.localeCompare(b.itemId)),
-    uniqueRowsChanged: promotedIds.length + mergedIds.length,
+    uniqueRowsChanged: promotedIds.length + mergedIds.length + reviewedIds.length,
   };
 }
 
@@ -6745,6 +6708,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
         // Null is explicit unpriced coverage, never a fabricated zero-dollar call.
         modelCostUsd,
         flaggedPairs: pairs.length,
+        ...(persisted.reviewedIds?.length ? { reviewedItemIds: persisted.reviewedIds } : {}),
         verdicts: persisted.adjudications.reduce<Record<string, number>>((acc, row) => {
           acc[row.verdict] = (acc[row.verdict] ?? 0) + 1;
           return acc;
@@ -6764,6 +6728,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       merged,
       held,
       modelCalled: pairs.length > 0 && !noModel,
+      ...(persisted.reviewedIds?.length ? { reviewed: persisted.reviewedIds.length } : {}),
       tokensIn,
       tokensOut,
       censusBefore,
