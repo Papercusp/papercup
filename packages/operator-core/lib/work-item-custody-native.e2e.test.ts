@@ -84,8 +84,8 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
       // A work-item row does not register its project. Exercise the real clamp
       // before setting up this fixture, then use the maintained registry seam.
       expect(registryBefore.projects.some(project => project.slug === 'papercusp')).toBe(false);
-      const unregistered = await tool('work_items:get', { id, harness: 'papercusp' });
-      expect(JSON.stringify(unregistered)).toContain('harness_forbidden');
+      await expect(tool('work_items:get', { id, harness: 'papercusp' }))
+        .rejects.toThrow('harness_forbidden');
       registered = true; // Restore even if a write succeeds but its notification fails.
       await saveHarnessRegistry({ ...registryBefore, projects: [
         ...registryBefore.projects, { slug: 'papercusp', path: ROOT },
