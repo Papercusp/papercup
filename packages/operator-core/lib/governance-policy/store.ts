@@ -70,8 +70,11 @@ function layerOf(row: RawLayerRow): StoredPolicyLayer {
     layerId: row.layer_id,
     level: row.level as PolicyLevel,
     version: Number(row.version),
-    rules: (row.rules ?? {}) as PolicyLayer['rules'],
-    exceptions: (Array.isArray(row.exceptions) ? row.exceptions : []) as PolicyException[],
+    // Preserve malformed JSON for the evaluator's fail-closed validation. JSON
+    // null and a non-array exception value are legal jsonb but are not policy;
+    // replacing either with an empty collection would manufacture a grant.
+    rules: row.rules as PolicyLayer['rules'],
+    exceptions: row.exceptions as PolicyException[],
     scopeRef: row.scope_ref,
     parentLayerId: row.parent_layer_id,
     contentHash: row.content_hash,
@@ -178,7 +181,8 @@ export async function loadPolicyAuthoritiesForWorkspace(
   if (loaded.status !== 'ok') return loaded.status === 'none'
     ? { status: 'none' } : { status: 'malformed', reason: loaded.reason };
   for (const row of loaded.chain) {
-    if (row.contentHash !== policyContentHash({ ...row, exceptions: row.exceptions ?? [] }))
+    if (row.contentHash !== policyContentHash({ level: row.level, scopeRef: row.scopeRef,
+      parentLayerId: row.parentLayerId, rules: row.rules, exceptions: row.exceptions ?? [] }))
       return { status: 'malformed', reason: `policy ${row.layerId} does not match its canonical content hash` };
   }
   // Include lineage and scope as well as content/version: a reparent or a
