@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification, replayAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, resolveIdentityArtifact, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, appliedOrCurrentIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, resolveIdentityArtifact, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, readIdentityPermissionSources, readIdentityReactionCeiling, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { identityRefusalContract } from './identity-refusal-contract';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
@@ -84,6 +84,122 @@ function fixture(grants: { requires?: string[]; optional?: string[] } | undefine
   };
   return { artifact, applied, record, state, policy, request };
 }
+
+describe('P-002 canonical identity permission sources', () => {
+  function input() {
+    const f = fixture();
+    return { f, read: vi.fn(async () => f.policy), value: {
+      workspaceId: 'ws-a', harnessSlug: 'sales', record: f.record, applied: f.applied,
+    } };
+  }
+
+  it('reads class asks from pinned sources and keeps the actual role and policy', async () => {
+    const { f, read, value } = input();
+    const result = await readIdentityPermissionSources(value, read);
+    expect(result).toMatchObject({ status: 'ok', role: 'su', applied: f.applied,
+      layers: { applied: [{ ref: 'grant-port', document: { grants: { requires: [CLASS] } } }] } });
+    expect(read).toHaveBeenCalledWith({ workspaceId: 'ws-a', harnessSlug: 'sales', role: 'su', classRefs: [CLASS] });
+    if (result.status !== 'ok') throw new Error('sources not loaded');
+    expect(result.policy).toEqual(f.policy);
+    expect(result.policy).not.toBe(f.policy);
+    expect(await readIdentityPermissionSources({ ...value, expectedRevision: result.revision }, read)).toMatchObject({ status: 'ok', revision: result.revision });
+  });
+
+  it('retains the applied source while a different desired source is pending', async () => {
+    const { f, read, value } = input();
+    const desired = fixture({ optional: ['other.class@1.0.0'] });
+    value.record = { ...desired.record, role: 'judge', identityHistory: [f.record] } as typeof value.record;
+    const result = await readIdentityPermissionSources(value, read);
+    expect(result).toMatchObject({ status: 'ok', role: 'judge', layers: {
+      applied: [{ document: { grants: { requires: [CLASS] } } }],
+      desired: [{ document: { grants: { optional: ['other.class@1.0.0'] } } }],
+    } });
+    expect(read).toHaveBeenCalledWith(expect.objectContaining({ role: 'judge', classRefs: [CLASS, 'other.class@1.0.0'] }));
+  });
+
+  it('keeps each layer maximum and stack restriction separate, including explicit empty grants', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const dir = mkdtempSync(join(tmpdir(), 'identity-authority-sources-'));
+    try {
+      const documents = [
+        { id: 'own-maximum', slots: [{ slot: 'domain' }], grants: { requires: [CLASS] },
+          ceiling: { tools: { allow: [] } } },
+        { id: 'stack-restriction', slots: [{ slot: 'practice' }], grants: { requires: [] },
+          floors: { resources: { deny: ['filesystem:*'] } } },
+      ];
+      const paths = new Map(documents.map(document => {
+        const path = join(dir, document.id + '.yaml');
+        writeFileSync(path, JSON.stringify(document));
+        return [document.id, path];
+      }));
+      const artifact = compileAgentSpecification({
+        source: { id: 'source-composition', slots: [], extends: [...paths.keys()] },
+        resolve: id => paths.get(id) ?? null, inputClosure: [pin],
+      });
+      const { read, value } = input();
+      value.record = { ...value.record, specificationRevision: artifact.specificationRevision, specificationArtifact: artifact };
+      value.applied = { ...value.applied, specificationRevision: artifact.specificationRevision };
+      const result = await readIdentityPermissionSources(value, read);
+      if (result.status !== 'ok') throw new Error('sources not loaded: ' + JSON.stringify(result));
+      expect(result.layers.applied).toHaveLength(3);
+      expect(result.layers.applied.find(layer => layer.ref === 'own-maximum')?.document).toMatchObject(documents[0]);
+      expect(result.layers.applied.find(layer => layer.ref === 'stack-restriction')?.document).toMatchObject(documents[1]);
+      expect(result.layers.applied.find(layer => layer.ref === 'source-composition')?.document.grants).toBeUndefined();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.each(['workspaceId', 'harnessSlug'] as const)('refuses a record from another %s before policy reads', async key => {
+    const { read, value } = input();
+    const result = await readIdentityPermissionSources({ ...value, [key]: 'foreign' }, read);
+    expect(result.status).toBe('unavailable');
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('refuses missing applied receipts and changed embedded source bytes', async () => {
+    const { read, value } = input();
+    expect((await readIdentityPermissionSources({ ...value, applied: {
+      ...value.applied, specificationRevision: 'a'.repeat(64),
+    } }, read)).status).toBe('unavailable');
+    const changed = JSON.parse(JSON.stringify(value));
+    changed.record.specificationArtifact.inputs.find((entry: { kind: string }) => entry.kind === 'blueprint-layer').document.grants = {};
+    expect((await readIdentityPermissionSources(changed, read)).status).toBe('unavailable');
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('admits the canonical control-only state revision fallback without selecting desired authority', async () => {
+    const { read, value } = input();
+    const result = await readIdentityPermissionSources({ ...value, applied: {
+      ...value.applied, stateRevision: 'control-only',
+    } }, read);
+    expect(result).toMatchObject({ status: 'ok', applied: { stateRevision: 'control-only' } });
+  });
+
+  it('refuses an unavailable policy and detects live policy changes even under the same opaque revision', async () => {
+    const { f, read, value } = input();
+    const first = await readIdentityPermissionSources(value, read);
+    if (first.status !== 'ok') throw new Error('sources not loaded');
+    f.policy.protectedAdditions = ['mail:*'];
+    expect(await readIdentityPermissionSources({ ...value, expectedRevision: first.revision }, read)).toMatchObject({ status: 'stale' });
+    read.mockRejectedValueOnce(new Error('source offline'));
+    expect((await readIdentityPermissionSources(value, read)).status).toBe('unavailable');
+  });
+
+  it('pins the record before the asynchronous policy read and detaches returned source objects', async () => {
+    const { f, value } = input();
+    const result = await readIdentityPermissionSources(value, async () => {
+      value.record = { ...value.record, specificationRevision: 'a'.repeat(64) };
+      value.workspaceId = 'changed-during-read';
+      return f.policy;
+    });
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('sources not loaded');
+    Object.assign(result.layers.applied[0].document, { id: 'mutated-result' });
+    expect(f.artifact.inputs.find(entry => entry.kind === 'blueprint-layer')?.document?.id).toBe('grant-port');
+    expect((await readIdentityPermissionSources({ ...value, expectedRevision: result.revision }, async () => f.policy)).status).toBe('unavailable');
+  });
+});
 
 describe('P-005 current identity grants at the common kernel seat', () => {
   it.each(['dispatch', 'indirect-dispatch', 'native'] as const)(
@@ -893,6 +1009,18 @@ describe('P-005 production policy reader', () => {
       workspaceId: 'ws-a', potSlug: 'sales-pot', classId: 'crm.email', classVersion: '1.0.0',
       providerKinds: ['tool', 'recipe'],
     });
+  });
+
+  it('the identity source adapter defaults to the same fresh canonical policy reader', async () => {
+    prepare();
+    const f = fixture();
+    const value = { workspaceId: 'ws-a', harnessSlug: 'sales', record: f.record, applied: f.applied };
+    const first = await readIdentityPermissionSources(value);
+    expect(first).toMatchObject({ status: 'ok', policy: { potSlug: 'sales-pot' } });
+    if (first.status !== 'ok') throw new Error('sources not loaded');
+    io.binding.mockResolvedValue({ ...f.policy.bindings[0], potSlug: 'sales-pot', status: 'revoked' });
+    expect(await readIdentityPermissionSources({ ...value, expectedRevision: first.revision })).toMatchObject({ status: 'stale' });
+    expect(io.state).toHaveBeenCalledWith('harness_registry', 'ws-a', { fresh: true });
   });
 
   it('does not cache bindings or administrator reductions across execution checks', async () => {

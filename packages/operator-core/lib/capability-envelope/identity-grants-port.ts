@@ -11,6 +11,7 @@ import {
   layerSourceDocument,
   BlueprintSourceDocumentSchema,
   replayAgentSpecification,
+  layerContentHash,
   type ResolvedAgentSpecification,
 } from '@papercusp/orchestrator/blueprint';
 import {
@@ -49,6 +50,8 @@ import { isLazyIdentityLaunchRecord } from './lazy-launch-record';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
 import { isHookReleasedOperationContinuationCall } from '../released-operation-continuation-door';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { identityWearerRole } from '../agent-identities/wearer-authority';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -422,6 +425,85 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
   })).digest('hex');
   return { policyRevision, potSlug, bindings, ceilings, tools, protectedAdditions };
 };
+
+/** P-002 source census for ONE canonical launch record, not a permission grant
+ * or a complete affected-owner/resource census. Keep each layer's own asks and
+ * maximum separate from restrictions on the whole stack. In particular neither
+ * merged configuration, publisher identity nor capability classes can supply
+ * scoped action/resource grants or human ownership.
+ *
+ * The host supplies the stored record and applied pair. An expected revision
+ * rechecks this slice after an asynchronous wait; the writer still must hold
+ * the complete source vector's transaction/lease through its first effect. */
+export async function readIdentityPermissionSources(
+  input: { workspaceId: string; harnessSlug: string; record: unknown;
+    applied: KernelExecutionRevision | null | undefined; expectedRevision?: string },
+  readPolicy: PolicyReader = readIdentityGrantPolicy,
+) {
+  const { workspaceId, harnessSlug, expectedRevision } = input;
+  const unavailable = (reason: string) => ({ status: 'unavailable' as const, reason });
+  const valid = (value: unknown): value is string => typeof value === 'string' &&
+    !!value.trim() && value === value.trim();
+  if (!valid(workspaceId) || !valid(harnessSlug) ||
+      !valid(input.applied?.specificationRevision) || !valid(input.applied?.stateRevision)) {
+    return unavailable('identity source scope or applied revision is unavailable');
+  }
+  // Detach BEFORE the first await, including the applied pair. A caller cannot
+  // replace a source or change the role while its policy read is in flight.
+  let record: Record<string, unknown> | null;
+  let applied: KernelExecutionRevision;
+  let artifacts: { applied: ResolvedAgentSpecification; desired: ResolvedAgentSpecification };
+  try {
+    record = object(structuredClone(input.record));
+    applied = structuredClone(input.applied!);
+    if (!record || record.workspaceId !== workspaceId || record.harnessSlug !== harnessSlug)
+      return unavailable('launch record does not belong to the requested workspace and harness');
+    const current = record.specificationArtifact ? replayAgentSpecification(record.specificationArtifact) : null;
+    const acknowledged = appliedOrCurrentIdentityArtifact(record, applied);
+    if (!current || current.specificationRevision !== record.specificationRevision || !acknowledged)
+      return unavailable('applied or desired identity receipt is unavailable');
+    artifacts = { applied: acknowledged, desired: current };
+  } catch {
+    return unavailable('identity source replay failed');
+  }
+  const sources = (artifact: ResolvedAgentSpecification) => {
+    const layers = artifact.inputs.filter(entry => entry.kind === 'blueprint-layer');
+    if (!layers.length) throw new Error('identity layer population is empty');
+    const refs = new Set<string>();
+    return layers.map(layer => {
+      // Replay checks the whole artifact hash. Verify the individual canonical
+      // source hash too, and parse its authored schema rather than treating an
+      // unvalidated embedded object as the publisher's declaration.
+      if (!layer.document || refs.has(layer.ref) || layerContentHash(layer.document) !== layer.contentHash ||
+          !BlueprintSourceDocumentSchema.safeParse(layer.document).success) throw new Error('invalid identity source');
+      refs.add(layer.ref);
+      return { ref: layer.ref, revision: layer.revision, contentHash: layer.contentHash,
+        sourceKind: layer.sourceKind, document: structuredClone(layer.document) };
+    });
+  };
+  let layers: { applied: ReturnType<typeof sources>; desired: ReturnType<typeof sources> };
+  try { layers = { applied: sources(artifacts.applied), desired: sources(artifacts.desired) }; }
+  catch { return unavailable('identity layer population is malformed or incomplete'); }
+  const role = identityWearerRole(record);
+  const classRefs = [...new Set([...layers.applied, ...layers.desired].flatMap(layer => {
+    const grants = BlueprintSourceDocumentSchema.parse(layer.document).grants;
+    return [...grants?.requires ?? [], ...grants?.optional ?? []];
+  }))].sort();
+  let policy: IdentityGrantPolicy;
+  try { policy = structuredClone(await readPolicy({ workspaceId, harnessSlug, role, classRefs })); }
+  catch { return unavailable('current identity grant policy is unavailable'); }
+  if (!valid(policy.policyRevision) || !valid(policy.potSlug) || !policy.ceilings?.length ||
+      !Array.isArray(policy.bindings) || !(policy.tools instanceof Map) || !Array.isArray(policy.protectedAdditions))
+    return unavailable('current identity grant policy is incomplete');
+  const revision = createHash('sha256').update(canonicalJson({
+    workspaceId, harnessSlug, role, applied,
+    desired: { specificationRevision: record.specificationRevision, stateRevision: record.stateRevision },
+    layers, policy: { ...policy, tools: [...policy.tools].sort(([a], [b]) => a.localeCompare(b)) },
+  })).digest('hex');
+  if (expectedRevision !== undefined && revision !== expectedRevision)
+    return { status: 'stale' as const, revision };
+  return { status: 'ok' as const, revision, role, applied, layers, policy };
+}
 
 /** The pot/role ceiling an identity reaction's capability is narrowed to (P-018, D-027 §4). */
 export interface IdentityReactionCeiling {
