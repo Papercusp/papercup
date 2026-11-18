@@ -240,6 +240,55 @@ describe('maintained run deadlines and retained artifacts', () => {
       if (fault === 'corrupt final locator') expect(readFileSync(join(directory, 'locator.json'), 'utf8')).toBe('{invalid');
       else expect(() => readFileSync(join(directory, 'locator.json'))).toThrow(/ENOENT/);
     });
+  async function sealedRouter(packet: TestRunArtifactPacket, name: string,
+    identity: { workspace: string; harness: string; runId: string }, selected: string[]) {
+    const directory = join(packet.paths.directory, `native-router-${name}`);
+    mkdirSync(directory, { mode: 0o700 });
+    const expected = selected.map((file, n) => ({ id: `group-${n}`, attempt: 'primary' as const,
+      selected: [file], runner: 'unsupported' as const, armed: false, out: null }));
+    writeFileSync(join(directory, 'expected.json'), JSON.stringify({ identity, expected }));
+    const retained = await retainNativeProofPacketAsync(directory, { identity, expected,
+      observations: expected.map(group => ({ id: group.id, out: null })), execution: 'router-settled' });
+    writeFileSync(join(directory, 'locator.json'), JSON.stringify(retained.locator));
+    return { directory, identity, expected, locator: retained.locator };
+  }
+  it.each(['aaa-child', 'zzz-child'])('retains nested isolated router identity without counting its files as parent selections: %s', async name => {
+    const { packet, source } = nativePacket();
+    writeFileSync(join(source, 'second.test.ts'), 'export {};');
+    const selected = [join(source, 'subject.test.ts'), join(source, 'second.test.ts')];
+    packet.captureSelectedSources(['subject.test.ts', 'second.test.ts'], { commit: 'fixture' });
+    await packet.flush();
+    const parentIdentity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
+    await sealedRouter(packet, 'parent', parentIdentity, selected);
+    const child = await sealedRouter(packet, name, { ...parentIdentity, workspace: 'test-runtime-child' }, [selected[0]]);
+    packet.childState = 'closed'; await packet.finish({ result: { ok: true, passed: 2 }, cleanup: { complete: true } });
+    const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
+    expect(manifest.nativeCustody, JSON.stringify(manifest.nativeCustody)).toMatchObject({ byteCustody: 'complete',
+      nestedRouters: [{ identity: child.identity, selectedFiles: [selected[0]], custody: 'complete' }] });
+    expect(verifyNativeProofPacket(child.directory, child.locator, child).status).toBe('complete');
+    const locator = manifest.nativeCustody.locator;
+    const retained = JSON.parse(readFileSync(join(packet.paths.nativeProof, 'objects', locator.manifest.ref), 'utf8'));
+    const outer = verifyNativeProofPacket(packet.paths.nativeProof, locator, { identity: parentIdentity, expected: retained.expected });
+    expect(outer.status).toBe('complete');
+    expect(outer.manifest.groups[0].auxiliary.some(row => row.role === `native-router-${name}/expected.json`)).toBe(true);
+  });
+  it.each(['missing-parent', 'wrong-parent', 'duplicate-parent', 'foreign-run', 'foreign-harness',
+    'tampered-identity', 'tampered-population'] as const)('refuses nested router custody with %s', async fault => {
+    const { packet, source } = nativePacket(); await packet.flush();
+    const selected = join(source, 'subject.test.ts');
+    const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
+    if (fault !== 'missing-parent') await sealedRouter(packet, 'parent', identity,
+      fault === 'duplicate-parent' ? [selected, selected] : [fault === 'wrong-parent' ? join(source, 'wrong.test.ts') : selected]);
+    const child = await sealedRouter(packet, 'child', { ...identity, workspace: 'test-runtime-child',
+      ...(fault === 'foreign-run' ? { runId: 'other-run' } : {}),
+      ...(fault === 'foreign-harness' ? { harness: 'other-harness' } : {}) }, [selected]);
+    if (fault === 'tampered-identity' || fault === 'tampered-population') writeFileSync(join(child.directory, 'expected.json'),
+      JSON.stringify({ identity: fault === 'tampered-identity' ? { ...child.identity, workspace: 'forged' } : child.identity,
+        expected: fault === 'tampered-population' ? [] : child.expected }));
+    packet.childState = 'closed'; await packet.finish({ result: { ok: true, passed: 1 }, cleanup: { complete: true } });
+    expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ result: { ok: true, passed: 1 },
+      cleanup: { complete: true }, nativeCustody: { byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured' } });
+  });
   it('holds an explicit cleanup reserve behind one absolute child cutoff', () => {
     expect(testRunDeadline(45_000, { now: 1000, cleanupReserveMs: 10_000 })).toEqual({
       startedAtMs: 1000, taskDeadlineAtMs: 46_000, childCutoffAtMs: 36_000, cleanupReserveMs: 10_000,
