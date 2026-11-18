@@ -478,13 +478,27 @@ describe('phase binding writer census', () => {
     const modules = inventory.sites.filter(site => site.path.endsWith('.sql'));
     expect(modules.map(site => site.path).sort()).toEqual(sources
       .filter(source => source.path.endsWith('.sql')).map(source => source.path).sort());
+    const reviewedModulePaths = [
+      'libs/papercusp/libs/db/sql/141-plan-item-claims.sql',
+      'libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql',
+      'libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql',
+    ];
+    const reviewedModules = modules.filter(site => reviewedModulePaths.includes(site.path));
+    expect(reviewedModules.map(site => site.path).sort()).toEqual([...reviewedModulePaths].sort());
     const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
     const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
-    for (const site of modules) {
+    // A migration supplied as another statement's source proof is not itself
+    // reviewed. Keep the complete new module population in the refusal check.
+    for (const site of modules.filter(site => !reviewedModulePaths.includes(site.path))) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(report.coverage.residue).toContain(site.id);
+      expect(report.problems).toContainEqual({ id: site.id, reasons: ['unclassified-writer'] });
+    }
+    for (const site of reviewedModules) {
       expect(byId.get(site.id)).toMatchObject({ disposition: 'metadata-only',
         sourceSha256: site.sourceSha256, statementSha256: site.statementSha256 });
       expect(report.coverage.checked).toContain(site.id);
-      for (const dependency of modules) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+      for (const dependency of reviewedModules) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
         path: dependency.path, sha256: dependency.sourceSha256,
       });
       const changed = inventoryPhaseWriters(sources.map(source => source.path === site.path
@@ -495,7 +509,7 @@ describe('phase binding writer census', () => {
       expect(stale.coverage.notChecked).toContain(changedSite.id);
       expect(stale.coverage.residue).toContain(changedSite.id);
       expect(stale.problems).toContainEqual({ id: changedSite.id, reasons: ['unclassified-writer'] });
-      for (const other of modules.filter(row => row.path !== site.path)) {
+      for (const other of reviewedModules.filter(row => row.path !== site.path)) {
         expect(stale.problems).toContainEqual({ id: other.id, reasons: [`stale-source-proof:${site.path}`] });
       }
     }
