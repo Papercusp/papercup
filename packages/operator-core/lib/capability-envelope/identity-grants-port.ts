@@ -536,7 +536,11 @@ export interface IdentityPermissionSessionSource {
  * authorities. Missing owners remain null, unmatched enrollments remain in the
  * host census, and a proven inapplicable department needs no owner. An absent/
  * malformed chain remains unavailable; policy editors never become owners.
- * Library, external backend and identity/vault ownership still need joins.
+ * Package selection also reconciles exact applied/desired session revisions
+ * with the runtime's attempt decision and explicit installation ownership.
+ * Unprovisioned/control-only revisions remain unknown; retained prior pins
+ * stay in the package census. Library, external backend and vault ownership
+ * still need joins. These source joins do not authorize a permission change.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -581,8 +585,9 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
     if (!visibility || (visibility.restricted && visibility.workspace !== workspaceId))
       throw new Error('identity population workspace is not visible to this connection');
     const sessions: Array<Omit<IdentityPermissionSessionSource, 'launchSpec' | 'controlState'>> = [];
+    const packageRevisions: Array<{ applied: unknown; desired: unknown }> = [];
     const hash = createHash('sha256').update(canonicalJson({ workspaceId }));
-    const query = tx<IdentityPermissionSessionSource[]>`
+    const query = tx<Array<IdentityPermissionSessionSource & { packageRevisions: { applied: unknown; desired: unknown } }>>`
       WITH launches AS (
         SELECT a.id, a.coord_owner_id, to_jsonb(a)->'launch_spec' AS launch_spec,
           row_number() OVER (PARTITION BY a.coord_owner_id ORDER BY a.id DESC) AS ordinal
@@ -600,12 +605,16 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       )
       SELECT n.owner_id AS "ownerId", n.id::text AS "sessionId", n.anchor_present AS "anchorPresent",
         encode(sha256(convert_to(jsonb_build_array(n.launch_spec, n.control_state)::text, 'UTF8')), 'hex') AS "sourceRevision",
+        CASE WHEN ${options.includePackageResources === true} THEN jsonb_build_object('applied', n.applied_pair,
+          'desired', jsonb_build_object('specificationRevision', n.launch_spec->'specificationRevision',
+            'stateRevision', n.launch_spec->'stateRevision')) ELSE NULL::jsonb END AS "packageRevisions",
         CASE WHEN ${options.visit !== undefined} THEN ${narrowedLaunchSpecToAppliedPairSql(tx)} ELSE NULL::jsonb END AS "launchSpec",
         CASE WHEN ${options.visit !== undefined} THEN n.control_state ELSE NULL::jsonb END AS "controlState"
         FROM joined n ORDER BY n.owner_id NULLS LAST, n.id NULLS LAST`;
     for await (const batch of query.cursor(8)) {
-      for (const { launchSpec, controlState, ...ref } of batch) {
+      for (const { launchSpec, controlState, packageRevisions: revisions, ...ref } of batch) {
         sessions.push(ref);
+        if (options.includePackageResources) packageRevisions.push(revisions);
         hash.update('\n').update(canonicalJson(ref));
         await options.visit?.({ ...ref, launchSpec, controlState });
       }
@@ -621,6 +630,36 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       if (population.status !== 'ok') throw new Error('package population is unavailable');
       packages = population;
       hash.update('\n').update(canonicalJson({ packageResourceRevision: packages.revision }));
+    }
+    let sessionPackageOwners: Array<{ ownerId: string | null; sessionId: string | null;
+      applied: Awaited<ReturnType<typeof import('../blueprint/session-package-resources').readSessionPackageOwnership>> | {
+        status: 'unknown'; revision: unknown; dependentId: null; humanOwnerId: null; reason: string };
+      desired: Awaited<ReturnType<typeof import('../blueprint/session-package-resources').readSessionPackageOwnership>> | {
+        status: 'unknown'; revision: unknown; dependentId: null; humanOwnerId: null; reason: string };
+    }> | undefined;
+    if (packages) {
+      const { readSessionPackageOwnership } = await import('../blueprint/session-package-resources');
+      const installationRevisions = new Set(packages.installations.map(row => canonicalJson([
+        row.owner_id, row.specification_revision, row.state_revision,
+      ])));
+      sessionPackageOwners = [];
+      for (const [index, session] of sessions.entries()) {
+        const resolve = async (phase: 'applied' | 'desired') => {
+          const raw = packageRevisions[index]?.[phase];
+          const revision = object(raw);
+          const spec = revision?.specificationRevision, state = revision?.stateRevision;
+          const valid = session.ownerId !== null && typeof spec === 'string' && /^[a-f0-9]{64}$/.test(spec) &&
+            typeof state === 'string' && !!state.trim() && state === state.trim();
+          if (!valid || !installationRevisions.has(canonicalJson([session.ownerId, spec, state])))
+            return { status: 'unknown' as const, revision: raw ?? null, dependentId: null, humanOwnerId: null,
+              reason: valid ? 'no-exact-installation' : 'session-revision-unavailable' };
+          return readSessionPackageOwnership(tx as unknown as TransactionSql, { workspaceId, ownerId: session.ownerId!,
+            revision: { specificationRevision: spec as string, stateRevision: state as string }, phase });
+        };
+        sessionPackageOwners.push({ ownerId: session.ownerId, sessionId: session.sessionId,
+          applied: await resolve('applied'), desired: await resolve('desired') });
+      }
+      hash.update('\n').update(canonicalJson({ sessionPackageOwners }));
     }
     let workspaceUsers: Extract<Awaited<ReturnType<typeof import('../auth').readWorkspaceUserBindings>>,
       { status: 'ok' }> | undefined;
@@ -687,7 +726,7 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
-      : { status: 'ok' as const, revision, sessions, ...(packages ? { packages } : {}),
+      : { status: 'ok' as const, revision, sessions, ...(packages ? { packages, sessionPackageOwners } : {}),
         ...(workspaceUsers ? { workspaceUsers } : {}), ...(hostAuthorities ? { hostAuthorities } : {}),
         ...(scopedPolicies ? { scopedPolicies } : {}),
         ...(inheritedPolicies ? { inheritedPolicies, inheritedPolicyOwners } : {}) };

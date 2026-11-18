@@ -4,6 +4,8 @@ import { replayAgentSpecification, type SessionActivation, type CompiledAgentSpe
 import { trackDetached } from '../detached-imports';
 import { applyPackageResourceDependent, beginPackageInstallation, beginPackageInstallationReleaseInTransaction,
   carryAppliedPackageInstallation, type PackageInstallationHumanOwnerProof } from './package-resource-receipts';
+import { readPackageInstallation } from './package-resource-receipts';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { blueprintPackageProvisioners, provisionBlueprintPackages } from './compile-packages';
 import { planKnowledgePackageResources, releasePackageInstallation } from './package-knowledge-resources';
 import { planRecipePackageResource } from './package-recipe-resources';
@@ -42,10 +44,19 @@ export function sessionPackageDependentId(ownerId: string, revision: SessionActi
  * live (preparing/applied) is reused, so a replay converges on one install. */
 async function sessionPackageAttempt(db: Sql | TransactionSql, ownerId: string,
   revision: SessionActivation['desired']): Promise<string> {
-  const rows = await db<Array<{ dependent_id: string; phase: string }>>`
+  return selectSessionPackageAttempt(ownerId, revision, await sessionPackageAttempts(db, ownerId, revision));
+}
+
+async function sessionPackageAttempts(db: Sql | TransactionSql, ownerId: string,
+  revision: SessionActivation['desired']) {
+  return db<Array<{ dependent_id: string; phase: string }>>`
     SELECT dependent_id, phase FROM harness_shared.blueprint_package_installations
      WHERE owner_id = ${ownerId} AND specification_revision = ${revision.specificationRevision}
-       AND state_revision = ${revision.stateRevision}`;
+       AND state_revision = ${revision.stateRevision} ORDER BY dependent_id, phase`;
+}
+
+function selectSessionPackageAttempt(ownerId: string, revision: SessionActivation['desired'],
+  rows: readonly { dependent_id: string; phase: string }[]): string {
   const terminal = new Set(rows.filter((row) => row.phase !== 'preparing' && row.phase !== 'applied')
     .map((row) => row.dependent_id));
   // At most rows.length ids are taken, so one of these rows.length + 1 is free or live.
@@ -54,6 +65,40 @@ async function sessionPackageAttempt(db: Sql | TransactionSql, ownerId: string,
     if (!terminal.has(id)) return id;
   }
   throw new Error('package attempt derivation exhausted its candidates');
+}
+
+/** Source evidence for P-002, NOT an authorization token. Use the runtime's
+ * attempt selector in the caller's existing population snapshot/lease. A human
+ * declaration belongs to the exact selected installation; never substitute an
+ * older, released, differently authored or control-only installation. The full
+ * journal census retains those rows independently. Runtime attempt selection
+ * spans workspaces, so a filtered view cannot establish a known selection.
+ * No credential lookup or package provisioner runs under this source lease. */
+export async function readSessionPackageOwnership(tx: TransactionSql, input: {
+  workspaceId: string; ownerId: string; revision: SessionActivation['desired']; phase: 'applied' | 'desired';
+}) {
+  input = structuredClone(input);
+  if (typeof tx.savepoint !== 'function') throw new Error('session package ownership requires an existing snapshot transaction');
+  const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value === value.trim();
+  if (![input.workspaceId, input.ownerId, input.revision?.stateRevision].every(text) ||
+      !/^[a-f0-9]{64}$/.test(input.revision?.specificationRevision ?? '') ||
+      !['applied', 'desired'].includes(input.phase)) throw new Error('session package ownership requires exact scope and revision');
+  const [visibility] = await tx<Array<{ restricted: boolean }>>`
+    SELECT row_security_active('harness_shared.blueprint_package_installations') AS restricted`;
+  if (!visibility || visibility.restricted) return { status: 'unknown' as const,
+    revision: input.revision, dependentId: null, humanOwnerId: null, reason: 'attempt-scope-not-visible' };
+  const rows = await sessionPackageAttempts(tx, input.ownerId, input.revision);
+  const dependentId = selectSessionPackageAttempt(input.ownerId, input.revision, rows);
+  const installation = await readPackageInstallation(tx, input.workspaceId, dependentId);
+  const attemptRevision = createHash('sha256').update(canonicalJson({ rows, dependentId, installation })).digest('hex');
+  const exact = installation?.owner_id === input.ownerId &&
+    installation.specification_revision === input.revision.specificationRevision &&
+    installation.state_revision === input.revision.stateRevision &&
+    (installation.phase === 'applied' || (input.phase === 'desired' && installation.phase === 'preparing'));
+  const humanOwnerId = exact ? installation.human_ownership?.userId ?? null : null;
+  return { status: humanOwnerId === null ? 'unknown' as const : 'known' as const,
+    revision: input.revision, dependentId, attemptRevision, humanOwnerId,
+    ...(humanOwnerId === null ? { reason: exact ? 'human-owner-not-recorded' : 'selected-installation-not-current' } : {}) };
 }
 
 function journaledPackages(artifact: CompiledAgentSpecification): boolean {

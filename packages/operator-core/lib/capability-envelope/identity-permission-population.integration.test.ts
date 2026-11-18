@@ -7,6 +7,7 @@ import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
+import { sessionPackageDependentId } from '../blueprint/session-package-resources';
 import { upsertLayer, upsertLayerInTx, upsertScopedPolicyAuthority } from '../governance-policy/store';
 
 let sql: postgres.Sql;
@@ -191,6 +192,144 @@ describe('P-002 canonical session identity population', () => {
   });
 
   const joined = { includePackageResources: true };
+  const appliedPackageRevision = { specificationRevision: 'c'.repeat(64), stateRevision: 'applied-state' };
+  const desiredPackageRevision = { specificationRevision: 'd'.repeat(64), stateRevision: 'desired-state' };
+  async function seedPackageOwner(revision = appliedPackageRevision, options: {
+    attemptId?: string; phase?: string; human?: string | null; workspaceId?: string;
+  } = {}) {
+    const workspaceId = options.workspaceId ?? 'ws';
+    const dependentId = sessionPackageDependentId('wearer', revision, options.attemptId);
+    const human = options.human === undefined ? 'explicit-human' : options.human;
+    const ownership = human === null ? null : { schemaVersion: 1, declaration: 'self', authMethod: 'cookie-session',
+      workspaceId, ownerId: 'wearer', userId: human, specificationRevision: revision.specificationRevision,
+      principalRevision: 'e'.repeat(64) };
+    // Stored-provenance fixtures only; no browser credential or live enrollment.
+    await sql`INSERT INTO harness_shared.blueprint_package_installations
+      (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources, phase, human_ownership)
+      VALUES (${workspaceId}, ${dependentId}, 'wearer', ${revision.specificationRevision}, ${revision.stateRevision},
+        '{}', ${options.phase ?? 'applied'}, ${ownership === null ? null : sql.json(ownership)})`;
+    return dependentId;
+  }
+  async function seedPackageSession() {
+    await sql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
+      VALUES (1, 'ws', 'wearer', ${sql.json({ ...desiredPackageRevision, identityHistory: [appliedPackageRevision] })})`;
+    await sql`INSERT INTO harness_shared.session_briefs VALUES ('ws', 'wearer',
+      ${sql.json({ activation: { applied: appliedPackageRevision } })})`;
+  }
+
+  it('reconciles session package owners using the runtime attempt and exact applied/desired revisions', async () => {
+    await seedPackageSession();
+    const applied = await seedPackageOwner();
+    await seedPackageOwner(desiredPackageRevision, { phase: 'released', human: 'released-human' });
+    const desired = await seedPackageOwner(desiredPackageRevision, {
+      attemptId: 'attempt:1', phase: 'preparing', human: 'desired-human',
+    });
+    await seedPackageOwner(appliedPackageRevision, { attemptId: 'unselected-explicit-attempt', human: 'other-human' });
+    expect(await readIdentityPermissionPopulation(sql, 'ws', joined)).toMatchObject({
+      sessionPackageOwners: [{ ownerId: 'wearer', sessionId: '1',
+        applied: { revision: appliedPackageRevision, dependentId: applied, humanOwnerId: 'explicit-human' },
+        desired: { revision: desiredPackageRevision, dependentId: desired, humanOwnerId: 'desired-human' },
+      }],
+    });
+  });
+
+  it('keeps selected unknown, unprovisioned and control-only package ownership unknown', async () => {
+    await seedPackageSession();
+    const applied = await seedPackageOwner(appliedPackageRevision, { human: null });
+    await seedPackageOwner(appliedPackageRevision, { attemptId: 'different-attempt', human: 'must-not-substitute' });
+    const first = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(first).toMatchObject({ sessionPackageOwners: [{
+      applied: { dependentId: applied, humanOwnerId: null }, desired: { humanOwnerId: null },
+    }] });
+    await sql`UPDATE harness_shared.session_briefs SET control_state =
+      ${sql.json({ activation: { applied: { ...appliedPackageRevision, stateRevision: 'control-only' } } })}`;
+    expect(await readIdentityPermissionPopulation(sql, 'ws', joined)).toMatchObject({
+      sessionPackageOwners: [{ applied: { humanOwnerId: null }, desired: { humanOwnerId: null } }],
+      packages: { installations: expect.arrayContaining([expect.objectContaining({ dependent_id: applied })]) },
+    });
+  });
+
+  it('pins the runtime cross-workspace attempt decision before an ownership-dependent effect', async () => {
+    await seedPackageSession();
+    await seedPackageOwner();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    // Runtime retries inspect the wearer's matching attempts across workspaces.
+    // A foreign terminal receipt must not make the census pick the local base.
+    await seedPackageOwner(appliedPackageRevision, { workspaceId: 'foreign', phase: 'released', human: 'foreign-human' });
+    expect(await readIdentityPermissionPopulation(sql, 'ws', joined)).toMatchObject({
+      sessionPackageOwners: [{ applied: { humanOwnerId: null } }],
+    });
+    await sql.begin(async tx => {
+      const current = await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined, expectedRevision: before.revision });
+      if (current.status === 'ok') await tx`INSERT INTO harness_shared.population_effects VALUES ('wrong-owner')`;
+      expect(current.status).toBe('stale');
+    });
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it.each(['preparing', 'applied', 'releasing', 'released', 'cleanup_failed'])(
+    'never substitutes a noncurrent %s installation for an applied human owner', async phase => {
+      await seedPackageSession();
+      const dependentId = await seedPackageOwner(appliedPackageRevision, { phase });
+      const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+      expect(before).toMatchObject({ sessionPackageOwners: [{ applied: {
+        humanOwnerId: phase === 'applied' ? 'explicit-human' : null,
+      } }], packages: { installations: [expect.objectContaining({ dependent_id: dependentId, phase })] } });
+    });
+
+  it('keeps package attempt ownership unknown when RLS hides other workspaces', async () => {
+    await seedPackageSession(); await seedPackageOwner();
+    const role = `package_owner_reader_${randomBytes(5).toString('hex')}`;
+    await sql.unsafe(`CREATE ROLE "${role}"; GRANT USAGE ON SCHEMA harness_shared TO "${role}";
+      GRANT SELECT ON ALL TABLES IN SCHEMA harness_shared TO "${role}";
+      ALTER TABLE harness_shared.blueprint_package_installations ENABLE ROW LEVEL SECURITY;
+      CREATE POLICY local_package_owner ON harness_shared.blueprint_package_installations TO "${role}"
+        USING (workspace_id = current_setting('app.workspace_id', true))`);
+    try {
+      await sql.begin('isolation level repeatable read', async tx => {
+        await tx.unsafe(`SET LOCAL ROLE "${role}"`);
+        await tx`SELECT set_config('app.workspace_id', 'ws', true)`;
+        expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', joined)).toMatchObject({
+          packages: { installations: [expect.objectContaining({ human_ownership: expect.objectContaining({ userId: 'explicit-human' }) })] },
+          sessionPackageOwners: [{ applied: { humanOwnerId: null, reason: 'attempt-scope-not-visible' } }],
+        });
+      });
+    } finally {
+      await sql.unsafe(`DROP POLICY local_package_owner ON harness_shared.blueprint_package_installations;
+        ALTER TABLE harness_shared.blueprint_package_installations DISABLE ROW LEVEL SECURITY;
+        DROP OWNED BY "${role}"; DROP ROLE "${role}"`);
+    }
+  });
+
+  it('joins session ownership in the same MVCC snapshot and holds global attempt insertion gaps through effect', async () => {
+    await seedPackageSession(); await seedPackageOwner();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    let changed = false;
+    const during = await readIdentityPermissionPopulation(sql, 'ws', { ...joined, visit: async () => {
+      if (changed) return;
+      changed = true;
+      await seedPackageOwner(appliedPackageRevision, { workspaceId: 'foreign', phase: 'released' });
+    } });
+    expect(changed).toBe(true);
+    expect(during).toEqual(before);
+    const after = await readIdentityPermissionPopulation(sql, 'ws', joined);
+    expect(after.revision).not.toBe(before.revision);
+    await sql.begin(async tx => {
+      expect(await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined, expectedRevision: after.revision })).toEqual(after);
+      await expect(sql.begin(async peer => {
+        await peer`SET LOCAL lock_timeout = '80ms'`;
+        await peer`DELETE FROM harness_shared.blueprint_package_installations WHERE workspace_id = 'foreign'`;
+      })).rejects.toMatchObject({ code: '55P03' });
+      await expect(sql.begin(async peer => {
+        await peer`SET LOCAL lock_timeout = '80ms'`;
+        await peer`INSERT INTO harness_shared.blueprint_package_installations
+          (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources)
+          VALUES ('another-workspace', 'phantom-attempt', 'wearer', ${appliedPackageRevision.specificationRevision},
+            ${appliedPackageRevision.stateRevision}, '{}')`;
+      })).rejects.toMatchObject({ code: '55P03' });
+    });
+  });
+
   async function seedPackages() {
     const digest = 'a'.repeat(64);
     const address = { workspaceId: 'ws', memoryScope: 'hive:test', packageKind: 'knowledge-pack',
