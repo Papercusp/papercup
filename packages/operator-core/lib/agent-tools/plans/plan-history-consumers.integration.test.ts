@@ -1045,6 +1045,11 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
       qualifiesForShipment: false,
       fixtureControlKind: 'synthetic-private-reference-control',
     };
+    // Retain the actual admission inputs before asserting them. A refused
+    // fixture must leave the same proof/case/execution evidence as a pass,
+    // without paying for or admitting any provider calls.
+    if (artifactDirectory) await writeFile(join(artifactDirectory, 'gec-b-positive-proof-preflight.json'),
+      canonicalJson(fixtureProofQualification));
     const requirePositiveFixture = (candidate: typeof fixtureProofQualification) => {
       const proof = candidate.proof;
       const cases = candidate.cases;
@@ -1060,7 +1065,7 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
         || execution.observations[0]?.runId !== proof.runId
         || execution.observations[0]?.caseKey !== proofCase || execution.observations[0]?.occurrence !== 1
         || execution.observations[0]?.invocationId !== String(proofInvocation.id)) {
-        throw new Error('GEC positive fixture prerequisites missing; no Q2 model capture admitted');
+        throw new Error(`GEC positive fixture prerequisites missing; no model capture admitted: ${canonicalJson(candidate)}`);
       }
     };
     requirePositiveFixture(fixtureProofQualification);
