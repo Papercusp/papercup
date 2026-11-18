@@ -23,6 +23,8 @@
  * names it, else 'role:<filedByRole>', else reporterKinds[0], else 'unattributed'.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 
 import { CLEANUP_ITEM_KIND } from '../../code-cleanup/cleanup-item-kind';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
@@ -42,6 +44,395 @@ export const BUG_INFLOW_MAX_DAYS = 30;
 /** The watchdog ticks every few minutes; a newest row older than this means the writer stopped. */
 export const BUG_INFLOW_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 export const BUG_INFLOW_TABLE = 'harness_shared.bug_inflow_daily';
+
+/** Frozen before P012 implementation. The complete source edition is retained in
+ * the existing artifacts store; changing its meaning requires a reviewed amendment. */
+export const R11_METRIC_REGISTRY = Object.freeze({
+  "schemaVersion": "bug-scoreboard-metrics-v1",
+  "version": 1,
+  "authority": {
+    "plan": "bug-backlog-inflow-and-duplicate-review-2026-11-13",
+    "rubric": "acceptance-bug-backlog-inflow-and-duplicate-review-2026-11-13",
+    "revision": 17,
+    "bar": "R-11",
+    "barHash": "852cc0c320872f019f3965d41656287414cdfe572943c1f6bbf0338169c67ff7"
+  },
+  "population": {
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "itemKind": "bug",
+    "lane": "IS DISTINCT FROM observation",
+    "excludeChildren": false
+  },
+  "time": {
+    "timezone": "UTC",
+    "window": "[startInclusive,endExclusive)",
+    "filingClock": "original canonical filing event",
+    "flagClock": "original flaggedAt; dueAt=flaggedAt+48h, never reset",
+    "maturity": "24h after the last filing in the daily cohort; retain final day-eight tail"
+  },
+  "sourceTaxonomy": [
+    "nonempty payload.source",
+    "watchdog when reporterKinds includes watchdog",
+    "role:<filedByRole>",
+    "first nonempty reporterKinds entry",
+    "unattributed"
+  ],
+  "metrics": [
+    {
+      "key": "filedPerDayBySource",
+      "unit": "count-by-source",
+      "definition": "Actual canonical filing events in the UTC window grouped by the recorded filing source; counted repeat occurrences are not new filed rows.",
+      "components": [
+        "countsBySource"
+      ],
+      "writerRefs": [
+        "harness/improvements/bug-inflow.ts:BUG_INFLOW_SOURCE_SQL",
+        "harness/improvements/capture-core.ts"
+      ]
+    },
+    {
+      "key": "closedPerDay",
+      "unit": "count",
+      "definition": "Actual transitions into a terminal state in the UTC window, retaining ordinary, administrative cleanup, committed fold and reopen events separately; adjusted ordinary closes equal ordinary close events minus reopens of ordinary closes in that window. A current closed_ts row snapshot is not an event ledger.",
+      "components": [
+        "ordinary",
+        "cleanup",
+        "fold",
+        "reopenedOrdinary",
+        "adjustedOrdinary"
+      ],
+      "writerRefs": [
+        "work-items.ts:setWorkItemState",
+        "issues-engineer.ts",
+        "work-items-admission-bulk-dedup.ts"
+      ]
+    },
+    {
+      "key": "shareReviewed",
+      "unit": "ratio",
+      "definition": "Distinct eligible filed cohort members with an actual reviewer verdict divided by the complete eligible filed cohort; retain the separate 24h on-time numerator and denominator. Preserve original filing clocks, all pending and missing members; never infer a first review from the current round alone.",
+      "components": [
+        "numerator",
+        "denominator",
+        "onTimeNumerator",
+        "onTimeDenominator"
+      ],
+      "writerRefs": [
+        "harness/improvements/agent-review.ts",
+        "harness/improvements/agent-review-policy.ts"
+      ]
+    },
+    {
+      "key": "shareBypassed",
+      "unit": "ratio",
+      "definition": "Distinct eligible filed cohort members with a recorded bypass route divided by that same complete eligible filed cohort; retain each route and reason. Missing route evidence is unknown.",
+      "components": [
+        "numerator",
+        "denominator",
+        "routes",
+        "reasons"
+      ],
+      "writerRefs": [
+        "harness/improvements/capture-core.ts",
+        "work-items-admission-promoter.ts"
+      ]
+    },
+    {
+      "key": "reviewerWait",
+      "unit": "milliseconds-per-row",
+      "definition": "For every eligible cohort member retain original filing-to-actual-verdict duration; preserve original flaggedAt and 48h dueAt, pending/right-censored members and missing evidence. Do not replace per-row durations with a sample or reset clocks at epoch recovery.",
+      "components": [
+        "rows",
+        "pending",
+        "rightCensored",
+        "missing"
+      ],
+      "writerRefs": [
+        "harness/improvements/agent-review.ts",
+        "harness/improvements/agent-review-policy.ts"
+      ]
+    },
+    {
+      "key": "mergesPerDay",
+      "unit": "count",
+      "definition": "Committed fold/merge events in the UTC window; retain duplicate, already-folded, protected and failed outcomes separately. A requested merge, retry or current duplicate_of link is not by itself a committed event.",
+      "components": [
+        "committed",
+        "duplicate",
+        "alreadyFolded",
+        "protected",
+        "failed"
+      ],
+      "writerRefs": [
+        "work-items-admission-bulk-dedup.ts",
+        "work-items-admission-promoter.ts"
+      ]
+    },
+    {
+      "key": "claimableCount",
+      "unit": "count-as-of",
+      "definition": "The canonical readIssueClaimability oracle at the exact as-of instant for an explicit workspace/harness/bug scope, without inherited personal/fleet filtering. Retain complete protected, held, blocked and unknown records; do not sum overlapping exclusion buckets or substitute writer-ready counts.",
+      "components": [
+        "count",
+        "population",
+        "protected",
+        "held",
+        "blocked",
+        "unknown"
+      ],
+      "writerRefs": [
+        "agent-tools/work_items/claimable.ts",
+        "scheduler/get-next.ts:readIssueClaimability"
+      ]
+    }
+  ],
+  "evidence": {
+    "raw": "retain integer components or complete per-row durations before any rounding",
+    "source": "immutable snapshot/event-ledger identity and hash with explicit omissions and working continuation; incomplete or unqualified historical capture is UNKNOWN",
+    "reconciliation": "separately authored query fingerprint distinct from writer; no writer aggregate import/call; compare every metric on every run",
+    "provenance": "expected/actual fire, current serving runtime and exact candidate closure, source/query/config fingerprints, independently authenticated artifact and lineage receipt",
+    "missing": "empty, unactivated, missing, stale, partial, self-authored, mismatched or unrehydratable evidence cannot be healthy"
+  },
+  "phase": {
+    "P012": "build and arm; pre-activation receipts are baseline",
+    "P013": "seven actual daily runs, final 24h maturation, retained adverse epochs and original deadlines; final shipment verifies exact artifact and consumer restart"
+  },
+  "qualification": "Existing row snapshots and newest-five reopen history are not complete event evidence. Current audit capture migration1643 is DRAFT; its presence is not deployment or continuity proof. Missing producer history remains explicitly UNKNOWN until actual P007/P009/P010 source qualification."
+} as const);
+export const R11_METRIC_REGISTRY_HASH = createHash('sha256')
+  .update(JSON.stringify(R11_METRIC_REGISTRY)).digest('hex');
+export type R11MetricKey = typeof R11_METRIC_REGISTRY.metrics[number]['key'];
+export type R11Metrics = Partial<Record<R11MetricKey, Record<string, unknown>>>;
+type R11Closure = Record<string, string>;
+
+export interface R11ScoreboardEpoch {
+  id: string; candidateSha: string; activatedAt: string; closure: R11Closure;
+  originalClockHash: string; disposition: 'active' | 'failed' | 'unknown'; artifactRef: string;
+  previousEpochId?: string;
+  repair?: { decisionRef: string; evidenceRef: string };
+}
+
+/** These inputs belong to the server-side retained-evidence resolver. They are
+ * not an authorization API: a production consumer must resolve the artifact,
+ * authenticate its author and obtain the lineage receipt through canonical
+ * readers before passing independent evidence here. Fixtures prove assessment,
+ * never live authorship, capture continuity or shipment. */
+export interface R11ScoreboardReceipt {
+  id: string; epochId: string; routineId: string;
+  windowStart: string; windowEnd: string; expectedFireAt: string; actualFireAt: string; measuredAt: string;
+  registryHash: string; originalClockHash: string;
+  runtime: { buildSha: string; closure: R11Closure };
+  source: {
+    ref: string; sha256: string; complete: boolean; totalRows: number; rowsRead: number;
+    omitted: number; nextCursor: string | null; cohortSize: number;
+  };
+  writerQueryHash: string; metrics: R11Metrics;
+  independent?: {
+    artifactRef: string; authorId: string;
+    lineage: { eligible: boolean; checkedAgainst: string[]; receiptRef: string };
+    sourceHash: string; registryHash: string; queryHash: string; closure: R11Closure;
+    originalClockHash: string; complete: boolean; omitted: number; metrics: R11Metrics;
+  };
+}
+export interface BugInflowScoreboardInput {
+  registryHash: string; implementationAuthors: string[]; activeEpochId: string;
+  epochHistory: { complete: boolean; omitted: number; nextCursor: string | null; epochs: R11ScoreboardEpoch[] };
+  cadence: { routineId: string; firstWindowStart: string; intervalMs: number; maxDelayMs: number; maxRuntimeMs: number };
+  receipts: R11ScoreboardReceipt[];
+}
+export interface R11ScoreboardAssessment {
+  verdict: 'healthy' | 'broken' | 'unknown';
+  independentVerdict: 'healthy' | 'broken' | 'unknown';
+  registryHash: string; checkedRuns: number; reasons: string[];
+  retainedReceiptRefs: string[]; adverseEpochRefs: string[];
+}
+
+const r11Record = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v);
+const r11Text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+const r11Hash = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
+const r11Count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+const r11Time = (v: string): number => Date.parse(v);
+function r11Same(a: unknown, b: unknown): boolean {
+  try { return canonicalJson(a) === canonicalJson(b); } catch { return false; }
+}
+function r11ClosureComplete(closure: R11Closure): boolean {
+  return Object.keys(closure).length > 0 && Object.entries(closure).every(([path, hash]) => r11Text(path) && r11Hash(hash));
+}
+function r11Counts(v: unknown): v is Record<string, number> {
+  return r11Record(v) && Object.entries(v).every(([key, count]) => r11Text(key) && r11Count(count));
+}
+
+/** Validate the frozen raw components, before rounded percentages or a verdict
+ * comparison. A missing component cannot become zero. No source population is
+ * truncated; retained source and receipt refs remain available on every result. */
+function r11MetricComplete(key: R11MetricKey, value: unknown): value is Record<string, unknown> {
+  if (!r11Record(value)) return false;
+  const definition = R11_METRIC_REGISTRY.metrics.find(m => m.key === key)!;
+  if (Object.keys(value).length !== definition.components.length ||
+      !definition.components.every(component => Object.hasOwn(value, component))) return false;
+  if (key === 'filedPerDayBySource') return r11Counts(value.countsBySource);
+  if (key === 'shareReviewed' || key === 'shareBypassed') {
+    if (!r11Count(value.numerator) || !r11Count(value.denominator) ||
+        value.denominator === 0 || value.numerator > value.denominator) return false;
+    if (key === 'shareReviewed') return r11Count(value.onTimeNumerator) &&
+      r11Count(value.onTimeDenominator) && value.onTimeDenominator > 0 &&
+      value.onTimeNumerator <= value.onTimeDenominator;
+    return r11Counts(value.routes) && r11Counts(value.reasons) &&
+      Object.values(value.routes).reduce((a, b) => a + b, 0) === value.numerator &&
+      Object.values(value.reasons).reduce((a, b) => a + b, 0) === value.numerator;
+  }
+  if (key === 'reviewerWait') {
+    if (!Array.isArray(value.rows) || !r11Count(value.pending) ||
+        !r11Count(value.rightCensored) || value.missing !== 0) return false;
+    const ids = new Set<string>();
+    let pending = 0;
+    for (const raw of value.rows) {
+      if (!r11Record(raw) || !r11Text(raw.itemId) || ids.has(raw.itemId) ||
+          typeof raw.filedAt !== 'string' || !Number.isFinite(r11Time(raw.filedAt))) return false;
+      ids.add(raw.itemId);
+      if (raw.decidedAt === null) {
+        pending++;
+        if (raw.waitMs !== null || typeof raw.rightCensoredAt !== 'string' ||
+            !Number.isFinite(r11Time(raw.rightCensoredAt)) || r11Time(raw.rightCensoredAt) < r11Time(raw.filedAt)) return false;
+      } else if (typeof raw.decidedAt !== 'string' || !Number.isFinite(r11Time(raw.decidedAt)) ||
+          !r11Count(raw.waitMs) || raw.waitMs !== r11Time(raw.decidedAt) - r11Time(raw.filedAt)) return false;
+      if (raw.flaggedAt !== undefined && (typeof raw.flaggedAt !== 'string' ||
+          typeof raw.dueAt !== 'string' || !Number.isFinite(r11Time(raw.flaggedAt)) ||
+          r11Time(raw.dueAt) !== r11Time(raw.flaggedAt) + 2 * DAY_MS)) return false;
+    }
+    return pending === value.pending && pending === value.rightCensored;
+  }
+  if (key === 'closedPerDay') return (
+    ['ordinary', 'cleanup', 'fold', 'reopenedOrdinary'].every(k => r11Count(value[k])) &&
+    Number.isSafeInteger(value.adjustedOrdinary) &&
+    value.adjustedOrdinary === Number(value.ordinary) - Number(value.reopenedOrdinary));
+  if (!Object.values(value).every(r11Count)) return false;
+  return key !== 'claimableCount' || (value.unknown === 0 &&
+    value.population === Number(value.count) + Number(value.protected) + Number(value.held) + Number(value.blocked));
+}
+
+/** Assess host-resolved retained evidence. All seven UTC windows and all seven
+ * metrics are checked. Historical epochs and every input receipt keep recovery
+ * references even when a current run is missing, corrupt or outside its window. */
+export function assessBugInflowScoreboard(
+  input: BugInflowScoreboardInput | undefined, now: Date,
+): R11ScoreboardAssessment {
+  const out: R11ScoreboardAssessment = {
+    verdict: 'unknown', independentVerdict: 'unknown', registryHash: R11_METRIC_REGISTRY_HASH,
+    checkedRuns: 0, reasons: [], retainedReceiptRefs: input?.receipts.map(r => r.id) ?? [],
+    adverseEpochRefs: input?.epochHistory.epochs.filter(e => e.disposition !== 'active').map(e => e.artifactRef) ?? [],
+  };
+  if (!input) { out.reasons.push('no host-resolved scoreboard evidence; baseline only'); return out; }
+  const unknown: string[] = [];
+  const broken: string[] = [];
+  const independentlyUnknown: string[] = [];
+  const independentlyBroken: string[] = [];
+  const epoch = input.epochHistory.epochs.find(e => e.id === input.activeEpochId);
+  const cadence = input.cadence;
+  const first = r11Time(cadence.firstWindowStart);
+  if (input.registryHash !== R11_METRIC_REGISTRY_HASH) unknown.push('frozen metric registry mismatch');
+  if (!input.epochHistory.complete || input.epochHistory.omitted !== 0 || input.epochHistory.nextCursor !== null)
+    unknown.push('epoch history incomplete; follow retained continuation');
+  if (!epoch || epoch.disposition !== 'active' || !r11Text(epoch.artifactRef) ||
+      !/^[a-f0-9]{40}$/.test(epoch.candidateSha) || !r11ClosureComplete(epoch.closure) ||
+      !r11Hash(epoch.originalClockHash) || !Number.isFinite(r11Time(epoch.activatedAt))) {
+    out.reasons.push(...unknown, 'activation epoch is absent or unqualified'); return out;
+  }
+  if (new Set(input.epochHistory.epochs.map(e => e.id)).size !== input.epochHistory.epochs.length)
+    unknown.push('duplicate epoch identity');
+  if (!r11Text(cadence.routineId) || cadence.intervalMs !== DAY_MS || !Number.isFinite(first) ||
+      first % DAY_MS !== 0 || first < r11Time(epoch.activatedAt) ||
+      !r11Count(cadence.maxDelayMs) || !r11Count(cadence.maxRuntimeMs)) {
+    out.reasons.push(...unknown, 'daily UTC cadence is not qualified');
+    return out;
+  }
+  if (epoch.previousEpochId) {
+    const prior = input.epochHistory.epochs.find(e => e.id === epoch.previousEpochId);
+    if (!prior || !r11Text(prior.artifactRef) || !r11Text(epoch.repair?.decisionRef) ||
+        !r11Text(epoch.repair?.evidenceRef)) unknown.push('successor epoch lacks retained adverse epoch, Decision or evidenced repair');
+    else {
+      if (prior.candidateSha === epoch.candidateSha || r11Same(prior.closure, epoch.closure))
+        broken.push('later timestamp or code-change-free restart is not a repair');
+      if (prior.originalClockHash !== epoch.originalClockHash) broken.push('successor epoch reset original clocks');
+    }
+  }
+  if (!input.implementationAuthors.length || !input.implementationAuthors.every(r11Text))
+    independentlyUnknown.push('implementation/proof authors are unqualified');
+  const windows = new Map<string, R11ScoreboardReceipt[]>();
+  const ids = new Set<string>();
+  for (const receipt of input.receipts) {
+    if (!r11Text(receipt.id) || ids.has(receipt.id)) unknown.push('missing or duplicate receipt identity');
+    ids.add(receipt.id);
+    const group = windows.get(receipt.windowStart) ?? [];
+    group.push(receipt);
+    windows.set(receipt.windowStart, group);
+    const offset = (r11Time(receipt.windowStart) - first) / DAY_MS;
+    if (!Number.isInteger(offset) || offset < 0 || offset >= 7 || receipt.epochId !== epoch.id)
+      unknown.push(`receipt outside the declared cohort: ${receipt.id}`);
+  }
+  for (let day = 0; day < 7; day++) {
+    const start = first + day * DAY_MS;
+    const startIso = new Date(start).toISOString();
+    const receipts = windows.get(startIso) ?? [];
+    if (receipts.length !== 1) { unknown.push(`expected exactly one receipt for ${startIso}`); continue; }
+    const r = receipts[0];
+    out.checkedRuns++;
+    if (r11Time(r.windowEnd) !== start + DAY_MS || r.routineId !== cadence.routineId ||
+        r.registryHash !== R11_METRIC_REGISTRY_HASH || r11Time(r.expectedFireAt) !== start + 2 * DAY_MS)
+      unknown.push(`window/cadence/registry mismatch: ${r.id}`);
+    const actual = r11Time(r.actualFireAt), measured = r11Time(r.measuredAt), expected = r11Time(r.expectedFireAt);
+    if (![actual, measured, expected].every(Number.isFinite) || measured > now.getTime())
+      unknown.push(`missing or future fire evidence: ${r.id}`);
+    else if (actual < expected || actual > expected + cadence.maxDelayMs ||
+        measured < actual || measured > actual + cadence.maxRuntimeMs)
+      broken.push(`missing maturity or late fire: ${r.id}`);
+    if (!r11ClosureComplete(r.runtime.closure) || !/^[a-f0-9]{40}$/.test(r.runtime.buildSha))
+      unknown.push(`runtime closure unqualified: ${r.id}`);
+    else if (!r11Same(r.runtime.closure, epoch.closure)) broken.push(`relevant candidate closure changed: ${r.id}`);
+    if (r.originalClockHash !== epoch.originalClockHash) broken.push(`original clocks changed: ${r.id}`);
+    if (!r11Text(r.source.ref) || !r11Hash(r.source.sha256) || !r.source.complete ||
+        !r11Count(r.source.totalRows) || r.source.totalRows === 0 ||
+        r.source.rowsRead !== r.source.totalRows || r.source.omitted !== 0 || r.source.nextCursor !== null ||
+        !r11Count(r.source.cohortSize) || r.source.cohortSize === 0)
+      unknown.push(`source incomplete, empty or unrecoverable: ${r.id}`);
+    const independent = r.independent;
+    const independentReady = independent && r11Text(independent.artifactRef) &&
+      r11Text(independent.authorId) && !input.implementationAuthors.includes(independent.authorId) &&
+      independent.lineage.eligible && r11Text(independent.lineage.receiptRef) &&
+      input.implementationAuthors.every(author => independent.lineage.checkedAgainst.includes(author)) &&
+      independent.sourceHash === r.source.sha256 && independent.registryHash === R11_METRIC_REGISTRY_HASH &&
+      r11Same(independent.closure, epoch.closure) && independent.originalClockHash === epoch.originalClockHash &&
+      independent.complete && independent.omitted === 0 && r11Hash(independent.queryHash) &&
+      r11Hash(r.writerQueryHash) && independent.queryHash !== r.writerQueryHash;
+    if (!independentReady) independentlyUnknown.push(`independent artifact/currentness/lineage unqualified: ${r.id}`);
+    const keys = R11_METRIC_REGISTRY.metrics.map(m => m.key);
+    if (Object.keys(r.metrics).length !== keys.length ||
+        (independent && Object.keys(independent.metrics).length !== keys.length))
+      unknown.push(`metric population differs from frozen registry: ${r.id}`);
+    for (const key of keys) {
+      const value = r.metrics[key];
+      if (!r11MetricComplete(key, value)) unknown.push(`missing or malformed ${key}: ${r.id}`);
+      if (independentReady && independent) {
+        if (!r11MetricComplete(key, independent.metrics[key]))
+          independentlyUnknown.push(`independent ${key} incomplete: ${r.id}`);
+        else if (value && !r11Same(value, independent.metrics[key]))
+          independentlyBroken.push(`numeric discrepancy for ${key}: ${r.id}`);
+      }
+    }
+  }
+  const lastMeasured = input.receipts.reduce((last, r) => Math.max(last, r11Time(r.measuredAt)), 0);
+  if (!Number.isFinite(lastMeasured) || now.getTime() - lastMeasured > DAY_MS + cadence.maxDelayMs + cadence.maxRuntimeMs)
+    unknown.push('latest retained measurement is stale');
+  out.independentVerdict = independentlyBroken.length ? 'broken' :
+    independentlyUnknown.length || unknown.length || out.checkedRuns !== 7 ? 'unknown' : 'healthy';
+  out.verdict = broken.length || independentlyBroken.length ? 'broken' :
+    unknown.length || out.independentVerdict !== 'healthy' ? 'unknown' : 'healthy';
+  out.reasons.push(...unknown, ...broken, ...independentlyUnknown, ...independentlyBroken);
+  return out;
+}
+
 
 /** Reporter bucket for a work_items row aliased `w`. */
 export const BUG_INFLOW_SOURCE_SQL = `coalesce(
@@ -144,6 +535,7 @@ export interface BugInflowDay {
 export type BugInflowAssessment = 'measured' | 'stale' | 'unmeasured';
 
 export interface BugInflowReading {
+  conformance: { r11: R11ScoreboardAssessment };
   assessment: BugInflowAssessment;
   /** Why the assessment is not 'measured' (empty when it is). */
   reasons: string[];
@@ -171,7 +563,7 @@ function addInto(acc: Record<string, number>, part: Record<string, number> | nul
 /** Pure: stored rows → the reading the cell and the brief serve. */
 export function shapeBugInflow(
   rows: readonly BugInflowRow[],
-  opts: { now: Date; windowDays: number },
+  opts: { now: Date; windowDays: number; scoreboard?: BugInflowScoreboardInput },
 ): BugInflowReading {
   const nowMs = opts.now.getTime();
   const today = utcDay(nowMs);
@@ -208,7 +600,8 @@ export function shapeBugInflow(
     if (ageMs !== null && ageMs > BUG_INFLOW_STALE_AFTER_MS) reasons.push(`newest row computed ${Math.round(ageMs / 60_000)}m ago (> ${BUG_INFLOW_STALE_AFTER_MS / 60_000}m)`);
   }
   const assessment: BugInflowAssessment = days.length === 0 ? 'unmeasured' : reasons.length ? 'stale' : 'measured';
-  return { assessment, reasons, windowDays: opts.windowDays, days, missingDays, totals, computedAt, ageMs, storage: BUG_INFLOW_TABLE };
+  return { assessment, reasons, windowDays: opts.windowDays, days, missingDays, totals, computedAt, ageMs,
+    storage: BUG_INFLOW_TABLE, conformance: { r11: assessBugInflowScoreboard(opts.scoreboard, opts.now) } };
 }
 
 /** Read the stored series. A SELECT on bug_inflow_daily only — never an aggregate over work_items. */

@@ -20,6 +20,7 @@ import {
   refreshBugInflowDaily,
   shapeBugInflow,
   type BugInflowRow,
+  type BugInflowScoreboardInput,
 } from './bug-inflow';
 import { BUILTIN_CELLS, WORK_BUG_INFLOW_CELL } from '../../cell-registrations';
 import { validateCellSpec } from '../../cell-registry';
@@ -157,5 +158,175 @@ describe('work.bugInflow cell registration', () => {
     expect(WORK_BUG_INFLOW_CELL.changeSignal).toEqual({ kind: 'poll', tool: 'improvements:bug-inflow', path: 'inflow' });
     expect(WORK_BUG_INFLOW_CELL.assessment?.path).toBe('assessments.bugInflow');
     expect(Object.keys(WORK_BUG_INFLOW_CELL.assessment?.codes ?? {}).sort()).toEqual(['measured', 'stale', 'unmeasured']);
+  });
+});
+
+// R11 fixtures model host-resolved evidence, never actual live qualification.
+const R11_REGISTRY_HASH = '050a169d8e6ddabc2f2e00f54a1807216191bab254756568c12b1a484147c262';
+const R11_DAY = 86_400_000;
+
+function scoreboardFixture(): BugInflowScoreboardInput {
+  const start = Date.parse('2026-10-12T00:00:00Z');
+  const closure = { 'packages/operator-core/lib/harness/improvements/bug-inflow.ts': 'f'.repeat(64) };
+  const authors = ['implementation-a', 'proof-author'];
+  const receipts = Array.from({ length: 7 }, (_, i) => {
+    const day = start + i * R11_DAY;
+    const actualFireAt = new Date(day + 2 * R11_DAY + 60_000).toISOString();
+    const metrics = {
+      filedPerDayBySource: { countsBySource: { agent: 2 } },
+      closedPerDay: { ordinary: 3, cleanup: 1, fold: 2, reopenedOrdinary: 1, adjustedOrdinary: 2 },
+      shareReviewed: { numerator: 2, denominator: 2, onTimeNumerator: 2, onTimeDenominator: 2 },
+      shareBypassed: { numerator: 0, denominator: 2, routes: {}, reasons: {} },
+      reviewerWait: {
+        rows: [1, 2].map(n => ({
+          itemId: `fixture-${i}-${n}`,
+          filedAt: new Date(day + n * 3_600_000).toISOString(),
+          decidedAt: new Date(day + (n + 1) * 3_600_000).toISOString(),
+          waitMs: 3_600_000,
+          flaggedAt: new Date(day + n * 3_600_000).toISOString(),
+          dueAt: new Date(day + (n + 48) * 3_600_000).toISOString(),
+        })),
+        pending: 0, rightCensored: 0, missing: 0,
+      },
+      mergesPerDay: { committed: 2, duplicate: 2, alreadyFolded: 1, protected: 0, failed: 0 },
+      claimableCount: { count: 1, population: 4, protected: 1, held: 1, blocked: 1, unknown: 0 },
+    };
+    const sourceHash = (i + 1).toString(16).repeat(64);
+    return {
+      id: `fixture-run-${i}`, epochId: 'fixture-epoch', routineId: 'fixture-daily-routine',
+      windowStart: new Date(day).toISOString(), windowEnd: new Date(day + R11_DAY).toISOString(),
+      expectedFireAt: new Date(day + 2 * R11_DAY).toISOString(), actualFireAt,
+      measuredAt: new Date(Date.parse(actualFireAt) + 5_000).toISOString(),
+      registryHash: R11_REGISTRY_HASH, originalClockHash: 'c'.repeat(64),
+      runtime: { buildSha: 'a'.repeat(40), closure },
+      source: {
+        ref: `fixture-source-${i}`, sha256: sourceHash, complete: true,
+        totalRows: 20, rowsRead: 20, omitted: 0, nextCursor: null, cohortSize: 2,
+      },
+      writerQueryHash: 'd'.repeat(64), metrics,
+      independent: {
+        artifactRef: `fixture-independent-${i}`, authorId: 'assessor-external',
+        lineage: { eligible: true, checkedAgainst: authors, receiptRef: `fixture-lineage-${i}` },
+        sourceHash, registryHash: R11_REGISTRY_HASH, queryHash: 'e'.repeat(64),
+        closure, originalClockHash: 'c'.repeat(64), complete: true, omitted: 0,
+        metrics: structuredClone(metrics),
+      },
+    };
+  });
+  return {
+    registryHash: R11_REGISTRY_HASH, implementationAuthors: authors, activeEpochId: 'fixture-epoch',
+    epochHistory: {
+      complete: true, omitted: 0, nextCursor: null,
+      epochs: [{
+        id: 'fixture-epoch', candidateSha: 'a'.repeat(40), activatedAt: new Date(start).toISOString(),
+        closure, originalClockHash: 'c'.repeat(64), disposition: 'active', artifactRef: 'fixture-epoch-artifact',
+      }],
+    },
+    cadence: {
+      routineId: 'fixture-daily-routine', firstWindowStart: new Date(start).toISOString(),
+      intervalMs: R11_DAY, maxDelayMs: 300_000, maxRuntimeMs: 300_000,
+    },
+    receipts,
+  };
+}
+
+function assessScoreboard(scoreboard: BugInflowScoreboardInput) {
+  const reading = shapeBugInflow([row('2026-10-20')], { now: NOW, windowDays: 1, scoreboard });
+  expect(reading.conformance).toBeDefined();
+  return reading.conformance.r11;
+}
+
+describe('R11 retained scoreboard assessment', () => {
+  it('R11 seven expected daily fires numerically reconcile the exact papercusp bug population', () => {
+    const result = assessScoreboard(scoreboardFixture());
+    expect(result).toMatchObject({ verdict: 'healthy', independentVerdict: 'healthy', checkedRuns: 7 });
+    expect(result.retainedReceiptRefs).toHaveLength(7);
+    expect(result.reasons).toEqual([]);
+    expect(shapeBugInflow([], { now: NOW, windowDays: 7 }).conformance.r11.verdict).toBe('unknown');
+  });
+
+  it('R11 freezes all seven original metric definitions and rejects missing keys or shared recomputation paths', () => {
+    const wrongRegistry = scoreboardFixture();
+    wrongRegistry.registryHash = '0'.repeat(64);
+    expect(assessScoreboard(wrongRegistry).verdict).toBe('unknown');
+    for (const key of Object.keys(scoreboardFixture().receipts[0].metrics)) {
+      const missing = scoreboardFixture();
+      delete missing.receipts[0].metrics[key as keyof typeof missing.receipts[0]['metrics']];
+      expect(assessScoreboard(missing).verdict).toBe('unknown');
+    }
+    const shared = scoreboardFixture();
+    shared.receipts[3].independent!.queryHash = shared.receipts[3].writerQueryHash;
+    expect(assessScoreboard(shared).independentVerdict).toBe('unknown');
+    const invalidWindow = scoreboardFixture();
+    invalidWindow.cadence.firstWindowStart = 'not-an-instant';
+    expect(assessScoreboard(invalidWindow).verdict).toBe('unknown');
+    const incompleteSource = scoreboardFixture();
+    incompleteSource.receipts[6].source.nextCursor = 'remaining-source-page';
+    expect(assessScoreboard(incompleteSource).verdict).toBe('unknown');
+  });
+
+  it('R11 rejects each possible corrupted day independently including an otherwise unsampled day', () => {
+    for (let day = 0; day < 7; day++) {
+      const input = scoreboardFixture();
+      input.receipts[day].metrics.shareReviewed!.denominator = 3;
+      const result = assessScoreboard(input);
+      expect(result.verdict, `corrupted day ${day}`).toBe('broken');
+      expect(result.retainedReceiptRefs).toHaveLength(7);
+    }
+    for (let day = 0; day < 7; day++) {
+      const missing = scoreboardFixture();
+      missing.receipts.splice(day, 1);
+      expect(assessScoreboard(missing).verdict).toBe('unknown');
+    }
+  });
+
+  it('R11 epoch recovery requires a repaired candidate and Decision while retaining failed windows and original clocks', () => {
+    const input = scoreboardFixture();
+    const active = input.epochHistory.epochs[0];
+    input.epochHistory.epochs.unshift({
+      ...structuredClone(active), id: 'failed-epoch', disposition: 'failed', artifactRef: 'fixture-failed-epoch-artifact',
+    });
+    active.previousEpochId = 'failed-epoch';
+    expect(assessScoreboard(input).verdict).not.toBe('healthy');
+    active.candidateSha = 'b'.repeat(40);
+    active.closure = { 'packages/operator-core/lib/harness/improvements/bug-inflow.ts': '0'.repeat(64) };
+    active.repair = { decisionRef: 'fixture-plan#D-001', evidenceRef: 'fixture-repair-evidence' };
+    for (const receipt of input.receipts) {
+      receipt.runtime = { buildSha: active.candidateSha, closure: active.closure };
+      receipt.independent!.closure = active.closure;
+    }
+    expect(assessScoreboard(input)).toMatchObject({ verdict: 'healthy', adverseEpochRefs: ['fixture-failed-epoch-artifact'] });
+    input.epochHistory.epochs.splice(0, 1);
+    expect(assessScoreboard(input).verdict).toBe('unknown');
+  });
+
+  it('R11 independent evidence rejects absent self-authored partial and mismatched artifact receipts', () => {
+    const changes = [
+      (r: BugInflowScoreboardInput['receipts'][number]) => { delete r.independent; },
+      (r: BugInflowScoreboardInput['receipts'][number]) => { r.independent!.authorId = 'implementation-a'; },
+      (r: BugInflowScoreboardInput['receipts'][number]) => { r.independent!.complete = false; },
+      (r: BugInflowScoreboardInput['receipts'][number]) => { r.independent!.sourceHash = '0'.repeat(64); },
+      (r: BugInflowScoreboardInput['receipts'][number]) => { r.independent!.artifactRef = ''; },
+      (r: BugInflowScoreboardInput['receipts'][number]) => { r.independent!.lineage.checkedAgainst = []; },
+    ];
+    for (const change of changes) {
+      const input = scoreboardFixture();
+      change(input.receipts[2]);
+      expect(assessScoreboard(input).independentVerdict).toBe('unknown');
+    }
+  });
+
+  it('R11 candidate closure containment accepts only unrelated advances and retains every adverse epoch and original deadline', () => {
+    const unrelated = scoreboardFixture();
+    unrelated.receipts[4].runtime.buildSha = 'b'.repeat(40);
+    expect(assessScoreboard(unrelated).verdict).toBe('healthy');
+    unrelated.receipts[4].runtime.closure = { changed: '0'.repeat(64) };
+    expect(assessScoreboard(unrelated).verdict).toBe('broken');
+    const resetClock = scoreboardFixture();
+    resetClock.receipts[6].originalClockHash = '0'.repeat(64);
+    expect(assessScoreboard(resetClock).verdict).toBe('broken');
+    const late = scoreboardFixture();
+    late.receipts[1].actualFireAt = new Date(Date.parse(late.receipts[1].expectedFireAt) + 300_001).toISOString();
+    expect(assessScoreboard(late).verdict).toBe('broken');
   });
 });
