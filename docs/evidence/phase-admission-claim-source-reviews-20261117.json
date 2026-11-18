@@ -45,6 +45,48 @@
   },
   "reviews": [
     {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"9db09f4ae3905ab1ad4da8ae8a636de2b21d5c39e51db2a84a0ae1ecfec5284f\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "9db09f4ae3905ab1ad4da8ae8a636de2b21d5c39e51db2a84a0ae1ecfec5284f",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+          "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact buildClient call and complete installNumericArrayTyping body. Installation reads the local array function/marker, creates and marks a wrapper and assigns client.array; it does not call numericArrayElementOid or the original function. The later original.call/apply and parameter-encoding frontiers remain separate unresolved candidates. This approves only local installation, not driver constructors or query execution.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+        "source:libs/papercusp/libs/db/src/raw-serializers.ts#installNumericArrayTyping",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "installNumericArrayTyping",
+          "reason": "Inspected the exact buildClient call and complete installNumericArrayTyping body. Installation reads the local array function/marker, creates and marks a wrapper and assigns client.array; it does not call numericArrayElementOid or the original function. The later original.call/apply and parameter-encoding frontiers remain separate unresolved candidates. This approves only local installation, not driver constructors or query execution.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#installNumericArrayTyping",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/raw-serializers.ts#930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+          "reason": "Inspected the exact buildClient call and complete installNumericArrayTyping body. Installation reads the local array function/marker, creates and marks a wrapper and assigns client.array; it does not call numericArrayElementOid or the original function. The later original.call/apply and parameter-encoding frontiers remain separate unresolved candidates. This approves only local installation, not driver constructors or query execution.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts#buildClient",
+            "source:libs/papercusp/libs/db/src/raw-serializers.ts#installNumericArrayTyping",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
       "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"0f723da48b6464a530ed1d19d456e50a95488b6cc7498c8668c6d280c6621819\"]#1",
       "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
       "statementSha256": "0f723da48b6464a530ed1d19d456e50a95488b6cc7498c8668c6d280c6621819",
