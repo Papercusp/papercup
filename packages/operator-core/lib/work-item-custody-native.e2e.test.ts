@@ -38,7 +38,8 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
     const workspace = process.env.PAPERCUSP_WORKSPACE!;
     const port = process.env.VERIFY_TAURI_PORT!;
     expect(owner).toBeTruthy();
-    expect(workspace).toBeTruthy();
+    expect(workspace).toMatch(/^verify-tauri-isolated-\d+$/);
+    expect(process.env.PAPERCUSP_WORKSPACE_ID).toBe(workspace);
     expect(port).toMatch(/^[1-9][0-9]*$/);
     expect(['3070', '3170', '3270', '3271']).not.toContain(port);
     const origin = `http://127.0.0.1:${port}`;
@@ -60,6 +61,9 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
     expect(who.workspaceId).toBe(workspace);
     const id = 'WI-r46-native-' + randomUUID();
     const sql = postgres(url, { max: 1, onnotice: () => {} });
+    const { loadHarnessRegistry, saveHarnessRegistry } = await import('./harness-registry');
+    const registryBefore = await loadHarnessRegistry(workspace, { fresh: true });
+    let registered = false;
     let installed = false;
     let seeded = false;
     const initialSchema = await captureOwnedDatabaseSchema(url);
@@ -79,6 +83,17 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
     const captures = (value: Lifecycle) => value.events
       .filter(event => event.action === 'work_items:custody:capture');
     try {
+      // A work-item row does not register its project. Exercise the real clamp
+      // before setting up this fixture, then use the maintained registry seam.
+      expect(registryBefore.projects.some(project => project.slug === 'papercusp')).toBe(false);
+      const unregistered = await tool('work_items:get', { id, harness: 'papercusp' });
+      expect(JSON.stringify(unregistered)).toContain('harness_forbidden');
+      registered = true; // Restore even if a write succeeds but its notification fails.
+      await saveHarnessRegistry({ ...registryBefore, projects: [
+        ...registryBefore.projects, { slug: 'papercusp', path: ROOT },
+      ] }, workspace);
+      expect((await loadHarnessRegistry(workspace, { fresh: true })).projects)
+        .toContainEqual({ slug: 'papercusp', path: ROOT });
       const existing = await sql`SELECT oid FROM pg_trigger WHERE NOT tgisinternal
         AND tgrelid = 'harness_shared.work_items'::regclass
         AND tgname = 'capture_work_item_custody_audit_trg'`;
@@ -155,7 +170,14 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
           await sql.unsafe('DROP FUNCTION harness_shared.capture_work_item_custody_audit()');
           expect(await captureOwnedDatabaseSchema(url)).toEqual(initialSchema);
         }
-      } finally { await sql.end({ timeout: 5 }); }
+      } finally {
+        try {
+          if (registered) {
+            await saveHarnessRegistry(registryBefore, workspace, { allowEmpty: true });
+            expect(await loadHarnessRegistry(workspace, { fresh: true })).toEqual(registryBefore);
+          }
+        } finally { await sql.end({ timeout: 5 }); }
+      }
     }
   }, 360_000);
 });
