@@ -6,6 +6,7 @@
  * their persisted write key. No assertion of atomicity between PG and a backend.
  */
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import type { Sql, TransactionSql } from 'postgres';
 import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 
@@ -83,6 +84,15 @@ export interface PackageInstallationHumanOwnership {
   principalRevision: string;
 }
 declare const humanOwnerProof: unique symbol;
+/** An explicit claim about one wearer and exact specification, never consent
+ * to change its permissions. Credentials travel separately in a host closure. */
+export const packageInstallationHumanOwnerDeclarationSchema = z.object({
+  declaration: z.literal('self'),
+  userId: z.string().min(1).max(200).refine(value => !!value.trim() && value !== '*'),
+  ownerId: z.string().min(1).max(200).refine(value => !!value.trim() && value !== '*'),
+  specificationRevision: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+export type PackageInstallationHumanOwnerDeclaration = z.infer<typeof packageInstallationHumanOwnerDeclarationSchema>;
 /** Host-local evidence, not an HTTP payload or serialized Principal. */
 export interface PackageInstallationHumanOwnerProof { readonly [humanOwnerProof]: true }
 const humanOwnerProofs = new WeakMap<PackageInstallationHumanOwnerProof, {
@@ -94,11 +104,11 @@ const humanOwnerProofs = new WeakMap<PackageInstallationHumanOwnerProof, {
  * permission-change consent; it is only one input to the existing guard. */
 export async function declarePackageInstallationHumanOwner(request: {
   workspaceId: string; resolvePrincipal: HostRequestPrincipalResolver | undefined;
-}, declaration: { declaration: 'self'; userId: string; ownerId: string; specificationRevision: string }):
+}, declaration: PackageInstallationHumanOwnerDeclaration):
 Promise<PackageInstallationHumanOwnerProof> {
   // Retain the actual declaration before dynamic import or credential I/O.
   request = { ...request };
-  declaration = { ...declaration };
+  declaration = packageInstallationHumanOwnerDeclarationSchema.parse(declaration);
   const { readRetainedRequestPrincipal } = await import('../auth/require-principal');
   const read = await readRetainedRequestPrincipal(request.resolvePrincipal, request.workspaceId);
   if (read.status !== 'ok' || read.principal.kind !== 'user' || read.principal.trust !== 'verified' ||

@@ -22,7 +22,10 @@ import { parseDepSpec } from '@papercusp/blueprint-distribution';
 import { getOrgPg } from '@papercusp/db-org';
 import { parse as parseYaml } from 'yaml';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
-import { blueprintInstallJournal } from './blueprint-install-journal';
+import { blueprintInstallJournal, blueprintInstallOwner } from './blueprint-install-journal';
+import { declarePackageInstallationHumanOwner, packageInstallationHumanOwnerDeclarationSchema,
+  type PackageInstallationHumanOwnerDeclaration, type PackageInstallationHumanOwnerProof } from '../blueprint/package-resource-receipts';
+import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 import type { InstallBlueprintCoreDeps as CoreDeps } from './install-blueprint-core';
 
 /** D-042: the D-027 §1 check the standalone rule install runs, for an identity's
@@ -122,6 +125,9 @@ export interface InstallBlueprintFromCupboardInput {
    * plugin code and shared content, echoing the exact `consentSubject` an
    * `identity_install_consent_required` refusal returned. */
   identityInstallConsent?: IdentityInstallConsent;
+  /** Human-authored ownership evidence for this exact pot/release only. The
+   * authenticated request is a separate host argument, never a JSON Principal. */
+  humanOwnershipDeclaration?: PackageInstallationHumanOwnerDeclaration;
 }
 
 export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResult {
@@ -274,6 +280,7 @@ export function capabilityGrantDepsForPot(
 function makeInstallCoreDeps(
   capabilityScope?: { workspaceId: string; potSlug: string },
   registryWorkspaceId?: string,
+  humanOwner?: PackageInstallationHumanOwnerProof,
 ): InstallBlueprintCoreDeps {
   const classRegistryWorkspace = capabilityScope?.workspaceId ?? registryWorkspaceId;
   return {
@@ -323,7 +330,7 @@ function makeInstallCoreDeps(
       // D-042: so are the event keys the release bundles.
       blueprintInstallJournal: ({ blueprintId, bindings, eventKeys }) => blueprintInstallJournal(
         { sql: getOrgPg().sql, workspaceId: capabilityScope.workspaceId, blueprintId },
-        { operation: 'install', potSlug: capabilityScope.potSlug, bindings, eventKeys },
+        { operation: 'install', potSlug: capabilityScope.potSlug, bindings, eventKeys, humanOwner },
       ),
       checkAsyncRules: asyncRuleInstallChecker(capabilityScope.workspaceId),
     } : {}),
@@ -337,8 +344,28 @@ function makeInstallCoreDeps(
  */
 export async function installBlueprintFromCupboard(
   input: InstallBlueprintFromCupboardInput,
+  request?: { workspaceId: string; resolvePrincipal: HostRequestPrincipalResolver | undefined },
 ): Promise<InstallBlueprintFromCupboardResult> {
+  // Capture the claim before listing, federation or credential waits. This
+  // evidence belongs to the root install, never its transitive dependencies.
+  input = { ...input };
+  request = request && { ...request };
   const operation = input.operation ?? 'install';
+  const workspaceId = input.workspaceId?.trim() || activeWorkspaceId();
+  let humanOwner: PackageInstallationHumanOwnerProof | undefined;
+  if (input.humanOwnershipDeclaration !== undefined) {
+    const parsed = packageInstallationHumanOwnerDeclarationSchema.safeParse(input.humanOwnershipDeclaration);
+    if (!parsed.success || (operation !== 'install' && operation !== 'update') || !input.potSlug?.trim())
+      return { ok: false, status: 400, error: 'invalid_human_ownership_declaration' };
+    if (!request || request.workspaceId !== workspaceId)
+      return { ok: false, status: 403, error: 'human_ownership_declaration_refused' };
+    input.humanOwnershipDeclaration = parsed.data;
+    try {
+      humanOwner = await declarePackageInstallationHumanOwner(request, parsed.data);
+    } catch {
+      return { ok: false, status: 403, error: 'human_ownership_declaration_refused' };
+    }
+  }
   if (operation === 'rollback' || operation === 'uninstall') {
     const id = input.blueprintId?.trim() ?? '';
     if (!id) return { ok: false, status: 400, error: `blueprintId required for ${operation}` };
@@ -387,7 +414,6 @@ export async function installBlueprintFromCupboard(
   if (!githubUrl) return { ok: false, status: 400, error: 'githubUrl or listingId required' };
 
   const requestedPotSlug = input.potSlug?.trim();
-  const workspaceId = input.workspaceId?.trim() || activeWorkspaceId();
   // The storefront's active selection is a HARNESS slug. Capability bindings
   // are pot-scoped, so collapse a member harness to its existing Hive home at
   // the server boundary instead of asking the client to duplicate federation
@@ -395,6 +421,9 @@ export async function installBlueprintFromCupboard(
   const potSlug = requestedPotSlug
     ? await potHomeSlugForHarness(workspaceId, requestedPotSlug)
     : null;
+  if (input.humanOwnershipDeclaration && (!potSlug ||
+      input.humanOwnershipDeclaration.ownerId !== blueprintInstallOwner(potSlug)))
+    return { ok: false, status: 403, error: 'human_ownership_target_mismatch' };
   // A plain blueprint with no capability grants remains installable outside a
   // pot. If grants are present, the core returns capability_grants_need_pot;
   // that is the accurate failure after the source has actually been parsed.
@@ -422,7 +451,7 @@ export async function installBlueprintFromCupboard(
       ...(input.classContractConsent ? { classContractConsent: input.classContractConsent } : {}),
       ...(input.identityInstallConsent ? { identityInstallConsent: input.identityInstallConsent } : {}),
       ...(capabilityContext ? { capabilityContext } : {}),
-    }, makeInstallCoreDeps(capabilityScope, workspaceId));
+    }, makeInstallCoreDeps(capabilityScope, workspaceId, humanOwner));
 
     // D-001's consent-gated plugin fetch: with `installPlugins: true`, install
     // each declared plugin resolvable from the Cupboard (not yet installed).

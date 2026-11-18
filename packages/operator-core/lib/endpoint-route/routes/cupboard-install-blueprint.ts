@@ -21,6 +21,9 @@ import { installBlueprintFromCupboard } from '../../cupboard/install-blueprint-i
 import { classContractConsentSchema, type ClassContractConsent } from '../../cupboard/class-contract-payload';
 import { recipeProviderConsentSchema, type RecipeProviderConsent } from '../../cupboard/capability-grant-resolver';
 import { identityInstallConsentSchema, type IdentityInstallConsent } from '../../cupboard/identity-install-consent';
+import { packageInstallationHumanOwnerDeclarationSchema } from '../../blueprint/package-resource-receipts';
+import { retainRequestPrincipal } from '../../auth/require-principal';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   method: 'POST',
@@ -39,6 +42,7 @@ export default defineTool({
       classContractConsent?: unknown;
       recipeProviderConsent?: unknown;
       identityInstallConsent?: unknown;
+      humanOwnershipDeclaration?: unknown;
     };
     try {
       body = await req.json();
@@ -86,14 +90,23 @@ export default defineTool({
       identityInstallConsent = parsed.data;
     }
 
-    const outcome = await installBlueprintFromCupboard({
+    const ownership = body.humanOwnershipDeclaration === undefined ? undefined
+      : packageInstallationHumanOwnerDeclarationSchema.safeParse(body.humanOwnershipDeclaration);
+    if (ownership && !ownership.success)
+      return Response.json({ ok: false, error: 'invalid_human_ownership_declaration' }, { status: 400 });
+    // Loopback reachability is not a human identity. Only an explicit claim
+    // retains the real credentials, and the shared installer verifies them.
+    const workspaceId = ownership?.success ? activeWorkspaceId() : undefined;
+    const request = workspaceId ? { workspaceId,
+      resolvePrincipal: await retainRequestPrincipal(req.headers, workspaceId) } : undefined;
+    const input = {
       ...(typeof body.listingId === 'string' ? { listingId: body.listingId } : {}),
       ...(typeof body.githubUrl === 'string' ? { githubUrl: body.githubUrl } : {}),
       ...(typeof body.listingRef === 'string' ? { listingRef: body.listingRef } : {}),
       installPlugins: body.installPlugins === true,
       ...(typeof body.potSlug === 'string' ? { potSlug: body.potSlug } : {}),
       ...(typeof body.capabilityRole === 'string' ? { capabilityRole: body.capabilityRole.trim() } : {}),
-      capabilityMode: 'interactive',
+      capabilityMode: 'interactive' as const,
       ...(body.capabilityProviderSelections &&
       typeof body.capabilityProviderSelections === 'object' &&
       !Array.isArray(body.capabilityProviderSelections)
@@ -102,7 +115,10 @@ export default defineTool({
       ...(classContractConsent ? { classContractConsent } : {}),
       ...(recipeProviderConsent ? { recipeProviderConsent } : {}),
       ...(identityInstallConsent ? { identityInstallConsent } : {}),
-    });
+      ...(ownership?.success ? { humanOwnershipDeclaration: ownership.data, workspaceId } : {}),
+    };
+    const outcome = request ? await installBlueprintFromCupboard(input, request)
+      : await installBlueprintFromCupboard(input);
 
     if (!outcome.ok) {
       return Response.json(

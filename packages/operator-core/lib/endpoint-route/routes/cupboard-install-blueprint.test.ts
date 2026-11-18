@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import route from './cupboard-install-blueprint';
 import { installBlueprintFromCupboard } from '../../cupboard/install-blueprint-io';
+import { retainRequestPrincipal } from '../../auth/require-principal';
 
 vi.mock('../../cupboard/install-blueprint-io', () => ({ installBlueprintFromCupboard: vi.fn() }));
+vi.mock('../../auth/require-principal', () => ({ retainRequestPrincipal: vi.fn() }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-owner-route' }));
 const install = vi.mocked(installBlueprintFromCupboard);
 const refusal = {
   ok: false as const, status: 403, error: 'capability_unsatisfied',
@@ -21,6 +24,36 @@ async function call(body: unknown) {
 beforeEach(() => {
   install.mockReset();
   install.mockResolvedValue(refusal);
+  vi.mocked(retainRequestPrincipal).mockReset();
+});
+
+describe('explicit human ownership declaration on the existing install door', () => {
+  const declaration = { declaration: 'self', userId: 'human-1', ownerId: 'pot:sales', specificationRevision: 'a'.repeat(64) };
+
+  it('retains request credentials separately from the claim and preserves refusal', async () => {
+    const resolvePrincipal = async () => null;
+    vi.mocked(retainRequestPrincipal).mockResolvedValue(resolvePrincipal);
+    const response = await call({ listingId: 'identity', potSlug: 'sales', humanOwnershipDeclaration: declaration });
+    expect(retainRequestPrincipal).toHaveBeenCalledWith(expect.any(Headers), 'ws-owner-route');
+    expect(install).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-owner-route',
+      humanOwnershipDeclaration: declaration }), { workspaceId: 'ws-owner-route', resolvePrincipal });
+    expect(response.status).toBe(403);
+  });
+
+  it('does not infer ownership or retain credentials from an ordinary install', async () => {
+    await call({ listingId: 'identity', potSlug: 'sales' });
+    expect(retainRequestPrincipal).not.toHaveBeenCalled();
+    expect(install.mock.calls[0]).toHaveLength(1);
+    expect(install.mock.calls[0][0]).not.toHaveProperty('humanOwnershipDeclaration');
+  });
+
+  it.each([null, [], 'self', { ...declaration, userId: '*' }, { ...declaration, declaration: 'delegated' },
+    { ...declaration, specificationRevision: 'latest' }, { ...declaration, principal: { kind: 'user' } }])(
+    'refuses malformed or serialized authority %j before execution', async (humanOwnershipDeclaration) => {
+      expect((await call({ listingId: 'identity', potSlug: 'sales', humanOwnershipDeclaration })).status).toBe(400);
+      expect(install).not.toHaveBeenCalled();
+      expect(retainRequestPrincipal).not.toHaveBeenCalled();
+    });
 });
 
 describe('P-005 public installer target role', () => {
