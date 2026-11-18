@@ -30,7 +30,15 @@
     "packages/operator-core/lib/sync/hyperbee/stage-stall-log.ts",
     "packages/operator-core/lib/build-info.ts",
     "libs/generic/module-singleton/src/index.ts",
-    "libs/papercusp/libs/db/src/raw-serializers.ts"
+    "libs/papercusp/libs/db/src/raw-serializers.ts",
+    "packages/operator-core/lib/personal-vault/sealed-contents.ts",
+    "packages/operator-core/lib/personal-vault/coord-seal.ts",
+    "packages/operator-core/lib/agent-tools/coordination/cue-authority.ts",
+    "packages/operator-core/lib/agent-tools/coordination/scope-broadcast.ts",
+    "libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+    "libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+    "libs/papercusp/libs/db/sql/1307-personal-sealed-contents.sql",
+    "libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -44,6 +52,233 @@
     "runtimeAttestation": false
   },
   "reviews": [
+    {
+      "siteId": "[\"packages/operator-core/lib/personal-vault/sealed-contents.ts\",\"sealCoordEnvelope::<callback>\",\"helper-edge\",\"965e4b773dc9ea285b8b7e0b2874dc1c3b3e313c24f89020267de2bbea6e2d85\"]#1",
+      "sourceSha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a",
+      "statementSha256": "965e4b773dc9ea285b8b7e0b2874dc1c3b3e313c24f89020267de2bbea6e2d85",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/personal-vault/sealed-contents.ts",
+          "sha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a"
+        },
+        {
+          "path": "packages/operator-core/lib/personal-vault/coord-seal.ts",
+          "sha256": "8fba7d903be1dca6bb4cf44680858d7a9993001fba5a09e0dc69cf7b2538bfda"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/cue-authority.ts",
+          "sha256": "cad2ece382c896f2cfc4754a81277ace97764baea3649124ce55be4f12a04a40"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/scope-broadcast.ts",
+          "sha256": "e84a2ee8117d9e47ab20b052ed12167d52e76359f92f4570d2f1b118762af946"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+          "sha256": "24857706a35e6232534421d8dc6de78910a43ecaad8dc343456beaca19758342"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+          "sha256": "06ca2e92e1be4f4950525ced13529daa899f5d54a7b074ec27a28fad28fba097"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1307-personal-sealed-contents.sql",
+          "sha256": "5a60ff6f43c7f067f43f08c8252b5707284f8ce111e2c34c7f31fa24250c0d77"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql",
+          "sha256": "c54cbfa25e061513bff7dcb1dcb0820af84a3b92dcf090d7c91e2a23c83f128e"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected complete splitForSeal and sealedSummary plus both imported routing-field constants. The call partitions own envelope entries into local objects using a fixed Set, constructs a summary/marker and returns them. It invokes no database writer, callback or external send. Subsequent seal storage, sql.json serialization, transaction dispatch and coordination append remain separate unresolved candidates.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+        "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+        "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+        "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "splitForSeal",
+          "reason": "Inspected complete splitForSeal and sealedSummary plus both imported routing-field constants. The call partitions own envelope entries into local objects using a fixed Set, constructs a summary/marker and returns them. It invokes no database writer, callback or external send. Subsequent seal storage, sql.json serialization, transaction dispatch and coordination append remain separate unresolved candidates.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:packages/operator-core/lib/personal-vault/coord-seal.ts#8fba7d903be1dca6bb4cf44680858d7a9993001fba5a09e0dc69cf7b2538bfda",
+          "reason": "Inspected complete splitForSeal and sealedSummary plus both imported routing-field constants. The call partitions own envelope entries into local objects using a fixed Set, constructs a summary/marker and returns them. It invokes no database writer, callback or external send. Subsequent seal storage, sql.json serialization, transaction dispatch and coordination append remain separate unresolved candidates.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/personal-vault/sealed-contents.ts\",\"sealCoordEnvelope::<callback>\",\"sql\",\"8b2c97f0a39afc489871a8f98e4d7e73127d61f5e24d8c233a07f15e30554f99\"]#1",
+      "sourceSha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a",
+      "statementSha256": "8b2c97f0a39afc489871a8f98e4d7e73127d61f5e24d8c233a07f15e30554f99",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/personal-vault/sealed-contents.ts",
+          "sha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a"
+        },
+        {
+          "path": "packages/operator-core/lib/personal-vault/coord-seal.ts",
+          "sha256": "8fba7d903be1dca6bb4cf44680858d7a9993001fba5a09e0dc69cf7b2538bfda"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/cue-authority.ts",
+          "sha256": "cad2ece382c896f2cfc4754a81277ace97764baea3649124ce55be4f12a04a40"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/scope-broadcast.ts",
+          "sha256": "e84a2ee8117d9e47ab20b052ed12167d52e76359f92f4570d2f1b118762af946"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+          "sha256": "24857706a35e6232534421d8dc6de78910a43ecaad8dc343456beaca19758342"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+          "sha256": "06ca2e92e1be4f4950525ced13529daa899f5d54a7b074ec27a28fad28fba097"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1307-personal-sealed-contents.sql",
+          "sha256": "5a60ff6f43c7f067f43f08c8252b5707284f8ce111e2c34c7f31fa24250c0d77"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql",
+          "sha256": "c54cbfa25e061513bff7dcb1dcb0820af84a3b92dcf090d7c91e2a23c83f128e"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the exact SELECT set_config: app.workspace_id is a literal key, workspaceId is a bound scalar, and true makes it transaction-local. PostgreSQL set_config changes session configuration only; this statement does not advance a claim or lifecycle row. The surrounding sql.begin dispatch and database handle remain unresolved.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+        "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+        "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+        "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "params.workspaceId",
+          "reason": "Inspected the exact SELECT set_config: app.workspace_id is a literal key, workspaceId is a bound scalar, and true makes it transaction-local. PostgreSQL set_config changes session configuration only; this statement does not advance a claim or lifecycle row. The surrounding sql.begin dispatch and database handle remain unresolved.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "sql-function-call-requires-reachability-review",
+          "reason": "Inspected the exact SELECT set_config: app.workspace_id is a literal key, workspaceId is a bound scalar, and true makes it transaction-local. PostgreSQL set_config changes session configuration only; this statement does not advance a claim or lifecycle row. The surrounding sql.begin dispatch and database handle remain unresolved.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "set_config",
+          "reason": "Inspected the exact SELECT set_config: app.workspace_id is a literal key, workspaceId is a bound scalar, and true makes it transaction-local. PostgreSQL set_config changes session configuration only; this statement does not advance a claim or lifecycle row. The surrounding sql.begin dispatch and database handle remain unresolved.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#sealCoordEnvelope::<callback>",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/personal-vault/sealed-contents.ts\",\"snapshotActiveLabels\",\"sql\",\"291968f54da302a1b80db3aaaff4de271112ae427312e4bcdeed7a214d209308\"]#1",
+      "sourceSha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a",
+      "statementSha256": "291968f54da302a1b80db3aaaff4de271112ae427312e4bcdeed7a214d209308",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/personal-vault/sealed-contents.ts",
+          "sha256": "dfbbf77a9b43c31331a03484129b14ddcf6c4565f45f033dfb50ea26df60e49a"
+        },
+        {
+          "path": "packages/operator-core/lib/personal-vault/coord-seal.ts",
+          "sha256": "8fba7d903be1dca6bb4cf44680858d7a9993001fba5a09e0dc69cf7b2538bfda"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/cue-authority.ts",
+          "sha256": "cad2ece382c896f2cfc4754a81277ace97764baea3649124ce55be4f12a04a40"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/coordination/scope-broadcast.ts",
+          "sha256": "e84a2ee8117d9e47ab20b052ed12167d52e76359f92f4570d2f1b118762af946"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+          "sha256": "24857706a35e6232534421d8dc6de78910a43ecaad8dc343456beaca19758342"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+          "sha256": "06ca2e92e1be4f4950525ced13529daa899f5d54a7b074ec27a28fad28fba097"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1307-personal-sealed-contents.sql",
+          "sha256": "5a60ff6f43c7f067f43f08c8252b5707284f8ce111e2c34c7f31fa24250c0d77"
+        },
+        {
+          "path": "libs/papercusp/libs/db/sql/1347-personal-disclosures-reader-window-idx.sql",
+          "sha256": "c54cbfa25e061513bff7dcb1dcb0820af84a3b92dcf090d7c91e2a23c83f128e"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "Inspected the complete active-label SELECT: it reads only personal_disclosures, using workspace/agent scalar parameters and released_at filtering. Row mapping copies labels and defaults readerSet in memory. The inspected 1302/1303 definitions use built-in comparisons/current_setting and user foreign keys; the catalog observation found only built-in foreign-key check triggers. This classifies the query text, not the supplied SQL handle or its constructors.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#snapshotActiveLabels",
+        "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+        "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+        "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "params.workspaceId",
+          "reason": "Inspected the complete active-label SELECT: it reads only personal_disclosures, using workspace/agent scalar parameters and released_at filtering. Row mapping copies labels and defaults readerSet in memory. The inspected 1302/1303 definitions use built-in comparisons/current_setting and user foreign keys; the catalog observation found only built-in foreign-key check triggers. This classifies the query text, not the supplied SQL handle or its constructors.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#snapshotActiveLabels",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "params.agentOwnerId",
+          "reason": "Inspected the complete active-label SELECT: it reads only personal_disclosures, using workspace/agent scalar parameters and released_at filtering. Row mapping copies labels and defaults readerSet in memory. The inspected 1302/1303 definitions use built-in comparisons/current_setting and user foreign keys; the catalog observation found only built-in foreign-key check triggers. This classifies the query text, not the supplied SQL handle or its constructors.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/personal-vault/sealed-contents.ts#snapshotActiveLabels",
+            "source:packages/operator-core/lib/personal-vault/coord-seal.ts#splitForSeal",
+            "source:libs/papercusp/libs/db/sql/1302-personal-disclosure-labels.sql",
+            "source:libs/papercusp/libs/db/sql/1303-personal-disclosure-labels-rls.sql",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"buildClient\",\"helper-edge\",\"9db09f4ae3905ab1ad4da8ae8a636de2b21d5c39e51db2a84a0ae1ecfec5284f\"]#1",
       "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
