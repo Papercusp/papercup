@@ -1866,7 +1866,7 @@ export function gatewayPinEnv(account: string, provider?: string, ownerId?: stri
  * account. So never emit '' / null / `default` on a path whose intent is "the machine's own login":
  * emit `system`. (That is why the picker's default row carries `system`.)
  */
-export function accountRoutingMode(value: any): "auto" | "default" | "pin";
+export function accountRoutingMode(value: any): "pin" | "default" | "auto";
 /**
  * Return whether raw Codex auth.json content contains a usable ChatGPT access
  * token. Pure and secret-free: this only parses the shape needed by the Codex
@@ -2568,7 +2568,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "ok" | "refuse" | "warn";
+    level: "warn" | "ok" | "refuse";
     pct: number;
     estTokens: number;
     window: number;
@@ -2620,7 +2620,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "ok" | "refuse" | "warn";
+    level: "warn" | "ok" | "refuse";
     pct: number;
     estTokens: number;
     window: number;

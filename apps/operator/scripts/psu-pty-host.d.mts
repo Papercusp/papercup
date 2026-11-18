@@ -2176,7 +2176,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "superseded" | "closed" | "duplicate" | "queued";
+    schedule(msg: any): "queued" | "closed" | "superseded" | "duplicate";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -5339,7 +5339,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "cancelled" | "pending" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "pending" | "cancelled" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;
