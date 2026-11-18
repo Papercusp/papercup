@@ -159,7 +159,7 @@ describe('universal batching in the operator', () => {
       const key = (input as { key: string }).key;
       expect(ctx.principal?.slug).toBe('original-caller');
       expect(ctx.workspaceId).toBe('original-workspace');
-      ctx.principal = { kind: 'system', slug: 'scoped-' + key, workspaceId: ctx.workspaceId,
+      ctx.principal = { kind: 'system', slug: 'scoped-' + key, workspaceId: 'original-workspace',
         capabilities: new Set(['test:write']) };
       seen.push(['enter', key]);
       const first = await invoke();
@@ -192,9 +192,9 @@ describe('universal batching in the operator', () => {
     } };
     const input = { _batch: 1, items: [item('a', 'a'), item('b', 'b')] };
     const refused = data(await call(input, { ctx }));
-    expect(refused.results.map(row => row.error?.code)).toEqual([
-      gate === 'role' ? 'role_not_allowed' : 'missing_capability',
-      gate === 'role' ? 'role_not_allowed' : 'missing_capability',
+    expect(refused.results.map(row => row.error)).toMatchObject([
+      { code: gate === 'role' ? 'role_not_allowed' : 'missing_capability' },
+      { code: gate === 'role' ? 'role_not_allowed' : 'missing_capability' },
     ]);
     expect(handler).not.toHaveBeenCalled();
     expect(data(await call(input, { ctx: { ...ctx, role: 'architect', principal: {
