@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const ctl = vi.hoisted(() => ({ inWorkflow: false }));
-const dbosCalls = vi.hoisted(() => ({ steps: [] as string[] }));
+const dbosCalls = vi.hoisted(() => ({ steps: [] as string[], snapshots: [] as unknown[][] }));
 const captured = vi.hoisted(
   () => ({ runner: null as null | { runStep: (n: string, fn: () => Promise<unknown>) => Promise<unknown> } }),
 );
@@ -41,7 +41,10 @@ vi.mock('@papercusp/backup', () => ({
     captured.runner = r as typeof captured.runner;
   },
   workspaceBackupFor: () => ({
-    snapshot: async () => ({ snapshotId: 99, kopiaSnapshotId: 'kopia-default', bytesAdded: 1, durationMs: 1 }),
+    snapshot: async (...args: unknown[]) => {
+      dbosCalls.snapshots.push(args);
+      return { snapshotId: 99, kopiaSnapshotId: 'kopia-default', bytesAdded: 1, durationMs: 1 };
+    },
   }),
 }));
 
@@ -61,6 +64,7 @@ import {
 afterEach(() => {
   ctl.inWorkflow = false;
   dbosCalls.steps.length = 0;
+  dbosCalls.snapshots.length = 0;
   captured.runner = null;
   setBackupSnapshotExecutor(null);
   setRestoreInPlaceExecutor(null);
@@ -116,6 +120,27 @@ describe('startBackupSnapshotWorkflow', () => {
   it('falls back to the real per-workspace snapshot when no executor is injected', async () => {
     const r = await startBackupSnapshotWorkflow({ workspaceId: 'ws-1', reason: 'manual' }, 'n1');
     expect(r.kopiaSnapshotId).toBe('kopia-default');
+  });
+
+  it('retains the exact existing receipt through the durable executor boundary', async () => {
+    const seen: Array<number | undefined> = [];
+    setBackupSnapshotExecutor(async (_workspaceId, _reason, _context, resumeSnapshotId) => {
+      seen.push(resumeSnapshotId);
+      return { snapshotId: resumeSnapshotId!, kopiaSnapshotId: 'resumed', bytesAdded: 0, durationMs: 1 };
+    });
+    const result = await startBackupSnapshotWorkflow({
+      workspaceId: 'ws-1', reason: 'pre_destructive', resumeSnapshotId: 99,
+    }, 'resume-99');
+    expect(result.snapshotId).toBe(99);
+    expect(seen).toEqual([99]);
+    expect(dbosCalls.snapshots).toEqual([]);
+  });
+
+  it('passes the exact receipt into guarded snapshot recovery without allocating a new row', async () => {
+    await startBackupSnapshotWorkflow({
+      workspaceId: 'ws-1', reason: 'pre_destructive', resumeSnapshotId: 99,
+    }, 'resume-99');
+    expect(dbosCalls.snapshots).toEqual([['pre_destructive', undefined, { resumeSnapshotId: 99 }]]);
   });
 });
 

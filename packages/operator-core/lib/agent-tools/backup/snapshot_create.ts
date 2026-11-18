@@ -101,15 +101,22 @@ export default defineTool({
       // tracking row exists (step 1 of snapshot(), well before the expensive
       // kopia shell-out), so even the deadline-loses branch can hand back a real
       // snapshotId to poll on. The snapshot promise is NOT cancelled when the
-      // deadline wins — it keeps running to completion in this same long-lived
-      // process; backup:snapshot_list is the authoritative way to observe it
-      // finish (this is exactly what the tool's own row-update step records).
-      let startedId: number | undefined;
+      // deadline wins — explicit resumes survive through the durable workflow
+      // when DBOS is launched; backup:snapshot_list observes completion.
+      let startedId: number | undefined = args.resumeSnapshotId;
       const wb = workspaceBackupFor(ws);
-      const snapshotPromise = wb.snapshot(args.reason, context, {
-        onStarted: (id) => { startedId = id; },
-        resumeSnapshotId: args.resumeSnapshotId,
-      });
+      const snapshotPromise = args.resumeSnapshotId !== undefined && dbosStarted()
+        ? (async () => {
+          const { startBackupSnapshotWorkflow } = await import('../../dbos/backup-workflow');
+          const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
+          return startBackupSnapshotWorkflow({
+            workspaceId: ws, reason: args.reason, context, resumeSnapshotId: args.resumeSnapshotId,
+          }, nonce);
+        })()
+        : wb.snapshot(args.reason, context, {
+          onStarted: (id) => { startedId = id; },
+          resumeSnapshotId: args.resumeSnapshotId,
+        });
       const deadline = new Promise<{ timedOut: true }>((resolve) => {
         setTimeout(() => resolve({ timedOut: true }), SAFE_DEADLINE_MS).unref();
       });

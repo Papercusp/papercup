@@ -43,6 +43,7 @@ export interface BackupSnapshotWorkflowInput {
   workspaceId: string;
   reason: SnapshotTriggerReason;
   context?: Record<string, unknown>;
+  resumeSnapshotId?: number;
 }
 
 /**
@@ -82,6 +83,7 @@ export type BackupSnapshotExecutor = (
   workspaceId: string,
   reason: SnapshotTriggerReason,
   context: Record<string, unknown> | undefined,
+  resumeSnapshotId?: number,
 ) => Promise<SnapshotResult>;
 
 // Default executor = the real per-workspace snapshot. Tests inject a stub so the
@@ -94,16 +96,18 @@ async function execute(
   workspaceId: string,
   reason: SnapshotTriggerReason,
   context: Record<string, unknown> | undefined,
+  resumeSnapshotId?: number,
 ): Promise<SnapshotResult> {
-  if (_executor) return _executor(workspaceId, reason, context);
-  return workspaceBackupFor(workspaceId).snapshot(reason, context);
+  if (_executor) return _executor(workspaceId, reason, context, resumeSnapshotId);
+  return workspaceBackupFor(workspaceId).snapshot(reason, context,
+    resumeSnapshotId === undefined ? undefined : { resumeSnapshotId });
 }
 
 async function backupSnapshotImpl(input: BackupSnapshotWorkflowInput): Promise<SnapshotResult> {
   // The durability comes from snapshot()'s INTERNAL runStep boundaries (via the
   // injected runner), not from wrapping the whole op as one step — so a resume
   // re-enters here and the completed inner steps replay their cached results.
-  return execute(input.workspaceId, input.reason, input.context);
+  return execute(input.workspaceId, input.reason, input.context, input.resumeSnapshotId);
 }
 
 export const backupSnapshotWorkflow = idempotentRegisterWorkflow('backupSnapshot', () =>

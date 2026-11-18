@@ -21,6 +21,22 @@ let homeDir: string;
 let sql: postgres.Sql;
 
 beforeAll(async () => {
+  // Native children inherit the committed-source loader while Vitest reads
+  // this local suite. Refuse mixed inputs before allocating a database or
+  // interpreting a SIGKILL from an older child as snapshot recovery evidence.
+  if (process.env.NODE_OPTIONS?.includes('committed-source-loader.mjs')) {
+    const repoRoot = resolve(packageRoot, '../..');
+    for (const path of [
+      'packages/operator-core/lib/dbos/backup-workflow-crash-resume.integration.test.ts',
+      'packages/operator-core/lib/dbos/backup-workflow.ts',
+      'packages/operator-core/test/_backup-crash-child.ts',
+    ]) {
+      const committed = spawnSync('git', ['show', 'HEAD:' + path], { cwd: repoRoot, maxBuffer: 8 * 1024 * 1024 });
+      expect(committed.status, 'await git-sync before backup crash proof: ' + path).toBe(0);
+      expect((await readFile(resolve(repoRoot, path))).equals(committed.stdout),
+        'await git-sync; committed-source loader would substitute ' + path).toBe(true);
+    }
+  }
   adminUri = await getTestPg();
   databaseName = 'backup_crash_' + randomBytes(5).toString('hex');
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
@@ -57,7 +73,7 @@ afterAll(async () => {
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
-function runChild(mode: 'crash' | 'recover') {
+function runChild(mode: 'crash' | 'recover', operation: 'restore' | 'snapshot' = 'restore') {
   return spawnSync(process.execPath, ['--import', 'tsx', childPath], {
     cwd: packageRoot,
     env: {
@@ -65,8 +81,9 @@ function runChild(mode: 'crash' | 'recover') {
       HOME: homeDir,
       BACKUP_CRASH_DB_DSN: dsn,
       BACKUP_CRASH_ROOT: root,
-      BACKUP_CRASH_OP_ID: operationId,
+      BACKUP_CRASH_OP_ID: operation === 'snapshot' ? operationId + '-snapshot' : operationId,
       BACKUP_CRASH_MODE: mode,
+      BACKUP_CRASH_OPERATION: operation,
     },
     timeout: 120_000,
     encoding: 'utf8',
@@ -98,6 +115,32 @@ describe('DBOS backup restore survives real producer death (P-023)', () => {
     const workflows = await sql.unsafe(
       'SELECT workflow_uuid, status FROM dbos.workflow_status WHERE workflow_uuid = $1',
       [workflowId],
+    );
+    expect(workflows).toEqual([{ workflow_uuid: workflowId, status: 'SUCCESS' }]);
+  }, 300_000);
+
+  it('SIGKILL preserves an exact snapshot resume and replays its completed step on a fresh executor', async () => {
+    const crashed = runChild('crash', 'snapshot');
+    expect(crashed.signal, 'crash child stderr: ' + crashed.stderr).toBe('SIGKILL');
+    const before = await sql.unsafe("SELECT phase, mode FROM test_backup.calls WHERE phase LIKE 'snapshot-%' ORDER BY phase, mode");
+    expect(before.map(row => [row.phase, row.mode])).toEqual([
+      ['snapshot-complete:80670', 'crash'],
+      ['snapshot-receipt:80670', 'crash'],
+    ]);
+
+    const recovered = runChild('recover', 'snapshot');
+    expect(recovered.status, 'recovery stdout: ' + recovered.stdout + '\nstderr: ' + recovered.stderr).toBe(0);
+    expect(recovered.stdout).toContain('BACKUP_SNAPSHOT_RECOVERED');
+    const calls = await sql.unsafe("SELECT phase, mode FROM test_backup.calls WHERE phase LIKE 'snapshot-%' ORDER BY phase, mode");
+    expect(calls.map(row => [row.phase, row.mode])).toEqual([
+      ['snapshot-complete:80670', 'crash'],
+      ['snapshot-complete:80670', 'recover'],
+      ['snapshot-receipt:80670', 'crash'],
+    ]);
+    const workflowId = 'backup-snapshot:ws-p023-crash:pre_destructive:' + operationId + '-snapshot';
+    const workflows = await sql.unsafe(
+      "SELECT workflow_uuid, status FROM dbos.workflow_status WHERE workflow_uuid LIKE $1",
+      ['%' + operationId + '-snapshot%'],
     );
     expect(workflows).toEqual([{ workflow_uuid: workflowId, status: 'SUCCESS' }]);
   }, 300_000);

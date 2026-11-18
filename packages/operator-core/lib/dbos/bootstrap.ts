@@ -37,7 +37,6 @@ import {
   dbosOrchestratorActive,
   dbosTimersActive,
   dbosProvisionActive,
-  dbosBackupActive,
   dbosRoutinesActive,
   dbosCurationActive,
   dbosReactionsActive,
@@ -505,15 +504,8 @@ async function startDbosOnce(): Promise<void> {
     // claim path in provision/runner stands down when this is active.
     await import('./provision-workflow');
   }
-  if (dbosBackupActive()) {
-    // dbos-flows P-011 (opt-in; enable with PAPERCUSP_DBOS_BACKUP=1): the workspace
-    // snapshot op as a durable workflow via the generic StepRunner seam (D-010).
-    // Register the workflow before launch (so recovery can resume an interrupted
-    // snapshot) and inject the DBOS-backed StepRunner into @papercusp/backup. When
-    // off, the lib's snapshot() runs un-stepped exactly as before.
-    const { wireBackupStepRunner } = await import('./backup-workflow');
-    wireBackupStepRunner();
-  }
+  const { wireBackupStepRunner } = await import('./backup-workflow');
+  wireBackupStepRunner();
   if (dbosRoutinesActive()) {
     // git-sync-auto-commit Phase 1 (opt-in; PAPERCUSP_DBOS_ROUTINES=1): the generic
     // scheduled-routines engine — a durable `routinesTick` driving
