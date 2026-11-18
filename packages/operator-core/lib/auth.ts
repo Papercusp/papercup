@@ -16,7 +16,8 @@
  * See PLAN-operator-arc-2026-05-12.md and migration 058.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { TtlMap } from './ttl-map';
 import { activeWorkspaceId } from './workspace-registry';
@@ -64,6 +65,79 @@ export interface Session {
   token: string;
   user_id: string;
   expires_at: number; // ms
+}
+
+export interface WorkspaceUserBindingSource {
+  userId: string | null;
+  userPresent: boolean;
+  active: boolean | null;
+  /** Content pins only; browser credentials never leave the database. */
+  claimRevisions: string[];
+}
+
+/** Local host workspace claims, not membership, human ownership or consent.
+ * The workspace is fixed by the session writer (migration 883), never inferred
+ * from the active workspace or the default account. Expired/inactive/orphaned
+ * claims remain visible so a permission-change census cannot discard them.
+ * Users without any claim on this workspace are not silently added to it.
+ *
+ * A pinned read holds both source tables, including insertion gaps, through the
+ * caller's effect. Resolve retained credentials BEFORE acquiring this lease:
+ * getSessionUser can update last_seen_at using the pool and must not run behind
+ * these locks on another connection. This reader does not authorize an editor.
+ * Credential expiry must still be checked at the protected effect boundary. */
+export async function readWorkspaceUserBindings(sql: Sql, workspaceId: string,
+  options: { expectedRevision?: string; pinForEffect?: boolean } = {}) {
+  options = { ...options };
+  if (!workspaceId || workspaceId === '*' || workspaceId !== workspaceId.trim() ||
+      /[\u0000-\u001f]/u.test(workspaceId) ||
+      (options.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedRevision)))
+    throw new Error('workspace user bindings require an exact workspace and revision');
+  const pinned = options.pinForEffect === true || options.expectedRevision !== undefined;
+  const transaction = typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function';
+  if (pinned && !transaction) throw new Error('pinned workspace user bindings require an existing transaction');
+  const read = async (tx: Sql) => {
+    const [isolation] = await tx<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS isolation`;
+    if (pinned) {
+      if (isolation?.isolation !== 'read committed')
+        throw new Error('pinned workspace user bindings require read committed isolation');
+      await tx`LOCK TABLE harness_shared.users, harness_shared.user_sessions IN SHARE MODE`;
+    } else if (!['repeatable read', 'serializable'].includes(isolation?.isolation ?? ''))
+      throw new Error('workspace user binding snapshot requires repeatable read or serializable isolation');
+    const [visibility] = await tx<Array<{ workspace: string | null; restricted: boolean }>>`
+      SELECT current_setting('app.workspace_id', true) AS workspace,
+        (row_security_active('harness_shared.users') OR
+         row_security_active('harness_shared.user_sessions')) AS restricted`;
+    if (!visibility || (visibility.restricted && visibility.workspace !== workspaceId))
+      throw new Error('workspace user bindings are not visible to this connection');
+    const users = new Map<string | null, WorkspaceUserBindingSource>();
+    // Hash only authorization inputs. last_seen_at, names and password hashes
+    // do not alter getSessionUser's already-minted cookie authority. In
+    // particular, its best-effort last_seen_at update must not stale this pin.
+    const query = tx<Array<{ userId: string | null; userPresent: boolean; active: boolean | null; claimRevision: string }>>`
+      SELECT s.user_id::text AS "userId", u.id IS NOT NULL AS "userPresent", u.is_active AS active,
+        encode(sha256(convert_to(jsonb_build_array(s.token, s.user_id, s.workspace_id,
+          s.capabilities, extract(epoch FROM s.expires_at), u.id, u.is_active)::text, 'UTF8')), 'hex') AS "claimRevision"
+        FROM harness_shared.user_sessions s LEFT JOIN harness_shared.users u ON u.id = s.user_id
+       WHERE s.workspace_id = ${workspaceId} ORDER BY s.user_id NULLS LAST, s.token`;
+    for await (const batch of query.cursor(32)) {
+      for (const row of batch) {
+        let user = users.get(row.userId);
+        if (!user) {
+          user = { userId: row.userId, userPresent: row.userPresent, active: row.active, claimRevisions: [] };
+          users.set(row.userId, user);
+        }
+        user.claimRevisions.push(row.claimRevision);
+      }
+    }
+    const sources = [...users.values()].map(user => ({ ...user, claimRevisions: user.claimRevisions.sort() }));
+    const revision = createHash('sha256').update(JSON.stringify({ workspaceId, users: sources })).digest('hex');
+    return options.expectedRevision !== undefined && revision !== options.expectedRevision
+      ? { status: 'stale' as const, revision }
+      : { status: 'ok' as const, revision, users: sources };
+  };
+  return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
+    tx => read(tx as unknown as Sql));
 }
 
 function newToken(): string {
