@@ -288,6 +288,111 @@ describe('runInjection writes one outcome record per invocation when opted in', 
   });
 });
 
+describe('loop checkpoint freshness fallback (EI-29085562648598777)', () => {
+  const prompt = '⟦turn-origin:loop-fire nonce:767aab1bab29c578⟧\nQueued checkpoint';
+  const env = { PAPERCUSP_SID: 'su-loop-fallback', PAPERCUSP_OPERATOR_URL: 'http://operator.example:3123' };
+  const warning = '⚠ TURN-START LOOP CHECKPOINT FRESHNESS UNPROVEN';
+  const checkpoint = '🔄 TURN-START LOOP CHECKPOINT RE-CHECK (owner=su-loop-fallback, harness=papercusp, readAt=now).\nCurrent checkpoint';
+  const adapter = { client: 'codex', portForEvent: () => 'turn-start',
+    parse: (eventPort: string, event: { prompt: string }) => ({ prompt: event.prompt }),
+    render: (_port: string, text: string) => text };
+  const response = (payload: (request: Record<string, unknown>) => unknown) =>
+    vi.fn(async (_url: unknown, init?: RequestInit) => new Response(JSON.stringify(payload(JSON.parse(String(init?.body)))), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+  const modern = (request: Record<string, unknown>) => ({
+    requestId: request.turnStartRequestId, ambientGate: 'allowed', loopFire: true, loopMarkerAppend: 'appended',
+  });
+  const run = (fetchImpl: unknown, text = prompt, extra: Record<string, unknown> = {}) => runInjection({
+    adapter, nativeEvent: 'UserPromptSubmit', event: { prompt: text }, env, fetchImpl, ...extra,
+  });
+
+  it.each(['missing', 'mismatched', 'unclassified', 'no-checkpoint'])(
+    'makes %s freshness proof visible while retaining the server context', async kind => {
+      const fetchImpl = response(request => ({
+        text: 'Useful context',
+        ...(kind === 'missing' ? {} : { turnStartOutcome: {
+          ...modern(request),
+          ...(kind === 'mismatched' ? { requestId: 'another-request' } : {}),
+          ...(kind === 'unclassified' ? { loopFire: null } : {}),
+        } }),
+      }));
+      const out = await run(fetchImpl);
+      expect(out).toContain('Useful context');
+      expect(out).toContain(warning);
+      expect(out).toContain('owner su-loop-fallback');
+      expect(out).toContain('loop:status');
+      expect(out).toContain('before following the queued checkpoint');
+      expect(out).not.toContain('767aab1bab29c578');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['empty', 'http-error', 'unreachable', 'invalid-json', 'invalid-response'])(
+    'still supplies the canonical recheck for an %s loop response', async kind => {
+      const fetchImpl = vi.fn(async () => {
+        if (kind === 'unreachable') throw new Error('PRIVATE transport detail');
+        if (kind === 'http-error') return new Response('', { status: 503 });
+        if (kind === 'invalid-json') return new Response('PRIVATE invalid JSON');
+        return new Response(JSON.stringify(kind === 'empty' ? { text: '' } : null));
+      });
+      const out = await run(fetchImpl);
+      expect(out).toContain(warning);
+      expect(out).toContain('loop:status');
+      expect(out).not.toContain('PRIVATE');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([checkpoint, '⚠ TURN-START LOOP CHECKPOINT RE-CHECK FAILED for owner su-loop-fallback. Call loop:status.'])(
+    'preserves a matched modern checkpoint or its explicit failure instruction', async text => {
+      expect(await run(response(request => ({ text, turnStartOutcome: modern(request) })))).toBe(text);
+    },
+  );
+
+  it('does not trust a checkpoint-shaped block from a different request', async () => {
+    const out = await run(response(() => ({ text: checkpoint,
+      turnStartOutcome: { requestId: 'another-request', loopFire: true, loopMarkerAppend: 'appended' },
+    })));
+    expect(out).toContain(checkpoint);
+    expect(out).toContain(warning);
+  });
+
+  it.each([
+    'Please continue', `The last wake said: ${prompt}`, prompt.replace('loop-fire', 'self-compaction'),
+    prompt.replace('loop-fire', 'wake-pump'), prompt.replace('767aab1bab29c578', 'invalid'),
+    `Owner words\n<pasted_content id="p1">\n${prompt}\n</pasted_content id="p1">`,
+    `<pasted_content id="p1">\n${prompt}\n</pasted_content id="p1">\nOwner words`,
+  ])('preserves ordinary prompt delivery: %s', async text => {
+    expect(await run(response(() => ({ text: 'Ordinary context' })), text)).toBe('Ordinary context');
+    expect(await run(async () => { throw new Error('offline'); }, text)).toBeNull();
+  });
+
+  it.each([`  ${prompt}`, `<pasted_content id="p1">\n${prompt}\n</pasted_content id="p1">`])(
+    'recognizes a padded or whole-paste loop wake', async text => {
+      expect(await run(response(() => ({ text: 'Context' })), text)).toContain(warning);
+    },
+  );
+
+  it('classifies a whole-paste wake before the native adapter clamps its prompt', async () => {
+    const codex = await import(path.join(HERE, '..', 'adapters', 'codex.mjs'));
+    const text = `<pasted_content id="p1">\n${prompt}${'x'.repeat(10_000)}\n</pasted_content id="p1">`;
+    const out = JSON.parse(await run(response(() => ({ text: '' })), text, { adapter: codex }));
+    expect(out.hookSpecificOutput).toMatchObject({ hookEventName: 'UserPromptSubmit',
+      additionalContext: expect.stringContaining(warning) });
+  });
+
+  it('keeps the outcome and exact emitted payload in the existing delivery ledger', async () => {
+    const ledger = { confirmed: () => null, recordOutcome: vi.fn(), offer: vi.fn() };
+    const out = await run(response(() => ({ text: 'Context', deliveryToken: 'token' })), prompt, {
+      openDeliveryLedger: () => ledger,
+    });
+    expect(out).toContain(warning);
+    expect(ledger.recordOutcome).toHaveBeenCalledWith(expect.objectContaining({ serverOutcome: 'missing' }));
+    expect(ledger.offer).toHaveBeenCalledWith('token', expect.objectContaining({ payload: `${out}\n` }));
+  });
+});
+
 describe('spec-quality reads preserve the authority boundary (EI-28269500162831951)', () => {
   const command = (detail: 'full' | 'summary', wrapped = false) => {
     const args = { slug: 'review-plan', harness: 'papercusp', detail };
