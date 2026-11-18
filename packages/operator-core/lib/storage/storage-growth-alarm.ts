@@ -834,8 +834,8 @@ export async function measureNativeDiskHeadroomAlarm(sql: Pick<import('postgres'
       AND r.started_at<to_timestamp($2/1000.0)-interval '24 hours'+(h+1)*interval '1 hour')) AS complete
     FROM (VALUES ('/'),('/mnt/data'),('/mnt/cold-a'),('/mnt/cold-b')) d(device)
     CROSS JOIN generate_series(0,23) h`, [scope.host, observed, producerPrefix]);
-  const { readDiskConsumerCensus } = await import('./disk-consumer-census');
-  const native = await Promise.all(HEADROOM_DEVICES.map(device => readDiskConsumerCensus(sql as never, {
+  const { readCompleteDiskConsumerCensus } = await import('./disk-consumer-census');
+  const native = await Promise.all(HEADROOM_DEVICES.map(device => readCompleteDiskConsumerCensus(sql as never, {
     host: scope.host, device, orderBy: 'growth', limit: 20, expectedDevices: [device],
     asOf: new Date(observed), now: new Date(observed),
   })));
@@ -1110,11 +1110,11 @@ async function defaultListTableSizes(): Promise<TableSizeRow[]> {
 }
 
 async function defaultReadDiskCensus(): Promise<readonly CensusDeviceView[]> {
-  const { readDiskConsumerCensus, resolveCensusDevices } = await import('./disk-consumer-census');
+  const { readCompleteDiskConsumerCensus, resolveCensusDevices } = await import('./disk-consumer-census');
   const { sql } = getOrgPg();
   const expectedDevices = (await resolveCensusDevices()).map(d => d.device)
     .filter(device => (HEADROOM_DEVICES as readonly string[]).includes(device));
-  const result = await readDiskConsumerCensus(sql as never, { orderBy: 'growth', limit: 20, expectedDevices });
+  const result = await readCompleteDiskConsumerCensus(sql as never, { orderBy: 'growth', limit: 20, expectedDevices });
   return result.devices.filter(d => (HEADROOM_DEVICES as readonly string[]).includes(d.device));
 }
 

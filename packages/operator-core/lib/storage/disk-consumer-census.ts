@@ -26,7 +26,7 @@
  * Linux-only (GNU du flags, /proc/self/mountinfo); other platforms skip with a reason.
  */
 import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants, promises as fsp, statfs as statfsCb } from 'node:fs';
 import { request } from 'node:http';
 import { hostname } from 'node:os';
@@ -1537,6 +1537,12 @@ export interface CensusDeviceView {
   consumers?: CensusGrowthRow[];
   consumersTotal?: number;
   truncatedByLimit?: boolean;
+  consumersReturned?: number;
+  /** Rows preceding this page: total = pageStart + returned + omitted. */
+  consumersPageStart?: number;
+  /** Remaining rows in this pinned population, recoverable through nextConsumerCursor. */
+  consumersOmitted?: number;
+  nextConsumerCursor?: string | null;
 }
 
 interface RunRow {
@@ -1553,7 +1559,8 @@ interface RunRow {
 
 async function consumersOf(sql: CensusSql, runId: string): Promise<CensusConsumer[]> {
   const rows = await sql<{ consumer: string; kind: CensusConsumerKind; depth: number; bytes: string | number }>`
-    SELECT consumer, kind, depth, bytes FROM harness_shared.disk_census_consumers WHERE run_id = ${runId}`;
+    SELECT consumer, kind, depth, bytes FROM harness_shared.disk_census_consumers WHERE run_id = ${runId}
+     ORDER BY consumer COLLATE "C"`;
   return rows.map((r) => ({ consumer: r.consumer, kind: r.kind, depth: Number(r.depth), bytes: Number(r.bytes) }));
 }
 
@@ -1579,56 +1586,169 @@ function censusProducerBuild(note: string | null): string | null {
   try { return encoded ? decodeURIComponent(encoded) : null; } catch { return null; }
 }
 
-/** The census read: per device, each consumer's size and its growth over the last ~24h. */
-export async function readDiskConsumerCensus(
-  sql: CensusSql,
-  opts: {
+export interface CensusReadOptions {
     host?: string;
     device?: string;
     orderBy?: 'bytes' | 'growth';
+    /** Display page size only; baseline search always drains its complete population. */
     limit?: number;
+    /** Resume one device's pinned consumer population, including after process restart. */
+    cursor?: string;
     /** Watched devices expected to have rows; one with none is reported `missing`. */
     expectedDevices?: readonly string[];
     /** Historical selection ceiling, separate from the staleness clock. */
     asOf?: Date;
     now?: Date;
-  } = {},
+}
+
+interface CensusConsumerCursor {
+  version: 1;
+  host: string;
+  device: string;
+  runId: string;
+  orderBy: 'bytes' | 'growth';
+  fingerprint: string;
+  after: string;
+}
+
+/** A continuation never silently substitutes a newer run or changed population. */
+export class CensusReadRestartError extends Error {
+  readonly code = 'census_restart_required';
+  readonly recovery = 'Restart storage:census without cursor; the previous population is unavailable or changed.';
+}
+
+function decodeConsumerCursor(encoded: string): CensusConsumerCursor {
+  try {
+    const bytes = Buffer.from(encoded, 'base64url');
+    if (bytes.toString('base64url') !== encoded) throw new Error('noncanonical encoding');
+    const value = JSON.parse(bytes.toString('utf8')) as CensusConsumerCursor;
+    if (value.version !== 1 || typeof value.host !== 'string' || !value.host
+      || typeof value.device !== 'string' || !value.device || typeof value.after !== 'string'
+      || typeof value.runId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.runId)
+      || !['bytes', 'growth'].includes(value.orderBy) || typeof value.fingerprint !== 'string'
+      || !/^[0-9a-f]{64}$/.test(value.fingerprint)) throw new Error('invalid fields');
+    return value;
+  } catch {
+    throw new CensusReadRestartError('Invalid census consumer cursor; restart the read.');
+  }
+}
+
+interface BaselineRow {
+  run_id: string;
+  finished_at: Date;
+  note: string | null;
+  avail_bytes: string | number;
+  size_bytes: string | number;
+  distance: string;
+}
+
+/** Query work is bounded, never the set of baselines that may establish truth. */
+const BASELINE_PAGE_SIZE = 100;
+async function findCensusBaseline(sql: CensusSql, host: string, run: RunRow, complete: boolean) {
+  const finishedAt = new Date(run.finished_at);
+  const target = new Date(finishedAt.getTime() - 24 * 3600_000);
+  let afterDistance: string | null = null;
+  let afterRun: string | null = null;
+  let count = 0;
+  let readableCount = 0;
+  let base: BaselineRow | undefined;
+  const population = createHash('sha256');
+  for (;;) {
+    const page: BaselineRow[] = await sql<BaselineRow>`
+      SELECT run_id, finished_at, note, avail_bytes, size_bytes,
+             abs(extract(epoch FROM (finished_at - ${target}::timestamptz)))::text AS distance
+        FROM harness_shared.disk_census_runs
+       WHERE host = ${host} AND device = ${run.device} AND complete
+         AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
+         AND (${afterDistance}::numeric IS NULL OR
+           (abs(extract(epoch FROM (finished_at - ${target}::timestamptz))), run_id) >
+           (${afterDistance}::numeric, ${afterRun}::uuid))
+       ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz))), run_id
+       LIMIT ${BASELINE_PAGE_SIZE}`;
+    for (const candidate of page) {
+      // Include rejected rows too: a later insert or repair requires resync,
+      // rather than changing the meaning of an already-issued continuation.
+      population.update(JSON.stringify(candidate));
+      count++;
+      if (censusScanIssues(candidate.note).length) continue;
+      readableCount++;
+      if (complete && !base && censusVisibility(candidate.note) === censusVisibility(run.note)) base = candidate;
+    }
+    if (page.length < BASELINE_PAGE_SIZE) break;
+    const last = page[page.length - 1]!;
+    afterDistance = last.distance;
+    afterRun = last.run_id;
+  }
+  return { base, count, readableCount, fingerprint: population.digest('hex') };
+}
+
+/** Each page observes one read-only snapshot; its cursor pins and verifies that source across calls. */
+export async function readDiskConsumerCensus(
+  sql: CensusSql, opts: CensusReadOptions = {},
 ): Promise<{ host: string; devices: CensusDeviceView[] }> {
-  const host = opts.host ?? hostname();
+  const cursor = opts.cursor ? decodeConsumerCursor(opts.cursor) : undefined;
+  if (cursor && ((opts.host !== undefined && opts.host !== cursor.host)
+    || (opts.device !== undefined && opts.device !== cursor.device)
+    || (opts.orderBy !== undefined && opts.orderBy !== cursor.orderBy))) {
+    throw new CensusReadRestartError('Census cursor host, device and ordering must remain unchanged.');
+  }
+  return sql.begin(async tx => {
+    await tx`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`;
+    return readCensusSnapshot(tx, opts, cursor);
+  });
+}
+
+async function readCensusSnapshot(
+  sql: CensusSql, opts: CensusReadOptions, cursor?: CensusConsumerCursor,
+): Promise<{ host: string; devices: CensusDeviceView[] }> {
+  const host = cursor?.host ?? opts.host ?? hostname();
+  const device = cursor?.device ?? opts.device;
+  const orderBy = cursor?.orderBy ?? opts.orderBy ?? 'bytes';
   const now = opts.now ?? new Date();
   const limit = Math.max(1, Math.min(opts.limit ?? 30, 500));
   const latest = await sql<RunRow>`
-    SELECT DISTINCT ON (device) run_id, device, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note
+    SELECT DISTINCT ON (device) run_id, device, finished_at, finished_at::text AS finished_at_exact,
+           started_at::text AS started_at_exact, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note
       FROM harness_shared.disk_census_runs
-     WHERE host = ${host} ${opts.device ? sql`AND device = ${opts.device}` : sql``}
+     WHERE host = ${host} ${device ? sql`AND device = ${device}` : sql``}
+       AND (${cursor?.runId ?? null}::uuid IS NULL OR run_id = ${cursor?.runId ?? null}::uuid)
        ${opts.asOf ? sql`AND finished_at <= ${opts.asOf}` : sql``}
      ORDER BY device, finished_at DESC, run_id`;
   const devices: CensusDeviceView[] = [];
+  if (cursor && latest.length !== 1) throw new CensusReadRestartError('Pinned census run was pruned or replaced.');
   for (const run of latest) {
     const finishedAt = new Date(run.finished_at);
-    const target = new Date(finishedAt.getTime() - 24 * 3600_000);
-    const candidates = await sql<{ run_id: string; finished_at: Date; note: string | null; avail_bytes: string | number; size_bytes: string | number }>`
-      SELECT run_id, finished_at, note, avail_bytes, size_bytes FROM harness_shared.disk_census_runs
-       WHERE host = ${host} AND device = ${run.device} AND complete
-         AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
-       ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz))), run_id
-       LIMIT 100`;
     // Changed visibility is not changed consumption. Prefer a comparable clean
     // baseline; otherwise growth stays unknown instead of inventing a spike.
     const coverageIssues = censusScanIssues(run.note);
     const complete = run.complete && coverageIssues.length === 0;
     if (!run.complete && coverageIssues.length === 0) coverageIssues.push('incomplete-run');
-    const readableCandidates = candidates.filter((candidate) => censusScanIssues(candidate.note).length === 0);
-    const base = complete
-      ? readableCandidates.find((candidate) => censusVisibility(candidate.note) === censusVisibility(run.note))
-      : undefined;
+    const search = await findCensusBaseline(sql, host, run, complete);
+    const { base } = search;
     const baselineStatus: CensusBaselineStatus = !complete ? 'latest-incomplete'
       : base ? 'comparable'
-      : candidates.length === 0 ? 'unavailable'
-      : readableCandidates.length === 0 ? 'incomplete-candidates'
+      : search.count === 0 ? 'unavailable'
+      : search.readableCount === 0 ? 'incomplete-candidates'
       : 'visibility-mismatch';
-    const rows = joinCensusGrowth(await consumersOf(sql, run.run_id), base ? await consumersOf(sql, base.run_id) : null);
-    const sorted = sortCensusRows(rows, opts.orderBy);
+    const consumers = await consumersOf(sql, run.run_id);
+    const baselineConsumers = base ? await consumersOf(sql, base.run_id) : null;
+    const fingerprint = createHash('sha256').update(JSON.stringify({ run, candidates: search.fingerprint,
+      consumers, baselineConsumers })).digest('hex');
+    if (cursor && cursor.fingerprint !== fingerprint) {
+      throw new CensusReadRestartError('Pinned census source or baseline population changed; restart the read.');
+    }
+    // Stable identity tie-breaks must not depend on SQL insertion/traversal order.
+    const rows = joinCensusGrowth(consumers, baselineConsumers)
+      .sort((a, b) => a.consumer < b.consumer ? -1 : a.consumer > b.consumer ? 1 : 0);
+    const sorted = sortCensusRows(rows, orderBy);
+    const previous = cursor ? sorted.findIndex(row => row.consumer === cursor.after) : -1;
+    if (cursor && previous < 0) throw new CensusReadRestartError('Pinned consumer identity is no longer present.');
+    const start = previous + 1;
+    const page = sorted.slice(start, start + limit);
+    const omitted = sorted.length - start - page.length;
+    const nextConsumerCursor = omitted > 0 ? Buffer.from(JSON.stringify({ version: 1, host,
+      device: run.device, runId: run.run_id, orderBy, fingerprint, after: page[page.length - 1]!.consumer,
+    } satisfies CensusConsumerCursor)).toString('base64url') : null;
     const used = Number(run.used_bytes);
     const attributed = Number(run.attributed_bytes);
     const unattributed = Math.max(0, used - attributed);
@@ -1656,14 +1776,36 @@ export async function readDiskConsumerCensus(
       baselineStatus,
       baselineAvailBytes: base ? Number(base.avail_bytes) : null,
       baselineSizeBytes: base ? Number(base.size_bytes) : null,
-      consumers: sorted.slice(0, limit),
+      consumers: page,
       consumersTotal: sorted.length,
-      truncatedByLimit: sorted.length > limit,
+      consumersReturned: page.length,
+      consumersPageStart: start,
+      consumersOmitted: omitted,
+      nextConsumerCursor,
+      truncatedByLimit: omitted > 0,
     });
   }
   for (const expected of opts.expectedDevices ?? []) {
-    if (opts.device && expected !== opts.device) continue;
+    if (device && expected !== device) continue;
     if (!devices.some((d) => d.device === expected)) devices.push({ device: expected, missing: true });
   }
   return { host, devices };
+}
+
+/** Decision consumers drain the same public continuation; display limits cannot hide evidence. */
+export async function readCompleteDiskConsumerCensus(sql: CensusSql, opts: Omit<CensusReadOptions, 'cursor'> = {}) {
+  const result = await readDiskConsumerCensus(sql, opts);
+  for (const device of result.devices) {
+    while (device.nextConsumerCursor) {
+      const page = await readDiskConsumerCensus(sql, { ...opts, host: result.host, device: device.device,
+        cursor: device.nextConsumerCursor });
+      const next = page.devices[0]!;
+      device.consumers!.push(...next.consumers!);
+      device.nextConsumerCursor = next.nextConsumerCursor;
+      device.consumersOmitted = next.consumersOmitted;
+      device.truncatedByLimit = next.truncatedByLimit;
+      device.consumersReturned = device.consumers!.length;
+    }
+  }
+  return result;
 }

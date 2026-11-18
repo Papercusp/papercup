@@ -21,6 +21,7 @@ import {
   apiStoreConsumers,
   diskCensusPassInFlight,
   pruneDiskCensus,
+  readCompleteDiskConsumerCensus,
   readDiskConsumerCensus,
   runDiskConsumerCensusOnce,
   unattributedKey,
@@ -50,6 +51,7 @@ let rootSql: postgres.Sql;
 let notificationSql: postgres.Sql;
 let sql: CensusSql;
 let fixture: string;
+let censusDatabaseUri: string;
 
 beforeEach(() => { invalidation.notify.mockClear(); });
 
@@ -80,7 +82,8 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 2, onnotice: () => {} });
+  censusDatabaseUri = u.toString();
+  rootSql = postgres(censusDatabaseUri, { max: 2, onnotice: () => {} });
   // Drizzle replaces its client's timestamp/JSON codecs. Never give it the
   // native census client, whose Date parameters need postgres.js serialization.
   notificationSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
@@ -110,6 +113,144 @@ afterAll(async () => {
   if (fixture) rmSync(fixture, { recursive: true, force: true });
   await rootSql?.end({ timeout: 5 });
   await notificationSql?.end({ timeout: 5 });
+});
+
+describe('lossless persisted census reader (real PG)', () => {
+  const at = new Date('2026-11-18T12:00:00Z');
+  const write = (host: string, runId: string, finishedAt: Date, consumers: CensusConsumer[], note = 'du walked as root') =>
+    writeCensusRun(sql, { runId, host, device: device(), startedAt: finishedAt, finishedAt,
+      attributedBytes: 50 * G, complete: true, note, consumers });
+
+  it.each([99, 100, 101, 401])('finds the decisive last baseline among %i candidates across insertion permutations', async count => {
+    for (const reverse of [false, true]) {
+      const host = `baseline-${count}-${reverse}-${randomUUID()}`;
+      const runIds = Array.from({ length: count }, () => randomUUID()).sort();
+      const ids = Array.from({ length: count }, (_, i) => i + 1);
+      if (reverse) ids.reverse();
+      // Equal-distance ties cross every page boundary. The only comparable
+      // candidate is last; all earlier rows must be classified, not capped.
+      for (const i of ids) {
+        await write(host, runIds[i - 1]!, new Date(at.getTime() - 24 * HOUR), [dir('/decisive', 3 * G)],
+          i === count ? 'du walked as root' : i % 2 ? 'du walked unprivileged' : 'du walked as root; du failed: unreadable');
+      }
+      const runId = randomUUID();
+      await write(host, runId, at, [dir('/decisive', 8 * G)]);
+      const view = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+      expect(view).toMatchObject({ runId, baselineRunId: runIds[count - 1], baselineStatus: 'comparable',
+        consumers: [{ consumer: '/decisive', growth24hBytes: 5 * G }] });
+      await rootSql`DELETE FROM harness_shared.disk_census_runs WHERE host = ${host}`;
+    }
+  });
+
+  it('pins one repeatable snapshot across baseline pages during a concurrent insert', async () => {
+    const host = `snapshot-${randomUUID()}`;
+    const runIds = Array.from({ length: 101 }, () => randomUUID()).sort();
+    for (let i = 1; i <= 101; i++) {
+      await write(host, runIds[i - 1]!, new Date(at.getTime() - 23 * HOUR), [dir('/decisive', 2 * G)],
+        i === 101 ? 'du walked as root' : 'du walked unprivileged');
+    }
+    await write(host, randomUUID(), at, [dir('/decisive', 8 * G)]);
+    const concurrentId = randomUUID();
+    let inserted = false;
+    const snapshotSql = new Proxy(sql, {
+      get(target, property, receiver) {
+        if (property !== 'begin') return Reflect.get(target, property, receiver);
+        return <T>(fn: (tx: CensusSql) => Promise<T>) => sql.begin(async tx => fn(new Proxy(tx, {
+          apply(target, receiver, args: [TemplateStringsArray, ...unknown[]]) {
+            const query = Reflect.apply(target, receiver, args);
+            // Return fragment queries unchanged: postgres.js recognizes their
+            // identity when interpolated into an outer tagged query.
+            if (inserted || !args[0].join(' ').includes('AS distance')) return query;
+            return query.then(async (rows: unknown[]) => {
+              inserted = true;
+              await write(host, concurrentId, new Date(at.getTime() - 24 * HOUR), [dir('/decisive', 6 * G)]);
+              return rows;
+            });
+          },
+        })));
+      },
+    });
+    expect((await readDiskConsumerCensus(snapshotSql, { host })).devices[0]!.baselineRunId).toBe(runIds[100]);
+    expect((await readDiskConsumerCensus(sql, { host })).devices[0]!.baselineRunId).toBe(concurrentId);
+    await rootSql`DELETE FROM harness_shared.disk_census_runs WHERE host = ${host}`;
+  });
+
+  it.each([
+    { count: 29, pageSize: 30 }, { count: 30, pageSize: 30 }, { count: 31, pageSize: 30 },
+    { count: 101, pageSize: 30 }, { count: 499, pageSize: 500 }, { count: 500, pageSize: 500 },
+    { count: 501, pageSize: 500 },
+  ])('recovers $count tied consumers at a $pageSize-row boundary across fresh clients', async ({ count, pageSize }) => {
+    const host = `consumer-pages-${randomUUID()}`;
+    const consumers = Array.from({ length: count }, (_, i) => dir(`/consumer-${String(i).padStart(4, '0')}`, G));
+    // A semantic key survives continuation intact, including multi-byte text.
+    consumers[consumers.length - 1]!.consumer += `-${'字'.repeat(600)}`;
+    const base = randomUUID();
+    const latest = randomUUID();
+    await write(host, base, new Date(at.getTime() - 24 * HOUR), consumers.map(c => ({ ...c, bytes: 0 })));
+    await write(host, latest, at, [...consumers].reverse());
+    const initial = (await readDiskConsumerCensus(sql, { host, limit: pageSize, now: at })).devices[0]!;
+    expect(initial).toMatchObject({ consumersTotal: count, consumersReturned: Math.min(count, pageSize),
+      consumersPageStart: 0, consumersOmitted: Math.max(0, count - pageSize), truncatedByLimit: count > pageSize });
+    const recovered = [...initial.consumers!];
+    let cursor = initial.nextConsumerCursor;
+    let pages = 1;
+    while (cursor) {
+      // A fresh client on every page has no process-local continuation state.
+      const client = postgres(censusDatabaseUri, { max: 1, onnotice: () => {} });
+      try {
+        const view = (await readDiskConsumerCensus(client as unknown as CensusSql,
+          { cursor: JSON.parse(JSON.stringify(cursor)), limit: 7, now: at })).devices[0]!;
+        expect(view.runId).toBe(latest);
+        expect(view.baselineRunId).toBe(base);
+        recovered.push(...view.consumers!);
+        expect(view.consumersOmitted).toBe(count - recovered.length);
+        expect(view.consumersReturned).toBe(view.consumers!.length);
+        expect(view.consumersPageStart! + view.consumersReturned! + view.consumersOmitted!).toBe(count);
+        cursor = view.nextConsumerCursor;
+        expect(++pages).toBeLessThanOrEqual(Math.ceil(count / 7) + 1);
+      } finally { await client.end({ timeout: 5 }); }
+    }
+    expect(recovered.map(c => c.consumer)).toEqual(consumers.map(c => c.consumer));
+    expect(new Set(recovered.map(c => c.consumer)).size).toBe(count);
+    expect(recovered.at(-1)).toMatchObject({ consumer: consumers.at(-1)!.consumer, growth24hBytes: G });
+    const complete = (await readCompleteDiskConsumerCensus(sql, { host, orderBy: 'growth', limit: 7, now: at })).devices[0]!;
+    expect(complete).toMatchObject({ consumersReturned: count, consumersOmitted: 0, truncatedByLimit: false, nextConsumerCursor: null });
+    expect(complete.consumers).toEqual(recovered);
+    const alarm = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [complete], emitToast: async () => {} });
+    expect(alarm.diskProjectionUnknown).toEqual([]);
+  });
+
+  it('keeps the pinned run when a newer run arrives, and requires resync for late baselines, source mutation and pruning', async () => {
+    const host = `consumer-resync-${randomUUID()}`;
+    const latest = randomUUID();
+    const baseline = randomUUID();
+    await write(host, baseline, new Date(at.getTime() - 23 * HOUR), [dir('/a', 0), dir('/z', 0)]);
+    await write(host, latest, at, [dir('/z', G), dir('/a', G)]);
+    const options = { host, limit: 1, now: at };
+    const first = (await readDiskConsumerCensus(sql, options)).devices[0]!;
+    const cursor = first.nextConsumerCursor!;
+    const resume = () => readDiskConsumerCensus(sql, { cursor, limit: 1, now: at });
+    await write(host, randomUUID(), new Date(at.getTime() + HOUR), [dir('/new', G)]);
+    expect((await resume()).devices[0]).toMatchObject({ runId: latest, consumers: [{ consumer: '/z' }] });
+    await expect(readDiskConsumerCensus(sql, { cursor, orderBy: 'growth' })).rejects.toMatchObject({ code: 'census_restart_required' });
+    await expect(readDiskConsumerCensus(sql, { cursor: 'not-a-cursor' })).rejects.toMatchObject({ code: 'census_restart_required' });
+    const malformed = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(cursor, 'base64url').toString()),
+      runId: '------------------------------------' })).toString('base64url');
+    await expect(readDiskConsumerCensus(sql, { cursor: malformed })).rejects.toMatchObject({ code: 'census_restart_required' });
+    const late = randomUUID();
+    await write(host, late, new Date(at.getTime() - 24 * HOUR), [dir('/a', 1), dir('/z', 1)]);
+    await expect(resume()).rejects.toMatchObject({ code: 'census_restart_required' });
+    const restarted = (await readDiskConsumerCensus(sql, { ...options, asOf: at })).devices[0]!;
+    expect(restarted.baselineRunId).toBe(late);
+    await rootSql`UPDATE harness_shared.disk_census_consumers SET bytes = bytes + 1 WHERE run_id = ${latest}`;
+    await expect(readDiskConsumerCensus(sql, { cursor: restarted.nextConsumerCursor! })).rejects.toMatchObject({ code: 'census_restart_required' });
+    const beforePrune = (await readDiskConsumerCensus(sql, { ...options, asOf: at })).devices[0]!;
+    await rootSql`DELETE FROM harness_shared.disk_census_runs WHERE run_id = ${late}`;
+    await expect(readDiskConsumerCensus(sql, { cursor: beforePrune.nextConsumerCursor! })).rejects.toMatchObject({ code: 'census_restart_required' });
+    const beforeRunPrune = (await readDiskConsumerCensus(sql, { ...options, asOf: at })).devices[0]!;
+    await rootSql`DELETE FROM harness_shared.disk_census_runs WHERE run_id = ${latest}`;
+    await expect(readDiskConsumerCensus(sql, { cursor: beforeRunPrune.nextConsumerCursor! })).rejects.toMatchObject({ code: 'census_restart_required' });
+  });
 });
 
 describe('disk consumer census (real du, real PG)', () => {

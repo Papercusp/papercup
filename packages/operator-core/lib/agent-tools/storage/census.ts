@@ -24,7 +24,8 @@ export default defineTool({
     .object({
       device: z.string().optional().describe('Mount point, e.g. "/" or "/mnt/data"; omit for every watched device.'),
       orderBy: z.enum(['bytes', 'growth']).optional().describe('bytes (default) = largest first; growth = fastest-growing first.'),
-      limit: z.number().int().min(1).max(500).optional().describe('Consumers per device (default 30).'),
+      limit: z.number().int().min(1).max(500).optional().describe('Display page size per device (default 30); follow nextConsumerCursor for remaining consumers.'),
+      cursor: z.string().min(1).optional().describe('Resume nextConsumerCursor for one pinned device. Changed or pruned source requires restarting without cursor.'),
       receiptId: z.string().uuid().optional().describe('Read this reclaim receipt; omitted returns the latest real pass.'),
     })
     .optional(),
@@ -44,6 +45,7 @@ export default defineTool({
       device: args?.device,
       orderBy: args?.orderBy,
       limit: args?.limit,
+      cursor: args?.cursor,
       expectedDevices,
     });
     const receipt = await readReclaimReceipt(getOrgPg().sql, activeWorkspaceId(), args?.receiptId);

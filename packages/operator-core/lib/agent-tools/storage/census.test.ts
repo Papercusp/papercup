@@ -30,4 +30,18 @@ describe('storage:census receipt access', () => {
   it('rejects invalid receipt ids at the tool schema boundary', () => {
     expect(tool.args.safeParse({ receiptId: 'bad' }).success).toBe(false);
   });
+  it('exposes and follows the reader continuation without treating a display page as complete', async () => {
+    const first = { host: 'host-a', devices: [{ device: '/', runId: 'pinned', consumersTotal: 31,
+      consumersReturned: 30, consumersOmitted: 1, nextConsumerCursor: 'pinned-cursor', truncatedByLimit: true }] };
+    const last = { host: 'host-a', devices: [{ device: '/', runId: 'pinned', consumersTotal: 31,
+      consumersReturned: 1, consumersOmitted: 0, nextConsumerCursor: null, truncatedByLimit: false,
+      consumers: [{ consumer: '/decisive-after-page' }] }] };
+    h.census.mockResolvedValueOnce(first).mockResolvedValueOnce(last);
+    const initial = await tool.handler({ limit: 30 }, {} as never);
+    expect(initial).toMatchObject({ data: first });
+    expect(tool.args.safeParse({ cursor: 'pinned-cursor', limit: 30 }).success).toBe(true);
+    const continued = await tool.handler({ cursor: 'pinned-cursor', limit: 30 }, {} as never);
+    expect(h.census).toHaveBeenLastCalledWith(h.sql, expect.objectContaining({ cursor: 'pinned-cursor', limit: 30 }));
+    expect(continued).toMatchObject({ data: last });
+  });
 });
