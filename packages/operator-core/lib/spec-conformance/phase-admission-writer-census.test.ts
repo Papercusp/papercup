@@ -1186,6 +1186,51 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('retains unsupported runtime sources without requiring recognizable SQL words', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-unsupported-runtime-'));
+    const inputs = [
+      source('getattr(connection, method)(payload)\n', 'scripts/runtime.py'),
+      source('"$runner" "$payload"\n', 'scripts/runtime.sh'),
+      source('"$runner" "$payload"\n', 'scripts/runtime.bash'),
+      source('& $runner $payload\n', 'scripts/runtime.ps1'),
+      source('fn main() { driver::dispatch(payload()); }\n', 'libs/runtime.rs'),
+      source('{"adapter":"runtime-provider","argument":"from-environment"}\n', 'apps/runtime.json'),
+      source('adapter: runtime-provider\nargument: from-environment\n', 'apps/runtime.yml'),
+      source('adapter = "runtime-provider"\nargument = "from-environment"\n', 'apps/runtime.toml'),
+    ];
+    try {
+      for (const input of inputs) {
+        mkdirSync(join(root, input.path, '..'), { recursive: true });
+        writeFileSync(join(root, input.path), input.content);
+      }
+      const inventory = inventoryPhaseWriterTree(root);
+      expect(inventory.gaps).toEqual([]);
+      expect(inventory.sources.map(row => row.path).sort()).toEqual(inputs.map(row => row.path).sort());
+      expect(inventory.sites.map(row => row.path).sort()).toEqual(inputs.map(row => row.path).sort());
+      for (const input of inputs) {
+        const site = inventory.sites.find(row => row.path === input.path)!;
+        expect(site.kind).toBe('unresolved');
+        expect(site.statement).toBe(input.content);
+        expect(site.unresolved).toEqual(['source-language-requires-review']);
+      }
+      // Every file remains a separate refusal identity, even when every other
+      // source has an explicit isolated-fixture classification.
+      for (const omitted of inventory.sites) {
+        const reviews = inventory.sites.filter(row => row.id !== omitted.id)
+          .map(row => review(row, 'isolated-fixture'));
+        let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+        try { assertPhaseWriterTreeCensus(root, reviews); }
+        catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+        expect(report?.ready).toBe(false);
+        expect(report?.census.coverage.notChecked).toEqual([omitted.id]);
+        expect(report?.census.coverage.residue).toEqual([omitted.id]);
+        expect(report?.census.problems).toEqual([{ id: omitted.id, reasons: ['unclassified-writer'] }]);
+      }
+      expect(assertPhaseWriterTreeCensus(root,
+        inventory.sites.map(row => review(row, 'isolated-fixture'))).ready).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('discovers dormant literals renamed imports and dynamic relation targets', () => {
     const inventory = inventoryPhaseWriters([
       source(write),
