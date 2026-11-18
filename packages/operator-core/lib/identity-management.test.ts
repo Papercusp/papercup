@@ -122,8 +122,8 @@ describe('identity management service', () => {
       const saved = await saveNamedIdentityComposition(input);
       expect(saved.ok).toBe(true);
       const yaml = await readFile(join(root, '.papercusp', 'blueprints', id, 'blueprint.yaml'), 'utf8');
-      expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [],
-        roles: [{ id: 'su', stack: input.componentRefs }] });
+      expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [] });
+      expect(parseYaml(yaml)).not.toHaveProperty('roles');
       expect((await getIdentitySource(id, { repoDir: root })).ok).toBe(true);
       expect((await listIdentitySources({ repoDir: root, after: 'zy', limit: 10 })).identities)
         .toContainEqual(expect.objectContaining({ id, launchCompatibility: {
@@ -155,7 +155,7 @@ describe('identity management service', () => {
       expect(withProvider.identities.find((entry) => entry.id === 'zz-provider-parent')?.launchCompatibility)
         .toMatchObject({ eligible: false, reason: expect.stringContaining('producer binding') });
       expect(withProvider.identities.find((entry) => entry.id === 'zz-provider-child')?.launchCompatibility)
-        .toMatchObject({ eligible: false, reason: expect.stringContaining('launch selection') });
+        .toMatchObject({ eligible: false, reason: expect.stringContaining('producer binding') });
       await expect(saveNamedIdentityComposition(input)).rejects.toThrow(/already exists/);
       await expect(previewNamedIdentityComposition({ ...input, id: 'zz-bad-composition',
         componentRefs: [`practice:${domainId}`] })).rejects.toThrow(/does not declare/);

@@ -184,6 +184,13 @@ describe('identity mutation before-image fence', () => {
       VALUES (100, ${WORKSPACE}, 'console', ${owner}, ${db.sql.json(original)})`;
   });
 
+  it('distinguishes a JSON object from a pre-stringified JSON parameter', async () => {
+    const [row] = await db.sql`SELECT launch_spec = ${db.sql.json(original)} AS object_matches,
+      launch_spec = ${JSON.stringify(original)}::jsonb AS string_matches
+      FROM harness_shared.adv_sessions WHERE id = 100`;
+    expect(row).toEqual({ object_matches: true, string_matches: false });
+  });
+
   it('refuses a stale compiled edit before provisioning or publishing activation', async () => {
     const concurrent = { ...original, stateRevision: 'concurrent' };
     mutationHost.rebuild.mockImplementationOnce(async () => {

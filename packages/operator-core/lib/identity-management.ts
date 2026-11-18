@@ -1,5 +1,5 @@
 /** P-011 identity library, explain/diff, and live-stack mutation on existing stores. */
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { mkdir, realpath, rename, rmdir, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
@@ -580,7 +580,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
        WHERE id = ${row.id}
          AND workspace_id = ${input.workspaceId}
          AND coord_owner_id = ${input.ownerId}
-         AND launch_spec = ${JSON.stringify(row.launch_spec)}::jsonb
+         AND launch_spec = ${transaction.json(row.launch_spec as JSONValue)}
        FOR UPDATE
     `;
     if (locked.length !== 1)
@@ -592,11 +592,11 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
     await provisionLaunchIdentityResources(rebuilt.artifact, sql, { ownerId: input.ownerId });
     const updated = await transaction<Array<{ id: number | string }>>`
       UPDATE harness_shared.adv_sessions
-         SET launch_spec = ${JSON.stringify(nextRecord)}::jsonb
+         SET launch_spec = ${transaction.json(nextRecord as unknown as JSONValue)}
        WHERE id = ${row.id}
          AND workspace_id = ${input.workspaceId}
          AND coord_owner_id = ${input.ownerId}
-         AND launch_spec = ${JSON.stringify(row.launch_spec)}::jsonb
+         AND launch_spec = ${transaction.json(row.launch_spec as JSONValue)}
       RETURNING id
     `;
     if (updated.length === 0)
