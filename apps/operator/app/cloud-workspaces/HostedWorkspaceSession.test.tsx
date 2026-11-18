@@ -344,13 +344,17 @@ async function ready(
   socket: { emit: (type: string, event: unknown) => void },
   limits?: { maxFileBytes: number; maxUploadChunkBytes: number },
 ) {
-  socket.emit("message", {
-    data: JSON.stringify({
-      type: "pty.ready",
-      role: "controller",
-      resumed: false,
-      ...(limits ? { limits } : {}),
-    }),
+  // A socket event runs outside React. Settle both the render and its passive
+  // bridge publication before consumers read onDesktopBridgeChange.
+  await act(async () => {
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "pty.ready",
+        role: "controller",
+        resumed: false,
+        ...(limits ? { limits } : {}),
+      }),
+    });
   });
   await waitFor(() => {
     const status = screen.getByText("live", { exact: true }).parentElement;
