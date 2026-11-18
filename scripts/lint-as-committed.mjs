@@ -987,6 +987,8 @@ export function parseArgs(argv) {
   const checkErrors = [];
   let workspaceDirs = [];
   let dependencyDonor;
+  let resumeRoot;
+  let resumeVerification;
   let ref = 'HEAD';
   let workspace;
   let keep = false;
@@ -1010,6 +1012,22 @@ export function parseArgs(argv) {
     else if (arg.startsWith('--workspace=')) workspace = arg.slice('--workspace='.length);
     else if (arg.startsWith('--workspace-dir=')) workspaceDirs.push(arg.slice('--workspace-dir='.length));
     else if (arg.startsWith('--dependency-donor=')) dependencyDonor = arg.slice('--dependency-donor='.length);
+    else if (arg.startsWith('--resume-root=')) resumeRoot = arg.slice('--resume-root='.length);
+    else if (arg.startsWith('--resume-verification=')) {
+      try {
+        const value = JSON.parse(arg.slice('--resume-verification='.length));
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            Object.keys(value).some(key => !['checkpointDir', 'generation', 'materializeMissing', 'maxBatches', 'maxDurationMs', 'batchSize'].includes(key)) ||
+            typeof value.checkpointDir !== 'string' || !isAbsolute(value.checkpointDir))
+          throw new Error('expected an absolute checkpointDir and bounded verification options');
+        for (const key of ['generation', 'materializeMissing'])
+          if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new Error('invalid ' + key);
+        for (const [key, maximum] of [['maxBatches', 1_000_000], ['maxDurationMs', 3600_000], ['batchSize', 4096]])
+          if (value[key] !== undefined && (!Number.isSafeInteger(value[key]) || value[key] < 1 || value[key] > maximum))
+            throw new Error('invalid ' + key);
+        resumeVerification = value;
+      } catch (error) { checkErrors.push('invalid --resume-verification: ' + error.message); }
+    }
     else if (arg.startsWith('--check=')) {
       try {
         const check = JSON.parse(arg.slice('--check='.length));
@@ -1054,9 +1072,15 @@ export function parseArgs(argv) {
   const forwardAmbiguous = forward.length > 0 && scripts.length > 1;
   try { workspaceDirs = normalizeDependencyWorkspaceDirs(workspaceDirs); }
   catch (error) { checkErrors.push('invalid --workspace-dir: ' + error.message); }
-  if (dependencyDonor !== undefined && (!dependencyDonor || !workspaceDirs.length))
-    checkErrors.push('--dependency-donor requires a non-empty path and --workspace-dir for exact dependency input checks');
+  // Retained verification compares the complete frozen input census even in
+  // full scope. Fresh extraction keeps the existing selected-scope guard.
+  if (dependencyDonor !== undefined && (!dependencyDonor || (!workspaceDirs.length && !resumeRoot)))
+    checkErrors.push('--dependency-donor requires a non-empty path and --workspace-dir (or --resume-root with bounded verification) for exact dependency input checks');
+  if ((resumeRoot !== undefined || resumeVerification !== undefined) &&
+      (!resumeRoot || !isAbsolute(resumeRoot) || !resumeVerification))
+    checkErrors.push('--resume-root requires an absolute retained root and --resume-verification');
   return { help: false, scripts, forward, ref, keep, any, unknown, nonLint, selfRecursive, forwardAmbiguous, sawSeparator,
+    ...(resumeRoot !== undefined ? { resumeRoot, resumeVerification, keep: true } : {}),
     ...(materializeOnly ? { materializeOnly: true, keep: true } : {}),
     ...(retainFor !== undefined ? { retainFor } : {}),
     ...(checks.length > 0 ? { checks } : {}),
@@ -1508,7 +1532,12 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
                     omitted means full scope; the selection is bound to dependency provenance
   --keep            do not delete the extracted tree (path is printed)
   --materialize-only prepare committed source without running a lint/test (implies --keep)
-  --dependency-donor=<dir> borrow dependencies from a compatible snapshot; requires --workspace-dir
+  --dependency-donor=<dir> borrow a compatible snapshot; requires --workspace-dir or bounded --resume-root
+  --resume-root=<dir> verify a retained tree at --ref instead of cloning/copying anew (implies --keep);
+                    requires --resume-verification=<json>
+  --resume-verification=<json> {checkpointDir, generation?, materializeMissing?, maxBatches?, maxDurationMs?, batchSize?};
+                    checkpointDir must be private and outside both trees; incomplete exits 75,
+                    preserves tree/journal and runs no commands or prepared-witness publication
   --retain-for=<path> retain source while this external artifact exists; requires --materialize-only
   --any             allow a non-'lint:' npm script (blast-radius opt-in)
   --check=<json>    repeat for sequential checks sharing ONE source/dependency preparation;
@@ -1828,6 +1857,8 @@ async function main() {
     process.exit(2);
   }
   let workRoot;
+  let submodules = [];
+  let dependenciesPrepared = false;
   let dependencyDonorPin;
   const releaseDependencyDonor = async () => {
     if (!dependencyDonorPin) return;
@@ -1843,7 +1874,12 @@ async function main() {
   // Exit and sweep share the dependent-artifact rule: retention may be added by
   // a consumer while the command is running, after args.keep was established.
   // SIGKILL is left to the next run's sweep.
-  const cleanupWorkRoot = () => workRoot ? cleanupCommittedWorkRoot(workRoot, args.keep) : false;
+  const cleanupWorkRoot = () => {
+    if (!workRoot) return false;
+    const incomplete = !dependenciesPrepared && existsSync(join(workRoot, OWNER_MARKER));
+    if (incomplete) console.error(`lint-as-committed: incomplete preparation retained at ${workRoot}; resume with --ref=${sha}, --resume-root and --resume-verification (not prepared proof).`);
+    return cleanupCommittedWorkRoot(workRoot, args.keep || incomplete);
+  };
   const bail = async (code) => {
     try { await cleanupWorkRoot(); }
     finally {
@@ -1856,6 +1892,30 @@ async function main() {
   }
 
   try {
+    if (args.resumeRoot) {
+      const root = realpathSync(args.resumeRoot);
+      if (root === realpathSync(repoRoot)) throw new Error('lint-as-committed: cannot resume the source checkout');
+      await withFsMutex(committedSourceRetentionMutexName(root), () => {
+        verifyCommittedWorkRoot(root, sha);
+        const markerPath = join(root, OWNER_MARKER);
+        const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+        if (pidAlive(marker.pid) !== false) throw new Error('lint-as-committed: retained root owner is live or unknown');
+        if (git(['status', '--porcelain', '--untracked-files=no'], root) ||
+            git(['submodule', 'status', '--recursive'], root).split('\n').some(line => /^[-+U]/.test(line)))
+          throw new Error('lint-as-committed: retained source changed or submodules are incomplete');
+        const scope = { mode: args.workspaceDirs?.length ? 'selected' : 'full', workspaceDirs: args.workspaceDirs ?? [] };
+        if (marker.dependencyScope && JSON.stringify(marker.dependencyScope) !== JSON.stringify(scope))
+          throw new Error('lint-as-committed: retained dependency scope differs');
+        const gitmodulesPath = join(root, '.gitmodules');
+        submodules = existsSync(gitmodulesPath) ? parseGitmodules(readFileSync(gitmodulesPath, 'utf8')) : [];
+        // Serialize ownership with retention; the sweeper sees this PID during
+        // verification, builds and commands. Prior preparation cannot authorize
+        // a new verification that has not completed yet.
+        writeFileSync(markerPath, JSON.stringify({ ...marker, pid: process.pid, keep: true, dependencyMode: undefined }));
+        workRoot = root;
+      });
+      console.log(`  resuming retained committed tree -> ${workRoot}`);
+    }
     if (args.dependencyDonor !== undefined) {
       // An explicit retained tree is an input even when its original owner is
       // gone and it exceeds the idle cap. Publish under the deleter's mutex,
@@ -1872,6 +1932,7 @@ async function main() {
     if (swept.removed.length > 0) {
       console.log(`  swept ${swept.removed.length} stale extracted tree(s): ${swept.removed.map((r) => `${r.name} (${r.reason})`).join(', ')}`);
     }
+    if (!args.resumeRoot) {
     workRoot = mkdtempSync(join(tmpdir(), `${WORK_ROOT_PREFIX}${short}-`));
     // ── materialise the committed content as a REAL git repo ──
     // It must be a real repo, not just the right bytes: these lints enumerate their
@@ -1901,7 +1962,8 @@ async function main() {
       await bail(2);
     }
     try {
-      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: args.keep, createdAtMs: Date.now(), sha, sourceRepoRoot: sourceObjectRoot }));
+      writeFileSync(join(workRoot, OWNER_MARKER), JSON.stringify({ pid: process.pid, keep: true, createdAtMs: Date.now(), sha, sourceRepoRoot: sourceObjectRoot,
+        dependencyScope: { mode: args.workspaceDirs?.length ? 'selected' : 'full', workspaceDirs: args.workspaceDirs ?? [] } }));
     } catch {
       /* best-effort: an unmarked tree still ages out by mtime */
     }
@@ -1934,7 +1996,7 @@ async function main() {
     // superproject above, once per submodule — an ordinary top-level clone of a local
     // path, which git allows by default, and which needs no submodule config at all.
     const gitmodulesPath = join(workRoot, '.gitmodules');
-    const submodules = existsSync(gitmodulesPath) ? parseGitmodules(readFileSync(gitmodulesPath, 'utf8')) : [];
+    submodules = existsSync(gitmodulesPath) ? parseGitmodules(readFileSync(gitmodulesPath, 'utf8')) : [];
     if (submodules.length > 0) {
       const t1 = Date.now();
       // Fail-closed BEFORE touching any submodule: if even one lacks a local checkout
@@ -2007,6 +2069,7 @@ async function main() {
       );
     }
 
+    }
     // Validate the complete frozen source, including populated submodules, before
     // selecting a dependency generation or copying/building dependency trees.
     // A repaired donor cannot make inconsistent committed metadata runnable.
@@ -2024,6 +2087,7 @@ async function main() {
         // resolved from the canonical source for commands and nested readers.
         environment: childEnvironment,
         workspaceDirs: args.workspaceDirs,
+        ...(args.resumeVerification ? { resumeVerification: args.resumeVerification } : {}),
         prepareWorkspace: ({ paths, workspacePaths }) => {
           // Exclude the private install before a pinned build checks cleanliness.
           writeLinkExcludes(workRoot, planLinkExcludes(paths, submodules.map((s) => s.path)));
@@ -2047,6 +2111,15 @@ async function main() {
       // becomes reclaimable as soon as preparation succeeds or fails.
       await releaseDependencyDonor();
     }
+    if (snapshot.status === 'incomplete') {
+      console.error('COMMITTED_DEPENDENCY_RESUME ' + JSON.stringify({
+        status: 'incomplete', root: workRoot, sourceCommit: sha,
+        checkpointDir: args.resumeVerification.checkpointDir, progress: snapshot.progress,
+      }));
+      process.exitCode = 75;
+      return;
+    }
+    dependenciesPrepared = true;
     const { paths: linkedPaths, workspacePaths } = snapshot;
     console.log(
       `  copied ${linkedPaths.length} node_modules dir(s) (independent snapshot; excluded from git status); ` +
@@ -2180,7 +2253,7 @@ async function main() {
     }
   } finally {
     await releaseDependencyDonor();
-    if (workRoot && args.keep) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
+    if (workRoot && args.keep && dependenciesPrepared) console.log(`\n  --keep: extracted tree left at ${workRoot} (swept after ${KEEP_TTL_MS / 3600_000}h or earlier above ${MAX_IDLE_KEPT_TREES} idle kept trees; in-use trees and dependent artifacts are retained)`);
     else await cleanupWorkRoot();
   }
 

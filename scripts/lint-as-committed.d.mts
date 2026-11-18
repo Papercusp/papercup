@@ -230,6 +230,8 @@ export function parseArgs(argv: any): {
     retainFor?: any;
     materializeOnly?: boolean | undefined;
     keep: boolean;
+    resumeRoot?: any;
+    resumeVerification?: any;
     help: boolean;
     scripts: any[];
     forward: any[];
