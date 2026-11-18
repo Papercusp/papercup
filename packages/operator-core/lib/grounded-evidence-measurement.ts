@@ -480,9 +480,9 @@ export function readGroundedMeasurementRows(scope: GroundedMeasurementScope, row
   const values = Object.fromEntries(GROUNDED_DIMENSIONS.map(key => [key, null])) as Record<GroundedDimension, number | null>;
   const gaps: string[] = [];
   const prefix = `${fixture.edition}/${scope.caseId}/${scope.arm}/${scope.iteration}/`;
+  const parsed = rows.map(row => ({ ...row, details: parseTestRunExecutionDetails(row.executionDetails) }));
   for (const dimension of GROUNDED_DIMENSIONS) {
-    const selected = rows.map(row => ({ ...row, details: parseTestRunExecutionDetails(row.executionDetails) }))
-      .filter(row => row.details?.check?.subject?.ref === prefix + dimension);
+    const selected = parsed.filter(row => row.details?.check?.subject?.ref === prefix + dimension);
     if (selected.length !== 1) { gaps.push(`${dimension}:missing-or-ambiguous-row`); continue; }
     const row = selected[0]!, check = row.details!.check!;
     let recordedScope: GroundedMeasurementScope | null = null;
@@ -515,6 +515,67 @@ export interface GroundedBaselinePin {
   observedAt: string;
   budgetHash: string;
   oracleHash: string;
+}
+function validGroundedBaselinePin(pin: GroundedBaselinePin): boolean {
+  const c = fixture.cases.find(candidate => candidate.id === pin.scope.caseId);
+  return !!c && scopeKeys.every(key => key === 'iteration' ? integer(pin.scope[key]) : nonblank(pin.scope[key]))
+    && pin.scope.arm === 'pre' && pin.scope.manifestHash === GROUNDED_MANIFEST_SHA256
+    && pin.generation === 'pre-intervention' && ['original', 'measurement-recapture'].includes(pin.cohort)
+    && nonblank(pin.version) && nonblank(pin.sourceClock) && Number.isFinite(Date.parse(pin.observedAt))
+    && pin.budgetHash === hash(fixture.budgets) && pin.oracleHash === hash(c.expected)
+    && pin.scope.iteration >= 1 && pin.scope.iteration <= fixture.budgets.resumesPerCase;
+}
+
+/** Parent journeys have their own admission and drain. Their fixed population
+ * comes from the frozen fixture, never from available child-case measurements. */
+export function groundedJourneyCostCensus() {
+  return fixture.cases.filter(c => /^J[1-9][0-9]*$/.test(c.id)).flatMap(c => {
+    const iterations = 'iterations' in c.input ? c.input.iterations ?? 0 : 0;
+    return Array.from({ length: iterations }, (_, index) => ({
+      caseId: c.id, arm: 'pre' as const, iteration: index + 1,
+    }));
+  });
+}
+export interface GroundedJourneyCostCapture {
+  pin: GroundedBaselinePin;
+  sourceRef: string;
+  rows: Parameters<typeof readGroundedMeasurementRows>[1];
+}
+/** Select one retained cohort explicitly. Recaptures and supplemental authoring
+ * never fill original parents. Reuse the exact-scope scalar reader; do not sum
+ * children or infer zero from missing records. This is cost coverage only,
+ * independent of journey correctness, deadlines and post-intervention ratios. */
+export function readGroundedJourneyCostRows(cohort: GroundedBaselinePin['cohort'],
+  captures: readonly GroundedJourneyCostCapture[]) {
+  const census = groundedJourneyCostCensus();
+  const key = (scope: Pick<GroundedMeasurementScope, 'caseId' | 'arm' | 'iteration'>) =>
+    `${scope.caseId}/${scope.arm}/${scope.iteration}`;
+  const expected = new Set(census.map(key));
+  const gaps: string[] = [];
+  for (const capture of captures) {
+    if (!expected.has(key(capture.pin.scope)) || capture.pin.cohort !== cohort)
+      gaps.push(`${key(capture.pin.scope)}:foreign-parent-or-cohort`);
+  }
+  const observations = census.map(parent => {
+    const selected = captures.filter(capture => key(capture.pin.scope) === key(parent) && capture.pin.cohort === cohort);
+    const capture = selected.length === 1 ? selected[0]! : null;
+    const parentGaps: string[] = [];
+    let values = Object.fromEntries(GROUNDED_DIMENSIONS.map(name => [name, null])) as Record<GroundedDimension, number | null>;
+    if (!capture) parentGaps.push('missing-or-duplicate-parent');
+    else if (!validGroundedBaselinePin(capture.pin) || !nonblank(capture.sourceRef)) parentGaps.push('invalid-parent-pin-or-source');
+    else {
+      const result = readGroundedMeasurementRows(capture.pin.scope, capture.rows);
+      values = result.values; parentGaps.push(...result.gaps);
+      // Exactly one admitted scalar per required dimension exhausts the parent
+      // population. Missing/replaced subjects are already rejected by the reader.
+      if (capture.rows.length > GROUNDED_DIMENSIONS.length)
+        parentGaps.push('unexpected-parent-scalar');
+    }
+    gaps.push(...parentGaps.map(gap => `${key(parent)}:${gap}`));
+    return { ...parent, cohort, pin: capture?.pin ?? null, sourceRef: capture?.sourceRef ?? null,
+      values, gaps: parentGaps, complete: parentGaps.length === 0 };
+  });
+  return { observations, gaps, complete: gaps.length === 0 };
 }
 export interface GroundedBaselineObservation {
   kind: GroundedBaselineKey['kind']; name: string;
@@ -767,15 +828,10 @@ export function classifyGroundedBaseline(input: {
   // only makes the diagnostic ledger envelope parseable; it is not an observed
   // timestamp and cannot qualify the invalid pin.
   const ledgerClock = Number.isFinite(Date.parse(pin.observedAt)) ? pin.observedAt : '1970-01-01T00:00:00.000Z';
-  const c = fixture.cases.find(candidate => candidate.id === pin.scope.caseId);
   const expected = groundedBaselineCensus().filter(key => key.caseId === pin.scope.caseId
     && key.iteration === pin.scope.iteration);
   const gaps: string[] = [];
-  const validPin = c && scopeKeys.every(key => key === 'iteration' ? integer(pin.scope[key]) : nonblank(pin.scope[key]))
-    && pin.scope.arm === 'pre' && pin.scope.manifestHash === GROUNDED_MANIFEST_SHA256
-    && pin.generation === 'pre-intervention' && ['original', 'measurement-recapture'].includes(pin.cohort)
-    && nonblank(pin.version) && nonblank(pin.sourceClock) && Number.isFinite(Date.parse(pin.observedAt))
-    && pin.budgetHash === hash(fixture.budgets) && pin.oracleHash === hash(c.expected) && expected.length > 0;
+  const validPin = validGroundedBaselinePin(pin) && expected.length > 0;
   if (!validPin) gaps.push('invalid-baseline-pin');
   let observations: GroundedBaselineObservation[] = [];
   try {

@@ -17,6 +17,7 @@ import {
   type GroundedBaselinePin, type GroundedBaselineObservation,
   groundedBaselineManifestCensus, validateGroundedBaselineManifestCensus, readGroundedBaselineEnrollment,
   type GroundedBaselineEnrollmentRun,
+  groundedJourneyCostCensus, readGroundedJourneyCostRows, type GroundedJourneyCostCapture,
 } from './grounded-evidence-measurement';
 
 const reads = vi.hoisted(() => ({ tree: vi.fn(), thread: vi.fn() }));
@@ -130,6 +131,98 @@ describe('GEC MANIFEST3 pinned census and enrollment', () => {
     expect(actual).toHaveLength(1);
     expect(actual[0]!.evidenceRefs).toEqual([receipt.evidenceRef]);
     expect(actual[0]).not.toHaveProperty('passing');
+  });
+});
+
+describe('GEC journey cost census', () => {
+  const setup = materializeGroundedFixture('journey-census');
+  const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+  function captures(cohort: GroundedBaselinePin['cohort'] = 'original'): GroundedJourneyCostCapture[] {
+    return groundedJourneyCostCensus().map(parent => {
+      const c = setup.manifest.cases.find(candidate => candidate.id === parent.caseId)!;
+      const scope: GroundedMeasurementScope = { ...parent, workspaceId: 'gec-unit', potId: 'journey-pot',
+        harness: 'papercusp', runId: `${cohort}-${parent.caseId}-${parent.iteration}`, ownerId: 'gec-unit',
+        manifestHash: GROUNDED_MANIFEST_SHA256, fixtureHash: setup.mappingHash,
+        sourceFingerprint: 'source', testFingerprint: 'test', runtimeFingerprint: 'runtime', configFingerprint: 'config' };
+      const census = { scope, sourceRef: 'recorder:parent-empty-control', complete: true, ids: [], rows: [] };
+      const measurement = measureGroundedEvidence({ scope,
+        boundary: { scope, sourceRef: 'recorder:parent-boundary', admittedAt: '2026-11-12T00:00:00Z',
+          settledAt: '2026-11-12T00:00:00Z', monotonicStartMs: 1, monotonicEndMs: 1, drained: true },
+        models: census, invocations: census, durable: census, storage: census, contracts: census });
+      return { sourceRef: `immutable:${scope.runId}`, pin: { scope, cohort, generation: 'pre-intervention',
+        version: 'original-version', sourceClock: 'original-clock', observedAt: '2026-11-12T00:00:00Z',
+        budgetHash: digest(setup.manifest.budgets), oracleHash: digest(c.expected) },
+      rows: measurement.ledgerResults.map((row, index) => ({ id: index + 1, status: row.verdict,
+        executionDetails: { schemaVersion: 1, check: row.check, workspaceId: scope.workspaceId,
+          harnessSlug: scope.harness, runGroupId: scope.runId, root: '/gec-unit', filePath: 'journey-census',
+          testNamePattern: null, passed: row.verdict === 'pass' ? 1 : 0, failed: 0, skipped: 0,
+          collectionFailed: false, mutationPhase: null, commitSha: null, worktreeDirty: true } satisfies TestRunExecutionDetails })) };
+    });
+  }
+  it('derives nine parents and 189 dimensions independently and preserves measured zero and permutation', () => {
+    const rows = captures(), actual = readGroundedJourneyCostRows('original', rows);
+    expect(groundedJourneyCostCensus()).toEqual(['J1', 'J2', 'J3'].flatMap(caseId =>
+      [1, 2, 3].map(iteration => ({ caseId, arm: 'pre', iteration }))));
+    expect(actual.complete).toBe(true);
+    expect(actual.observations.flatMap(row => Object.values(row.values))).toEqual(Array(189).fill(0));
+    expect(readGroundedJourneyCostRows('original', [...rows].reverse())).toEqual(actual);
+    expect(readGroundedJourneyCostRows('original', []).observations).toHaveLength(9);
+    expect(readGroundedJourneyCostRows('original', []).observations.every(row =>
+      Object.values(row.values).every(value => value === null))).toBe(true);
+  });
+  it('rejects every omitted or duplicated parent, including a duplicate beyond the population boundary', () => {
+    const rows = captures();
+    for (let index = 0; index < rows.length; index++) {
+      for (const changed of [rows.filter((_, i) => i !== index), [...rows, rows[index]!]]) {
+        const actual = readGroundedJourneyCostRows('original', changed);
+        expect(actual.complete).toBe(false);
+        expect(actual.observations[index]!.values.endToEndMs).toBeNull();
+      }
+    }
+  });
+  it('keeps original, recapture and child-case measurements separate', () => {
+    const original = captures(), recaptured = captures('measurement-recapture');
+    expect(readGroundedJourneyCostRows('measurement-recapture', recaptured).complete).toBe(true);
+    expect(readGroundedJourneyCostRows('original', recaptured).complete).toBe(false);
+    expect(readGroundedJourneyCostRows('original', [...original.slice(1), recaptured[0]!])
+      .observations[0]!.values.modelCalls).toBeNull();
+    const child = structuredClone(original[0]!); child.pin.scope.caseId = 'C1';
+    expect(readGroundedJourneyCostRows('original', [...original.slice(1), child]).observations[0]!.complete).toBe(false);
+    expect(readGroundedJourneyCostRows('original', [...original, child]).complete).toBe(false);
+  });
+  it('rejects every missing or duplicate scalar and retains unknown without file-pass repair', () => {
+    const original = captures();
+    for (let index = 0; index < GROUNDED_DIMENSIONS.length; index++) {
+      const dimension = GROUNDED_DIMENSIONS[index]!;
+      for (const mode of ['missing', 'duplicate', 'unknown']) {
+        const changed = structuredClone(original), capture = changed[8]!;
+        if (mode === 'missing') capture.rows = capture.rows.filter((_, i) => i !== index);
+        if (mode === 'duplicate') capture.rows = [...capture.rows, capture.rows[index]!];
+        if (mode === 'unknown') Object.assign(capture.rows[index]!, { status: 'error' });
+        const actual = readGroundedJourneyCostRows('original', changed);
+        expect(actual.complete, `${mode}:${dimension}`).toBe(false);
+        expect(actual.observations[8]!.values[dimension]).toBeNull();
+      }
+    }
+  });
+  it('rejects foreign scope, changed pins, child scalars and unqualified parent sources', () => {
+    const original = captures();
+    for (const field of ['workspaceId', 'potId', 'harness', 'runId', 'ownerId', 'sourceFingerprint',
+      'testFingerprint', 'runtimeFingerprint', 'configFingerprint', 'manifestHash', 'fixtureHash'] as const) {
+      const changed = structuredClone(original); changed[0]!.pin.scope[field] = 'foreign';
+      expect(readGroundedJourneyCostRows('original', changed).observations[0]!.complete, field).toBe(false);
+    }
+    for (const field of ['budgetHash', 'oracleHash', 'generation', 'observedAt', 'sourceClock', 'version'] as const) {
+      const changed = structuredClone(original); Object.assign(changed[0]!.pin, { [field]: '' });
+      expect(readGroundedJourneyCostRows('original', changed).observations[0]!.values.modelCalls, field).toBeNull();
+    }
+    const missingSource = structuredClone(original); missingSource[0]!.sourceRef = '';
+    expect(readGroundedJourneyCostRows('original', missingSource).complete).toBe(false);
+    const child = structuredClone(original);
+    const foreign = structuredClone(child[0]!.rows[0]!);
+    (foreign.executionDetails as TestRunExecutionDetails).check!.subject!.ref = 'GEC-20261112-B/C1/pre/1/endToEndMs';
+    child[0]!.rows = [...child[0]!.rows, foreign];
+    expect(readGroundedJourneyCostRows('original', child).observations[0]!.gaps).toContain('unexpected-parent-scalar');
   });
 });
 
