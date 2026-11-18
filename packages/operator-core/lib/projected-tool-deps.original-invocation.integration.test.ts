@@ -75,6 +75,19 @@ const settle = (req: Begin, ref: string, changes: Partial<Settle> = {}) => obser
 });
 
 describe('original invocation ledger (real Postgres)', () => {
+  it.each(['ok', 'refused'])('counts legacy %s calls with null metadata before reserving another slot', async status => {
+    const req = request();
+    req.ctx.runId = randomUUID();
+    const windowKey = 'run:' + req.ctx.runId;
+    const ref = await observer.begin(req);
+    await db.adminSql`UPDATE harness_shared.tool_invocations
+      SET status=${status}, metadata_json=NULL, window_key=${windowKey}
+      WHERE workspace_id=${workspaceId} AND id=${ref.substring('tool-invocation:'.length)}::bigint`;
+    expect(await PROJECTED_DEPS.readQuotaState!(req.toolName, req.ctx, windowKey)).toEqual({ count: 1 });
+    expect(await PROJECTED_DEPS.reserveQuota!({ ...req, callId: randomUUID(), windowKey,
+      limit: 1, signal: req.ctx.signal! })).toEqual({ allowed: false, count: 1 });
+  });
+
   it('UTB-atomic-quota admits one effect for simultaneous parents and reuses the reserved invocation', async () => {
     const name = 'example:p003_quota';
     const runId = randomUUID();
