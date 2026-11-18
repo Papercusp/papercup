@@ -80,6 +80,8 @@ function fakeTx(opts: {
   witnessHashOverride?: string;
   pin: number;
   rubricSlug?: string | null;
+  rubricHarness?: string;
+  ambiguousRubric?: boolean;
   /** The plan_revisions row at seq = pin; absent (the default) = history lacks it. */
   pinnedSnapshot?: string | null;
   pinnedHashOverride?: string;
@@ -92,10 +94,15 @@ function fakeTx(opts: {
     if (s.includes('LEFT JOIN harness_shared.plan_revisions')) {
       const snap = opts.pinnedSnapshot ?? null;
       return [{
+        plan_slug: 'acceptance-subject-plan', harness_slug: opts.rubricHarness ?? 'papercusp',
         subject_version: String(opts.pin),
         content_snapshot: snap,
         content_hash: snap == null ? null : (opts.pinnedHashOverride ?? hashPlanContent(snap)),
-      }];
+      }, ...(opts.ambiguousRubric ? [{
+        plan_slug: 'acceptance-subject-plan', harness_slug: 'duplicate-harness',
+        subject_version: String(opts.pin), content_snapshot: snap,
+        content_hash: snap == null ? null : hashPlanContent(snap),
+      }] : [])];
     }
     if (s.includes('FROM harness_shared.plan_audits')) {
       if (opts.witnessSnapshot == null) return [];
@@ -117,7 +124,9 @@ function fakeTx(opts: {
         acceptance_bar_rubric_revision: 4, acceptance_bar_set_hash: seeded.barSetHash,
       }];
     }
-    if (s.includes('SELECT plan_slug, harness_slug')) return [{ plan_slug: 'acceptance-subject-plan', harness_slug: 'papercusp' }];
+    if (s.includes('SELECT plan_slug, harness_slug')) return [{
+      plan_slug: 'acceptance-subject-plan', harness_slug: opts.rubricHarness ?? 'papercusp',
+    }];
     if (s.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
     if (s.includes('SELECT version, template_data')) return [{ version: 4, template_data: seeded.templateData }];
     if (s.includes('UPDATE harness_shared.harness_plans')) return [{ plan_slug: 'acceptance-subject-plan' }];
@@ -138,15 +147,24 @@ describe('reconcileStaleAcceptanceBarSubjectPin', () => {
     h.withWorkspace.mockReset();
   });
 
-  it('catches a stranded pin up when only BAR-neutral prose changed since the activation audit', async () => {
+  it.each(['papercusp', 'review-library'])('catches a stranded pin up from activation history with the rubric in %s', async (rubricHarness) => {
     const { pinWrites } = fakeTx({
       version: 5, content: subjectPlan({ now: 'note: ← WI-1 released' }),
-      witnessSnapshot: subjectPlan(), pin: SEEDED_PIN,
+      witnessSnapshot: subjectPlan(), pin: SEEDED_PIN, rubricHarness,
     });
     await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).resolves.toEqual({
       reconciled: true, fromRevision: SEEDED_PIN, toRevision: 5, witness: 'activation_audit',
     });
     expect(pinWrites()).toBeGreaterThan(0);
+  });
+
+  it('refuses ambiguous workspace rubric refs before attempting a pin repair', async () => {
+    const { pinWrites } = fakeTx({
+      version: 5, content: subjectPlan({ now: 'neutral progress' }),
+      witnessSnapshot: subjectPlan(), pin: SEEDED_PIN, ambiguousRubric: true,
+    });
+    await expect(reconcileStaleAcceptanceBarSubjectPin(ARGS)).rejects.toMatchObject({ code: 'rubric_ref_ambiguous' });
+    expect(pinWrites()).toBe(0);
   });
 
   // WI-6554700010010492: Requirements were amended AFTER activation (rubrics:amend re-pins

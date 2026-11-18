@@ -193,6 +193,8 @@ describe('R-11: activation seeds acceptance bars from item-type criteria', () =>
   // neutral post-activation write (here an item status change, as plans:set-status makes)
   // rebuilds the seed with preserveExistingBars; without the item-type bars that rebuild
   // refuses bar_rubric_conflict and the contract's subject-revision pin never advances.
+  // EI-29143199352607138: both the writer and stale-pin recovery must resolve the
+  // rubric's own harness without changing any other part of its reviewed contract.
   it.each([
     [HARNESS, 'write'], ['independent-rubric-harness', 'write'],
     [HARNESS, 'recovery'], ['independent-rubric-harness', 'recovery'],
@@ -237,9 +239,9 @@ describe('R-11: activation seeds acceptance bars from item-type criteria', () =>
     const advanced = route === 'recovery'
       ? (await reconcileStaleAcceptanceBarSubjectPin({ workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug })).reconciled
       : await db.adminSql.begin((tx) => synchronizeAcceptanceBarSubjectRevision(tx as never, {
-      workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug,
-      previousBody: before, nextBody: after, previousVersion: 1, nextVersion: 2,
-    }));
+        workspaceId: WORKSPACE, harnessSlug: HARNESS, planSlug,
+        previousBody: before, nextBody: after, previousVersion: 1, nextVersion: 2,
+      }));
     expect(advanced, 'the neutral write must advance the bar contract').toBe(true);
 
     const [rubric] = await db.adminSql<{ version: number; template_data: { barContract?: { subjectPlanRevision?: number }; criteria?: Array<{ barKey?: string }> } }[]>`

@@ -74,18 +74,25 @@ export async function reconcileStaleAcceptanceBarSubjectPin(args: {
       }
       // The pin, plus the revision row it names. Compared as text so a malformed pin can
       // never raise a cast error inside the join; it simply finds no row.
-      const [pinned] = await tx<Array<{
+      // The history belongs to the subject harness; the rubric ref resolves
+      // independently across the workspace, just as the pin writer does.
+      const { uniqueRubricRow } = await import('./rubrics');
+      const pinned = uniqueRubricRow(await tx<Array<{
+        plan_slug: string; harness_slug: string;
         subject_version: string | null; content_snapshot: string | null; content_hash: string | null;
       }>>`
-        SELECT rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version,
+        SELECT rubric.plan_slug, rubric.harness_slug,
+               rubric.template_data->'barContract'->>'subjectPlanRevision' AS subject_version,
                r.content_snapshot, r.content_hash
           FROM harness_shared.harness_plans rubric
           LEFT JOIN harness_shared.plan_revisions r
             ON r.workspace_id = ${args.workspaceId} AND r.harness_slug = ${args.harnessSlug}
            AND r.plan_slug = ${args.planSlug}
            AND r.seq::text = rubric.template_data->'barContract'->>'subjectPlanRevision'
-         WHERE rubric.workspace_id = ${args.workspaceId} AND rubric.harness_slug = ${args.harnessSlug}
-           AND rubric.plan_slug = ${subject.acceptance_bar_rubric_slug}`;
+         WHERE rubric.workspace_id = ${args.workspaceId}
+           AND rubric.plan_slug = ${subject.acceptance_bar_rubric_slug}
+           AND rubric.template = 'rubric' AND rubric.template_slug IS NULL
+         ORDER BY rubric.harness_slug LIMIT 2`, subject.acceptance_bar_rubric_slug);
       const pin = Number(pinned?.subject_version);
       const version = Number(subject.version);
       if (pinned?.subject_version == null || !Number.isSafeInteger(pin)) {

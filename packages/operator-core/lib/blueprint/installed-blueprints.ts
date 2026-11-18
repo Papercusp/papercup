@@ -128,16 +128,16 @@ export function readBlueprintSourcePopulation(opts: { localDirs?: string[]; expe
       const key = JSON.stringify([location.tier, root]);
       if (seen.has(key)) continue;
       seen.add(key);
-      let state: ReturnType<typeof scan>;
-      try { state = scan(root); }
+      try { lstatSync(root); }
       catch (error) {
-        // Only an absent ROOT is absence. A file removed during traversal must
-        // refuse the read instead of erasing an existing library from the census.
+        // Only the initial root lookup can establish absence. Disappearance
+        // after traversal starts must refuse the entire inventory.
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT' ||
             (error as NodeJS.ErrnoException).path !== root) throw error;
         roots.push({ root, tier: location.tier, state: 'absent', canonicalRoot: null, revision: digest(['absent']) });
         continue;
       }
+      const state = scan(root);
       if (!state.children) throw new Error(`blueprint population root is not a directory: ${root}`);
       roots.push({ root, tier: location.tier, state: 'present', canonicalRoot: realpathSync(root), revision: state.revision });
       for (const [id, child] of state.children) {

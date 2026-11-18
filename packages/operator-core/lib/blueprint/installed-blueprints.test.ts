@@ -11,7 +11,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const rootMock = vi.hoisted(() => ({ fn: vi.fn(() => '/home/u/.papercusp') }));
 vi.mock('../papercusp-root', () => ({ papercuspRoot: rootMock.fn }));
-const inventoryMock = vi.hoisted(() => ({ builtinRoot: null as string | null, unreadable: null as string | null }));
+const inventoryMock = vi.hoisted(() => ({ builtinRoot: null as string | null,
+  unreadable: null as string | null, disappear: null as string | null }));
 vi.mock('@papercusp/orchestrator/blueprint', async importOriginal => {
   const actual = await importOriginal<typeof import('@papercusp/orchestrator/blueprint')>();
   return { ...actual, builtinBlueprintPath: (id: string) => inventoryMock.builtinRoot
@@ -19,7 +20,10 @@ vi.mock('@papercusp/orchestrator/blueprint', async importOriginal => {
 });
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
+  return { ...actual, readdirSync: (...args: Parameters<typeof actual.readdirSync>) => {
+    if (args[0] === inventoryMock.disappear) actual.rmSync(inventoryMock.disappear, { recursive: true });
+    return actual.readdirSync(...args);
+  }, readFileSync: (...args: Parameters<typeof actual.readFileSync>) => {
     if (args[0] === inventoryMock.unreadable) throw Object.assign(new Error('fixture permission denied'), { code: 'EACCES' });
     return actual.readFileSync(...args);
   } };
@@ -46,6 +50,7 @@ afterEach(() => {
   rootMock.fn.mockReturnValue('/home/u/.papercusp');
   inventoryMock.builtinRoot = null;
   inventoryMock.unreadable = null;
+  inventoryMock.disappear = null;
   for (const root of tempRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -161,6 +166,16 @@ describe('complete blueprint library source inventory (P-002)', () => {
     rmSync(join(dirs[2], 'shared', 'blueprint.yaml'));
     mkdirSync(join(dirs[2], 'shared', 'blueprint.yaml'));
     expect(readBlueprintSourcePopulation(options)).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('refuses a root that disappears after traversal starts', () => {
+    const { dirs, options } = fixture();
+    inventoryMock.disappear = dirs[1];
+    expect(readBlueprintSourcePopulation(options)).toMatchObject({ status: 'unavailable' });
+    inventoryMock.disappear = null;
+    const absent = readBlueprintSourcePopulation(options);
+    if (absent.status !== 'ok') throw new Error('fixture inventory unavailable');
+    expect(absent.roots.find(root => root.root === dirs[1])).toMatchObject({ state: 'absent' });
   });
 
   it('rejects malformed revision pins and keeps root identity in the revision', () => {
