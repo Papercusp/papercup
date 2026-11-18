@@ -28,6 +28,7 @@ import { canonicalJson } from '@papercusp/hash-chain';
 
 import { CLEANUP_ITEM_KIND } from '../../code-cleanup/cleanup-item-kind';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
+import { acceptanceLineageClosure, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 
 const DAY_MS = 86_400_000;
@@ -798,13 +799,60 @@ export async function readBugScoreboardSource(ref: string, opts: { pageSize?: nu
 
 interface R11StoredManifest {
   input: Omit<BugInflowScoreboardInput, 'receipts'>;
-  receipts: Array<{ writerRef: string; independentRef?: string }>;
+  receipts: Array<{ writerRef: string; independentRef?: string; authorshipPostRef?: string }>;
+}
+
+/** Authenticate an exact retained packet through the existing local append-only
+ * post substrate. The post body is JSON { schemaVersion, writerRef,
+ * independentRef }; its author and time come only from the canonical row.
+ * Re-read the complete current implementer/lineage population on EVERY call:
+ * an earlier eligible receipt cannot authorize a later related implementation.
+ * This authenticates authorship, never event capture or numerical correctness.
+ */
+export async function resolveR11IndependentEvidence(args: {
+  writerRef: string; independentRef: string; authorshipPostRef: string;
+  declaredAuthors: string[]; now?: Date; sql?: Sql;
+}): Promise<NonNullable<R11ScoreboardReceipt['independent']>> {
+  const sql = args.sql ?? getOrgPg().sql;
+  const workspaceId = R11_METRIC_REGISTRY.population.workspaceId;
+  const match = /^thread-post:([1-9][0-9]*)$/.exec(args.authorshipPostRef);
+  if (!match || !Array.isArray(args.declaredAuthors) || args.declaredAuthors.some(a => !r11Text(a)))
+    throw new Error('R11 independent authorship reference or declared authors invalid');
+  const writer = await loadR11Evidence(args.writerRef, 'receipt', sql);
+  const independent = await loadR11Evidence(args.independentRef, 'independent', sql);
+  if (!r11Record(writer) || !r11Record(independent) || typeof writer.measuredAt !== 'string')
+    throw new Error('R11 independent packet or writer invalid');
+  const rows = await sql.unsafe(`SELECT author_id, body, created_at FROM harness_shared.coord_thread_posts
+    WHERE workspace_id = $1 AND id = $2::bigint AND origin = 'local'`, [workspaceId, match[1]]) as unknown as
+    Array<{ author_id: string | null; body: string; created_at: Date | string }>;
+  const post = rows[0];
+  if (rows.length !== 1 || !r11Text(post?.author_id)) throw new Error('R11 independent authorship is unverified');
+  const signature: unknown = JSON.parse(post.body);
+  if (!r11Record(signature) || signature.schemaVersion !== 'bug-scoreboard-independent-authorship-v1' ||
+      signature.writerRef !== args.writerRef || signature.independentRef !== args.independentRef)
+    throw new Error('R11 independent authorship does not bind these exact packets');
+  const postedAt = new Date(post.created_at).getTime(), measuredAt = r11Time(writer.measuredAt);
+  if (!Number.isFinite(postedAt) || !Number.isFinite(measuredAt) || postedAt < measuredAt ||
+      postedAt > (args.now ?? new Date()).getTime()) throw new Error('R11 independent authorship time invalid');
+  const canonicalAuthors = await resolvePlanImplementerIdentities(R11_METRIC_REGISTRY.authority.plan, { sql, workspaceId });
+  if (!canonicalAuthors.length) throw new Error('R11 canonical implementation authors are unqualified');
+  const authors = [...new Set([...canonicalAuthors, ...args.declaredAuthors])].sort();
+  const lineage = await acceptanceLineageClosure(post.author_id, { sql, workspaceId, requireComplete: true });
+  if (!lineage.has(post.author_id) || authors.some(author => lineage.has(author)))
+    throw new Error('R11 independent author is related to an implementation/proof author');
+  const receiptRef = await storeR11Evidence('authorship', {
+    authorshipPostRef: args.authorshipPostRef, authorId: post.author_id,
+    postedAt: new Date(postedAt).toISOString(), writerRef: args.writerRef, independentRef: args.independentRef,
+    checkedAgainst: authors, lineage: [...lineage].sort(), checkedAt: (args.now ?? new Date()).toISOString(),
+  }, sql);
+  return { ...independent, artifactRef: args.independentRef, authorId: post.author_id,
+    lineage: { eligible: true, checkedAgainst: authors, receiptRef } } as NonNullable<R11ScoreboardReceipt['independent']>;
 }
 
 /** Persist producer records and independent packets separately. Neither the
  * caller's authorId nor its claimed lineage becomes an authentication receipt. */
 export async function persistBugScoreboardEvidence(input: BugInflowScoreboardInput,
-  opts: { sql?: Sql } = {}): Promise<{ manifestRef: string; receiptRefs: string[] }> {
+  opts: { sql?: Sql; authorshipPosts?: Record<string, string> } = {}): Promise<{ manifestRef: string; receiptRefs: string[] }> {
   const sql = opts.sql ?? getOrgPg().sql;
   if (input.registryHash !== R11_METRIC_REGISTRY_HASH) throw new Error('R11 metric registry mismatch');
   const { receipts, ...header } = input;
@@ -813,14 +861,19 @@ export async function persistBugScoreboardEvidence(input: BugInflowScoreboardInp
     const { independent, ...writer } = receipt;
     const writerRef = await storeR11Evidence('receipt', writer, sql);
     const independentRef = independent ? await storeR11Evidence('independent', independent, sql) : undefined;
-    stored.receipts.push({ writerRef, ...(independentRef ? { independentRef } : {}) });
+    const authorshipPostRef = opts.authorshipPosts?.[receipt.id];
+    if (authorshipPostRef !== undefined && (!independentRef || !/^thread-post:([1-9][0-9]*)$/.test(authorshipPostRef)))
+      throw new Error('R11 authorship post requires an independent packet and canonical post reference');
+    stored.receipts.push({ writerRef, ...(independentRef ? { independentRef } : {}),
+      ...(authorshipPostRef ? { authorshipPostRef } : {}) });
   }
   return { manifestRef: await storeR11Evidence('manifest', stored, sql), receiptRefs: stored.receipts.map(r => r.writerRef) };
 }
 
 /** Retained-artifact transport to the existing assessor. A production resolver
  * must authenticate independent authorship AND qualify capture continuity before
- * supplying host-resolved independent inputs; stored self-claims are stripped.
+ * supplying host-resolved independent inputs; stored self-claims are stripped
+ * unless the exact packet has a canonical outside-lineage authorship post.
  * This reader therefore cannot certify a row snapshot as historical evidence. */
 export async function readStoredBugScoreboard(manifestRef: string, opts: {
   now?: Date; sql?: Sql; pageSize?: number;
@@ -832,6 +885,7 @@ export async function readStoredBugScoreboard(manifestRef: string, opts: {
     if (!r11Record(raw) || !r11Record(raw.input) || !Array.isArray(raw.receipts)) throw new Error('invalid R11 manifest');
     const input = { ...raw.input, receipts: [] } as unknown as BugInflowScoreboardInput;
     const refs: string[] = [];
+    const authenticationErrors: string[] = [];
     for (const entry of raw.receipts) {
       if (!r11Record(entry) || !r11Text(entry.writerRef)) throw new Error('invalid R11 receipt reference');
       refs.push(entry.writerRef);
@@ -847,11 +901,33 @@ export async function readStoredBugScoreboard(manifestRef: string, opts: {
         refs.push(entry.independentRef);
       }
       const { independent: _untrusted, ...retained } = writer;
-      input.receipts.push(retained as unknown as R11ScoreboardReceipt);
+      const receipt = retained as unknown as R11ScoreboardReceipt;
+      if (entry.authorshipPostRef !== undefined) {
+        try {
+          if (!r11Text(entry.authorshipPostRef) || !r11Text(entry.independentRef))
+            throw new Error('R11 independent authorship binding invalid');
+          receipt.independent = await resolveR11IndependentEvidence({ writerRef: entry.writerRef,
+            independentRef: entry.independentRef, authorshipPostRef: entry.authorshipPostRef,
+            declaredAuthors: input.implementationAuthors, now, sql });
+          refs.push(receipt.independent.lineage.receiptRef, entry.authorshipPostRef);
+          input.implementationAuthors = [...new Set([...input.implementationAuthors,
+            ...receipt.independent.lineage.checkedAgainst])].sort();
+        } catch (error) {
+          // Preserve the writer's broken verdict even if authentication fails.
+          if (r11Text(entry.authorshipPostRef)) refs.push(entry.authorshipPostRef);
+          authenticationErrors.push(error instanceof Error ? error.message : 'R11 independent authentication failed');
+        }
+      }
+      input.receipts.push(receipt);
     }
     const assessment = assessBugInflowScoreboard(input, now);
     assessment.retainedReceiptRefs.push(...refs);
-    assessment.reasons.push('row snapshots do not qualify event-history continuity; independent artifact authorship is unverified');
+    // Even authenticated authorship cannot promote a snapshot into history.
+    if (assessment.verdict === 'healthy') assessment.verdict = 'unknown';
+    if (assessment.independentVerdict === 'healthy') assessment.independentVerdict = 'unknown';
+    assessment.reasons.push(...authenticationErrors, 'row snapshots do not qualify event-history continuity');
+    if (input.receipts.some(r => !r.independent))
+      assessment.reasons.push('independent artifact authorship is unverified for one or more receipts');
     return assessment;
   } catch (error) {
     const assessment = unknown();

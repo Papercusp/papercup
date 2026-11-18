@@ -27,6 +27,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import {
   freezeBugScoreboardSource, persistBugScoreboardEvidence, readBugScoreboardSource,
   readBugScoreboardSourcePage, readStoredBugScoreboard,
+  resolveR11IndependentEvidence,
   readBugInflowDaily, refreshBugInflowDaily,
 } from './bug-inflow';
 import { scoreboardFixture } from './bug-inflow.fixture';
@@ -292,6 +293,104 @@ describe('R11 retained PostgreSQL source and receipt consumer', () => {
     }
     await expect(readBugScoreboardSourcePage('missing', { pageSize: 0, sql: db.adminSql })).rejects.toThrow(/pageSize/);
   });
+
+  it('R11 canonical independent authorship binds exact packets and rechecks the complete implementer census after restart', async () => {
+    await clearSource();
+    const input = scoreboardFixture(), receipt = input.receipts[0];
+    const plan = 'bug-backlog-inflow-and-duplicate-review-2026-11-13';
+    await sourceSeed('auth-implementer');
+    await db.adminSql`UPDATE harness_shared.work_items SET source_plan_slug = ${plan}, taken_by = 'implementation-a'
+      WHERE workspace_id = ${workspace} AND harness_slug = ${harness} AND feature_id = 'auth-implementer'`;
+    const { independent, ...writer } = receipt;
+    independent!.authorId = 'self-asserted-eligible-identity';
+    const writerRef = await storeR11Evidence('receipt', writer, db.adminSql);
+    const independentRef = await storeR11Evidence('independent', independent, db.adminSql);
+    const threadId = 'r11-canonical-authorship';
+    await db.adminSql`INSERT INTO harness_shared.coord_threads (workspace_id, thread_id, parent_kind, parent_ref)
+      VALUES (${workspace}, ${threadId}, 'plan', ${plan})`;
+    const post = async (author: string | null, body: unknown, origin = 'local', ws = workspace,
+      createdAt = NOW.toISOString()) => {
+      const [row] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
+        (workspace_id, thread_id, author_id, body, origin, created_at)
+        VALUES (${ws}, ${threadId}, ${author}, ${JSON.stringify(body)}, ${origin}, ${createdAt}) RETURNING id`;
+      return `thread-post:${row.id}`;
+    };
+    const signature = { schemaVersion: 'bug-scoreboard-independent-authorship-v1', writerRef, independentRef };
+    const authorshipPostRef = await post('canonical-independent-reviewer', signature);
+    const args = { writerRef, independentRef, authorshipPostRef, declaredAuthors: input.implementationAuthors,
+      sql: db.adminSql, now: NOW };
+    // A new call uses only durable references and the actual private database;
+    // no caller-provided eligible/author fields are reused as authentication.
+    const restarted = await resolveR11IndependentEvidence({ ...args, authorshipPostRef: JSON.parse(JSON.stringify(authorshipPostRef)) });
+    expect(restarted).toMatchObject({ authorId: 'canonical-independent-reviewer', artifactRef: independentRef,
+      lineage: { eligible: true, checkedAgainst: expect.arrayContaining(['implementation-a', 'proof-author']) } });
+    expect(await loadR11Evidence(restarted.lineage.receiptRef, 'authorship', db.adminSql)).toMatchObject({
+      authorId: 'canonical-independent-reviewer', authorshipPostRef, writerRef, independentRef });
+    for (const ref of [
+      await post(null, signature), await post('canonical-independent-reviewer', signature, 'remote'),
+      await post('canonical-independent-reviewer', signature, 'local', 'foreign-workspace'),
+      await post('canonical-independent-reviewer', { ...signature, writerRef: 'another-writer' }),
+      await post('canonical-independent-reviewer', { ...signature, independentRef: 'another-packet' }),
+      await post('canonical-independent-reviewer', signature, 'local', workspace, '2026-10-01T00:00:00Z'),
+      await post('canonical-independent-reviewer', signature, 'local', workspace, '2027-01-01T00:00:00Z'),
+      await post('implementation-a', signature),
+    ]) await expect(resolveR11IndependentEvidence({ ...args, authorshipPostRef: ref })).rejects.toThrow();
+    const edges: Array<[string, string]> = [['implementation-a', 'r11-related-reviewer']];
+    for (let n = 0; n < 66; n++) edges.push([`r11-incomplete-${n}`, `r11-incomplete-${n + 1}`]);
+    await db.adminSql`INSERT INTO harness_shared.tool_invocations ${db.adminSql(edges.map(([from, to], n) => ({
+      workspace_id: workspace, harness_slug: harness, plugin_name: 'agentmcp', tool_name: 'coord:rebind-identity',
+      role: 'su', spawn_id: `r11-auth-edge-${n}`, window_key: `r11-auth-edge-${n}`,
+      status: 'ok', args_json: { from, to }, coord_owner_id: to,
+    })))}`;
+    await expect(resolveR11IndependentEvidence({ ...args,
+      authorshipPostRef: await post('r11-related-reviewer', signature) })).rejects.toThrow(/related/);
+    await expect(resolveR11IndependentEvidence({ ...args,
+      authorshipPostRef: await post('r11-incomplete-0', signature) })).rejects.toThrow(/census_incomplete/);
+    // Canonical authors absent from the stored declaration still exclude the
+    // reviewer. A decisive claimant after many rows cannot hide behind a prefix.
+    for (let i = 0; i < 41; i++) {
+      await sourceSeed(`auth-census-${i.toString().padStart(3, '0')}`);
+      await db.adminSql`UPDATE harness_shared.work_items SET source_plan_slug = ${plan}, taken_by = ${
+        i === 40 ? 'canonical-independent-reviewer' : `canonical-implementer-${i}`}
+        WHERE workspace_id = ${workspace} AND harness_slug = ${harness}
+          AND feature_id = ${`auth-census-${i.toString().padStart(3, '0')}`}`;
+    }
+    await expect(resolveR11IndependentEvidence(args)).rejects.toThrow(/related/);
+  }, 60_000);
+
+  it('R11 authenticated reconciliation still leaves row-snapshot history unknown and preserves broken writer verdicts', async () => {
+    await clearSource();
+    const input = scoreboardFixture();
+    await sourceSeed('auth-reader-implementer');
+    await db.adminSql`UPDATE harness_shared.work_items SET source_plan_slug = 'bug-backlog-inflow-and-duplicate-review-2026-11-13',
+      taken_by = 'implementation-a' WHERE workspace_id = ${workspace} AND harness_slug = ${harness}
+      AND feature_id = 'auth-reader-implementer'`;
+    const source = await freezeBugScoreboardSource({ now: NOW, sql: db.adminSql });
+    const authorshipPosts: Record<string, string> = {};
+    for (const receipt of input.receipts) {
+      Object.assign(receipt.source, { ref: source.ref, sha256: source.sha256, totalRows: source.totalRows, rowsRead: source.totalRows });
+      receipt.independent!.sourceHash = source.sha256;
+      const { independent, ...writer } = receipt;
+      const writerRef = await storeR11Evidence('receipt', writer, db.adminSql);
+      const independentRef = await storeR11Evidence('independent', independent, db.adminSql);
+      const [post] = await db.adminSql`INSERT INTO harness_shared.coord_thread_posts
+        (workspace_id, thread_id, author_id, body, origin, created_at)
+        VALUES (${workspace}, 'r11-canonical-authorship', 'canonical-independent-reader', ${JSON.stringify({
+          schemaVersion: 'bug-scoreboard-independent-authorship-v1', writerRef, independentRef })}, 'local', ${NOW.toISOString()}) RETURNING id`;
+      authorshipPosts[receipt.id] = `thread-post:${post.id}`;
+    }
+    const stored = await persistBugScoreboardEvidence(input, { sql: db.adminSql, authorshipPosts });
+    const reading = await readStoredBugScoreboard(stored.manifestRef, { now: NOW, sql: db.adminSql });
+    expect(reading).toMatchObject({ verdict: 'unknown', independentVerdict: 'unknown', checkedRuns: 7 });
+    expect(reading.retainedReceiptRefs.filter(ref => ref.includes('/authorship/'))).toHaveLength(7);
+    expect(reading.reasons.join(' ')).toContain('row snapshots do not qualify event-history continuity');
+    expect(reading.reasons.join(' ')).not.toContain('authorship is unverified');
+    input.receipts[6].metrics.shareReviewed!.denominator = 3;
+    const broken = await persistBugScoreboardEvidence(input, { sql: db.adminSql, authorshipPosts });
+    const failed = await readStoredBugScoreboard(broken.manifestRef, { now: NOW, sql: db.adminSql });
+    expect(failed.verdict).toBe('broken');
+    expect(failed.reasons.join(' ')).toContain('does not bind these exact packets');
+  }, 60_000);
 
   it('R11 assessor consumes actual persisted writer records and independent reconciliation artifacts across restart', async () => {
     await clearSource();
