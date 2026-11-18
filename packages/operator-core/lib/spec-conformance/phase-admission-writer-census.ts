@@ -213,6 +213,10 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const seenPaths = new Set<string>();
   const byPath = new Map(input.map(source => [source.path, source]));
   const sourceHashes = new Map(input.map(source => [source.path, digest(source.content)]));
+  // A symbol can identify a variable, class or type. Only an actual function
+  // body supplies the syntax whose outgoing calls this inventory has visited.
+  // In particular `const send = connection.send` is not a closed callable.
+  const callableDeclarations = new Set<string>();
   const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; spelling: string; statement: string;
     line: number; column: number; importedName?: string; importedCall: boolean; argumentNames: string[];
@@ -243,6 +247,21 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       catch {
         retainedGaps.push({ id: `source:${source.path}`, reason: 'typescript-parse-unresolved' });
         continue;
+      }
+      for (const statement of unit.ast.statements) {
+        const declarations = ts.isVariableStatement(statement) ? statement.declarationList.declarations : [statement];
+        for (const declaration of declarations) {
+          const name = 'name' in declaration ? declaration.name : undefined;
+          if (!name || !ts.isIdentifier(name)) continue;
+          const body = ts.isFunctionDeclaration(declaration) ? declaration.body
+            : ts.isVariableDeclaration(declaration) && declaration.initializer
+              && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
+              ? declaration.initializer.body : undefined;
+          if (body) {
+            const { line, column } = unit.span(name);
+            callableDeclarations.add(JSON.stringify([source.path, line, column, name.text]));
+          }
+        }
       }
       const operation = (node: ts.Node): string => {
         const names: string[] = [];
@@ -453,44 +472,51 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   // reaches it. Keep the full candidates but decline every such target proof.
   if (helperSymbols.stats.callCensusTruncated) targets.clear();
   const added = new Set<string>();
-  let changed = true;
-  while (changed) {
-    changed = false;
-    // Aliases supply candidates, never binding proof. Retain every assignment
-    // and ambiguous name rather than choosing a convenient lexical scope.
-    for (const alias of aliases) if (writers.has(alias.target) && !writers.has(alias.name)) {
-      writers.add(alias.name); changed = true;
-    }
-    for (const call of calls) {
-      const name = call.importedName ?? call.spelling;
-      const key = JSON.stringify([call.path, call.operation, call.statement, call.line, call.column]);
-      const target = targets.get(JSON.stringify([call.path, call.line, call.column]));
-      // An opaque local/global call can write without any imported name,
-      // known SQL spelling or previously seeded writer. Preserve that call and
-      // every positional/spread argument; target identity alone cannot prove
-      // which effects a callback or an argument will have. Existing explicit
-      // SQL/indirect/append sites already retain their own frontiers.
-      const opaqueCall = !target?.declaration && !call.hasDirectSite;
-      if ((!writers.has(name) && !call.argumentNames.some(argument => writers.has(argument))
-        && !(target && writerPaths.has(target.path)) && !call.importedCall && !opaqueCall) || added.has(key)) continue;
-      added.add(key);
-      const source = byPath.get(call.path)!;
-      const helperTarget: PhaseWriterSite['helperTarget'] = target ? {
-        path: target.path, sha256: sourceHashes.get(target.path)!, basis: 'syntax-bound-module-target-not-runtime-closure',
-      } : undefined;
-      add(source, call.operation, call.statement, call.line, 'helper-edge', {
-        callees: [call.callee], dynamicEdges: [call.callee,
-          ...(opaqueCall ? call.argumentTexts : []),
-          ...(helperTarget ? [`source:${helperTarget.path}#${helperTarget.sha256}`] : [])],
-        ...(helperTarget ? { helperTarget } : {}),
-        ...(target?.declaration ? { helperDeclaration: target.declaration } : {}),
-        unresolved: [...(!helperTarget && call.importedCall ? ['imported-call-target-requires-review'] : []),
-          ...(opaqueCall ? ['call-target-declaration-unresolved'] : []),
-          ...(helperSymbols.stats.callCensusTruncated ? ['helper-symbol-export-resolution-incomplete'] : [])],
-      });
-      if (!writerPaths.has(source.path)) { writerPaths.add(source.path); changed = true; }
-      const wrapper = call.operation.split('::')[0]!;
-      if (!writers.has(wrapper)) { writers.add(wrapper); changed = true; }
+  // Retain the existing source-reviewed frontiers verbatim first. They already
+  // require explicit review of their full statements. A second fixed point
+  // adds previously unseeded calls with their unresolved declaration/arguments;
+  // it cannot re-label an old review or exempt any existing candidate.
+  for (const includeOpaque of [false, true]) {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      // Aliases supply candidates, never binding proof. Retain every assignment
+      // and ambiguous name rather than choosing a convenient lexical scope.
+      for (const alias of aliases) if (writers.has(alias.target) && !writers.has(alias.name)) {
+        writers.add(alias.name); changed = true;
+      }
+      for (const call of calls) {
+        const name = call.importedName ?? call.spelling;
+        const key = JSON.stringify([call.path, call.operation, call.statement, call.line, call.column]);
+        const target = targets.get(JSON.stringify([call.path, call.line, call.column]));
+        // An opaque local/global call can write without any imported name,
+        // known SQL spelling or previously seeded writer. Preserve that call and
+        // every positional/spread argument; target identity alone cannot prove
+        // which effects a callback or an argument will have. Existing explicit
+        // SQL/indirect/append sites already retain their own frontiers.
+        const opaqueCall = includeOpaque && (!target?.declaration || !callableDeclarations.has(target.declaration.id))
+          && !call.hasDirectSite;
+        if ((!writers.has(name) && !call.argumentNames.some(argument => writers.has(argument))
+          && !(target && writerPaths.has(target.path)) && !call.importedCall && !opaqueCall) || added.has(key)) continue;
+        added.add(key);
+        const source = byPath.get(call.path)!;
+        const helperTarget: PhaseWriterSite['helperTarget'] = target ? {
+          path: target.path, sha256: sourceHashes.get(target.path)!, basis: 'syntax-bound-module-target-not-runtime-closure',
+        } : undefined;
+        add(source, call.operation, call.statement, call.line, 'helper-edge', {
+          callees: [call.callee], dynamicEdges: [call.callee,
+            ...(opaqueCall ? call.argumentTexts : []),
+            ...(helperTarget ? [`source:${helperTarget.path}#${helperTarget.sha256}`] : [])],
+          ...(helperTarget ? { helperTarget } : {}),
+          ...(target?.declaration ? { helperDeclaration: target.declaration } : {}),
+          unresolved: [...(!helperTarget && call.importedCall ? ['imported-call-target-requires-review'] : []),
+            ...(opaqueCall ? ['call-target-declaration-unresolved'] : []),
+            ...(helperSymbols.stats.callCensusTruncated ? ['helper-symbol-export-resolution-incomplete'] : [])],
+        });
+        if (!writerPaths.has(source.path)) { writerPaths.add(source.path); changed = true; }
+        const wrapper = call.operation.split('::')[0]!;
+        if (!writers.has(wrapper)) { writers.add(wrapper); changed = true; }
+      }
     }
   }
   return { schemaVersion: 1, scope: { kind: 'supplied-sources' }, sources, sites: sites.sort((a, b) => compare(a.id, b.id)),

@@ -41,7 +41,8 @@ describe('phase binding writer census', () => {
     const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
     const accepted = reviewed.reviews.map(row => row.siteId).sort();
     expect(report.ready).toBe(false);
-    expect([...report.coverage.checked].sort()).toEqual(accepted);
+    expect([...report.coverage.checked].sort(), JSON.stringify(report.problems.filter(row => accepted.includes(row.id))))
+      .toEqual(accepted);
     expect(report.coverage.notApplicable).toEqual([]);
     const unreviewed = inventory.sites.filter(site => !accepted.includes(site.id)).map(site => site.id);
     expect([...report.coverage.notChecked].sort()).toEqual([...unreviewed].sort());
@@ -1066,7 +1067,7 @@ describe('phase binding writer census', () => {
     const opaque = source(`
       const connection = acquireConnection();
       const send = connection.send;
-      const statement = ['UP', "DATE work_items SET status='open'"].join('');
+      const statement = 'UP' + "DATE work_items SET status='open'";
       function hidden() { return send(statement, ...parameters); }
       function entry() { return hidden(); }
     `, 'packages/opaque.ts');
@@ -1074,7 +1075,8 @@ describe('phase binding writer census', () => {
     const call = inventory.sites.find(site => site.statement === 'send(statement, ...parameters)');
     expect(call).toBeDefined();
     expect(call!.unresolved).toContain('call-target-declaration-unresolved');
-    expect(call!.dynamicEdges).toEqual(['send', 'statement', '...parameters']);
+    expect(call!.dynamicEdges).toEqual(['send', 'statement', '...parameters',
+      `source:${opaque.path}#${call!.sourceSha256}`]);
     expect(inventory.sites.some(site => site.statement === 'hidden()' && site.kind === 'helper-edge')).toBe(true);
     const report = reconcilePhaseWriterCensus(inventory, []);
     expect(report.ready).toBe(false);
@@ -1101,6 +1103,35 @@ describe('phase binding writer census', () => {
       expect(frontier.unresolved).toContain('indirect-call-target-requires-review');
       expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(frontier.id);
       expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(helper.id);
+    }
+  });
+
+  it('retains every same-line opaque call occurrence across counter and consumer boundaries', async () => {
+    for (const count of [1, 2, 3, 499, 500, 501]) {
+      const sources = [source(`function entry() { ${'opaque();'.repeat(count)} }`, 'packages/opaque.ts'),
+        source('export function unrelated() {}', 'packages/other.ts')];
+      const inventory = inventoryPhaseWriters(sources);
+      expect(inventoryPhaseWriters([...sources].reverse())).toEqual(inventory);
+      expect(inventory.sites).toHaveLength(count);
+      expect(new Set(inventory.sites.map(site => site.id)).size).toBe(count);
+      const last = inventory.sites.at(-1)!;
+      const reviews = inventory.sites.filter(site => site.id !== last.id).map(site => review(site));
+      const lines: string[] = [];
+      const footer = await writePhaseWriterCensus({ ...inventory, excluded: [],
+        enumeration: { scanned: ['.'], unscanned: [] } }, reviews, async line => { lines.push(line); });
+      const recovered: PhaseWriterSite[] = [];
+      async function* batches() {
+        for (let offset = 0; offset < lines.length; offset += 2) {
+          yield* lines.slice(offset, offset + 2);
+          await Promise.resolve();
+        }
+      }
+      expect(await readPhaseWriterCensus(batches(), row => {
+        if (row.kind === 'site') recovered.push(row.value as PhaseWriterSite);
+      })).toEqual(footer);
+      expect(recovered).toEqual(inventory.sites);
+      expect(footer.ready).toBe(false);
+      expect(reconcilePhaseWriterCensus(inventory, reviews).coverage.residue).toEqual([last.id]);
     }
   });
 
