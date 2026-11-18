@@ -84,6 +84,60 @@ describe('phase binding writer census', () => {
       .map(row => row.siteId).sort());
   });
 
+  it('pins clock and notification SQL reviews without accepting append or lifecycle closure', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const clock = 'libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql';
+    const clockDefinition = 'libs/papercusp/libs/db/sql/813-contention-free-hlc-sequence.sql';
+    const paths = [clock, clockDefinition,
+      'libs/papercusp/libs/db/sql/126-coordination-fanout.sql',
+      'libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql',
+      'libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql'];
+    const pgLog = 'packages/coordination/src/event-log/pg-log.ts';
+    const sources = [...new Set([...reviewed.reviewedSourcePaths, ...paths, pgLog])]
+      .map(path => ({ path, content: readFileSync(new URL(path, root), 'utf8') }));
+    const inventory = inventoryPhaseWriters(sources);
+    const callers = inventory.sites.filter(site => paths.includes(site.path) && site.path !== clockDefinition);
+    expect(callers.map(site => site.path).sort()).toEqual(paths.filter(path => path !== clockDefinition).sort());
+    const current = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    for (const site of callers) {
+      expect(current.coverage.checked).toContain(site.id);
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+    }
+    expect(byId.get(callers.find(site => site.path === clock)!.id)?.sourceProofs)
+      .toContainEqual({ path: clockDefinition,
+        sha256: inventory.sources.find(row => row.path === clockDefinition)!.sha256 });
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === clockDefinition
+      ? { ...source, content: source.content + '\nUPDATE harness_shared.work_items SET status=\'wip\';\n' }
+      : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    const clockSite = callers.find(site => site.path === clock)!;
+    expect(stale.problems.find(row => row.id === clockSite.id)?.reasons)
+      .toContain('stale-source-proof:' + clockDefinition);
+    // A reviewed function module cannot approve an extra statement or any of
+    // the independent advancing, append, or transaction/driver frontiers.
+    for (const site of callers) {
+      const injected = inventoryPhaseWriters(sources.map(source => source.path === site.path
+        ? { ...source, content: source.content + '\nUPDATE harness_shared.plan_item_claims SET owner=\'other\';\n' }
+        : source));
+      const refused = reconcilePhaseWriterCensus(injected, reviewed.reviews);
+      const replacement = injected.sites.find(row => row.path === site.path)!;
+      expect(refused.coverage.residue).toContain(replacement.id);
+      expect(refused.problems).toContainEqual({ id: replacement.id, reasons: ['unclassified-writer'] });
+    }
+    for (const { siteId } of reviewed.pendingAdvancing) expect(current.coverage.residue).toContain(siteId);
+    const append = inventory.sites.filter(site => site.path === pgLog
+      && site.operation === 'appendLine' && site.kind === 'sql');
+    expect(append).toHaveLength(1);
+    for (const site of append) expect(current.coverage.residue).toContain(site.id);
+    expect(current.ready).toBe(false);
+  });
+
   it('pins sealing scope reads and pure splitting while retaining write and driver frontiers', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(
@@ -482,6 +536,10 @@ describe('phase binding writer census', () => {
       'libs/papercusp/libs/db/sql/141-plan-item-claims.sql',
       'libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql',
       'libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql',
+      'libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql',
+      'libs/papercusp/libs/db/sql/126-coordination-fanout.sql',
+      'libs/papercusp/libs/db/sql/1112-prevent-resolved-escalation-projection-resurrection.sql',
+      'libs/papercusp/libs/db/sql/1436-emit-change-notify-row-workspace.sql',
     ];
     const reviewedModules = modules.filter(site => reviewedModulePaths.includes(site.path));
     expect(reviewedModules.map(site => site.path).sort()).toEqual([...reviewedModulePaths].sort());
@@ -498,9 +556,16 @@ describe('phase binding writer census', () => {
       expect(byId.get(site.id)).toMatchObject({ disposition: 'metadata-only',
         sourceSha256: site.sourceSha256, statementSha256: site.statementSha256 });
       expect(report.coverage.checked).toContain(site.id);
-      for (const dependency of reviewedModules) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
-        path: dependency.path, sha256: dependency.sourceSha256,
-      });
+      const claimProofPaths = [
+        'libs/papercusp/libs/db/sql/141-plan-item-claims.sql',
+        'libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql',
+        'libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql',
+      ];
+      if (claimProofPaths.includes(site.path)) {
+        for (const path of claimProofPaths) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+          path, sha256: inventory.sources.find(row => row.path === path)!.sha256,
+        });
+      }
       const changed = inventoryPhaseWriters(sources.map(source => source.path === site.path
         ? { ...source, content: source.content + '\nUPDATE harness_shared.plan_item_claims SET owner = \'new-holder\';\n' }
         : source));
@@ -509,7 +574,8 @@ describe('phase binding writer census', () => {
       expect(stale.coverage.notChecked).toContain(changedSite.id);
       expect(stale.coverage.residue).toContain(changedSite.id);
       expect(stale.problems).toContainEqual({ id: changedSite.id, reasons: ['unclassified-writer'] });
-      for (const other of reviewedModules.filter(row => row.path !== site.path)) {
+      for (const other of reviewedModules.filter(row => row.path !== site.path
+        && byId.get(row.id)!.sourceProofs.some(proof => proof.path === site.path))) {
         expect(stale.problems).toContainEqual({ id: other.id, reasons: [`stale-source-proof:${site.path}`] });
       }
     }
