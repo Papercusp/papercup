@@ -241,6 +241,34 @@ beforeEach(async () => {
 });
 
 describe('engineer issues surface (real PG)', () => {
+  it.each([
+    { route: 'direct', input: {}, admission: 'pending', owner: null },
+    { route: 'explicit NULL', input: { admission: null }, admission: 'pending', owner: null },
+    { route: 'assigned', input: { assignee: 'agA' }, admission: 'auto', owner: 'agA' },
+    { route: 'critical', input: { severity: 'critical' as const }, admission: 'auto', owner: null },
+    { route: 'security', input: { topics: ['security'] }, admission: 'auto', owner: null },
+    { route: 'explicit pending', input: { assignee: 'agA', admission: 'pending' as const }, admission: 'pending', owner: 'agA' },
+  ])('R4 direct bug writer atomically records admission and review debt: $route', async ({ input, admission, owner }) => {
+    const created = await issues.createIssue({ kind: 'bug', title: 'Review every new bug', ...input });
+    const [stored] = await db.sql`
+      SELECT admission, admitted_at, admitted_by, taken_by, payload, created_ts
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${PINNED_WS} AND feature_id = ${created.id}`;
+    expect(stored.admission).toBe(admission);
+    expect(stored.taken_by).toBe(owner);
+    expect(stored.payload.admissionReview).toMatchObject({
+      state: 'pending', retryAttempts: 0, reviewedAt: null, reviewedBy: null,
+    });
+    expect(Date.parse(stored.payload.admissionReview.enteredAt)).toBe(Number(stored.created_ts));
+    if (admission === 'pending') {
+      expect(stored.admitted_at).toBeNull();
+      expect(stored.admitted_by).toBeNull();
+    } else {
+      expect(stored.admitted_at).not.toBeNull();
+      expect(stored.admitted_by).toMatch(/^bypass:/);
+    }
+  });
+
   it.for(['bug', 'change', 'task'] as const)(
     'preserves explicit harness scope in an un-potted workspace (%s)', async kind => {
       expect(await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system')).toBe(true);
@@ -423,7 +451,7 @@ describe('engineer issues surface (real PG)', () => {
       updatedAt: expect.any(String),
     };
     for (const kind of ['bug', 'change', 'task'] as const) {
-      const created = await issues.createIssue({ title: `enroll ${kind} ${Date.now()}`, kind, createdBy: 'agA' });
+      const created = await issues.createIssue({ title: `enroll ${kind} ${Date.now()}`, kind, createdBy: 'agA', admission: 'auto' });
       expect((created.payload as Record<string, unknown>).implementationReadiness).toEqual(enrolled);
       // The stamp is the visible legacy exception, so the row stays claimable exactly
       // as an un-enrolled row was (no claimability change before the P-007 cutover).
@@ -454,13 +482,14 @@ describe('engineer issues surface (real PG)', () => {
       payload: { lane: 'observation' },
     });
     expect(observation.payload).not.toHaveProperty('implementationReadiness');
+    expect(observation.payload).not.toHaveProperty('admissionReview');
   });
 
   it('issue-family writes refresh updated_at — no stale updated_ts (WI-339 regression)', async () => {
     // The bug: the local-write helpers omitted `updated_at` from the UPDATE SET clause,
     // so the INSTEAD OF trigger's COALESCE(NEW.updated_at, now()) carried the OLD view
     // value and `updated_ts` never refreshed. Every mutation helper must restamp it.
-    const { id } = await issues.createIssue({ title: 'stamp me', createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 'stamp me', createdBy: 'agA', admission: 'auto' });
     const STALE_MS = Date.now() - 86_400_000; // a day ago
     // Backdate via the view — the trigger HONORS an explicit updated_at (the
     // federation-preserve path the COALESCE supports), so this lands a stale updated_ts.
@@ -544,7 +573,7 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('persists dispatch provenance atomically and preserves it on self-reclaim (EI-25163151398656476)', async () => {
-    const issue = await issues.createIssue({ title: `dispatch-provenance-${Date.now()}`, createdBy: 'agA' });
+    const issue = await issues.createIssue({ title: `dispatch-provenance-${Date.now()}`, createdBy: 'agA', admission: 'auto' });
     const claimed = await issues.claimIssue(issue.id, 'agB', { assignedBy: 'su-leader' });
     expect(claimed).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
     expect(await issues.getIssue(issue.id)).toMatchObject({ assignee: 'agB', assignedBy: 'su-leader' });
@@ -554,7 +583,7 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('bounds a contended issue release and leaves the claim intact until retry (EI-23215738429986679)', async () => {
-    const issue = await issues.createIssue({ title: `release-contention-${Date.now()}`, createdBy: 'agA' });
+    const issue = await issues.createIssue({ title: `release-contention-${Date.now()}`, createdBy: 'agA', admission: 'auto' });
     const claimed = await issues.claimIssue(issue.id, 'agB');
     expect(claimed?.assignee).toBe('agB');
 
@@ -640,7 +669,7 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('claim → assignee set + auto-subscribed; release clears it', async () => {
-    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA', admission: 'auto' });
     const claimed = await issues.claimIssue(id, 'agB');
     expect(claimed?.assignee).toBe('agB');
     // assigned_at MUST stamp on claim: the implement lane's stale-claim reclaim
@@ -666,6 +695,7 @@ describe('engineer issues surface (real PG)', () => {
       title: 'original watchdog subject',
       body: 'original watchdog observation',
       createdBy: 'agA',
+      admission: 'auto',
       payload: { watchdogKey: 'repeated-tool-error:original' },
     });
 
@@ -738,7 +768,7 @@ describe('engineer issues surface (real PG)', () => {
   // against a notify path that was dead for an unrelated reason — a suite of only
   // "nothing happened" assertions cannot detect its own instrument being broken.
   it('WI-2142171: a no-op re-claim by the CURRENT holder does not re-notify subscribers', async () => {
-    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA', admission: 'auto' });
     const before = (await inboxOf('agA')).length;
 
     // POSITIVE CONTROL — a genuine claim MUST reach the subscriber.
@@ -761,7 +791,7 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('WI-2142171: a no-op re-release of an already-unassigned issue does not re-notify subscribers', async () => {
-    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA', admission: 'auto' });
     await issues.claimIssue(id, 'agB');
     const afterClaim = (await inboxOf('agA')).length;
 
@@ -779,7 +809,7 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('EI-7150: setIssueState to a non-terminal state (e.g. open) PRESERVES the claim — only resolved/closed clear it', async () => {
-    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 't', createdBy: 'agA', admission: 'auto' });
     const claimed = await issues.claimIssue(id, 'agB');
     expect(claimed?.assignee).toBe('agB');
     // The non-terminal UPDATE branch (state !== resolved/closed) must touch ONLY
@@ -844,7 +874,7 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   it('terminal issue transitions clear the progress anchor with the released claim', async () => {
-    const { id } = await issues.createIssue({ title: 'clear progress on close', createdBy: 'agA' });
+    const { id } = await issues.createIssue({ title: 'clear progress on close', createdBy: 'agA', admission: 'auto' });
     await issues.claimIssue(id, 'agB');
     noteGoalClaimed('agB', id);
     expect(readAgentStateStamp('agB').goalRef).toBe(id);
@@ -1875,7 +1905,8 @@ describe('claimIssue by id applies the acceptance floor to a NEW holder (P-007 /
 
   /** createIssue stamps the creation-enrollment `unknown` verdict; override it and/or the age. */
   async function seedIssue(opts: { createdTs?: number; readiness?: unknown; status?: string } = {}) {
-    const created = await issues.createIssue({ title: TITLE, body: SUMMARY, kind: 'bug', createdBy: 'agA' });
+    // These fixtures isolate the acceptance floor after duplicate admission.
+    const created = await issues.createIssue({ title: TITLE, body: SUMMARY, kind: 'bug', createdBy: 'agA', admission: 'auto' });
     if (opts.readiness !== undefined) {
       await db.sql`UPDATE harness_shared.work_items
                       SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{implementationReadiness}',

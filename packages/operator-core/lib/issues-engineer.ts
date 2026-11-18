@@ -22,7 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { isDeepStrictEqual } from 'node:util';
 import { assertWorkItemDefinitionUnchanged } from './work-item-definition';
 import type { OrgSql, WorkItemClaimTransaction } from './work-items';
-import { admittedWhereSql, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
+import { admittedWhereSql, buildAdmissionReviewMetadata, selfHealOwnNodeOriginIfStranded, type BornAdmission } from './work-items-admission';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import {
   assertWorkspaceChoice,
@@ -1270,9 +1270,21 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // creation-time by a named bypass. `admitted_at`/`admitted_by` are stamped ONLY for
   // the non-pending case — a pending row that already carries an admitter reads, to
   // every later consumer and to the stats ledger, as an item somebody has judged.
-  const bornAdmission: BornAdmission | null = input.admission ?? null;
+  // R-4: raw emitters and compatibility callers share this INSERT with capture
+  // and work_items:create. A new bug must never inherit legacy NULL admission.
+  // Assignment/urgent bypasses keep immediate admission and still owe review.
+  const bug = storageKind === 'bug' && inputPayload.lane !== 'observation';
+  const defaultBypass = input.severity === 'critical' ? 'bypass:severity-critical'
+    : input.topics?.some(topic => topic.trim().toLowerCase() === 'security') ? 'bypass:topic-security'
+    : input.assignee?.trim() ? 'bypass:explicit-assignment' : null;
+  const bornAdmission: BornAdmission | null = input.admission ?? (bug ? (defaultBypass ? 'auto' : 'pending') : null);
   const bornAdmittedAt = bornAdmission && bornAdmission !== 'pending' ? created : null;
-  const bornAdmittedBy = bornAdmission && bornAdmission !== 'pending' ? (input.admittedBy ?? null) : null;
+  const bornAdmittedBy = bornAdmission && bornAdmission !== 'pending' ? (input.admittedBy ?? defaultBypass) : null;
+  if (bug && inputPayload.admissionReview === undefined) {
+    inputPayload.admissionReview = buildAdmissionReviewMetadata({
+      state: 'pending', nowMs: Date.parse(created), alertReason: 'new bug requires duplicate review',
+    });
+  }
   const sourcePlanSlug =
     typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
   const sourcePlanItemIds = Array.isArray(input.sourcePlanItemIds)

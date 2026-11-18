@@ -170,6 +170,62 @@ export function isAdmitted(
  */
 export const DEFAULT_PROMOTER_TICK_MINUTES = 30;
 
+export const WORK_ITEM_ADMISSION_PROMOTER = 'work-item-admission-promoter';
+export const DEFAULT_ADMISSION_REVIEW_SLO_MINUTES = DEFAULT_PROMOTER_TICK_MINUTES * 2;
+export const ADMISSION_REVIEW_RETRY_OWNER = `system:${WORK_ITEM_ADMISSION_PROMOTER}`;
+export const ADMISSION_REVIEW_ALERT_KEY = 'work-item-admission-review-debt';
+export type AdmissionReviewState = 'pending' | 'reviewed' | 'terminal';
+
+export interface AdmissionReviewMetadata {
+  state: AdmissionReviewState;
+  enteredAt: string;
+  reviewDueAt: string;
+  retryOwner: string;
+  retryAttempts: number;
+  lastRetryAt: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  terminalAt: string | null;
+  terminalOutcome: string | null;
+  alert: { key: string; state: 'open' | 'cleared'; emittedAt: string; reason: string };
+}
+
+/** Shared by filing and fail-open writers without loading the model runner. */
+export function buildAdmissionReviewMetadata(input: {
+  state: AdmissionReviewState;
+  nowMs: number;
+  retryOwner?: string;
+  retryAttempts?: number;
+  enteredAtMs?: number;
+  reviewDueAtMs?: number;
+  reviewedBy?: string | null;
+  terminalOutcome?: string | null;
+  alertState?: 'open' | 'cleared';
+  alertReason?: string;
+}): AdmissionReviewMetadata {
+  const now = new Date(input.nowMs).toISOString();
+  const terminal = input.state === 'terminal';
+  const reviewed = input.state !== 'pending';
+  return {
+    state: input.state,
+    enteredAt: new Date(input.enteredAtMs ?? input.nowMs).toISOString(),
+    reviewDueAt: new Date(input.reviewDueAtMs ?? input.nowMs + DEFAULT_ADMISSION_REVIEW_SLO_MINUTES * 60_000).toISOString(),
+    retryOwner: input.retryOwner ?? ADMISSION_REVIEW_RETRY_OWNER,
+    retryAttempts: Math.max(0, Math.floor(input.retryAttempts ?? 0)),
+    lastRetryAt: input.state === 'pending' ? null : now,
+    reviewedAt: reviewed ? now : null,
+    reviewedBy: reviewed ? (input.reviewedBy ?? ADMISSION_REVIEW_RETRY_OWNER) : null,
+    terminalAt: terminal ? now : null,
+    terminalOutcome: terminal ? (input.terminalOutcome ?? 'terminal') : null,
+    alert: {
+      key: ADMISSION_REVIEW_ALERT_KEY,
+      state: input.alertState ?? (input.state === 'pending' ? 'open' : 'cleared'),
+      emittedAt: now,
+      reason: input.alertReason ?? (input.state === 'pending' ? 'pending fail-open admission requires re-review' : 'review completed'),
+    },
+  };
+}
+
 /**
  * How many promoter ticks a row may sit pending before the INDEPENDENT deterministic
  * fail-open runner admits it as 'unreviewed' — `runAdmissionFailOpen`'s
