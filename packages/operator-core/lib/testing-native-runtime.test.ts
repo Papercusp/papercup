@@ -4,11 +4,36 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
-import { assertNativeIsolatedWorkspace } from './testing-native-runtime';
+import { assertNativeIsolatedWorkspace, NATIVE_CUSTODY_LIFECYCLE_PICK, readNativeCustodyLifecycle } from './testing-native-runtime';
+import { applyPick } from './result-projection/apply';
 
 const root = resolve(import.meta.dirname, '../../..');
 const modulePath = join(root, 'packages/operator-core/lib/testing-native-runtime.ts');
 const bwrap = spawnSync('bwrap', ['--unshare-user', '--dev-bind', '/', '/', '--die-with-parent', '--', 'true']);
+
+it('preserves empty and populated native custody timelines through the real response projection', () => {
+  const id = 'WI-native-custody-projection';
+  const coverage = { auditRows: 0, reopenEntries: 0, notRecorded: ['continuity unknown'],
+    truncated: false, invalidEntries: 0, degraded: false };
+  const event = { at: '2026-11-18T00:00:00.000Z', atMs: 1794960000000, kind: 'other',
+    by: null, source: 'audit_log', action: 'work_items:custody:capture',
+    custodyCapture: { receipt: 'valid', operation: 'UPDATE', actorAuthentication: 'unverified',
+      continuity: 'unknown', problems: [] } };
+  for (const events of [[], [event]]) {
+    const source = { results: [{ id, lifecycle: { events, coverage }, workItem: { title: 'unselected' } }] };
+    const { picked, unmatched } = applyPick(source, NATIVE_CUSTODY_LIFECYCLE_PICK);
+    expect(unmatched).toEqual([]);
+    expect(picked).toEqual({ results: [{ id, lifecycle: { events, coverage } }] });
+    expect(readNativeCustodyLifecycle(JSON.parse(JSON.stringify(picked)), id)).toEqual({ events, coverage });
+  }
+  for (const lifecycle of [{ coverage }, { events: null, coverage }, { events: {}, coverage },
+    { events: [] }, { events: [], coverage: { notRecorded: null } }])
+    expect(() => readNativeCustodyLifecycle({ results: [{ id, lifecycle }] }, id))
+      .toThrow('event array and coverage');
+  for (const response of [null, {}, { results: [] },
+    { results: [{ id: 'WI-foreign', lifecycle: { events: [], coverage } }] }])
+    expect(() => readNativeCustodyLifecycle(response, id)).toThrow('requested work-item');
+});
 
 it('preserves native fixture isolation through actual hermetic worker setup', async () => {
   const previous = { ...process.env };

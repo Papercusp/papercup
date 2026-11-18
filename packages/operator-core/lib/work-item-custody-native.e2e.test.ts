@@ -13,7 +13,8 @@ import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { captureOwnedDatabaseSchema } from '@papercusp/test-config/pg';
 import { describe, expect, inject, it } from 'vitest';
-import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
+import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness,
+  NATIVE_CUSTODY_LIFECYCLE_PICK, readNativeCustodyLifecycle } from './testing-native-runtime';
 import type { WorkItemLifecycleCoverage, WorkItemLifecycleEvent } from './work-item-lifecycle-history';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
@@ -69,14 +70,8 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('R-46 owned native custo
     const lifecycle = async (): Promise<Lifecycle> => {
       assertNativeRuntimeLiveness(ROOT, receipt.sourceCommit);
       const response = await tool('work_items:get', { id, harness: 'papercusp', detail: true,
-        threadLimit: 0, payloadTier: 'full', projection: { pick: [
-          'results[].id', 'results[].lifecycle.events[].action',
-          'results[].lifecycle.events[].custodyCapture', 'results[].lifecycle.coverage',
-        ] } });
-      expect(response.results, JSON.stringify(response)).toHaveLength(1);
-      expect(response.results[0].id).toBe(id);
-      expect(response.results[0].lifecycle, JSON.stringify(response)).toBeTruthy();
-      return response.results[0].lifecycle;
+        threadLimit: 0, payloadTier: 'full', projection: { pick: NATIVE_CUSTODY_LIFECYCLE_PICK } });
+      return readNativeCustodyLifecycle(response, id);
     };
     const captures = (value: Lifecycle) => value.events
       .filter(event => event.action === 'work_items:custody:capture');

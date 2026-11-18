@@ -30,6 +30,9 @@ it('captures authenticated original kernel inputs on a containing private host a
   const runId = await recordIsolatedIntegrationProof({ root, signal: context.signal,
     minimumFileRunTimeoutMs: options.testTimeoutMs,
     filePath: 'packages/operator-core/lib/agent-tools/dev/telemetry-kernel-capture.integration.test.ts',
+    retainedArtifacts: ['phases/execute/idop-kernel-capture.json', 'phases/execute/idop-original-invocation.json',
+      'phases/execute/idop-kernel-comparison.json', 'phases/execute/idop-host-capture.json',
+      'phases/execute/idop-host-original-invocation.json', 'phases/execute/idop-host-comparison.json'],
     sourcePaths: [...captureSources, 'packages/operator-core/lib/agent-identities/idop-kernel-capture-http-fixture.ts',
       'scripts/operator-api-working-tree.mjs', 'packages/operator-core/test/working-tree-operator-api-fixture.ts'],
     execute: async (observe, evidenceDir) => {
@@ -91,7 +94,7 @@ it('captures authenticated original kernel inputs on a containing private host a
       expect(hostComparison).toMatchObject({ passed: true, unexpected: [], unusedManifest: [], differences: [],
         manifest: { path: 'docs/evidence/idop-p001-expected-permission-differences.json',
           scope: 'private-self-host-envelope-and-arguments', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
-      expect(hostComparison.population).toEqual(['private-self-host-envelope', 'private-self-argument-confinement']);
+      expect(hostComparison.population).toEqual(['private-self-host-envelope', 'private-self-argument-confinement'].sort());
       expect(hostComparison.checked.map((row: { id: string }) => row.id)).toEqual(hostComparison.population);
     },
   });

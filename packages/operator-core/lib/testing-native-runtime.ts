@@ -9,8 +9,25 @@ import { join } from 'node:path';
 import { isCliEntry } from './util/cli-entry';
 import { readProcessIdentity, linuxProcStateFromStat } from './process-identity.ts';
 import type { RecordedRuntimeEnvironment } from '@papercusp/test-config/execution-details';
+import type { WorkItemLifecycleHistory } from './work-item-lifecycle-history';
 
 type RuntimeReader = () => RecordedRuntimeEnvironment | null;
+
+// Selecting leaves below events[] omits an empty timeline. Keep the array and
+// its coverage together so verified absence cannot become missing evidence.
+export const NATIVE_CUSTODY_LIFECYCLE_PICK = [
+  'results[].id', 'results[].lifecycle.events', 'results[].lifecycle.coverage',
+];
+
+export function readNativeCustodyLifecycle(response: unknown, id: string): Pick<WorkItemLifecycleHistory, 'events' | 'coverage'> {
+  const body = response as { results?: { id?: unknown; lifecycle?: Partial<WorkItemLifecycleHistory> }[] } | null;
+  if (!Array.isArray(body?.results) || body.results.length !== 1 || body.results[0]?.id !== id)
+    throw new Error('Native custody response must contain the requested work-item');
+  const lifecycle = body.results[0].lifecycle;
+  if (!Array.isArray(lifecycle?.events) || !Array.isArray(lifecycle.coverage?.notRecorded))
+    throw new Error('Native custody response must contain an event array and coverage');
+  return { events: lifecycle.events, coverage: lifecycle.coverage! };
+}
 
 /** The launcher pin is deliberately scrubbed by Vitest's hermetic worker setup.
  * Keep the canonical isolated workspace and reject a conflicting surviving pin. */
