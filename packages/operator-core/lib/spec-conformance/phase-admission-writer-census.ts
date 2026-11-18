@@ -49,6 +49,25 @@ export interface PhaseWriterInvocation {
   line: number;
   column: number;
 }
+/** Conservative syntax candidates, not value flow, callback closure or a
+ * runtime argument binding. An unknown spread can supply any later slot;
+ * retain every possible source, defaults and binding patterns intact. */
+export interface PhaseWriterArgumentFlow {
+  basis: 'syntax-only-not-runtime-binding';
+  targetSha256: string;
+  thisParameter?: string;
+  spreadArguments: number[];
+  extraArguments: number[];
+  parameters: Array<{
+    position: number;
+    statement: string;
+    rest: boolean;
+    pattern: boolean;
+    initializer?: string;
+    argumentIndexes: number[];
+    mayBeMissing: boolean;
+  }>;
+}
 export interface PhaseWriterSite {
   /** Complete path, enclosing operation and statement digest; no display truncation. */
   id: string;
@@ -70,6 +89,7 @@ export interface PhaseWriterSite {
   /** Exact syntax target, never callback binding or an effect exemption. */
   helperDeclaration?: SymbolDeclaration;
   invocation?: PhaseWriterInvocation;
+  argumentFlow?: PhaseWriterArgumentFlow;
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
@@ -112,6 +132,34 @@ export interface PhaseWriterCoverage {
 function canonicalPath(path: string): boolean {
   return !!path && !path.includes('\0') && !path.includes('\\') && !path.startsWith('/')
     && path.split('/').every(part => !!part && part !== '.' && part !== '..');
+}
+
+type ParameterSyntax = Pick<PhaseWriterArgumentFlow['parameters'][number], 'statement' | 'rest' | 'pattern' | 'initializer'>;
+interface CallableSyntax { parameters: ParameterSyntax[]; thisParameter?: string }
+function argumentFlow(signature: CallableSyntax, invocation: PhaseWriterInvocation,
+  targetSha256: string): PhaseWriterArgumentFlow {
+  let minimumPosition = 0, precedingSpread = false;
+  const arguments_ = invocation.arguments.map((text, index) => {
+    const spread = text.startsWith('...');
+    const argument = { index, minimumPosition, unbounded: precedingSpread || spread, spread };
+    if (spread) precedingSpread = true;
+    else minimumPosition++;
+    return argument;
+  });
+  return { basis: 'syntax-only-not-runtime-binding', targetSha256,
+    ...(signature.thisParameter === undefined ? {} : { thisParameter: signature.thisParameter }),
+    spreadArguments: arguments_.filter(argument => argument.spread).map(argument => argument.index),
+    extraArguments: signature.parameters.some(parameter => parameter.rest) ? [] : arguments_
+      .filter(argument => argument.unbounded || argument.minimumPosition >= signature.parameters.length)
+      .map(argument => argument.index),
+    parameters: signature.parameters.map((parameter, position) => ({ position, ...parameter,
+      argumentIndexes: arguments_.filter(argument => parameter.rest
+        ? argument.unbounded || argument.minimumPosition >= position
+        : argument.minimumPosition === position || argument.unbounded && argument.minimumPosition < position)
+        .map(argument => argument.index),
+      mayBeMissing: !parameter.rest && minimumPosition <= position,
+    })),
+  };
 }
 
 /** Retain the whole fluent statement and every argument, rather than dropping
@@ -235,6 +283,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   // body supplies the syntax whose outgoing calls this inventory has visited.
   // In particular `const send = connection.send` is not a closed callable.
   const callableDeclarations = new Set<string>();
+  const callableSyntax = new Map<string, CallableSyntax>();
   const deferredEffectSiteIds = new Set<string>();
   const occurrences = new Map<string, number>();
   const calls: Array<{ path: string; operation: string; callee: string; spelling: string; statement: string;
@@ -243,7 +292,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const aliases: Array<{ name: string; target: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
     kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
-      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget' | 'helperDeclaration' | 'invocation'>> = {}) => {
+      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget' | 'helperDeclaration' | 'invocation' | 'argumentFlow'>> = {}) => {
     const statementSha256 = digest(statement), sourceSha256 = sourceHashes.get(source.path)!;
     // Identical statements in the same operation are separate source occurrences.
     const base = JSON.stringify([source.path, operation, kind, statementSha256]);
@@ -272,13 +321,25 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         for (const declaration of declarations) {
           const name = 'name' in declaration ? declaration.name : undefined;
           if (!name || !ts.isIdentifier(name)) continue;
-          const body = ts.isFunctionDeclaration(declaration) ? declaration.body
+          const callable = ts.isFunctionDeclaration(declaration) ? declaration
             : ts.isVariableDeclaration(declaration) && declaration.initializer
               && (ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer))
-              ? declaration.initializer.body : undefined;
-          if (body) {
+              ? declaration.initializer : undefined;
+          if (callable?.body) {
             const { line, column } = unit.span(name);
-            callableDeclarations.add(JSON.stringify([source.path, line, column, name.text]));
+            const id = JSON.stringify([source.path, line, column, name.text]);
+            callableDeclarations.add(id);
+            const parameters: ParameterSyntax[] = [];
+            let thisParameter: string | undefined;
+            for (const parameter of callable.parameters) {
+              if (ts.isIdentifier(parameter.name) && parameter.name.text === 'this') {
+                thisParameter = parameter.getText(unit.ast); continue;
+              }
+              parameters.push({ statement: parameter.getText(unit.ast), rest: !!parameter.dotDotDotToken,
+                pattern: !ts.isIdentifier(parameter.name),
+                ...(parameter.initializer ? { initializer: parameter.initializer.getText(unit.ast) } : {}) });
+            }
+            callableSyntax.set(id, { parameters, ...(thisParameter === undefined ? {} : { thisParameter }) });
           }
         }
       }
@@ -629,6 +690,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         const helperTarget: PhaseWriterSite['helperTarget'] = target ? {
           path: target.path, sha256: sourceHashes.get(target.path)!, basis: 'syntax-bound-module-target-not-runtime-closure',
         } : undefined;
+        const signature = target?.declaration && callableSyntax.get(target.declaration.id);
         add(source, call.operation, call.statement, call.line, 'helper-edge', {
           invocation: call.invocation,
           callees: [call.callee], dynamicEdges: [call.callee,
@@ -636,6 +698,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
             ...(helperTarget ? [`source:${helperTarget.path}#${helperTarget.sha256}`] : [])],
           ...(helperTarget ? { helperTarget } : {}),
           ...(target?.declaration ? { helperDeclaration: target.declaration } : {}),
+          ...(signature && helperTarget ? { argumentFlow: argumentFlow(signature, call.invocation, helperTarget.sha256) } : {}),
           unresolved: [...(!helperTarget && call.importedCall ? ['imported-call-target-requires-review'] : []),
             ...(opaqueCall ? ['call-target-declaration-unresolved'] : []),
             ...(helperSymbols.stats.callCensusTruncated ? ['helper-symbol-export-resolution-incomplete'] : [])],

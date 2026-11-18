@@ -24,6 +24,118 @@ const write = 'async function exampleWrite(tx) { await tx`UPDATE harness_shared.
 
 describe('phase binding writer census', () => {
 
+  it('observes real Drizzle constructor callbacks and refuses an unreviewed callback effect', async () => {
+    const { drizzle } = await import('drizzle-orm/postgres-js');
+    const { pgTable, integer } = await import('drizzle-orm/pg-core');
+    const { relations } = await import('drizzle-orm/relations');
+    // Execute the SAME source that the census inspects, using the installed
+    // library. This is a callback-effect observer, not a database/runtime proof.
+    // No connection is needed for schema extraction; any attempted use of the
+    // supplied client beyond its parser/serializer metadata must fail.
+    const content = `
+      const table = pgTable('phase_callback_probe', { id: integer('id') }, (columns) => {
+        effect('extra-config');
+        return {};
+      });
+      const links = relations(table, ({ many }) => {
+        effect('relations-config');
+        return { children: many(table) };
+      });
+      drizzle(client, { schema: { table, links } });
+    `;
+    const effects: string[] = [], clientAccesses: string[] = [];
+    const client = new Proxy({ options: { parsers: {}, serializers: {} } }, {
+      get(target, key, receiver) {
+        clientAccesses.push(String(key));
+        if (key !== 'options') throw new Error(`unexpected query-client access: ${String(key)}`);
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    new Function('pgTable', 'integer', 'relations', 'drizzle', 'client', 'effect', content)(
+      pgTable, integer, relations, drizzle, client, (effect: string) => { effects.push(effect); });
+    // A constructor can execute arbitrary application callbacks while never
+    // querying its client. Observing zero queries cannot exempt those effects.
+    expect(effects).toEqual(['extra-config', 'relations-config']);
+    expect(clientAccesses.length).toBeGreaterThan(0);
+    expect(new Set(clientAccesses)).toEqual(new Set(['options']));
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-drizzle-callback-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/schema.ts';
+      writeFileSync(join(root, path), content);
+      const inventory = inventoryPhaseWriterTree(root);
+      const callbackStatements = ["effect('extra-config')", "effect('relations-config')"];
+      const callbacks = inventory.sites.filter(site => callbackStatements.includes(site.statement)
+        && site.unresolved.includes('call-target-declaration-unresolved'));
+      expect(callbacks.map(site => site.statement).sort()).toEqual([...callbackStatements].sort());
+      for (const callback of callbacks) {
+        const reviews = inventory.sites.filter(site => site.id !== callback.id).map(site => review(site));
+        let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+        try { assertPhaseWriterTreeCensus(root, reviews); }
+        catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
+        expect(report?.ready).toBe(false);
+        expect(report?.census.coverage.residue).toEqual([callback.id]);
+        expect(report?.census.problems).toEqual([{ id: callback.id, reasons: ['unclassified-writer'] }]);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('executes the complete current org schema callback population through real Drizzle extraction', async () => {
+    const { is, Table } = await import('drizzle-orm');
+    const { Relations, createTableRelationsHelpers, extractTablesRelationalConfig } = await import('drizzle-orm/relations');
+    // Drizzle exposes these symbols at runtime but omits them from its .d.ts.
+    const { ExtraConfigBuilder } = Reflect.get(Table, 'Symbol') as { ExtraConfigBuilder: symbol };
+    const shared = await import('../../../../libs/papercusp/libs/db/src/schema');
+    const generated = await import('../../../../libs/papercusp/libs/db/src/schema/generated');
+    const generatedRelations = await import('../../../../libs/papercusp/libs/db/src/schema/generated-relations');
+    // Match connection.ts's two schema arguments without importing getOrgPg()
+    // or opening a pool. Namespace exports are removed just as in that caller.
+    const { generated: _generated, generatedRelations: _relations, ...sharedTables } = shared;
+    for (const schema of [sharedTables, { ...sharedTables, ...generated, ...generatedRelations }]) {
+      const expected: string[] = [], observed: string[] = [];
+      const wrapped = Object.fromEntries(Object.entries(schema).map(([name, value]) => {
+        if (is(value, Table)) {
+          const builder = Reflect.get(value, ExtraConfigBuilder) as ((...args: unknown[]) => unknown) | undefined;
+          if (builder) {
+            const id = `${name}:extra-config`;
+            expected.push(id);
+            return [name, new Proxy(value, {
+              get(target, key) {
+                if (key === ExtraConfigBuilder) return (...args: unknown[]) => {
+                  observed.push(id);
+                  return Reflect.apply(builder, target, args);
+                };
+                return Reflect.get(target, key, target);
+              },
+            })];
+          }
+        } else if (is(value, Relations)) {
+          const id = `${name}:relations-config`;
+          expected.push(id);
+          return [name, new Proxy(value, {
+            get(target, key) {
+              if (key === 'config') return (...args: unknown[]) => {
+                observed.push(id);
+                return Reflect.apply(target.config, target, args);
+              };
+              return Reflect.get(target, key, target);
+            },
+          })];
+        }
+        return [name, value];
+      }));
+      const result = extractTablesRelationalConfig(wrapped, createTableRelationsHelpers);
+      expect(expected.length).toBeGreaterThan(0);
+      expect(observed).toEqual(expected);
+      expect(new Set(observed).size).toBe(expected.length);
+      expect(Object.keys(result.tables).sort()).toEqual(Object.entries(schema)
+        .filter(([, value]) => is(value, Table)).map(([name]) => name).sort());
+    }
+    // Only the supplied real schema callbacks were exercised. The constructor,
+    // pool, arbitrary callers and the repository census remain unapproved.
+  });
+
   it('retains canonical claim read and release reviews without accepting advancing writes', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(
@@ -1123,6 +1235,91 @@ describe('phase binding writer census', () => {
       writeFileSync(join(root, 'packages/property.ts'), 'function entry(actor) { return actor.status; }');
       expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains complete positional parameter syntax without treating it as runtime binding proof', () => {
+    const inputs = [
+      source('export function sink(this: void, first, second = fallback, { key } = {}, ...rest) { callback(first); }', 'packages/callee.ts'),
+      source('import { sink as route } from "./callee"; function entry(a, b, c, d, e) { route(a, b, c, d, e); }', 'packages/caller.ts'),
+    ];
+    const inventory = inventoryPhaseWriters(inputs);
+    const site = inventory.sites.find(site => site.kind === 'helper-edge' && site.statement === 'route(a, b, c, d, e)')!;
+    expect(site.argumentFlow).toEqual({
+      basis: 'syntax-only-not-runtime-binding',
+      targetSha256: inventory.sources.find(row => row.path === 'packages/callee.ts')!.sha256,
+      thisParameter: 'this: void', spreadArguments: [], extraArguments: [],
+      parameters: [
+        { position: 0, statement: 'first', rest: false, pattern: false, argumentIndexes: [0], mayBeMissing: false },
+        { position: 1, statement: 'second = fallback', rest: false, pattern: false, argumentIndexes: [1], mayBeMissing: false, initializer: 'fallback' },
+        { position: 2, statement: '{ key } = {}', rest: false, pattern: true, argumentIndexes: [2], mayBeMissing: false, initializer: '{}' },
+        { position: 3, statement: '...rest', rest: true, pattern: false, argumentIndexes: [3, 4], mayBeMissing: false },
+      ],
+    });
+    expect(site.helperDeclaration?.path).toBe('packages/callee.ts');
+    expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(site.id);
+    const missing = inventoryPhaseWriters([inputs[0]!, source('import { sink } from "./callee"; sink();', 'packages/caller.ts')]);
+    const flow = missing.sites.find(site => site.statement === 'sink()')!.argumentFlow!;
+    expect(flow.parameters.map(row => [row.argumentIndexes, row.mayBeMissing]))
+      .toEqual([[[], true], [[], true], [[], true], [[], false]]);
+  });
+
+  it('retains every possible argument source across unknown spread cardinalities', () => {
+    const inputs = [
+      source('export function sink(first, second, third, ...rest) { return 0; }', 'packages/callee.ts'),
+      source('import { sink } from "./callee"; sink(one, ...parts, last);', 'packages/caller.ts'),
+    ];
+    const site = inventoryPhaseWriters(inputs).sites.find(site => site.statement === 'sink(one, ...parts, last)')!;
+    expect(site.argumentFlow?.spreadArguments).toEqual([1]);
+    expect(site.argumentFlow?.parameters.map(row => row.argumentIndexes)).toEqual([[0], [1, 2], [1, 2], [1, 2]]);
+    expect(site.argumentFlow?.parameters.map(row => row.mayBeMissing)).toEqual([false, false, true, false]);
+    // Execute an independent fixture at several actual spread lengths. Each
+    // real argument source must occur in the conservative syntax mapping.
+    const receive = (first: number, second: number, third: number, ...rest: number[]) => [first, second, third, rest];
+    for (const count of [0, 1, 2, 31, 32, 33]) {
+      const values = [0, ...Array.from({ length: count }, () => 1), 2];
+      const actual = receive(values[0]!, values[1]!, values[2]!, ...values.slice(3));
+      for (const [position, value] of actual.entries()) {
+        for (const sourceIndex of Array.isArray(value) ? value : [value]) {
+          if (sourceIndex !== undefined) expect(site.argumentFlow!.parameters[position]!.argumentIndexes).toContain(sourceIndex);
+        }
+      }
+    }
+    const finite = inventoryPhaseWriters([
+      source('export function sink(first, second) { return 0; }', 'packages/callee.ts'), inputs[1]!,
+    ]).sites.find(site => site.statement === 'sink(one, ...parts, last)')!;
+    expect(finite.argumentFlow?.extraArguments).toEqual([1, 2]);
+    const repeated = inventoryPhaseWriters([inputs[0]!, source(
+      'import { sink } from "./callee"; sink(...left, middle, ...right, last);', 'packages/caller.ts')])
+      .sites.find(site => site.statement === 'sink(...left, middle, ...right, last)')!;
+    expect(repeated.argumentFlow?.spreadArguments).toEqual([0, 2]);
+    expect(repeated.argumentFlow?.parameters.map(row => row.argumentIndexes)).toEqual([[0, 1], [0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 3]]);
+  });
+
+  it('preserves argument-flow tail identities through source permutations and stream recovery', async () => {
+    for (const count of [1, 2, 3, 499, 500, 501]) {
+      const args = Array.from({ length: count }, (_, index) => `value${index}`);
+      const statement = `sink(${args.join(', ')})`;
+      const inputs = [
+        source('export function sink(first, ...rest) { return 0; }', 'packages/callee.ts'),
+        source(`import { sink } from "./callee"; ${statement};`, 'packages/caller.ts'),
+      ];
+      const inventory = inventoryPhaseWriters(inputs);
+      expect(inventoryPhaseWriters([...inputs].reverse())).toEqual(inventory);
+      const site = inventory.sites.find(site => site.statement === statement)!;
+      expect(site.argumentFlow?.parameters[0]!.argumentIndexes).toEqual([0]);
+      expect(site.argumentFlow?.parameters[1]!.argumentIndexes).toEqual(args.map((_, index) => index).slice(1));
+      expect(site.invocation!.arguments[count - 1]).toBe(`value${count - 1}`);
+      expect(reconcilePhaseWriterCensus(inventory, []).coverage.residue).toContain(site.id);
+      const lines: string[] = [];
+      const footer = await writePhaseWriterCensus(inventory, [], async line => { lines.push(line); await Promise.resolve(); });
+      const recovered: PhaseWriterSite[] = [];
+      expect(await readPhaseWriterCensus(lines, row => {
+        if (row.kind === 'site') recovered.push(row.value as PhaseWriterSite);
+      })).toEqual(footer);
+      expect(recovered).toEqual(inventory.sites);
+    }
+    const opaque = inventoryPhaseWriters([source('const sink = connection.send; sink(...values);')]);
+    expect(opaque.sites.find(site => site.kind === 'helper-edge' && site.statement === 'sink(...values)')!.argumentFlow).toBeUndefined();
   });
 
   it('retains implicit JavaScript dispatch through destructuring spread coercion iteration and thenables', async () => {
