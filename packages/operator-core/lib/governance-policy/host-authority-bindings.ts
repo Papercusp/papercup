@@ -4,10 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
-import { resolveSessionToken } from '../auth';
-import { refuseLegacyBootstrapPrincipal } from '../auth/require-principal';
 
 export interface HostAuthorityBinding {
   kind: 'user' | 'platform';
@@ -47,11 +44,20 @@ export async function enrollHostAuthorityBinding(headers: Headers, workspaceId: 
       !['user', 'platform'].includes(input.kind) || !exact(input.subjectId) || input.subjectId === '*' ||
       !exact(input.reason) || Object.keys(input).some(key => !['kind', 'subjectId', 'reason'].includes(key)))
     throw new HostAuthorityEnrollmentError('invalid', 'exact enrollment subject and reason required');
+  // Keep enrollment's auth graph out of read-only population scans.
+  const [{ resolveSessionToken }, { refuseLegacyBootstrapPrincipal }] = await Promise.all([
+    import('../auth'), import('../auth/require-principal'),
+  ]);
   refuseLegacyBootstrapPrincipal(credentials);
-  const token = await resolveSessionToken(credentials);
+  let token: string | undefined;
+  try { token = await resolveSessionToken(credentials); }
+  catch (error) {
+    if (!(error instanceof URIError)) throw error;
+    throw new HostAuthorityEnrollmentError('forbidden', 'malformed browser session cookie');
+  }
   if (!token || !/^[a-f0-9]{64}$/.test(token))
     throw new HostAuthorityEnrollmentError('forbidden', 'authenticated browser session required');
-  sql ??= getOrgPg().sql;
+  sql ??= (await import('@papercusp/db-org')).getOrgPg().sql;
   if (typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function')
     throw new HostAuthorityEnrollmentError('invalid', 'enrollment owns its read committed transaction');
 

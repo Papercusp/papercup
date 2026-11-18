@@ -57,14 +57,16 @@ describe('P-002 authenticated explicit host enrollment', () => {
     expect(await sql`SELECT to_regclass('harness_shared.governance_policy_layers') AS policy`).toEqual([{ policy: null }]);
   });
 
-  it.each(['missing', 'bearer', 'foreign', 'limited', 'inactive', 'expired', 'revoked'])(
+  it.each(['missing', 'bearer', 'foreign', 'limited', 'inactive', 'expired', 'revoked', 'malformed-cookie', 'invalid-token'])(
     'refuses %s credentials without writing ownership', async mode => {
       const f = await browser(mode === 'limited' ? ['tools:read'] : ['*'], mode === 'foreign' ? 'foreign' : 'ws');
       if (mode === 'inactive') await sql`UPDATE harness_shared.users SET is_active = false`;
       if (mode === 'expired') await sql`UPDATE harness_shared.user_sessions SET expires_at = clock_timestamp() - interval '1 second'`;
       if (mode === 'revoked') await sql`DELETE FROM harness_shared.user_sessions`;
       const headers = mode === 'missing' ? new Headers() : mode === 'bearer'
-        ? new Headers({ authorization: `Bearer ${f.token}` }) : f.headers;
+        ? new Headers({ authorization: `Bearer ${f.token}` }) : mode === 'malformed-cookie'
+          ? new Headers({ cookie: 'papercusp_session=%' }) : mode === 'invalid-token'
+            ? new Headers({ cookie: 'papercusp_session=not-a-browser-token' }) : f.headers;
       await expect(enrollHostAuthorityBinding(headers, 'ws', enrollment, sql)).rejects.toMatchObject({ code: 'forbidden' });
       expect(await readHostAuthorityBindings(sql, 'ws')).toMatchObject({ bindings: [] });
     },
@@ -129,16 +131,26 @@ describe('P-002 authenticated explicit host enrollment', () => {
 
   it('checks wall-clock expiry on the INSERT after an auth-row lock wait, not only before locking', async () => {
     const f = await browser();
+    // A name-filtered run starts with a cold auth graph. Exercise the actual
+    // authenticated SQL path BEFORE starting the expiry window, without writing
+    // ownership or replacing wall-clock expiry with a larger guessed timeout.
+    await expect(enrollHostAuthorityBinding(f.headers, 'ws',
+      { ...enrollment, kind: 'user', subjectId: 'another-human' }, sql))
+      .rejects.toMatchObject({ code: 'forbidden' });
     await sql`UPDATE harness_shared.user_sessions SET expires_at = clock_timestamp() + interval '2 seconds'`;
     let pending: Promise<unknown> | undefined;
     await sql.begin(async blocker => {
       // An unchanged row preserves the content revision while making FOR SHARE
       // wait. Its pre-wait WHERE may already have evaluated unexpired=true.
       await blocker`UPDATE harness_shared.users SET is_active = true WHERE id = ${f.userId}`;
+      // Deliberately cache the pre-wait activity snapshot. Every observation
+      // below must refresh it; pg_stat_activity is not pg_locks' live view.
+      await blocker`SELECT count(*) FROM pg_stat_activity`;
       pending = enrollHostAuthorityBinding(f.headers, 'ws', enrollment, sql).catch(error => error);
       const deadline = Date.now() + 10_000;
       let waiting = false;
       while (!waiting && Date.now() < deadline) {
+        await blocker`SELECT pg_stat_clear_snapshot()`;
         const [row] = await blocker`SELECT EXISTS(SELECT 1 FROM pg_stat_activity
           WHERE datname = current_database() AND wait_event_type = 'Lock'
             AND query LIKE '%FOR SHARE OF s, u%') AS waiting`;
