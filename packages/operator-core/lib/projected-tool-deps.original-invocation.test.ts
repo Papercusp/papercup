@@ -19,6 +19,7 @@ vi.mock('@papercusp/db-org', async original => ({ ...(await original<object>()),
 } }) }));
 
 import { PROJECTED_DEPS, flushPendingTelemetry, __resetTelemetryHealthForTests } from './projected-tool-deps';
+import { idopAuthorityValue } from './agent-identities/permission-input-data';
 
 const request = () => ({ toolName: 'example:effect', pluginName: 'agent-mcp', callId: 'call-original',
   ctx: { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'worker', uiClientId: 'su-original', isSuperuser: true,
@@ -60,6 +61,77 @@ describe('mandatory original invocation ledger binding', () => {
     db.fail = false; await flushPendingTelemetry();
     expect(inserts()).toHaveLength(fault === 'database' ? 0 : 1);
   });
+
+  it('preserves observed privilege, principal sets and native-session binding without guessing missing fields', async () => {
+    const req = request();
+    const ctx = { ...req.ctx, isSuperuser: false, isPowerUser: false, advSessionId: 82,
+      gateBypass: { role: false, capability: false, quota: false },
+      requestedExecutionRevision: null, appliedExecutionRevision: { specificationRevision: 'spec', stateRevision: 'state' } };
+    await observer().begin({ ...req, ctx } as never);
+    const original = JSON.parse(String(inserts()[0].params[19])).originalInvocation;
+    expect(original.permissionContext).toMatchObject({ schemaVersion: 1,
+      scope: 'original-dispatch-context-projection', status: 'captured', sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      excludedKeys: expect.arrayContaining(['signal']) });
+    const data = idopAuthorityValue(original.permissionContext.data) as typeof ctx;
+    expect(data).toEqual(expect.objectContaining({ isSuperuser: false, isPowerUser: false, advSessionId: 82,
+      gateBypass: ctx.gateBypass, requestedExecutionRevision: null, appliedExecutionRevision: ctx.appliedExecutionRevision }));
+    expect(data.principal.capabilities).toEqual(new Set(['example:write']));
+    expect(data.principal.roles).toEqual(new Set(['worker']));
+    expect(data).not.toHaveProperty('profile');
+    expect(data).not.toHaveProperty('signal');
+    expect(original.runtime).toEqual(expect.objectContaining({ pid: process.pid, processId: expect.any(String) }));
+    ctx.gateBypass.capability = true;
+    ctx.principal.capabilities.add('foreign:grant');
+    expect(data.gateBypass.capability).toBe(false);
+    expect(data.principal.capabilities.has('foreign:grant')).toBe(false);
+  });
+
+  it('does not persist headers, argument-like projection data, or excluded service state', async () => {
+    const req = request();
+    const ctx = { ...req.ctx, requestOrigin: { headers: { authorization: 'secret-header' } },
+      sourceProjection: { privateArgument: 'secret-projection' }, kernelState: { privateState: 'secret-state' },
+      secret: () => { throw new Error('must not run'); } };
+    await observer().begin({ ...req, ctx } as never);
+    const original = JSON.parse(String(inserts()[0].params[19])).originalInvocation;
+    expect(original.permissionContext).toMatchObject({ status: 'captured',
+      excludedKeys: expect.arrayContaining(['requestOrigin', 'sourceProjection', 'kernelState', 'secret']) });
+    expect(JSON.stringify(original)).not.toContain('secret-header');
+    expect(JSON.stringify(original)).not.toContain('secret-projection');
+    expect(JSON.stringify(original)).not.toContain('secret-state');
+  });
+
+  it('keeps absent privilege and an explicitly undefined binding distinct from false and null', async () => {
+    const req = request();
+    const { isSuperuser: _superuser, ...ctx } = req.ctx;
+    await observer().begin({ ...req, ctx: { ...ctx, advSessionId: undefined } } as never);
+    const saved = JSON.parse(String(inserts()[0].params[19])).originalInvocation.permissionContext;
+    expect(saved.status).toBe('captured');
+    const data = idopAuthorityValue(saved.data);
+    expect(data).not.toHaveProperty('isSuperuser');
+    expect(data).toHaveProperty('advSessionId', undefined);
+    expect(data).not.toHaveProperty('isPowerUser');
+  });
+
+  it.each(['getter', 'function', 'oversize', 'principal-extension'] as const)(
+    'records unavailable projection evidence for %s while retaining the original invocation', async fault => {
+      const req = request();
+      const ctx = { ...req.ctx } as Record<string, unknown>;
+      const getter = vi.fn(() => { throw new Error('secret-getter'); });
+      // Identity attribution necessarily reads isSuperuser before observation.
+      // A projection-only, non-enumerable getter isolates this capture contract.
+      if (fault === 'getter') Object.defineProperty(ctx, 'kernelOwnership', { get: getter });
+      if (fault === 'function') ctx.gateBypass = { capability: () => true };
+      if (fault === 'oversize') ctx.projectDir = 'x'.repeat(65536);
+      if (fault === 'principal-extension') ctx.principal = { ...req.ctx.principal, privateToken: 'secret-token' };
+      await expect(observer().begin({ ...req, ctx } as never)).resolves.toBe('tool-invocation:91001');
+      const original = JSON.parse(String(inserts()[0].params[19])).originalInvocation;
+      expect(original.permissionContext).toMatchObject({ status: 'unavailable', reason: expect.any(String) });
+      expect(original.permissionContext).not.toHaveProperty('data');
+      expect(original.permissionContext).not.toHaveProperty('sha256');
+      expect(getter).not.toHaveBeenCalled();
+      expect(JSON.stringify(original)).not.toContain('secret-getter');
+      expect(JSON.stringify(original)).not.toContain('secret-token');
+    });
 
   it.each([undefined, 'su-unverified-http-client'])(
     'rejects an unsigned HTTP caller with client %s before submitting ledger SQL', async uiClientId => {

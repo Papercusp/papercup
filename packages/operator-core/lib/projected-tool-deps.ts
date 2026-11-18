@@ -100,6 +100,7 @@ import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { readAgentStateStamp } from './agent-state-stamp';
 import { classifyCallOrigin } from './telemetry-call-origin';
 import { getServingHostIdentity } from './serving-host-identity';
+import { captureOriginalPermissionContext } from './agent-identities/permission-input-data';
 import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
 import { goalKickoffRefusalPayload, isGoalKickoffGuardedTool, readGoalKickoffEvidence } from './goals/kickoff-evidence';
@@ -1563,6 +1564,8 @@ const originalInvocationObserver: OriginalInvocationObserver = {
         allowedTools: principal.allowedTools ? [...principal.allowedTools] : null,
       } : null },
       selection: { ...selection }, startedAtMs: Date.now(),
+      permissionContext: captureOriginalPermissionContext(ctx),
+      runtime: { pid: process.pid, ...getServingHostIdentity() },
     };
     // No argument/result/error bytes or raw transport headers enter the mandatory
     // record. Existing telemetry enrichment keeps its own redaction contract.

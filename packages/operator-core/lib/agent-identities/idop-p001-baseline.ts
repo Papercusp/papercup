@@ -48,6 +48,7 @@ import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord,
   type LazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from '../capability-envelope/lazy-launch-record';
 import type { PlanExecutionGuardDeps } from '../agent-tools/plans/plan-execution-guard';
 import type { resolveMcpName } from '@papercusp/agent-mcp';
+import { idopAuthorityData, idopAuthorityValue, type PermissionInputJson } from './permission-input-data';
 
 type IdopControlState = Awaited<ReturnType<typeof import('../projected-tool-deps').readControlAnchorKernelState>>;
 export type IdopInnerKernelPorts = {
@@ -271,7 +272,7 @@ export function inspectIdopP001Coverage(baseline: CoverageInput) {
   };
 }
 
-type ComparisonJson = null | boolean | number | string | ComparisonJson[] | { [key: string]: ComparisonJson };
+type ComparisonJson = PermissionInputJson;
 export const IDOP_P001_ROLE_POLICY_SOURCES = [
   'packages/operator-core/lib/capability-envelope/policy.ts',
   'packages/agent-mcp/src/gate-bypass.ts',
@@ -474,69 +475,6 @@ export function replayIdopP001HostPermissionSnapshot(raw: unknown, expectedSha25
   // Return the validated data-only callers so each source arm can consume the
   // original context without reimplementing the lossless authority codec.
   return { snapshot: JSON.parse(bytes) as IdopP001HostSnapshot, sha256: expectedSha256, contexts, ports };
-}
-
-/** Lossless data-only authority codec. Tagged containers cannot collide with
- * user JSON, and preserve Map/Set/Date/undefined rather than silently erasing
- * a policy catalog, principal capabilities or an explicitly absent row. */
-function idopAuthorityData(value: unknown, ancestors = new Set<object>()): ComparisonJson {
-  if (value === undefined) return ['undefined'];
-  if (Object.is(value, -0)) return ['negative-zero'];
-  if (value === null || ['string', 'boolean'].includes(typeof value) ||
-      typeof value === 'number' && Number.isFinite(value)) return value as ComparisonJson;
-  if (typeof value !== 'object' || !value || ancestors.has(value)) throw new Error('IDOP authority requires acyclic data-only inputs');
-  const next = new Set(ancestors).add(value);
-  const encode = (entry: unknown) => idopAuthorityData(entry, next);
-  if (value instanceof Date || value instanceof Map || value instanceof Set) {
-    const prototype = value instanceof Date ? Date.prototype : value instanceof Map ? Map.prototype : Set.prototype;
-    if (Object.getPrototypeOf(value) !== prototype || Reflect.ownKeys(value).length) {
-      throw new Error('IDOP authority container has an unsupported prototype or extra properties');
-    }
-    if (value instanceof Date && Number.isFinite(value.getTime())) return ['date', value.toISOString()];
-    if (value instanceof Map) return ['map', [...value].map(([key, entry]) => [encode(key), encode(entry)])];
-    if (value instanceof Set) return ['set', [...value].map(encode)];
-    throw new Error('IDOP authority has an invalid Date');
-  }
-  if (Array.isArray(value)) {
-    if (Object.getOwnPropertyNames(value).length !== value.length + 1 || Object.getOwnPropertySymbols(value).length) {
-      throw new Error('IDOP authority array has holes or extra properties');
-    }
-    return ['array', Array.from({ length: value.length }, (_, index) => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-      if (!descriptor || !('value' in descriptor)) throw new Error('IDOP authority has an unreadable accessor');
-      return encode(descriptor.value);
-    })];
-  }
-  if (![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length) {
-    throw new Error('IDOP authority has an unsupported prototype or symbol');
-  }
-  return ['object', Object.entries(Object.getOwnPropertyDescriptors(value)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([key, descriptor]) => {
-      if (!('value' in descriptor)) throw new Error('IDOP authority has an unreadable accessor');
-      return [key, encode(descriptor.value)];
-    })];
-}
-
-function idopAuthorityValue(data: ComparisonJson): unknown {
-  if (!Array.isArray(data)) return data;
-  const [kind, body] = data;
-  const entries = body as ComparisonJson[];
-  switch (kind) {
-    case 'undefined': return undefined;
-    case 'negative-zero': return -0;
-    case 'date': return new Date(body as string);
-    case 'array': return entries.map(idopAuthorityValue);
-    case 'set': return new Set(entries.map(idopAuthorityValue));
-    case 'map': return new Map(entries.map(entry => {
-      const [key, value] = entry as ComparisonJson[];
-      return [idopAuthorityValue(key), idopAuthorityValue(value)];
-    }));
-    case 'object': return Object.fromEntries(entries.map(entry => {
-      const [key, value] = entry as [string, ComparisonJson];
-      return [key, idopAuthorityValue(value)];
-    }));
-    default: throw new Error('IDOP invalid authority data tag');
-  }
 }
 
 function idopKernelContextData(ctx: UnifiedToolContext, workspaceId: string) {

@@ -26,6 +26,7 @@ vi.mock('./decision-ledger/emit', async original => ({
 vi.mock('./agent-tools/coordination/dispatch-heartbeat', () => ({ maybeBeatPresenceOnDispatch: vi.fn() }));
 
 import { PROJECTED_DEPS, flushPendingTelemetry } from './projected-tool-deps';
+import { idopAuthorityValue } from './agent-identities/permission-input-data';
 
 type Observer = NonNullable<DispatchProjectedDeps['invocationObserver']>;
 type Begin = Parameters<Observer['begin']>[0];
@@ -97,16 +98,23 @@ describe('original invocation ledger (real Postgres)', () => {
     const name = 'example:p003_cancel';
     const abort = new AbortController();
     const keys = [randomUUID(), randomUUID()];
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     const handler = vi.fn(async ({ key }: { key: string }) => {
       await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
-      abort.abort();
+      entered.resolve();
+      await release.promise;
       return { data: { key } };
     });
     defineTool({ name, args: z.object({ key: z.string() }), requirePrincipal: false,
       capability: 'example:write', handler });
-    const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
+    const pending = dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
       items: keys.map(key => ({ itemId: key, args: { key } })) }, { ...request().ctx, signal: abort.signal },
     { invocationObserver: observer });
+    await entered.promise;
+    abort.abort();
+    release.resolve();
+    const result = await pending;
     const batch = result.result!.structuredContent as unknown as BatchResult;
     expect(batch.results).toHaveLength(2);
     expect(batch.results[1]).toMatchObject({ itemId: keys[1], ok: false, status: 'not-started' });
@@ -142,21 +150,32 @@ describe('original invocation ledger (real Postgres)', () => {
   it('UTB-uncertain-replay retains a committed write after a lost response without retrying it', async () => {
     const name = 'example:p003_uncertain';
     const keys = [randomUUID(), randomUUID()];
+    const abort = new AbortController();
+    const native = vi.fn(async () => []);
     const handler = vi.fn(async ({ key }: { key: string }) => {
       await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
-      if (key === keys[0]) throw new Error('response lost after committed effect');
+      abort.abort();
       return { data: { key } };
     });
     defineTool({ name, args: z.object({ key: z.string() }), requirePrincipal: false,
-      capability: 'example:write', effect: 'write', handler });
+      capability: 'example:write', effect: 'write', batch: { execute: native }, handler });
     const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
-      items: keys.map(key => ({ itemId: key, args: { key } })) }, request().ctx, { invocationObserver: observer });
+      items: keys.map(key => ({ itemId: key, args: { key } })) }, { ...request().ctx, signal: abort.signal },
+    { invocationObserver: observer });
     const batch = result.result!.structuredContent as unknown as BatchResult;
-    expect(batch.results.map(item => [item.itemId, item.ok])).toEqual([[keys[0], false], [keys[1], true]]);
-    expect(handler.mock.calls.map(([args]) => args.key)).toEqual(keys);
+    expect(batch.results.map(item => [item.itemId, item.status])).toEqual([
+      [keys[0], 'unknown-effect'], [keys[1], 'not-started'],
+    ]);
+    expect(batch.results[0].receipt).toMatchObject({ status: 'recovery-incomplete', attemptId: expect.any(String) });
+    expect(handler.mock.calls.map(([args]) => args.key)).toEqual([keys[0]]);
+    expect(native).not.toHaveBeenCalled();
     const rows = await db.adminSql`SELECT call_id,value FROM harness_shared.original_invocation_probe_effects WHERE call_id IN ${db.adminSql(keys)} ORDER BY call_id`;
-    expect(rows.map(row => row.call_id)).toEqual([...keys].sort());
-    expect(rows.map(row => row.value)).toEqual([1, 1]);
+    expect(rows.map(row => row.call_id)).toEqual([keys[0]]);
+    expect(rows.map(row => row.value)).toEqual([1]);
+    const attempts = await db.adminSql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE workspace_id=${workspaceId} AND tool_name=${name}`;
+    expect(attempts).toHaveLength(1);
+    expect(batch.results[0].receipt).toMatchObject({ attemptId: attempts[0].metadata_json.originalInvocation.callId });
   });
 
   it.each(['ok', 'refused'])('counts legacy %s calls with null metadata before reserving another slot', async status => {
@@ -184,13 +203,20 @@ describe('original invocation ledger (real Postgres)', () => {
       args: z.object({ key: z.string() }), handler });
     const tool = lookupByMcpName(name)!;
     tool.rolesQuota = { worker: { perRun: 1 } };
-    const deps: DispatchProjectedDeps = { reserveQuota: PROJECTED_DEPS.reserveQuota,
+    const admissions = Promise.withResolvers<void>();
+    let waiting = 0;
+    const deps: DispatchProjectedDeps = { reserveQuota: async input => {
+      if (++waiting === 2) admissions.resolve();
+      await admissions.promise;
+      return PROJECTED_DEPS.reserveQuota!(input);
+    },
       readQuotaState: PROJECTED_DEPS.readQuotaState, invocationObserver: observer,
       recordInvocation: PROJECTED_DEPS.recordInvocation };
     const keys = [randomUUID(), randomUUID()];
     const ctx = { ...request().ctx, runId };
     const results = await Promise.all(keys.map(key => dispatchProjectedTool(tool, name, { key }, ctx, deps)));
     const items = results.flatMap(result => (result.result!.structuredContent as unknown as BatchResult).results);
+    expect(waiting).toBe(2);
     expect(items.map(item => item.ok).sort()).toEqual([false, true]);
     expect(handler).toHaveBeenCalledOnce();
     const effects = await db.adminSql`SELECT * FROM harness_shared.original_invocation_probe_effects WHERE call_id IN ${db.adminSql(keys)}`;
@@ -251,6 +277,27 @@ describe('original invocation ledger (real Postgres)', () => {
         selection: { responseWindowMs: 100, executionDeadlineMs: 1000 } },
       executionObservation: { state: 'unknown' }, responseObservation: { state: 'pending', delivery: 'unknown' },
     });
+  });
+
+  it('commits exact observed privilege and session evidence to the same immutable original row', async () => {
+    const req = request();
+    req.ctx.isPowerUser = false;
+    req.ctx.advSessionId = 291;
+    req.ctx.gateBypass = { role: true, capability: false, quota: false };
+    const ref = await observer.begin(req);
+    const before = (await read(ref)).metadata_json.originalInvocation;
+    expect(before.permissionContext).toMatchObject({ schemaVersion: 1,
+      scope: 'original-dispatch-context-projection', status: 'captured' });
+    const data = idopAuthorityValue(before.permissionContext.data) as UnifiedToolContext;
+    expect(data).toMatchObject({ workspaceId, uiClientId: ownerId, isSuperuser: true,
+      isPowerUser: false, advSessionId: 291, gateBypass: req.ctx.gateBypass });
+    expect(data.principal?.capabilities).toEqual(new Set(['example:write']));
+    expect(data).not.toHaveProperty('signal');
+    expect(before.runtime.pid).toBe(process.pid);
+    req.ctx.gateBypass.capability = true;
+    await settle(req, ref);
+    expect((await read(ref)).metadata_json.originalInvocation).toEqual(before);
+    expect(data.gateBypass?.capability).toBe(false);
   });
 
   it.each(['request-expired', 'response-lost', 'unknown'] as const)(
