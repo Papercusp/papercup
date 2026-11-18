@@ -161,17 +161,17 @@ export function classifyHostedWorkspaceHosting(
   return 'byoc';
 }
 
-/** Read the existing delegation record, not a client-supplied hosting claim. */
+/** Read server-owned linked identity or delegation, never a client hosting claim. */
 export async function readHostedWorkspaceHosting(
   binding: HostedConnectorBinding,
 ): Promise<'byoc' | 'papercusp' | null> {
   return withWorkspace(binding.controlPlaneWorkspaceId, async (sql) => {
-    const rows = await sql<Array<{ provider_config: unknown }>>`
-      SELECT connection.provider_config
+    const rows = await sql<Array<{ kind: string; linked_install_id: string | null; provider_config: unknown }>>`
+      SELECT customer.kind, customer.linked_install_id, connection.provider_config
         FROM harness_shared.customer_workspaces AS customer
-        JOIN harness_shared.workspace_hosts AS host
+        LEFT JOIN harness_shared.workspace_hosts AS host
           ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
-        JOIN harness_shared.workspace_host_connections AS connection
+        LEFT JOIN harness_shared.workspace_host_connections AS connection
           ON connection.workspace_id = host.workspace_id AND connection.id = host.connection_id
        WHERE customer.workspace_id = ${binding.controlPlaneWorkspaceId}
          AND customer.id = ${binding.customerWorkspaceId}
@@ -180,6 +180,9 @@ export async function readHostedWorkspaceHosting(
          AND customer.state <> 'deleted'
        LIMIT 1
     `;
+    // Existing installs have no cloud provisioning rows and always require
+    // the customer-owned sealed channel, including when a delegation exists.
+    if (rows[0]?.kind === 'linked') return rows[0].linked_install_id?.trim() ? 'byoc' : null;
     return classifyHostedWorkspaceHosting(rows[0]?.provider_config, binding.customerWorkspaceId);
   });
 }
@@ -190,18 +193,19 @@ export async function readCustomerWorkspaceHosting(
   customerWorkspaceId: string,
 ): Promise<'byoc' | 'papercusp' | null> {
   return withWorkspace(controlPlaneWorkspaceId, async (sql) => {
-    const rows = await sql<Array<{ provider_config: unknown }>>`
-      SELECT connection.provider_config
+    const rows = await sql<Array<{ kind: string; linked_install_id: string | null; provider_config: unknown }>>`
+      SELECT customer.kind, customer.linked_install_id, connection.provider_config
         FROM harness_shared.customer_workspaces AS customer
-        JOIN harness_shared.workspace_hosts AS host
+        LEFT JOIN harness_shared.workspace_hosts AS host
           ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
-        JOIN harness_shared.workspace_host_connections AS connection
+        LEFT JOIN harness_shared.workspace_host_connections AS connection
           ON connection.workspace_id = host.workspace_id AND connection.id = host.connection_id
        WHERE customer.workspace_id = ${controlPlaneWorkspaceId}
          AND customer.id = ${customerWorkspaceId}
          AND customer.state <> 'deleted'
        LIMIT 1
     `;
+    if (rows[0]?.kind === 'linked') return rows[0].linked_install_id?.trim() ? 'byoc' : null;
     return classifyHostedWorkspaceHosting(rows[0]?.provider_config, customerWorkspaceId);
   });
 }
