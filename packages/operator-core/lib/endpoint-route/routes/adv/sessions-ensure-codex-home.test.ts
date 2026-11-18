@@ -23,13 +23,15 @@ const mocks = vi.hoisted(() => ({
   resumeTarget: vi.fn(),
   claimRepair: vi.fn(),
   readRepair: vi.fn(),
+  readReplay: vi.fn(),
   finishRepair: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
 vi.mock('../transport/_mcp-result-replay', () => ({
   claimPendingMcpResult: mocks.claimRepair,
-  lookupStoredMcpResult: mocks.readRepair,
+  lookupStoredMcpResult: mocks.readReplay,
+  lookupStoredMcpOperationReceipt: mocks.readRepair,
   finalizePendingMcpResult: mocks.finishRepair,
 }));
 const ADV_SESSION_ID = 900_000_000 + process.pid;
@@ -305,6 +307,43 @@ describe('ensure-codex-home explicit preserved artifact policy', () => {
     });
     expect((await ensureCodexHome(conflict)).status).toBe(409);
     expect(mocks.ensureHome).toHaveBeenCalledOnce();
+  });
+
+  it('uses exact-tool receipt observation while the generic reader hides pending repairs', async () => {
+    const attempt = 'cad0b405-5a83-4f66-9624-142c8477daa0';
+    const requestHash = 'b'.repeat(64);
+    mocks.readReplay.mockResolvedValue(null);
+    mocks.readRepair.mockResolvedValue({ content: [], _meta: { state: 'pending' },
+      structuredContent: { owner: OWNER, advSessionId: ADV_SESSION_ID,
+        repairAttemptId: attempt, requestHash, pending: true } });
+    const response = await ensureCodexHomeStatus(new Request('http://localhost/api/adv/sessions/ensure-codex-home?' +
+      new URLSearchParams({ owner: OWNER, advSessionId: String(ADV_SESSION_ID), repairAttemptId: attempt, requestHash })));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ pending: true, repairAttemptId: attempt, requestHash });
+    expect(mocks.readRepair).toHaveBeenCalledExactlyOnceWith(
+      `codex-home-repair:papercusp-workspace:${OWNER}:${ADV_SESSION_ID}`, attempt, 'adv:ensure-codex-home');
+    expect(mocks.readReplay).not.toHaveBeenCalled();
+    expect(mocks.claimRepair).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
+    expect(mocks.funding).not.toHaveBeenCalled();
+  });
+
+  it('refuses mismatched owner ADV attempt and request hash during receipt observation', async () => {
+    const attempt = 'cad0b405-5a83-4f66-9624-142c8477daa0';
+    const receipt = { owner: OWNER, advSessionId: ADV_SESSION_ID,
+      repairAttemptId: attempt, requestHash: 'b'.repeat(64), pending: true };
+    for (const mismatch of [{ owner: 'another-owner' }, { advSessionId: ADV_SESSION_ID + 1 },
+      { repairAttemptId: 'cad0b405-5a83-4f66-9624-142c8477daa1' }, { requestHash: 'c'.repeat(64) }]) {
+      mocks.readRepair.mockResolvedValue({ content: [], _meta: { state: 'pending' },
+        structuredContent: { ...receipt, ...mismatch } });
+      const response = await ensureCodexHomeStatus(new Request('http://localhost/api/adv/sessions/ensure-codex-home?' +
+        new URLSearchParams({ owner: OWNER, advSessionId: String(ADV_SESSION_ID),
+          repairAttemptId: attempt, requestHash: receipt.requestHash })));
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({ error: 'repair-request-conflict' });
+    }
+    expect(mocks.claimRepair).not.toHaveBeenCalled();
+    expect(mocks.ensureHome).not.toHaveBeenCalled();
   });
 
   it.each(['default', 'auto', 'pool-fixture'])('uses the real artifact verifier and saved %s route even when fresh rendering succeeds', async account => {

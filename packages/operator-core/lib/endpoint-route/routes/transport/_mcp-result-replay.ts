@@ -88,6 +88,9 @@ const REPLAY_TTL_MS = 60 * 60 * 1000;
 // operation receipt must survive reconnects after the ordinary cache TTL.
 // Reuse this receipt table as the durable operation identity; no new ledger.
 const DURABLE_CREATION_TOOL = 'pot:create_from_repo';
+// Home preparation mutates files outside this ledger. Losing its receipt must
+// never authorize another mutation, even when the original attempt is pending.
+const DURABLE_CODEX_HOME_REPAIR_TOOL = 'adv:ensure-codex-home';
 /** Opportunistic sweep at most this often per process. */
 const SWEEP_MIN_INTERVAL_MS = 60 * 1000;
 let lastSweepAt = 0;
@@ -259,6 +262,28 @@ export async function lookupStoredMcpResult(
   idempotencyKey: string,
   options: LookupStoredMcpResultOptions = {},
 ): Promise<StoredMcpResult | null> {
+  const stored = await readStoredMcpReceipt(ownerKey, idempotencyKey, null, options);
+  // Transport replay represents completion, never asynchronous coordination.
+  if (!stored || isPendingMcpResult(stored)) return null;
+  return { ...stored, _meta: { ...(stored._meta ?? {}), replayed: true } };
+}
+
+/** Observe coordination state for precisely one tool, without replaying it. */
+export async function lookupStoredMcpOperationReceipt(
+  ownerKey: string,
+  idempotencyKey: string,
+  expectedToolName: string,
+  options: LookupStoredMcpResultOptions = {},
+): Promise<StoredMcpResult | null> {
+  return readStoredMcpReceipt(ownerKey, idempotencyKey, expectedToolName, options);
+}
+
+async function readStoredMcpReceipt(
+  ownerKey: string,
+  idempotencyKey: string,
+  expectedToolName: string | null,
+  options: LookupStoredMcpResultOptions,
+): Promise<StoredMcpResult | null> {
   const { sql } = getOrgPg();
   const statementTimeoutSetting = String(
     options.statementTimeoutMs ?? REPLAY_LOOKUP_STATEMENT_TIMEOUT_MS,
@@ -307,8 +332,9 @@ export async function lookupStoredMcpResult(
             SELECT result, is_error, tool_name
               FROM harness_shared.mcp_tool_results
              WHERE owner_key = ${ownerKey} AND idempotency_key = ${idempotencyKey}
+               AND (${expectedToolName}::text IS NULL OR tool_name = ${expectedToolName})
                AND (created_at > now() - make_interval(secs => ${REPLAY_TTL_MS / 1000})
-                 OR tool_name = ${DURABLE_CREATION_TOOL})
+                 OR tool_name IN (${DURABLE_CREATION_TOOL}, ${DURABLE_CODEX_HOME_REPAIR_TOOL}))
           `;
           const prior = selected[0];
           if (prior && isPendingDomainMcpResult(decodeStoredMcpResult(prior.result, prior.is_error), prior.tool_name)) {
@@ -341,17 +367,7 @@ export async function lookupStoredMcpResult(
   }
   const row = rows[0];
   if (!row) return null;
-  const stored = decodeStoredMcpResult(row.result, row.is_error);
-  // Pending receipts are coordination state, not terminal tool results. The
-  // MCP handler calls this before invoking the tool on a retry, so returning a
-  // pending marker here would make the retry look like a completed write.
-  if (!stored || isPendingMcpResult(stored)) return null;
-  return {
-    ...stored,
-    // Tag the replay so the caller KNOWS this is the stored outcome of a
-    // prior execution, not a fresh run.
-    _meta: { ...(stored._meta ?? {}), replayed: true },
-  };
+  return decodeStoredMcpResult(row.result, row.is_error);
 }
 
 /**
@@ -571,7 +587,8 @@ export async function sweepExpiredMcpResults(now = Date.now()): Promise<number> 
   const rows = await sql<Array<{ n: number }>>`
     WITH del AS (
       DELETE FROM harness_shared.mcp_tool_results
-       WHERE created_at < ${cutoff}::timestamptz AND tool_name <> ${DURABLE_CREATION_TOOL}
+       WHERE created_at < ${cutoff}::timestamptz
+         AND tool_name NOT IN (${DURABLE_CREATION_TOOL}, ${DURABLE_CODEX_HOME_REPAIR_TOOL})
       RETURNING 1
     )
     SELECT count(*)::int AS n FROM del

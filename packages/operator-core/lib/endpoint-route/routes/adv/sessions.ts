@@ -1742,8 +1742,8 @@ const ensureCodexHomeStatus = defineTool({
       return json({ ok: false, error: 'valid repair identity required' }, 400);
     const scope = await codexHomeRepairScope(expected.owner, expected.advSessionId);
     if (!scope) return json({ ok: false, error: 'repair-owner-mismatch' }, 409);
-    const { lookupStoredMcpResult } = await import('../transport/_mcp-result-replay');
-    return codexHomeRepairReceiptResponse(await lookupStoredMcpResult(scope.ownerKey, expected.repairAttemptId), expected, true);
+    const { lookupStoredMcpOperationReceipt } = await import('../transport/_mcp-result-replay');
+    return codexHomeRepairReceiptResponse(await lookupStoredMcpOperationReceipt(scope.ownerKey, expected.repairAttemptId, CODEX_HOME_REPAIR_TOOL), expected, true);
   },
 });
 

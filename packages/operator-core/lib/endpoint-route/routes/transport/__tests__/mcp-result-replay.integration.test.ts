@@ -18,9 +18,11 @@ import { getAmendReceipt, trackAmendRun } from '../../../../agent-tools/rubrics/
 import {
   validIdempotencyKey,
   lookupStoredMcpResult,
+  lookupStoredMcpOperationReceipt,
   serializeStoredMcpResult,
   storeMcpResult,
   claimPendingMcpResult,
+  finalizePendingMcpResult,
   sweepExpiredMcpResults,
   type StoredMcpResult,
 } from '../_mcp-result-replay';
@@ -256,6 +258,50 @@ describe('MCP result replay (audit P-046 / EI-68)', () => {
     expect(await claimPendingMcpResult(input)).toMatchObject({ claimed: false, pending: true });
     expect(await lookupStoredMcpResult(OWNER_A, 'old-pending-pot')).toBeNull();
   });
+  it('retains pending and finalized Codex home repair receipts across expiry and sweep', async () => {
+    const key = { ownerKey: OWNER_A, idempotencyKey: 'retained-home-repair',
+      toolName: 'adv:ensure-codex-home', workspaceId: 'default' };
+    const pending: StoredMcpResult = { ...RESULT, _meta: { state: 'pending' } };
+    expect((await claimPendingMcpResult({ ...key, result: pending })).claimed).toBe(true);
+    const age = () => db.adminSql`UPDATE harness_shared.mcp_tool_results
+      SET created_at = now() - interval '2 hours'
+      WHERE owner_key = ${OWNER_A} AND idempotency_key = ${key.idempotencyKey}`;
+    await age();
+    await sweepExpiredMcpResults();
+    expect(await lookupStoredMcpOperationReceipt(OWNER_A, key.idempotencyKey, key.toolName)).toEqual(pending);
+    expect(await lookupStoredMcpResult(OWNER_A, key.idempotencyKey)).toBeNull();
+    const final = { ...RESULT, _meta: { state: 'complete' }, structuredContent: { pending: false, response: { status: 200 } } };
+    expect(await finalizePendingMcpResult({ ...key, result: final })).toBe(true);
+    await age();
+    await sweepExpiredMcpResults();
+    expect(await lookupStoredMcpOperationReceipt(OWNER_A, key.idempotencyKey, key.toolName)).toEqual(final);
+    expect(await lookupStoredMcpResult(OWNER_A, key.idempotencyKey)).toMatchObject({ ...final, _meta: { replayed: true } });
+  });
+
+  it('does not reclaim an aged pending Codex home repair attempt', async () => {
+    const input = { ownerKey: OWNER_A, idempotencyKey: 'pending-home-no-reclaim',
+      toolName: 'adv:ensure-codex-home', workspaceId: 'default',
+      result: { ...RESULT, _meta: { state: 'pending', progressId: 'original' } } };
+    expect((await claimPendingMcpResult(input)).claimed).toBe(true);
+    await db.adminSql`UPDATE harness_shared.mcp_tool_results SET created_at = now() - interval '2 hours'
+      WHERE owner_key = ${OWNER_A} AND idempotency_key = ${input.idempotencyKey}`;
+    await sweepExpiredMcpResults();
+    expect(await claimPendingMcpResult({ ...input, result: { ...RESULT, _meta: { state: 'pending', progressId: 'duplicate' } } }))
+      .toMatchObject({ claimed: false, pending: true, result: input.result });
+  });
+
+  it('observes only the expected tool receipt and keeps generic pending replay terminal-only', async () => {
+    const key = 'exact-operation';
+    const pending = { ...RESULT, _meta: { state: 'pending' } };
+    await claimPendingMcpResult({ ownerKey: OWNER_A, idempotencyKey: key,
+      toolName: 'adv:ensure-codex-home', workspaceId: 'default', result: pending });
+    expect(await lookupStoredMcpOperationReceipt(OWNER_A, key, 'adv:ensure-codex-home')).toEqual(pending);
+    expect(await lookupStoredMcpResult(OWNER_A, key)).toBeNull();
+    expect(await lookupStoredMcpOperationReceipt(OWNER_A, key, 'pot:create_from_repo')).toBeNull();
+    expect(await lookupStoredMcpOperationReceipt(OWNER_B, key, 'adv:ensure-codex-home')).toBeNull();
+    expect(await lookupStoredMcpOperationReceipt(OWNER_A, 'another-attempt', 'adv:ensure-codex-home')).toBeNull();
+  });
+
   it('the sweep removes ordinary rows past the 1h TTL; lookup ignores them either way', async () => {
     const { sql } = getOrgPg();
     await storeMcpResult({
