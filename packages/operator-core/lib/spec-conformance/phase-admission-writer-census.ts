@@ -399,7 +399,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
             'unresolved', { callees: [target], dynamicEdges: [target, ...(text?.edges ?? [])],
               unresolved: ['tagged-invocation-target-requires-review'] });
           const invocation: PhaseWriterInvocation = { form: 'tag', target, arguments: text?.edges ?? [],
-            template: node.template.getText(unit.ast), ...unit.span(node.tag) };
+            template: node.template.getText(unit.ast), line: unit.span(node.tag).line, column: unit.span(node.tag).column };
           for (let index = start; index < sites.length; index++) sites[index]!.invocation = invocation;
         } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           const callee = node.expression.getText(unit.ast);
@@ -411,7 +411,8 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const rootName = ts.isIdentifier(root) ? root.text : root.getText(unit.ast);
           const directSiteStart = sites.length;
           const invocation: PhaseWriterInvocation = { form: ts.isNewExpression(node) ? 'construct' : 'call',
-            target: callee, arguments: args.map(argument => argument.getText(unit.ast)), ...unit.span(node.expression) };
+            target: callee, arguments: args.map(argument => argument.getText(unit.ast)),
+            line: unit.span(node.expression).line, column: unit.span(node.expression).column };
           const call = { path: source.path, operation: operation(node), callee, spelling: targetName(target) ?? callee,
             statement: node.getText(unit.ast), line: unit.span(bindingSite).line, column: unit.span(bindingSite).column,
             importedCall: importedLocals.has(rootName),
