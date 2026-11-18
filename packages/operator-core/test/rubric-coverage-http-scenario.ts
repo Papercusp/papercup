@@ -15,6 +15,7 @@ import { retainMeasurementProvenance } from '../lib/measurement-provenance';
 import { continuityProbeRevision, SQL_PROBE_TOOL } from '../lib/continuity-probes';
 import scorecardsList from '../lib/agent-tools/scorecards/list';
 import { scorecardGetArgs } from '../lib/agent-tools/scorecards/get';
+import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import '../lib/agent-tools/dev/pg_query';
 
 type Options = { workspace: string; harness: string; base: string;
@@ -68,6 +69,40 @@ export function manualCoverageRubricProposal(input: { rubricRef: string; planSlu
     rubricSlug: input.rubricRef, rubricRevision: 2, existingTemplateData: authored });
   assert.equal(seed.ok, true, JSON.stringify(seed));
   return proposal;
+}
+
+/** Share canonical plan seeding between the real PG and private HTTP journeys. */
+export async function prepareManualCoverageFixture(input: { workspace: string; harness: string;
+  planSlug: string; rubricRef: string; measuredAt: string; actorId: string }) {
+  const scope = await resolvePlanScope({ workspaceId: input.workspace, harnessSlug: input.harness });
+  assert.equal(scope.workspaceId, input.workspace);
+  const { sql } = getOrgPg();
+  const { hashPlanContent } = await import('@papercusp/plan-parser/content-hash');
+  const { seedAcceptanceBarsInTransaction } = await import('../lib/acceptance-bar-seed');
+  const content = manualCoveragePlanContent(input.planSlug);
+  await sql`INSERT INTO harness_shared.harness_plans
+    (workspace_id,harness_slug,plan_slug,version,content,content_hash)
+    VALUES (${scope.workspaceId},${scope.harnessSlug},${input.planSlug},1,${content},${hashPlanContent(content)})`;
+  await sql`INSERT INTO harness_shared.plan_items (workspace_id,harness_slug,plan_slug,item_id,seq)
+    VALUES (${scope.workspaceId},${scope.harnessSlug},${input.planSlug},'P-001',1)`;
+  const proposal = manualCoverageRubricProposal({ rubricRef: input.rubricRef, planSlug: input.planSlug,
+    harness: scope.harnessSlug, subjectPlanRevision: 1, measuredAt: input.measuredAt, actorId: input.actorId });
+  const { barContract: _contract, barSetHash: _hash, ...authored } = proposal;
+  await proposeRubric(authored);
+  const seeded = await sql.begin(tx => seedAcceptanceBarsInTransaction({ executor: tx as never,
+    workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, planSlug: input.planSlug, planContent: content,
+    planTitle: 'Manual coverage fixture', planStatus: 'ready', planVersion: 1,
+    adoptionEpoch: 1, cohort: 'post-epoch', actorId: input.actorId, now: new Date(input.measuredAt) }));
+  assert.equal(seeded.ok, true, JSON.stringify(seeded));
+  await sql`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,source_plan_slug,source_plan_item_ids)
+    VALUES (${scope.workspaceId},${scope.harnessSlug},'WI-901001','bug','open','admitted','Manual fixture','','{}'::jsonb,
+      ${input.planSlug},ARRAY['P-001']::text[])`;
+  await sql`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,terminal_owner,terminal_completion_ref,authority)
+    VALUES (${scope.workspaceId},${scope.harnessSlug},'WI-901002','bug','done','admitted','Archived review','','{}'::jsonb,
+      ${input.actorId},'fixture:archived-manual-review','validated')`;
+  return scope;
 }
 
 /** Validate the actual request builders before spending time on an API build. */
@@ -131,9 +166,6 @@ export async function measureRubricCoverageScenario(o: Options) {
     let manualBindingId: number | undefined;
     if (manual) {
       const planSlug = 'private-manual-coverage-fixture';
-      const content = manualCoveragePlanContent(planSlug);
-      const { hashPlanContent } = await import('@papercusp/plan-parser/content-hash');
-      const { seedAcceptanceBarsInTransaction } = await import('../lib/acceptance-bar-seed');
       const { bindSpecEvidenceItems } = await import('../lib/agent-tools/plans/bind-spec-evidence');
       const clockTables = ['plan_spec_clauses', 'plan_spec_clause_revisions', 'spec_evidence_bindings'];
       // This process and database are disposable. Control only Date during the
@@ -142,29 +174,10 @@ export async function measureRubricCoverageScenario(o: Options) {
       try {
         for (const table of clockTables) await sql.unsafe(
           `ALTER TABLE harness_shared.${table} ALTER COLUMN created_at SET DEFAULT '2026-11-01T12:00:00Z'::timestamptz`);
-        await sql`INSERT INTO harness_shared.harness_plans
-          (workspace_id,harness_slug,plan_slug,version,content,content_hash)
-          VALUES (${o.workspace},${o.harness},${planSlug},1,${content},${hashPlanContent(content)})`;
-        await sql`INSERT INTO harness_shared.plan_items (workspace_id,harness_slug,plan_slug,item_id,seq)
-          VALUES (${o.workspace},${o.harness},${planSlug},'P-001',1)`;
-        const proposal = manualCoverageRubricProposal({ rubricRef, planSlug, harness: o.harness,
-          subjectPlanRevision: 1, measuredAt, actorId: identity.ownerId });
-        const { barContract: _contract, barSetHash: _hash, ...authored } = proposal;
-        await proposeRubric(authored);
-        const seeded = await sql.begin(tx => seedAcceptanceBarsInTransaction({ executor: tx as never,
-          workspaceId: o.workspace, harnessSlug: o.harness, planSlug, planContent: content,
-          planTitle: 'Manual coverage fixture', planStatus: 'ready', planVersion: 1,
-          adoptionEpoch: 1, cohort: 'post-epoch', actorId: identity.ownerId, now: new Date(measuredAt) }));
-        assert.equal(seeded.ok, true, JSON.stringify(seeded));
-        await sql`INSERT INTO harness_shared.work_items
-          (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,source_plan_slug,source_plan_item_ids)
-          VALUES (${o.workspace},${o.harness},'WI-901001','bug','open','admitted','Manual fixture','','{}'::jsonb,${planSlug},ARRAY['P-001']::text[])`;
-        await sql`INSERT INTO harness_shared.work_items
-          (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,terminal_owner,terminal_completion_ref,authority)
-          VALUES (${o.workspace},${o.harness},'WI-901002','bug','done','admitted','Archived review','','{}'::jsonb,
-            ${identity.ownerId},'fixture:archived-manual-review','validated')`;
+        const fixtureScope = await prepareManualCoverageFixture({ workspace: o.workspace, harness: o.harness,
+          planSlug, rubricRef, measuredAt, actorId: identity.ownerId });
         mock.timers.enable({ apis: ['Date'], now: new Date(measuredAt) });
-        const produced = await bindSpecEvidenceItems({ workspaceId: o.workspace, harnessSlug: o.harness,
+        const produced = await bindSpecEvidenceItems({ workspaceId: o.workspace, harnessSlug: fixtureScope.harnessSlug,
           actorId: identity.ownerId, slug: planSlug, items: [{ workItemId: 'WI-901001', specId: 'AUTO-BAR-R-1-P-001',
             evidenceKind: 'manual', evidenceRef: 'archive:manual-review',
             measurement: { schemaVersion: 1, kind: 'work-items', workItemIds: ['WI-901002'], successfulCompletionReceipts: true },

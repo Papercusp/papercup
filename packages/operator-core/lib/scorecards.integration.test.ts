@@ -2416,9 +2416,16 @@ describe('pinned historical evidence action readers — real PG', () => {
   it('reads the fixed manual fixture from the real measured binding producer without granting live freshness', async () => {
     const { bindSpecEvidenceItems } = await import('./agent-tools/plans/bind-spec-evidence');
     const { bindSpecEvidence, listSpecEvidence, retractSpecEvidence } = await import('./agent-tools/plans/spec-evidence-store');
-    const { manualCoverageRubricProposal, manualCoveragePlanContent } = await import('../test/rubric-coverage-http-scenario');
-    const { hashPlanContent } = await import('@papercusp/plan-parser/content-hash');
+    const { prepareManualCoverageFixture } = await import('../test/rubric-coverage-http-scenario');
+    const { loadHarnessRegistry, saveHarnessRegistry } = await import('./harness-registry');
     const workspaceId = issuesScopeWorkspace();
+    const memberHarness = 'manual-coverage-member';
+    const registry = await loadHarnessRegistry(workspaceId);
+    await saveHarnessRegistry({ ...registry, projects: [
+      ...registry.projects.filter(project => project.slug !== memberHarness && project.slug !== 'papercusp'),
+      { slug: 'papercusp', path: process.cwd(), hive_slug: 'papercusp' },
+      { slug: memberHarness, path: process.cwd(), hive_slug: 'papercusp' },
+    ] }, workspaceId);
     const planSlug = 'measured-manual-coverage';
     const rubricRef = 'acceptance-measured-manual-coverage';
     const clock = '2026-11-02T00:00:00Z';
@@ -2430,35 +2437,12 @@ describe('pinned historical evidence action readers — real PG', () => {
     for (const table of clockTables) await db.adminSql.unsafe(
       `ALTER TABLE harness_shared.${table} ALTER COLUMN created_at SET DEFAULT '2026-11-01T12:00:00Z'::timestamptz`);
     try {
-      const content = manualCoveragePlanContent(planSlug);
-      await db.adminSql`INSERT INTO harness_shared.harness_plans
-        (workspace_id, harness_slug, plan_slug, version, content, content_hash)
-        VALUES (${workspaceId}, 'papercusp', ${planSlug}, 1, ${content}, ${hashPlanContent(content)})`;
-      await db.adminSql`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq)
-        VALUES (${workspaceId}, 'papercusp', ${planSlug}, 'P-001', 1)`;
-      await db.adminSql`INSERT INTO harness_shared.work_items
-        (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,source_plan_slug,source_plan_item_ids)
-        VALUES (${workspaceId},'papercusp','WI-901001','bug','open','admitted','Manual fixture','','{}'::jsonb,${planSlug},ARRAY['P-001']::text[])`;
-      await db.adminSql`INSERT INTO harness_shared.work_items
-        (workspace_id,harness_slug,feature_id,item_kind,status,admission,title,summary,payload,terminal_owner,terminal_completion_ref,authority)
-        VALUES (${workspaceId},'papercusp','WI-901002','bug','done','admitted','Archived review','','{}'::jsonb,
-          'su-fixture','fixture:archived-manual-review','validated')`;
-      const [subjectPlan] = await db.adminSql<{ version: number; content: string }[]>`SELECT version, content FROM harness_shared.harness_plans
-        WHERE workspace_id=${workspaceId} AND harness_slug='papercusp' AND plan_slug=${planSlug}`;
-      expect(subjectPlan!.content).toBe(content);
-      const { parseRequirementBars, seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
-      expect(parseRequirementBars(subjectPlan!.content)).toMatchObject({ ok: true });
-      const proposal = manualCoverageRubricProposal({ rubricRef, planSlug, harness: 'papercusp',
-        subjectPlanRevision: Number(subjectPlan!.version), measuredAt, actorId: 'su-fixture' });
-      // Author the methods before activation captures their complete immutable BAR pin.
-      const { barContract: _contract, barSetHash: _hash, ...authored } = proposal;
-      await proposeRubric(authored);
-      const seeded = await db.adminSql.begin(tx => seedAcceptanceBarsInTransaction({
-        executor: tx as never, workspaceId, harnessSlug: 'papercusp', planSlug, planContent: subjectPlan!.content,
-        planTitle: 'Manual coverage fixture', planStatus: 'ready', planVersion: Number(subjectPlan!.version),
-        adoptionEpoch: 1, cohort: 'post-epoch', actorId: 'su-fixture', now: new Date(measuredAt),
-      }));
-      expect(seeded).toMatchObject({ ok: true, rubricSlug: rubricRef });
+      const fixtureScope = await prepareManualCoverageFixture({ workspace: workspaceId, harness: memberHarness,
+        planSlug, rubricRef, measuredAt, actorId: 'su-fixture' });
+      expect(fixtureScope).toEqual({ workspaceId, harnessSlug: 'papercusp' });
+      const seededItems = await db.adminSql`SELECT harness_slug FROM harness_shared.work_items
+        WHERE workspace_id=${workspaceId} AND feature_id IN ('WI-901001','WI-901002')`;
+      expect(seededItems.map(row => row.harness_slug)).toEqual(['papercusp', 'papercusp']);
       const rubric = (await getRubric(rubricRef))!;
       expect(rubric.barSetHash).toMatch(/^[a-f0-9]{64}$/);
       const measurement = { schemaVersion: 1 as const, kind: 'work-items' as const,
@@ -2469,10 +2453,10 @@ describe('pinned historical evidence action readers — real PG', () => {
       let produced: Awaited<ReturnType<typeof bindSpecEvidenceItems>>;
       vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(measuredAt);
       try {
-        produced = await bindSpecEvidenceItems({ harnessSlug: 'papercusp', workspaceId,
+        produced = await bindSpecEvidenceItems({ harnessSlug: fixtureScope.harnessSlug, workspaceId,
           actorId: 'su-fixture', slug: planSlug, items: [binding] });
       } finally { vi.useRealTimers(); }
-      expect(produced).toMatchObject({ ok: true, results: [{ ok: true, status: 'created' }] });
+      expect(produced, JSON.stringify(produced)).toMatchObject({ ok: true, results: [{ ok: true, status: 'created' }] });
       const bindingId = (produced.results[0] as { id: number }).id;
       const readRows = (comparisonTime = clock) => listSpecEvidence({ workspaceId, harnessSlug: 'papercusp', planSlugs: [planSlug],
         auditAsOf: new Date(comparisonTime), includeRetracted: true, measurementMode: 'metadata', limit: 201 });
