@@ -85,8 +85,9 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('executes the complete current org schema callback population through real Drizzle extraction', async () => {
+  it('executes the complete current org schema callbacks through real extraction and construction', async () => {
     const { is, Table } = await import('drizzle-orm');
+    const { drizzle } = await import('drizzle-orm/postgres-js');
     const { Relations, createTableRelationsHelpers, extractTablesRelationalConfig } = await import('drizzle-orm/relations');
     // Drizzle exposes these symbols at runtime but omits them from its .d.ts.
     const { ExtraConfigBuilder } = Reflect.get(Table, 'Symbol') as { ExtraConfigBuilder: symbol };
@@ -135,9 +136,29 @@ describe('phase binding writer census', () => {
       expect(new Set(observed).size).toBe(expected.length);
       expect(Object.keys(result.tables).sort()).toEqual(Object.entries(schema)
         .filter(([, value]) => is(value, Table)).map(([name]) => name).sort());
+
+      // Exercise the actual constructor too: direct extraction alone does not
+      // establish that its caller supplies this complete callback population.
+      observed.length = 0;
+      const clientAccesses: PropertyKey[] = [];
+      const client = new Proxy(Object.assign(() => {
+        throw new Error('schema construction attempted a database query');
+      }, { options: { parsers: {}, serializers: {} } }), {
+        get(target, key, receiver) {
+          clientAccesses.push(key);
+          if (key !== 'options') throw new Error(`schema construction accessed query client: ${String(key)}`);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      const db = Reflect.apply(drizzle, undefined, [client, { schema: wrapped }]);
+      expect(Reflect.get(db, '$client')).toBe(client);
+      expect(observed).toEqual(expected);
+      expect(new Set(observed).size).toBe(expected.length);
+      expect(clientAccesses.length).toBeGreaterThan(0);
+      expect(new Set(clientAccesses)).toEqual(new Set(['options']));
     }
-    // Only the supplied real schema callbacks were exercised. The constructor,
-    // pool, arbitrary callers and the repository census remain unapproved.
+    // This measures these exact schema inputs with a trapped client. The real
+    // pool, arbitrary callers and repository census remain unapproved.
   });
 
   it('retains canonical claim read and release reviews without accepting advancing writes', () => {
