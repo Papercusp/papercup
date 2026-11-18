@@ -1536,6 +1536,7 @@ lint-as-committed — run a lint as the release gate runs it (committed detector
   --resume-root=<dir> verify a retained tree at --ref instead of cloning/copying anew (implies --keep);
                     requires --resume-verification=<json>
   --resume-verification=<json> {checkpointDir, generation?, materializeMissing?, maxBatches?, maxDurationMs?, batchSize?};
+                    materializeMissing:true also permits adding selected workspaces; use a fresh checkpointDir
                     checkpointDir must be private and outside both trees; incomplete exits 75,
                     preserves tree/journal and runs no commands or prepared-witness publication
   --retain-for=<path> retain source while this external artifact exists; requires --materialize-only
@@ -1904,7 +1905,17 @@ async function main() {
             git(['submodule', 'status', '--recursive'], root).split('\n').some(line => /^[-+U]/.test(line)))
           throw new Error('lint-as-committed: retained source changed or submodules are incomplete');
         const scope = { mode: args.workspaceDirs?.length ? 'selected' : 'full', workspaceDirs: args.workspaceDirs ?? [] };
-        if (marker.dependencyScope && JSON.stringify(marker.dependencyScope) !== JSON.stringify(scope))
+        // Recover an omitted workspace without recopying completed roots. This
+        // only admits verification: old bytes and newly materialized trees all
+        // pass the full verifier, and its journal still binds the exact scope.
+        // Publish the enlarged scope only after validation succeeds below.
+        const previousScope = marker.dependencyScope;
+        const additiveSelection = args.resumeVerification.materializeMissing === true &&
+          previousScope?.mode === 'selected' && scope.mode === 'selected' &&
+          Array.isArray(previousScope.workspaceDirs) && previousScope.workspaceDirs.length > 0 &&
+          scope.workspaceDirs.length > previousScope.workspaceDirs.length &&
+          previousScope.workspaceDirs.every(path => scope.workspaceDirs.includes(path));
+        if (previousScope && JSON.stringify(previousScope) !== JSON.stringify(scope) && !additiveSelection)
           throw new Error('lint-as-committed: retained dependency scope differs');
         const gitmodulesPath = join(root, '.gitmodules');
         submodules = existsSync(gitmodulesPath) ? parseGitmodules(readFileSync(gitmodulesPath, 'utf8')) : [];

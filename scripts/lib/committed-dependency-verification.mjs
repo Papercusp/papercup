@@ -108,7 +108,16 @@ async function command(helper, args, script, deadline, environment = process.env
     { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, env: environment });
     return result.stdout;
   } catch (error) {
-    if (error.code === 124 || error.code === 137) throw new Incomplete();
+    if (error.code === 124 || error.code === 137) {
+      // An incomplete copy may have spent its budget waiting for admission.
+      // Keep bounded helper evidence so the next attempt can distinguish that
+      // from copying or scanning, without interpreting a timeout as readiness.
+      throw Object.assign(new Incomplete(), { commandEvidence: {
+        exitCode: error.code,
+        stdoutTail: String(error.stdout ?? '').slice(-1500),
+        stderrTail: String(error.stderr ?? '').slice(-1500),
+      } });
+    }
     fail('census failed: ' + String(error.stderr || error.message).slice(0, 1500));
   }
 }
@@ -492,7 +501,10 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         progress.phase = 'complete';
         return { status: 'complete', sourceRoot: donor, paths: scan.trees.map(tree => tree.path), scope, progress };
       } catch (error) {
-        if (error instanceof Incomplete) return incomplete();
+        if (error instanceof Incomplete) {
+          if (error.commandEvidence) progress.interruptedCommand = error.commandEvidence;
+          return incomplete();
+        }
         throw error;
       } finally { rmSync(scratch, { recursive: true, force: true }); }
     }, mutexOptions), mutexOptions);
