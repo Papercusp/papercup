@@ -824,10 +824,6 @@ export function classifyGroundedBaseline(input: {
   original: { body: string; sha256: string };
 }) {
   const { pin, original } = input;
-  // Invalid source clocks keep the original pin and unknown values. The epoch
-  // only makes the diagnostic ledger envelope parseable; it is not an observed
-  // timestamp and cannot qualify the invalid pin.
-  const ledgerClock = Number.isFinite(Date.parse(pin.observedAt)) ? pin.observedAt : '1970-01-01T00:00:00.000Z';
   const expected = groundedBaselineCensus().filter(key => key.caseId === pin.scope.caseId
     && key.iteration === pin.scope.iteration);
   const gaps: string[] = [];
@@ -871,7 +867,22 @@ export function classifyGroundedBaseline(input: {
   // an input to this summary, and numeric zero remains a measured success.
   const state: GroundedBaselineState = rows.some(row => row.state === 'failure') ? 'failure'
     : !rows.length || rows.some(row => row.state === 'unknown') ? 'unknown' : 'success';
-  const ledgerResults: RubricCheckResult[] = rows.map(row => {
+  return { rows, state, gaps, complete: validPin === true && gaps.length === 0,
+    ledgerResults: groundedBaselineLedgerResults(rows) };
+}
+
+type GroundedBaselineCensusRow = Omit<GroundedBaselineRow, 'pin' | 'originalSha256'> & {
+  pin: GroundedBaselinePin | null;
+  originalSha256: string | null;
+  gap?: string;
+};
+
+function groundedBaselineLedgerResults(rows: readonly GroundedBaselineCensusRow[]): RubricCheckResult[] {
+  return rows.map(row => {
+    // An absent or invalid source clock stays absent/invalid in the retained
+    // row. The epoch only permits a diagnostic envelope, never an observation.
+    const clock = row.pin?.observedAt;
+    const ledgerClock = clock && Number.isFinite(Date.parse(clock)) ? clock : '1970-01-01T00:00:00.000Z';
     const provenance = retainMeasurementProvenance({ startedAt: ledgerClock, finishedAt: ledgerClock,
       procedure: { kind: 'grounded-baseline-classification', row },
       result: { state: row.state, value: row.value }, predicateInput: { path: '$["value"]', value: row.value },
@@ -883,7 +894,42 @@ export function classifyGroundedBaseline(input: {
     verdict: row.state === 'success' ? 'pass' : row.state === 'failure' ? 'fail' : 'error',
     measuredAt: ledgerClock, durationMs: null };
   });
-  return { rows, state, gaps, complete: validPin === true && gaps.length === 0, ledgerResults };
+}
+
+/** Project the fixed population, including keys with no designated original.
+ * Callers select the cohort explicitly; historical candidates and recaptures
+ * cannot fill its holes. Duplicate designations stay unknown rather than picking
+ * a newer/pass result. This extends the existing classifier and ledger format. */
+export function classifyGroundedBaselineCensus(cohort: GroundedBaselinePin['cohort'],
+  captures: readonly Parameters<typeof classifyGroundedBaseline>[0][]) {
+  const census = groundedBaselineCensus();
+  const groups = new Map<string, ReturnType<typeof classifyGroundedBaseline>[]>();
+  const gaps: string[] = [];
+  for (const capture of captures) {
+    if (capture.pin.cohort !== cohort) {
+      gaps.push(`${capture.pin.scope.caseId}/${capture.pin.scope.iteration}:foreign-cohort`);
+      continue;
+    }
+    const classified = classifyGroundedBaseline(capture);
+    if (!classified.rows.length) gaps.push('foreign-baseline-capture');
+    gaps.push(...classified.gaps);
+    for (const row of classified.rows) {
+      const key = baselineKey(row.key), matches = groups.get(key) ?? [];
+      matches.push(classified); groups.set(key, matches);
+    }
+  }
+  const rows: GroundedBaselineCensusRow[] = census.map(key => {
+    const id = baselineKey(key), matches = groups.get(id) ?? [];
+    if (matches.length === 1) return matches[0]!.rows.find(row => baselineKey(row.key) === id)!;
+    const gap = matches.length ? 'duplicate-designated-immutable-original'
+      : 'no-designated-immutable-original-for-this-atomic-key';
+    gaps.push(`${id}:${gap}`);
+    return { key, state: 'unknown', value: null, pin: null, originalSha256: null, observation: null, gap };
+  });
+  const state: GroundedBaselineState = rows.some(row => row.state === 'failure') ? 'failure'
+    : rows.some(row => row.state === 'unknown') ? 'unknown' : 'success';
+  return { cohort, rows, state, gaps, complete: gaps.length === 0 && !rows.some(row => row.state === 'unknown'),
+    ledgerResults: groundedBaselineLedgerResults(rows) };
 }
 
 /** Reclassify from original bytes and compare the exact persisted key-set,
@@ -895,10 +941,17 @@ export function readGroundedBaselineRows(input: Parameters<typeof classifyGround
 }[], ledgerScope = { workspaceId: input.pin.scope.workspaceId, harnessSlug: input.pin.scope.harness,
   runGroupId: input.pin.scope.runId }) {
   const classified = classifyGroundedBaseline(input);
-  const gaps = [...classified.gaps];
+  const gaps = [...classified.gaps, ...groundedBaselineLedgerGaps(classified.ledgerResults, persisted, ledgerScope)];
+  return { ...classified, gaps, integrity: gaps.length === 0 };
+}
+
+function groundedBaselineLedgerGaps(results: readonly RubricCheckResult[], persisted: readonly {
+  id: number; status: string; executionDetails: unknown;
+}[], ledgerScope: { workspaceId: string; harnessSlug: string; runGroupId: string }) {
+  const gaps: string[] = [];
   if (![ledgerScope.workspaceId, ledgerScope.harnessSlug, ledgerScope.runGroupId].every(nonblank))
     gaps.push('invalid-ledger-scope');
-  const expected = new Map(classified.ledgerResults.map(row => [row.check.subject!.ref, row]));
+  const expected = new Map(results.map(row => [row.check.subject!.ref, row]));
   const seen = new Set<string>();
   for (const row of persisted) {
     const details = parseTestRunExecutionDetails(row.executionDetails);
@@ -912,7 +965,18 @@ export function readGroundedBaselineRows(input: Parameters<typeof classifyGround
       || details.runGroupId !== ledgerScope.runGroupId) gaps.push(`${ref}:changed-persisted-observation`);
   }
   for (const ref of expected.keys()) if (!seen.has(ref)) gaps.push(`${ref}:missing-persisted-row`);
-  return { ...classified, gaps, integrity: gaps.length === 0 };
+  return gaps;
+}
+
+/** Ledger integrity is separate from baseline readiness: a faithful persisted
+ * unknown with a null pin is valid evidence of an unresolved census key. */
+export function readGroundedBaselineCensusRows(cohort: GroundedBaselinePin['cohort'],
+  captures: readonly Parameters<typeof classifyGroundedBaseline>[0][],
+  persisted: Parameters<typeof readGroundedBaselineRows>[1],
+  ledgerScope: { workspaceId: string; harnessSlug: string; runGroupId: string }) {
+  const classified = classifyGroundedBaselineCensus(cohort, captures);
+  const ledgerGaps = groundedBaselineLedgerGaps(classified.ledgerResults, persisted, ledgerScope);
+  return { ...classified, ledgerGaps, integrity: ledgerGaps.length === 0 };
 }
 
 /** Persisted values use the SAME serialization supplied to the original write.
