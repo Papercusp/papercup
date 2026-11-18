@@ -14,7 +14,9 @@
     "packages/operator-core/lib/agent-state-stamp.ts",
     "packages/operator-core/lib/agent-state-stamp-cluster.ts",
     "apps/operator/bin/hono-host.ts",
-    "packages/operator-core/lib/cluster-fork.ts"
+    "packages/operator-core/lib/cluster-fork.ts",
+    "libs/papercusp/libs/db/src/connection.ts",
+    "libs/papercusp/libs/db/src/store-identity.ts"
   ],
   "catalogObservation": {
     "evidence": "/tmp/vault-e750-claims-trigger-source-match.json",
@@ -28,6 +30,510 @@
     "runtimeAttestation": false
   },
   "reviews": [
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"_quarantineDiscoveryEndpointIfProvenForeign\",\"helper-edge\",\"42e763590de5f35812838eea227545c4743bf345fee9523f0466e48509e646b2\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "42e763590de5f35812838eea227545c4743bf345fee9523f0466e48509e646b2",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected endpointKeyFromUrl function parses a URL and calls the inspected endpointKey normalizer; both return scalar values and perform no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "endpointKeyFromUrl",
+          "reason": "The inspected endpointKeyFromUrl function parses a URL and calls the inspected endpointKey normalizer; both return scalar values and perform no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected endpointKeyFromUrl function parses a URL and calls the inspected endpointKey normalizer; both return scalar values and perform no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"_quarantineDiscoveryEndpointIfProvenForeign\",\"helper-edge\",\"76b2453d60249a19bb00478603c518d863c655ed85cf899c445c1825ebdd77de\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "76b2453d60249a19bb00478603c518d863c655ed85cf899c445c1825ebdd77de",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected endpointKeyFromUrl function parses a URL and calls the inspected endpointKey normalizer; both return scalar values and perform no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "endpointKeyFromUrl",
+          "reason": "The inspected endpointKeyFromUrl function parses a URL and calls the inspected endpointKey normalizer; both return scalar values and perform no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected endpointKeyFromUrl function parses a URL and calls the inspected endpointKey normalizer; both return scalar values and perform no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"_quarantineDiscoveryEndpointIfProvenForeign\",\"helper-edge\",\"da2939b63d9d6d9c798f6dfc3bec39ea36efd6512566c316d908a741ed1711e7\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "da2939b63d9d6d9c798f6dfc3bec39ea36efd6512566c316d908a741ed1711e7",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "endpointKey",
+          "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"endpointKeyFromUrl\",\"helper-edge\",\"b34fe3d96c1c218d2e4fc67c1c807259327c02cb0828d02bd223f6a388e69476\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "b34fe3d96c1c218d2e4fc67c1c807259327c02cb0828d02bd223f6a388e69476",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "endpointKey",
+          "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"readDiscoveryFile\",\"helper-edge\",\"d819a398b956b3a024b2c5cff29e36edc6a85baa35e511c2b2340f27b149e72b\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "d819a398b956b3a024b2c5cff29e36edc6a85baa35e511c2b2340f27b149e72b",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "endpointKey",
+          "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected endpointKey function only normalizes an optional host and port into a string or null; it reads the local native-host Set and performs no I/O or authority write. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"reportResolvedDatabaseTarget\",\"helper-edge\",\"e33856b646575c165e28e56723f7fd4b20ea410729ee494e820c75a7619c1a09\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "e33856b646575c165e28e56723f7fd4b20ea410729ee494e820c75a7619c1a09",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected function parses a URL and returns only host:port or an unparseable marker. This exact call does not execute the surrounding diagnostic output or configuration resolution. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "redactedDatabaseEndpoint",
+          "reason": "The inspected function parses a URL and returns only host:port or an unparseable marker. This exact call does not execute the surrounding diagnostic output or configuration resolution. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected function parses a URL and returns only host:port or an unparseable marker. This exact call does not execute the surrounding diagnostic output or configuration resolution. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"resolvedAdminDatabaseTarget\",\"helper-edge\",\"e33856b646575c165e28e56723f7fd4b20ea410729ee494e820c75a7619c1a09\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "e33856b646575c165e28e56723f7fd4b20ea410729ee494e820c75a7619c1a09",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected function parses a URL and returns only host:port or an unparseable marker. This exact call does not execute the surrounding diagnostic output or configuration resolution. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "redactedDatabaseEndpoint",
+          "reason": "The inspected function parses a URL and returns only host:port or an unparseable marker. This exact call does not execute the surrounding diagnostic output or configuration resolution. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/connection.ts#17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+          "reason": "The inspected function parses a URL and returns only host:port or an unparseable marker. This exact call does not execute the surrounding diagnostic output or configuration resolution. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"validateDiscoveryTargetOnce::<callback>\",\"helper-edge\",\"1bd8adc9c1b68ae948d0035f55300b88d668a5df4c4b68b91d4b3301fac289b1\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "1bd8adc9c1b68ae948d0035f55300b88d668a5df4c4b68b91d4b3301fac289b1",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected function only formats a diagnostic string from the supplied identities. It does not emit telemetry, quarantine a pool or invoke an authority operation. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "describeStoreIdentityMismatch",
+          "reason": "The inspected function only formats a diagnostic string from the supplied identities. It does not emit telemetry, quarantine a pool or invoke an authority operation. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/store-identity.ts#74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+          "reason": "The inspected function only formats a diagnostic string from the supplied identities. It does not emit telemetry, quarantine a pool or invoke an authority operation. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"validateDiscoveryTargetOnce::<callback>\",\"helper-edge\",\"a3d0ebd58fdee5c7419bb8afe24d76ffcd020cdd91f8dda0ff69d3e83d43ac3d\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "a3d0ebd58fdee5c7419bb8afe24d76ffcd020cdd91f8dda0ff69d3e83d43ac3d",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected parser validates the first probe row and returns trimmed systemIdentifier/database strings or null. It neither queries nor mutates a claim, plan, work item or pool. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "parseStoreIdentity",
+          "reason": "The inspected parser validates the first probe row and returns trimmed systemIdentifier/database strings or null. It neither queries nor mutates a claim, plan, work item or pool. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/store-identity.ts#74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+          "reason": "The inspected parser validates the first probe row and returns trimmed systemIdentifier/database strings or null. It neither queries nor mutates a claim, plan, work item or pool. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/connection.ts\",\"validateDiscoveryTargetOnce::<callback>\",\"helper-edge\",\"c6df2fcb0dbbdeb3b5c1ff05982c46e3d2aa8decfee0483b58db0748a82288d3\"]#1",
+      "sourceSha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22",
+      "statementSha256": "c6df2fcb0dbbdeb3b5c1ff05982c46e3d2aa8decfee0483b58db0748a82288d3",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected function calls the pinned parseStoreIdentity argument parser, redactUrl and sameStore, and records only process-local identity/violation latches. It returns a verdict; telemetry, quarantine and pool teardown are separate caller operations and remain unreviewed. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "pinOrVerifyStoreIdentity",
+          "reason": "The inspected function calls the pinned parseStoreIdentity argument parser, redactUrl and sameStore, and records only process-local identity/violation latches. It returns a verdict; telemetry, quarantine and pool teardown are separate caller operations and remain unreviewed. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/store-identity.ts#74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+          "reason": "The inspected function calls the pinned parseStoreIdentity argument parser, redactUrl and sameStore, and records only process-local identity/violation latches. It returns a verdict; telemetry, quarantine and pool teardown are separate caller operations and remain unreviewed. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/store-identity.ts\",\"pinOrVerifyStoreIdentity\",\"helper-edge\",\"170d9b14d763c38a0f8b81266d82c011a6dfb8d0941e99ba4db9594ea73294d9\"]#1",
+      "sourceSha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+      "statementSha256": "170d9b14d763c38a0f8b81266d82c011a6dfb8d0941e99ba4db9594ea73294d9",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected function parses and redacts a URL into protocol/host/port/path text or a fixed unparseable marker, without I/O or authority effects. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "redactUrl",
+          "reason": "The inspected function parses and redacts a URL into protocol/host/port/path text or a fixed unparseable marker, without I/O or authority effects. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/store-identity.ts#74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+          "reason": "The inspected function parses and redacts a URL into protocol/host/port/path text or a fixed unparseable marker, without I/O or authority effects. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"libs/papercusp/libs/db/src/store-identity.ts\",\"pinOrVerifyStoreIdentity\",\"helper-edge\",\"ace730a2ba862dfcd494462411d06af47e62b7669f7ec18798842a43c7c4a6ca\"]#1",
+      "sourceSha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+      "statementSha256": "ace730a2ba862dfcd494462411d06af47e62b7669f7ec18798842a43c7c4a6ca",
+      "sourceProofs": [
+        {
+          "path": "libs/papercusp/libs/db/src/connection.ts",
+          "sha256": "17af9206be0c7add6d5c06a600af0521f8883dc8186cb20e11708874b35ecd22"
+        },
+        {
+          "path": "libs/papercusp/libs/db/src/store-identity.ts",
+          "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The inspected function compares systemIdentifier and database scalar values. It does not access the database or advance lifecycle authority. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+      "evidenceRefs": [
+        "source:libs/papercusp/libs/db/src/connection.ts",
+        "source:libs/papercusp/libs/db/src/store-identity.ts",
+        "work-item:WI-6554700010050108"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "sameStore",
+          "reason": "The inspected function compares systemIdentifier and database scalar values. It does not access the database or advance lifecycle authority. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        },
+        {
+          "edge": "source:libs/papercusp/libs/db/src/store-identity.ts#74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+          "reason": "The inspected function compares systemIdentifier and database scalar values. It does not access the database or advance lifecycle authority. Review applies only to this exact call and both pinned source files. getOrgPg/getClaim/notify closure, installed callbacks and adjacent advancing operations remain unresolved; no full-runtime or full-repository acceptance is asserted.",
+          "evidenceRefs": [
+            "source:libs/papercusp/libs/db/src/connection.ts",
+            "source:libs/papercusp/libs/db/src/store-identity.ts",
+            "work-item:WI-6554700010050108"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"deleteClaimLocal\",\"helper-edge\",\"f57caf6f07fa63f348af14b1ab538673b162274bddbe2ab517790fcc848baade\"]#1",
       "sourceSha256": "2b86f4b94450175c9d8c96601cef7e7aeff0b1c3dc0e08a9b9aa2db6328239a8",

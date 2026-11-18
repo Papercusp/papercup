@@ -84,6 +84,71 @@ describe('phase binding writer census', () => {
       .map(row => row.siteId).sort());
   });
 
+  it('pins identity helper reviews while leaving database and notification closure unresolved', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const reviewed = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviewedSourcePaths: string[]; reviews: PhaseWriterReview[];
+        pendingAdvancing: Array<{ siteId: string }>;
+      };
+    const sources = reviewed.reviewedSourcePaths.map(path => ({
+      path, content: readFileSync(new URL(path, root), 'utf8'),
+    }));
+    const connection = 'libs/papercusp/libs/db/src/connection.ts';
+    const identity = 'libs/papercusp/libs/db/src/store-identity.ts';
+    const inventory = inventoryPhaseWriters(sources);
+    const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
+    const helpers = inventory.sites.filter(site => [connection, identity].includes(site.path)
+      && site.kind === 'helper-edge' && byId.has(site.id));
+    expect(helpers.map(site => site.statement).sort()).toEqual([
+      'describeStoreIdentityMismatch(verdict.pinned, verdict.observed)',
+      'endpointKey(disc.host, disc.port)', 'endpointKey(endpoint.host, endpoint.port)',
+      'endpointKey(u.hostname, u.port)', 'endpointKeyFromUrl(observed.url)',
+      'endpointKeyFromUrl(pinned.url)', 'parseStoreIdentity(rows)',
+      'pinOrVerifyStoreIdentity(parseStoreIdentity(rows), opts.url)',
+      'redactUrl(url)', 'redactedDatabaseEndpoint(url)', 'redactedDatabaseEndpoint(url)',
+      'sameStore(_pinned, observed)',
+    ].sort());
+    const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    for (const site of helpers) {
+      expect(report.coverage.checked).toContain(site.id);
+      expect(byId.get(site.id)?.disposition).toBe('metadata-only');
+      for (const path of [connection, identity]) expect(byId.get(site.id)?.sourceProofs).toContainEqual({
+        path, sha256: inventory.sources.find(row => row.path === path)!.sha256,
+      });
+    }
+    const unresolved = inventory.sites.filter(site => site.kind === 'helper-edge'
+      && ['getOrgPg', 'getClaim', 'notifyAgentOrdersChanged', 'buildClient',
+        '_quarantineDiscoveryEndpointIfProvenForeign'].includes(site.callees[0] ?? ''));
+    expect(unresolved.length).toBeGreaterThan(0);
+    for (const site of unresolved) {
+      expect(byId.has(site.id)).toBe(false);
+      expect(report.coverage.notChecked).toContain(site.id);
+      expect(report.coverage.residue).toContain(site.id);
+    }
+    for (const { siteId } of reviewed.pendingAdvancing) {
+      expect(report.problems).toContainEqual({ id: siteId, reasons: ['unclassified-writer'] });
+    }
+    // Only the dependency body changes: the three imported call statements keep
+    // their exact identities and still lose their prior source approval.
+    const changed = inventoryPhaseWriters(sources.map(source => source.path === identity
+      ? { ...source, content: source.content + '\nexport function unreviewedIdentityEffect(sql: any) { '
+        + 'return sql`UPDATE harness_shared.plan_item_claims SET owner=\'changed\'`; }\n' }
+      : source));
+    const stale = reconcilePhaseWriterCensus(changed, reviewed.reviews);
+    const imported = helpers.filter(site => site.path === connection
+      && site.helperTarget?.path === identity);
+    expect(imported).toHaveLength(3);
+    for (const site of imported) {
+      expect(changed.sites.some(current => current.id === site.id)).toBe(true);
+      expect(stale.coverage.checked).not.toContain(site.id);
+      expect(stale.problems.find(row => row.id === site.id)?.reasons)
+        .toContain('stale-source-proof:' + identity);
+    }
+    const fresh = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
+    expect([...fresh.coverage.checked].sort()).toEqual([...report.coverage.checked].sort());
+  });
+
   it('pins manually reviewed SQL modules without accepting changed bodies or adjacent migrations', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(
