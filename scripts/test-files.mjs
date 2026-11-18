@@ -41,6 +41,7 @@ import {
   parseBatchProgress,
 } from './lib/batch-watchdog.mjs';
 import { formatTaskOutcomeFields } from './lib/task-progress-line.mjs';
+import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import {
   buildGovernedProcessDemand,
   classifyGovernedTestProcessOutcome,
@@ -693,6 +694,17 @@ export function perGroupVitestEnv(env, groupIndex, groupCount, { vitestArgs = []
  * start. Keep the unsealed declaration readable if the router is hard-killed. */
 export async function createRouterProofCustody(groups, env, repoRoot) {
   if (!env.PC_EXECUTED_SOURCE_MAP_OUT?.trim() && !env.PAPERCUSP_TEST_ARTIFACT_DIR) return null;
+  // testing:run supplies its child cutoff; direct managed launches instead
+  // inherit the task deadline. Reserve settlement time through the existing
+  // admission contract before any producer starts. Never extend an announced
+  // cutoff past the enclosing task's deadline.
+  const childCutoff = readTaskDeadlineEpochMs({
+    PAPERCUSP_TASK_DEADLINE_EPOCH_MS: env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS,
+  });
+  const taskDeadline = readTaskDeadlineEpochMs(env);
+  const deadlineAtMs = childCutoff !== null
+    ? taskDeadline === null ? childCutoff : Math.min(childCutoff, taskDeadline)
+    : taskDeadline === null ? null : admitTaskDeadline({ env }).childCutoffEpochMs;
   // Keep ordinary router supervision independent of the native custody subject.
   // In mutation probes its test child must exercise the intended overlay; an
   // eager parent import would instead load committed scheduler bytes even when
@@ -763,9 +775,8 @@ export async function createRouterProofCustody(groups, env, repoRoot) {
       return id;
     },
     async finish() {
-      const cutoff = Number(env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS);
       const result = await retainNativeProofPacketAsync(directory, { identity, expected, observations, execution: 'router-settled',
-        ...(Number.isSafeInteger(cutoff) && cutoff > 0 ? { deadlineAtMs: cutoff } : {}),
+        ...(deadlineAtMs !== null ? { deadlineAtMs } : {}),
         onProgress: record => console.error('TEST_FILE_FINALIZATION ' + JSON.stringify({
           pid: process.pid, phase: 'native-proof-custody', ...record, custodyDirectory: directory,
         })),

@@ -986,6 +986,9 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
   const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
   let stdout = '', stderr = '', pending = '';
   const counters = new Map();
+  const startedAtMs = Date.now();
+  const recentProgress = [];
+  let lastOutput = null, lastPhase = null;
   let termination;
   let terminationReason;
   let rejectAborted;
@@ -1001,10 +1004,33 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
   };
   const watchdog = createProgressAwareWatchdog({ timeoutMs: Math.min(timeoutMs, maxMs), maxMs,
     stallWindowMs, extensionMs,
-    onExtend: () => process.stderr.write('VERIFIER_DEPENDENCY_PROGRESS watchdog extended on advancing dependency counters\n'),
-    onKill: decision => terminate(`verifier dependency preflight timed out: ${decision.reason}`) });
+    onExtend: decision => {
+      process.stderr.write('VERIFIER_DEPENDENCY_PROGRESS watchdog extended on advancing dependency counters\n');
+      reportWatchdog('extend', decision);
+    },
+    onKill: decision => {
+      const evidence = reportWatchdog('kill', decision);
+      terminate(`verifier dependency preflight timed out: ${decision.reason}; watchdog=${JSON.stringify(evidence)}`);
+    } });
+  // Preserve what the detector actually measured, including quiet phase changes.
+  // Observing output here never grants it forward-progress authority.
+  function reportWatchdog(event, decision) {
+    const evidence = { schemaVersion: 1, event, elapsedMs: Date.now() - startedAtMs,
+      lastProgressAgeMs: watchdog.msSinceProgress, deadlineMs: watchdog.deadlineMs,
+      extensions: watchdog.extensions, timeoutMs: Math.min(timeoutMs, maxMs),
+      maxMs, stallWindowMs, extensionMs, decision, recentProgress: recentProgress.slice(),
+      lastOutput, lastPhase };
+    process.stderr.write('VERIFIER_DEPENDENCY_WATCHDOG ' + JSON.stringify(evidence) + '\n');
+    return evidence;
+  }
+  const noteProgress = (counter, value) => {
+    watchdog.noteProgress();
+    recentProgress.push({ elapsedMs: Date.now() - startedAtMs, counter: counter.slice(0, 256), value });
+    if (recentProgress.length > 8) recentProgress.shift();
+  };
   const collect = (stream, chunk) => {
     const text = chunk.toString();
+    lastOutput = { elapsedMs: Date.now() - startedAtMs, stream, text: text.slice(-256) };
     if (stream === 'stdout') stdout = (stdout + text).slice(-4 * 1024 * 1024);
     else stderr = (stderr + text).slice(-4 * 1024 * 1024);
     process[stream].write(chunk);
@@ -1012,13 +1038,15 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
     const lines = pending.split('\n');
     pending = lines.pop().slice(-4096);
     for (const line of lines) {
+      if (/^\[dependency-generation\] (?:PHASE|SUMMARY) /.test(line))
+        lastPhase = { elapsedMs: Date.now() - startedAtMs, text: line.slice(0, 512) };
       const counter = /((?:checksum read|copy|work) progress:.*?) (?:written|read|io)=(\d+)MiB/.exec(line)
         ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line)
         ?? /^(verifier census progress: scan=\d+:\d+) checked=(\d+)(?: |$)/.exec(line)
         ?? /^(snapshot progress:) completed=(\d+)(?: |$)/.exec(line);
       if (counter && Number(counter[2]) > (counters.get(counter[1]) ?? 0)) {
         counters.set(counter[1], Number(counter[2]));
-        watchdog.noteProgress();
+        noteProgress(counter[1], Number(counter[2]));
       }
       // Native generations also finish small/reused trees without byte ticks.
       // Count a tree only once across both native completion formats.
@@ -1027,7 +1055,7 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
       const key = tree ? 'generation-tree: ' + tree : null;
       if (key && !counters.has(key)) {
         counters.set(key, 1);
-        watchdog.noteProgress();
+        noteProgress(key, 1);
       }
     }
   };

@@ -151,7 +151,7 @@ import {
 } from '../../../../scripts/test-files.mjs';
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
-import { verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { retainNativeProofPacketAsync, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 describe('router native custody population (P002)', () => {
   it('does not load the scheduler mutation subject when router custody was not requested', () => {
@@ -248,6 +248,69 @@ describe('router native custody population (P002)', () => {
       complete: true, stdout: Buffer.from([0, 255, 10]), stderr: Buffer.from([254, 0, 10]),
     } }, 'npx', ['vitest', 'run', ...group.selected]);
   }
+  it.each([-1, 0, 1])('admits managed custody only beyond the shared settlement reserve (%i ms)', async delta => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const progress = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const launch = setup({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + 120_000 + delta) });
+      if (delta <= 0) {
+        await expect(launch).rejects.toThrow('TASK_DEADLINE_REFUSAL');
+        expect(existsSync(join(root, 'packets'))).toBe(false);
+        return;
+      }
+      const { producer, session } = await launch;
+      for (const group of session.expected) produce(session, group.id);
+      clock.mockReturnValue(now + 2);
+      await expect(session.finish()).rejects.toMatchObject({ code: 'NATIVE_PROOF_SYNC_DEADLINE' });
+      expect(progress.mock.calls.some(([line]) => String(line).includes('"phase":"sync-complete"'))).toBe(false);
+      expect(existsSync(join(session.directory, 'locator.json'))).toBe(false);
+      const locator = JSON.parse(readFileSync(join(session.directory, 'pending-locator.json'), 'utf8'));
+      const contract = { identity: session.identity, expected: structuredClone(session.expected) };
+      // Integrity can be complete before durability settles. The pending
+      // locator is recoverable evidence, not the published custody verdict.
+      const retained = verifyNativeProofPacket(session.directory, locator, contract);
+      expect(retained.status).toBe('complete');
+      expect(retained.manifest.groups.map((group: { id: string }) => group.id)).toEqual(['group-0', 'group-1']);
+      expect(retained.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      // Recover from retained bytes after the original producers disappear;
+      // an interrupted settlement must not turn into a missing population.
+      rmSync(producer, { recursive: true });
+      const recovered = await retainNativeProofPacketAsync(session.directory, {
+        ...contract, retainedLocator: locator, deadlineAtMs: now + 60_000,
+      });
+      const read = verifyNativeProofPacket(session.directory, recovered.locator, contract);
+      expect(read.status).toBe('complete');
+      expect(read.manifest.groups.map((group: { id: string }) => group.id)).toEqual(['group-0', 'group-1']);
+      expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+    } finally { clock.mockRestore(); progress.mockRestore(); log.mockRestore(); }
+  });
+
+  it.each(['child', 'task'] as const)('keeps the earlier announced %s custody deadline', async earlier => {
+    const now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const progress = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { session } = await setup({
+        PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(now + (earlier === 'child' ? 1 : 240_000)),
+        PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(now + (earlier === 'task' ? 1 : 240_000)),
+      });
+      for (const group of session.expected) produce(session, group.id);
+      clock.mockReturnValue(now + 2);
+      await expect(session.finish()).rejects.toMatchObject({ code: 'NATIVE_PROOF_SYNC_DEADLINE' });
+      const locator = JSON.parse(readFileSync(join(session.directory, 'pending-locator.json'), 'utf8'));
+      const read = verifyNativeProofPacket(session.directory, locator, {
+        identity: session.identity, expected: session.expected,
+      });
+      expect(read.status).toBe('complete');
+      expect(read.manifest.groups.map((group: { id: string }) => group.id)).toEqual(['group-0', 'group-1']);
+      expect(read.manifest.verdicts).toMatchObject({ nativeProof: 'unqualified', acceptance: 'unmeasured' });
+      expect(existsSync(join(session.directory, 'locator.json'))).toBe(false);
+    } finally { clock.mockRestore(); progress.mockRestore(); log.mockRestore(); }
+  });
+
   it('retains primary/detail identity and raw failed-child streams after temporary output removal', async () => {
     const { producer, session } = await setup();
     const detail = session.detail('group-0', 0, 'file-0.test.ts', join(producer, 'detail.json'));

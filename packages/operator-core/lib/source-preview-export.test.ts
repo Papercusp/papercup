@@ -2057,6 +2057,49 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(output).toContain('copy-complete');
   });
 
+  it.each([true, false])('retains timed watchdog decisions without promoting output chatter (advancing=%s)', async advancing => {
+    const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = await runVerifierDependencyCommand(process.execPath, ['-e', `
+        let tick = 0;
+        console.log('[dependency-generation] PHASE schema=1 phase=retention outcome=started');
+        console.log('snapshot progress: completed=1');
+        const timer = setInterval(() => {
+          tick++;
+          console.log('snapshot progress: completed=' + (${advancing} ? tick + 1 : 1));
+          if (${advancing} && tick === 18) { clearInterval(timer); console.log('copy-complete'); }
+        }, 100);
+      `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+        stallWindowMs: 500, extensionMs: 500 }).catch(error => error);
+      const snapshots = writes.mock.calls.flatMap(([chunk]) => String(chunk).split('\n'))
+        .filter(line => line.startsWith('VERIFIER_DEPENDENCY_WATCHDOG '))
+        .map(line => JSON.parse(line.slice('VERIFIER_DEPENDENCY_WATCHDOG '.length)));
+      expect(snapshots.length).toBeGreaterThan(0);
+      const decision = snapshots.at(-1)!;
+      expect(decision).toMatchObject({ schemaVersion: 1, timeoutMs: 1000, maxMs: 5000,
+        stallWindowMs: 500, extensionMs: 500,
+        lastPhase: { text: '[dependency-generation] PHASE schema=1 phase=retention outcome=started' } });
+      expect(decision.elapsedMs).toBeGreaterThanOrEqual(1000);
+      expect(decision.recentProgress.length).toBeLessThanOrEqual(8);
+      expect(decision.recentProgress.at(-1)).toMatchObject({ counter: 'snapshot progress:' });
+      expect(decision.lastOutput.elapsedMs).toBeGreaterThanOrEqual(decision.recentProgress.at(-1).elapsedMs);
+      if (advancing) {
+        expect(result).toContain('copy-complete');
+        expect(decision).toMatchObject({ event: 'extend', decision: { reason: 'progress-advancing' } });
+        expect(decision.lastProgressAgeMs).toBeLessThanOrEqual(500);
+        expect(decision.recentProgress.at(-1).value).toBeGreaterThan(1);
+      } else {
+        expect(result).toBeInstanceOf(Error);
+        expect(decision).toMatchObject({ event: 'kill', decision: { reason: 'progress-stalled' } });
+        expect(decision.lastProgressAgeMs).toBeGreaterThan(500);
+        expect(decision.recentProgress).toHaveLength(1);
+        expect(decision.recentProgress[0].value).toBe(1);
+        // The existing failure/manifest channel retains the exact same snapshot.
+        expect(JSON.parse(result.message.split('; watchdog=')[1])).toEqual(decision);
+      }
+    } finally { writes.mockRestore(); }
+  });
+
   it('treats completed small-tree snapshots as progress after byte counters go quiet', async () => {
     const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
       let completed = 0;
