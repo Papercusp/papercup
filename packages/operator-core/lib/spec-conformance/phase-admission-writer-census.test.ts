@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -1395,6 +1396,68 @@ describe('phase binding writer census', () => {
       rmSync(join(root, 'packages/broken.ts'));
       expect(assertPhaseWriterTreeCensus(root, reviews).ready).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains enumerated submodule directory identities while guarding every descendant and missing module', async () => {
+    for (const count of [0, 1, 2, 3]) {
+      const root = mkdtempSync(join(tmpdir(), 'phase-submodule-roots-'));
+      const modules = Array.from({ length: count }, (_, index) => `libs/component-${index}`);
+      const missing = 'libs/missing';
+      const link = 'libs/linked-writer.ts';
+      const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+      try {
+        git(root, ['init', '-q']);
+        mkdirSync(join(root, 'libs'), { recursive: true });
+        writeFileSync(join(root, '.gitmodules'), [...modules, missing].map(path =>
+          `[submodule "${path}"]\n\tpath = ${path}\n\turl = ./fixture\n`).join(''));
+        for (const path of modules) {
+          mkdirSync(join(root, path));
+          git(join(root, path), ['init', '-q']);
+          writeFileSync(join(root, path, 'writer.ts'), write);
+          // A gitlink's object belongs to the child repository. Enumeration
+          // needs its index identity and working tree, never a parent commit.
+          git(root, ['update-index', '--add', '--cacheinfo', `160000,${'1'.repeat(40)},${path}`]);
+        }
+        writeFileSync(join(root, 'libs/plain-writer.ts'), write);
+        symlinkSync('plain-writer.ts', join(root, link));
+        const inventory = inventoryPhaseWriterTree(root);
+        const excluded = modules.map(path => ({ path,
+          reason: 'enumerated-submodule-directory:libs/test-config/src/tracked-files.mjs' }));
+        expect(inventory.excluded.filter(row => modules.includes(row.path))).toEqual(excluded);
+        expect(inventory.enumeration).toEqual({ scanned: modules, unscanned: [missing] });
+        expect(inventory.gaps).toEqual([
+          { id: `source:${link}`, reason: 'non-regular-source' },
+          { id: `submodule:${missing}`, reason: 'declared-submodule-not-enumerated' },
+        ]);
+        const sources = [...modules.map(path => `${path}/writer.ts`), 'libs/plain-writer.ts'].sort();
+        expect(inventory.sources.map(source => source.path)).toEqual(sources);
+        const inspected = inventory.sites.map(site => review(site));
+        const expectedGaps = inventory.gaps.map(gap => `gap:${gap.id}`);
+        expect(reconcilePhaseWriterCensus(inventory, inspected).coverage.residue).toEqual(expectedGaps);
+        for (const path of sources) {
+          const writer = inventory.sites.find(site => site.path === path && site.kind === 'sql')!;
+          expect(writer).toBeDefined();
+          expect(reconcilePhaseWriterCensus(inventory, inspected.filter(row => row.siteId !== writer.id))
+            .coverage.residue).toContain(writer.id);
+        }
+        const lines: string[] = [];
+        const footer = await writePhaseWriterCensus(inventory, inspected, async line => { lines.push(line); });
+        expect(await readPhaseWriterCensus(lines)).toEqual(footer);
+        expect(lines.map(line => JSON.parse(line)).filter(row => row.kind === 'excluded'
+          && modules.includes(row.value.path)).map(row => row.value)).toEqual(excluded);
+        if (modules.length) {
+          const added = `${modules.at(-1)}/later-writer.ts`;
+          writeFileSync(join(root, added), write);
+          expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual([
+            { id: `source:${added}`, reason: 'added', expected: null,
+              actual: inventory.sources[0]!.sha256 },
+          ]);
+          const late = inventoryPhaseWriterTree(root);
+          expect(reconcilePhaseWriterCensus(late, inspected).coverage.residue)
+            .toContain(late.sites.find(site => site.path === added && site.kind === 'sql')!.id);
+        }
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
   });
 
   it('retains each generated docs mirror exclusion without exempting source or lookalike paths', async () => {
