@@ -175,24 +175,35 @@ export async function synchronizeAcceptanceBarSubjectRevision(
        AND plan_slug = ${args.planSlug} AND version = ${args.nextVersion}
        AND content = ${args.nextBody} AND acceptance_bar_rubric_slug IS NOT NULL`;
   if (!subject) return false;
+  // Rubric refs are workspace-unique; their storage harness need not be the
+  // subject's harness. Resolve that identity before taking its advisory lock.
+  const { uniqueRubricRow, normalizeAcceptanceBarCriterion } = await import('./rubrics');
+  const rubricIdentity = uniqueRubricRow(await sql<Array<{ plan_slug: string; harness_slug: string }>>`
+    SELECT plan_slug, harness_slug
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.workspaceId} AND plan_slug = ${subject.acceptance_bar_rubric_slug}
+       AND template = 'rubric' AND template_slug IS NULL
+     ORDER BY harness_slug LIMIT 2`, subject.acceptance_bar_rubric_slug);
+  if (!rubricIdentity) return false;
+  const rubricHarness = rubricIdentity.harness_slug;
   const [lock] = await sql<Array<{ ok: boolean }>>`
     SELECT pg_try_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
-      hashtext(${planAdvisoryLockKey(args.workspaceId, args.harnessSlug, subject.acceptance_bar_rubric_slug)})) AS ok`;
+      hashtext(${planAdvisoryLockKey(args.workspaceId, rubricHarness, subject.acceptance_bar_rubric_slug)})) AS ok`;
   if (!lock?.ok) throw new Error('acceptance_bar_subject_revision_rubric_busy');
   const [rubric] = await sql<Array<{ version: number | string; template_data: unknown }>>`
     SELECT version, template_data
       FROM harness_shared.harness_plans
-     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${rubricHarness}
        AND plan_slug = ${subject.acceptance_bar_rubric_slug}
        AND template = 'rubric' AND template_data->>'kind' = 'acceptance'
      FOR UPDATE`;
   if (!rubric || Number(rubric.version) !== Number(subject.acceptance_bar_rubric_revision)) return false;
   const parsedRubric = rubricTemplateDataAuthoringSchema.safeParse(rubric.template_data);
   if (!parsedRubric.success || parsedRubric.data.subjectPlan !== args.planSlug ||
+      (parsedRubric.data.subjectHarnessSlug !== undefined && parsedRubric.data.subjectHarnessSlug !== args.harnessSlug) ||
       !parsedRubric.data.barContract || parsedRubric.data.barSetHash !== subject.acceptance_bar_set_hash) {
     return false;
   }
-  const { normalizeAcceptanceBarCriterion } = await import('./rubrics');
   // Amendments may store the canonical BAR identity in `key` alone. Retain
   // server-hashed BARs and use the same identity fallback as the BAR hash reader;
   // ordinary legacy criteria without a BAR identity/hash still stay excluded.
@@ -256,11 +267,12 @@ export async function synchronizeAcceptanceBarSubjectRevision(
     UPDATE harness_shared.harness_plans
        SET template_data = jsonb_set(template_data, '{barContract,subjectPlanRevision}',
              to_jsonb(${args.nextVersion}::integer)), origin = 'local'
-     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${args.harnessSlug}
+     WHERE workspace_id = ${args.workspaceId} AND harness_slug = ${rubricHarness}
        AND plan_slug = ${subject.acceptance_bar_rubric_slug}
        AND version = ${subject.acceptance_bar_rubric_revision}
        AND template = 'rubric' AND template_data->>'kind' = 'acceptance'
        AND template_data->>'subjectPlan' = ${args.planSlug}
+       AND (template_data->>'subjectHarnessSlug' IS NULL OR template_data->>'subjectHarnessSlug' = ${args.harnessSlug})
        AND template_data->>'barSetHash' = ${subject.acceptance_bar_set_hash}
     RETURNING plan_slug`;
   if (rows.length !== 1) return false;

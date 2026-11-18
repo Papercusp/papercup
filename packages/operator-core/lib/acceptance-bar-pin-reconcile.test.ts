@@ -117,6 +117,7 @@ function fakeTx(opts: {
         acceptance_bar_rubric_revision: 4, acceptance_bar_set_hash: seeded.barSetHash,
       }];
     }
+    if (s.includes('SELECT plan_slug, harness_slug')) return [{ plan_slug: 'acceptance-subject-plan', harness_slug: 'papercusp' }];
     if (s.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
     if (s.includes('SELECT version, template_data')) return [{ version: 4, template_data: seeded.templateData }];
     if (s.includes('UPDATE harness_shared.harness_plans')) return [{ plan_slug: 'acceptance-subject-plan' }];

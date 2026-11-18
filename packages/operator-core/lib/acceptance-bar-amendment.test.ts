@@ -35,8 +35,10 @@ import {
   normalizeAcceptanceBarCriterion,
   amendmentRequestHash,
   computeAcceptanceBarHash,
+  RubricRefAmbiguousError,
   type AmendRubricInput,
 } from './rubrics';
+import { planAdvisoryLockKey } from './agent-tools/plans/plan-lock-key';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import {
   ACCEPTANCE_BAR_MEANING_FIELDS,
@@ -376,7 +378,9 @@ describe('acceptance BAR amendment transaction contract', () => {
 });
 
 describe('BAR-neutral subject-plan revision synchronization', () => {
-  function legacyMaterializationFixture(canonicalIntent?: string) {
+  function legacyMaterializationFixture(canonicalIntent?: string, options: {
+    rubricHarness?: string; subjectHarness?: string; ambiguous?: boolean;
+  } = {}) {
     const before = subjectPlan();
     const seeded = buildAcceptanceBarSeed({
       planSlug: 'subject-plan', planContent: before, actorId: 'seed-author',
@@ -393,13 +397,20 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
       method: 'Run the named installed-product journey.',
       check: { kind: 'tests', files: ['packages/product.test.ts'] },
     });
-    const data = { ...seeded.templateData, criteria: [criterion], barSetHash: computeAcceptanceBarSetHash([criterion]) };
-    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+    const data = {
+      ...seeded.templateData, subjectHarnessSlug: options.subjectHarness ?? 'papercusp',
+      criteria: [criterion], barSetHash: computeAcceptanceBarSetHash([criterion]),
+    };
+    const sql = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       const statement = strings.join(' ');
       if (statement.includes('SELECT status, acceptance_bar_rubric_slug')) return [{
         status: 'active', acceptance_bar_rubric_slug: 'acceptance-subject-plan',
         acceptance_bar_rubric_revision: 4, acceptance_bar_set_hash: data.barSetHash,
       }];
+      if (statement.includes('SELECT plan_slug, harness_slug')) return [
+        { plan_slug: 'acceptance-subject-plan', harness_slug: options.rubricHarness ?? 'papercusp' },
+        ...(options.ambiguous ? [{ plan_slug: 'acceptance-subject-plan', harness_slug: 'duplicate-harness' }] : []),
+      ];
       if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
       if (statement.includes('SELECT version, template_data')) return [{ version: 4, template_data: data }];
       if (statement.includes('UPDATE harness_shared.harness_plans')) return [{ plan_slug: 'acceptance-subject-plan' }];
@@ -444,6 +455,32 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     expect(updates[0]).toContain('{barContract,subjectPlanRevision}');
     expect(updates[0]).not.toContain('criteria');
     expect(updates[0]).not.toContain('SET version');
+  });
+
+  it('locks and updates the unique rubric storage harness while retaining the subject harness', async () => {
+    const f = legacyMaterializationFixture(undefined, { rubricHarness: 'review-library' });
+    await expect(f.synchronize(f.render())).resolves.toBe(true);
+    const lock = f.sql.mock.calls.find(([strings]) => strings.join(' ').includes('pg_try_advisory_xact_lock'));
+    expect(lock?.slice(1)).toContain(planAdvisoryLockKey('workspace', 'review-library', 'acceptance-subject-plan'));
+    const updates = f.sql.mock.calls.filter(([strings]) => strings.join(' ').includes('UPDATE '));
+    expect(updates[0]?.slice(1)).toContain('review-library');
+    expect(updates[1]?.slice(1)).toContain('papercusp');
+    const lockedRead = f.sql.mock.calls.find(([strings]) => strings.join(' ').includes('FOR UPDATE'));
+    expect(lockedRead?.slice(1)).toContain('review-library');
+  });
+
+  it('refuses ambiguous workspace rubric refs before taking a lock or writing a pin', async () => {
+    const f = legacyMaterializationFixture(undefined, { ambiguous: true });
+    await expect(f.synchronize(f.render())).rejects.toBeInstanceOf(RubricRefAmbiguousError);
+    expect(f.sql.mock.calls.some(([strings]) => /pg_try_advisory_xact_lock|UPDATE /.test(strings.join(' ')))).toBe(false);
+  });
+
+  it('refuses a cross-harness rubric bound to another subject harness', async () => {
+    const f = legacyMaterializationFixture(undefined, {
+      rubricHarness: 'review-library', subjectHarness: 'another-subject-harness',
+    });
+    await expect(f.synchronize(f.render())).resolves.toBe(false);
+    expect(f.sql.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE '))).toBe(false);
   });
 
   it.each([false, true])('still requires original Intent for a fresh BAR with completeness=%s', (requireContractCompleteness) => {
@@ -569,6 +606,9 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
           acceptance_bar_rubric_revision: 4,
           acceptance_bar_set_hash: templateData.barSetHash,
         }];
+      }
+      if (statement.includes('SELECT plan_slug, harness_slug')) {
+        return [{ plan_slug: 'acceptance-subject-plan', harness_slug: 'papercusp' }];
       }
       if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
       if (statement.includes('SELECT version, template_data')) {
@@ -696,6 +736,9 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
           acceptance_bar_rubric_revision: 4,
           acceptance_bar_set_hash: amendedSeed.barSetHash,
         }];
+      }
+      if (statement.includes('SELECT plan_slug, harness_slug')) {
+        return [{ plan_slug: 'acceptance-subject-plan', harness_slug: 'papercusp' }];
       }
       if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
       if (statement.includes('SELECT version, template_data')) {
