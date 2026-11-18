@@ -657,7 +657,7 @@ export async function readBugInflowDaily(
 const R11_EVIDENCE_PREFIX = 'evidence/bug-backlog-inflow-and-duplicate-review-2026-11-13/p012/stored/';
 const r11Digest = (content: string) => createHash('sha256').update(content).digest('hex');
 
-async function storeR11Evidence(kind: string, value: unknown, sql: Sql): Promise<string> {
+export async function storeR11Evidence(kind: string, value: unknown, sql: Sql): Promise<string> {
   const content = canonicalJson({
     schemaVersion: 'bug-scoreboard-evidence-v1', kind,
     workspaceId: R11_METRIC_REGISTRY.population.workspaceId,
@@ -676,7 +676,7 @@ async function storeR11Evidence(kind: string, value: unknown, sql: Sql): Promise
   return ref;
 }
 
-async function loadR11Evidence(ref: string, kind: string, sql: Sql): Promise<unknown> {
+export async function loadR11Evidence(ref: string, kind: string, sql: Sql): Promise<unknown> {
   const prefix = `${R11_EVIDENCE_PREFIX}${kind}/`;
   if (!ref.startsWith(prefix) || !ref.endsWith('.json') ||
       !r11Hash(ref.slice(prefix.length, -5))) throw new Error('invalid R11 evidence identity');

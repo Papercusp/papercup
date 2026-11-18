@@ -82,6 +82,7 @@ import {
 import { REUSE_MEASUREMENT_INSTRUMENT_KEYS, type ReuseMetric } from './code-intelligence/reuse-measurement';
 import { FLEET_PRODUCTIVITY_KEY, fleetProductivityRescore } from './fleet/execution-productivity';
 import { FLEET_COMMS_KEY, fleetCommsRescore } from './fleet/execution-comms';
+import { BUG_SCOREBOARD_INSTRUMENT, bugScoreboardRescore } from './harness/improvements/bug-scoreboard-instrument';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -811,6 +812,7 @@ export function platformComputedInstrumentKeys(): string[] {
   return [
     FLEET_PRODUCTIVITY_KEY,
     FLEET_COMMS_KEY,
+    BUG_SCOREBOARD_INSTRUMENT,
     MANAGED_INVENTORY_EVIDENCE_INSTRUMENT,
     LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY,
     FINAL_CONTEXT_SAMPLE_INSTRUMENT,
@@ -883,7 +885,8 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === FLEET_PRODUCTIVITY_KEY ? { rescore: fleetProductivityRescore() }
+      ...(key === BUG_SCOREBOARD_INSTRUMENT ? { rescore: bugScoreboardRescore() }
+        : key === FLEET_PRODUCTIVITY_KEY ? { rescore: fleetProductivityRescore() }
         : key === FLEET_COMMS_KEY ? { rescore: fleetCommsRescore() }
         : key === MANAGED_INVENTORY_EVIDENCE_INSTRUMENT ? { rescore: managedCapabilityInventoryRescore() }
         : key === LEAD_SOURCE_OBSERVATIONS_INSTRUMENT_KEY ? { rescore: leadSourceObservationsRescore() }

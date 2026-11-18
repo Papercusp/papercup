@@ -16,6 +16,12 @@
  *   - observation-lane rows, other workspaces and non-issue kinds count nowhere.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { fork } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
+import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof }
+  from '../../../test/isolated-integration-proof';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import {
@@ -24,6 +30,11 @@ import {
   readBugInflowDaily, refreshBugInflowDaily,
 } from './bug-inflow';
 import { scoreboardFixture } from './bug-inflow.fixture';
+import { produceBugScoreboardCycle, consumeBugScoreboardCycle, bugScoreboardRescore,
+  BUG_SCOREBOARD_INSTRUMENT } from './bug-scoreboard-instrument';
+import { loadR11Evidence, storeR11Evidence } from './bug-inflow';
+import { rescoreRubric } from '../routines/rubric-rescore-action';
+import { readLatestRubricCheckResults, recordRubricCheckResults, runInstrumentChecks } from '../../check-results-ledger';
 
 const WS = 'ws-r6-exact';
 const OTHER_WS = 'ws-r6-other';
@@ -121,6 +132,111 @@ describe('R11 retained PostgreSQL source and receipt consumer', () => {
   });
   const clearSource = () => db.adminSql`DELETE FROM harness_shared.work_items
     WHERE workspace_id = ${workspace} AND harness_slug = ${harness}`;
+
+  it('R11 current-build daily instrument executes inside the maintained isolated background runtime and proves original cleanup', async () => {
+    const root = resolve(import.meta.dirname, '../../../../..');
+    const filePath = 'packages/operator-core/lib/harness/improvements/bug-inflow.integration.test.ts';
+    const runId = await recordIsolatedIntegrationProof({ root, filePath,
+      sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/lib/harness/improvements/bug-scoreboard-instrument.ts',
+        'packages/operator-core/lib/harness/improvements/bug-inflow.ts',
+        'packages/operator-core/lib/rubric-instrument-registry.ts'],
+      execute: async (observe, evidenceDir) => {
+        const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' };
+        delete env.PC_HEAVY_PREEMPT_READY_FILE;
+        delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+        const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime', '--', process.execPath,
+          'scripts/test-files.mjs', filePath,
+          '--testNamePattern=R11 scheduled current-build rescore writes a fresh unknown cycle'],
+        { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+        observe(child);
+        const result = await captureIsolatedWorker(child, evidenceDir, isolatedTestFileWorkerOptions(env, 1));
+        expect(result).toMatchObject({ code: 0, signal: null, timedOut: false,
+          exitWaitTimedOut: false, stdioDrainTimedOut: false });
+        expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+        expect(result.output).toContain('R11 scheduled current-build rescore writes a fresh unknown cycle');
+      },
+    });
+    const observation = JSON.parse(readFileSync(join(defaultEvidenceRoot('isolated-integration'), runId,
+      'phases/execute/lifecycle-observation.json'), 'utf8'));
+    expect(observation.ended).toMatchObject({ exitCode: 0, signal: null, runtimeRemoved: true, pgDataRemoved: true });
+    console.log('R11_ISOLATED_RUNTIME_PROOF ' + JSON.stringify({ runId, runtimeRemoved: true, pgDataRemoved: true }));
+  }, 900_000);
+
+  it('R11 scheduled current-build rescore writes a fresh unknown cycle to the canonical PG results ledger after a prior healthy reading', async () => {
+    await clearSource();
+    await sourceSeed('ledger-original');
+    const rubricRef = 'r11-daily-operational-fixture';
+    const criteria = [{ key: 'daily', model: 'All seven metrics require qualified event history and independent reconciliation.',
+      check: { kind: 'instrument' as const, instrumentKey: BUG_SCOREBOARD_INSTRUMENT, maxAgeMs: 87_000_000 } }];
+    const ledgerSql = db.adminSql as unknown as Parameters<typeof recordRubricCheckResults>[2];
+    // An older pass is history. It cannot satisfy a new run whose source cannot
+    // qualify. The rescorer, registry, producer/consumer and PG writer are real;
+    // only the fixture rubric and private DB/time are supplied here.
+    const older = await runInstrumentChecks({ rubricRef, criteria, workspaceId: workspace, harnessSlug: harness,
+      now: () => NOW.getTime() - 60_000, resolvePlatform: async () => ({ verdict: 'pass', detail: 'older synthetic control' }) });
+    await recordRubricCheckResults(older, { workspaceId: workspace, harnessSlug: harness }, ledgerSql);
+    const outcome = await rescoreRubric({ rubricRef, workspaceId: workspace, harnessSlug: harness,
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', tzid: 'UTC',
+        action: { system: 'rubric-rescore', input: { rubricRef, maxRuntimeMs: 300_000, maxSchedulingDelayMs: 300_000 } } } }, {
+      getRubric: async () => ({ rubricId: rubricRef, workspaceId: workspace, subjectHarnessSlug: harness,
+        kind: 'standard', criteria }),
+      readLatest: input => readLatestRubricCheckResults(input, ledgerSql),
+      runInstruments: input => runInstrumentChecks({ ...input, now: () => NOW.getTime(),
+        resolvePlatform: bugScoreboardRescore({
+          produce: window => produceBugScoreboardCycle(window, { sql: db.adminSql, now: NOW }),
+          consume: (ref, cycle, window) => consumeBugScoreboardCycle(ref, cycle, window, { sql: db.adminSql, now: NOW }),
+        }).resolve }),
+      record: (results, scope) => recordRubricCheckResults(results, scope, ledgerSql),
+    });
+    expect(outcome).toMatchObject({ rubricKind: 'standard', executed: 1, crossings: [], instrumentError: expect.any(String) });
+    expect(outcome.testRunIds).toHaveLength(1);
+    const latest = await readLatestRubricCheckResults({ rubricRef, workspaceId: workspace }, ledgerSql);
+    const row = [...latest.values()][0];
+    expect(row.status).toBe('error');
+    expect(row.lastMeasurement?.status).toBe('pass');
+    expect(row.check.value).toBeNull();
+    expect(JSON.stringify(row.check.provenance)).toContain('/cycle/');
+    const all = await db.adminSql<{ status: string }[]>`SELECT status FROM harness_shared.test_runs
+      WHERE workspace_id = ${workspace} AND harness_slug = ${harness}
+        AND file_path LIKE ${'%'+rubricRef+'%'} ORDER BY id`;
+    expect(all.map(r => r.status)).toEqual(['pass', 'error']);
+  });
+
+  it('R11 scheduled producer consumes the same immutable cycle across restart and rejects prior-cycle, stale, forged and missing-source proof', async () => {
+    await clearSource();
+    await sourceSeed('cycle-original');
+    const window = { workspaceId: workspace, harnessSlug: harness,
+      windowStart: '2026-10-19T12:00:00.000Z', windowEnd: NOW.toISOString() };
+    const first = await produceBugScoreboardCycle(window, { sql: db.adminSql, now: NOW, cycleId: 'cycle-one' });
+    await sourceSeed('cycle-later');
+    const second = await produceBugScoreboardCycle(window, { sql: db.adminSql, now: NOW, cycleId: 'cycle-two' });
+    const restart = JSON.parse(JSON.stringify(first));
+    const read = await consumeBugScoreboardCycle(restart.ref, restart.cycleId, window, { sql: db.adminSql, now: NOW });
+    expect(read).toMatchObject({ verdict: 'unknown', reportRef: first.ref });
+    expect(read.evidenceRefs).toHaveLength(2);
+    const packet = await loadR11Evidence(first.ref, 'cycle', db.adminSql) as Record<string, any>;
+    expect(packet.source.totalRows).toBe(1);
+    expect(packet.expectedFireAt).toBeNull();
+    expect(packet.cohortWindow).toEqual({ start: '2026-10-18T00:00:00.000Z',
+      end: '2026-10-19T00:00:00.000Z', matureAt: '2026-10-20T00:00:00.000Z' });
+    expect(Object.keys(packet.metrics)).toHaveLength(7);
+    expect(Object.values(packet.metrics).every((m: any) => m.status === 'unknown')).toBe(true);
+    await expect(consumeBugScoreboardCycle(first.ref, second.cycleId, window, { sql: db.adminSql, now: NOW }))
+      .rejects.toThrow(/identity/);
+    await expect(consumeBugScoreboardCycle(first.ref, first.cycleId, window,
+      { sql: db.adminSql, now: new Date(NOW.getTime() + 300_001) })).rejects.toThrow(/freshness/);
+    const forged = structuredClone(packet); forged.metrics.shareReviewed.status = 'healthy';
+    const forgedRef = await storeR11Evidence('cycle', forged, db.adminSql);
+    await expect(consumeBugScoreboardCycle(forgedRef, first.cycleId, window, { sql: db.adminSql, now: NOW }))
+      .rejects.toThrow(/receipt mismatch/);
+    await db.adminSql`DELETE FROM harness_shared.harness_text_artifacts
+      WHERE workspace_id = ${workspace} AND harness_slug = ${harness} AND rel_path = ${packet.source.ref}`;
+    await expect(consumeBugScoreboardCycle(first.ref, first.cycleId, window, { sql: db.adminSql, now: NOW }))
+      .rejects.toThrow(/missing or changed/);
+    expect((await consumeBugScoreboardCycle(second.ref, second.cycleId, window, { sql: db.adminSql, now: NOW })).verdict)
+      .toBe('unknown');
+  });
 
   it('R11 scoreboard source-query continuation prove N-1 N N+1 decisive-tail consumer recovery permutations many batches and restart fairness', async () => {
     const n = 4;
