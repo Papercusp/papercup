@@ -26,12 +26,27 @@ const LIVE_OPERATOR_PORTS = ['3055', '3070', '3170'];
 // is serialized into the child below.
 function decodePrivateToolResponse(response: { structuredContent?: unknown }) {
   const batch = response.structuredContent as {
-    results?: Array<{ status?: string; output?: { structuredContent?: unknown;
+    results?: Array<{ status?: string; error?: { code?: unknown; message?: unknown; meta?: unknown };
+      output?: { structuredContent?: unknown;
       content?: Array<{ type: string; text?: string }> } }>;
   } | undefined;
-  if (batch?.results?.length !== 1) throw new Error('Expected exactly one private MCP operation');
+  if (!Array.isArray(batch?.results) || batch.results.length !== 1)
+    throw new Error('Expected exactly one private MCP operation');
   const operation = batch.results[0]!;
-  if (!['completed', 'failed'].includes(operation.status ?? '') || !operation.output)
+  if (!operation || !['completed', 'failed'].includes(operation.status ?? ''))
+    throw new Error('Private MCP operation did not settle');
+  // Canonical dispatcher validation failures carry error instead of output.
+  // Never interpret a partial error or conflicting output as a tool refusal.
+  if (operation.error !== undefined) {
+    const error = operation.error;
+    if (operation.status !== 'failed' || operation.output !== undefined
+      || !error || typeof error !== 'object' || Array.isArray(error)
+      || typeof error.code !== 'string' || !error.code.trim()
+      || typeof error.message !== 'string' || !error.message.trim())
+      throw new Error('Private MCP operation has a malformed or ambiguous error');
+    return { ...error, ok: false };
+  }
+  if (!operation.output)
     throw new Error('Private MCP operation did not settle with a readable output');
   if (operation.output.structuredContent) return operation.output.structuredContent;
   const text = operation.output.content?.find(c => c.type === 'text' && c.text?.trim().startsWith('{'))?.text;
@@ -45,9 +60,28 @@ it('R11 private caller decodes complete singleton results and refusals, rejectin
     for (const output of [{ structuredContent: body }, { content: [{ type: 'text', text: JSON.stringify(body) }] }])
       expect(decodePrivateToolResponse({ structuredContent: { results: [{ status, output }] } })).toEqual(body);
   }
-  for (const results of [[], [{ status: 'unknown-effect' }], [{ status: 'completed' }],
+  for (const results of [[], [null], { length: 1, 0: { status: 'completed' } },
+    [{ status: 'unknown-effect' }], [{ status: 'completed' }],
     [{ status: 'completed', output: { content: [] } }], [{}, {}]])
     expect(() => decodePrivateToolResponse({ structuredContent: { results } })).toThrow();
+});
+
+it('private caller decodes canonical validation errors without output and rejects partial or conflicting errors', () => {
+  // Measured scorecards:repair response retained in EI-29076811994262641 post1237051.
+  const error = {
+    code: 'invalid_input',
+    message: 'invalid_args: Prepared audit source requires explicit targetIds — accepted args: targetIds, harness, preparedSource, sourcePreparation, gradingLaunch',
+    meta: { invalidInput: { source: 'projected-tool-registry',
+      registryRevision: 'projected-tool-registry-v1:c85b4c11279300ab', toolName: 'scorecards:repair', corrections: [] } },
+  };
+  const operation = { itemId: 'item-1', ok: false, status: 'failed', error };
+  expect(decodePrivateToolResponse({ structuredContent: { results: [operation] } })).toEqual({ ...error, ok: false });
+  for (const invalidError of [null, [], {}, { code: error.code }, { message: error.message },
+    { ...error, code: '' }, { ...error, code: 400 }, { ...error, message: ' ' }, { ...error, message: 400 }])
+    expect(() => decodePrivateToolResponse({ structuredContent: { results: [{ ...operation, error: invalidError }] } })).toThrow();
+  for (const invalidOperation of [{ ...operation, status: 'completed' }, { ...operation, status: 'unknown-effect' },
+    { ...operation, output: { structuredContent: { ok: true } } }])
+    expect(() => decodePrivateToolResponse({ structuredContent: { results: [invalidOperation] } })).toThrow();
 });
 
 // Runs inside the private runtime as the CLI's caller command (`-- <caller>`).
