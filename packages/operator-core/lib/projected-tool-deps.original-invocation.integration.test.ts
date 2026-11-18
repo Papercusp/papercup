@@ -75,6 +75,90 @@ const settle = (req: Begin, ref: string, changes: Partial<Settle> = {}) => obser
 });
 
 describe('original invocation ledger (real Postgres)', () => {
+  it('UTB-forbidden-effects admits the allowed sibling without writing the forbidden record', async () => {
+    const name = 'example:p003_forbidden';
+    const keys = [randomUUID(), randomUUID()];
+    const handler = vi.fn(async ({ key }: { key: string }) => {
+      await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
+      return { data: { key } };
+    });
+    defineTool({ name, args: z.object({ key: z.string() }), requirePrincipal: false,
+      capability: 'example:write', authorize: ({ input }) => ({ allow: input.key !== keys[0] }), handler });
+    const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
+      items: keys.map(key => ({ itemId: key, args: { key } })) }, request().ctx, { invocationObserver: observer });
+    const batch = result.result!.structuredContent as unknown as BatchResult;
+    expect(batch.results.map(item => [item.itemId, item.ok])).toEqual([[keys[0], false], [keys[1], true]]);
+    expect(handler).toHaveBeenCalledOnce();
+    const rows = await db.adminSql`SELECT call_id FROM harness_shared.original_invocation_probe_effects WHERE call_id IN ${db.adminSql(keys)}`;
+    expect(rows.map(row => row.call_id)).toEqual([keys[1]]);
+  });
+
+  it('UTB-cancel-unstarted stops the next write after the first effect cancels its parent', async () => {
+    const name = 'example:p003_cancel';
+    const abort = new AbortController();
+    const keys = [randomUUID(), randomUUID()];
+    const handler = vi.fn(async ({ key }: { key: string }) => {
+      await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
+      abort.abort();
+      return { data: { key } };
+    });
+    defineTool({ name, args: z.object({ key: z.string() }), requirePrincipal: false,
+      capability: 'example:write', handler });
+    const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
+      items: keys.map(key => ({ itemId: key, args: { key } })) }, { ...request().ctx, signal: abort.signal },
+    { invocationObserver: observer });
+    const batch = result.result!.structuredContent as unknown as BatchResult;
+    expect(batch.results).toHaveLength(2);
+    expect(batch.results[1]).toMatchObject({ itemId: keys[1], ok: false, status: 'not-started' });
+    expect(handler).toHaveBeenCalledOnce();
+    const rows = await db.adminSql`SELECT call_id FROM harness_shared.original_invocation_probe_effects WHERE call_id IN ${db.adminSql(keys)}`;
+    expect(rows.map(row => row.call_id)).toEqual([keys[0]]);
+  });
+
+  it('UTB-same-record-order refuses a stale second write at the real PostgreSQL effect boundary', async () => {
+    const name = 'example:p003_cas';
+    const key = randomUUID();
+    await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},0)`;
+    const native = vi.fn(async () => []);
+    const handler = vi.fn(async ({ revision }: { revision: number }) => {
+      const rows = await db.adminSql`UPDATE harness_shared.original_invocation_probe_effects
+        SET value=value+1 WHERE call_id=${key} AND value=${revision} RETURNING value`;
+      return rows.length ? { data: { revision: rows[0].value } }
+        : { isError: true, content: [{ type: 'text' as const, text: 'stale revision' }] };
+    });
+    defineTool({ name, args: z.object({ revision: z.number().int() }), requirePrincipal: false,
+      capability: 'example:write', effect: 'write', batch: { execute: native }, handler });
+    const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
+      items: ['first', 'stale'].map(itemId => ({ itemId, args: { revision: 0 } })) }, request().ctx,
+    { invocationObserver: observer });
+    const batch = result.result!.structuredContent as unknown as BatchResult;
+    expect(batch.results.map(item => [item.itemId, item.ok])).toEqual([['first', true], ['stale', false]]);
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(native).not.toHaveBeenCalled();
+    const rows = await db.adminSql`SELECT value FROM harness_shared.original_invocation_probe_effects WHERE call_id=${key}`;
+    expect(rows[0].value).toBe(1);
+  });
+
+  it('UTB-uncertain-replay retains a committed write after a lost response without retrying it', async () => {
+    const name = 'example:p003_uncertain';
+    const keys = [randomUUID(), randomUUID()];
+    const handler = vi.fn(async ({ key }: { key: string }) => {
+      await db.adminSql`INSERT INTO harness_shared.original_invocation_probe_effects (call_id,value) VALUES (${key},1)`;
+      if (key === keys[0]) throw new Error('response lost after committed effect');
+      return { data: { key } };
+    });
+    defineTool({ name, args: z.object({ key: z.string() }), requirePrincipal: false,
+      capability: 'example:write', effect: 'write', handler });
+    const result = await dispatchProjectedTool(lookupByMcpName(name)!, name, { _batch: 1,
+      items: keys.map(key => ({ itemId: key, args: { key } })) }, request().ctx, { invocationObserver: observer });
+    const batch = result.result!.structuredContent as unknown as BatchResult;
+    expect(batch.results.map(item => [item.itemId, item.ok])).toEqual([[keys[0], false], [keys[1], true]]);
+    expect(handler.mock.calls.map(([args]) => args.key)).toEqual(keys);
+    const rows = await db.adminSql`SELECT call_id,value FROM harness_shared.original_invocation_probe_effects WHERE call_id IN ${db.adminSql(keys)} ORDER BY call_id`;
+    expect(rows.map(row => row.call_id)).toEqual([...keys].sort());
+    expect(rows.map(row => row.value)).toEqual([1, 1]);
+  });
+
   it.each(['ok', 'refused'])('counts legacy %s calls with null metadata before reserving another slot', async status => {
     const req = request();
     req.ctx.runId = randomUUID();
