@@ -47,6 +47,197 @@ function data(result: Awaited<ReturnType<typeof call>>): BatchResult {
 }
 
 describe('universal batching in the operator', () => {
+  it('caps active child deadlines at the parent deadline and leaves expired siblings unstarted', async () => {
+    vi.useFakeTimers();
+    try {
+      const deadlineAtMs = Date.now() + 30;
+      const entered: string[] = [];
+      const signals: AbortSignal[] = [];
+      defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read', args: operation,
+        timeoutSec: 60, handler: async (value, ctx) => {
+          entered.push(value.key);
+          signals.push(ctx.signal);
+          expect(ctx.deadlineAtMs).toBe(deadlineAtMs);
+          return new Promise((_resolve, reject) => ctx.signal.addEventListener('abort',
+            () => reject(new Error('parent deadline reached')), { once: true }));
+        } });
+      const pending = call({ _batch: 1, items: [item('active', 'active'), item('later', 'later')] }, {
+        ctx: { deadlineAtMs },
+      });
+      await vi.advanceTimersByTimeAsync(30);
+      const result = data(await pending);
+      expect(entered).toEqual(['active']);
+      expect(signals.map(signal => signal.aborted)).toEqual([true]);
+      expect(result.results).toMatchObject([
+        { itemId: 'active', ok: false, error: { code: 'timeout' } },
+        { itemId: 'later', ok: false, status: 'not-started' },
+      ]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('enforces the declared single-child concurrency ceiling across awaited effects', async () => {
+    vi.useFakeTimers();
+    try {
+      let active = 0;
+      let peak = 0;
+      const started: string[] = [];
+      defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+        batch: { maxConcurrency: 1 }, handler: async value => {
+          peak = Math.max(peak, ++active);
+          started.push(value.key);
+          await new Promise(resolve => setTimeout(resolve, 5));
+          active--;
+          return { data: value };
+        } });
+      const pending = call({ _batch: 1, items: ['a', 'b', 'c'].map(key => item(key, key)) });
+      await vi.advanceTimersByTimeAsync(20);
+      expect(data(await pending).counts).toEqual({ ok: 3, failed: 0 });
+      expect(peak).toBe(1);
+      expect(active).toBe(0);
+      expect(started).toEqual(['a', 'b', 'c']);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('preserves an incomplete business page and its continuation inside each child output', async () => {
+    const page = { rows: [{ id: 'first' }], total: 17, complete: false, hasMore: true,
+      nextCursor: 'original-business-page-2' };
+    const handler = vi.fn(async () => ({ data: page }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', args: operation, handler });
+    const result = data(await call({ _batch: 1, items: [item('page', 'page')] }));
+    expect(result.results[0].output?.structuredContent).toEqual(page);
+    expect(handler).toHaveBeenCalledOnce();
+    expect(result.results[0].output?.structuredContent).not.toHaveProperty('complete', true);
+  });
+
+  it('retains independently owned child handles after the parent response and cancellation', async () => {
+    const adapter = { id: 'existing-session-runtime', auditRef: 'P003:runtime-fixture', ownsExecution: true as const,
+      transactionScope: 'independent' as const, outcome: 'business' as const, durability: 'session' as const,
+      cancellation: 'owner-managed' as const, progress: 'reported' as const };
+    const jobs = new Map<string, { handle: string; ownerId: string; state: 'accepted' | 'completed' }>();
+    const handler = vi.fn(async () => ({ data: { unexpectedInlineExecution: true } }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      execution: { lifecycle: 'independent', adapter }, handler });
+    const parent = new AbortController();
+    const result = data(await call({ _batch: 1, items: [item('a', 'left'), item('b', 'right')] }, {
+      ctx: { signal: parent.signal, uiClientId: 'original-runtime-owner', toolExecution: { mode: 'async' } },
+      deps: { executionAdapter: ({ input }) => ({ id: adapter.id,
+        verifyAdmission: async admission => {
+          const original = jobs.get(admission.handle);
+          return original?.ownerId === admission.ownerId && original.state === admission.state;
+        },
+        dispatch: async () => {
+          const handle = 'runtime:' + (input as { key: string }).key;
+          const admission = { handle, ownerId: 'original-runtime-owner', state: 'accepted' as const };
+          jobs.set(handle, admission);
+          return { result: { content: [] }, admission };
+        },
+      }) },
+    }));
+    expect(result.counts).toEqual({ ok: 2, failed: 0 });
+    expect(result.results.map(row => row.output?._meta?.toolExecution)).toEqual([
+      expect.objectContaining({ handle: 'runtime:a', ownerId: 'original-runtime-owner', terminal: false }),
+      expect.objectContaining({ handle: 'runtime:b', ownerId: 'original-runtime-owner', terminal: false }),
+    ]);
+    parent.abort();
+    expect([...jobs.values()].map(job => [job.handle, job.state])).toEqual([
+      ['runtime:a', 'accepted'], ['runtime:b', 'accepted'],
+    ]);
+    jobs.get('runtime:a')!.state = 'completed';
+    expect(jobs.get('runtime:a')?.state).toBe('completed');
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('preserves ordinary host wrapper order and isolated caller scope with one effect per child', async () => {
+    const seen: unknown[] = [];
+    const transaction = { rlsScope: 'original-workspace' };
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      needsWorkspaceTx: true, handler: async (value, ctx) => {
+        seen.push(['effect', value.key, ctx.principal?.slug, ctx.workspaceId, ctx.tx]);
+        return { data: value };
+      } });
+    const deps: DispatchProjectedDeps = { aroundInvoke: async ({ input, ctx, invoke }) => {
+      const key = (input as { key: string }).key;
+      expect(ctx.principal?.slug).toBe('original-caller');
+      expect(ctx.workspaceId).toBe('original-workspace');
+      ctx.principal = { kind: 'system', slug: 'scoped-' + key, workspaceId: ctx.workspaceId,
+        capabilities: new Set(['test:write']) };
+      seen.push(['enter', key]);
+      const first = await invoke();
+      expect(await invoke()).toBe(first);
+      seen.push(['settle', key]);
+      return first;
+    } };
+    const host = (): Partial<UnifiedToolContext> => ({ tx: transaction, workspaceId: 'original-workspace',
+      principal: { kind: 'system', slug: 'original-caller', workspaceId: 'original-workspace',
+        capabilities: new Set(['test:write']) } });
+    const tool = lookupByMcpName(name)!;
+    for (const key of ['a', 'b']) expect((await runDispatchStack({ ...tool, batchContract: undefined }, name,
+      { key }, { ...context(), ...host() }, deps)).ok).toBe(true);
+    const ordinary = [...seen];
+    seen.length = 0;
+    const result = data(await call({ _batch: 1, items: [item('a'), item('b')] }, { deps, ctx: host() }));
+    expect(result.counts).toEqual({ ok: 2, failed: 0 });
+    expect(seen).toEqual(ordinary);
+    expect(seen).toHaveLength(6);
+  });
+
+  it.each(['role', 'capability'] as const)('enforces the ordinary %s gate for every child', async gate => {
+    const handler = vi.fn(async (value: { key: string }) => ({ data: value }));
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', args: operation, handler });
+    const tool = lookupByMcpName(name)!;
+    if (gate === 'role') tool.agentRoles = ['architect'];
+    const ctx: Partial<UnifiedToolContext> = { role: 'operator', principal: {
+      kind: 'system', slug: 'limited-caller', workspaceId: 'universal-batch-fixture',
+      capabilities: new Set(gate === 'role' ? ['test:write'] : []),
+    } };
+    const input = { _batch: 1, items: [item('a', 'a'), item('b', 'b')] };
+    const refused = data(await call(input, { ctx }));
+    expect(refused.results.map(row => row.error?.code)).toEqual([
+      gate === 'role' ? 'role_not_allowed' : 'missing_capability',
+      gate === 'role' ? 'role_not_allowed' : 'missing_capability',
+    ]);
+    expect(handler).not.toHaveBeenCalled();
+    expect(data(await call(input, { ctx: { ...ctx, role: 'architect', principal: {
+      ...ctx.principal!, capabilities: new Set(['test:write']),
+    } } })).counts).toEqual({ ok: 2, failed: 0 });
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates cancellation once and never replays an uncertain write or starts its sibling', async () => {
+    const parent = new AbortController();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let disposals = 0;
+    const effects: string[] = [];
+    defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
+      handler: async (value, ctx) => {
+        effects.push(value.key);
+        return new Promise((_resolve, reject) => {
+          ctx.signal.addEventListener('abort', () => {
+            disposals++;
+            reject(Object.assign(new Error('response lost after effect'), { dispatchMetadata: {
+              abortCompletionReceipt: { status: 'unknown', attemptId: 'original-write-attempt', retrySafe: false },
+            } }));
+          }, { once: true });
+          entered();
+        });
+      } });
+    const pending = call({ _batch: 1, items: [item('active', 'active'), item('later', 'later')] }, {
+      ctx: { signal: parent.signal },
+    });
+    await started;
+    parent.abort(); parent.abort();
+    const result = data(await pending);
+    expect(disposals).toBe(1);
+    expect(effects).toEqual(['active']);
+    expect(result.results).toMatchObject([
+      { itemId: 'active', ok: false, status: 'unknown-effect' },
+      { itemId: 'later', ok: false, status: 'not-started' },
+    ]);
+    expect(result.results[0].receipt).toEqual({ status: 'unknown', attemptId: 'original-write-attempt', retrySafe: false });
+    expect(result.results[0].receipt).not.toHaveProperty('retrySafe', true);
+  });
+
   it.each([20, 100])('recovers original caller-bound outputs and receipts after projecting %i dispatched children', async count => {
     const sandbox = mkdtempSync(join(tmpdir(), 'batch-recovery-'));
     vi.stubEnv('PAPERCUSP_SCRATCH_ROOT', join(sandbox, 'scratch'));
