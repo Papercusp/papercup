@@ -365,7 +365,7 @@ function verifiedRetainedCodexSqliteHome(codexHome: string, sessionKey: string |
 
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
-function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false, requireExistingBinding = false, sid?: string): string {
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false, requireExistingBinding = false, sid?: string, restrictedRoleRestore = false): string {
   if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
@@ -407,6 +407,24 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
   }
   if (recordedHome && recordedHome !== sqliteHome &&
       !verifiedRetainedCodexSqliteHome(codexHome, sessionKey, recordedHome, sqliteHome, sid)) {
+    // A legacy SU repair could replace an archived role's config using its
+    // own TMPDIR before a native child ever ran. Only the restricted writer
+    // may undo that empty relocation, using the original recorded location.
+    // Never select between databases or move/delete either state directory.
+    if (restrictedRoleRestore && sid && existingCodexHomeOwnerSid(codexHome) === sid) {
+      try {
+        const servers = config.mcp_servers as Record<string, { url?: unknown }> | undefined;
+        const legacy = servers?.['papercusp-su'];
+        const authority = typeof legacy?.url === 'string' ? new URL(legacy.url).searchParams : null;
+        const sameOwner = authority?.getAll('client').length === 1 && authority.get('client') === sid
+          && authority.getAll('superuser').length === 1 && authority.get('superuser') === '1'
+          && !authority.has('role') && !servers?.papercusp;
+        const emptyBindings = [recordedHome, sqliteHome].every(path =>
+          basename(path) === `session-${sessionKey}` && lstatSync(path).isDirectory()
+          && realpathSync(path) === path && readdirSync(path).length === 0);
+        if (sameOwner && emptyBindings) return recordedHome;
+      } catch { /* unmeasured ownership or state remains a conflict */ }
+    }
     throw new Error('Cannot repair Codex home: launch receipt and configured sqlite_home disagree');
   }
   return sqliteHome;
@@ -1663,7 +1681,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     ? codexHomeForSessionKey(opts.sessionKey)
     : freshCodexHome(codexHomeForSessionKey(opts.sessionKey));
   const sqliteHome = opts.preserveExisting
-    ? preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome, false, false, opts.sid)
+    ? preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome, false, false, opts.sid, true)
     : freshCodexSqliteHome(opts.sessionKey);
   if (opts.preserveExisting) {
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });

@@ -1433,6 +1433,37 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toBe(before);
   });
 
+  it.each(['empty', 'configured-data', 'recorded-data', 'foreign-owner', 'symlink'] as const)
+    ('restores only an empty same-owner legacy SU SQLite binding during restricted role repair (%s)', async condition => {
+    const { writeRoleCodexHome } = await loadMod();
+    const input = { sessionKey: 'empty-legacy-role', sid: 'su-empty-legacy-role',
+      mcpUrl: 'http://x/api/mcp?role=judge', promptText: 'RESTRICTED JUDGE' };
+    const first = writeRoleCodexHome(input);
+    const configured = join(fakeHome, 'legacy-serving-state', `session-${input.sessionKey}`);
+    mkdirSync(configured, { recursive: true });
+    const config = `sqlite_home = ${JSON.stringify(configured)}\n[mcp_servers.papercusp-su]\nurl = "http://x/api/mcp?superuser=1&client=${input.sid}"\n`;
+    writeFileSync(first.configPath, config);
+    writeFileSync(join(first.codexHome, '.owner-sid'), condition === 'foreign-owner' ? 'su-foreign' : input.sid);
+    const payload = condition === 'recorded-data' ? join(first.sqliteHome, 'state_5.sqlite')
+      : join(configured, 'state_5.sqlite');
+    if (condition.endsWith('-data')) writeFileSync(payload, 'KEEP ALL NATIVE STATE');
+    if (condition === 'symlink') {
+      rmSync(configured, { recursive: true });
+      symlinkSync(first.sqliteHome, configured, 'dir');
+    }
+    const repair = () => writeRoleCodexHome({ ...input, preserveExisting: true,
+      recordedSqliteHome: first.sqliteHome });
+    if (condition === 'empty') {
+      expect(repair().sqliteHome).toBe(first.sqliteHome);
+      expect(parseToml(readFileSync(first.configPath, 'utf8')).mcp_servers).toHaveProperty('papercusp');
+      expect(existsSync(configured)).toBe(true);
+    } else {
+      expect(repair).toThrow('launch receipt and configured sqlite_home disagree');
+      expect(readFileSync(first.configPath, 'utf8')).toBe(config);
+      if (condition.endsWith('-data')) expect(readFileSync(payload, 'utf8')).toBe('KEEP ALL NATIVE STATE');
+    }
+  });
+
   it('keeps the async repair producer on its receipt across serving roots and refuses two extant SQLite bindings', async () => {
     const { writeSuCodexHomeAsync, ensureSuCodexHomeConfigAsync } = await loadMod();
     const input = { sessionKey: 'receipt-config-producer', sid: 'su-receipt-config-producer',
