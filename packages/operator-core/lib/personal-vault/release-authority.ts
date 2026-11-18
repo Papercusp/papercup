@@ -22,6 +22,12 @@
  */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
+import {
+  assessPermissionChange,
+  type PermissionChangeAssessment,
+  type PermissionChangeInput,
+} from '../governance-policy/effective-authority';
 import {
   findCapturedDirectiveContaining,
   getOwnerDirective,
@@ -33,6 +39,7 @@ export type ReleaseAuthorityRefusalCode =
   | 'release_authority_not_found'
   | 'release_authority_not_owner_typed'
   | 'release_authority_foreign'
+  | 'release_authority_wrong_owner'
   | 'release_authority_declined'
   | 'release_authority_code_missing'
   | 'release_authority_stale';
@@ -70,6 +77,8 @@ function containsCode(text: string, code: string): boolean {
 export async function verifyReleaseAuthority(params: {
   workspaceId: string;
   agentOwnerId: string | null;
+  /** Host-resolved human authority owner; omission preserves existing single-owner callers. */
+  authorityOwnerId?: string;
   /** Canonical form of the exact change; the release code is derived from it. */
   request: string;
   /** Owner-readable description of the change, for the prompt the agent relays. */
@@ -122,6 +131,9 @@ export async function verifyReleaseAuthority(params: {
   if (directive.recordedBy !== agentOwnerId) {
     return refuse('release_authority_foreign', `owner directive #${directive.id} was typed into another session (${directive.recordedBy}), not this one`);
   }
+  if (params.authorityOwnerId !== undefined && directive.ownerId !== params.authorityOwnerId) {
+    return refuse('release_authority_wrong_owner', `owner directive #${directive.id} belongs to a different authority owner`);
+  }
   if (directive.dispositionStatus === 'declined') {
     return refuse('release_authority_declined', `owner directive #${directive.id} was declined`);
   }
@@ -137,4 +149,87 @@ export async function verifyReleaseAuthority(params: {
     releaseRef: releaseRefFor(directive.id),
     capturedAt: new Date(directive.createdAtMs),
   };
+}
+
+/** R-11: these pins come from the actual writer, never from agent arguments. */
+export interface PermissionChangeReleaseInput {
+  workspaceId: string;
+  agentOwnerId: string | null;
+  change: {
+    operation: 'layer-grants' | 'stack-settings' | 'stack-layers' | 'identity-version';
+    targetId: string;
+    beforeRevision: string;
+    afterRevision: string;
+  };
+  permissionChange: PermissionChangeInput;
+  /** Latest change/delivery time of the pinned before-image. Required, not inferred from the request. */
+  notBefore: Date;
+  directives?: readonly { ownerId: string; directiveId: number }[];
+}
+
+/** Reuse the existing owner-turn code; bind it to the entire edit and affected census. */
+export function permissionChangeReleaseRequest(input: PermissionChangeReleaseInput, ownerId: string): string {
+  return 'permission-change:' + createHash('sha256').update(canonicalJson({
+    workspaceId: input.workspaceId, ownerId, change: input.change,
+    permissionChange: input.permissionChange, notBefore: input.notBefore.toISOString(),
+  })).digest('hex');
+}
+
+export type PermissionChangeReleaseAuthority = {
+  allowed: boolean;
+  assessment: PermissionChangeAssessment;
+  approvals: Array<{ ownerId: string; authority: Extract<ReleaseAuthority, { ok: true }> }>;
+  refusal?: { ownerId?: string; code: string; detail?: string; releaseCode?: string | null; ownerPrompt?: string | null };
+};
+
+/**
+ * Host admission seam for R-11. Ordinary edit authority, complete census and
+ * fixed floors are checked before any owner-turn lookup. Only a known widening
+ * can use approvals; unknown comparisons remain refused. Every affected human
+ * owner must approve the exact same before/after evidence in this session.
+ *
+ * This is NOT a reusable authorization token or a store loader. The writer must
+ * derive these inputs from canonical stores and call inside its revision-guarded
+ * transaction/lease immediately before effect. No policy or approval store is added.
+ */
+export async function verifyPermissionChangeAuthority(
+  input: PermissionChangeReleaseInput,
+  sql: Sql,
+): Promise<PermissionChangeReleaseAuthority> {
+  // Freeze caller-owned objects before the first asynchronous authority lookup.
+  const pinned: PermissionChangeReleaseInput = {
+    ...JSON.parse(canonicalJson(input)), notBefore: new Date(input.notBefore?.getTime() ?? NaN),
+  };
+  const assessment = assessPermissionChange(pinned.permissionChange);
+  const refuse = (code: string, detail?: string): PermissionChangeReleaseAuthority => ({
+    allowed: false, assessment, approvals: [], refusal: { code, ...(detail ? { detail } : {}) },
+  });
+  const validPin = (value: unknown) => typeof value === 'string' && !!value.trim() && value === value.trim();
+  if (!validPin(pinned.workspaceId) || !pinned.change ||
+      !['layer-grants', 'stack-settings', 'stack-layers', 'identity-version'].includes(pinned.change.operation) ||
+      ![pinned.change.targetId, pinned.change.beforeRevision, pinned.change.afterRevision].every(validPin) ||
+      !Number.isFinite(pinned.notBefore.getTime())) return refuse('permission_change_unpinned');
+  if (assessment.canApplyWithoutApproval) return { allowed: true, assessment, approvals: [] };
+  if (!assessment.requiresOwnerApproval || assessment.comparison.kind !== 'widening') {
+    return refuse(assessment.code, assessment.reason);
+  }
+  const owners = [...new Set(pinned.permissionChange.census.scopes.flatMap(scope =>
+    scope.owners.map(owner => owner.ownerId)))].sort();
+  const directives = pinned.directives ?? [];
+  if (!Array.isArray(directives) || new Set(directives.map(row => row?.ownerId)).size !== directives.length ||
+      directives.some(row => !row || !owners.includes(row.ownerId) ||
+        !Number.isSafeInteger(row.directiveId) || row.directiveId <= 0)) return refuse('permission_change_invalid_directives');
+  const approvals: PermissionChangeReleaseAuthority['approvals'] = [];
+  for (const ownerId of owners) {
+    const authority = await verifyReleaseAuthority({
+      workspaceId: pinned.workspaceId, agentOwnerId: pinned.agentOwnerId, authorityOwnerId: ownerId,
+      request: permissionChangeReleaseRequest(pinned, ownerId),
+      describe: `approve ${pinned.change.operation} on ${pinned.change.targetId} for authority owner ${ownerId}`,
+      directiveId: directives.find(row => row.ownerId === ownerId)?.directiveId,
+      notBefore: pinned.notBefore,
+    }, sql);
+    if (!authority.ok) return { allowed: false, assessment, approvals: [], refusal: { ownerId, ...authority } };
+    approvals.push({ ownerId, authority });
+  }
+  return { allowed: true, assessment, approvals };
 }
