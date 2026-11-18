@@ -25,6 +25,13 @@ const statement = 'INSERT INTO dbos.application_versions (value, nullable) VALUE
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 let adminUri: string, database: string, dsn: string, sql: postgres.Sql;
 let directory: string;
+function retain(name: string, value: unknown) {
+  const destination = process.env.PAPERCUSP_TEST_ARTIFACT_DIR ?? directory;
+  writeFileSync(join(destination, 'gec-commit-receipts-' + name + '.json'), JSON.stringify({
+    kind: 'independent-server-value-control', acceptance: 'unmeasured', input,
+    fixture, ...value as Record<string, unknown>,
+  }), { flag: 'wx', mode: 0o600 });
+}
 
 beforeAll(async () => {
   adminUri = await getTestPg();
@@ -90,6 +97,9 @@ describe('independent committed server-value receipts', () => {
     expect(child.stdout).toBe('write-returned');
     const receipts = await sql.unsafe(fixture.committedRows!.query, [marker]);
     const rows = await sql.unsafe('SELECT value, nullable FROM dbos.application_versions');
+    retain(mode, { mode, statement, payload, receipts: [...receipts], rows: [...rows],
+      process: { pid: child.pid, status: child.status, signal: child.signal, stdout: child.stdout,
+        stderr: child.stderr, error: child.error?.message ?? null } });
     expect(receipts).toHaveLength(mode === 'committed' ? 1 : 0);
     expect(rows).toHaveLength(mode === 'committed' ? 1 : 0);
     if (mode === 'committed') {
@@ -113,11 +123,13 @@ describe('independent committed server-value receipts', () => {
     try {
       await writer.unsafe('BEGIN');
       await writer.unsafe(statement, [payload, null]);
-      expect(await sql.unsafe(fixture.committedRows!.query, [marker])).toHaveLength(0);
+      const beforeCommit = [...await sql.unsafe(fixture.committedRows!.query, [marker])];
+      expect(beforeCommit).toHaveLength(0);
       await writer.unsafe('COMMIT');
       await writer.unsafe('UPDATE dbos.application_versions SET value = $1', [payload]);
       await writer.unsafe('UPDATE dbos.application_versions SET value = $1', ['new λ']);
       const receipts = await sql.unsafe(fixture.committedRows!.query, [marker]);
+      retain('visibility', { statement, payload, beforeCommit, receipts: [...receipts] });
       expect(receipts).toHaveLength(3);
       expect(receipts.map(row => row.receipt.values[0].changed)).toEqual([true, false, true]);
       expect(receipts[2]!.receipt.values[0].hex).toBe(Buffer.from('new λ').toString('hex'));
