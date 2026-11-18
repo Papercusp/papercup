@@ -656,7 +656,10 @@ describe('documented pinned MCP helper recovery (EI-28910250918419088)', () => {
   });
 
   it.each([false, true])('keeps canonical repair available while a bound plan is unstarted (wrapped=%s)', async wrapped => {
-    const args = { targetIds: ['EI-audit'], harness: 'papercusp' };
+    const args = { targetIds: ['EI-audit'], harness: 'papercusp', sourcePreparation: {
+      sourceRoot: '/frozen/exact-source', receiptPath: '/original.json',
+      receiptSha256: 'a'.repeat(64), outputDir: '/new-audit-output',
+    } };
     const cmd = command('node scripts/mcp-call.mjs --port 33629 '
       + (wrapped ? 'tools:invoke' : 'scorecards:repair') + ' --json -',
     wrapped ? { name: 'scorecards:repair', args } : args);
