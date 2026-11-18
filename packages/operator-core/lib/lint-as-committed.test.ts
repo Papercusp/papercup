@@ -2516,6 +2516,66 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     } finally { f.cleanup(); }
   }, 90_000);
 
+  it.each(['valid', 'tampered', 'no-opt-in', 'narrow', 'replace', 'full', 'prior-full'] as const)
+    ('verifies additive retained CLI scope without recopying completed roots (%s)', variant => {
+      const f = retainedFixture();
+      const previousScope = variant === 'prior-full' ? { mode: 'full', workspaceDirs: [] }
+        : { mode: 'selected', workspaceDirs: variant === 'narrow' ? ['libs/extra', 'libs/runtime']
+          : variant === 'replace' ? ['libs/extra'] : ['libs/runtime'] };
+      const selected = variant === 'full' ? []
+        : ['narrow', 'replace'].includes(variant) ? ['libs/runtime'] : ['libs/extra', 'libs/runtime'];
+      const retained = join(f.workRoot, 'node_modules/alpha.txt');
+      const inode = statSync(retained).ino;
+      const missing = 'libs/extra/node_modules/leaf/index.cjs';
+      try {
+        f.head = snapshot(f.root, { 'libs/extra/package.json': '{"name":"@fixture/extra"}' }, f.head);
+        f.marker.sha = f.head;
+        gitFixture(f.workRoot, ['checkout', '--detach', '--quiet', f.head]);
+        gitFixture(f.workRoot, ['update-ref', 'refs/heads/main', f.main]);
+        writeFileSync(f.markerPath, JSON.stringify({ ...f.marker, sha: f.head,
+          dependencyMode: 'independent-copy-v1', dependencyScope: previousScope }));
+        mkdirSync(dirname(join(f.root, missing)), { recursive: true });
+        writeFileSync(join(f.root, missing), 'module.exports = "added-workspace";');
+        if (variant === 'tampered') writeFileSync(retained, 'payload-v2');
+        const environment = commandEnvironment({ DEPENDENCY_GENERATION_RACY_WINDOW_SEC: '0' });
+        const run = (maxBatches: number) => spawnSync(process.execPath, [scriptPath, 'lint:probe',
+          '--ref=' + f.head, '--resume-root=' + f.workRoot,
+          ...selected.map(path => '--workspace-dir=' + path),
+          '--resume-verification=' + JSON.stringify({ checkpointDir: f.checkpointDir,
+            batchSize: 2, maxBatches, maxDurationMs: 30_000, materializeMissing: variant !== 'no-opt-in' }),
+        ], { cwd: f.root, env: environment, encoding: 'utf8', timeout: 40_000, killSignal: 'SIGKILL' });
+        const first = run(variant === 'tampered' ? 64 : 1);
+        const output = first.stdout + first.stderr;
+        expect(statSync(retained).ino).toBe(inode);
+        expect(output).not.toContain('materialised committed tree in');
+        expect(output).not.toContain('check(s) pass AS COMMITTED');
+        expect(output).not.toContain('Committed source prepared at');
+        expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyScope).toEqual(previousScope);
+        if (variant !== 'valid') {
+          expect(first.status, output).toBe(1);
+          expect(output).toContain(variant === 'tampered' ? 'dependency bytes differ' : 'retained dependency scope differs');
+          if (variant === 'tampered') expectUnpreparedRetainedMarker(f);
+          else expect(existsSync(join(f.workRoot, missing))).toBe(false);
+          return;
+        }
+        expect(first.status, output).toBe(75);
+        expectUnpreparedRetainedMarker(f);
+        const leafInode = statSync(join(f.workRoot, missing)).ino;
+        const completed = run(64);
+        const completedOutput = completed.stdout + completed.stderr;
+        expect(completed.status, completedOutput).toBe(0);
+        expect(completedOutput).toContain('All 1 check(s) pass AS COMMITTED');
+        expect(completedOutput).toMatch(/"reusedBatches":[1-9]/);
+        expect(statSync(retained).ino).toBe(inode);
+        expect(statSync(join(f.workRoot, missing)).ino).toBe(leafInode);
+        expect(leafInode).not.toBe(statSync(join(f.root, missing)).ino);
+        expect(readFileSync(join(f.workRoot, missing))).toEqual(readFileSync(join(f.root, missing)));
+        expect(JSON.parse(readFileSync(f.markerPath, 'utf8'))).toMatchObject({
+          dependencyMode: 'independent-copy-v1', dependencyScope: { mode: 'selected', workspaceDirs: selected },
+        });
+      } finally { f.cleanup(); }
+    }, 90_000);
+
   it.each(['source', 'dependency', 'commit', 'owner', 'scope'] as const)
     ('refuses retained CLI %s drift before commands or prepared publication', defect => {
       const f = retainedFixture();
@@ -2765,6 +2825,30 @@ fs.writeFileSync('public/runtime-ready', asset);
       expectUnpreparedRetainedMarker(f);
     } finally { f.cleanup(); }
   }, 60_000);
+
+  it('retains bounded helper timeout evidence without publishing a prepared dependency copy', async () => {
+    const f = retainedFixture();
+    const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+    const materializer = join(f.parent, 'waiting-helper.sh');
+    writeFileSync(materializer, [
+      "printf '%s' '" + 'x'.repeat(2000) + "'",
+      "printf 'COPY_ADMISSION_WAIT holder=fixture\\n' >&2",
+      'sleep 5',
+    ].join('\n'));
+    try {
+      const result = await verifyRetainedDependencies(f.root, f.workRoot,
+        { ...f.options().resumeVerification, maxDurationMs: 500 },
+        { sourceCommit: f.head, materializer, verifySource: vi.fn() });
+      expect(result.status).toBe('incomplete');
+      expect(result.progress.censusStage).toBe('inputs');
+      expect(result.progress.interruptedCommand).toEqual({
+        exitCode: 124, stdoutTail: 'x'.repeat(1500), stderrTail: 'COPY_ADMISSION_WAIT holder=fixture\n',
+      });
+      expect(result.progress.verifiedEntries).toBe(0);
+      expect(existsSync(join(f.checkpointDir, 'manifest.json'))).toBe(false);
+      expectUnpreparedRetainedMarker(f);
+    } finally { f.cleanup(); }
+  }, 10_000);
 
   it('rejects widening the workspace scope of an interrupted verification journal', async () => {
     const f = retainedFixture();
