@@ -940,15 +940,18 @@ async function waitForReaders(
  * `waitForReadersBeforeReserve` snapshots the current readers and leaves admission
  * open while that cohort drains. The writer then reserves admission and drains all
  * remaining/racing readers, so newcomers cannot indefinitely extend the open phase.
+ * `required` refuses the developer disable switch before the callback can run.
+ * It does not turn this cooperative mutex into protection from arbitrary filesystem writes.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean>, reserveContinuationTicket: () => Promise<FsMutexContinuationTicket> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, continuationTicket?: FsMutexContinuationTicket, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', required?: boolean, waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, deferAfterHolderAgeMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, continuationTicket?: FsMutexContinuationTicket, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
   if (opts.mode === "read" || opts.mode === "reader")
     return withFsMutexRead(name, fn, opts);
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") {
+    if (opts.required) throw new Error('required filesystem mutex cannot be disabled');
     return fn();
   }
 
@@ -1506,14 +1509,18 @@ export async function withFsMutexBudget(name, fn, opts) {
 
 /**
  * Existing unweighted reader lease; writers drain these readers as before.
+ * `required` refuses the developer disable switch before the callback can run.
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', required?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, intent?: Record<string, string | number | boolean>, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, onTimedOut?: (info: { waitedMs: number, timeoutMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
-  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") return fn();
+  if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") {
+    if (opts.required) throw new Error('required filesystem mutex cannot be disabled');
+    return fn();
+  }
 
   const io = opts.io ?? {};
   const writeFileIo = io.writeFile ?? writeFile;

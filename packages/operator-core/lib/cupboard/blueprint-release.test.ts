@@ -20,6 +20,7 @@ import {
 import { prepareReleaseForPublish } from './publish-release-gate';
 import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../identity/ed25519';
+import { withBlueprintSourceMutation } from '../blueprint/source-lock';
 
 let root = '';
 let installedDir = '';
@@ -59,6 +60,25 @@ async function source(version: string, prompt: string, maxCostUsd: number, porta
 }
 
 describe('immutable blueprint release lifecycle', () => {
+  it('waits for whole-library custody before creating release history or switching active files', async () => {
+    const first = await source('1.0.0', 'original prompt', 1);
+    let release!: () => void;
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const held = withBlueprintSourceMutation([installedDir], async () => {
+      entered(); await new Promise<void>(resolve => { release = resolve; });
+    });
+    await ready;
+    const pending = commitBlueprintRelease({ installedDir, sourceDir: first.dir, id: 'identity',
+      version: '1.0.0', source: 'repo', pins: [first.pin] });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(existsSync(installedDir)).toBe(false);
+    } finally { release(); await held; }
+    const installed = await pending;
+    expect(await fs.readFile(join(installed.installedTo, 'prompts/persona.md'), 'utf8')).toBe('original prompt');
+  });
+
   it.each(['prompts/persona.md', 'blueprint.yaml', 'new-file.txt'])
     ('refuses a stale installed-package preview after %s changes, preserving active bytes and history', async path => {
       const first = await source('1.0.0', 'original prompt', 1);

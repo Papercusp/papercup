@@ -41,6 +41,7 @@ import {
   availableHiveBlueprintIds,
   availableBlueprintSources,
   readBlueprintSourcePopulation,
+  blueprintMutationRoots,
 } from './installed-blueprints';
 
 const tempRoots: string[] = [];
@@ -74,6 +75,28 @@ describe('complete blueprint library source inventory (P-002)', () => {
     };
     return { root, dirs, options, read };
   }
+
+  it('maps file edits and ancestor removals to every intersected registered physical root', () => {
+    const { root, dirs, options } = fixture();
+    for (const dir of dirs)
+      expect(blueprintMutationRoots([join(dir, 'shared', 'blueprint.yaml')], options)).toEqual([dir]);
+    expect(blueprintMutationRoots([root], options)).toEqual([...dirs].sort());
+    expect(blueprintMutationRoots([join(root, 'unrelated.txt')], options)).toEqual([]);
+    const alias = join(root, 'alias');
+    symlinkSync(dirs[2], alias);
+    expect(blueprintMutationRoots([join(alias, 'new', 'prompt.md')], options)).toEqual([dirs[2]]);
+  });
+
+  it('recognizes an absent local library reached through an ancestor alias', () => {
+    const { root, options } = fixture();
+    const repo = join(root, 'checkout');
+    mkdirSync(repo);
+    const alias = join(root, 'checkout-alias');
+    symlinkSync(repo, alias);
+    const local = join(repo, '.papercusp', 'blueprints');
+    expect(blueprintMutationRoots([join(alias, '.papercusp', 'blueprints', 'future', 'blueprint.yaml')],
+      { localDirs: [...options.localDirs, local] })).toEqual([join(alias, '.papercusp', 'blueprints'), local].sort());
+  });
 
   it('retains hidden tiers and malformed declarations without changing selected catalog precedence', () => {
     const { dirs, options, read } = fixture();

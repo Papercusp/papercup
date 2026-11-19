@@ -16,6 +16,7 @@ import { renderStackTransitionContext, renderStackTransitionContextResult } from
 import { compileLaunchSpecificationArtifact } from './role-launch-spec';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 import { retainRequestPrincipal } from './auth/require-principal';
+import { withBlueprintSourceMutation } from './blueprint/source-lock';
 
 vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => ({
   kind: 'user', slug: 'identity-test-editor', workspaceId: 'identity-service-fixture',
@@ -127,7 +128,20 @@ describe('identity management service', () => {
       expect(preview.components.map((component) => component.tier)).toEqual(['local', 'local']);
       expect(preview.preview.launchCompatibility).toMatchObject({ eligible: true });
       expect(preview.preview.layers.map((layer) => layer.id)).toContain(domainId);
-      const saved = await saveNamedIdentityComposition(input, await editorRequest());
+      let release!: () => void;
+      let entered!: () => void;
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      const library = join(root, '.papercusp', 'blueprints');
+      const held = withBlueprintSourceMutation([library], async () => {
+        entered(); await new Promise<void>(resolve => { release = resolve; });
+      });
+      await ready;
+      const pending = saveNamedIdentityComposition(input, await editorRequest());
+      try {
+        await new Promise(resolve => setTimeout(resolve, 80));
+        await expect(readFile(join(library, input.id, 'blueprint.yaml'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally { release(); await held; }
+      const saved = await pending;
       expect(saved.ok).toBe(true);
       const yaml = await readFile(join(root, '.papercusp', 'blueprints', id, 'blueprint.yaml'), 'utf8');
       expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [] });

@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getDatatype, installPublishedDatatype } from '../datatype-registry-store';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
+import { withBlueprintSourceMutation } from '../blueprint/source-lock';
 import { resolveCupboardBaseUrl } from './base-url';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import { gitCloneShallow, installCupboardUnitFromListing } from './install-io';
@@ -254,7 +255,8 @@ export function makeBundleAppInstallers(workspaceId: string, opts: InstallBundle
             error: `bundle declared blueprint id "${blueprint.id}" but the repo's blueprint.yaml declares "${res.id}"`,
           };
         }
-        await writeBundleSource(join(INSTALLED_BLUEPRINTS_DIR(), res.id), blueprint);
+        await withBlueprintSourceMutation([INSTALLED_BLUEPRINTS_DIR()], () =>
+          writeBundleSource(join(INSTALLED_BLUEPRINTS_DIR(), res.id), blueprint));
         return { ok: true as const };
       } catch (e) {
         if (e instanceof InstallBlueprintError) return { ok: false as const, error: e.message };

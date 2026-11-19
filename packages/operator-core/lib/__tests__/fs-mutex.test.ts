@@ -1356,6 +1356,21 @@ describe('withFsMutex', () => {
     const result = await withFsMutex('npm-install', async () => 'unlocked');
     expect(result).toBe('unlocked');
   });
+
+  it.each(['write', 'read', 'reader', 'direct-read'] as const)(
+    'refuses a required %s lease before running any callback when locking is disabled', async mode => {
+      process.env.PAPERCUSP_DISABLE_FS_MUTEX = '1';
+      const effect = vi.fn(async () => 'unguarded effect');
+      const acquired = vi.fn();
+      const opts = { required: true, onAcquired: acquired };
+      const run = mode === 'direct-read'
+        ? withFsMutexRead('required-lease', effect, opts)
+        : withFsMutex('required-lease', effect, { ...opts, mode });
+      await expect(run).rejects.toThrow('required filesystem mutex cannot be disabled');
+      expect(effect).not.toHaveBeenCalled();
+      expect(acquired).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // EI-25235644267089650: old leases still protect live owners. Age is only a

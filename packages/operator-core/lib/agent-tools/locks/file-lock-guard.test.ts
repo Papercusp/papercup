@@ -7,7 +7,7 @@
  */
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkNonRepoTmpDir } from './non-repo-tmpdir';
 
@@ -40,6 +40,7 @@ vi.mock('./in-workspace-txn', () => ({
 // un-enriched, which is all these assertions check.
 
 import { guardFileLock, toRepoRelative, withFileLock, fileLockedResult } from './file-lock-guard';
+import { withBlueprintSourceMutation } from '../../blueprint/source-lock';
 
 // REPO creates its OWN `.git`, so findRepoRoot stops at it regardless of where
 // tmpdir() lives. NO_REPO must have NO `.git` ancestor, so it uses
@@ -54,6 +55,43 @@ const ctx = { projectDir: REPO, log: () => {} } as never;
 const CHILD_REPO = join(REPO, 'libs', 'shared');
 mkdirSync(join(CHILD_REPO, 'src'), { recursive: true });
 writeFileSync(join(CHILD_REPO, '.git'), 'gitdir: /unused/submodule\n');
+
+describe('ordinary blueprint source file effects', () => {
+  it('waits on library custody before acquiring a file lock or running a normal edit', async () => {
+    const library = join(REPO, '.papercusp', 'blueprints');
+    h.tryAcquire.mockResolvedValue({ ok: true, newly_held: ['.papercusp/blueprints/new/blueprint.yaml'] });
+    let entered!: () => void;
+    let release!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const held = withBlueprintSourceMutation([library], async () => {
+      entered(); await new Promise<void>(resolve => { release = resolve; });
+    });
+    await ready;
+    const run = vi.fn(async () => 'edited');
+    const pending = guardFileLock(ctx, [join(library, 'new', 'blueprint.yaml')], { intent: 'ordinary edit' }, run);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 80));
+      expect(run).not.toHaveBeenCalled();
+      expect(h.tryAcquire).not.toHaveBeenCalled();
+    } finally { release(); await held; }
+    expect(await pending).toMatchObject({ acquired: true, result: 'edited' });
+  });
+
+  it('refuses unavailable root custody even when ordinary file acquisition would fail open', async () => {
+    const prior = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    process.env.PAPERCUSP_DISABLE_FS_MUTEX = '1';
+    const run = vi.fn(async () => 'unsafe');
+    try {
+      await expect(guardFileLock(ctx, [join(REPO, '.papercusp', 'blueprints', 'new.yaml')],
+        { intent: 'ordinary edit' }, run)).rejects.toThrow('required filesystem mutex cannot be disabled');
+      expect(run).not.toHaveBeenCalled();
+      expect(h.tryAcquire).not.toHaveBeenCalled();
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+      else process.env.PAPERCUSP_DISABLE_FS_MUTEX = prior;
+    }
+  });
+});
 
 beforeEach(() => {
   h.tryAcquire.mockReset();
@@ -116,6 +154,97 @@ describe('toRepoRelative', () => {
   });
   it('returns null for the repo root itself', () => {
     expect(toRepoRelative(REPO, REPO)).toBeNull();
+  });
+});
+
+describe('complete coordination for source/effect admission', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([{ paths: [] }, { paths: ['/outside-authorized-roots/source.yaml'] },
+    { paths: ['foo.ts', '/outside-authorized-roots/source.yaml'] }, { paths: ['foo.ts', 'bad\u0000path'] }])(
+    'refuses unresolved or empty cohorts before any effect: $paths', async ({ paths }) => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'partial', held: ['foo.ts'] });
+    const run = vi.fn(async () => 'written');
+    expect(await guardFileLock(ctx, paths, { intent: 'permission admission', requireCoordinated: true }, run))
+      .toMatchObject({ acquired: false, lockUnavailable: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(h.tryAcquire).not.toHaveBeenCalled();
+  });
+
+  it('uses the existing external namespace for a missing runtime subtree', async () => {
+    vi.stubEnv('XDG_RUNTIME_DIR', NO_REPO);
+    const path = join(NO_REPO, 'missing', 'library', 'source.yaml');
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'external', held: ['@external/runtime/missing/library/source.yaml'] });
+    const run = vi.fn(async () => 'written');
+    expect(await guardFileLock(ctx, [path], { intent: 'permission admission', requireCoordinated: true }, run))
+      .toMatchObject({ acquired: true, coordinated: true, result: 'written' });
+    expect(h.tryAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      coordinationDomain: '/dom', paths: ['@external/runtime/missing/library/source.yaml'],
+    }));
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a whole repository instead of giving it a disjoint external key', async () => {
+    vi.stubEnv('XDG_RUNTIME_DIR', dirname(REPO));
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'wrong-domain', held: ['external-key'] });
+    const run = vi.fn(async () => 'written');
+    expect(await guardFileLock(ctx, [REPO], { intent: 'permission admission', requireCoordinated: true }, run))
+      .toMatchObject({ acquired: false, lockUnavailable: true, error: expect.stringContaining('repository-root') });
+    expect(h.tryAcquire).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('honors an external ancestor hold before a runtime-file effect', async () => {
+    vi.stubEnv('XDG_RUNTIME_DIR', NO_REPO);
+    h.tryAcquire.mockResolvedValue({ ok: false, busy: [{ path: '@external/runtime/library', owner: 'peer',
+      owner_label: 'Peer', intent: 'source census', expires_ts: new Date() }] });
+    const run = vi.fn(async () => 'written');
+    expect(await guardFileLock(ctx, [join(NO_REPO, 'library', 'source.yaml')],
+      { intent: 'permission admission', requireCoordinated: true }, run)).toMatchObject({ acquired: false });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses an acquisition fault even without the separate failClosed option', async () => {
+    h.tryAcquire.mockRejectedValue(new Error('authority unavailable'));
+    const run = vi.fn(async () => 'written');
+    expect(await guardFileLock(ctx, ['foo.ts'], { intent: 'permission admission', requireCoordinated: true }, run))
+      .toMatchObject({ acquired: false, lockUnavailable: true, error: 'authority unavailable' });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses mixed external and repository custody before acquiring either', async () => {
+    vi.stubEnv('XDG_RUNTIME_DIR', NO_REPO);
+    const run = vi.fn(async () => 'written');
+    expect(await guardFileLock(ctx, ['foo.ts', join(NO_REPO, 'library', 'source.yaml')],
+      { intent: 'permission admission', requireCoordinated: true }, run))
+      .toMatchObject({ acquired: false, lockUnavailable: true });
+    expect(h.tryAcquire).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('runs a strict repository effect only after acquiring its complete path set', async () => {
+    h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'complete', held: ['foo.ts', 'missing/source.yaml'] });
+    const run = vi.fn(async () => {
+      expect(h.tryAcquire).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        coordinationDomain: '/dom', paths: ['foo.ts', 'missing/source.yaml'],
+      }));
+      expect(h.tryFinish).not.toHaveBeenCalled();
+      return 'written';
+    });
+    expect(await guardFileLock(ctx, ['foo.ts', 'missing/source.yaml'],
+      { intent: 'permission admission', requireCoordinated: true }, run))
+      .toMatchObject({ acquired: true, coordinated: true, result: 'written' });
+    expect(h.tryFinish).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the unavailable reason through the handler wrapper without inventing a holder', async () => {
+    const run = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'written' }] }));
+    const handler = withFileLock({ intent: 'permission admission', requireCoordinated: true }, () => [], run);
+    const result = await handler({}, ctx);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false, reason: 'lock_unavailable' });
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

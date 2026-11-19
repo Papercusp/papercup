@@ -22,6 +22,7 @@ import {
 } from '@papercusp/orchestrator/blueprint';
 import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
 import { papercuspRoot } from '../papercusp-root';
+import { physicalPath } from '../agent-tools/locks/external-path';
 
 /** Cupboard-installed blueprints root — `~/.papercusp/blueprints`. */
 export function INSTALLED_BLUEPRINTS_DIR(): string {
@@ -74,6 +75,24 @@ function blueprintSourceRoots(opts: { localDirs?: string[] }) {
     { root: INSTALLED_BLUEPRINTS_DIR(), tier: 'installed' as const },
     ...(opts.localDirs ?? []).slice().reverse().map((root) => ({ root, tier: 'local' as const })),
   ];
+}
+
+/** Registered source roots intersected by an ordinary file mutation. Include
+ * ancestors (a recursive delete/rename) and absent local library subtrees. */
+export function blueprintMutationRoots(paths: readonly string[], opts: { localDirs?: string[] } = {}): string[] {
+  const absolute = paths.map(path => resolve(path));
+  const candidates = blueprintSourceRoots(opts).map(({ root }) => root);
+  for (const path of absolute) {
+    const match = /^(.*\/\.papercusp\/blueprints)(?:\/|$)/.exec(path);
+    if (match) candidates.push(match[1]!);
+  }
+  const physical = absolute.map(physicalPath);
+  const intersects = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  return [...new Set(candidates.filter(root => {
+    // Lexical matching also catches a library alias whose target is being replaced.
+    if (absolute.some(path => intersects(path, resolve(root)))) return true;
+    return physical.some(path => intersects(path, physicalPath(root)));
+  }).map(root => resolve(root)))].sort();
 }
 
 /** The existing file catalog, with the same local → installed → built-in precedence as resolution. */

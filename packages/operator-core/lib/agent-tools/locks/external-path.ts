@@ -58,7 +58,7 @@ function relativeFile(root: string | null | undefined, absolute: string): string
 /** Resolve existing components before appending any absent subtree. Errors and
  * dangling links are not evidence of a new path: never replace them with a
  * lexical identity that could bypass a physical ancestor's lock. */
-function physicalPath(input: string): string {
+export function physicalPath(input: string): string {
   let ancestor = resolve(input);
   const absent: string[] = [];
   while (true) {

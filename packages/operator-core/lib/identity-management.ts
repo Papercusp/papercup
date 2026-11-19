@@ -19,6 +19,7 @@ import {
 import { listIdentitySources, getIdentitySource, inspectIdentitySource,
   identityLaunchCompatibility } from './agent-identities/source';
 import { availableBlueprintSources, operatorResolveExtends } from './blueprint/installed-blueprints';
+import { withBlueprintSourceMutation } from './blueprint/source-lock';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { provisionLaunchIdentityResources } from './role-launch-spec';
 import { resolveProjectDir } from './spawn-config';
@@ -303,9 +304,10 @@ export async function previewNamedIdentityComposition(input: {
 export async function saveNamedIdentityComposition(input: Parameters<typeof previewNamedIdentityComposition>[0],
   request?: IdentityEditRequest) {
   const editor = await readIdentityEditor(request?.workspaceId ?? '', request);
-  const prepared = await previewNamedIdentityComposition(input);
   const root = await realpath(input.repoDir);
   const parent = join(root, '.papercusp', 'blueprints');
+  return withBlueprintSourceMutation([parent], async () => {
+  const prepared = await previewNamedIdentityComposition(input);
   await readIdentityEditor(request!.workspaceId, request, editor.revision);
   await mkdir(parent, { recursive: true });
   const actualParent = await realpath(parent);
@@ -326,6 +328,7 @@ export async function saveNamedIdentityComposition(input: Parameters<typeof prev
   }
   return { ok: true as const, id: prepared.id, preview: prepared.preview,
     components: prepared.components };
+  });
 }
 
 function flatten(value: unknown, prefix = '', out = new Map<string, unknown>()): Map<string, unknown> {

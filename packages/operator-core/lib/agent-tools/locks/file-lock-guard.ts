@@ -44,7 +44,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { resolveCapabilityBaseDir } from '../capability/base-dir';
 import { hasValidGitEntry } from './valid-git-entry';
-import { managedRepositoryPathToLockIdentity } from './external-path';
+import { managedRepositoryPathToLockIdentity, resolveExternalPathLockIdentity } from './external-path';
 import { readFileLockIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
@@ -55,6 +55,8 @@ import { DEFAULT_LOCK_TTL_SEC } from './lock-config';
 import type { CellReader } from '../../cell-registry';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { preserveEditGeneration, recordEditAttributionStrict } from '../../edit-attribution';
+import { blueprintMutationRoots } from '../../blueprint/installed-blueprints';
+import { withBlueprintSourceMutation } from '../../blueprint/source-lock';
 
 /** Default lease — same as the PreToolUse hook (`ttl_sec: 1200`). Successful
  * edits preserve custody before handoff; TTL remains the crash backstop. */
@@ -102,6 +104,17 @@ export interface FileLockSpec {
    * `lock_unavailable` outcome to surface.
    */
   failClosed?: boolean;
+  /**
+   * Require custody of EVERY requested path before running the callback.
+   * Includes authorized home/runtime paths using the existing external lock
+   * namespace; empty, malformed, partially resolved or mixed custody sets refuse.
+   * Implies failClosed on acquisition faults. The default remains repo-only.
+   *
+   * This guarantees participation in the file-lock protocol, not exclusion of
+   * arbitrary filesystem writers. A library effect lease still needs every
+   * writer to participate and must protect its complete source population.
+   */
+  requireCoordinated?: boolean;
 }
 
 /** Fail-CLOSED outcome: the acquire faulted and `failClosed` forbade proceeding. */
@@ -169,7 +182,25 @@ function isDir(p: string): boolean {
  * Returns the busy snapshot (enriched with holder presence) without running the
  * body on contention. Fails OPEN: an unexpected acquire fault runs the body.
  */
-export async function guardFileLock<T>(
+export async function guardFileLock<T>(ctx: FileLockCtx, rawPaths: string[], spec: FileLockSpec,
+  run: (lock: FileLockRunContext) => Promise<T>) {
+  // Preserve the established malformed-cohort refusal (and default behavior)
+  // before filesystem canonicalization can throw on a NUL path.
+  if (rawPaths.some(path => !path || path.includes('\0')))
+    return guardFileLockWithinSourceCustody(ctx, rawPaths, spec, run);
+  const cwd = resolveCapabilityBaseDir(ctx);
+  const repoRoot = findRepoRoot(cwd) ?? cwd;
+  const roots = blueprintMutationRoots(rawPaths.map(path => resolve(cwd, path)), {
+    localDirs: [join(repoRoot, '.papercusp', 'blueprints')],
+  });
+  // This boundary is required even when the ordinary per-file policy would
+  // fail open. A source inventory must not race an admitted file-tool effect.
+  return roots.length
+    ? withBlueprintSourceMutation(roots, () => guardFileLockWithinSourceCustody(ctx, rawPaths, spec, run))
+    : guardFileLockWithinSourceCustody(ctx, rawPaths, spec, run);
+}
+
+async function guardFileLockWithinSourceCustody<T>(
   ctx: FileLockCtx,
   rawPaths: string[],
   spec: FileLockSpec,
@@ -199,18 +230,37 @@ export async function guardFileLock<T>(
   // Only each path's repository root is resolved here. Mapping the base
   // repository to the caller's coordination domain needs the caller's identity,
   // which is read below, after the uncoordinated early return.
-  let located: Array<{ root: string; path: string }>;
+  let located: Array<{ root: string | null; path: string }>;
   let paths: string[];
   try {
     located = rawPaths.map((p) => {
+      if (spec.requireCoordinated && (!p || p.includes('\0'))) {
+        throw new Error('file-lock-unresolved-path: empty or malformed path');
+      }
       const absolute = isAbsolute(p) ? p : resolve(cwd, p);
       const managed = managedRepositoryPathToLockIdentity(absolute);
       const root = managed?.coordinationDomain ?? findRepoRoot(absolute);
       const path = managed?.path ?? toRepoRelative(absolute, cwd);
-      return root && path ? { root, path } : null;
-    }).filter((r): r is { root: string; path: string } => r !== null);
+      if (root && path) return { root, path };
+      if (spec.requireCoordinated) {
+        if (root) throw new Error('file-lock-repository-root: no whole-repository path key');
+        const external = resolveExternalPathLockIdentity(absolute);
+        return { root: external.coordinationDomain ?? null, path: external.path };
+      }
+      return null;
+    }).filter((r): r is { root: string | null; path: string } => r !== null);
     paths = located.length > 0 ? normalizePaths(located.map((r) => r.path)) : [];
-  } catch {
+    if (spec.requireCoordinated && (paths.length === 0 || located.length !== rawPaths.length)) {
+      throw new Error('file-lock-unresolved-path: every requested path must be coordinated');
+    }
+    if (spec.requireCoordinated && located.some(r => r.root === null) && located.some(r => r.root !== null)) {
+      throw new Error('file-lock-mixed-custody: split external and repository paths');
+    }
+  } catch (error) {
+    if (spec.requireCoordinated) {
+      return { acquired: false, busy: [], lockUnavailable: true,
+        error: error instanceof Error ? error.message : String(error) };
+    }
     // Preserve the existing handling of malformed/outside-repository paths.
     located = [];
     paths = [];
@@ -237,7 +287,8 @@ export async function guardFileLock<T>(
   // without one, and that throw stays outside the path-resolution try/catch, so
   // it can never downgrade an in-repository write to uncoordinated.
   const { ownerId, ownerLabel, coordinationDomain: defaultDomain } = readFileLockIdentity(ctx);
-  const domains = [...new Set(located.map((r) => (r.root === baseRepoRoot ? defaultDomain : r.root)))];
+  const domains = [...new Set(located.map((r) =>
+    (r.root === null || r.root === baseRepoRoot ? defaultDomain : r.root)))];
   // This guard owns one repository transaction and one preservation receipt.
   // Never collapse an operation spanning repositories onto one of their keys.
   if (domains.length > 1) {
@@ -273,7 +324,7 @@ export async function guardFileLock<T>(
   } catch (err) {
     const contended = isWorkspaceContended(err);
     const detail = err instanceof Error ? err.message : String(err);
-    if (spec.failClosed || (err as { reason?: string })?.reason === 'file_lock_preservation_failed') {
+    if (spec.requireCoordinated || spec.failClosed || (err as { reason?: string })?.reason === 'file_lock_preservation_failed') {
       // The opt-in inversion. A wide offset-based write would rather not happen
       // at all than happen unarbitrated — see FileLockSpec.failClosed.
       ctx.log?.(`[file-lock] acquire ${contended ? 'contended after retries' : 'faulted'}, REFUSING edit (fail-closed): ${detail}`);
@@ -452,6 +503,11 @@ export function withFileLock<A, C extends FileLockCtx>(
     const rawPaths = extractPaths(args, ctx);
     const outcome = await guardFileLock<ToolResultLike>(ctx, rawPaths, spec, async () => handler(args, ctx));
     if (outcome.acquired) return outcome.result;
+    if ('lockUnavailable' in outcome) {
+      return { isError: true, content: [{ type: 'text', text: JSON.stringify({
+        ok: false, reason: 'lock_unavailable', error: outcome.error,
+      }) }] };
+    }
     return fileLockedResult(
       outcome.busy,
       outcome.reader,

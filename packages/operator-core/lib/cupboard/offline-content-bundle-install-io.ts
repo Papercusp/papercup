@@ -34,6 +34,7 @@ import {
 } from './install-rubric-core';
 import { createTextCollector } from '../child-output';
 import { cupboardGitDeps } from './install-io';
+import { withBlueprintSourceMutation } from '../blueprint/source-lock';
 import type {
   InstallBundleAppInput,
   InstallBundleAppOptions,
@@ -126,6 +127,7 @@ async function installOfflineBlueprint(
   if (!SAFE_BLUEPRINT_ID_RE.test(unit.id)) return { ok: false, error: `unsafe blueprint id "${unit.id}"` };
 
   const root = join(contentHome(), 'blueprints');
+  return withBlueprintSourceMutation([root], async () => {
   const target = join(root, unit.id);
   assertInside(root, target, `blueprint id "${unit.id}"`);
   const source = bundleUnitSource(unit);
@@ -186,6 +188,7 @@ async function installOfflineBlueprint(
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
   }
+  });
 }
 
 function emptyCatalog(): Awaited<ReturnType<BundleHostState['deriveCatalog']>> {

@@ -25,6 +25,7 @@ import { resolveAndValidateBlueprint } from '@papercusp/blueprint-distribution';
 import { parse as parseYaml } from 'yaml';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { blueprintRegistrySets } from '../blueprint/registry-sets';
+import { withBlueprintSourceMutation } from '../blueprint/source-lock';
 import { resolveBlueprintPackageInputs, type BlueprintPackageResolver } from '../blueprint/compile-packages';
 import { registerHarnessOpProxies } from '../harness-ops/proxy';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
@@ -564,6 +565,7 @@ async function copyPackage(src: string, target: string): Promise<void> {
 }
 
 async function withLifecycleLock<T>(installedDir: string, id: string, run: () => Promise<T>): Promise<T> {
+  return withBlueprintSourceMutation([installedDir], async () => {
   const root = releaseRoot(installedDir, id);
   await fs.mkdir(root, { recursive: true });
   const lock = join(root, '.lock');
@@ -588,6 +590,7 @@ async function withLifecycleLock<T>(installedDir: string, id: string, run: () =>
   } finally {
     await fs.rm(lock, { recursive: true, force: true });
   }
+  });
 }
 
 async function readArchive(installedDir: string, id: string, contentHash: string): Promise<BlueprintReleaseArchive> {
