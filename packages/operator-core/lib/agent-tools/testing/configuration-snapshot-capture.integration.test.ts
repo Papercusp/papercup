@@ -294,6 +294,7 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
     const receiptFile = join(receiptDir, 'receipts.jsonl');
     const nativeFile = join(receiptDir, 'native.json');
     const attempt = `population-native-${randomUUID()}`;
+    let verified = false;
     try {
       await execFileAsync(process.execPath, ['scripts/test-files.mjs', suite], {
         cwd: REPO_ROOT,
@@ -325,7 +326,10 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
                commit_sha, worktree_dirty, workspace_id, harness_slug
           FROM harness_shared.test_runs WHERE id::text = ANY(${ids})
       `;
-      expect(rows).toHaveLength(ids.length);
+      expect(rows, JSON.stringify(receipts.map(receipt => ({
+        receiptId: receipt.receiptId, attempt: receipt.attempt, filePath: receipt.filePath,
+        outcome: receipt.outcome, ...(receipt.outcome === 'inserted' ? { id: receipt.id } : {}),
+      })))).toHaveLength(ids.length);
       const native = JSON.parse(await readFile(nativeFile, 'utf8'));
       expect(native.completionCheckpoint).toMatchObject({ runGroupId: group, qualificationAttemptId: attempt });
       expect(native.nativeRun).toMatchObject({ selectedPopulationMatched: true,
@@ -576,8 +580,10 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
         expect(tampered).toHaveLength(1);
         expect(parseTestRunExecutionDetails(tampered[0].execution_details)).toBeUndefined();
       }
+      verified = true;
     } finally {
-      await rm(receiptDir, { recursive: true, force: true });
+      if (verified) await rm(receiptDir, { recursive: true, force: true });
+      else process.stderr.write(`P021 original population custody failure evidence retained: ${receiptDir}\n`);
     }
   }, 180_000);
 
