@@ -940,6 +940,13 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
     neverRan?: { answeringOwnerId: string },
   ) => Promise<string>;
   /**
+   * EI-29004252322074401: the task ledger's terminal verdict for a retained
+   * answering task, or null while it is live, unknown or unledgered. Never throws.
+   * A recovered kickoff-proof timeout whose task already ENDED can never receive
+   * its native receipt, so recovery fails that rank instead of re-retaining it.
+   */
+  readEndedTask: (taskId: string | null | undefined) => Promise<string | null>;
+  /**
    * The failure line a spawned rank's launch log ends on, or null. Never throws.
    * (WI-10003197: psu refusals were visible only by grepping fleet-logs.)
    */
@@ -1510,6 +1517,25 @@ async function defaultReadLaunchLogReason(logPath: string | null | undefined): P
  * still be alive it might yet boot, and closing its row would mark a running
  * session ended.
  */
+/**
+ * Default `readEndedTask` (EI-29004252322074401): the task-manager ledger state
+ * for `taskId` (the source `processes:list` reads) when it is terminal, else
+ * null. `stranded` is NOT ended: the operator lost observation of that process,
+ * so it may still be running and could yet persist its kickoff receipt.
+ */
+export async function defaultReadEndedTask(taskId: string | null | undefined): Promise<string | null> {
+  if (!taskId) return null;
+  try {
+    const [{ getTask }, { isTerminalState }] = await Promise.all([
+      import('../task-manager/store'), import('../task-manager/types')]);
+    const task = await getTask(taskId);
+    if (!task || task.state === 'stranded' || !isTerminalState(task.state)) return null;
+    return task.exitReason ? `${task.state}: ${task.exitReason}` : task.state;
+  } catch {
+    return null;
+  }
+}
+
 export async function defaultStopFailedLaunch(
   taskId: string | null | undefined,
   neverRan?: { answeringOwnerId: string },
@@ -1912,6 +1938,7 @@ export async function dispatchConsultResponder(
     probeBackendAvailable: defaultProbeBackendAvailable,
     mintOwnerId: () => `su-${randomUUID()}`,
     stopFailedLaunch: defaultStopFailedLaunch,
+    readEndedTask: defaultReadEndedTask,
     readLaunchLogReason: defaultReadLaunchLogReason,
     recordDispatchAttempts: defaultRecordDispatchAttempts,
     readSourceDispatchRecords: defaultReadSourceDispatchRecords,
@@ -2725,7 +2752,14 @@ async function finishAnsweringSession(
   const failed = (reason: DispatchSkipReason, detail: string): AnsweringSessionResult => ({
     record: { ...base, outcome: 'failed', reason, detail }, answeringOwnerId: null, verified: null,
   });
-  if (spawn.kickoffProof?.persisted === false && spawn.kickoffProof.reason === 'kickoff-proof-timeout') {
+  const proofTimedOut = spawn.kickoffProof?.persisted === false
+    && spawn.kickoffProof.reason === 'kickoff-proof-timeout';
+  // EI-29004252322074401: a RECOVERED timeout whose original task already ended
+  // can never receive its native receipt. Re-retaining it kept the consult
+  // proof-pending on a dead fork until expiry; fail the rank instead so the
+  // cascade advances. A live, unknown or unledgered task keeps its custody.
+  const endedTask = recovering && proofTimedOut ? await d.readEndedTask(spawn.taskId) : null;
+  if (proofTimedOut && !endedTask) {
     return {
       record: { ...base, outcome: 'pending',
         ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
@@ -2750,7 +2784,9 @@ async function finishAnsweringSession(
     const result = failed(
       'kickoff-not-persisted',
       `spawn did not persist its kickoff in the native transcript ` +
-        `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'}); ${stopped}` +
+        `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'}); ` +
+        (endedTask ? `original answering task ${spawn.taskId} ended (${endedTask}) without a receipt; ` : '') +
+        `${stopped}` +
         (launchError ? `; launcher said: ${launchError}` : ''),
     );
     return {

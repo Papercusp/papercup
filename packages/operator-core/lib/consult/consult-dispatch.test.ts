@@ -207,6 +207,7 @@ function makeFakes(
       calls.stoppedNeverRan.push(neverRan ?? null);
       return `stopped task ${taskId}`;
     },
+    readEndedTask: async () => null,
     readLaunchLogReason: async (logPath: string | null | undefined) => {
       calls.logReads.push(logPath);
       return opts.logReason ?? null;
@@ -642,6 +643,30 @@ describe('dispatchConsultResponder — the fork leg', () => {
       // The cascade must commit the result before consuming this receipt.
       expect(existsSync(path)).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // EI-29004252322074401: a recovered timeout whose task the ledger shows ENDED must
+  // fail the rank so the cascade advances, not re-retain the dead fork as pending.
+  it.each([
+    ['killed: scope-kill SIGTERM', false],
+    [null, true],
+  ] as const)('recovering a still-timed-out kickoff (ended task %s) keeps pending=%s', async (ended, keepsPending) => {
+    const { deps, calls } = makeFakes({}, { spawnStatuses: ['timeout'] });
+    const initial = await dispatchConsultResponder(OPTS, CTX, deps);
+    const readEndedTask = vi.fn(async () => ended);
+    const recovered = await dispatchConsultResponder({ ...OPTS, recoverKickoff: initial.pendingKickoff! }, CTX,
+      { ...deps, readEndedTask });
+    expect(readEndedTask).toHaveBeenCalledWith('task-1');
+    expect(calls.spawn).toHaveLength(1);
+    if (keepsPending) {
+      expect(recovered).toMatchObject({ dispatched: false, pending: true, attempts: [{ outcome: 'pending' }] });
+      expect(calls.stopped).toEqual([]);
+    } else {
+      expect(recovered.pending).toBeUndefined();
+      expect(recovered).toMatchObject({ dispatched: false, attempts: [{ outcome: 'failed', reason: 'kickoff-not-persisted',
+        detail: expect.stringContaining('original answering task task-1 ended (killed: scope-kill SIGTERM)') }] });
+      expect(calls.stoppedNeverRan).toEqual([{ answeringOwnerId: 'su-answer-1' }]);
+    }
   });
 
   it('does not run the expiry callback when the native kickoff was not persisted', async () => {
