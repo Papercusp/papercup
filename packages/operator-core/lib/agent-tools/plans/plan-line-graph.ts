@@ -1,6 +1,7 @@
 /** Plan-line storage over the existing work graph (migration 1601). */
 import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
+import { InvalidInputError } from '@papercusp/tooldef';
 import { deriveIndexFromContent, type PlanIndexItem } from './derive-index';
 import { ISSUE_FAMILY_ROUTE_KINDS } from '../../work-nature/agent-work-predicate';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -165,22 +166,44 @@ async function readValidatedLegacyPlanItems(
   tx: Sql,
   scope: Omit<PlanLineScope, 'slug'>,
   slugs: readonly string[],
+  representedByPlan: ReadonlyMap<string, readonly PlanIndexItem[]> = new Map(),
 ): Promise<Map<string, PlanIndexItem[]>> {
   const uniqueSlugs = [...new Set(slugs)];
   if (uniqueSlugs.length === 0) return new Map();
-  // The graph path avoids detoasting plan content. Only graphless rows with a
-  // nonempty JSON index reach this query, and only those rows return content.
-  const rows = await tx<{ plan_slug: string; items: unknown; content: string | null }[]>`
-    SELECT plan_slug, items, content
+  const representedIds = Object.fromEntries(uniqueSlugs.map(slug =>
+    [slug, (representedByPlan.get(slug) ?? []).map(item => item.id)]));
+  // Inspect canonical bytes only for graphless plans or an index that names
+  // unrepresented IDs. Complete graphs keep the ordinary no-detoast path.
+  const rows = await tx<{
+    plan_slug: string; items: unknown; content: string | null; version: number; content_hash: string;
+  }[]>`
+    SELECT plan_slug, items, content, version, content_hash
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
        AND plan_slug = ANY(${uniqueSlugs}::text[])
        AND items IS NOT NULL AND items <> '[]'::jsonb
+       AND NOT (coalesce(${JSON.stringify(representedIds)}::text::jsonb -> plan_slug, '[]'::jsonb)
+         @> jsonb_path_query_array(items, '$[*].id'))
   `;
   const result = new Map<string, PlanIndexItem[]>();
   for (const row of rows) {
     const items = matchingLegacyPlanItems(row.items, row.content ?? '');
-    if (items) result.set(row.plan_slug, items);
+    if (!items) continue;
+    const represented = representedByPlan.get(row.plan_slug) ?? [];
+    if (represented.length) {
+      const ids = new Set(represented.map(item => item.id));
+      const missingItemIds = items.filter(item => !ids.has(item.id)).map(item => item.id);
+      if (missingItemIds.length) throw new InvalidInputError(JSON.stringify({
+        code: 'plan_line_graph_incomplete', planSlug: row.plan_slug, missingItemIds,
+        message: 'Saved plan content and its matching index contain unrepresented lines. Reconcile before reading a complete plan population.',
+        recovery: { tool: 'plans:backfill-dependency-edges', args: {
+          harness: scope.harnessSlug, dryRun: true, savedLines: {
+            slug: row.plan_slug, expectedVersion: Number(row.version), expectedContentHash: row.content_hash,
+          },
+        } },
+      }));
+    }
+    result.set(row.plan_slug, items);
   }
   return result;
 }
@@ -192,9 +215,10 @@ export async function readPlanLineItems(
   parentRow?: { items: unknown; content: string | null },
 ): Promise<PlanIndexItem[]> {
   const nodes = await readPlanLineNodes(tx, scope);
+  if (nodes.length > 0 && parentRow && missingStoredPlanLineIds(nodes, parentRow).length === 0) return nodes;
+  if (nodes.length === 0 && parentRow) return matchingLegacyPlanItems(parentRow.items, parentRow.content ?? '') ?? [];
+  const legacy = await readValidatedLegacyPlanItems(tx, scope, [scope.slug], new Map([[scope.slug, nodes]]));
   if (nodes.length > 0) return nodes;
-  if (parentRow) return matchingLegacyPlanItems(parentRow.items, parentRow.content ?? '') ?? [];
-  const legacy = await readValidatedLegacyPlanItems(tx, scope, [scope.slug]);
   return legacy.get(scope.slug) ?? [];
 }
 
@@ -212,9 +236,8 @@ export async function readPlanLineItemsByPlan(
     items.push(node);
     result.set(node.planSlug, items);
   }
-  const graphless = uniqueSlugs.filter((slug) => !result.has(slug));
-  const legacy = await readValidatedLegacyPlanItems(tx, scope, graphless);
-  for (const [slug, items] of legacy) result.set(slug, items);
+  const legacy = await readValidatedLegacyPlanItems(tx, scope, uniqueSlugs, result);
+  for (const [slug, items] of legacy) if (!result.has(slug)) result.set(slug, items);
   return result;
 }
 

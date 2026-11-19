@@ -24,7 +24,7 @@ import '../../plan-items/reflect-rules';
 import '../plan-items/release';
 import { deriveIndexFromContent } from './derive-index';
 import { hashPlanContent } from './content-hash';
-import { writePlanLineNodes, readPlanLineNodes, repairSavedPlanLines, type SavedPlanLinesPreview } from './plan-line-graph';
+import { writePlanLineNodes, readPlanLineNodes, readPlanLineItems, repairSavedPlanLines, type SavedPlanLinesPreview } from './plan-line-graph';
 import { mutateWorkItemDependenciesInTransaction, withWorkItemDependencyAdmissionTransaction } from '../../dbos/work-item-deps-store';
 import backfillDependencyEdgesTool from './backfill-dependency-edges';
 import { writePlanIndexRows } from './plan-index-rows';
@@ -758,6 +758,28 @@ describe('bounded saved-line graph reconciliation', () => {
     expect(data(await callPublic(false, preview)))
       .toMatchObject({ alreadyReconciled: true, nodesAdded: 0, edgesWritten: 0 });
     expect(await retained()).toEqual(prior);
+  });
+  it('follows the incomplete-read diagnostic through the existing signed repair and recovers the tail', async () => {
+    await prepare();
+    let failure: unknown;
+    try { await readPlanLineItems(fx.admin, scope); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    const diagnostic = JSON.parse((failure as Error).message);
+    expect(diagnostic).toMatchObject({ code: 'plan_line_graph_incomplete',
+      missingItemIds: ['P-023', 'P-024', 'P-025', 'P-026'],
+      recovery: { tool: 'plans:backfill-dependency-edges', args: { harness: HARNESS, dryRun: true } } });
+    const args = diagnostic.recovery.args;
+    const preview = data(await backfillDependencyEdgesTool.handler(backfillDependencyEdgesTool.args.parse(args), ctx()));
+    expect(preview.nodesAdded).toBe(0);
+    const prior = await retained();
+    const applied = data(await backfillDependencyEdgesTool.handler(backfillDependencyEdgesTool.args.parse({
+      ...args, dryRun: false, savedLines: { ...args.savedLines, preview: preview.preview },
+    }), ctx()));
+    expect(applied).toMatchObject({ nodesAdded: 4, edgesWritten: 4 });
+    expect(await retained()).toEqual(prior);
+    const items = await readPlanLineItems(fx.admin, scope);
+    expect(items.map(item => item.id)).toEqual(Array.from({ length: 26 }, (_, i) => lineId(i + 1)));
+    expect(items.at(-1)).toMatchObject({ id: 'P-026', blockedBy: ['P-025'] });
   });
   it.each([
     { label: 'Frontier P-017 to P-026', id: 'P-017', oldBlockers: ['P-014', 'P-016'], addedBlocker: 'P-026',

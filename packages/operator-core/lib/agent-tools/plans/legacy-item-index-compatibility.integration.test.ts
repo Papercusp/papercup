@@ -48,6 +48,13 @@ async function seedPlan(slug: string, content: string, items: unknown): Promise<
   );
 }
 
+async function seedGraphItem(slug: string, id: string, text: string, sequence: number): Promise<void> {
+  await db.sql.unsafe(
+    'INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, plan_slug, plan_line_id, plan_seq, plan_phase, plan_importance, plan_decision_refs, plan_deliverable, plan_owner_gate_marker, plan_line_text) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::text[], $14, $15, $16)',
+    [workspaceId, harnessSlug, `WI-${slug}-${id}`, text, text, 'open', 'feature', slug, id, sequence, 'Phase 1', 'normal', [], null, null, text],
+  );
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('planlinecompat');
   connection.sql = db.sql;
@@ -154,21 +161,65 @@ describe('old writer JSON item index compatibility', () => {
     expect(mismatch.content).not.toContain('P-003');
   });
 
-  it('prefers current graph rows over an otherwise matching legacy index', async () => {
+  it.each([21, 22, 23])('reports the complete missing population after %i represented items in either saved order', async count => {
+    for (const reversed of [false, true]) {
+      const slug = `partial-${count}-${reversed}`;
+      const lines = Array.from({ length: count + 3 }, (_, i) =>
+        `- **P-${String(i + 1).padStart(3, '0')}** \u0060todo\u0060 Task ${i + 1}`);
+      const content = body.slice(0, body.indexOf('- **P-001**'))
+        + (reversed ? [...lines].reverse() : lines).join('\n') + '\n';
+      await seedPlan(slug, content, deriveIndexFromContent(content).items);
+      for (let i = 0; i < count; i++) {
+        await seedGraphItem(slug, `P-${String(i + 1).padStart(3, '0')}`, `Task ${i + 1}`, i);
+      }
+      const missing = Array.from({ length: 3 }, (_, i) => `P-${String(count + i + 1).padStart(3, '0')}`);
+      const message = /plan_line_graph_incomplete/;
+      for (const read of [
+        () => getPlanRow(slug, scope),
+        () => getPlanItemRow(slug, scope),
+        () => readExecutionPlanRow({ ...scope, planSlug: slug }),
+        () => listPlanIndexRows({ ...scope, includeItems: true, limit: 10 }),
+      ]) {
+        let failure: unknown;
+        try { await read(); } catch (error) { failure = error; }
+        expect(failure).toBeInstanceOf(Error);
+        const text = (failure as Error).message;
+        expect(text).toMatch(message);
+        for (const id of missing) expect(text).toContain(id);
+        expect(text).toContain('plans:backfill-dependency-edges');
+        expect(text).toContain(hashPlanContent(content));
+        expect(text).toContain('expectedVersion');
+      }
+      // Simulate the additive materialization's result: subsequent consumers
+      // recover the entire population and keep graph-owned text authoritative.
+      for (const [i, id] of missing.entries()) {
+        await seedGraphItem(slug, id, `Recovered ${id}`, count + i);
+        // Each fresh read sees durable progress, while an unreconciled tail
+        // still prevents a complete-population claim after partial recovery.
+        for (const remaining of missing.slice(i + 1)) {
+          await expect(getPlanRow(slug, scope)).rejects.toThrow(remaining);
+        }
+      }
+      expect((await getPlanRow(slug, scope))?.items).toHaveLength(count + 3);
+      expect((await getPlanItemRow(slug, scope))?.items).toHaveLength(count + 3);
+      expect((await listPlanIndexRows({ ...scope, includeItems: true, limit: 10 }))
+        .find(plan => plan.planSlug === slug)?.items).toHaveLength(count + 3);
+    }
+  });
+
+  it('prefers current graph text over an otherwise matching legacy index without omitting saved IDs', async () => {
     await seedPlan('graph-wins', body, deriveIndexFromContent(body).items);
-    await db.sql.unsafe(
-      'INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, plan_slug, plan_line_id, plan_seq, plan_phase, plan_importance, plan_decision_refs, plan_deliverable, plan_owner_gate_marker, plan_line_text) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::text[], $14, $15, $16)',
-      [workspaceId, harnessSlug, 'WI-graph', 'Graph text', 'Graph text', 'open', 'feature', 'graph-wins', 'P-001', 0, 'Phase 1', 'normal', [], null, null, 'Graph text'],
-    );
+    await seedGraphItem('graph-wins', 'P-001', 'Graph text', 0);
+    await seedGraphItem('graph-wins', 'P-002', 'Graph second task', 1);
 
     const plan = await getPlanRow('graph-wins', scope);
     const listed = await listPlanIndexRows({ ...scope, includeItems: true, limit: 10 });
     const listedPlan = listed.find((candidate) => candidate.planSlug === 'graph-wins');
     if (!plan || !listedPlan) throw new Error('graph fixture read missing');
 
-    expect(plan.items.map((item) => item.id)).toEqual(['P-001']);
+    expect(plan.items.map((item) => item.id)).toEqual(['P-001', 'P-002']);
     expect(plan.items[0]?.text).toBe('Graph text');
-    expect(listedPlan.items.map((item) => item.id)).toEqual(['P-001']);
+    expect(listedPlan.items.map((item) => item.id)).toEqual(['P-001', 'P-002']);
     expect(listedPlan.items[0]?.text).toBe('Graph text');
   });
 });
