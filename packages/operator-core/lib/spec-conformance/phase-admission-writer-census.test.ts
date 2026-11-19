@@ -1625,6 +1625,59 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('retains archive source symlinks as gaps until each identity is recovered', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-archive-links-'));
+    const writer = 'packages/writer.ts';
+    const links = ['packages/live-link.ts', 'packages/missing-link.ts'];
+    try {
+      mkdirSync(join(root, 'packages'));
+      writeFileSync(join(root, writer), write);
+      symlinkSync('writer.ts', join(root, links[0]!));
+      symlinkSync('absent.ts', join(root, links[1]!));
+
+      const before = inventoryPhaseWriterTree(root);
+      const reviews = before.sites.map(site => review(site));
+      expect(before.sources.map(source => source.path)).toEqual([writer]);
+      expect(before.gaps).toEqual(links.map(path => ({ id: `source:${path}`, reason: 'non-regular-source' })));
+      expect(reconcilePhaseWriterCensus(before, reviews).coverage.residue).toEqual(links.map(path => `gap:source:${path}`));
+      expect(() => assertPhaseWriterTreeCensus(root, reviews)).toThrow('phase_writer_tree_census_incomplete');
+
+      rmSync(join(root, links[0]!));
+      expect(inventoryPhaseWriterTree(root).gaps.map(gap => gap.id)).toEqual([`source:${links[1]}`]);
+      rmSync(join(root, links[1]!));
+      writeFileSync(join(root, links[1]!), write);
+      const after = inventoryPhaseWriterTree(root);
+      expect(after.gaps).toEqual([]);
+      expect(() => assertPhaseWriterTreeCensus(root, reviews)).toThrow('phase_writer_tree_census_incomplete');
+      expect(assertPhaseWriterTreeCensus(root, after.sites.map(site => review(site))).ready).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses an archive path that cannot be decoded without changing its identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-archive-path-'));
+    const directory = join(root, 'packages');
+    const valid = 'writer-\uFFFD.ts';
+    const invalid = Buffer.concat([Buffer.from('writer-'), Buffer.from([0xff]), Buffer.from('.ts')]);
+    const invalidPath = Buffer.concat([Buffer.from(`${directory}/`), invalid]);
+    try {
+      mkdirSync(directory);
+      writeFileSync(join(directory, valid), write);
+      writeFileSync(invalidPath, write);
+      expect(() => inventoryPhaseWriterTree(root)).toThrow(
+        `Invalid UTF-8 in filesystem path record under ${directory} (hex: ${invalid.toString('hex')})`,
+      );
+
+      rmSync(invalidPath);
+      const inventory = inventoryPhaseWriterTree(root);
+      expect(inventory.sources.map(source => source.path)).toEqual([`packages/${valid}`]);
+      expect(assertPhaseWriterTreeCensus(root, inventory.sites.map(site => review(site))).ready).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('retains unreadable runtime bytes as gaps regardless of filename extension', () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-unknown-runtime-bytes-'));
     try {
