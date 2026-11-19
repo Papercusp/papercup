@@ -13,6 +13,8 @@
  */
 
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { proveOrphanedGradingAuditLaunch, type OrphanedGradingAuditLaunchProof } from './grading-audit-orphan-launch';
 import { launchTaskForKickoffRecovery, nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { getOrgPg } from '@papercusp/db-org';
@@ -881,6 +883,48 @@ type RetainedNativeTranscriptProof = {
   nativeBackend?: 'claude' | 'codex';
 };
 
+/** A completed, owner-bound native turn is a recovery epoch, not a process
+ * death. Never derive it from PTY text or a tool result quoting a failure. */
+async function* nativeTranscriptLines(path: string, signal?: AbortSignal): AsyncGenerator<string> {
+  const input = createReadStream(path, { signal });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try { for await (const line of lines) yield line; }
+  finally { lines.close(); input.destroy(); }
+}
+
+async function nativeRuntimeInterruption(
+  lines: AsyncIterable<string> | Iterable<string>, proof: RetainedNativeTranscriptProof, runtime: GradingAuditRuntimeBinding,
+): Promise<string | undefined> {
+  let completed: string | undefined;
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    let row: Record<string, unknown>;
+    try { row = JSON.parse(line); } catch { return undefined; }
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return undefined;
+    const payload = row.payload as Record<string, unknown> | undefined;
+    const session = row.sessionId ?? row.session_id ?? (row.type === 'session_meta' ? payload?.id : undefined);
+    if (typeof session === 'string' && session !== proof.nativeSessionId) return undefined;
+    const codex = proof.nativeBackend === 'codex' && row.type === 'event_msg';
+    const claude = proof.nativeBackend === 'claude';
+    const completion = (codex && payload?.type === 'task_complete') || (claude && row.type === 'result');
+    const final = codex ? payload?.last_agent_message : row.result;
+    if (completion) {
+      completed = undefined;
+      const epoch = payload?.turn_id ?? row.uuid ?? row.timestamp;
+      if (typeof final === 'string' && typeof epoch === 'string' && epoch && final.includes(runtime.baseUrl) &&
+          /unreachable|ECONNREFUSED|connection (?:refused|failure)|not reachable|(?:could not|failed to) connect|endpoint[^\n]*unavailable/i.test(final)) {
+        completed = createHash('sha256').update(JSON.stringify([proof.nativeSessionId, epoch, final])).digest('hex');
+      }
+    } else if ((codex && ['task_started', 'turn_started'].includes(String(payload?.type))) ||
+        row.type === 'response_item' || (claude && ['user', 'assistant'].includes(String(row.type)))) {
+      // A newer turn/activity invalidates an older interruption, including a
+      // successful resumed turn that has not completed yet.
+      completed = undefined;
+    }
+  }
+  return completed;
+}
+
 /**
  * Native transcript evidence for the recovery seam is deliberately stricter than a PTY tail:
  * the exact session must have a kickoff/user record and no assistant response or tool activity.
@@ -1146,6 +1190,8 @@ export async function notifyRetainedGradingAuditor(
     runtime?: GradingAuditRuntimeBinding;
     /** Resume a positively parked retained task without replacing its lease. */
     resumeParked?: boolean;
+    /** Exact completed native turn that stopped on this evaluator's transport. */
+    resumeAfterTurn?: string;
   },
   deps: {
     append?: PgCoordLog['appendLineIfAbsent'];
@@ -1175,6 +1221,7 @@ export async function notifyRetainedGradingAuditor(
   // A restored endpoint needs a new handoff even when the audit lease did not
   // change. Legacy notices keep their original replay identity.
   if (input.runtime) notificationIdentity.push(input.runtime);
+  if (input.resumeParked && input.runtime && input.resumeAfterTurn) notificationIdentity.push(input.resumeAfterTurn);
   const msgId = `${input.resumeParked ? 'grading-audit-resume' : 'grading-audit-renewal'}:${createHash('sha256')
     .update(JSON.stringify(notificationIdentity))
     .digest('hex')}`;
@@ -1190,7 +1237,7 @@ export async function notifyRetainedGradingAuditor(
     ...replayRefusalGuidance,
     `${input.resumeParked ? 'Resume retained audit under existing lease' : 'Renewed lease'}: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
     ...(input.runtime ? [
-      `Current retained evaluator: '${input.runtime.baseUrl}' (build '${input.runtime.evaluatorBuild.sha}', version '${input.runtime.evaluatorBuild.version}', runtime task '${input.runtime.taskId}'). Use this endpoint's /api/mcp for scorecards:get and the audit; the task's gradingAuditRuntimeBinding is updated with this notice. Require its exact build and the target/lease/currentness checks below. If this route cannot be used, stop and report the route failure; do not substitute a default operator.`,
+      `Current retained evaluator: '${input.runtime.baseUrl}' (build '${input.runtime.evaluatorBuild.sha}', version '${input.runtime.evaluatorBuild.version}', runtime task '${input.runtime.taskId}'). Use this endpoint's /api/mcp for scorecards:get and the audit; the task's gradingAuditRuntimeBinding is updated with this notice. Require its exact build and the target/lease/currentness checks below. A prior transport interruption does not invalidate completed audit work: continue after re-reading this exact pending target and lease on the restored endpoint. If this route cannot be used, report the exact endpoint failure for canonical scorecards:repair continuation; do not substitute a default operator or emit a grade from incomplete evidence.`,
     ] : []),
     `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt, fingerprint, and reservation snapshot ${JSON.stringify(reservation.snapshot ?? null)} before auditing; otherwise stop without grading or emitting.`,
     gradingAuditBrief(card, reservation.reservedAt, input.runtime),
@@ -3318,6 +3365,7 @@ export async function dispatchPendingGradingAudits(
         }
       }
       const viableLiveTasks = [] as typeof liveTasks;
+      const retainedNativeProofs = new Map<string, RetainedNativeTranscriptProof>();
       for (const task of liveTasks) {
         const taskLogPath = task.logPath ?? null;
         const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
@@ -3341,6 +3389,7 @@ export async function dispatchPendingGradingAudits(
             // The existing log-only classifier remains authoritative when native proof is unavailable.
           }
         }
+        if (nativeProof) retainedNativeProofs.set(task.taskId, nativeProof);
         // EI-23148617450190529: a headless CLI can return to its interactive
         // prompt after a delayed gateway/quota failure while its PTY and task
         // ledger row stay live. The old guard treated process liveness as mission
@@ -3538,6 +3587,23 @@ export async function dispatchPendingGradingAudits(
         );
         markPhase('retained-auditor-notification');
         const retainedRuntime = retainedRuntimes.get(issueId);
+        let resumeAfterTurn: string | undefined;
+        const retainedProof = retainedTask && retainedNativeProofs.get(retainedTask.taskId);
+        if (resumeParked && retainedRuntime && retainedProof) {
+          try {
+            const deadline = input.ctx.deadlineAtMs;
+            const timeout = typeof deadline === 'number' && Number.isFinite(deadline)
+              ? AbortSignal.timeout(Math.max(0, Math.ceil(deadline - Date.now()))) : undefined;
+            const signals = [input.ctx.signal, timeout].filter((signal): signal is AbortSignal => Boolean(signal));
+            // The ordinary PTY tail cuts at 16KB and can split a native JSON
+            // record. Stream the exact transcript through EOF instead; caller
+            // cancellation/deadline makes an incomplete scan unknown.
+            const lines = deps.readLogTail
+              ? (await readLogTail(retainedProof.nativeTranscriptPath)).split(/\r?\n/u)
+              : nativeTranscriptLines(retainedProof.nativeTranscriptPath, signals.length ? AbortSignal.any(signals) : undefined);
+            resumeAfterTurn = await nativeRuntimeInterruption(lines, retainedProof, retainedRuntime);
+          } catch { /* Unknown transcript evidence keeps the original once-per-lease wake. */ }
+        }
         const renewalNotification = unchangedReplayRefusal
           ? {
               state: 'skipped' as const,
@@ -3560,6 +3626,7 @@ export async function dispatchPendingGradingAudits(
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
                 ...(resumeParked ? { resumeParked: true } : {}),
+                ...(resumeAfterTurn ? { resumeAfterTurn } : {}),
               });
         if (renewalNotification?.state === 'failed') {
           // A pre-append failure delivered nothing. Clear only this exact epoch

@@ -20,7 +20,7 @@ import { planClassAllowsAllExemptItems } from '../../plan-class-refs';
 export const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
 
 /** Increment when implementation-independence detector semantics change; prose can change independently. */
-export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 4;
+export const IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION = 5;
 
 export const SPEC_QUALITY_CRITERIA = [
   'stable-revision-identity',
@@ -429,6 +429,26 @@ const NON_CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])([^\s()[\]`'"]+\.(?:html?|css|js
 // file TYPE, not a file (WI-6554700010029504). Non-global: used with .test().
 const CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])[^\s()[\]`'"]+\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i;
 
+// Share the noun vocabulary across active, passive and subject prescriptions.
+// Merely observing an existing customer's data/state is not a prescription.
+const IMPLEMENTATION_SURFACE_NOUN = String.raw`(?:pages?|screens?|routes?|endpoints?|components?|handlers?|operations?|ops?|modules?|services?|runtimes?|flows?|workflows?|ledgers?|diagnostics|instrumentation|mechanisms?|pipelines?|paths?|patterns?|scheduling|schedulers?|sweeps?|records?|capabilit(?:y|ies)|surfaces?|rollback(?:/kill-switch)?|kill-switch(?:es)?|report\s+cards?)`;
+const EXISTING_SURFACE_REUSE_RE = new RegExp(
+  String.raw`\b(?:extends?|reuses?|modif(?:y|ies)|wires?|integrates?|expands?|renders?|mounts?|uses?|exposes?|wakes?)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}` + IMPLEMENTATION_SURFACE_NOUN + String.raw`\b`, 'i',
+);
+const EXISTING_SURFACE_USAGE_RE = new RegExp(
+  String.raw`\b(?:through|via|using|by|under)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}` + IMPLEMENTATION_SURFACE_NOUN + String.raw`\b`, 'i',
+);
+const EXISTING_SURFACE_SUBJECT_RE = new RegExp(
+  String.raw`\bexisting\s+(?:[\w/-]+\s+){0,6}` + IMPLEMENTATION_SURFACE_NOUN + String.raw`\s+(?:implements?|handles?|runs?|invokes?|provides?)\b`, 'i',
+);
+const STORAGE_BACKEND_PATTERN = String.raw`(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store|dbos)`;
+const NAMED_STORAGE_BACKEND_RE = new RegExp(
+  String.raw`\b(?:stored|persisted|written|saved|kept|mirrored|replicated|recorded)\b[^.!?;\n]{0,80}\b` + STORAGE_BACKEND_PATTERN + String.raw`\b|\b` + STORAGE_BACKEND_PATTERN + String.raw`\b[^.!?;\n]{0,80}\b(?:database|storage|store|state)\b`, 'i',
+);
+const RECORD_IN_BACKEND_RE = new RegExp(
+  String.raw`\brecord(?:s|ing)?\b[^.!?;\n]{0,80}\b(?:in|into|to)\s+(?:the\s+)?(?:existing\s+)?` + STORAGE_BACKEND_PATTERN + String.raw`\b`, 'i',
+);
+
 function repositoryPathReason(text: string): string | null {
   for (const match of text.matchAll(REPO_DIR_TOKEN_RE)) {
     const token = match[1].replace(/\.+$/, '');
@@ -589,7 +609,7 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
     return 'names an internal operation ' + JSON.stringify(operationReference[0]);
   }
   const existingSurfaceReuse =
-    /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates|expand|expands|render|renders|mount|mounts)\b[^.\n]{0,80}\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability|report\s+cards?)\b/i.exec(behavior) ??
+    EXISTING_SURFACE_REUSE_RE.exec(behavior) ??
     /\b(?:extend|extends|reuse|reuses|modify|modifies|wire|wires|integrate|integrates|expand|expands|render|renders|mount|mounts)\b[^.\n]{0,80}\bexisting\s+shared\s+[A-Z][A-Za-z0-9]*(?:Card|Component|Widget|Panel|View|Block)\b/.exec(behavior);
   if (existingSurfaceReuse) {
     return 'prescribes reuse of an existing implementation surface ' + JSON.stringify(existingSurfaceReuse[0].trim());
@@ -600,8 +620,7 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
   // Restrict the former to implementation nouns and usage/subject positions:
   // an existing customer/account is an observable identity, not code coupling.
   const implementationPrescription =
-    /\b(?:through|via|using|by)\s+(?:the\s+)?existing\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability)\b/i.exec(behavior) ??
-    /\bexisting\s+(?:[\w/-]+\s+){0,6}(?:page|screen|route|endpoint|component|handler|operation|op|module|service|runtime|flow|ledger|diagnostics|instrumentation|mechanism|pipeline|path|scheduling|scheduler|sweep|records?|capability)\s+(?:implements?|handles?|runs?|invokes?|provides?)\b/i.exec(behavior);
+    EXISTING_SURFACE_USAGE_RE.exec(behavior) ?? EXISTING_SURFACE_SUBJECT_RE.exec(behavior);
   if (implementationPrescription) {
     return 'prescribes implementation reuse or selection ' + JSON.stringify(implementationPrescription[0].trim());
   }
@@ -609,8 +628,8 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
   // Inspect each imperative separately so a proof-reuse instruction cannot hide
   // a later machinery choice. All source/route/storage/construct checks still
   // inspect the complete behavior, including any qualifying proof condition.
-  const verificationProofReuse = /^reuse\s+(?:(?:the|prior|previous|current|clean|passing|verified|existing)\s+)*(?:(?:verification|test|check|proof)\s+)?(?:receipts?|evidence|(?:test|check)\s+results?)(?:\s+(?:when|if)\s+[^.!?;\n]+)?$/i;
-  const imperativePrescriptions = /(?:^|[.!?;]\s*)(?:reuse|extend|modify|wire|integrate|evaluate)\s+(?!(?:of|is|was|will|must|can|may)\b)[^.!?;\n]+/gi;
+  const verificationProofReuse = /^(?:reuse|use)\s+(?:(?:the|prior|previous|current|clean|passing|verified|existing)\s+)*(?:(?:verification|test|check|proof)\s+)?(?:receipts?|evidence|(?:test|check)\s+results?)(?:\s+(?:when|if)\s+[^.!?;\n]+)?$/i;
+  const imperativePrescriptions = /(?:^|[.!?;]\s*)(?:reuse|use|extend|modify|wire|integrate|evaluate)\s+(?!(?:of|is|was|will|must|can|may)\b)[^.!?;\n]+/gi;
   for (const match of behavior.matchAll(imperativePrescriptions)) {
     const prescription = match[0].replace(/^[.!?;]\s*/, '').trim();
     if (!verificationProofReuse.test(prescription)) {
@@ -622,7 +641,7 @@ function implementationCouplingReason(behavior: string, publicContract?: string)
   const filesystemPermission =
     /\b0[0-7]{3}\b[^.!?;\n]{0,60}\b(?:file|file\s+system|filesystem|directory)\b|\b(?:file|file\s+system|filesystem|directory)\b[^.!?;\n]{0,60}\b0[0-7]{3}\b/i.exec(behavior);
   const namedStorageBackend =
-    /\b(?:stored|persisted|written|saved|kept|mirrored|replicated)\b[^.!?;\n]{0,80}\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b|\b(?:postgres(?:ql)?|mysql|mariadb|sqlite|redis|s3|object\s+storage|keychain|key\s+store)\b[^.!?;\n]{0,80}\b(?:database|storage|store)\b/i.exec(behavior);
+    NAMED_STORAGE_BACKEND_RE.exec(behavior) ?? RECORD_IN_BACKEND_RE.exec(behavior);
   const storageEncryptionOrMirroring =
     /\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b[^.!?;\n]{0,80}\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b|\b(?:postgres(?:ql)?|database|db|file|filesystem|storage|store)\b[^.!?;\n]{0,80}\b(?:encrypt(?:ed|ion|ing)?|mirror(?:s|ed|ing)?|replicat(?:e|es|ed|ing|ion)|replica)\b/i.exec(behavior);
   const storageMechanism = filesystemPermission ?? namedStorageBackend ?? storageEncryptionOrMirroring;
@@ -1139,6 +1158,9 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'Computed cards are refreshed by the existing runtime.', expected: 'coupled' as const },
     { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
     { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'Record partial success in existing DBOS state.', expected: 'coupled' as const },
+    { behavior: 'Use successful existing platform operations and completion submissions to persist requests and wake the existing git-sync workflow.', expected: 'coupled' as const },
+    { behavior: 'Retain immutable content under the existing private recovery-ref pattern.', expected: 'coupled' as const },
     { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
     { behavior: 'The private field condition_key retains episode coalescing.', expected: 'coupled' as const },
     { behavior: 'runSyncBatchDeltaCheck evaluates the batch under sustained load.', expected: 'coupled' as const },
@@ -1158,6 +1180,9 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'An invitation is accepted by the existing account holder.', expected: 'independent' as const },
     { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
     { behavior: 'Reuse prior clean receipts when current; do not recreate proof just for recovery.', expected: 'independent' as const },
+    { behavior: 'Use prior clean receipts when current.', expected: 'independent' as const },
+    { behavior: 'The customer sees their existing state after reopening the page.', expected: 'independent' as const },
+    { behavior: 'An audit record includes the DBOS run identifier supplied by the caller.', expected: 'independent' as const },
     { behavior: 'Recipe discovery returns a typed input contract with required issueId for replay.', expected: 'independent' as const },
     { behavior: 'Recipe discovery returns a typed input contract with required issueId; issueId evaluates the replay.', expected: 'coupled' as const },
   ].map((control) => {
@@ -1168,7 +1193,7 @@ export function evaluatePlanSpecQuality(input: {
   const implementationIndependenceCoverage =
     ' Detector semantics revision: ' + IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION + '.' +
     ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
-    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names and metric spellings), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including shared UI components/report cards, runtimes, flows, pipelines, ledgers, mechanisms, scheduling paths and sweeps, including passive by prescriptions), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Detector coverage: implementation filenames, explicitly qualified/quoted construct symbols (including snake_case identifiers), bare lowerCamel identifiers (excluding recognized public platform/device names and metric spellings), repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including shared UI components/report cards, runtimes, flows/workflows, pipelines, ledgers, mechanisms, recovery patterns, scheduling paths and sweeps, including passive by/under prescriptions), imperative implementation selection, filesystem permission modes, recognized named storage backends (Postgres/PostgreSQL, MySQL, MariaDB, SQLite, Redis, S3, object storage, keychain, key store and DBOS state), encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +

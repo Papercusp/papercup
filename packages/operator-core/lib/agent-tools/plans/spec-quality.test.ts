@@ -742,6 +742,55 @@ describe('evaluatePlanSpecQuality', () => {
   });
 
   it.each([
+    'Record partial success in existing DBOS state.',
+    'Partial success is recorded in existing DBOS state.',
+    'Use successful existing platform operations and completion submissions to persist requests and wake the existing git-sync workflow. The periodic routine becomes a bounded recovery/reconciliation mechanism.',
+    'Retain immutable content under the existing private recovery-ref pattern.',
+    'Expose existing status/evidence surfaces.',
+    'Use existing rollback/kill-switch.',
+    'The request wakes the existing git-sync workflow.',
+    'Use the same git-sync authority, per-repository lease, private-index publication and conditional ref update.',
+  ])('rejects audited implementation selections in behavior and observations: %s', (text) => {
+    for (const sourceBar of [null, {
+      barKey: 'R-18', barHash: 'a'.repeat(64), barSetHash: 'b'.repeat(64),
+      rubricSlug: 'acceptance-quality-plan', rubricRevision: 1, evidencePlane: 'tree' as const,
+    }]) {
+      for (const field of ['behavior', 'observation'] as const) {
+        const contract = clause({
+          sourceBar,
+          behavior: field === 'behavior' ? text : 'The operation reports partial success after recovery.',
+          falsifier: field === 'observation' ? { observation: text } : null,
+        });
+        const before = structuredClone(contract);
+        const result = evaluatePlanSpecQuality({
+          planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+          classRef: 'plan-class-feature-ship', clauses: [contract],
+        });
+        expect(result.ratings['implementation-independence'].rating, field).toBe('fail');
+        expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+          expect.objectContaining({ disposition: 'evaluated', rating: 'fail', reason: expect.any(String) }),
+        );
+        expect(contract).toEqual(before);
+      }
+    }
+  });
+
+  it.each([
+    'The customer sees their existing state after reopening the page.',
+    'Existing requests retain their submitted content.',
+    'Existing records remain readable after a restart.',
+    'Partial success is recorded and remains visible after restart.',
+    'A failed operation leaves the existing workflow status visible.',
+    'An audit record includes the DBOS run identifier supplied by the caller.',
+  ])('keeps observable state and workflow outcomes independent: %s', (behavior) => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [clause({ behavior })],
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+  });
+
+  it.each([
     'An existing customer sees their subscription after signing in.',
     'The customer reuses an existing account when accepting an invitation.',
     'The customer completes a job with the reported provider cost.',
@@ -792,6 +841,8 @@ describe('evaluatePlanSpecQuality', () => {
     'Reuse current verification evidence.',
     'Reuse prior passing test results when their source fingerprints are current.',
     'Reuse the current test receipts.',
+    'Use prior clean receipts when current.',
+    'Use prior passing test results when their source fingerprints are current.',
   ])('keeps verification-proof reuse independent in item and sourceBar contracts: %s', (behavior) => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
@@ -1292,7 +1343,7 @@ describe('evaluatePlanSpecQuality', () => {
     }
   });
 
-  it('pins detector revision 4 to representative coupled and independent verdicts', () => {
+  it('pins detector revision 5 to representative coupled and independent verdicts', () => {
     const goldenCases = [
       { behavior: 'The retrieval report includes nDCG@5 for the frozen queries and ground truth.', expected: 'pass' },
       { behavior: 'The user sees saved settings after reopening the page.', expected: 'pass' },
@@ -1302,6 +1353,10 @@ describe('evaluatePlanSpecQuality', () => {
       { behavior: 'Recipe discovery returns an input contract with required issueId; issueId evaluates the replay.', expected: 'fail' },
       { behavior: 'The source dbPath remains present after the migration.', expected: 'pass' },
       { behavior: 'The source dbPath remains present while dbPath resolves the directory.', expected: 'fail' },
+      { behavior: 'Record partial success in existing DBOS state.', expected: 'fail' },
+      { behavior: 'Use successful existing platform operations to wake the existing git-sync workflow.', expected: 'fail' },
+      { behavior: 'Retain immutable content under the existing private recovery-ref pattern.', expected: 'fail' },
+      { behavior: 'The customer sees their existing state after reopening the page.', expected: 'pass' },
     ] as const;
 
     for (const { behavior, expected } of goldenCases) {
@@ -1311,7 +1366,7 @@ describe('evaluatePlanSpecQuality', () => {
       });
       const rating = result.ratings['implementation-independence'];
       expect(rating.rating).toBe(expected);
-      expect(rating.evidence).toContain('Detector semantics revision: 4.');
+      expect(rating.evidence).toContain('Detector semantics revision: 5.');
     }
   });
 
