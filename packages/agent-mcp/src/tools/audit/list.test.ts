@@ -55,7 +55,7 @@ async function call(
   nextRows = rows;
   lastValues = [];
   const tool = lookupByMcpName('audit:list')!;
-  const r = await dispatchProjectedTool(tool, 'audit:list', args, MAKE_CTX(), {});
+  const r = await dispatchProjectedTool(tool, 'audit:list', args, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
   expect(r.ok).toBe(true);
   return JSON.parse((r.result!.content[0] as { text: string }).text) as Payload;
 }
@@ -181,14 +181,14 @@ describe('audit:list — limit default + cap', () => {
 
   it('rejects a limit over the 500 cap (zod .max enforces it)', async () => {
     const tool = lookupByMcpName('audit:list')!;
-    const r = await dispatchProjectedTool(tool, 'audit:list', { limit: 501 }, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(tool, 'audit:list', { limit: 501 }, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|limit|500|less|max/i);
   });
 
   it('rejects a non-positive limit', async () => {
     const tool = lookupByMcpName('audit:list')!;
-    const r = await dispatchProjectedTool(tool, 'audit:list', { limit: 0 }, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(tool, 'audit:list', { limit: 0 }, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|limit|positive|greater/i);
   });
@@ -208,7 +208,7 @@ describe('audit:list — limit default + cap', () => {
  */
 describe('audit:list — sinceTs epoch-unit floor', () => {
   const dispatch = async (args: Record<string, unknown>) =>
-    dispatchProjectedTool(lookupByMcpName('audit:list')!, 'audit:list', args, MAKE_CTX(), {});
+    dispatchProjectedTool(lookupByMcpName('audit:list')!, 'audit:list', args, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
 
   it('refuses an epoch-SECONDS value instead of matching every row', async () => {
     // Pre-fix this dispatched cleanly and bound a value that every row's `ts`

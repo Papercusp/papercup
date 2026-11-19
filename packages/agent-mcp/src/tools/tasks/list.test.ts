@@ -236,7 +236,7 @@ describe('tasks:list — declared-schema vs full-mode serialization (Gap 16)', (
   it('full-mode extra columns SURVIVE serialization despite the flat 4-field result schema', async () => {
     fixtureRows = [FULL_ROW()];
     const t = lookupByMcpName('tasks:list')!;
-    const r = await dispatchProjectedTool(t, 'tasks:list', { detail: 'full', limit: 50 }, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(t, 'tasks:list', { detail: 'full', limit: 50 }, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(true);
     const text = (r.result!.content[0] as { text: string }).text;
     const out = JSON.parse(text) as Array<Record<string, unknown>>;
@@ -256,7 +256,7 @@ describe('tasks:list — declared-schema vs full-mode serialization (Gap 16)', (
   it('summary-mode dispatch yields exactly the declared 4-field shape', async () => {
     fixtureRows = [FULL_ROW()];
     const t = lookupByMcpName('tasks:list')!;
-    const r = await dispatchProjectedTool(t, 'tasks:list', { detail: 'summary', limit: 50 }, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(t, 'tasks:list', { detail: 'summary', limit: 50 }, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(true);
     const out = JSON.parse((r.result!.content[0] as { text: string }).text) as Array<Record<string, unknown>>;
     expect(Object.keys(out[0]).sort()).toEqual(['harnessSlug', 'id', 'status', 'title']);
@@ -264,7 +264,7 @@ describe('tasks:list — declared-schema vs full-mode serialization (Gap 16)', (
 
   it('rejects an over-cap limit at the dispatch boundary (invalid_args)', async () => {
     const t = lookupByMcpName('tasks:list')!;
-    const r = await dispatchProjectedTool(t, 'tasks:list', { limit: 201 }, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(t, 'tasks:list', { limit: 201 }, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|limit|200|less|max/i);
   });

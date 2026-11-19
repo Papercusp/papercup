@@ -48,7 +48,7 @@ async function call(
   nextRows = rows;
   lastValues = [];
   const tool = lookupByMcpName('intel:spawn_tree')!;
-  const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', args, MAKE_CTX(), {});
+  const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', args, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
   expect(r.ok).toBe(true);
   return JSON.parse((r.result!.content[0] as { text: string }).text) as Payload;
 }
@@ -100,7 +100,7 @@ describe('intel:spawn_tree — status enum arg', () => {
       'intel:spawn_tree',
       { harness: 'sheets', status: 'bogus' },
       MAKE_CTX(),
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|status|enum/i);
@@ -199,7 +199,7 @@ describe('intel:spawn_tree — row shaping', () => {
 describe('intel:spawn_tree — input validation', () => {
   it('rejects a missing harness arg', async () => {
     const tool = lookupByMcpName('intel:spawn_tree')!;
-    const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', {}, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', {}, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|harness|required/i);
   });
@@ -207,7 +207,7 @@ describe('intel:spawn_tree — input validation', () => {
   it('rejects a blank or oversized spawnId', async () => {
     const tool = lookupByMcpName('intel:spawn_tree')!;
     for (const spawnId of ['', ' '.repeat(2), 'x'.repeat(257)]) {
-      const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', { harness: 'sheets', spawnId }, MAKE_CTX(), {});
+      const r = await dispatchProjectedTool(tool, 'intel:spawn_tree', { harness: 'sheets', spawnId }, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
       expect(r.ok).toBe(false);
       expect(r.error?.message ?? '').toMatch(/invalid_args|spawnId|spawn/i);
     }

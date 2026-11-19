@@ -51,7 +51,7 @@ async function call(rows: Array<Record<string, unknown>>): Promise<{
 }> {
   sqlImpl.mockResolvedValueOnce(rows);
   const tool = lookupByMcpName('papercusp:list_workspaces')!;
-  const r = await dispatchProjectedTool(tool, 'papercusp:list_workspaces', {}, MAKE_CTX(), {});
+  const r = await dispatchProjectedTool(tool, 'papercusp:list_workspaces', {}, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
   expect(r.ok).toBe(true);
   return JSON.parse((r.result!.content[0] as { text: string }).text);
 }

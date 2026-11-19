@@ -211,7 +211,7 @@ describe('goals:list — workspace-global call-scope contract', () => {
           return Promise.resolve([]);
         }) as never,
       } as UnifiedToolContext,
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(accepted.ok).toBe(true);
 
@@ -232,7 +232,7 @@ describe('goals:list — workspace-global call-scope contract', () => {
         principal: { slug: 'op', workspaceId: 'default', capabilities: new Set(['goals:read']) } as never,
         tx: (() => Promise.resolve([])) as never,
       } as UnifiedToolContext,
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(rejected.ok).toBe(false);
     expect(rejected.error?.message ?? '').toMatch(/Unrecognized key|harness|detail|limit/i);

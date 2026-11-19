@@ -57,7 +57,7 @@ async function call(
   nextRows = rows;
   lastValues = [];
   const tool = lookupByMcpName('intel:artifacts')!;
-  const r = await dispatchProjectedTool(tool, 'intel:artifacts', args, MAKE_CTX(), {});
+  const r = await dispatchProjectedTool(tool, 'intel:artifacts', args, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
   expect(r.ok).toBe(true);
   return JSON.parse((r.result!.content[0] as { text: string }).text) as Payload;
 }
@@ -204,7 +204,7 @@ describe('intel:artifacts — row shaping', () => {
 describe('intel:artifacts — input validation', () => {
   it('rejects a missing harness arg', async () => {
     const tool = lookupByMcpName('intel:artifacts')!;
-    const r = await dispatchProjectedTool(tool, 'intel:artifacts', {}, MAKE_CTX(), {});
+    const r = await dispatchProjectedTool(tool, 'intel:artifacts', {}, MAKE_CTX(), { batchResponseVersion: 'operation-v0' });
     expect(r.ok).toBe(false);
     expect(r.error?.message ?? '').toMatch(/invalid_args|harness|required/i);
   });
