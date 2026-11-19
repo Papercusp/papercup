@@ -1134,6 +1134,9 @@ dependency_generation_publication_token() {
     printf 'tree\t%s\n' "$tree_token"
     printf 'marker\t%s\t%s\n' "$marker_inode" "$marker_digest"
     printf 'manifest\t%s\t%s\n' "$manifest_token" "$manifest_digest"
+    if [ -f "$generation/.dependency-inputs/.manifest" ]; then
+      printf 'dependency-inputs\t%s\n' "$(dependency_generation_sha256 < "$generation/.dependency-inputs/.manifest")"
+    fi
     if [ -f "$generation/.verifier-closure.json" ]; then
       printf 'verifier\t%s\n' "$(dependency_generation_sha256 < "$generation/.verifier-closure.json")"
     fi
@@ -3711,7 +3714,7 @@ dependency_generation_ensure() {
   done
 }
 
-# Copy the input lockfiles of `root` into `dest` (same relative paths) BEFORE the trees are
+# Copy the dependency inputs of `root` into `dest` (same relative paths) BEFORE the trees are
 # copied. The audit below must judge the copied trees against the lockfiles they were
 # copied under: the generation is indexed under its PRE-build inputs, and a peer may
 # rewrite a live lockfile mid-copy (an ordinary tracked file the install mutex does not
@@ -3722,13 +3725,10 @@ dependency_generation_snapshot_lockfiles() {
   mkdir -p -- "$dest" || return 1
   while IFS=$'\t' read -r rel digest; do
     [ -n "$rel" ] || continue
-    case "${rel##*/}" in
-      package-lock.json|npm-shrinkwrap.json) ;;
-      *) continue ;;
-    esac
     mkdir -p -- "$dest/$(dirname -- "$rel")" || return 1
     cp -- "$root/$rel" "$dest/$rel" || return 1
   done <<< "$manifest"
+  printf '%s\n' "$manifest" > "$dest/.manifest"
 }
 
 # Lock-vs-tree completeness audit (WI-6554700010008514): every installed lock entry of
@@ -4127,7 +4127,10 @@ dependency_generation_ensure_once() {
       return 75
     fi
     dependency_generation_emit_phase lock-tree-audit "$phase_started_ms" ok
-    rm -rf -- "$build/.lock-inputs"
+    # Keep the proof with the immutable bytes. A selector is a lookup record and
+    # may be lost; installed versions alone cannot prove patches or Node pins.
+    mv "$build/.lock-inputs" "$build/.dependency-inputs" || return 1
+    find "$build/.dependency-inputs" -type f -exec chmod a-w {} +
   fi
   # Freeze file contents before recording the snapshot identity because mode is
   # part of the metadata fingerprint. Recording first would make every freshly
@@ -4314,7 +4317,7 @@ DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
 # Compare against published ancestors as well as live inputs, using the same
 # equivalence proof and immutable selector validation. Never infer a donor from
 # directory names or publish a selector merely because a generation exists.
-dependency_generation_find_equivalent_prewarm() {
+dependency_generation_find_indexed_prewarm() {
   local integration_root="$1" ref="$2" scratch="$3" generation_root="$4" helper="$5"
   local revision source_ref source_input source_manifest extracted_manifest verdict rc basis cache indexed selector
   # No historical input can help without a published selector. Do not hydrate
@@ -4333,7 +4336,7 @@ dependency_generation_find_equivalent_prewarm() {
   # One helper process shares immutable subtree manifests and blob hashes across
   # all parents. Per-ref Bash/Git/hash processes exhausted the 30s caller budget
   # before duplicate-input detection even reached the selector check.
-  indexed="$(git -C "$integration_root" log --first-parent --format=%P --max-count=32 "$ref" -- "${history_paths[@]}" \
+  indexed="$(git -C "$integration_root" log --first-parent --format=%P "$ref" -- "${history_paths[@]}" \
     | "${DEPENDENCY_GENERATION_NODE:-node}" "$helper" --indexed-input-refs "$integration_root" "$generation_root" "$cache")" || return 1
   while IFS=$'\t' read -r source_ref source_input; do
     [ -n "$source_ref" ] || continue
@@ -4380,6 +4383,52 @@ dependency_generation_find_equivalent_prewarm() {
   return 74
 }
 
+# Search the complete immutable store independently of selectors and Git history.
+# Legacy generations without recorded inputs remain unknown for this path; the
+# indexed historical path below can still supply their original input proof.
+dependency_generation_find_equivalent_prewarm() {
+  local integration_root="$1" ref="$2" scratch="$3" generation_root="$4" helper="$5"
+  local generation identity token basis manifest recorded verdict rc
+  DEPENDENCY_GENERATION_EXACT_SOURCE_ID=''
+  DEPENDENCY_GENERATION_EXACT_SOURCE_TOKEN=''
+  for generation in "$generation_root"/v1-*; do
+    [ -d "$generation" ] || continue
+    identity="${generation##*/}"
+    [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+    basis="$generation/.dependency-inputs"
+    if [ ! -f "$basis/.manifest" ]; then
+      dependency_generation_log "stored donor $identity has no dependency-input provenance; trying indexed history"
+      continue
+    fi
+    token="$(dependency_generation_read_field "$generation/.papercusp-dependency-generation" publication_token)"
+    dependency_generation_select_prevalidated "$generation_root" "$identity" "$token" 2>/dev/null || continue
+    manifest="$(dependency_generation_input_manifest "$basis" | LC_ALL=C sort)" || return 1
+    recorded="$(cat "$basis/.manifest")" || return 1
+    [ "$manifest" = "$recorded" ] || {
+      dependency_generation_log "FATAL: stored donor $identity dependency-input provenance changed"
+      return 1
+    }
+    rc=0
+    verdict="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \
+      --ref-root "$scratch" --ref-manifest "$scratch/.ref-inputs" \
+      --live-root "$basis" --live-manifest "$basis/.manifest")" || rc=$?
+    [ "$rc" -ne 3 ] || continue
+    [ "$rc" -eq 0 ] || return 1
+    rc=0
+    dependency_generation_audit_lock_tree "$DEPENDENCY_GENERATION_TREE" "$scratch" || rc=$?
+    [ "$rc" -ne 3 ] || continue
+    [ "$rc" -eq 0 ] || return "$rc"
+    DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$DEPENDENCY_GENERATION_TREE"
+    DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT="$({ printf 'schema\t1\n'; printf '%s\n' "$manifest"; } | dependency_generation_sha256)" || return 1
+    DEPENDENCY_GENERATION_EXACT_SOURCE_ID="$identity"
+    DEPENDENCY_GENERATION_EXACT_SOURCE_TOKEN="$token"
+    DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT="$verdict"
+    dependency_generation_log "exact-ref build: recovered stored donor $identity from immutable dependency-input provenance"
+    return 0
+  done
+  dependency_generation_find_indexed_prewarm "$@"
+}
+
 dependency_generation_stage_exact_ref_inputs() {
   local integration_root="$1" ref="$2" exact_input="$3"
   local generation_root="${4:-$(dependency_generation_resolve_root "$integration_root")}"
@@ -4388,6 +4437,8 @@ dependency_generation_stage_exact_ref_inputs() {
   DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT=''
   DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT="$integration_root"
   DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
+  DEPENDENCY_GENERATION_EXACT_SOURCE_ID=''
+  DEPENDENCY_GENERATION_EXACT_SOURCE_TOKEN=''
   parent="$(dependency_generation_exact_scratch_parent "$integration_root")"
   mkdir -p "$parent" || return 1
   dependency_generation_sweep_exact_scratch "$parent"
@@ -5108,7 +5159,11 @@ dependency_generation_main() {
     if [ "$live_input" != "$exact_input" ] \
       && [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ] \
       && [ -z "$DEPENDENCY_GENERATION_EQUIVALENCE_VERDICT" ]; then
-      dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
+      if [ -n "${DEPENDENCY_GENERATION_EXACT_SOURCE_ID:-}" ]; then
+        dependency_generation_select_prevalidated "$generation_root" "$DEPENDENCY_GENERATION_EXACT_SOURCE_ID" "$DEPENDENCY_GENERATION_EXACT_SOURCE_TOKEN" || return $?
+      else
+        dependency_generation_select_input_fingerprint "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" "$generation_root" || return $?
+      fi
       DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT="$(dependency_generation_read_field "$DEPENDENCY_GENERATION_PATH/.papercusp-dependency-generation" closure)"
       dependency_generation_acquire_selector_lease \
         "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?

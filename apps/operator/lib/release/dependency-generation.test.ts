@@ -2033,7 +2033,7 @@ describe('immutable dependency generation', () => {
       });
       expect(pruned.status, pruned.stderr).toBe(0);
       expect(existsSync(generation)).toBe(false);
-      expect(existsSync(selector)).toBe(false);
+      expect(readPin(selector).identity).not.toBe(publishedIdentity(ensured.stdout));
     }, NATIVE_SHELL_TIMEOUT_MS);
 
     it('refuses --retain-as without --ensure-ref or with a malformed label', () => {
@@ -2474,9 +2474,9 @@ describe('immutable dependency generation', () => {
       'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
     }));
     writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v2\n');
-    // Same live tree and candidate: only the validated donor changes.
+    // Losing a selector must not hide an otherwise valid immutable donor.
     rmSync(selector);
-    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('refused');
+    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('buildable');
     writeFileSync(selector, selectorBytes);
     const prediction = predictRef(integration, candidate);
     expect(prediction.status, prediction.stderr).toBe(0);
@@ -2492,6 +2492,59 @@ describe('immutable dependency generation', () => {
     const leaseRoot = join(generationRoot, '.leases');
     expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
     expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each([31, 32, 33])('WI-6554700010053896: recovers a selector-less donor after %i stored entries across restart', (count) => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    commitFixture(integration, 'installed donor');
+    const donor = publish(integration);
+    expect(donor.status, donor.stderr).toBe(0);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const donorNumber = BigInt(`0x${publishedIdentity(donor.stdout).slice(3)}`);
+    for (let index = 1; index < count; index += 1) {
+      mkdirSync(join(generationRoot, `v1-${(donorNumber - BigInt(index)).toString(16).padStart(64, '0')}`));
+    }
+    const candidateLock = JSON.parse(lockWith(PKG));
+    candidateLock.packages[''].dependencies = { pkg: '1.0.0' };
+    writeFileSync(join(integration, 'package-lock.json'), `${JSON.stringify(candidateLock)}\n`);
+    const candidate = commitFixture(integration, 'exact candidate');
+    rmSync(join(generationRoot, '.inputs'), { recursive: true });
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v2\n');
+    const recovered = ensureRef(integration, candidate);
+    expect(recovered.status, recovered.stderr).toBe(0);
+    expect(recovered.stderr).toContain('recovered stored donor');
+    expect(publishedIdentity(recovered.stdout)).toBe(publishedIdentity(donor.stdout));
+    expect(readFileSync(join(publishedPath(recovered.stdout), 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    // A fresh process follows the repaired selector instead of a run-local cache.
+    const restarted = ensureRef(integration, candidate);
+    expect(restarted.status, restarted.stderr).toBe(0);
+    expect(publishedIdentity(restarted.stdout)).toBe(publishedIdentity(donor.stdout));
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-6554700010053896: refuses selector-less donor with different patch inputs', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    mkdirSync(join(integration, 'patches'));
+    writeFileSync(join(integration, 'patches/pkg.patch'), 'original patch\n');
+    commitFixture(integration, 'installed donor');
+    const donor = publish(integration);
+    expect(donor.status, donor.stderr).toBe(0);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    rmSync(join(generationRoot, '.inputs'), { recursive: true });
+    writeFileSync(join(integration, 'patches/pkg.patch'), 'candidate patch\n');
+    const candidate = commitFixture(integration, 'different patch');
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    const refused = ensureRef(integration, candidate);
+    expect(refused.status).toBe(74);
+    expect(refused.stderr).toContain('not install-equivalent');
+    expect(refused.stderr).not.toContain('recovered stored donor');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('rejects an incomplete legacy ancestor even when its publication token is valid', () => {
