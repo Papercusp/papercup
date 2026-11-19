@@ -502,8 +502,11 @@ export function captureDurableProcessBoundary<T extends {
       || events.some(event => !object(event) || event.pool !== sql.pool)
       || typeof terminal.query !== 'string' || digest(terminal.query) !== sql.queryHash
       || terminal.command !== sql.command || terminal.status !== sql.status
-      || events.some((event, index) => index > 0 && object(event) && object(events[index - 1])
-        && Number(event.monotonicMs) < Number(events[index - 1]!.monotonicMs)))
+      || events.some((event, index) => {
+        const previous = events[index - 1];
+        return index > 0 && object(event) && object(previous)
+          && Number(event.monotonicMs) < Number(previous.monotonicMs);
+      }))
       sqlGaps.push(String(row.id) + ':sql-terminal-mismatch');
     if (sql.serverMessages !== undefined) {
       const submits = phase('submit'), ready = phase('ready'), submit = submits[0], receipt = ready[0];

@@ -606,7 +606,51 @@ describe('parent-owned durable process boundary', () => {
       import fs from 'node:fs';
       const { createDurableCaptureRecorder } = await import(process.env.CAPTURE_MODULE);
       const scope = JSON.parse(process.env.CAPTURE_SCOPE), fault = process.env.CAPTURE_FAULT;
-      if (fault.startsWith('attempt-')) {
+      if (fault.startsWith('sql-')) {
+        const { observeGroundedStoreOperations } = await import(process.env.MEASUREMENT_MODULE);
+        const recorder = createDurableCaptureRecorder(process.env.CAPTURE_PATH);
+        class Query {
+          values = []; _results;
+          constructor(text) { this.text = text; this._results = { command: text.startsWith('SELECT') ? 'SELECT' : 'INSERT', rowCount: 1 }; }
+          submit(connection) { connection.bind({ valueMapper: value => value }); }
+          handleReadyForQuery() {} handleError() {}
+        }
+        class Client {
+          processID = 321; _activeQuery = null;
+          query(text) { const q = new Query(text); this._activeQuery = q; q.submit({ bind() {} }); return q; }
+          _getActiveQuery() { return this._activeQuery; }
+          _handleNotice(message) { return message; }
+          _handleReadyForQuery() { const q = this._activeQuery; this._activeQuery = null; q?.handleReadyForQuery(); }
+        }
+        const sqlObservations = [];
+        const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [],
+          sourceRef: process.env.CAPTURE_PATH, attemptId: 'actual-sql',
+          nodePostgres: [{ pool: 'actual-client', clientPrototype: Client.prototype, queryPrototype: Query.prototype,
+            serializerSourceRef: 'original-mapper', serverMessageSourceRef: 'original-client' }],
+          onSqlObservation: row => sqlObservations.push(row) });
+        const client = new Client();
+        for (const text of ['SELECT 1', 'INSERT INTO fixture DEFAULT VALUES']) {
+          tap.run(() => client.query(text)); client._handleReadyForQuery({ status: 'I' });
+        }
+        if (fault === 'sql-pending') tap.run(() => client.query('SELECT pending'));
+        const settled = fault === 'sql-exit';
+        const census = () => ({ scope, sourceRef: process.env.CAPTURE_PATH, complete: settled, ids: [], rows: [] });
+        const capture = { processId: process.pid, sqlObservations,
+          processTermination: settled ? null : { pid: process.pid, signal: 'SIGKILL' },
+          boundary: settled ? { scope, sourceRef: process.env.CAPTURE_PATH, drained: true } : null,
+          census: census(), invocations: census(), storage: settled ? tap.seal() : tap.snapshot() };
+        if (fault === 'sql-lost-terminal') capture.storage.rows.pop();
+        if (fault === 'sql-lost-admission') capture.storage.diagnostics.admissions.pop();
+        if (fault === 'sql-ready-loss') capture.sqlObservations = sqlObservations.filter(row => row.phase !== 'ready');
+        if (fault === 'sql-query-mismatch') capture.sqlObservations.find(row => row.phase === 'terminal').query += ' changed';
+        if (fault === 'sql-foreign-pool') capture.sqlObservations.find(row => row.phase === 'terminal').pool = 'foreign';
+        if (fault === 'sql-hooks') capture.storage.diagnostics.hooksIntact = false;
+        if (fault === 'sql-server-pending') capture.storage.diagnostics.serverMessagesPending.push(capture.storage.ids[0]);
+        if (fault === 'sql-duplicate-terminal') capture.sqlObservations.push({ ...sqlObservations.find(row => row.phase === 'terminal') });
+        if (fault === 'sql-fragment-exclusion') capture.storage.diagnostics.excludedUnexecutedIds.push('unproven-fragment');
+        recorder.retain(capture);
+        if (!settled) process.kill(process.pid, 'SIGKILL');
+      } else if (fault.startsWith('attempt-')) {
         const { observeGroundedDurableHost, observeGroundedToolDispatch } = await import(process.env.MEASUREMENT_MODULE);
         const recorder = createDurableCaptureRecorder(process.env.CAPTURE_PATH);
         let termination = null;
@@ -770,6 +814,33 @@ describe('parent-owned durable process boundary', () => {
     expect(JSON.parse(readFileSync(path + '.process.json', 'utf8'))).toEqual(processCapture);
     expect(() => materializeDurableCapture(path, result)).toThrow(/status=7[\s\S]*startup output[\s\S]*original startup failure/);
     expect(() => reconstructDurableCapture(path)).toThrow(/ENOENT/);
+  });
+
+  it.each(['sql-kill', 'sql-exit'])('qualifies only independently returned SQL terminals after %s', fault => {
+    const { path, original } = fixture();
+    const { child: result, processCapture } = captureDurableProcessBoundary(path, scope, () => child(path, fault));
+    expect(result.error, result.stderr).toBeUndefined();
+    const edition = processCapture.storageTerminalAccounting;
+    expect(edition).toMatchObject({ schemaVersion: 'gec-sql-terminals-v1', complete: true, gaps: [],
+      accountingScope: 'returned-sql-operations-only', storageOperations: 2, storageBytes: null,
+      commitQualification: 'unchanged-original-evidence' });
+    expect(reconstructDurableCapture(path)).toHaveProperty('storage.rows', edition.rows);
+    expect(edition.rows).toEqual([expect.objectContaining({ kind: 'unknown' }), expect.objectContaining({ kind: 'unknown' })]);
+    expect(readFileSync(path, 'utf8')).toBe(original);
+    expect(reconstructDurableCapture(path)).toHaveProperty('storage.complete', fault === 'sql-exit');
+  });
+
+  it.each(['sql-pending', 'sql-lost-terminal', 'sql-lost-admission', 'sql-ready-loss', 'sql-query-mismatch',
+    'sql-foreign-pool', 'sql-hooks', 'sql-server-pending', 'sql-duplicate-terminal', 'sql-fragment-exclusion'])
+  ('refuses a SQL terminal census after %s', fault => {
+    const { path } = fixture();
+    const { child: result, processCapture } = captureDurableProcessBoundary(path, scope, () => child(path, fault));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.signal).toBe('SIGKILL');
+    expect(processCapture.storageTerminalAccounting).toMatchObject({ complete: false, storageOperations: null,
+      storageBytes: null });
+    expect(processCapture.storageTerminalAccounting.gaps.length).toBeGreaterThan(0);
+    expect(reconstructDurableCapture(path)).toHaveProperty('storage.complete', false);
   });
 });
 
