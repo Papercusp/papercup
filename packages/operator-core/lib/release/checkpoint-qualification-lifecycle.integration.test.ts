@@ -924,13 +924,17 @@ describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
         expect(originals.map(row => row.file_path)).toEqual(specifications.map(spec => spec.testFile).sort());
         const recover = () => recoverStoredQualificationNativeCompletions(target, input, classifier);
         const recovered = await recover();
-        expect(recovered, first.output()).toMatchObject({ status: 'updated', transaction: {
+        if (recovered.status !== 'updated') {
+          const detail = 'refusalReason' in recovered ? recovered.refusalReason
+            : 'error' in recovered ? recovered.error : undefined;
+          throw new Error(`Original ledger recovery returned ${recovered.status}${detail ? `: ${detail}` : ''}`);
+        }
+        expect(recovered.transaction, first.output()).toMatchObject({
           outcome: { kind: 'pending' }, continuation: { nativeProducers: [{ originals: { status: 'known',
             runGroupId: owner.runId, selectedManifestHash: snapshot.nativeRun.selectedManifest.sha256,
             bindings: expect.arrayContaining(originals.map(row => expect.objectContaining({ unitId: row.file_path,
               reference: expect.objectContaining({ testRunId: row.id }) }))),
-          } }] } } });
-        if (recovered.status !== 'updated') throw Error('real native original rows did not authenticate');
+          } }] } });
         const bank = recovered.transaction.continuation!.receipts;
         expect(bank).toHaveLength(specifications.length);
         for (const receipt of bank) {
