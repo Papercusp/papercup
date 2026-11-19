@@ -22,20 +22,14 @@ import { registerGitSyncResource } from '../lib/harness/git-sync/git-sync-action
 import { inWorkspaceTxn } from '../lib/agent-tools/locks/in-workspace-txn';
 import { registerAwait, listActiveAwaits } from '../lib/events/await/store';
 import { emitAwaitedEvent } from '../lib/events/await/engine';
+import { compileJsonSchema } from '../lib/json-schema-validation';
 
 // with-test-pg scrubs ambient application variables. Fixture inputs cross that
 // boundary explicitly in argv, just like the existing metadata scenario flag.
-const root = process.argv.find(arg => arg.startsWith('--source-root='))?.slice('--source-root='.length)!;
-assert.ok(root, 'explicit source root required for the bundled private fixture');
-const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
+const root = process.argv.find(arg => arg.startsWith('--source-root='))?.slice('--source-root='.length);
 const workerMode = process.argv.includes('--worker');
 const releaseScenario = process.argv.includes('--release-continuation');
 const metadataScenario = process.argv.includes('--metadata-repair');
-const privateRoot = dirname(process.env.HOME!);
-assert.match(workspace, /^test-runtime-/);
-assert.notEqual(process.env.PAPERCUSP_PG_PORT, '5432');
-assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
-assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
 const servers: Server[] = [];
 const phase = (stage: string) => console.log('FRICTION_WORKER_PHASE ' + JSON.stringify({ stage, workerMode, pid: process.pid }));
 const requestOptions = { timeout: 30_000, maxTotalTimeout: 30_000, resetTimeoutOnProgress: false };
@@ -70,7 +64,39 @@ const parse = (result: any) => {
   return JSON.parse(block.text);
 };
 
+export function assertMetadataRepairCatalog(
+  tools: Array<{ name: string; inputSchema: Record<string, unknown> }>,
+  request: Record<string, unknown>,
+) {
+  const tool = tools.find(entry => entry.name === 'git-sync:run');
+  assert.ok(tool, 'loaded worker catalog must contain git-sync:run');
+  // Discovery schemas may wrap the operation in $defs/anyOf for batching.
+  // Check the public request contract, including controls against a stale or
+  // permissive schema that silently ignores either worker qualification input.
+  const validate = compileJsonSchema(tool.inputSchema);
+  assert.ok(validate(request), `loaded worker catalog rejects metadata repair: ${JSON.stringify(validate.errors)}`);
+  assert.ok(!validate({ ...request, repairMetadata: {} }), 'loaded worker catalog must validate metadata repair');
+  assert.ok(!validate({ ...request, target: {} }), 'loaded worker catalog must validate the exact target');
+}
+
+export async function readMetadataRepairCatalog(client: Pick<Client, 'listTools'>) {
+  let catalog = await client.listTools(undefined, requestOptions);
+  while (!catalog.tools.some(entry => entry.name === 'git-sync:run') && catalog.nextCursor) {
+    catalog = await client.listTools({ cursor: catalog.nextCursor }, requestOptions);
+  }
+  return catalog;
+}
+
 export async function runGitSyncTargetWorkerFixture() {
+  // A sidecar re-exec intentionally has no fixture argv. Only fixture modes
+  // require the private source and isolated-runtime environment.
+  assert.ok(root, 'explicit source root required for the bundled private fixture');
+  const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
+  const privateRoot = dirname(process.env.HOME!);
+  assert.match(workspace, /^test-runtime-/);
+  assert.notEqual(process.env.PAPERCUSP_PG_PORT, '5432');
+  assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
+  assert.equal(process.env.PAPERCUSP_DBOS_ROUTINES, '0');
   if (workerMode) {
     assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '1');
     // This fixture composes the side-effect-free request handler, so it owns
@@ -185,11 +211,12 @@ export async function runGitSyncTargetWorkerFixture() {
       await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/api/mcp?${query}`),
         { requestInit: { headers: { Authorization: `Bearer ${token}` } } }), requestOptions);
       phase(`initialize-complete:${port}`);
-      const catalog = await client.listTools(undefined, requestOptions);
+      const catalog = metadataScenario ? await readMetadataRepairCatalog(client)
+        : await client.listTools(undefined, requestOptions);
       if (metadataScenario) {
         const tool = catalog.tools.find(entry => entry.name === 'git-sync:run');
-        assert.ok(tool?.inputSchema.properties?.repairMetadata, 'loaded worker catalog must expose metadata repair');
-        assert.ok(tool.inputSchema.properties.target, 'loaded worker catalog must expose the exact target');
+        console.log('FRICTION_WORKER_CATALOG ' + JSON.stringify({ port, tool: tool ?? null }));
+        assertMetadataRepairCatalog(catalog.tools, { ...mutation, target: ready.target });
       }
       phase(`catalog-complete:${port}`);
       return client;

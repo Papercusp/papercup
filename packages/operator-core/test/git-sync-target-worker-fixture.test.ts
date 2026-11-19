@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
+import { listMcpProjections } from '@papercusp/tooldef';
 
 const originalArgv = process.argv;
 
@@ -80,8 +81,69 @@ afterEach(() => { process.argv = originalArgv; vi.restoreAllMocks(); vi.unstubAl
 it('requires an explicit source-root argument even when an ambient source root is present', async () => {
   process.argv = originalArgv;
   vi.stubEnv('FRICTION_SOURCE_ROOT', '/ambient/source');
-  await expect(import('./git-sync-target-worker-fixture'))
+  const { runGitSyncTargetWorkerFixture } = await import('./git-sync-target-worker-fixture');
+  await expect(runGitSyncTargetWorkerFixture())
     .rejects.toThrow('explicit source root required for the bundled private fixture');
+});
+
+it('enters the embed sidecar without fixture argv or isolated-runtime assertions', async () => {
+  process.argv = originalArgv;
+  vi.stubEnv('PAPERCUSP_EMBED_SIDECAR_MODE', '1');
+  vi.stubEnv('PAPERCUSP_WORKSPACE_ID', undefined);
+  vi.stubEnv('PAPERCUSP_PG_PORT', '5432');
+  vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', undefined);
+  vi.stubEnv('PAPERCUSP_DBOS_ROUTINES', undefined);
+  const { runEmbedSidecarServer } = await import('../lib/memory/embed-sidecar-server');
+  await import('./git-sync-target-worker-fixture');
+  expect(runEmbedSidecarServer).toHaveBeenCalledOnce();
+});
+
+it('validates the real public metadata-worker request schema without assuming root properties', async () => {
+  await import('../lib/agent-tools/git_sync/run');
+  const { assertMetadataRepairCatalog } = await import('./git-sync-target-worker-fixture');
+  const tools = listMcpProjections('operator', 'engineer');
+  const request = { installSlug: 'private-fixture', target: { environment: 'staging',
+    buildSha: 'a'.repeat(40), installRoot: '/fixture/source' }, repairMetadata: {
+    base: 'b'.repeat(40), expectedPendingLockSha256: 'c'.repeat(64), requestId: 'fixture',
+    generation: 1, publishedLibrarySelections: [],
+  } };
+  expect(tools.find(entry => entry.name === 'git-sync:run')).toBeDefined();
+  expect(() => assertMetadataRepairCatalog(tools, request)).not.toThrow();
+  expect(() => assertMetadataRepairCatalog([], request)).toThrow('must contain git-sync:run');
+  expect(() => assertMetadataRepairCatalog(tools, { ...request,
+    repairMetadata: { ...request.repairMetadata, generation: 0 } })).toThrow('rejects metadata repair');
+  for (const omitted of ['repairMetadata', 'target']) {
+    const properties = { installSlug: { type: 'string' },
+      repairMetadata: { type: 'object', required: ['base'] }, target: { type: 'object', required: ['buildSha'] } };
+    delete properties[omitted as 'repairMetadata' | 'target'];
+    expect(() => assertMetadataRepairCatalog([{ name: 'git-sync:run', inputSchema: {
+      type: 'object', properties,
+    } }], request)).toThrow(omitted === 'target' ? 'must validate the exact target' : 'must validate metadata repair');
+  }
+});
+
+it.each([0, 1, 12])('finds the exact metadata tool after %s catalog pages and follows every cursor', async before => {
+  const { readMetadataRepairCatalog } = await import('./git-sync-target-worker-fixture');
+  const tool = { name: 'git-sync:run', inputSchema: { type: 'object' as const } };
+  const listTools = vi.fn();
+  for (let index = 0; index < before; index++) {
+    listTools.mockResolvedValueOnce({ tools: [{ ...tool, name: 'other:tool' }], nextCursor: `page-${index + 1}` });
+  }
+  listTools.mockResolvedValueOnce({ tools: [tool] });
+  expect((await readMetadataRepairCatalog({ listTools })).tools).toEqual([tool]);
+  expect(listTools).toHaveBeenCalledTimes(before + 1);
+  expect(listTools.mock.calls.map(([params]) => params)).toEqual([
+    undefined, ...Array.from({ length: before }, (_, index) => ({ cursor: `page-${index + 1}` })),
+  ]);
+});
+
+it('reports an absent metadata tool only after exhausting catalog recovery', async () => {
+  const { readMetadataRepairCatalog, assertMetadataRepairCatalog } = await import('./git-sync-target-worker-fixture');
+  const listTools = vi.fn().mockResolvedValueOnce({ tools: [], nextCursor: 'last-page' })
+    .mockResolvedValueOnce({ tools: [] });
+  const catalog = await readMetadataRepairCatalog({ listTools });
+  expect(listTools).toHaveBeenCalledTimes(2);
+  expect(() => assertMetadataRepairCatalog(catalog.tools, {})).toThrow('must contain git-sync:run');
 });
 
 it.each([false, true])('retains the original worker scenario failure when cleanup fails: %s', async cleanupFails => {
