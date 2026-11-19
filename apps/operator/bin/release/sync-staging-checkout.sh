@@ -213,7 +213,9 @@ record_staging_sync_failure() {
   # Only a failure BEFORE the restart (bundle, migration preflight, schema)
   # condemns the commit itself. A refused or slow restart says nothing about it.
   if [[ "$phase" == prepare ]]; then
-    { if [[ -r "$dir/staging-sync-failed-targets" ]]; then tail -n 63 "$dir/staging-sync-failed-targets"; fi
+    # Retain the whole streak's failed-target knowledge across process restarts.
+    # Evicting an older failure can re-admit it and make fallback stop progressing.
+    { if [[ -r "$dir/staging-sync-failed-targets" ]]; then cat "$dir/staging-sync-failed-targets"; fi
       printf '%s\n' "$target"; } > "$dir/staging-sync-failed-targets.tmp" &&
       mv -f "$dir/staging-sync-failed-targets.tmp" "$dir/staging-sync-failed-targets"
   fi
@@ -313,7 +315,10 @@ select_staging_fallback_target() {
   while IFS= read -r sha; do
     [[ -n "$sha" ]] && bad["$sha"]=1
   done < "$failed_file"
-  mapfile -t range < <(git -C "$INTEGRATION_ROOT" rev-list --first-parent --max-count=4096 "$tip" "^$served" 2>/dev/null)
+  # Bound expensive candidate builds to one per run, not the ancestry we consult.
+  # A newest-N prefix can omit the only candidate below the oldest known failure
+  # and incorrectly report no fallback forever, including after a process restart.
+  mapfile -t range < <(git -C "$INTEGRATION_ROOT" rev-list --first-parent "$tip" "^$served" 2>/dev/null)
   # Newest first: everything older than the oldest known-failed commit is untried.
   for sha in "${range[@]}"; do
     if [[ -n "${bad[$sha]:-}" ]]; then
