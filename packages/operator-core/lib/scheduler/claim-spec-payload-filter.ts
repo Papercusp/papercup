@@ -53,7 +53,7 @@ import type { FilterLeaf, FilterNode } from './claim-spec';
 /**
  * Claim-spec filter fields that appear (under the SAME key) on the
  * `work-item:claimable` event payload (`{ id, kind, severity, harness, title,
- * summary, state, reason, assignee, plan, tags, goal }` — see emitWorkItemClaimableEvent).
+ * summary, state, reason, assignee, plan, fleet, tags, goal }` — see emitWorkItemClaimableEvent).
  * The emitter only announces unassigned rows, but it carries that guaranteed
  * `assignee: null` explicitly so an assignee leaf remains observable when it is
  * nested under `any`/`not` rather than being silently dropped. `severity`,
@@ -66,8 +66,11 @@ import type { FilterLeaf, FilterNode } from './claim-spec';
  * (EI-21834327391666056). `summary` carries the same untruncated body as the
  * claim-spec subject so body-scoped OR arms can narrow without broadening the
  * whole subscription (EI-27692065520622700).
+ * `fleet` carries that subject's canonical fleet slug, including explicit null,
+ * so a fleet branch inside a plan/id/fleet OR does not make every claimable row
+ * a candidate (EI-29233643223528341).
  */
-const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'summary', 'assignee', 'plan', 'tags', 'goal']);
+const PAYLOAD_FILTERABLE_FIELDS = new Set<FilterLeaf['field']>(['id', 'kind', 'title', 'summary', 'assignee', 'plan', 'fleet', 'tags', 'goal']);
 
 /** Array-VALUED payload fields — mingo/DataCondition still does implicit
  *  per-element matching for these (verified: `equals`/`notEquals`/`in`/`matches`

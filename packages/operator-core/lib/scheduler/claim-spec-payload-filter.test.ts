@@ -28,6 +28,7 @@ function payloadOf(p: {
   summary?: string | null;
   assignee?: string | null;
   plan?: string | null;
+  fleet?: string | null;
   tags?: string[];
   goal?: string | null;
 }): Record<string, unknown> {
@@ -42,6 +43,7 @@ function payloadOf(p: {
     state: 'todo',
     reason: 'created',
     plan: p.plan ?? null,
+    fleet: p.fleet ?? null,
     tags: p.tags ?? [],
     goal: p.goal ?? null,
   };
@@ -54,6 +56,7 @@ function subjectOf(p: {
   title?: string;
   summary?: string | null;
   plan?: string | null;
+  fleet?: string | null;
   tags?: string[];
   goal?: string | null;
 }): ClaimSpecSubject {
@@ -67,7 +70,7 @@ function subjectOf(p: {
     paths: [],
     plan: p.plan ?? null,
     planItem: [],
-    fleet: null,
+    fleet: p.fleet ?? null,
     triageGate: null,
     itemClass: 'work',
     age: null,
@@ -132,6 +135,64 @@ describe('summary-scoped member wakes (EI-27692065520622700)', () => {
         { summary: 'before\nlane\nafter' }, { summary: 'before\r\nlane\r\nafter' }]) {
         expect(payloadMatchesFilter(translated, payloadOf(item)), JSON.stringify({ current, item }))
           .toBe(matchesClaimSpecFilter(subjectOf(item), current));
+      }
+    }
+  });
+});
+
+describe('EI-29233643223528341: fleet OR arms preserve member wake scope', () => {
+  const filter: FilterNode = {
+    any: [
+      { field: 'plan', op: '=', value: 'repair-plan' },
+      { field: 'id', op: 'in', value: ['WI-admitted'] },
+      { field: 'fleet', op: '=', value: 'repair-fleet' },
+      { field: 'tags', op: 'contains', value: 'repair-fleet' },
+      { field: 'title', op: 'contains', value: 'repair-plan' },
+    ],
+  };
+  const cases: Array<{ label: string; item: Parameters<typeof payloadOf>[0]; expected: boolean }> = [
+    { label: 'unrelated directive recovery', item: { id: 'WI-other', title: 'Recover unresolved owner directive' }, expected: false },
+    { label: 'another plan and fleet', item: { plan: 'other-plan', fleet: 'other-fleet' }, expected: false },
+    { label: 'assigned plan', item: { plan: 'repair-plan' }, expected: true },
+    { label: 'explicit ad-hoc id', item: { id: 'WI-admitted' }, expected: true },
+    { label: 'fleet-only work', item: { fleet: 'repair-fleet' }, expected: true },
+    { label: 'fleet tag', item: { tags: ['repair-fleet'] }, expected: true },
+    { label: 'plan title', item: { title: 'Follow up repair-plan' }, expected: true },
+  ];
+
+  for (const { label, item, expected } of cases) {
+    it(label, () => {
+      expect(matchesClaimSpecFilter(subjectOf(item), filter)).toBe(expected);
+      const derived = claimSpecFilterToClaimablePayloadFilter(filter);
+      expect(derived).toBeDefined();
+      expect(payloadMatchesFilter(derived, payloadOf(item))).toBe(expected);
+    });
+  }
+
+  it('wakes later leader-admitted work after deriving the replacement scope', () => {
+    const item = { id: 'WI-later', title: 'New independent repair' };
+    expect(payloadMatchesFilter(claimSpecFilterToClaimablePayloadFilter(filter), payloadOf(item))).toBe(false);
+    const replacement: FilterNode = { any: [filter, { field: 'id', op: '=', value: item.id }] };
+    expect(matchesClaimSpecFilter(subjectOf(item), replacement)).toBe(true);
+    expect(payloadMatchesFilter(claimSpecFilterToClaimablePayloadFilter(replacement), payloadOf(item))).toBe(true);
+  });
+
+  it('preserves fleet null, comparison and negation semantics', () => {
+    const filters: FilterNode[] = [
+      { field: 'fleet', op: '=', value: 'repair-fleet' },
+      { field: 'fleet', op: '!=', value: 'repair-fleet' },
+      { field: 'fleet', op: 'in', value: ['repair-fleet', 'other-fleet'] },
+      { field: 'fleet', op: 'glob', value: 'REPAIR-*' },
+      { field: 'fleet', op: 'contains', value: 'repair' },
+      { field: 'fleet', op: 'word', value: 'repair' },
+      { not: { field: 'fleet', op: '=', value: 'repair-fleet' } },
+    ];
+    for (const current of filters) {
+      const derived = claimSpecFilterToClaimablePayloadFilter(current);
+      expect(derived).toBeDefined();
+      for (const fleet of [null, '', 'repair-fleet', 'other-fleet', 'repair_fleet', 'airrepair']) {
+        expect(payloadMatchesFilter(derived, payloadOf({ fleet })), JSON.stringify({ current, fleet }))
+          .toBe(matchesClaimSpecFilter(subjectOf({ fleet }), current));
       }
     }
   });

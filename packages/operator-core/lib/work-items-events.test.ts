@@ -23,6 +23,7 @@ import {
   workItemIdFromRef,
 } from './work-items-events';
 import type { WorkItem } from './work-items';
+import { claimSpecSubjectFromWorkItem } from './scheduler/claim-spec-match';
 
 const duplicateAdmissionCheck = vi.hoisted(() => vi.fn(async () => true));
 vi.mock('./work-items-admission', async (importOriginal) => ({
@@ -94,6 +95,19 @@ const edgeRel = (srcId: string, dstId: string, rel: string) => ({
 });
 
 describe('helpers', () => {
+  it.each([null, {}, { fleet_slug: 'repair-fleet' }, { fleet_slug: '' }, { fleet_slug: 42 }])(
+    'preserves the canonical fleet on emitted and registration-time claimable payloads (%j)',
+    async (payload) => {
+      const item = wi({ id: 'WI-fleet-snapshot', state: 'open', assignee: null, payload });
+      const fleet = claimSpecSubjectFromWorkItem(item).fleet;
+      expect(workItemClaimableEventPayload(item, 'released')).toHaveProperty('fleet', fleet);
+      await expect(liveWorkItemClaimableEventPayload(item.id, undefined, {
+        getItem: vi.fn(async () => item) as never,
+        duplicateAdmissionCheck: async () => true,
+      })).resolves.toHaveProperty('fleet', fleet);
+    },
+  );
+
   it.each(['Plan GREEN-MAIN: body-only lane', '', null, undefined])(
     'preserves canonical summary on claimable payloads (%s)',
     (summary) => {
