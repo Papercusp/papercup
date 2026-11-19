@@ -26,6 +26,13 @@ import { z } from 'zod';
 import ts from 'typescript';
 import { pinModuleState } from '@papercusp/module-singleton';
 import {
+  COMMERCE_CORE_ROOT,
+  COMMERCE_SCAN_ROOTS,
+  deriveCommerceReachability,
+  isCommerceSourcePath,
+  readCommittedCommerceRoots,
+} from '../../p2p/v1-core/commerce-reachability';
+import {
   APP_ROOTS,
   contentVerdictKey,
   isCensusSourcePath,
@@ -53,7 +60,7 @@ import {
   type PlanContentWriter,
 } from './plan-content-writer-census';
 
-export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census', 'plan-content-writer-census', 'state-subscribe-handle-census'] as const;
+export const TREE_INSTRUMENT_KEYS = ['provider-specific-census', 'deliverable-kind-branch-census', 'notification-classification-census', 'embedded-terminal-host-census', 'plan-content-writer-census', 'state-subscribe-handle-census', 'p2p-v1-commerce-reachability'] as const;
 export const treeInstrumentKeySchema = z.enum(TREE_INSTRUMENT_KEYS);
 export type TreeInstrumentKey = z.infer<typeof treeInstrumentKeySchema>;
 
@@ -388,6 +395,23 @@ async function planContentWriterCensusAtCommit(root: string, commit: string, dep
   return planContentWriterCensusOutput(writers);
 }
 
+async function commerceReachabilityAtCommit(root: string, commit: string, deps: CommittedTreeDeps): Promise<unknown> {
+  const contract = `${COMMERCE_CORE_ROOT}/p2p/v1-core/v1-scope-contract.ts`;
+  const files = (await listCommittedFilesUnder(root, commit, COMMERCE_SCAN_ROOTS, isCommerceSourcePath, deps))
+    .filter(file => isCommerceSourcePath(file.path));
+  const sources = new Map<string, string>();
+  const blobs = new Map<string, string>();
+  await forEachCommittedBody(root, files, (file, body) => {
+    sources.set(file.path, body);
+    blobs.set(file.path, file.blob);
+  }, deps);
+  const declaration = sources.get(contract);
+  if (declaration === undefined) throw new Error(`commerce scope contract ${contract} is missing from the tree`);
+  const roots = readCommittedCommerceRoots(contract, declaration);
+  const reachable = deriveCommerceReachability(sources, roots).map(path => ({ path, blob: blobs.get(path)! }));
+  return { schemaVersion: 1, reachable };
+}
+
 const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string, deps: CommittedTreeDeps) => Promise<unknown>> = {
   'provider-specific-census': providerCensusAtCommit,
   'deliverable-kind-branch-census': kindBranchCensusAtCommit,
@@ -395,6 +419,7 @@ const TREE_INSTRUMENTS: Record<TreeInstrumentKey, (root: string, commit: string,
   'embedded-terminal-host-census': embeddedTerminalCensusAtCommit,
   'plan-content-writer-census': planContentWriterCensusAtCommit,
   'state-subscribe-handle-census': stateSubscribeHandleCensusAtCommit,
+  'p2p-v1-commerce-reachability': commerceReachabilityAtCommit,
 };
 
 /**

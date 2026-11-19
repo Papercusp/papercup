@@ -9,8 +9,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { COMMERCE_CORE_ROOT, COMMERCE_SCAN_ROOTS, deriveCommerceReachability, isCommerceSourcePath } from './commerce-reachability';
 import {
   isV1ReleaseBuild,
   isV1ScopeRefusal,
@@ -29,98 +29,23 @@ const RELEASE_ENV = 'PAPERCUSP_FLAG_PAPERCUSP_P2P_V1_RELEASE_BUILD';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const libDir = path.resolve(here, '../..');
-const p2pDir = path.join(libDir, 'p2p');
 const repoRoot = path.resolve(libDir, '../../..');
-const OPERATOR_CORE_ALIAS = '@papercusp/operator-core/lib/';
 
-/** Source roots a release-build boot loads: operator-core lib, the operator host lib and bin. */
-const SCAN_ROOTS = [libDir, path.join(repoRoot, 'apps/operator/lib'), path.join(repoRoot, 'bin')];
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'dist-verify', '.vitest-tmp', 'coverage', '__tests__', '__fixtures__', 'e2e']);
-const SOURCE_EXT = /\.(ts|tsx|mts|cts)$/;
-const NOT_SOURCE = /\.d\.ts$|\.(test|spec)\.(ts|tsx|mts)$|\.fixture\.ts$/;
-
-function walk(dir: string, out: string[]): string[] {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) walk(full, out);
-    } else if (SOURCE_EXT.test(entry.name) && !NOT_SOURCE.test(entry.name)) {
-      out.push(full);
+function readCommerceSources(directory: string, files: Map<string, string>): void {
+  const absolute = path.join(repoRoot, directory);
+  if (!fs.existsSync(absolute)) return;
+  for (const entry of fs.readdirSync(absolute, { withFileTypes: true })) {
+    const relative = `${directory}/${entry.name}`;
+    if (entry.isSymbolicLink() && (isCommerceSourcePath(relative) || isCommerceSourcePath(`${relative}/_.ts`))) {
+      throw new Error(`commerce scan cannot follow symlink ${relative}`);
+    }
+    if (entry.isDirectory() && isCommerceSourcePath(`${relative}/_.ts`)) {
+      readCommerceSources(relative, files);
+    } else if (entry.isFile() && isCommerceSourcePath(relative)) {
+      files.set(relative, fs.readFileSync(path.join(repoRoot, relative), 'utf8'));
     }
   }
-  return out;
 }
-
-function resolveSpecifier(from: string, spec: string): string | null {
-  let base: string;
-  if (spec.startsWith('.')) base = path.resolve(path.dirname(from), spec);
-  else if (spec.startsWith(OPERATOR_CORE_ALIAS)) base = path.join(libDir, spec.slice(OPERATOR_CORE_ALIAS.length));
-  else return null;
-  const stem = base.replace(/\.(m|c)?js$/, '');
-  for (const candidate of [base, `${stem}.ts`, `${stem}.tsx`, `${stem}.mts`, path.join(stem, 'index.ts'), path.join(stem, 'index.tsx')]) {
-    if (SOURCE_EXT.test(candidate) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
-  }
-  return null;
-}
-
-/** Top-level static VALUE imports and re-exports; type-only ones and dynamic import() are not edges. */
-function staticValueImports(file: string, text: string): string[] {
-  const kind = file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
-  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, kind);
-  const targets: string[] = [];
-  for (const statement of source.statements) {
-    let spec: ts.Expression | undefined;
-    if (ts.isImportDeclaration(statement)) {
-      const clause = statement.importClause;
-      if (clause?.isTypeOnly) continue;
-      if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings) &&
-          clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every((e) => e.isTypeOnly)) continue;
-      spec = statement.moduleSpecifier;
-    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
-      if (statement.isTypeOnly) continue;
-      if (statement.exportClause && ts.isNamedExports(statement.exportClause) &&
-          statement.exportClause.elements.length > 0 && statement.exportClause.elements.every((e) => e.isTypeOnly)) continue;
-      spec = statement.moduleSpecifier;
-    }
-    if (spec && ts.isStringLiteral(spec)) {
-      const resolved = resolveSpecifier(file, spec.text);
-      if (resolved) targets.push(resolved);
-    }
-  }
-  return targets;
-}
-
-/** Text token a static import of `file` must contain (its stem, or its directory for an index). */
-function importToken(file: string): string {
-  const stem = path.basename(file).replace(SOURCE_EXT, '');
-  return stem === 'index' ? path.basename(path.dirname(file)) : stem;
-}
-
-/** Every scanned module that reaches a root through static value imports, roots included. */
-function deriveCommerceReach(): Set<string> {
-  const texts = new Map<string, string>();
-  for (const root of SCAN_ROOTS) for (const file of walk(root, [])) texts.set(file, fs.readFileSync(file, 'utf8'));
-  const reach = new Set(V1_COMMERCE_ROOTS.map((root) => path.join(libDir, root)));
-  for (const root of reach) if (!texts.has(root)) throw new Error(`commerce root ${root} is missing from the tree`);
-  const parsed = new Map<string, string[]>();
-  for (let grew = true; grew;) {
-    grew = false;
-    const tokens = [...new Set([...reach].map(importToken))];
-    for (const [file, text] of texts) {
-      if (reach.has(file) || !tokens.some((token) => text.includes(token))) continue;
-      let targets = parsed.get(file);
-      if (!targets) parsed.set(file, (targets = staticValueImports(file, text)));
-      if (targets.some((target) => reach.has(target))) {
-        reach.add(file);
-        grew = true;
-      }
-    }
-  }
-  return reach;
-}
-
-const libRelative = (file: string) => path.relative(libDir, file).split(path.sep).join('/');
 
 describe('P2P v1 release-build switch', () => {
   it('is on only when the documented launch variable is set', () => {
@@ -146,9 +71,13 @@ describe('P2P v1 release-build switch', () => {
 });
 
 describe('R-7 SPEC-P001-EXCLUDED-SET-EQUAL: the release build cannot load a commerce module', () => {
-  const reach = deriveCommerceReach();
-  const derivedP2p = [...reach].filter((file) => file.startsWith(p2pDir + path.sep)).map(libRelative).sort();
-  const derivedOutside = [...reach].filter((file) => !file.startsWith(p2pDir + path.sep)).map(libRelative).sort();
+  const files = new Map<string, string>();
+  for (const root of COMMERCE_SCAN_ROOTS) readCommerceSources(root, files);
+  const reach = deriveCommerceReachability(files, V1_COMMERCE_ROOTS);
+  const prefix = `${COMMERCE_CORE_ROOT}/p2p/`;
+  const libRelative = (file: string) => path.posix.relative(COMMERCE_CORE_ROOT, file);
+  const derivedP2p = reach.filter(file => file.startsWith(prefix)).map(libRelative).sort();
+  const derivedOutside = reach.filter(file => !file.startsWith(prefix)).map(libRelative).sort();
 
   it('R-7: the derived p2p commerce population equals the not-in-v1 commerce list', () => {
     expect(derivedP2p.length).toBeGreaterThan(V1_COMMERCE_ROOTS.length);

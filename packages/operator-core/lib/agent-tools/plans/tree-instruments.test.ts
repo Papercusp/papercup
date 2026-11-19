@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { defaultBlobBatchReader, type BlobBatchReader } from './committed-tree-reader';
+import { deriveCommerceReachability } from '../../p2p/v1-core/commerce-reachability';
 import { scanRepository } from '../../../../../scripts/check-fire-and-forget-classification.mjs';
 import {
   __resetTreeInstrumentMemoForTest,
@@ -129,6 +130,85 @@ describe('provider-specific-census tree instrument', () => {
     const commit = await put({ 'bin/tool.mjs': 'export {};\n' });
     expect(await measureTreeInstrumentAtCommit('provider-specific-census', root, commit))
       .toEqual({ providerSpecificPaths: [], strictViolations: [] });
+  });
+});
+
+describe('p2p-v1-commerce-reachability tree instrument', () => {
+  const key = 'p2p-v1-commerce-reachability' as const;
+  const core = 'packages/operator-core/lib';
+  const contract = `${core}/p2p/v1-core/v1-scope-contract.ts`;
+  const commerceRoot = `${core}/p2p/funding.ts`;
+  const exporter = `${core}/p2p/relay/index.ts`;
+  const importer = 'bin/zz-last.ts';
+  const roots = "export const V1_COMMERCE_ROOTS = ['p2p/funding.ts'] as const;\n";
+  const census = (commit: string, readBlobs?: BlobBatchReader) =>
+    measureTreeInstrumentAtCommit(key, root, commit, { readBlobs });
+  const entry = (commit: string, path: string) => ({ path, blob: git('rev-parse', `${commit}:${path}`) });
+
+  it('finds the same reverse closure when the source order is reversed', () => {
+    const sibling = `${core}/p2p/relay/sibling.ts`;
+    const sources = new Map([
+      [sibling, "export { fund } from './';"],
+      [exporter, "export { fund } from '../funding';"],
+      [commerceRoot, 'export const fund = 1;'],
+      [importer, "import '@papercusp/operator-core/lib/p2p/relay/sibling';"],
+    ]);
+    const expected = [importer, commerceRoot, exporter, sibling];
+    const declared = ['p2p/funding.ts'];
+    expect(deriveCommerceReachability(sources, declared)).toEqual(expected);
+    expect(deriveCommerceReachability(new Map([...sources].reverse()), declared)).toEqual(expected);
+  });
+
+  it.each([127, 128, 129])('follows the decisive importer after %i unrelated sources', async (count) => {
+    const distractors = Object.fromEntries(Array.from({ length: count }, (_, index) => [
+      `apps/operator/lib/neutral-${index}.ts`,
+      `export type { Amount } from '@papercusp/operator-core/lib/p2p/funding';\n`,
+    ]));
+    const base = await put({
+      [contract]: roots,
+      [commerceRoot]: 'export type Amount = number;\nexport const fund = 1;\n',
+      [exporter]: "export { fund } from '../funding.js';\n",
+      ...distractors,
+      [importer]: "void import('@papercusp/operator-core/lib/p2p/relay');\n",
+    });
+    const before = await census(base);
+    expect(before).toEqual({ schemaVersion: 1, reachable: [commerceRoot, exporter].map(path => entry(base, path)) });
+    const unrelated = await put({ 'apps/operator/lib/new-helper.ts': 'export const idle = true;\n' });
+    expect(await census(unrelated)).toEqual(before);
+    const changed = await put({ [importer]: "import '@papercusp/operator-core/lib/p2p/relay';\n" });
+    const after = await census(changed);
+    expect(after).toEqual({ schemaVersion: 1, reachable: [importer, commerceRoot, exporter].map(path => entry(changed, path)) });
+    expect(foldTreeInstrumentFingerprint('source', key, after)).not.toBe(foldTreeInstrumentFingerprint('source', key, before));
+    __resetTreeInstrumentMemoForTest();
+    expect(await census(changed)).toEqual(after);
+  });
+
+  it('includes a decisive edge after multiple blob batches', async () => {
+    const padding = 'x'.repeat(4 * 1024 * 1024);
+    const commit = await put({
+      [contract]: roots,
+      [commerceRoot]: 'export const fund = 1;\n',
+      'apps/operator/lib/z1.ts': `// 1 ${padding}\n`,
+      'apps/operator/lib/z2.ts': `// 2 ${padding}\n`,
+      'apps/operator/lib/z3.ts': `// 3 ${padding}\n`,
+      [importer]: "import '@papercusp/operator-core/lib/p2p/funding';\n",
+    });
+    const batches: string[][] = [];
+    const read: BlobBatchReader = async (directory, blobs) => {
+      batches.push([...blobs]);
+      return defaultBlobBatchReader(directory, blobs);
+    };
+    const expected = [importer, commerceRoot].map(path => entry(commit, path));
+    expect(await census(commit, read)).toEqual({ schemaVersion: 1, reachable: expected });
+    expect(batches.length).toBeGreaterThanOrEqual(3);
+    expect(batches.at(-1)).toContain(expected[0]!.blob);
+  });
+
+  it('reads the committed root declaration and refuses missing roots', async () => {
+    const commit = await put({ [contract]: roots, [commerceRoot]: 'export {};\n' });
+    const changed = await put({ [contract]: "export const V1_COMMERCE_ROOTS = ['p2p/missing.ts'] as const;\n" });
+    await expect(census(changed)).rejects.toThrow('commerce root packages/operator-core/lib/p2p/missing.ts is missing');
+    expect(await census(commit)).toEqual({ schemaVersion: 1, reachable: [entry(commit, commerceRoot)] });
   });
 });
 
