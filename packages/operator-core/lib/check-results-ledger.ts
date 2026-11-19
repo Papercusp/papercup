@@ -439,7 +439,8 @@ export function buildRubricCheckLedgerRow(result: RubricCheckResult, scope: Rubr
     durationMs: result.durationMs,
     startedAt,
     finishedAt,
-    outputTail: result.verdict === 'pass' ? null : (result.detail ?? null),
+    // Passing measurements still carry evidence. Keep it readable through the same ledger field.
+    outputTail: result.detail ?? null,
     runGroupId: scope.runGroupId ?? null,
     commitSha: scope.commitSha ?? null,
     harnessSlug: scope.harnessSlug,

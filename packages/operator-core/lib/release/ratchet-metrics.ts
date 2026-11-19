@@ -216,7 +216,7 @@ export async function measureRatchetMetrics(
 
 /** The instrument's scheduled verdict (rubric-rescore): pass / fail (the alarm) / unknown. */
 export function ratchetMetricsVerdict(metrics: RatchetMetrics): { verdict: 'pass' | 'fail' | 'unknown'; detail: string } {
-  return { verdict: metrics.verdict, detail: JSON.stringify({ detail: metrics.detail, alarms: metrics.alarms, downgradedFailing: metrics.downgradedFailing, downgradesPerDay: metrics.downgradesPerDay, introduced: metrics.introduced.slice(0, 20), fixed: metrics.fixed.slice(0, 20) }) };
+  return { verdict: metrics.verdict, detail: JSON.stringify({ detail: metrics.detail, alarms: metrics.alarms, downgradedFailing: metrics.downgradedFailing, downgradesPerDay: metrics.downgradesPerDay, introduced: metrics.introduced, fixed: metrics.fixed }) };
 }
 
 /**
@@ -248,5 +248,5 @@ export async function recordRatchetMetrics(input: {
     },
     expect: { op: 'lte', value: 0 },
   });
-  return (input.record ?? recordRubricCheckResults)([{ ...result, detail: input.metrics.detail }], input.scope);
+  return (input.record ?? recordRubricCheckResults)([{ ...result, detail: ratchetMetricsVerdict(input.metrics).detail }], input.scope);
 }

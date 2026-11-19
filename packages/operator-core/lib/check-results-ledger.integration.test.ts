@@ -41,6 +41,7 @@ import {
 import { SQL_PROBE_TOOL, continuityProbeRevision } from './continuity-probes';
 import { evaluateCriterionProbeChecks } from './rubrics-criterion-checks';
 import type { InstrumentReading } from './rubric-instrument-registry';
+import { computeRatchetMetrics, recordRatchetMetrics, RATCHET_METRICS_WINDOW_MS } from './release/ratchet-metrics';
 // A sql probe pins dev:pg_query's projected schema revision, which resolves only once the tool is
 // registered: importing it is what makes continuityProbeRevision(SQL_PROBE_TOOL) non-null.
 import './agent-tools/dev/pg_query';
@@ -60,6 +61,38 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+it.each([19, 20, 21, 81])('persists full ratchet evidence for %i names through real JSONB and ledger reads', async count => {
+  const rubricRef = `lossless-ratchet-${count}`;
+  const nowMs = Date.now();
+  const introduced = Array.from({ length: count }, (_, index) => `introduced-${index}.test.ts`);
+  const fixed = Array.from({ length: count }, (_, index) => `fixed-${index}.test.ts`);
+  const saved: Array<{ id: number; detail: string }> = [];
+  for (const failing of [false, true]) {
+    const runs = [...introduced.map(file => ({ file, atMs: nowMs - 1, pass: false })),
+      ...fixed.slice(failing ? 1 : 0).flatMap(file => [
+        { file, atMs: nowMs - RATCHET_METRICS_WINDOW_MS - 1, pass: false },
+        { file, atMs: nowMs - 1, pass: true },
+      ])];
+    const metrics = computeRatchetMetrics({ nowMs, runs: failing ? runs.reverse() : runs, downgrades: [] });
+    const ids = await recordRatchetMetrics({ rubricRef, criterionKey: 'evidence', metrics, scope: SCOPE,
+      record: (results, scope) => recordRubricCheckResults(results, scope, sql()) });
+    expect(ids).toHaveLength(1);
+    const reading = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, testRunIds: ids }, sql());
+    const row = reading.get('evidence:instrument')!;
+    expect(row.status).toBe(failing ? 'fail' : 'pass');
+    const detail = JSON.parse(row.detail!);
+    expect(detail.introduced).toEqual([...introduced].sort());
+    expect(detail.fixed).toEqual(fixed.slice(failing ? 1 : 0).sort());
+    expect(detail.introduced).toContain(`introduced-${count - 1}.test.ts`);
+    saved.push({ id: ids[0]!, detail: row.detail! });
+  }
+  // A later result never replaces the earlier complete population in historical recovery.
+  for (const prior of saved) {
+    const recovered = await readLatestRubricCheckResults({ rubricRef, workspaceId: WS, testRunIds: [prior.id] }, sql());
+    expect(recovered.get('evidence:instrument')?.detail).toBe(prior.detail);
+  }
 });
 
 let healthReportSequence = 0;

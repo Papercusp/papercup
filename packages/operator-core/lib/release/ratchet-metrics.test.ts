@@ -14,6 +14,7 @@ import {
   RATCHET_METRICS_INSTRUMENT_KEY,
   RATCHET_METRICS_WINDOW_MS,
   recordRatchetMetrics,
+  ratchetMetricsVerdict,
   repoRelativeTestPath,
   type RatchetDowngradeRow,
   type RatchetTestRun,
@@ -29,6 +30,30 @@ const dg = (testFile: string, createdHoursAgo: number, revokedHoursAgo: number |
   testFile,
   createdAtMs: NOW - createdHoursAgo * H,
   revokedAtMs: revokedHoursAgo === null ? null : NOW - revokedHoursAgo * H,
+});
+
+describe('lossless ratchet evidence', () => {
+  it.each([19, 20, 21, 81])('retains all %i introduced and fixed identities in the instrument and ledger', async count => {
+    const introduced = Array.from({ length: count }, (_, index) => `introduced-${index}.test.ts`);
+    const fixed = Array.from({ length: count }, (_, index) => `fixed-${index}.test.ts`);
+    const runs = [...introduced.map(file => run(file, 1, false)),
+      ...fixed.flatMap(file => [run(file, 30, false), run(file, 1, true)])];
+    for (const ordered of [runs, [...runs].reverse()]) {
+      const metrics = computeRatchetMetrics({ nowMs: NOW, runs: ordered, downgrades: [] });
+      const reading = JSON.parse(ratchetMetricsVerdict(metrics).detail);
+      expect(reading.introduced).toEqual([...introduced].sort());
+      expect(reading.fixed).toEqual([...fixed].sort());
+      let detail = '';
+      await recordRatchetMetrics({ rubricRef: 'acceptance-lossless', criterionKey: 'ratchet', metrics,
+        scope: { workspaceId: 'ws', harnessSlug: 'papercusp' },
+        record: async results => { detail = results[0]!.detail ?? ''; return [1]; } });
+      const stored = JSON.parse(JSON.parse(JSON.stringify({ detail })).detail);
+      expect(stored.introduced).toEqual(reading.introduced);
+      expect(stored.fixed).toEqual(reading.fixed);
+      expect(stored.introduced).toContain(`introduced-${count - 1}.test.ts`);
+      expect(stored.fixed).toContain(`fixed-${count - 1}.test.ts`);
+    }
+  });
 });
 
 describe('computeRatchetMetrics', () => {

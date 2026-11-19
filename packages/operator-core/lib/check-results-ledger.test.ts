@@ -22,6 +22,22 @@ const AT = '2026-10-13T04:00:00.000Z';
 const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
 
 describe('rubric check execution timestamps', () => {
+  it.each(['pass', 'fail', 'error'] as const)('preserves complete %s measurement detail through the strict reader', async verdict => {
+    const detail = JSON.stringify({ introduced: Array.from({ length: 81 }, (_, index) => `introduced-${index}.test.ts`),
+      fixed: Array.from({ length: 81 }, (_, index) => `fixed-${index}.test.ts`) });
+    const row = buildRubricCheckLedgerRow({
+      check: { id: 'R-1:instrument', rubricRef: 'lossless-detail', criterionKey: 'R-1', kind: 'instrument',
+        value: verdict === 'error' ? null : 0, unit: 'count' },
+      verdict, measuredAt: AT, durationMs: 0, detail,
+    }, { workspaceId: 'ws', harnessSlug: 'papercusp' });
+    expect(row.outputTail).toBe(detail);
+    const restored = JSON.parse(JSON.stringify(row));
+    const read = await readLatestRubricCheckResults({ rubricRef: 'lossless-detail', workspaceId: 'ws', harnessSlug: 'papercusp' },
+      async () => [{ id: 1, status: row.status, file_path: row.filePath, finished_at: AT,
+        output_tail: restored.outputTail, execution_details: restored.executionDetails }]);
+    expect(read.get('R-1:instrument')?.detail).toBe(detail);
+  });
+
   it('writes the execution bounds retained in measurement provenance', () => {
     const startedAt = '2026-11-07T16:22:00.000Z';
     const finishedAt = '2026-11-07T16:22:06.500Z';
