@@ -55,10 +55,13 @@ describe('snapshot receipt recovery', () => {
       started_at: new Date().toISOString(), status, finished_at: null as string | null,
       kopia_snapshot_id: null as string | null, bytes_added: '1', bytes_total: '2',
       db_dump_ok: true as boolean | null, error_text: null as string | null,
-      hook_payload: { ok: true } as Record<string, unknown>, capture_started: false };
+      hook_payload: { ok: true } as Record<string, unknown>, capture_started: false,
+      hook_event_id: '123' as string | number | null };
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?'); queries.push({ text, values });
-      if (text.includes('SELECT id FROM harness_shared.backup_events')) return Promise.resolve([{ id: '123' }]);
+      if (text.includes('SELECT id FROM harness_shared.backup_events')) {
+        return Promise.resolve(row.hook_event_id === null ? [] : [{ id: row.hook_event_id }]);
+      }
       if (text.includes('SELECT event.id, event.payload_json')) return Promise.resolve([
         { id: 123, payload_json: row.hook_payload, capture_started: row.capture_started },
       ]);
@@ -106,6 +109,56 @@ describe('snapshot receipt recovery', () => {
     expect(f.steps).not.toContain('backup-insert-row');
     expect(f.kopia).toHaveBeenCalledWith(expect.arrayContaining(['create', '--tags=papercusp-backup-row-id:78850']), expect.any(Object));
     expect(f.queries.find(q => q.text.includes('SET kopia_snapshot_id'))?.values).toContain(78850);
+  });
+
+  it('replays the same durable hook after newer hook events arrive, while a fresh workflow selects the new event', async () => {
+    const f = producerFixture();
+    configureWithSql(f.sql, async () => ({ release: async () => {} }));
+    const history: Array<{ name: string; value: unknown }> = [];
+    let replay = false;
+    let cursor = 0;
+    let hookExecutions = 0;
+    configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      const cached = history[cursor];
+      if (replay && cached) {
+        expect(name).toBe(cached.name);
+        cursor += 1;
+        return cached.value as T;
+      }
+      // Model a lost worker after the dump step committed its output. The
+      // fixture deliberately retains the running receipt for crash recovery.
+      if (!replay && name === 'backup-kopia-create') throw new Error('simulated worker loss');
+      let value: T;
+      if (name.startsWith('backup-pre-snapshot-hook')) {
+        hookExecutions += 1;
+        f.row.hook_event_id = '298062';
+        value = { ok: true } as T;
+      } else value = await fn();
+      history.push({ name, value });
+      cursor += 1;
+      return value;
+    } });
+    await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .rejects.toThrow('simulated worker loss');
+    replay = true;
+    cursor = 0;
+    await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .resolves.toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+    expect(history.map(step => step.name)).toContain('backup-pre-snapshot-hook:resume:78850:123');
+    expect(hookExecutions).toBe(1);
+    expect(f.queries.filter(q => q.text.includes('SELECT id FROM harness_shared.backup_events'))).toHaveLength(1);
+    expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+
+    // A different workflow has its own durable history and may retry a newer
+    // admission result; pinning must not freeze all future resume attempts.
+    const freshNames: string[] = [];
+    configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      freshNames.push(name);
+      return name.startsWith('backup-pre-snapshot-hook') ? { ok: true } as T : fn();
+    } });
+    await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .resolves.toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+    expect(freshNames).toContain('backup-pre-snapshot-hook:resume:78850:298062');
   });
 
   it.each(['host-backup-in-progress', 'backup-guard-busy'] as const)

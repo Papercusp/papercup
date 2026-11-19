@@ -609,18 +609,22 @@ export class WorkspaceBackup {
           throw new Error(`snapshot ${snapshotRowId} has no positive artifact-absence proof; re-read its receipt before resuming`);
         }
         receiptFinalized = false;
-        // This also covers a crash after a recovery CAS but before the next
-        // hook: the row is running again, yet the original step can still hold
-        // a cached admission rejection. The latest durable hook event gives a
-        // stable retry identity without discarding the old result or evidence.
-        const [priorHook] = await sql<{ id: string | number }[]>`
-          SELECT id FROM harness_shared.backup_events
-           WHERE workspace_id = ${this.workspaceId} AND snapshot_id = ${snapshotRowId}
-             AND kind = 'hook_pg_dump' ORDER BY id DESC LIMIT 1
-        `;
-        if (priorHook) {
-          const eventId = Number(priorHook.id);
-          if (!Number.isSafeInteger(eventId) || eventId <= 0) throw new Error('snapshot retry hook event has an invalid identity');
+        // A fresh recovery can bypass a cached admission rejection, including
+        // a crash after its receipt CAS. Persist the selected event in this
+        // workflow's history: the dump itself writes a newer hook event, so a
+        // live latest-event read would change the next step name on replay.
+        const eventId = await steps.runStep('backup-resume-hook-identity', async () => {
+          const [priorHook] = await sql<{ id: string | number }[]>`
+            SELECT id FROM harness_shared.backup_events
+             WHERE workspace_id = ${this.workspaceId} AND snapshot_id = ${snapshotRowId}
+               AND kind = 'hook_pg_dump' ORDER BY id DESC LIMIT 1
+          `;
+          if (!priorHook) return null;
+          const id = Number(priorHook.id);
+          if (!Number.isSafeInteger(id) || id <= 0) throw new Error('snapshot retry hook event has an invalid identity');
+          return id;
+        });
+        if (eventId !== null) {
           dumpStepName += `:resume:${snapshotRowId}:${eventId}`;
         }
         await this.event(snapshotRowId!, 'progress', { phase: 'producer_resumed' });
