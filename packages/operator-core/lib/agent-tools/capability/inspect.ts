@@ -669,21 +669,16 @@ export default defineTool({
         if (identity.ownerId !== ctx.uiClientId || identity.workspaceId !== ctx.workspaceId) {
           return err('host-envelope-self-required', 'Host envelope capture identity must match the calling session and workspace.');
         }
-        const [confinement, modes, overrides, flags, flagKeys, distinct, capture] = await Promise.all([
-          import('../../capability-envelope/session-confinement-port'), import('../../modes/store'),
-          import('../../capability-envelope-overrides'), import('@papercusp/flags/server'),
-          import('@papercusp/flags'), import('../../flag-distinct-id'), import('../../agent-identities/idop-p001-baseline'),
+        const [flagKeys, distinct, capture] = await Promise.all([
+          import('@papercusp/flags'), import('../../flag-distinct-id'), import('../../agent-identities/idop-p001-host-inputs'),
         ]);
-        const ports = confinement.getSessionConfinementReadPorts();
         const startedAt = new Date().toISOString();
-        const result = await capture.captureIdopP001HostPermissionPorts({
+        const result = await capture.captureIdopP001ServingEnvelopeInputs({
           workspaceId: ctx.workspaceId, contexts: [ctx], flags: [
             { key: flagKeys.FLAGS.CAPABILITY_ENVELOPE, distinctId: 'system' },
             { key: flagKeys.FLAGS.CAPABILITY_ENVELOPE_OVERRIDES, distinctId: distinct.systemDistinctId() },
           ],
-        }, { ...ports, audit: { resolveIdentity: resolveAgentIdentity, readModes: modes.getModes },
-          roleOverrides: overrides.envelopeRoleOverrides, protectedAdditions: overrides.envelopeProtectedAdditions,
-          readFlagAttestation: flags.getFlagAttestation });
+        });
         return { content: [{ type: 'text' as const, text: JSON.stringify({
           ok: true, scope: 'original-host-self-envelope-inputs', snapshot: result.snapshot, sha256: result.sha256,
           provenance: { schemaVersion: 1, ownerId: identity.ownerId, workspaceId: identity.workspaceId,

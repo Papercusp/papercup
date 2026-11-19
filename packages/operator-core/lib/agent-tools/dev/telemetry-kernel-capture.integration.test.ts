@@ -10,6 +10,7 @@ const options = isolatedWorkerOptions(600_000);
 const captureSources = [
   'packages/operator-core/lib/agent-tools/dev/telemetry.ts',
   'packages/operator-core/lib/agent-identities/idop-p001-baseline.ts',
+  'packages/operator-core/lib/agent-identities/idop-p001-host-inputs.ts',
   'packages/operator-core/lib/agent-identities/permission-input-data.ts',
   'packages/operator-core/lib/projected-tool-deps.ts',
   'packages/operator-core/lib/capability-envelope/identity-grants-port.ts',

@@ -67,12 +67,7 @@ export default defineTool({
         throw Error('host_permission_inputs_requires_matching_identity');
       }
       if (args.view === 'kernel-permission-inputs') {
-        const [kernel, grants, plan, apps, organization, mcp, capture] = await Promise.all([
-          import('../../projected-tool-deps'), import('../../capability-envelope/identity-grants-port'),
-          import('../plans/plan-execution-guard'), import('../../connected-apps/enforce'),
-          import('../../governance-policy/enforce'), import('@papercusp/agent-mcp'),
-          import('../../agent-identities/idop-p001-baseline'),
-        ]);
+        const { captureIdopP001ServingKernelInputs } = await import('../../agent-identities/idop-p001-host-inputs');
         const startedAt = new Date().toISOString();
         const runtime = getServingHostIdentity();
         // Preserve the host's dispatch-stack kernel request fields. In
@@ -86,18 +81,8 @@ export default defineTool({
           appliedRevision: ctx.appliedExecutionRevision ?? ctx.kernelState?.appliedRevision ?? ctx.kernelState?.activation?.applied ?? null,
           requestedRevision: ctx.requestedExecutionRevision ?? ctx.kernelState?.requestedRevision ?? null,
           ownership: ctx.kernelOwnership ?? ctx.kernelState?.ownership };
-        const app = apps.appPrincipalRefOfSlug(ctx.principal?.slug);
         const result = await trackPhase(ctx.phases, 'dev:telemetry:kernel-permission-inputs', () =>
-          capture.captureIdopP001KernelPermissionPorts({ workspaceId, requests: [{ request }],
-            policyInputs: [], operationClaims: [], toolNames: [request.toolName],
-            apps: app ? [{ appId: app.appId, tokenIds: app.tokenId ? [app.tokenId] : [] }] : [],
-            convergence: [], captureIdentityDependencies: true,
-          }, { inner: { readState: kernel.readControlAnchorKernelState, resolveIdentity: resolveAgentIdentity,
-            readPolicy: grants.readIdentityGrantPolicy, readOperationEffectClaim: grants.readCurrentOperationEffectClaim,
-            resolveTool: mcp.resolveMcpName, runtime: { pid: process.pid, processId: runtime.processId },
-            plan: { readBindings: plan.readExecutionPlanBindings, resolveGoal: plan.readExecutionPlanGoal,
-              checkPlan: plan.checkExecutionPlan } },
-          app: apps.getAppKeyScopeReadPorts(), organization: organization.getInheritedPolicyReadPorts() }));
+          captureIdopP001ServingKernelInputs({ workspaceId, requests: [{ request }] }));
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true,
           scope: 'original-host-self-kernel-permission-inputs', snapshot: result.snapshot, sha256: result.sha256,
           provenance: { schemaVersion: 1, ownerId: identity.ownerId, workspaceId, runtime,
@@ -107,20 +92,15 @@ export default defineTool({
       }
       // Resolve only on this view: normal telemetry must not load the comparison
       // graph. Read the same host ports/cache as dispatch; never force a refresh.
-      const [confinement, modes, overrides, flags, flagKeys, capture] = await Promise.all([
-        import('../../capability-envelope/session-confinement-port'), import('../../modes/store'),
-        import('../../capability-envelope-overrides'), import('@papercusp/flags/server'),
-        import('@papercusp/flags'), import('../../agent-identities/idop-p001-baseline'),
+      const [flagKeys, capture] = await Promise.all([
+        import('@papercusp/flags'), import('../../agent-identities/idop-p001-host-inputs'),
       ]);
       const startedAt = new Date().toISOString();
       const result = await trackPhase(ctx.phases, 'dev:telemetry:host-permission-inputs', () =>
-        capture.captureIdopP001HostPermissionPorts({
+        capture.captureIdopP001ServingEnvelopeInputs({
           workspaceId, contexts: [ctx],
           flags: [{ key: flagKeys.FLAGS.CAPABILITY_ENVELOPE, distinctId: 'system' }],
-        }, { ...confinement.getSessionConfinementReadPorts(),
-          audit: { resolveIdentity: resolveAgentIdentity, readModes: modes.getModes },
-          roleOverrides: overrides.envelopeRoleOverrides, protectedAdditions: overrides.envelopeProtectedAdditions,
-          readFlagAttestation: flags.getFlagAttestation }));
+        }));
       return { content: [{ type: 'text', text: JSON.stringify({
         ok: true, scope: 'original-host-self-permission-inputs', snapshot: result.snapshot, sha256: result.sha256,
         provenance: { schemaVersion: 1, ownerId: identity.ownerId, workspaceId: identity.workspaceId,
