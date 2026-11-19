@@ -94,6 +94,16 @@ describe('P001 authentic proof producer and intended child baseline', () => {
       writeFileSync(runtimeWrapper, runtimeWrapperSource.replace(runtimeHostCatch,
         "catch (error) { console.error('P001_HOST_PROOF_ERROR', import.meta.url, String(error)); return null; }\n}\nexport function captureCurrentRuntimeProofIdentity")
         .replace(runtimeReturn, "const host = hostProof(); const measured = host?.captureCurrentRuntimeProofIdentity?.(options) ?? null; console.error('P001_RECORDER_RUNTIME ' + JSON.stringify({ module: import.meta.url, root: options.root, available: !!measured, fingerprint: host?.runtimeProofFingerprint?.(measured), identity: measured, execArgv: process.execArgv, helperExports: Object.keys(host ?? {}) })); return measured;"));
+      const workerSetup = join(root, 'libs/test-config/src/executed-inputs-capture-setup.ts');
+      const workerSetupSource = readFileSync(workerSetup, 'utf8');
+      const workerRuntime = 'const runtimeBefore = runtimeProof.captureCurrentRuntimeProofIdentity?.({ root }) ?? null;';
+      expect(workerSetupSource).toContain(workerRuntime);
+      // The JSON display reporter omits worker console logs. Write diagnostics
+      // before fs capture, one file per capture, and retain them in assertions.
+      // workerExecution records process custody and does not contain execArgv.
+      writeFileSync(workerSetup, workerSetupSource.replace(workerRuntime, workerRuntime +
+        "\nwriteFileSync(" + JSON.stringify(join(directory, 'worker-invocation-')) +
+        " + captureId + '.json', JSON.stringify({ captureId, pid: process.pid, testFile: expect.getState().testPath, invocationArguments: [...process.execArgv], environment: ['BUN_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH'].map(key => [key, process.env[key] ?? null]), runtimeBefore }));"));
       cpSync(join(source, 'libs/test-config/package.json'), join(root, 'libs/test-config/package.json'));
       mkdirSync(join(root, 'libs/generic'), { recursive: true });
       cpSync(join(source, 'libs/generic/module-singleton'), join(root, 'libs/generic/module-singleton'), { recursive: true });
@@ -126,6 +136,15 @@ describe('P001 authentic proof producer and intended child baseline', () => {
         // A CLI --reporter replaces ALL configured reporters, including the
         // native ledger/proof producers. Change only the display reporter.
         "config.test.reporters = config.test.reporters.map(reporter => reporter === 'default' ? 'json' : reporter);\n" +
+        "config.test.reporters.push({ onInit(ctx) { for (const project of ctx.projects) {\n" +
+        "const invocation = wrapper.resolveVitestWorkerInvocation(project);\n" +
+        "const expected = wrapper.captureVitestWorkerProofIdentity({ root, project });\n" +
+        "const diagnostic = { pool: project.config.pool, execArgv: project.config.execArgv, " +
+        "conditions: project.vite.config.ssr.resolve?.conditions, isProduction: project.vite.config.isProduction, " +
+        "hasVitest: !!project.vitest, invocationArgv: invocation?.execArgv, expected };\n" +
+        "console.error('P001_INTENDED_WORKER_PREFLIGHT ' + JSON.stringify(diagnostic));\n" +
+        "if (!expected) throw Error('Intended worker runtime unavailable: ' + JSON.stringify(diagnostic));\n" +
+        "} } });\n" +
         "export default config;\n");
       for (const name of ['a', 'b']) {
         writeFileSync(join(workspace, `lib/${name}.ts`), 'export const value = true;\n');
@@ -184,11 +203,20 @@ describe('P001 authentic proof producer and intended child baseline', () => {
           { cwd: workspace, env: environment, encoding: 'utf8', timeout: 60_000, maxBuffer: 8 * 1024 * 1024 });
         expect(child.error, child.stdout + child.stderr).toBeUndefined();
         expect(child.stdout.trim(), child.stderr).not.toBe('');
-        return { status: child.status, report: JSON.parse(child.stdout), stderr: child.stderr };
+        const workerInvocations = readdirSync(directory)
+          .filter(file => file.startsWith('worker-invocation-') && file.endsWith('.json'))
+          .sort().map(file => JSON.parse(readFileSync(join(directory, file), 'utf8')));
+        return { status: child.status, report: JSON.parse(child.stdout),
+          workerInvocations,
+          stderr: child.stderr + '\nP001_NATIVE_CHILD_REPORT ' + child.stdout +
+            '\nP001_NATIVE_WORKER_INVOCATIONS ' + JSON.stringify(workerInvocations) };
       };
       const initial = run(env);
       expect(initial.status, initial.stderr).toBe(0);
       expect(initial.report.numPassedTests).toBe(2);
+      expect(initial.workerInvocations, initial.stderr).toHaveLength(2);
+      expect(initial.workerInvocations.map(row => row.testFile).sort()).toEqual(
+        ['a', 'b'].map(name => join(workspace, `lib/${name}.test.ts`)));
       expect(initial.stderr, initial.stderr).not.toContain('P001_HOST_PROOF_ERROR');
       const originals = await org.adminSql`
         SELECT file_path, status, commit_sha, source, worktree_dirty FROM harness_shared.test_runs
