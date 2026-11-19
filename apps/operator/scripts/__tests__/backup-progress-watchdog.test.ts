@@ -433,7 +433,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
     ['after-timeout', 'post-sudo-entered', 124],
     ['after-killed-timeout', 'post-sudo-entered', 137],
     ['after-malformed', 'post-sudo-entered', 0],
-  ] as const)('records archive observer execution stage and preserves fail-closed parsing: %s', (mode, stage, status) => {
+  ] as const)('records archive observer execution stage without mistaking unknown progress for failure: %s', (mode, stage, status) => {
     const root = mkdtempSync(join(tmpdir(), 'backup-size-stage-'));
     try {
       const progress = join(root, 'archive with spaces.tmp');
@@ -476,21 +476,19 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         'run_bounded_watched 99 100 "$PROGRESS_PATH" /bin/sleep "$PRODUCER_DURATION"',
       ].join('\n')], {
         encoding: 'utf8', timeout: 4_000,
-        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PROGRESS_PATH: progress, MEASURE_MODE: mode, PRODUCER_DURATION: mode === 'success' ? '0.5' : '30' },
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PROGRESS_PATH: progress, MEASURE_MODE: mode, PRODUCER_DURATION: '0.5' },
       });
       expect(run.error, run.stderr).toBeUndefined();
       if (mode === 'success') {
         expect(run.status, run.stderr).toBe(0);
         expect(run.stderr).not.toContain('ABORTING DUMP');
       } else {
-        expect([137, 143], run.stderr).toContain(run.status);
+        expect(run.status, run.stderr).toBe(0);
         expect(run.stderr).toContain('unable to measure archive progress');
         expect(run.stderr).toContain(`du_status=${status} probe_stage=${stage}`);
         expect(run.stderr).toMatch(/probe_started_epoch=\d+\.\d+ probe_finished_epoch=\d+\.\d+/);
-        // The parent reaps the watcher once the producer exits; backend cleanup
-        // also lives in guarded_dump_one/the outer script, outside this fixture.
-        // A signalled 30-second producer within this four-second harness proves
-        // the observer failed closed without depending on that watcher race.
+        expect(run.stderr).toContain('progress unknown');
+        expect(run.stderr).not.toContain('ABORTING DUMP');
         expect(run.stderr).not.toContain('killing stalled producer');
       }
     } finally {
@@ -498,7 +496,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
     }
   });
 
-  it.each(['hang', 'hang-ignore-term'])('terminates its producer when the archive-size observer %s', (mode) => {
+  it.each(['hang', 'hang-ignore-term'])('retains the absolute ceiling when the archive-size observer %s', (mode) => {
     const root = mkdtempSync(join(tmpdir(), 'backup-size-deadline-'));
     try {
       const sudo = join(root, 'sudo');
@@ -517,6 +515,9 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         'PC_BACKUP_MIN_FREE_GB=1',
         'PROGRESS_STALE_SEC=1',
         'KILL_GRACE_SEC=0',
+        'printf "0\\n" > "$CLOCK"',
+        'date() { cat "$CLOCK"; }',
+        'sleep() { if [ "$1" = "$PC_BACKUP_WATCH_SEC" ]; then tick=$(cat "$CLOCK"); printf "%s\\n" "$((tick + 1))" > "$CLOCK"; fi; command sleep "$1"; }',
         'fs_avail_gb() { echo 999; }',
         'log() { printf "%s\\n" "$*" >&2; }',
         'reap_own_stragglers() { :; }',
@@ -526,13 +527,13 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         '  command timeout --kill-after=0.1s 0.1s "$@"',
         '}',
         watchdogSource(),
-        'run_bounded_watched 1 8 "$PROGRESS_PATH" /bin/sleep 30',
+        'run_bounded_watched 1 3 "$PROGRESS_PATH" /bin/sleep 30',
         'rc=$?',
         'printf "watchdog returned:%s\\n" "$rc"',
         'test "$rc" -ne 0',
       ].join('\n')], {
         encoding: 'utf8', timeout: 4_000,
-        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PROGRESS_PATH: progress, MEASURE_MODE: mode },
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PROGRESS_PATH: progress, MEASURE_MODE: mode, CLOCK: join(root, 'clock') },
       });
       expect(run.error, run.stderr).toBeUndefined();
       expect(run.status, run.stderr).toBe(0);
@@ -540,6 +541,48 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       expect(run.stderr).toContain('unable to measure archive progress');
       expect(run.stderr).toContain(mode === 'hang' ? 'du_status=124' : 'du_status=137');
       expect(run.stderr).toContain('probe_stage=post-sudo-unobserved');
+      expect(run.stderr).toContain('absolute watchdog ceiling 3s reached');
+      expect(run.stderr).not.toContain('killing stalled producer');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['growing', 'stalled'])('requires fresh stall evidence after an observer gap: %s', (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-observer-recovery-'));
+    try {
+      const progress = join(root, 'archive.tmp');
+      writeFileSync(progress, 'x');
+      const run = spawnSync('bash', ['-c', [
+        'set -uo pipefail',
+        'PC_BACKUP_WATCH_SEC=0.03',
+        'PC_BACKUP_MIN_FREE_GB=1',
+        'PROGRESS_STALE_SEC=2',
+        'KILL_GRACE_SEC=0',
+        'printf "0\\n" > "$CLOCK"',
+        'date() { cat "$CLOCK"; }',
+        'sleep() { if [ "$1" = "$PC_BACKUP_WATCH_SEC" ]; then tick=$(cat "$CLOCK"); printf "%s\\n" "$((tick + 1))" > "$CLOCK"; fi; command sleep "$1"; }',
+        'fs_avail_gb() { echo 999; }',
+        'log() { printf "tick=%s %s\\n" "$(cat "$CLOCK")" "$*" >&2; }',
+        'reap_own_stragglers() { :; }',
+        'timeout() { shift 2; "$@"; }',
+        'sudo() { tick=$(cat "$CLOCK"); if [ "$tick" -eq 2 ] || [ "$tick" -eq 3 ]; then echo "observer unavailable" >&2; return 13; fi; bytes=1; [ "$MODE" != growing ] || bytes="$tick"; printf "%s\\t%s\\n" "$bytes" "$PROGRESS_PATH"; }',
+        watchdogSource(),
+        'run_bounded_watched 1 9 "$PROGRESS_PATH" bash -c \'while [ "$(cat "$CLOCK")" -lt 7 ]; do /bin/sleep 0.005; done\'',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 5_000,
+        env: { ...process.env, CLOCK: join(root, 'clock'), PROGRESS_PATH: progress, MODE: mode },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect(run.stderr).toContain('progress unknown');
+      if (mode === 'growing') {
+        expect(run.status, run.stderr).toBe(0);
+        expect(run.stderr).not.toContain('ABORTING DUMP');
+      } else {
+        expect([137, 143], run.stderr).toContain(run.status);
+        expect(run.stderr).toMatch(/tick=6 ABORTING DUMP:.*killing stalled producer/);
+        expect(run.stderr).not.toMatch(/tick=[2345] ABORTING DUMP/);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -590,7 +633,7 @@ case "$1" in
     ;;
   unmeasurable)
     : > "$PROGRESS_PATH"
-    run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'sleep 20'
+    run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'sleep 1'
     ;;
 esac
 `,
@@ -631,11 +674,12 @@ esac
       rmSync(progress, { force: true });
       rmSync(sudoLog, { force: true });
       const unmeasurable = run('unmeasurable', true);
-      expect(unmeasurable.status, unmeasurable.stderr).not.toBe(0);
+      expect(unmeasurable.status, unmeasurable.stderr).toBe(0);
       expect(unmeasurable.stderr).toContain('unable to measure archive progress');
       expect(unmeasurable.stderr).toContain('du_status=1 probe_stage=post-sudo-unobserved');
       expect(unmeasurable.stderr).toContain('output=du: Permission denied');
       expect(unmeasurable.stderr).not.toContain('killing stalled producer');
+      expect(unmeasurable.stderr).not.toContain('ABORTING DUMP');
       expect(readFileSync(sudoLog, 'utf8')).toContain('-n -u postgres sh -c');
     } finally {
       rmSync(root, { recursive: true, force: true });

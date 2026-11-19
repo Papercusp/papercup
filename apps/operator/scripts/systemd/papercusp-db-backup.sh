@@ -480,12 +480,14 @@ run_bounded_watched() {
   local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
   local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed space_abort_reason
   local last_bytes=0 last_progress_epoch=0 current_bytes=0 progress_path_seen=0
+  local progress_sample_known=1 progress_known_since_epoch
   local measurement_output measurement_rc measurement_detail measurement_stage
   local measurement_started_epoch measurement_finished_epoch
   local last_diagnostic_epoch
   local backup_diagnostic_last_path='' backup_diagnostic_last_snapshot='' backup_diagnostic_last_elapsed=''
   start_epoch=$(date +%s)
   last_progress_epoch="$start_epoch"
+  progress_known_since_epoch="$start_epoch"
   last_diagnostic_epoch="$start_epoch"
   "$@" &
   dump_pid=$!
@@ -495,6 +497,7 @@ run_bounded_watched() {
       prioritize_backup_backends
       now_epoch=$(date +%s)
       elapsed=$(( now_epoch - start_epoch ))
+      progress_sample_known=1
       space_abort_reason=''
       if ! now=$(fs_avail_gb); then
         log "ABORTING DUMP: unable to measure free space on $PGOUT; killing this dump until headroom can be verified"
@@ -515,7 +518,7 @@ run_bounded_watched() {
       # A -Fd producer may not have created its output directory by the first
       # watch sample. Treat that startup interval as zero bytes while the free
       # space floor and elapsed watchdog remain active. Once observed, a missing
-      # or unreadable path is still an immediate measurement failure.
+      # or unreadable path is an unknown observation, not evidence of a stall.
       if [ ! -e "$progress_path" ] && [ "$progress_path_seen" -eq 0 ]; then
         current_bytes=0
       else
@@ -545,14 +548,20 @@ run_bounded_watched() {
         if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
           measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
           measurement_detail=${measurement_detail:0:240}
-          log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc probe_stage=$measurement_stage probe_started_epoch=$measurement_started_epoch probe_finished_epoch=$measurement_finished_epoch output=${measurement_detail:-<empty>}); terminating bounded producer"
-          log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" progress-unreadable
-          kill -TERM "$dump_pid" 2>/dev/null
-          sleep "$KILL_GRACE_SEC"
-          kill -KILL "$dump_pid" 2>/dev/null
-          reap_own_stragglers
-          return 0
+          log "WARN: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc probe_stage=$measurement_stage probe_started_epoch=$measurement_started_epoch probe_finished_epoch=$measurement_finished_epoch output=${measurement_detail:-<empty>}); progress unknown, absolute watchdog and free-space protection remain active"
+          if [ "$progress_known_since_epoch" -ne 0 ]; then
+            log_backup_diagnostics "$progress_path" "$elapsed" "$last_bytes" progress-unreadable
+          fi
+          progress_sample_known=0
+          progress_known_since_epoch=0
+          current_bytes="$last_bytes"
         fi
+      fi
+      # A failed observer neither proves growth nor proves its absence. After
+      # recovery, require a fresh interval of measured no-growth before a stall
+      # verdict; the absolute ceiling and the disk guard never depend on it.
+      if [ "$progress_sample_known" -eq 1 ] && [ "$progress_known_since_epoch" -eq 0 ]; then
+        progress_known_since_epoch="$now_epoch"
       fi
       if [ "$current_bytes" -gt "$last_bytes" ]; then
         last_bytes="$current_bytes"
@@ -562,6 +571,8 @@ run_bounded_watched() {
       if [ "$elapsed" -ge "$max_secs" ]; then
         log "ABORTING DUMP: absolute watchdog ceiling ${max_secs}s reached (output ${last_bytes} bytes); killing bounded producer"
       elif [ "$elapsed" -ge "$floor_secs" ] &&
+           [ "$progress_sample_known" -eq 1 ] &&
+           [ $(( now_epoch - progress_known_since_epoch )) -ge "$PROGRESS_STALE_SEC" ] &&
            [ $(( now_epoch - last_progress_epoch )) -ge "$PROGRESS_STALE_SEC" ]; then
         log "ABORTING DUMP: no archive growth for ${PROGRESS_STALE_SEC}s after ${floor_secs}s floor (output ${last_bytes} bytes); killing stalled producer"
       else
