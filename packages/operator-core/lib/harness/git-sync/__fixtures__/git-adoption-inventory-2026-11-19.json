@@ -1,0 +1,53 @@
+{
+  "sources": [
+    {
+      "name": "git/git",
+      "commit": "c4244bdfe6d28ed552e10f1e37387978549b36ed",
+      "positiveControl": "git/git@c4244bdfe6d28ed552e10f1e37387978549b36ed",
+      "scope": "Exact commit named in original source conversation turn21; parent e92a518a741ead85634c43f871e7e095bcf66f1f to this commit. Other upstream history is outside this two-patch review.",
+      "url": "https://github.com/git/git/commit/c4244bdfe6d28ed552e10f1e37387978549b36ed"
+    },
+    {
+      "name": "openai/git",
+      "commit": "9f7a692455637abfc077817d48e1fef5bd851ca2",
+      "positiveControl": "openai/git@9f7a692455637abfc077817d48e1fef5bd851ca2",
+      "scope": "Exact commit named in original source conversation turn21; parent 540401f2f3be07bfa4c9cf32ec99c8cad7e5bcd1 to this commit. Current codex branch and unrelated fork history are outside this two-patch review.",
+      "url": "https://github.com/openai/git/commit/9f7a692455637abfc077817d48e1fef5bd851ca2"
+    }
+  ],
+  "members": [
+    {
+      "key": "git/git@c4244bdfe6d28ed552e10f1e37387978549b36ed",
+      "source": "git/git",
+      "commit": "c4244bdfe6d28ed552e10f1e37387978549b36ed",
+      "exclusion": null,
+      "subject": "fetch-pack: accept \"pack\" output for packfile URIs",
+      "paths": [
+        "fetch-pack.c",
+        "t/t5702-protocol-v2.sh"
+      ],
+      "license": "GPL-2.0-only unless a file states otherwise",
+      "licenseSha256": "5b2198d1645f767585e8a88ac0499b04472164c0d2da22e75ecf97ef443ab32e",
+      "upstreamStatus": "Published upstream commit; containing release not established by this inventory.",
+      "command": "fetch-pack via packfile-URI HTTP fetch",
+      "transport": "protocol-v2 packfile-URI advertisement and HTTP pack download"
+    },
+    {
+      "key": "openai/git@9f7a692455637abfc077817d48e1fef5bd851ca2",
+      "source": "openai/git",
+      "commit": "9f7a692455637abfc077817d48e1fef5bd851ca2",
+      "exclusion": null,
+      "subject": "http-fetch: reuse completed packs before downloading",
+      "paths": [
+        "http-fetch.c",
+        "t/t5550-http-fetch-dumb.sh"
+      ],
+      "license": "GPL-2.0-only unless a file states otherwise",
+      "licenseSha256": "5b2198d1645f767585e8a88ac0499b04472164c0d2da22e75ecf97ef443ab32e",
+      "upstreamStatus": "Published pinned OpenAI fork commit; upstream inclusion not established by this inventory.",
+      "command": "http-fetch with a previously installed named pack",
+      "transport": "HTTP packfile-URI download"
+    }
+  ],
+  "hash": "c3722b087132a4209ddd1d600461ef164f70506e7fbe2474de5699e0631f16f8"
+}
