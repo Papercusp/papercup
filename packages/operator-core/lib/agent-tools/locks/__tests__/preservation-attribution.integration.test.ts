@@ -49,6 +49,9 @@ describe('outside-transaction preservation attribution (EI-28956526342522195)', 
       let entered!: () => void;
       const captureGate = new Promise<void>(resolve => { resume = resolve; });
       const captureEntered = new Promise<void>(resolve => { entered = resolve; });
+      const siblingOwner = `su-${randomUUID()}`;
+      let resumeSibling: (() => void) | undefined;
+      let sibling: Promise<unknown> | undefined;
       const startedAt = Date.now();
       const holder = inWorkspaceTxn(domain, owner, async tx => {
         const [backend] = await tx<{ pid: number; name: string }[]>`
@@ -90,14 +93,36 @@ describe('outside-transaction preservation attribution (EI-28956526342522195)', 
         await expect(inWorkspaceTxn(domain, 'unrelated-reader', async () => 'unrelated', {
           paths: ['b.ts'],
         })).resolves.toBe('unrelated');
+        let siblingEntered!: () => void;
+        const siblingReady = new Promise<void>(resolve => { siblingEntered = resolve; });
+        const siblingGate = new Promise<void>(resolve => { resumeSibling = resolve; });
+        sibling = inWorkspaceTxn(domain, siblingOwner, tx =>
+          preserveOutsideWorkspaceTxn(tx, domain, ['b.ts'], ['sibling-lease'], async () => {
+            siblingEntered();
+            await siblingGate;
+            return 'sibling';
+          }), { paths: ['b.ts'] });
+        await Promise.race([siblingReady, sibling.then(() => { throw new Error('sibling capture never entered'); })]);
         const blocked = await Promise.all([
           inWorkspaceTxn(domain, 'same-path', async () => 'must not enter', { paths: ['a.ts'] }),
           inWorkspaceTxn(domain, 'global', async () => 'must not enter'),
         ].map(operation => operation.then(() => null, error => error)));
         for (const error of blocked) expect(error).toBeInstanceOf(WorkspaceContendedError);
+        const samePath = (blocked[0] as WorkspaceContendedError).preservation;
+        expect(samePath?.truncated).toBe(false);
+        expect(samePath?.holders, JSON.stringify(samePath)).toEqual([{ owner, backendPid: backendIds[0],
+          startedAtMs: Number(identity![1]), phase: 'preservation', ownerComplete: true }]);
+        expect(samePath!.observedAtMs).toBeGreaterThanOrEqual(Number(identity![1]));
+        const global = (blocked[1] as WorkspaceContendedError).preservation;
+        expect(global?.holders.map(holder => holder.owner).sort()).toEqual([owner, siblingOwner].sort());
       } finally {
-        resume();
-        await settled;
+        try {
+          resumeSibling?.();
+          await sibling;
+        } finally {
+          resume();
+          await settled;
+        }
       }
 
       const actual = await settled;
