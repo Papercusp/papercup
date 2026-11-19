@@ -25,8 +25,9 @@ function fixture(): AuthoritySnapshot {
 describe('P-002 correlated identity contributions', () => {
   function contributed(): AuthoritySnapshot {
     const current = fixture();
-    current.policies[0] = {
-      ...current.policies[0], rules: {}, contributions: [
+    const policies = [...current.policies];
+    policies[0] = {
+      ...policies[0], rules: {}, contributions: [
         { id: 'network-layer', revision: 'network:1', grants: {
           tools: { allow: ['capability:bash'] }, actions: { allow: ['net:connect'] },
           resources: { allow: [resourcePermissionValue(request.resource)] },
@@ -37,7 +38,7 @@ describe('P-002 correlated identity contributions', () => {
         }, maximum: {} },
       ],
     };
-    return current;
+    return { ...current, policies };
   }
 
   it('permits each complete contribution without creating cross-layer tool/action/resource grants', () => {
