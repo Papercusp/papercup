@@ -12,13 +12,14 @@ const registry = vi.hoisted(() => ({
   load: vi.fn(),
   contentPath: vi.fn(),
   integrationRoot: vi.fn(),
+  frozenQueue: vi.fn(),
 }));
 vi.mock('../workspace-registry', () => ({ readRegistry: registry.read }));
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: registry.load,
   resolveHarnessContentPath: registry.contentPath,
 }));
-vi.mock('../harness/routines/release-actions', () => ({ resolveIntegrationRoot: registry.integrationRoot }));
+vi.mock('../harness/routines/release-actions', () => ({ resolveIntegrationRoot: registry.integrationRoot, readFrozenCandidateRepairQueueState: registry.frozenQueue }));
 // WI-10007542: the prune start runs behind governed admission. The seam is faked so this
 // unit suite never reaches the durable admission tables.
 const governed = vi.hoisted(() => ({ run: vi.fn() }));
@@ -45,6 +46,7 @@ beforeEach(() => {
   registry.read.mockReturnValue({ workspaces: [{ id: 'ws-1' }] });
   registry.load.mockResolvedValue({ projects: [{ slug: 'project' }] });
   registry.contentPath.mockReturnValue(integration);
+  registry.frozenQueue.mockResolvedValue({ status: 'absent' });
   governed.run.mockImplementation((_input: unknown, start: (context: unknown) => Promise<unknown>) => start({}));
 });
 
@@ -64,6 +66,39 @@ function pruneArguments(): string[] {
 }
 
 describe('hourly dependency-generation retention discovery', () => {
+  it('refreshes both frozen refs before pruning and clears them only after measured queue absence', async () => {
+    const store = join(fixture, 'store');
+    mkdirSync(store);
+    recordStore(store);
+    registry.frozenQueue.mockResolvedValue({ status: 'value', queue: { candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40) } });
+    await runDependencyGenerationRetention();
+    expect(pruneArguments()).toEqual([
+      '--integration', integration, '--generation-root', store, '--sync-frozen-refs',
+      '--frozen-ref', 'a'.repeat(40), '--frozen-ref', 'b'.repeat(40),
+      '--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade',
+    ]);
+    mkdirSync(join(store, '.pins'), { recursive: true });
+    writeFileSync(join(store, '.pins/frozen'), 'retention=frozen\n');
+    writeFileSync(output, '');
+    registry.frozenQueue.mockResolvedValue({ status: 'absent' });
+    await runDependencyGenerationRetention();
+    expect(pruneArguments()).toEqual([
+      '--integration', integration, '--generation-root', store, '--sync-frozen-refs',
+      '--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade',
+    ]);
+  });
+
+  it('retains a shared store when any consumer queue cannot be read', async () => {
+    const store = join(fixture, 'store');
+    mkdirSync(store);
+    recordStore(store);
+    registry.frozenQueue.mockRejectedValue(new Error('queue unavailable'));
+    const report = await runDependencyGenerationRetention();
+    expect(report.status).toBe('partial');
+    expect(pruneArguments()).toEqual([]);
+    expect(report.errors[0].error).toContain('queue unavailable');
+  });
+
   it('skips an absent integration even when the environment names a live shared store', async () => {
     const store = join(fixture, 'global-store');
     mkdirSync(store);
