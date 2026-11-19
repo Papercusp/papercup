@@ -933,7 +933,8 @@ describe('consultExpiryFindSilentResponders', () => {
 
 // review-system-rework-reduction-2026-09-23 P-014 (spec RSR-P-014-A).
 describe('review consult classification', () => {
-  it('recognizes the three review families and nothing else', () => {
+  it('recognizes required BAR critiques alongside the existing review families', () => {
+    expect(reviewConsultKind({ policy: 'bar-critique' })).toBe('bar-critique');
     expect(reviewConsultKind({ policy: 'rubric-vetting' })).toBe('rubric-vetting');
     expect(reviewConsultKind({ cascade: { flavor: 'acceptance-grading' } })).toBe('acceptance-grading');
     expect(reviewConsultKind(JSON.stringify({ cascade: { flavor: 'grading-integrity' } }))).toBe('grading-integrity');
@@ -952,6 +953,23 @@ describe('consultExpiryFileReviewWorkItem', () => {
     requesterId: 'rubric-author',
     silentResponderId: 'resp-silent',
   };
+
+  it('keeps BAR proof on the original plan-bound consult, including a recoverable long request', async () => {
+    const upsert = vi.fn(async (_key: string, _input: { summary: string }) => ({ id: 'WI-bar' }));
+    const file = consultExpiryFileReviewWorkItem({ upsert, resolveHarness: async () => 'papercusp' });
+    await expect(file({ ...base, kind: 'bar-critique', routing: { policy: 'bar-critique' } })).rejects.toThrow(/original plan identity/);
+    const question = 'Current BAR contract\n' + 'x'.repeat(4100) + 'DECISIVE CLAUSE';
+    await file({ ...base, kind: 'bar-critique', originTaskRef: 'plan-bar', question, routing: { policy: 'bar-critique' } });
+    const input = upsert.mock.calls[0]![1];
+    expect(input).toMatchObject({ harness: 'papercusp', payload: { reviewConsult: {
+      kind: 'bar-critique', conversationId: base.conversationId, planSlug: 'plan-bar', requesterId: base.requesterId,
+    } } });
+    expect(input.summary).toContain('consult:reply');
+    expect(input.summary).toContain('consult:close');
+    expect(input.summary).toContain('Request preview;');
+    expect(input.summary).toContain(`conversations:get { id: '${base.conversationId}' }`);
+    expect(input.summary).not.toContain('emit the single terminal grading-integrity');
+  });
 
   it('files a vetting review as an unassigned open task keyed per conversation, in the resolved harness', async () => {
     const upsert = vi.fn(async () => ({ id: 'EI-review-1' }));

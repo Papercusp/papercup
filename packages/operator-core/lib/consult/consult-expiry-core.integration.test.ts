@@ -31,6 +31,8 @@ import type { CoordEnvelope } from '@papercusp/coordination/core';
 import { currentRequestWorkspaceId } from '../workspace-als';
 import { sendMessage } from '../agent-tools/coordination/messages';
 import type { TaskRow } from '../task-manager/types';
+import { evaluateBarCritiqueGate, loadBarCritiqueEvidence, type BarCritiqueClause } from '../agent-tools/plans/plan-start-critique-gate';
+import type { listSpecClauses } from '../agent-tools/plans/spec-clauses-store';
 
 // Execute the REAL message writer + REAL PG replay backend, but never resolve
 // synthetic requester ids against the live agent roster or use the live DB.
@@ -1658,7 +1660,7 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     };
     await rootSql`UPDATE harness_shared.consult_state
       SET state = 'no_qualified_responder', responder_id = NULL, expires_at = NULL,
-          routing = ${rootSql.json(snapshot as never)}
+          routing = ${rootSql.json(snapshot as never)}, origin_task_ref = 'plan-bar'
       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
     return id;
   }
@@ -1690,6 +1692,7 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
 
   it.each([
     ['rubric-vetting', {}],
+    ['bar-critique', { policy: 'bar-critique' }],
     ['acceptance-grading', { cascade: { flavor: 'acceptance-grading', harnessSlug: 'hx' } }],
     ['grading-integrity', { cascade: { flavor: 'grading-integrity', harnessSlug: 'hx' } }],
   ] as const)('converts a completed no-qualified %s route without inventing a responder or expiry', async (kind, routing) => {
@@ -1741,18 +1744,104 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     }));
   });
 
+  it('recovers two BAR requests through claim-bound original answers and the unchanged distinct-lineage acceptance reader', async () => {
+    const ids = await Promise.all([seedUnroutedReview({ policy: 'bar-critique' }), seedUnroutedReview({ policy: 'bar-critique' })]);
+    type ReviewItem = NonNullable<Awaited<ReturnType<NonNullable<ConsultVerbDeps['readReviewWorkItem']>>>>;
+    const tasks = new Map<string, ReviewItem>();
+    const file = consultExpiryFileReviewWorkItem({
+      resolveHarness: async () => 'hx',
+      upsert: async (key, input) => {
+        const id = `WI-${key}`;
+        if (!tasks.has(id)) tasks.set(id, { kind: input.kind, state: 'open', assignee: null, harness: input.harness!, payload: input.payload });
+        return { id };
+      },
+    });
+    const { deps } = withFiler();
+    deps.fileReviewWorkItem = file;
+    const notify = deps.notifyRequester;
+    deps.notifyRequester = async alert => { if (ids.includes(alert.conversationId)) throw new Error('retry same task'); await notify(alert); };
+    expect((await sweepExpiredConsults(deps)).conversionFailures).toEqual(expect.arrayContaining(ids));
+    const taskCount = tasks.size;
+    deps.notifyRequester = notify;
+    expect((await sweepExpiredConsults(deps)).converted.map(row => row.conversationId)).toEqual(expect.arrayContaining(ids));
+    expect(tasks.size).toBe(taskCount);
+    const clause: BarCritiqueClause = {
+      specId: 'BAR-RECOVERY', revision: 1, behavior: 'Recover the full current BAR contract', behaviorClass: 'happy-path',
+      requiredEvidence: ['tree'], requiredTestLayers: ['integration'], mutationRequired: false, exemption: null,
+      falsifier: { observation: 'A task alone passes acceptance' }, lifecycleStatus: 'draft',
+      createdAt: '2026-08-01T00:00:00Z', sourceBar: null,
+    };
+    const parties = async (owners: readonly string[]) => new Map(owners.map(owner => [owner, owner]));
+    const evidence = () => loadBarCritiqueEvidence({ workspaceId: WS, harnessSlug: 'hx', planSlug: 'plan-bar', authorIds: ['plan-author'] },
+      { sql: rootSql, partyKeys: parties, listClauses: (async () => [clause]) as unknown as typeof listSpecClauses });
+    const verdict = async () => {
+      const read = await evidence();
+      return evaluateBarCritiqueGate({ planSlug: 'plan-bar', currentClauses: [clause], ...read, threshold: 2 });
+    };
+    expect((await verdict()).satisfied).toBe(false); // Conversion is not critique proof.
+    let postId = 900_000;
+    const posts: string[] = [];
+    const verbs: ConsultVerbDeps = {
+      getSql: () => rootSql,
+      now: () => new Date(Date.now() + 1000),
+      post: async input => {
+        posts.push(input.body);
+        return { post: { id: ++postId, thread_id: `thr-${input.conversation_id}`, author_id: 'reviewer',
+          body: input.body, created_ts: new Date().toISOString() }, delivered: 1, author_origin: 'agent' };
+      },
+      emitReplyEvent: async () => {},
+      readReviewWorkItem: async id => tasks.get(id) ?? null,
+      barReviewAuthors: async () => ['plan-author'],
+      reviewPartyKeys: async owners => new Map(owners.map(owner => [owner, owner === 'author-fork' ? 'plan-author' : owner])),
+    };
+    for (const [index, id] of ids.entries()) {
+      const taskId = (await rowOf(id)).outcome as { work_item_id: string };
+      const task = tasks.get(taskId.work_item_id)!;
+      const answer = (authorId: string) => ({ workspaceId: WS, conversationId: id, authorId, kind: 'answer' as const,
+        body: `Outside review ${index}`, evidence: [{ session_id: `review-session-${index}`, turn_idx: 1 }] });
+      for (const owner of ['stranger', 'rubric-author', 'plan-author', 'author-fork']) {
+        task.assignee = owner === 'stranger' ? 'different-holder' : owner;
+        expect(await consultReplyCore(answer(owner), verbs)).toMatchObject({ error: 'consult_not_open' });
+      }
+      task.assignee = `outside-${index}`;
+      task.state = 'done';
+      expect(await consultReplyCore(answer(task.assignee), verbs)).toMatchObject({ error: 'consult_not_open' });
+      task.state = 'open';
+      const payload = task.payload;
+      task.payload = { reviewConsult: { kind: 'bar-critique', conversationId: id, planSlug: 'wrong-plan', requesterId: 'rubric-author' } };
+      expect(await consultReplyCore(answer(task.assignee), verbs)).toMatchObject({ error: 'consult_not_open' });
+      task.payload = payload;
+      expect(posts).toHaveLength(index * 2);
+      expect(await consultReplyCore(answer(task.assignee), verbs)).toMatchObject({ ok: true, state: 'expired', role: 'responder' });
+      expect(await rowOf(id)).toMatchObject({ state: 'expired', responder_id: null,
+        outcome: { disposition: 'converted_to_review_work_item', work_item_id: taskId.work_item_id } });
+      expect((await verdict()).satisfied).toBe(false); // A grounded answer still needs the requester disposition.
+      expect(await consultCloseCore({ workspaceId: WS, conversationId: id, authorId: 'rubric-author',
+        outcome: 'answered', answer: 'Reviewed the complete current BAR contract.' }, verbs)).toMatchObject({ ok: true, state: 'closed_answered' });
+      expect((await verdict()).satisfied).toBe(index === 1);
+    }
+    const read = await evidence();
+    expect(read.critiques.map(row => row.criticId).sort()).toEqual(['outside-0', 'outside-1']);
+    expect(evaluateBarCritiqueGate({ planSlug: 'plan-bar', currentClauses: [clause], ...read,
+      critiques: read.critiques.map(row => ({ ...row, partyKey: 'same-lineage' })), threshold: 2 }).satisfied).toBe(false);
+    expect(evaluateBarCritiqueGate({ planSlug: 'plan-bar', currentClauses: [{ ...clause, behavior: 'Unreviewed amended contract' }],
+      ...read, threshold: 2 }).satisfied).toBe(false);
+  });
+
   it('leaves retrieval-only, unmeasured, unfinished, ordinary, closed and answered empty routes untouched', async () => {
     const ids = await Promise.all([
       seedUnroutedReview({ deliveryIntent: 'retrieval-only' }),
       seedUnroutedReview({ request: { version: 1, result: { verdict: 'relevance_unmeasured' } } }),
       seedUnroutedReview({ request: { version: 1 } }),
       seedUnroutedReview({ policy: 'consult-default' }),
+      seedUnroutedReview({ policy: 'bar-critique', deliveryIntent: 'retrieval-only' }),
+      seedUnroutedReview({ policy: 'bar-critique', request: { version: 1, result: { verdict: 'relevance_unmeasured' } } }),
       seedUnroutedReview(),
       seedUnroutedReview(),
     ]);
-    await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()} WHERE conversation_id = ${ids[4]!}`;
+    await rootSql`UPDATE harness_shared.consult_state SET closed_at = ${NOW.toISOString()} WHERE conversation_id = ${ids[6]!}`;
     await rootSql`INSERT INTO harness_shared.consult_post_meta (workspace_id, post_id, conversation_id, author_id, kind)
-      VALUES (${WS}, ${++seq}, ${ids[5]!}, 'actual-reviewer', 'answer')`;
+      VALUES (${WS}, ${++seq}, ${ids[7]!}, 'actual-reviewer', 'answer')`;
     const { deps, filed } = withFiler();
     const result = await sweepExpiredConsults(deps);
     expect(filed.filter((req) => ids.includes(req.conversationId))).toEqual([]);

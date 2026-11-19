@@ -119,6 +119,7 @@ interface ClaimItem {
 }
 
 const JUDGE_REVIEW_CONSULT_KINDS = new Set([
+  'bar-critique',
   'rubric-vetting',
   'acceptance-grading',
   'grading-integrity',
@@ -141,7 +142,7 @@ function judgeReviewClaimRefusal(id: string): BulkItemResult {
     id,
     error: 'judge_review_claim_only',
     hint:
-      'The judge role may self-claim one pullable review-consult task only (rubric-vetting, acceptance-grading, or grading-integrity), ' +
+      'The judge role may self-claim one pullable review-consult task only (bar-critique, rubric-vetting, acceptance-grading, or grading-integrity), ' +
       'with changeKinds:["no-code-change"]. Generic, batch, delegated, forced, and code-change claims remain unavailable to judges.',
   };
 }

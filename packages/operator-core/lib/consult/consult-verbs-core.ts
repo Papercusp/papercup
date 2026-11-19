@@ -55,6 +55,7 @@ import { isDecisionReviewRouting, validateDecisionReviewStance, type DecisionRev
 import { appendParkerResponse } from './park-adapters';
 import { appendConsultReview, readConsultReview, type ReviewAnswer, type ReviewDispositionInput, type ConsultReviewState } from './review-findings';
 import { BAR_CRITIQUE_POLICY } from './selection-policies';
+import type { WorkItem } from '../work-items';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -105,6 +106,10 @@ const CONSULT_PARTICIPATION_REMEDY =
 
 export interface ConsultVerbDeps {
   getSql: () => Sql;
+  /** Isolated-test seams; production uses the canonical work-item and author readers. */
+  readReviewWorkItem?: (id: string) => Promise<Pick<WorkItem, 'kind' | 'state' | 'assignee' | 'payload' | 'harness'> | null>;
+  barReviewAuthors?: (scope: { workspaceId: string; harnessSlug: string; planSlug: string }) => Promise<string[]>;
+  reviewPartyKeys?: (owners: string[]) => Promise<Map<string, string>>;
   /** Write-through into the conversation thread — bound to
    * conversations.postReply WITH via_consult_verb (the kind-gate opt-in). */
   post: (input: {
@@ -554,6 +559,44 @@ export interface ConsultReplyResult {
   hint: string;
 }
 
+/** A converted BAR task delegates one grounded answer, never approval or a new
+ * routing selection. Keep the expired consult and its provenance intact until
+ * the original requester records the existing late disposition. */
+async function isClaimedBarReviewAnswer(row: ConsultStateRow | null, req: ConsultReplyRequest, deps: ConsultVerbDeps): Promise<boolean> {
+  if (!row || row.state !== 'expired' || !row.closed_at || row.responder_id !== null ||
+      req.kind !== 'answer' || !req.evidence?.length || req.authorId === row.requester_id || !row.origin_task_ref) return false;
+  const routing = (typeof row.routing === 'string' ? JSON.parse(row.routing) : row.routing) as { policy?: unknown } | null;
+  const outcome = (typeof row.outcome === 'string' ? JSON.parse(row.outcome) : row.outcome) as {
+    disposition?: unknown; review_kind?: unknown; work_item_id?: unknown;
+  } | null;
+  if (routing?.policy !== BAR_CRITIQUE_POLICY || outcome?.disposition !== 'converted_to_review_work_item' ||
+      outcome.review_kind !== 'bar-critique' || typeof outcome.work_item_id !== 'string') return false;
+  const item = await (deps.readReviewWorkItem ?? (async id => {
+    const { getWorkItem } = await import('../work-items');
+    return getWorkItem(id, undefined, {}, deps.getSql());
+  }))(outcome.work_item_id);
+  const review = (item?.payload as { reviewConsult?: unknown } | null)?.reviewConsult as {
+    kind?: unknown; conversationId?: unknown; planSlug?: unknown; requesterId?: unknown;
+  } | undefined;
+  if (!item || item.kind !== 'task' || !['open', 'wip'].includes(item.state) || item.assignee !== req.authorId || !item.harness ||
+      review?.kind !== 'bar-critique' || review.conversationId !== req.conversationId ||
+      review.planSlug !== row.origin_task_ref || review.requesterId !== row.requester_id) return false;
+  const scope = { workspaceId: req.workspaceId, harnessSlug: item.harness, planSlug: row.origin_task_ref };
+  const authors = await (deps.barReviewAuthors ?? (async scope => {
+    const { loadBarCritiqueAuthors } = await import('../agent-tools/plans/plan-start-critique-gate');
+    const result = await loadBarCritiqueAuthors(scope, deps.getSql());
+    if (!result.plan) throw new Error('BAR review recovery plan is missing');
+    return result.authorIds;
+  }))(scope);
+  const excluded = [...new Set([row.requester_id, ...authors])];
+  const parties = await (deps.reviewPartyKeys ?? (async owners => {
+    const { lineagePartyKeys } = await import('../acceptance-author-identity');
+    return lineagePartyKeys(owners, { sql: deps.getSql(), workspaceId: req.workspaceId });
+  }))([...excluded, req.authorId]);
+  const party = parties.get(req.authorId) ?? req.authorId;
+  return !excluded.some(owner => (parties.get(owner) ?? owner) === party);
+}
+
 export async function consultReplyCore(
   req: ConsultReplyRequest,
   deps: ConsultVerbDeps,
@@ -572,13 +615,14 @@ export async function consultReplyCore(
     ? await claimPendingRevival(sql, req.workspaceId, req.conversationId, req.authorId, now)
     : null;
   if (pendingClaim) currentRow = pendingClaim;
+  const claimedBarReviewAnswer = await isClaimedBarReviewAnswer(currentRow, req, deps);
   // Both answer and cant-help settlement retain reviewer findings. The original
   // requester still owns their disposition ledger; this append cannot reopen it.
   const appendsSettledReview = (currentRow?.state === 'closed_answered' || currentRow?.state === 'closed_cant_help') &&
     req.authorId === currentRow.requester_id && req.kind === 'new_fact' &&
     Boolean(req.reviewDispositions?.length) && req.review === undefined &&
     req.evidence === undefined && req.stance === undefined && req.parkResponse === undefined;
-  const gated = appendsSettledReview ? { row: currentRow! } : gateCommon(currentRow, {
+  const gated = appendsSettledReview || claimedBarReviewAnswer ? { row: currentRow! } : gateCommon(currentRow, {
     authorId: req.authorId,
     kind: req.kind,
   });
@@ -589,7 +633,7 @@ export async function consultReplyCore(
   // far (the selection menu's [0..cascade_cursor] prefix). Earlier cascade
   // selectees REMAIN participants after the chain advances past them — the
   // one consult thread is the accumulator they keep deliberating in.
-  if (!isConsultParticipant(row, req.authorId)) {
+  if (!claimedBarReviewAnswer && !isConsultParticipant(row, req.authorId)) {
     // EI-21385436565682208: name the ACTUAL remedy. conversations:join cannot
     // enroll anyone here (participation is router-assigned), so an un-hinted
     // not_a_participant sent agents into a join -> reply -> refuse loop.

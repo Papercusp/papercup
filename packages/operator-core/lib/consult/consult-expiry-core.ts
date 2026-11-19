@@ -70,6 +70,7 @@ export interface DueConsultRow {
   snapshot_updated_at: string;
   latency_contract: string;
   question: string;
+  origin_task_ref?: string | null;
   routing: unknown;
   cascade_cursor: number;
   cascade_digest: unknown;
@@ -165,7 +166,7 @@ export function currentUnjudgedFirstTurn(
  * grading-integrity audit) is therefore turned into a claimable work item at half
  * its TTL, so it is PULLED by agents already polling the claimable backlog.
  */
-export type ReviewConsultKind = 'rubric-vetting' | 'acceptance-grading' | 'grading-integrity';
+export type ReviewConsultKind = 'rubric-vetting' | 'acceptance-grading' | 'grading-integrity' | 'bar-critique';
 
 /** Classify a persisted routing snapshot. Null = not a review consult (ordinary
  * consults keep the existing cascade/expiry behaviour). */
@@ -184,6 +185,7 @@ export function reviewConsultKind(routing: unknown): ReviewConsultKind | null {
   if (flavor === GRADING_CASCADE_FLAVOR) return 'acceptance-grading';
   if (flavor === 'grading-integrity') return 'grading-integrity';
   if (s.policy === RUBRIC_VETTING_POLICY) return 'rubric-vetting';
+  if (s.policy === BAR_CRITIQUE_POLICY) return 'bar-critique';
   return null;
 }
 
@@ -193,6 +195,7 @@ export interface ReviewWorkItemRequest {
   conversationId: string;
   kind: ReviewConsultKind;
   question: string;
+  originTaskRef?: string | null;
   requesterId: string;
   /** The selectee that stayed silent (never a critic of record). */
   silentResponderId: string | null;
@@ -452,7 +455,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
            state, expires_at, COALESCE(expires_at < ${nowIso}::timestamptz, false) AS is_due,
            updated_at,
            to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS snapshot_updated_at,
-           latency_contract, question, routing, cascade_cursor, cascade_digest,
+           latency_contract, question, origin_task_ref, routing, cascade_cursor, cascade_digest,
            exchanges_used, dispatch_attempts, engagement.has_responder_reply,
            pending_followup.post_id AS pending_followup_post_id,
            COALESCE(
@@ -512,7 +515,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
              AND NOT engagement.has_responder_reply
              AND routing->>'deliveryIntent' = 'dispatch'
              AND routing #>> '{request,result,verdict}' = 'no_qualified_responder'
-             AND (routing->>'policy' = ${RUBRIC_VETTING_POLICY}
+             AND (routing->>'policy' IN (${RUBRIC_VETTING_POLICY}, ${BAR_CRITIQUE_POLICY})
                   OR routing #>> '{cascade,flavor}' IN (${GRADING_CASCADE_FLAVOR}, 'grading-integrity')))
        )
        AND NOT (routing #>> '{cascadeDispatch,version}' = '1'
@@ -625,6 +628,9 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     const noQualifiedReviewer = row.state === 'no_qualified_responder' && row.responder_id === null && row.expires_at === null;
     if (
       reviewKind &&
+      // Routed BAR reviewers keep their original answer channel and progress
+      // lease. Only the completed, measured empty route needs pullable recovery.
+      (reviewKind !== 'bar-critique' || noQualifiedReviewer) &&
       (row.state === 'awaiting_responder' || noQualifiedReviewer) &&
       row.has_responder_reply === false &&
       (row.is_half_silent === true || unstampedDispatchFailed || noQualifiedReviewer)
@@ -995,6 +1001,7 @@ async function convertReviewConsult(
       conversationId: row.conversation_id,
       kind,
       question: row.question,
+      originTaskRef: row.origin_task_ref,
       requesterId: row.requester_id,
       silentResponderId: row.responder_id,
       routing: row.routing,
@@ -1139,7 +1146,11 @@ export function reviewConversionAlertForRow(input: {
     .map(encodeURIComponent)
     .join(':');
   const next =
-    kind === 'rubric-vetting'
+    kind === 'bar-critique'
+      ? `The claimant answers the ORIGINAL consult with consult:reply { conversation_id: '${row.conversation_id}', ` +
+        `kind: 'answer', body, evidence }. Then the requester records consult:close { outcome: 'answered', answer }. ` +
+        `Task comments and scorecards do not replace BAR proof; current-contract and distinct-lineage checks remain required.`
+      : kind === 'rubric-vetting'
       ? `Once a reviewer other than you and the rubric author posts a critique as a comment on ${workItemId}, ` +
         `record vetting with scorecards:emit { ..., vettingWorkItem: '${workItemId}' }.`
       : `A reviewer claims ${workItemId} from the claimable backlog and emits the scorecard; ` +

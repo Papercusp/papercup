@@ -443,11 +443,11 @@ describe('work_items:claim handler (keyed-array)', () => {
     } });
   });
 
-  it('lets an evidence judge self-claim one pullable review-consult task', async () => {
+  it.each(['rubric-vetting', 'bar-critique'])('lets an evidence judge self-claim one pullable %s task', async (kind) => {
     getM.mockResolvedValue(issueItem({
       id: 'WI-REVIEW',
       kind: 'task',
-      payload: { reviewConsult: { conversationId: 'conv-review', kind: 'rubric-vetting' } },
+      payload: { reviewConsult: { conversationId: 'conv-review', kind } },
     }));
 
     const b = await body({ id: 'WI-REVIEW', harness: 'papercusp', changeKinds: ['no-code-change'] }, { role: 'judge' });

@@ -469,6 +469,26 @@ export interface PlanStartBarCritiqueOutcome {
  * contracted plan: nothing to critique). The author set is every identity the plan row and
  * its activation audits record as having authored or seeded it; their lineage counts zero.
  */
+export async function loadBarCritiqueAuthors(
+  input: { workspaceId: string; harnessSlug: string; planSlug: string },
+  sql: Sql,
+) {
+  const [plans, audits] = await Promise.all([
+    sql<Array<{ owner: string | null; acceptance_bar_seeded_by: string | null; created_at: Date | string }>>`
+      SELECT owner, acceptance_bar_seeded_by, created_at FROM harness_shared.harness_plans
+       WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND plan_slug = ${input.planSlug}
+    `,
+    sql<Array<{ created_by: string | null }>>`
+      SELECT created_by FROM harness_shared.plan_audits
+       WHERE workspace_id = ${input.workspaceId} AND plan_slug = ${input.planSlug} AND audit_kind = 'activation'
+       ORDER BY audit_seq
+    `,
+  ]);
+  const plan = plans[0];
+  return { plan, authorIds: [...new Set([plan?.owner, plan?.acceptance_bar_seeded_by, ...audits.map(r => r.created_by)]
+    .map(id => id?.trim() ?? '').filter(Boolean))] };
+}
+
 export async function evaluatePlanStartBarCritique(
   input: {
     workspaceId: string;
@@ -485,25 +505,7 @@ export async function evaluatePlanStartBarCritique(
   const currentClauses = await listClauses(scope);
   if (currentClauses.length === 0) return null;
   const sql = deps.sql ?? getOrgPg().sql;
-  const [planRows, auditRows] = await Promise.all([
-    sql<Array<{ owner: string | null; acceptance_bar_seeded_by: string | null; created_at: Date | string }>>`
-      SELECT owner, acceptance_bar_seeded_by, created_at FROM harness_shared.harness_plans
-       WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug} AND plan_slug = ${input.planSlug}
-    `,
-    sql<Array<{ created_by: string | null }>>`
-      SELECT created_by FROM harness_shared.plan_audits
-       WHERE workspace_id = ${input.workspaceId} AND plan_slug = ${input.planSlug} AND audit_kind = 'activation'
-       ORDER BY audit_seq
-    `,
-  ]);
-  const plan = planRows[0];
-  const authorIds = [
-    ...new Set(
-      [plan?.owner, plan?.acceptance_bar_seeded_by, ...auditRows.map((r) => r.created_by)]
-        .map((id) => id?.trim() ?? '')
-        .filter(Boolean),
-    ),
-  ];
+  const { plan, authorIds } = await loadBarCritiqueAuthors(input, sql);
   const live = currentClauses.filter(isLiveBarCritiqueClause);
   const mandatoryOutcomeBarCount = new Set(
     live.map((c) => c.sourceBar?.barKey).filter((k): k is string => Boolean(k)),

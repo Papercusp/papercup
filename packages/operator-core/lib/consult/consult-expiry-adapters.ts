@@ -546,8 +546,12 @@ export function consultExpiryFileReviewWorkItem(
       (await deps.resolveHarness(req.workspaceId, req.conversationId).catch(() => null)) ||
       undefined;
 
+    if (req.kind === 'bar-critique' && (!req.originTaskRef?.trim() || !harness)) {
+      throw new Error('BAR review recovery requires the original plan identity and harness');
+    }
+
     const question = req.question.length > REVIEW_SUMMARY_QUESTION_CAP
-      ? `${req.question.slice(0, REVIEW_SUMMARY_QUESTION_CAP)}…`
+      ? `${req.question.slice(0, REVIEW_SUMMARY_QUESTION_CAP)}…\n[Request preview; ${req.question.length - REVIEW_SUMMARY_QUESTION_CAP} characters omitted. Read the complete original with conversations:get { id: '${req.conversationId}' }.]`
       : req.question;
     const title = reservationKey && typeof cascade?.planSlug === 'string' && typeof cascade?.rubricId === 'string'
       ? `Acceptance review-target reservation — ${cascade.planSlug} (${cascade.rubricId})`
@@ -558,7 +562,7 @@ export function consultExpiryFileReviewWorkItem(
       `Requester: ${req.requesterId}; silent selectee: ` +
       `${req.silentResponderId ?? '(none)'}. You may take it unless you are the requester, the rubric's ` +
       `author, or an implementer of the subject plan — the emit gates refuse those parties anyway. ` +
-      reviewInstructions(req.kind) +
+      reviewInstructions(req.kind, req.conversationId) +
       `\n\nOriginal request:\n${question}`;
 
     const result = await deps.upsert(conditionKey, {
@@ -574,6 +578,7 @@ export function consultExpiryFileReviewWorkItem(
           kind: req.kind,
           requesterId: req.requesterId,
           silentResponderId: req.silentResponderId,
+          ...(req.kind === 'bar-critique' ? { planSlug: req.originTaskRef } : {}),
         },
       },
     });
@@ -582,7 +587,14 @@ export function consultExpiryFileReviewWorkItem(
   };
 }
 
-function reviewInstructions(kind: ReviewWorkItemRequestKind): string {
+function reviewInstructions(kind: ReviewWorkItemRequestKind, conversationId: string): string {
+  if (kind === 'bar-critique') {
+    return `To review: claim this item, read the complete original request with conversations:get { id: '${conversationId}' }, ` +
+      `and critique the current plan contract. Post the grounded answer to the ORIGINAL consult with ` +
+      `consult:reply { conversation_id: '${conversationId}', kind: 'answer', body, evidence }. ` +
+      `The requester then records consult:close { conversation_id: '${conversationId}', outcome: 'answered', answer }. ` +
+      'Task comments or scorecards do not satisfy BAR acceptance. Distinct outside-author lineages and current-contract checks remain required.';
+  }
   if (kind === 'rubric-vetting') {
     return (
       'To review: claim this item, read the rubric named below, and post your critique with ' +
