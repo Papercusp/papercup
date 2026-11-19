@@ -839,8 +839,18 @@ function renderArtifacts(
   unavailable?: ReadonlyMap<string, string>,
 ): string {
   const real = artifacts.filter(isListedArtifact);
+  const withdrawn = artifacts.flatMap((artifact) => {
+    if (!artifact.withdrawn || artifact.name.endsWith('.sig')) return [];
+    const { reason, ref } = artifact.withdrawn;
+    return [`<li><strong>${escapeHtml(artifact.name)}</strong> — ${escapeHtml(reason)}${ref ? ` (${escapeHtml(ref)})` : ''}</li>`];
+  });
+  const withdrawalHistory = withdrawn.length > 0
+    ? `<details class="withdrawn-downloads"><summary>Withdrawn installers</summary><ul>${withdrawn.join('\n')}</ul></details>`
+    : '';
   if (real.length === 0) {
-    return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
+    return withdrawalHistory
+      ? `<p class="empty">Installers were recorded for this release and have since been withdrawn.</p>${withdrawalHistory}`
+      : `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
   }
 
   const known = new Set(PLATFORM_SECTIONS.flatMap((s) => s.platforms));
@@ -853,7 +863,7 @@ function renderArtifacts(
   const other = real.filter((a) => !known.has(a.platform));
   if (other.length > 0) sections.push(renderPlatformSection('Other', true, other, undefined, unavailable));
 
-  return sections.join('\n');
+  return [...sections, withdrawalHistory].filter(Boolean).join('\n');
 }
 
 /**

@@ -1513,8 +1513,10 @@ describe('withdrawn artifacts', () => {
 
   it('the releases page links the listed artifact and not the withdrawn one', () => {
     const html = renderIndexHtml([rel], opts);
-    expect(html).toContain('Papercusp GUI_0.0.25_amd64.deb');
-    expect(html).not.toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+    expect(html).toContain('href="desktop-v0.0.25-alpha/Papercusp%20GUI_0.0.25_amd64.deb"');
+    expect(html).toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+    expect(html).not.toContain(`href="${pulled.url}"`);
+    expect(html).toContain(pulled.withdrawn.reason);
   });
 
   it('history.json (the in-app update feed) omits the withdrawn artifact', () => {
@@ -1524,9 +1526,12 @@ describe('withdrawn artifacts', () => {
     expect(json.releases[0]!.artifacts.map((a) => a.name)).toEqual(['Papercusp GUI_0.0.25_amd64.deb']);
   });
 
-  it('a release whose only artifact is withdrawn says it has no downloads', () => {
+  it('distinguishes withdrawn history from a release with no recorded installer', () => {
     const html = renderIndexHtml([hydrated({ row: row({ version: '0.0.25', artifacts: [pulled] }) })], opts);
-    expect(html).not.toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
-    expect(html).toContain('No downloadable artifacts recorded for this release.');
+    expect(html).toContain('Installers were recorded for this release and have since been withdrawn.');
+    expect(html).toContain('Papercusp_GUI_0.0.25_amd64.AppImage');
+    expect(html).toContain('D-030');
+    expect(html).not.toContain(`href="${pulled.url}"`);
+    expect(html).not.toContain('No downloadable artifacts recorded for this release.');
   });
 });
