@@ -30,6 +30,7 @@ describe('parseRepairTickLegs', () => {
       ],
     });
     expect(parsed).toEqual({
+      populationEvidence: { status: 'unknown' },
       head: 'abc123def456',
       atMs: 1_000,
       ok: false,
@@ -40,6 +41,58 @@ describe('parseRepairTickLegs', () => {
         { id: 'lint:tsc', status: 'pass', durationMs: 5000 },
       ],
     });
+  });
+
+  it.each([19, 20, 21, 31, 32, 33])('preserves a complete %i-leg population and decisive late pass across restart', (count) => {
+    const ids = Array.from({ length: count }, (_, index) => `lint:population-${index}`);
+    for (const ordered of [ids, [...ids].reverse()]) {
+      const head = 'a'.repeat(40);
+      let snapshot = parseRepairTickLegs({ head, atMs: 1, ok: true, failingSignatures: [],
+        legs: ordered.map((id) => ({ id, status: 'pass', durationMs: 1 })),
+        populationEvidence: { status: 'complete', measuredLegCount: count, failingSignatureCount: 0 },
+      })!;
+      for (let restart = 0; restart < 4; restart += 1) {
+        snapshot = parseRepairTickLegs(JSON.parse(JSON.stringify(snapshot)))!;
+        expect(snapshot.legs.map((leg) => leg.id)).toEqual(ordered);
+        expect(snapshot.populationEvidence?.status).toBe('complete');
+        expect(repairTickClearedQueueSignature(snapshot, { repairHead: head, failingTests: [ordered.at(-1)!] })).toBe(true);
+      }
+    }
+  });
+
+  it.each(['legacy', 'empty', 'clipped', 'duplicate', 'malformed', 'signature-mismatch'] as const)
+    ('keeps %s population unknown until a complete remeasurement replaces it', (kind) => {
+      const head = 'a'.repeat(40);
+      const id = 'lint:decisive';
+      const raw = { head, atMs: 1, ok: true, failingSignatures: [] as unknown[],
+        legs: [{ id, status: 'pass', durationMs: 1 }] as unknown[],
+        populationEvidence: { status: 'complete', measuredLegCount: 1, failingSignatureCount: 0 } as unknown,
+      };
+      const complete = JSON.parse(JSON.stringify(raw));
+      if (kind === 'legacy') delete (raw as { populationEvidence?: unknown }).populationEvidence;
+      if (kind === 'empty' || kind === 'clipped') raw.legs = [];
+      if (kind === 'duplicate') raw.legs = [raw.legs[0], raw.legs[0]];
+      if (kind === 'malformed') raw.legs.push({ id: 'lint:bad', status: 'unknown', durationMs: 1 });
+      if (kind === 'signature-mismatch') raw.failingSignatures = [id];
+      let snapshot = parseRepairTickLegs(raw)!;
+      for (let restart = 0; restart < 3; restart += 1) {
+        snapshot = parseRepairTickLegs(JSON.parse(JSON.stringify(snapshot)))!;
+        expect(snapshot.populationEvidence?.status).toBe('unknown');
+        expect(repairTickClearedQueueSignature(snapshot, { repairHead: head, failingTests: [id] })).toBe(false);
+        expect(partitionSameHeadContradictions([id], snapshot, head)).toEqual({ contradicted: [], actionable: [id] });
+      }
+      if (kind === 'malformed') expect(snapshot.populationEvidence?.unreadableEntries)
+        .toContainEqual({ id: 'lint:bad', status: 'unknown', durationMs: 1 });
+      const recovered = parseRepairTickLegs(complete)!;
+      expect(recovered.populationEvidence?.status).toBe('complete');
+      expect(repairTickClearedQueueSignature(recovered, { repairHead: head, failingTests: [id] })).toBe(true);
+    });
+
+  it('distinguishes a complete empty population from a legacy empty snapshot', () => {
+    const raw = { head: 'a'.repeat(40), atMs: 1, ok: true, failingSignatures: [], legs: [] };
+    expect(parseRepairTickLegs(raw)?.populationEvidence?.status).toBe('unknown');
+    expect(parseRepairTickLegs({ ...raw, populationEvidence: { status: 'complete', measuredLegCount: 0, failingSignatureCount: 0 } })
+      ?.populationEvidence?.status).toBe('complete');
   });
 
   it('returns null for a missing/blank head — the field the currency check depends on', () => {
@@ -129,6 +182,7 @@ describe('repairTickClearedQueueSignature', () => {
   const HEAD = 'aa9487596d5406cc49d424a4162d99634b214cdf';
   const LANE = '@papercusp/operator-core :: test:lane-stateful';
   const tick = (over: Partial<StoredRepairTickLegs> = {}): StoredRepairTickLegs => ({
+    populationEvidence: { status: 'complete' },
     head: HEAD.slice(0, 12),
     atMs: 1_000,
     ok: true,
@@ -182,6 +236,7 @@ describe('partitionSameHeadContradictions / releaseFixerTargetsAfterSameHeadCont
   const FILE = 'packages/operator-core/lib/agent-tools/plans/arm-schedule.test.ts';
   const LINT = 'lint:design-primitives';
   const tick = (over: Partial<StoredRepairTickLegs> = {}): StoredRepairTickLegs => ({
+    populationEvidence: { status: 'complete' },
     head: HEAD.slice(0, 12),
     atMs: 1_000,
     ok: false,

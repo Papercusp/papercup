@@ -1497,8 +1497,9 @@ function isSupersededCancelledWait(current: CheckpointQualificationTransaction):
   return !!current.pendingRepairHead && current.pendingRepairHead !== judgedHead;
 }
 
-const uniqueStrings = (values: readonly string[], cap = 64): string[] =>
-  [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, cap);
+// These sets define policy and durable evidence; a display/work budget cannot truncate them.
+const uniqueStrings = (values: readonly string[]): string[] =>
+  [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 
 export const isTerminalQualificationOutcome = (outcome: QualificationOutcome): boolean =>
   outcome.kind === 'green' || outcome.kind === 'red' || outcome.kind === 'code-inconclusive';
@@ -1565,7 +1566,7 @@ function consumedRunner(
   return [
     ...(current.consumedPhysicalRuns ?? []),
     { ...runner, evidenceRefs, endedAtMs: nowMs, outcome },
-  ].slice(-32);
+  ];
 }
 
 /** A runner may carry at most one run id: bind only when it has none yet, or already has this one. */
@@ -2050,7 +2051,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
           ),
         )
       : {};
-  const consumedPhysicalRuns = Array.isArray(row.consumedPhysicalRuns) ? row.consumedPhysicalRuns.slice(-32) : [];
+  const consumedPhysicalRuns = Array.isArray(row.consumedPhysicalRuns) ? row.consumedPhysicalRuns : [];
   const currentPhysicalRunner = row.currentPhysicalRunner
     ? {
         ...row.currentPhysicalRunner,
@@ -2279,7 +2280,7 @@ export function waitQualificationTransaction(
       candidate: input.candidate?.trim() || current.candidate,
       repairHead: input.repairHead?.trim() || current.repairHead,
       runId: released.runId,
-      blockers: (input.blockers ?? []).slice(0, 24).map((blocker) => ({ ...blocker, observedAtMs: nowMs })),
+      blockers: (input.blockers ?? []).map((blocker) => ({ ...blocker, observedAtMs: nowMs })),
       waitGeneration: current.waitGeneration + 1,
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs, released.bind),

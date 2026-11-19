@@ -19,6 +19,7 @@ import {
 } from './gate-candidate-failures';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
 import type { RepairSignatureEntry } from './release/frozen-candidate-repair-queue';
+import { parseRepairTickLegs } from './release/repair-tick-legs-snapshot';
 
 const CANDIDATE = 'adbf27530285830455f8d8df32a45752cfaff332';
 const REPAIR_HEAD = 'e7bffeac00000000000000000000000000000000';
@@ -28,6 +29,13 @@ const REPAIR_HEAD_RUN_GROUP = 'repair-head-run-current';
 const read = (opts: Parameters<typeof readGateCandidateFailures>[0]) =>
   readGateCandidateFailures({
     ...opts,
+    // Literal fixtures in this helper represent fresh complete measurements.
+    // Parsed legacy/damaged inputs carry their own explicit unknown marker.
+    repairTickLegs: opts.repairTickLegs ? {
+      populationEvidence: { status: 'complete', measuredLegCount: opts.repairTickLegs.legs.length,
+        failingSignatureCount: opts.repairTickLegs.failingSignatures.length },
+      ...opts.repairTickLegs,
+    } : opts.repairTickLegs,
     candidateRunGroupId:
       opts.candidateRunGroupId !== undefined
         ? opts.candidateRunGroupId
@@ -871,6 +879,35 @@ describe('readGateCandidateFailures', () => {
   });
 
   describe('nonTestLegs (WI-2143253)', () => {
+    it.each(['legacy', 'clipped', 'malformed'] as const)('refuses an all-clear from a %s snapshot population and recovers on remeasurement', async (kind) => {
+      const id = 'lint:population';
+      const complete = { head: REPAIR_HEAD, atMs: 1, ok: true, failingSignatures: [],
+        legs: [{ id, status: 'pass', durationMs: 1 }],
+        populationEvidence: { status: 'complete', measuredLegCount: 1, failingSignatureCount: 0 },
+      };
+      const damaged = JSON.parse(JSON.stringify(complete));
+      if (kind === 'legacy') delete damaged.populationEvidence;
+      if (kind === 'clipped') damaged.legs = [];
+      if (kind === 'malformed') damaged.legs.push({ id: 'lint:bad', status: 'unknown' });
+      const options = { candidateSha: CANDIDATE, repairHeadSha: REPAIR_HEAD, root: '/repo',
+        sql: fakeSql({ filesJudged: 1, failing: [] }),
+        queueSignature: [{ id, kind: 'lint-leg' as const, recipe: `npm run ${id}`, admittedRound: 1, measuredHead: REPAIR_HEAD }],
+      };
+      for (const raw of [damaged, JSON.parse(JSON.stringify(parseRepairTickLegs(damaged)))]) {
+        const result = await read({ ...options, repairTickLegs: parseRepairTickLegs(raw) });
+        expect(result.nonTestLegsMeasured).toBe('not-recorded');
+        expect(result.nonTestLegs).toMatchObject({ evidenceStatus: 'unknown', recovery: expect.stringContaining('Remeasure') });
+        expect(result.nonTestLegs.reading).toContain('INCOMPLETE');
+        expect(result.nonTestLegs.outstanding).toContain(id);
+        expect(result.assessment).not.toMatch(/none-failing|all-fixes-contained/);
+      }
+      const recovered = await read({ ...options, repairTickLegs: parseRepairTickLegs(complete) });
+      expect(recovered.nonTestLegsMeasured).toBe('measured');
+      expect(recovered.nonTestLegs.evidenceStatus).toBe('complete');
+      expect(recovered.nonTestLegs.outstanding).not.toContain(id);
+      expect(recovered.assessment).toBe('all-fixes-contained');
+    });
+
     it('is an UNMEASURED object — never null — when the caller has no repairTickLegs measurement (C2)', async () => {
       const res = await read({
         candidateSha: CANDIDATE,
@@ -995,6 +1032,7 @@ describe('readGateCandidateFailures', () => {
 
 describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', () => {
   const legsSnap = {
+    populationEvidence: { status: 'complete' as const, measuredLegCount: 2, failingSignatureCount: 1 },
     head: REPAIR_HEAD.slice(0, 12),
     atMs: 1_800_000_000_000,
     ok: false,
@@ -1178,6 +1216,8 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
 describe('P-007 — a red non-test leg is NEVER none-failing on any reading of this cell', () => {
   const SHORT = REPAIR_HEAD.slice(0, 12);
   const tick = (legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored' }>, head = SHORT) => ({
+    populationEvidence: { status: 'complete' as const, measuredLegCount: legs.length,
+      failingSignatureCount: legs.filter((leg) => leg.status !== 'pass').length },
     head,
     atMs: 1_800_000_000_000,
     ok: legs.every((l) => l.status === 'pass'),

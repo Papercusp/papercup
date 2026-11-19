@@ -4722,18 +4722,39 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   // answerable. If the retry accounting stops at the broadcast, /admin/git and every gate
   // history reader still cannot tell a retry-absorbed green from a clean one — which IS the
   // defect, merely moved one layer down.
+  it('persists complete empty subjects without inventing arrays for unknown measurements', () => {
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
+      postSuiteLegs: [
+        { id: 'complete', status: 'failed', durationMs: 1, subjectPaths: [], subjectPathsComplete: true },
+        { id: 'unknown', status: 'failed', durationMs: 1 },
+      ],
+      repairTickLegs: { head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: ['complete', 'unknown'],
+        populationEvidence: { status: 'complete', measuredLegCount: 2, failingSignatureCount: 2 }, legs: [
+        { id: 'complete', status: 'fail', durationMs: 1, subjectPaths: [], subjectPathsComplete: true },
+        { id: 'unknown', status: 'fail', durationMs: 1 },
+      ] },
+    });
+    const persisted = JSON.parse(JSON.stringify(detail));
+    expect(persisted.repairTickLegs.populationEvidence).toEqual({ status: 'complete', measuredLegCount: 2, failingSignatureCount: 2 });
+    for (const legs of [persisted.postSuiteLegs, persisted.repairTickLegs.legs]) {
+      expect(legs[0]).toMatchObject({ subjectPaths: [], subjectPathsComplete: true });
+      expect(legs[1]).not.toHaveProperty('subjectPaths');
+      expect(legs[1]).not.toHaveProperty('subjectPathsComplete');
+    }
+  });
+
   it.each([31, 32, 33])('persists %i complete leg identities and path populations independently from output previews', (count) => {
     const paths = Array.from({ length: 41 }, (_, index) => `packages/core/file-${index}.ts`);
     const ids = Array.from({ length: count }, (_, index) => `lint:${'shared-prefix-'.repeat(17)}${index}`);
     const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
-      postSuiteLegs: ids.map((id) => ({ id, status: 'failed', durationMs: 1, subjectPaths: paths })),
+      postSuiteLegs: ids.map((id) => ({ id, status: 'failed', durationMs: 1, subjectPaths: paths, subjectPathsComplete: true })),
       repairTickLegs: { head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: ids,
-        legs: ids.map((id) => ({ id, status: 'fail', durationMs: 1, subjectPaths: paths, outputTail: 'first/file.ts ' + 'x'.repeat(2000) })),
+        legs: ids.map((id) => ({ id, status: 'fail', durationMs: 1, subjectPaths: paths, subjectPathsComplete: true, outputTail: 'first/file.ts ' + 'x'.repeat(2000) })),
       },
     });
-    expect(detail.postSuiteLegs).toEqual(ids.map((id) => expect.objectContaining({ id, subjectPaths: paths })));
+    expect(detail.postSuiteLegs).toEqual(ids.map((id) => expect.objectContaining({ id, subjectPaths: paths, subjectPathsComplete: true })));
     expect(detail.repairTickLegs).toMatchObject({ head: 'a'.repeat(40), failingSignatures: ids,
-      legs: ids.map((id) => expect.objectContaining({ id, subjectPaths: paths, outputTail: expect.stringMatching(/^first\/file.ts/) })),
+      legs: ids.map((id) => expect.objectContaining({ id, subjectPaths: paths, subjectPathsComplete: true, outputTail: expect.stringMatching(/^first\/file.ts/) })),
     });
   });
 
@@ -5188,6 +5209,30 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     signature: [],
   };
 
+  it.each([true, false, undefined])('writer preserves complete empty subjects vs unknown through restart (%s)', async (subjectPathsComplete) => {
+    const { parseRepairManifest, claimRepairManifestLeg, withRepairManifest } = await import('../../release/repair-manifest');
+    const lintQueue = { ...queue, failingTests: ['lint:tsc'], signature: [{ id: 'lint:tsc', kind: 'lint-leg' as const,
+      recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: queue.repairHead }] };
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: { head: queue.repairHead, legs: [
+      { id: 'lint:tsc', status: 'fail', subjectPaths: [], subjectPathsComplete },
+    ] } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
+    const params = write?.[1];
+    if (!Array.isArray(params)) throw new Error('queue write must carry positional SQL parameters');
+    let persisted = JSON.parse(String(params[2])).repair_queue;
+    for (let restart = 0; restart < 3; restart += 1) {
+      persisted.manifest = parseRepairManifest(JSON.parse(JSON.stringify(persisted.manifest)));
+      persisted = withRepairManifest(persisted, 5_000 + restart).queue;
+      expect(persisted.manifest.rows.find((row: { legId: string }) => row.legId === 'lint:tsc'))
+        .toMatchObject({ subjectPaths: [], subjectPathsComplete: subjectPathsComplete === true, admitCommand: null });
+      const claim = claimRepairManifestLeg(persisted.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 6_000 });
+      expect(claim.ok).toBe(subjectPathsComplete === true);
+      if (claim.ok) expect(claim.paths).toEqual([]);
+      else expect(claim.reason).toBe('incomplete-subjects');
+    }
+  });
+
   it.each(['current', 'foreign', 'missing'] as const)('writer admits complete structured paths only from the %s-head measurement', async (kind) => {
     const paths = ['package.json', 'packages/core/file with spaces.ts',
       ...Array.from({ length: 39 }, (_, index) => `packages/core/violating-${index}.ts`)];
@@ -5195,7 +5240,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: queue.repairHead }] };
     fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: {
       ...(kind === 'missing' ? {} : { head: kind === 'current' ? queue.repairHead.slice(0, 12) : 'f'.repeat(12) }),
-      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: paths, outputTail: 'generic trailer' }],
+      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: paths, subjectPathsComplete: true, outputTail: 'generic trailer' }],
     } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
     await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
     const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
@@ -5206,6 +5251,37 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc');
     expect(row.subjectPaths).toEqual(kind === 'current' ? paths : []);
     expect(row.admitCommand !== null).toBe(kind === 'current');
+  });
+
+  it.each(['legacy', 'partial', 'malformed', 'duplicate'] as const)('keeps %s persisted subjects incomplete until a full remeasurement', async (kind) => {
+    const { parseRepairManifest, claimRepairManifestLeg, withRepairManifest } = await import('../../release/repair-manifest');
+    const paths = Array.from({ length: 41 }, (_, index) => `packages/core/legacy-${index}.ts`);
+    const lintQueue = { ...queue, failingTests: ['lint:tsc'], signature: [{ id: 'lint:tsc', kind: 'lint-leg' as const,
+      recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: queue.repairHead }] };
+    const leg = { id: 'lint:tsc', status: 'fail', subjectPaths: paths as unknown[],
+      ...(kind === 'legacy' ? {} : { subjectPathsComplete: kind !== 'partial' }) };
+    if (kind === 'malformed') leg.subjectPaths = [...paths, 7];
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: { head: queue.repairHead,
+      legs: kind === 'duplicate' ? [leg, { ...leg, subjectPaths: ['packages/core/other.ts'] }] : [leg],
+    } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
+    const params = write?.[1];
+    if (!Array.isArray(params)) throw new Error('queue write must carry positional SQL parameters');
+    let persisted = JSON.parse(String(params[2])).repair_queue;
+    for (let restart = 0; restart < 3; restart += 1) {
+      persisted.manifest = parseRepairManifest(JSON.parse(JSON.stringify(persisted.manifest)));
+      persisted = withRepairManifest(persisted, 5_000 + restart).queue;
+      const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc');
+      expect(row.subjectPaths).toEqual(kind === 'duplicate' ? [...paths, 'packages/core/other.ts'] : paths);
+      expect(row.admitCommand).toBeNull();
+      expect(claimRepairManifestLeg(persisted.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 6_000 }))
+        .toMatchObject({ ok: false, reason: 'incomplete-subjects', recovery: { legId: 'lint:tsc', head: queue.repairHead } });
+    }
+    const complete = [...paths, 'packages/core/decisive-last.ts'];
+    const recovered = withRepairManifest(persisted, 7_000, { subjectPaths: { 'lint:tsc': complete } });
+    const claim = claimRepairManifestLeg(recovered.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 8_000 });
+    expect(claim.ok && claim.paths).toEqual(complete);
   });
 
   it('P037: writer roots the standalone scripts typecheck before rendering its admit command', async () => {
@@ -5222,7 +5298,8 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     const persisted = JSON.parse(String(params[2])).repair_queue;
     const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc:scripts');
     expect(row.subjectPaths).toEqual(['scripts/lib/runtime-compatibility-census.mjs']);
-    expect(row.admitCommand).toContain('scripts/lib/runtime-compatibility-census.mjs');
+    expect(row.admitCommand).toBeNull();
+    expect(row.subjectPathsComplete).toBe(false);
   });
 
   it('P-025: returns explicit unreadable state and makes the legacy reader throw on schema skew', async () => {
@@ -6245,6 +6322,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       signature: [],
     });
     const tickAt = (head: string) => ({
+      populationEvidence: { status: 'complete', measuredLegCount: 2, failingSignatureCount: 1 },
       head: head.slice(0, 12),
       atMs: 1,
       ok: false,

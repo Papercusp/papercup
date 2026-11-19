@@ -52,9 +52,11 @@ import {
   continueStoredQualificationWork,
   type QualificationWorkProgressInput,
   recordStoredQualificationScheduledFire,
+  qualificationIntentMatches,
   recordStoredQualificationExecutorIdentityBlock,
   recoverStoredQualificationExecutorIdentity,
   waitQualificationTransaction,
+  waitStoredQualification,
   recordStoredQualificationVerdict,
   recordStoredQualificationComposedVerdict,
   reserveQualificationRunner,
@@ -116,6 +118,58 @@ async function metadata(): Promise<Record<string, unknown>> {
 }
 
 describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
+  it.each([[63, 31, 23], [64, 32, 24], [65, 33, 25]])(
+    'persists complete qualification populations through JSONB (%i paths, %i runs, %i blockers)',
+    async (pathCount, runCount, blockerCount) => {
+      await seed();
+      const paths = Array.from({ length: pathCount }, (_, index) => `source/path-${index}.ts`);
+      const attemptId = 'lossless-populations';
+      expect(await beginStoredQualification(target, { attemptId, candidate: 'candidate-1', declaredPaths: paths, nowMs: 100 }))
+        .toMatchObject({ status: 'updated' });
+      const blockers = Array.from({ length: blockerCount }, (_, index) => ({
+        code: `blocker-${index}`, clearEvents: Array.from({ length: 65 }, (_, event) => `ready:${index}:${event}`),
+      }));
+      for (let index = 0; index < runCount; index++) {
+        expect(await reserveStoredQualificationRunner(target, {
+          attemptId, runnerId: `physical-${index}`, runId: `run-${index}`, leaseDurationMs: 10,
+          evidenceRefs: [`checkpoint-run:run-${index}`], nowMs: 200 + index * 20,
+        })).toMatchObject({ status: 'updated' });
+        expect(await waitStoredQualification(target, {
+          attemptId, runId: `run-${index}`, reason: 'dependency-generation', blockers,
+          evidenceRefs: [`waited:${index}`], nowMs: 210 + index * 20,
+        })).toMatchObject({ status: 'updated' });
+        // Every iteration re-enters the production parser from persisted PostgreSQL JSONB.
+        const saved = await readStoredQualification(target);
+        if (saved.status !== 'present') throw new Error('qualification population unreadable');
+        expect(saved.transaction.consumedPhysicalRuns).toHaveLength(index + 1);
+        expect(saved.transaction.evidenceRefs).toContain(`checkpoint-run:run-${index}`);
+      }
+      const saved = await readStoredQualification(target);
+      if (saved.status !== 'present') throw new Error('qualification population missing');
+      const current = saved.transaction;
+      expect(current.candidatePolicy.declaredPaths).toEqual(paths);
+      expect(qualificationIntentMatches(current, { declaredPaths: [...paths].reverse() })).toBe(true);
+      expect(qualificationIntentMatches(current, { declaredPaths: [...paths.slice(0, -1), 'decisive-tail.ts'] })).toBe(false);
+      expect(current.consumedPhysicalRuns?.map(run => run.id))
+        .toEqual(Array.from({ length: runCount }, (_, index) => `physical-${index}`));
+      expect(current.evidenceRefs).toHaveLength(runCount * 2);
+      expect(current.blockers.map(({ code, clearEvents }) => ({ code, clearEvents }))).toEqual(blockers);
+      expect(projectCheckpointQualificationState(current).safeNextAction.waitEvents)
+        .toEqual(blockers.flatMap(blocker => blocker.clearEvents));
+      expect(await waitStoredQualification(target, {
+        attemptId, reason: 'dependency-generation', blockers, nowMs: 10_000,
+      })).toMatchObject({ status: 'idempotent' });
+      const changed = blockers.map((blocker, index) => index === blockerCount - 1
+        ? { ...blocker, clearEvents: [...blocker.clearEvents.slice(0, -1), 'ready:decisive-tail'] } : blocker);
+      expect(await waitStoredQualification(target, {
+        attemptId, reason: 'dependency-generation', blockers: changed, nowMs: 10_001,
+      })).toMatchObject({ status: 'updated' });
+      const recovered = await readStoredQualification(target);
+      if (recovered.status !== 'present') throw new Error('updated qualification missing');
+      expect(projectCheckpointQualificationState(recovered.transaction).safeNextAction.waitEvents).toContain('ready:decisive-tail');
+    },
+  );
+
   it('persists an unavailable executor through the real scheduled handler and refuses unqualified recovery', async () => {
     const fence = { attemptId: 'executor-identity-attempt', candidate: 'frozen-candidate', repairHead: 'frozen-repair' };
     const started = Date.now() - 1000;
@@ -346,8 +400,9 @@ describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
         const input = { ...fixture.input, runnerId: 'runner-two', runId: 'run-two', pidIdentity: 'boot:43', nowMs: 900 };
         const stored = await readStoredQualification(target);
         if (stored.status !== 'present') throw new Error('fixture qualification missing');
-        expect(evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: stored.transaction.continuation },
-          { ...input, sourceCommit: input.candidate })).toMatchObject({ reused: ['native'], run: ['post', 'remaining'] });
+        const retained = evaluatePartialTaskContinuation({ root, taskKey: input.taskKey, continuation: stored.transaction.continuation },
+          { ...input, sourceCommit: input.candidate });
+        expect(retained, JSON.stringify(retained)).toMatchObject({ reused: ['native'], run: ['post', 'remaining'] });
 
         // Execute/enroll only the missing file. The old completed file is never
         // included in this producer's independent selection or output population.

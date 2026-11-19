@@ -72,6 +72,8 @@ export interface RepairManifestRow {
   subjectPaths: string[];
   /** Missing paths in legacy evidence. Sticky until a complete structured measurement replaces it. */
   subjectPathsTruncated: number;
+  /** Only an explicitly complete measurement can make legacy subject evidence exact. */
+  subjectPathsComplete?: boolean;
   subjectSource: RepairManifestSubjectSource;
   status: RepairManifestStatus;
   /** `red-at-candidate` | `admitted-in-#N@<sha8>` | `green-at-<sha8>` — the D-007 vocabulary. */
@@ -100,6 +102,8 @@ export interface BuildRepairManifestInput {
   legOutputs?: Readonly<Record<string, string | undefined>>;
   /** Per-leg subject paths the caller KNOWS (wins over every other source). */
   subjectPaths?: Readonly<Record<string, readonly string[] | undefined>>;
+  /** False for legacy snapshots, diagnostic previews, malformed records or interrupted measurements. */
+  subjectPathsComplete?: Readonly<Record<string, boolean | undefined>>;
   /**
    * npm-workspace NAME → repo-relative DIRECTORY (`npm-workspace-dirs.ts`). Passed IN rather
    * than read here so this function stays a pure derivation.
@@ -213,20 +217,25 @@ function normalizeStructuredSubjects(paths: readonly string[]): string[] {
 function resolveSubjectPaths(
   entry: RepairSignatureEntry,
   input: BuildRepairManifestInput,
-): { paths: string[]; source: RepairManifestSubjectSource; truncated: number } {
+): { paths: string[]; source: RepairManifestSubjectSource; truncated: number; complete: boolean } {
   const previous = input.previous?.candidate === input.queue.candidate
     ? input.previous.rows.find((row) => row.legId === entry.id && row.kind === entry.kind && row.workspace === entry.workspace)
     : undefined;
   const supplied = input.subjectPaths?.[entry.id];
-  if (supplied && supplied.length > 0) {
+  const suppliedComplete = input.subjectPathsComplete?.[entry.id];
+  if (supplied && (supplied.length > 0 || suppliedComplete === true)) {
     const normalized = normalizeStructuredSubjects(supplied);
-    if (normalized.length > 0) return { paths: normalized, source: 'supplied', truncated: 0 };
+    const complete = suppliedComplete !== false && normalized.length === new Set(supplied).size;
+    return {
+      paths: complete ? normalized : normalizeStructuredSubjects([...(previous?.subjectPaths ?? []), ...normalized]),
+      source: 'supplied', truncated: complete ? 0 : previous?.subjectPathsTruncated ?? 0, complete,
+    };
   }
   if (entry.kind === 'test-file') {
     const p = normalizeRepoPath(entry.id);
-    if (p) return { paths: [p], source: 'leg-id', truncated: 0 };
+    if (p) return { paths: [p], source: 'leg-id', truncated: 0, complete: true };
   }
-  if (entry.kind === 'seed') return { paths: [], source: 'none', truncated: 0 };
+  if (entry.kind === 'seed') return { paths: [], source: 'none', truncated: 0, complete: true };
   const dirs = input.workspaceDirs;
   const workspaceDir = (entry.workspace ? dirs?.[entry.workspace] : undefined)
     ?? input.legProjectDirs?.[entry.id];
@@ -240,6 +249,7 @@ function resolveSubjectPaths(
     return {
       paths: normalizeStructuredSubjects([...(previous?.subjectPaths ?? []), ...mined]),
       source: 'leg-output', truncated: previous?.subjectPathsTruncated ?? 0,
+      complete: suppliedComplete === true && (previous?.subjectPathsTruncated ?? 0) === 0,
     };
   }
   // Rebuilding a queue after an admission must not erase evidence already measured
@@ -248,16 +258,17 @@ function resolveSubjectPaths(
     return {
       paths: normalizeStructuredSubjects(previous.subjectPaths), source: previous.subjectSource,
       truncated: previous.subjectPathsTruncated,
+      complete: previous.subjectPathsComplete === true && suppliedComplete !== false,
     };
   }
-  return { paths: [], source: 'none', truncated: 0 };
+  return { paths: [], source: 'none', truncated: 0, complete: false };
 }
 
 /** Attach structured paths at the same CAS boundary as the measured queue transition. */
 export function withMeasuredLegSubjects(
   queue: FrozenCandidateRepairQueue,
   measuredHead: string,
-  legs: readonly { id: string; status: string; subjectPaths?: readonly string[] }[],
+  legs: readonly { id: string; status: string; subjectPaths?: readonly string[]; subjectPathsComplete?: boolean }[],
   nowMs: number,
 ): FrozenCandidateRepairQueue {
   if (queue.repairHead !== measuredHead) return queue;
@@ -272,13 +283,18 @@ export function withMeasuredLegSubjects(
     measurements, head: measuredHead, nowMs: Math.max(nowMs, queue.updatedAtMs + 1),
   });
   const subjectPaths: Record<string, string[]> = {};
+  const subjectPathsComplete: Record<string, boolean> = {};
   for (const leg of legs) {
     if (leg.status !== 'failed' && leg.status !== 'fail' && leg.status !== 'errored') continue;
     const paths = normalizeStructuredSubjects(leg.subjectPaths ?? []);
-    if (paths.length) subjectPaths[leg.id] = paths;
+    // An explicit empty array can replace older incomplete evidence. An absent
+    // array is unknown even if a caller supplied the completeness marker.
+    subjectPaths[leg.id] = paths;
+    subjectPathsComplete[leg.id] = leg.subjectPathsComplete === true && Array.isArray(leg.subjectPaths) &&
+      paths.length === new Set(leg.subjectPaths).size;
   }
   return Object.keys(subjectPaths).length
-    ? withRepairManifest(queue, nowMs, { subjectPaths }).queue
+    ? withRepairManifest(queue, nowMs, { subjectPaths, subjectPathsComplete }).queue
     : queue;
 }
 
@@ -350,10 +366,11 @@ export function buildRepairManifest(input: BuildRepairManifestInput): RepairMani
       recipe: entry.recipe,
       subjectPaths: subject.paths,
       subjectPathsTruncated: subject.truncated,
+      subjectPathsComplete: subject.complete,
       subjectSource: subject.source,
       status,
       statusLabel,
-      admitCommand: subject.paths.length > 0 && subject.truncated === 0 ? renderAdmitCommand(subject.paths) : null,
+      admitCommand: subject.paths.length > 0 && subject.truncated === 0 && subject.complete ? renderAdmitCommand(subject.paths) : null,
       claim: prior?.claim ?? null,
     });
   }
@@ -384,7 +401,7 @@ export interface WithRepairManifestResult<Q extends BuildRepairManifestInput['qu
 export function withRepairManifest<Q extends BuildRepairManifestInput['queue'] & { manifest?: RepairManifest | null }>(
   queue: Q,
   nowMs: number,
-  extras: Pick<BuildRepairManifestInput, 'legOutputs' | 'subjectPaths' | 'workspaceDirs' | 'legProjectDirs'> = {},
+  extras: Pick<BuildRepairManifestInput, 'legOutputs' | 'subjectPaths' | 'subjectPathsComplete' | 'workspaceDirs' | 'legProjectDirs'> = {},
 ): WithRepairManifestResult<Q> {
   const previous = queue.manifest ?? null;
   const manifest = buildRepairManifest({ queue, nowMs, previous, ...extras });
@@ -397,6 +414,7 @@ export function withRepairManifest<Q extends BuildRepairManifestInput['queue'] &
     signatureChanged || manifest.rows.some((r) =>
       prevLabels.get(r.legId) !== r.statusLabel ||
       previous?.rows.find((prior) => prior.legId === r.legId)?.subjectPathsTruncated !== r.subjectPathsTruncated ||
+      previous?.rows.find((prior) => prior.legId === r.legId)?.subjectPathsComplete !== r.subjectPathsComplete ||
       JSON.stringify(previous?.rows.find((prior) => prior.legId === r.legId)?.subjectPaths) !== JSON.stringify(r.subjectPaths),
     );
   return { queue: { ...queue, manifest }, manifest, signatureChanged, statusChanged };
@@ -434,7 +452,7 @@ export function claimRepairManifestLeg(
   if (row.claim && row.claim.actor !== input.actor) {
     return { ok: false, reason: 'held-by-other', holder: row.claim, row };
   }
-  if (row.subjectPathsTruncated !== 0) {
+  if (row.subjectPathsTruncated !== 0 || row.subjectPathsComplete !== true) {
     return {
       ok: false, reason: 'incomplete-subjects', row,
       recovery: { legId: row.legId, head: manifest.repairHead, recipe: row.recipe },
@@ -504,10 +522,16 @@ export function parseRepairManifest(raw: unknown): RepairManifest | null {
       recipe: typeof r.recipe === 'string' ? r.recipe : '',
       subjectPaths,
       subjectPathsTruncated: typeof r.subjectPathsTruncated === 'number' ? r.subjectPathsTruncated : 0,
+      subjectPathsComplete: r.subjectPathsComplete === true && Array.isArray(r.subjectPaths) &&
+        subjectPaths.length === r.subjectPaths.length &&
+        normalizeStructuredSubjects(subjectPaths).length === new Set(subjectPaths).size,
       subjectSource: source,
       status,
       statusLabel: typeof r.statusLabel === 'string' ? r.statusLabel : 'red-at-candidate',
-      admitCommand: typeof r.admitCommand === 'string' ? r.admitCommand : null,
+      admitCommand: r.subjectPathsComplete === true && r.subjectPathsTruncated === 0 &&
+        Array.isArray(r.subjectPaths) && subjectPaths.length === r.subjectPaths.length &&
+        normalizeStructuredSubjects(subjectPaths).length === new Set(subjectPaths).size &&
+        typeof r.admitCommand === 'string' ? r.admitCommand : null,
       claim,
     });
   }
@@ -571,8 +595,8 @@ export function renderRepairManifest(manifest: RepairManifest, opts: { heading?:
         ? row.kind === 'seed'
           ? '(whole gate — no path)'
           : '(unknown — name the paths you fix)'
-        : row.subjectPaths.join('<br>') + (row.subjectPathsTruncated ?
-          `<br>INCOMPLETE: ${row.subjectPathsTruncated} missing; remeasure ${row.legId} at ${manifest.repairHead} with ${row.recipe}` : '');
+        : row.subjectPaths.join('<br>') + (row.subjectPathsTruncated || row.subjectPathsComplete !== true ?
+          `<br>INCOMPLETE: ${row.subjectPathsTruncated ? `${row.subjectPathsTruncated} missing` : 'completeness unknown'}; remeasure ${row.legId} at ${manifest.repairHead} with ${row.recipe}` : '');
     const claim = row.claim ? `${row.claim.actor} (${new Date(row.claim.atMs).toISOString()})` : '—';
     const admit = row.admitCommand ? `\`${row.admitCommand}\`` : '—';
     lines.push(`| ${row.legId} | ${row.kind} | ${row.statusLabel} | ${paths} | ${claim} | ${admit} |`);

@@ -30,6 +30,14 @@
  * silently dropped.
  */
 
+import type { RepairLegEvidence } from './repair-leg-lifecycle';
+
+/** Fresh producer attestation, checked against the persisted arrays on read. */
+export interface RepairTickLegPopulationEvidence extends RepairLegEvidence {
+  measuredLegCount?: number;
+  failingSignatureCount?: number;
+}
+
 export interface RepairTickLegSnapshot {
   /** The NON_TEST_GATE_SCRIPTS registry id (e.g. `lint:design-primitives`) — a correlation
    *  key that is NEVER a repo path (a fixer edits scripts/config under it, not a file named
@@ -43,8 +51,8 @@ export interface RepairTickLegSnapshot {
 /** The persisted shape of one repair-tick's cheap-legs measurement. */
 export interface StoredRepairTickLegs {
   /**
-   * The repairHead these legs were actually measured AT, SHORT (the writer persists
-   * `head.slice(0, 12)` — release-actions.ts — never the full sha). May differ from the
+   * The repairHead these legs were actually measured AT. Legacy writers shortened
+   * this value to twelve characters. May differ from the
    * live repairHead: fixes land ON TOP of the frozen candidate and the legs re-run at the
    * advancing head, same as the file-based failures on the sibling cell. Compare with
    * `repairHeadSha.startsWith(head)`, never `===`.
@@ -53,11 +61,10 @@ export interface StoredRepairTickLegs {
   atMs: number;
   /** True when every measured leg passed. */
   ok: boolean;
-  /** Registry ids of every leg that did not pass at `head` — complete, not a first-failure
-   *  floor (bounded to 20 by the writer). */
+  /** Retained failing ids. Consult populationEvidence before treating the list as exact. */
   failingSignatures: string[];
-  /** Bounded to 32 by the writer. */
   legs: RepairTickLegSnapshot[];
+  populationEvidence?: RepairTickLegPopulationEvidence;
 }
 
 /**
@@ -78,12 +85,27 @@ export function parseRepairTickLegs(raw: unknown): StoredRepairTickLegs | null {
   if (!head || atMs == null) return null;
 
   const rawLegs = Array.isArray(r.legs) ? r.legs : [];
+  const marker = r.populationEvidence && typeof r.populationEvidence === 'object' && !Array.isArray(r.populationEvidence)
+    ? r.populationEvidence as Record<string, unknown> : null;
+  const unreadable: unknown[] = Array.isArray(marker?.unreadableEntries) ? [...marker.unreadableEntries] : [];
+  if (!Array.isArray(r.legs)) unreadable.push({ malformedLegs: r.legs });
+  if (r.populationEvidence !== undefined && (!marker ||
+    (marker.status !== 'complete' && marker.status !== 'unknown') ||
+    (marker.unreadableEntries !== undefined && !Array.isArray(marker.unreadableEntries)))) {
+    unreadable.push({ malformedPopulationEvidence: r.populationEvidence });
+  }
   const legs: RepairTickLegSnapshot[] = [];
+  const seenLegs = new Set<string>();
   for (const entry of rawLegs) {
-    if (!entry || typeof entry !== 'object') continue;
+    if (!entry || typeof entry !== 'object') { unreadable.push(entry); continue; }
     const e = entry as Record<string, unknown>;
-    if (typeof e.id !== 'string' || !e.id) continue;
-    if (e.status !== 'pass' && e.status !== 'fail' && e.status !== 'errored') continue;
+    // Skipped/declined scripts explicitly lie outside the measured population.
+    if (typeof e.id === 'string' && e.id && (e.status === 'skipped' || e.status === 'not-checked')) continue;
+    if (typeof e.id !== 'string' || !e.id || seenLegs.has(e.id) ||
+      (e.status !== 'pass' && e.status !== 'fail' && e.status !== 'errored')) {
+      unreadable.push(entry); continue;
+    }
+    seenLegs.add(e.id);
     legs.push({
       id: e.id,
       status: e.status,
@@ -91,9 +113,24 @@ export function parseRepairTickLegs(raw: unknown): StoredRepairTickLegs | null {
     });
   }
 
-  const failingSignatures = Array.isArray(r.failingSignatures)
-    ? r.failingSignatures.filter((v): v is string => typeof v === 'string')
-    : [];
+  const failingSignatures: string[] = [];
+  const seenFailures = new Set<string>();
+  if (Array.isArray(r.failingSignatures)) {
+    for (const id of r.failingSignatures) {
+      if (typeof id !== 'string' || !id || seenFailures.has(id)) unreadable.push(id);
+      else { seenFailures.add(id); failingSignatures.push(id); }
+    }
+  } else unreadable.push({ malformedFailingSignatures: r.failingSignatures });
+  const failures = legs.filter((leg) => leg.status !== 'pass');
+  const countsMatch = Number.isInteger(marker?.measuredLegCount) && marker?.measuredLegCount === legs.length &&
+    Number.isInteger(marker?.failingSignatureCount) && marker?.failingSignatureCount === failingSignatures.length;
+  const failuresMatch = failures.length === failingSignatures.length && failures.every((leg) => seenFailures.has(leg.id));
+  const populationEvidence: RepairTickLegPopulationEvidence = {
+    status: marker?.status === 'complete' && countsMatch && failuresMatch && unreadable.length === 0 ? 'complete' : 'unknown',
+    ...(typeof marker?.measuredLegCount === 'number' ? { measuredLegCount: marker.measuredLegCount } : {}),
+    ...(typeof marker?.failingSignatureCount === 'number' ? { failingSignatureCount: marker.failingSignatureCount } : {}),
+    ...(unreadable.length ? { unreadableEntries: unreadable } : {}),
+  };
 
   return {
     head,
@@ -101,6 +138,7 @@ export function parseRepairTickLegs(raw: unknown): StoredRepairTickLegs | null {
     ok: r.ok === true,
     failingSignatures,
     legs,
+    populationEvidence,
   };
 }
 
@@ -137,7 +175,7 @@ export function repairTickClearedQueueSignature(
   snapshot: StoredRepairTickLegs | null,
   queue: { repairHead: string; failingTests?: readonly string[] | null },
 ): boolean {
-  if (!snapshot || !snapshot.ok) return false;
+  if (!snapshot || !snapshot.ok || snapshot.populationEvidence?.status !== 'complete') return false;
   const { contradicted, actionable } = partitionSameHeadContradictions(queue.failingTests, snapshot, queue.repairHead);
   return actionable.length === 0 && contradicted.length > 0;
 }
@@ -172,7 +210,7 @@ export function partitionSameHeadContradictions(
   repairHead: string | null,
 ): SameHeadContradictionPartition {
   const failing = failingTests ?? [];
-  if (!snapshot || repairTickLegsCurrent(snapshot, repairHead) !== true) {
+  if (!snapshot || snapshot.populationEvidence?.status !== 'complete' || repairTickLegsCurrent(snapshot, repairHead) !== true) {
     return { contradicted: [], actionable: [...failing] };
   }
   const passed = new Set<string>();

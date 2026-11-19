@@ -444,6 +444,15 @@ describe('frozen-candidate repair queue', () => {
     ).toMatchObject({ zeroAttemptStalled: false });
   });
 
+  it.each(['complete', 'unknown', undefined] as const)('preserves %s lifecycle completeness through the candidate diagnostic', (status) => {
+    const evidence = status ? { status, ...(status === 'unknown' ? { unreadableEntries: [{ id: 'lint:unreadable' }] } : {}) } : undefined;
+    const stored = { ...fresh(), legEvidence: evidence };
+    const restarted = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(stored)))!;
+    const diagnostic = diagnoseFrozenCandidateRepairQueue(restarted, { nowMs: T0 + 1 })!;
+    expect(diagnostic.legEvidence).toEqual(evidence ?? { status: 'unknown' });
+    expect(diagnostic.legs).toEqual(restarted.legs ?? []);
+  });
+
   it('P-011 projects the complete bounded lineage ledger and blocked reason through the canonical diagnostic', () => {
     const admission = {
       atMs: T0 + 1,

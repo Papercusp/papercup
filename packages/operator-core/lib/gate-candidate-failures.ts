@@ -264,6 +264,10 @@ export interface GateCandidateFailures {
     failing: RepairTickLegSnapshot[];
     /** Plain-language reading, hedged by `current`. */
     reading: string;
+    /** Unknown legacy/malformed populations cannot establish an all-clear. */
+    evidenceStatus?: 'complete' | 'unknown';
+    recovery?: string;
+    unreadableEntries?: number;
     /**
      * P-003 — the NAMED per-leg surface. One row per leg this cycle knows about, joining
      * THIS tick's measurement to the queue's own lifecycle for that leg (P-002/D-005).
@@ -555,7 +559,10 @@ function buildNonTestLegs(
   if (!snap) return unmeasuredNonTestLegs(queueLegs, queueSignature, queueLegEvidence);
   const current = repairTickLegsCurrent(snap, repairHeadSha);
   const failing = snap.legs.filter((l) => l.status !== 'pass');
-  const reading =
+  const complete = snap.populationEvidence?.status === 'complete';
+  const reading = !complete
+    ? `INCOMPLETE — retained repair-tick population at ${snap.head} cannot establish an all-clear; remeasure the repair-tick legs at the current repairHead.`
+    :
     current === false
       ? `STALE — measured at an earlier repairHead (${snap.head}); the queue has since moved past it. Not evidence about the current repairHead.`
       : failing.length === 0
@@ -569,6 +576,9 @@ function buildNonTestLegs(
     all: snap.legs,
     failing,
     reading,
+    evidenceStatus: complete ? 'complete' : 'unknown',
+    ...(!complete ? { recovery: 'Remeasure the repair-tick legs at the current repairHead.' } : {}),
+    unreadableEntries: snap.populationEvidence?.unreadableEntries?.length ?? 0,
     perLeg,
     outstanding: outstandingLegIds(perLeg, current),
     shrink: summarizeRepairLegs(queueLegs ?? undefined, queueLegEvidence),
@@ -632,7 +642,11 @@ function buildPerLeg(
 ): GateCandidateFailures['nonTestLegs']['perLeg'] {
   // No snapshot ⇒ nothing was measured this tick: every row is `not-measured`, and only
   // the cycle's lifecycle/signature speaks (a `failing` leg stays outstanding — D-005 rule 4).
-  const measured = new Map((snap?.legs ?? []).map((leg) => [leg.id, leg.status]));
+  const measured = new Map<string, RepairLegStatus | 'not-measured'>((snap?.legs ?? []).map((leg) =>
+    [leg.id, leg.status === 'pass' && snap?.populationEvidence?.status !== 'complete' ? 'not-measured' : leg.status]));
+  for (const id of snap?.failingSignatures ?? []) {
+    if (!measured.has(id) || measured.get(id) === 'pass' || measured.get(id) === 'not-measured') measured.set(id, 'fail');
+  }
   const lifecycles = new Map((queueLegs ?? []).map((leg) => [leg.id, leg]));
   const signature = new Map(
     (queueSignature ?? []).filter((entry) => entry.kind === 'lint-leg').map((entry) => [entry.id, entry]),
@@ -1113,7 +1127,7 @@ export async function readGateCandidateFailures(
   // P-012 / C2: measured-ness is derived from whether a SNAPSHOT exists, never from the
   // truthiness of `nonTestLegs` — that object is always present now, so its truthiness
   // would read every unmeasured queue as 'measured'.
-  const nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'] = opts.repairTickLegs
+  const nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'] = opts.repairTickLegs?.populationEvidence?.status === 'complete'
     ? 'measured'
     : 'not-recorded';
   const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs, opts.queueSignature, opts.queueLegEvidence);
@@ -1363,6 +1377,7 @@ export async function readGateCandidateFailures(
       outstandingLegs: nonTestLegs.outstanding.length,
       fixedLegs: nonTestLegs.perLeg.filter((l) => l.lifecycle === 'fixed' && !nonTestLegs.outstanding.includes(l.id)).length,
       staleUnadmittedLegs: staleUnadmittedRedLegIds(nonTestLegs.perLeg, nonTestLegs.current).length,
+      incompleteLegPopulation: Boolean(opts.repairTickLegs && opts.repairTickLegs.populationEvidence?.status !== 'complete'),
     }),
   };
 }
@@ -1380,6 +1395,7 @@ export function assessCandidateFailures(c: {
   fixedLegs: number;
   /** WI-10005727 — `staleUnadmittedRedLegIds(...).length`. */
   staleUnadmittedLegs: number;
+  incompleteLegPopulation?: boolean;
 }): GateCandidateFailuresCode {
   // A genuinely unrepaired test file is real work, whatever else is true.
   if (c.stillBrokenCount > 0) return 'repairs-outstanding';
@@ -1389,6 +1405,7 @@ export function assessCandidateFailures(c: {
   // WI-10005727: a leg last measured red at an OLDER head, never admitted, says nothing
   // about repairHead — so neither all-clear below may be claimed while one exists.
   if (c.staleUnadmittedLegs > 0) return 'unmeasured';
+  if (c.incompleteLegPopulation) return 'unmeasured';
   // Rows exist but some could not be compared: an unmeasured state wearing a green coat,
   // reported as unmeasured rather than as either verdict.
   // A file the gate already PASSED at repairHead is resolved, not unmeasured.

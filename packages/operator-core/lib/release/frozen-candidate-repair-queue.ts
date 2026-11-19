@@ -2009,6 +2009,8 @@ export interface FrozenRepairQueueDiagnostic {
    * diagnostic forgot to project the ledger.
    */
   legs: readonly FrozenRepairLegState[];
+  /** Completeness must survive the diagnostic consumed by candidate-failure readers. */
+  legEvidence?: RepairLegEvidence;
   /** P-006: the typed signature — WHAT is red, by kind, with the recipe that re-measures it.
    * The same population as `failingTests`, so the two never disagree. */
   signature: readonly RepairSignatureEntry[];
@@ -3331,6 +3333,7 @@ export function diagnoseFrozenCandidateRepairQueue(
     // P-002/P-003: carried onto the diagnostic so a reader holding it can answer "which
     // non-test leg, and did its fix land" without re-parsing the raw queue blob.
     legs: queue.legs ?? [],
+    legEvidence: queue.legEvidence ?? { status: 'unknown' },
     signature: queue.signature,
     // P-011: the normalized diagnostic is the ONE read model behind release:repair-queue,
     // gitPipelineSnapshot and the owner brief. Dropping these two fields here forced each

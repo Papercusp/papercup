@@ -2476,6 +2476,21 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     expect(provenance.legs[0].outputTail).toContain('first/file.ts');
   });
 
+  it('persists complete empty subjects in gate metadata without turning unknown into empty', async () => {
+    await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+      repairTickLegs: { ...tickLegs, failingSignatures: ['complete', 'unknown'],
+        populationEvidence: { status: 'complete', measuredLegCount: 2, failingSignatureCount: 2 }, legs: [
+        { id: 'complete', status: 'fail', durationMs: 1, subjectPaths: [], subjectPathsComplete: true },
+        { id: 'unknown', status: 'fail', durationMs: 1 },
+      ] },
+    });
+    const stored = JSON.parse(JSON.stringify(seededGh!.repairTickLegs));
+    expect(parseRepairTickLegs(stored)?.populationEvidence?.status).toBe('complete');
+    expect(stored.legs[0]).toMatchObject({ subjectPaths: [], subjectPathsComplete: true });
+    expect(stored.legs[1]).not.toHaveProperty('subjectPaths');
+    expect(stored.legs[1]).not.toHaveProperty('subjectPathsComplete');
+  });
+
   it.each([19, 20, 21, 31, 32, 33])('D010: persists all %i failing identities across repeated measurements and retires only measured passes', async (count) => {
     const ids = Array.from({ length: count }, (_, index) => `lint:${'shared-prefix-'.repeat(17)}${index}`);
     for (const ordered of [ids, [...ids].reverse()]) {
@@ -2495,13 +2510,14 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
       const paths = Array.from({ length: 41 }, (_, index) => `packages/x/file-${index}.ts`);
       await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
         repairTickLegs: { ...tickLegs, failingSignatures: ordered,
-          legs: ordered.map((id) => ({ id, status: 'fail' as const, durationMs: 1, subjectPaths: paths })),
+          legs: ordered.map((id) => ({ id, status: 'fail' as const, durationMs: 1, subjectPaths: paths, subjectPathsComplete: true })),
         },
       });
       const snapshot = parseRepairTickLegs(JSON.parse(JSON.stringify(seededGh!.repairTickLegs)))!;
       expect(snapshot.failingSignatures).toEqual(ordered);
       expect(snapshot.legs.map((leg) => leg.id)).toEqual(ordered);
       expect((seededGh!.repairTickLegs as { legs: { subjectPaths: string[] }[] }).legs.at(-1)!.subjectPaths).toEqual(paths);
+      expect((seededGh!.repairTickLegs as { legs: { subjectPathsComplete?: boolean }[] }).legs.at(-1)!.subjectPathsComplete).toBe(true);
       const last = ordered.at(-1)!;
       await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
         repairTickLegs: { ...tickLegs, failingSignatures: [], ok: true,

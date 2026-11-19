@@ -59,6 +59,7 @@ import {
 } from '../../release/verdict-flip-quarantine-gate';
 import { nextStoredRatchetShadow, type RatchetShadowHealth } from '../../release/ratchet-shadow';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
+import type { RepairTickLegPopulationEvidence } from '../../release/repair-tick-legs-snapshot';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import {
   composeGateRedOwnership,
@@ -1755,6 +1756,7 @@ export interface CheckpointVerdict {
     durationMs: number;
     skipReason?: string;
     subjectPaths?: string[];
+    subjectPathsComplete?: boolean;
     executionIdentity?: {
       runId: string;
       candidate: string;
@@ -1864,7 +1866,8 @@ export interface CheckpointVerdict {
     atMs: number;
     ok: boolean;
     failingSignatures: string[];
-    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string; subjectPaths?: string[] }>;
+    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string; subjectPaths?: string[]; subjectPathsComplete?: boolean }>;
+    populationEvidence?: RepairTickLegPopulationEvidence;
   };
 }
 
@@ -2450,7 +2453,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       status: leg.status,
       durationMs: Math.max(0, Math.floor(leg.durationMs)),
       ...(leg.skipReason ? { skipReason: leg.skipReason.slice(0, 500) } : {}),
-      ...(leg.subjectPaths?.length ? { subjectPaths: [...leg.subjectPaths] } : {}),
+      ...(leg.subjectPaths ? { subjectPaths: [...leg.subjectPaths] } : {}),
+      ...(leg.subjectPathsComplete === true ? { subjectPathsComplete: true } : {}),
       ...(leg.executionIdentity
         ? {
             executionIdentity: {
@@ -2490,13 +2494,15 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       head: v.repairTickLegs.head,
       atMs: v.repairTickLegs.atMs,
       ok: v.repairTickLegs.ok,
+      ...(v.repairTickLegs.populationEvidence ? { populationEvidence: v.repairTickLegs.populationEvidence } : {}),
       failingSignatures: [...v.repairTickLegs.failingSignatures],
       legs: v.repairTickLegs.legs.map((leg) => ({
         id: leg.id,
         status: leg.status,
         durationMs: Math.max(0, Math.floor(leg.durationMs)),
         ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 500) } : {}),
-        ...(leg.subjectPaths?.length ? { subjectPaths: [...leg.subjectPaths] } : {}),
+        ...(leg.subjectPaths ? { subjectPaths: [...leg.subjectPaths] } : {}),
+        ...(leg.subjectPathsComplete === true ? { subjectPathsComplete: true } : {}),
       })),
     };
   }
@@ -5250,6 +5256,7 @@ export async function trackGateStall(
                 head: tickLegs.head,
                 atMs: tickLegs.atMs,
                 ok: tickLegs.ok,
+                ...(tickLegs.populationEvidence ? { populationEvidence: tickLegs.populationEvidence } : {}),
                 failingSignatures: [...tickLegs.failingSignatures],
                 // WI-10002091: persist the PER-LEG records too. Every consumer already expects
                 // them and this is the only writer that can supply them:
@@ -5269,7 +5276,8 @@ export async function trackGateStall(
                   status: leg.status,
                   durationMs: Math.max(0, Math.floor(leg.durationMs)),
                   ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 1000) } : {}),
-                  ...(leg.subjectPaths?.length ? { subjectPaths: [...leg.subjectPaths] } : {}),
+                  ...(leg.subjectPaths ? { subjectPaths: [...leg.subjectPaths] } : {}),
+                  ...(leg.subjectPathsComplete === true ? { subjectPathsComplete: true } : {}),
                 })),
               }),
               measuredIds,
@@ -6910,7 +6918,7 @@ async function readRepairTickLegOutputs(
   sql: Pick<import('../../work-items').OrgSql, 'unsafe'>,
   target: GateVerdictTarget,
   repairHead: string,
-): Promise<{ legOutputs: Record<string, string>; subjectPaths: Record<string, string[]>; previousManifest: unknown }> {
+): Promise<{ legOutputs: Record<string, string>; subjectPaths: Record<string, string[]>; subjectPathsComplete: Record<string, boolean>; previousManifest: unknown }> {
   try {
     const rows = (await sql.unsafe(
       `SELECT metadata->'gate_health'->'repairTickLegs' AS legs,
@@ -6923,21 +6931,26 @@ async function readRepairTickLegOutputs(
     const previousManifest = Array.isArray(rows) ? rows[0]?.manifest : null;
     const raw = Array.isArray(rows) ? rows[0]?.legs : undefined;
     const head = raw && typeof raw === 'object' ? (raw as { head?: unknown }).head : null;
-    if (typeof head !== 'string' || head.length < 12 || !repairHead.startsWith(head)) return { legOutputs: {}, subjectPaths: {}, previousManifest };
+    if (typeof head !== 'string' || head.length < 12 || !repairHead.startsWith(head)) return { legOutputs: {}, subjectPaths: {}, subjectPathsComplete: {}, previousManifest };
     const legs = raw && typeof raw === 'object' && Array.isArray((raw as { legs?: unknown }).legs)
       ? ((raw as { legs: unknown[] }).legs as Array<Record<string, unknown>>)
       : [];
     const out: Record<string, string> = {};
     const subjectPaths: Record<string, string[]> = {};
+    const subjectPathsComplete: Record<string, boolean> = {};
     for (const leg of legs) {
       if (!leg || typeof leg.id !== 'string' || (leg.status !== 'fail' && leg.status !== 'errored')) continue;
       const paths = Array.isArray(leg.subjectPaths) ? leg.subjectPaths.filter((p): p is string => typeof p === 'string') : [];
-      if (paths.length) subjectPaths[leg.id] = paths;
-      out[leg.id] = typeof leg.outputTail === 'string' ? leg.outputTail : '';
+      const duplicate = Object.hasOwn(subjectPathsComplete, leg.id);
+      subjectPaths[leg.id] = [...new Set([...(subjectPaths[leg.id] ?? []), ...paths])];
+      subjectPathsComplete[leg.id] = !duplicate && leg.subjectPathsComplete === true &&
+        Array.isArray(leg.subjectPaths) && paths.length === leg.subjectPaths.length;
+      const tail = typeof leg.outputTail === 'string' ? leg.outputTail : '';
+      out[leg.id] = duplicate ? `${out[leg.id] ?? ''}\n${tail}` : tail;
     }
-    return { legOutputs: out, subjectPaths, previousManifest };
+    return { legOutputs: out, subjectPaths, subjectPathsComplete, previousManifest };
   } catch {
-    return { legOutputs: {}, subjectPaths: {}, previousManifest: null };
+    return { legOutputs: {}, subjectPaths: {}, subjectPathsComplete: {}, previousManifest: null };
   }
 }
 
@@ -7182,6 +7195,7 @@ export async function writeFrozenCandidateRepairQueue(
     manifested = withRepairManifest(queue, Date.now(), {
       legOutputs: evidence.legOutputs,
       subjectPaths: evidence.subjectPaths,
+      subjectPathsComplete: evidence.subjectPathsComplete,
       workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
       // This root scripts project is outside npm workspaces.
       legProjectDirs: { 'lint:tsc:scripts': 'scripts' },

@@ -104,12 +104,29 @@ function holdResult(overrides: Partial<CheckpointResult> = {}): CheckpointResult
 }
 
 describe("measureRepairTickLegs", () => {
+  it.each([true, false, undefined])("preserves empty subject measurement provenance (%s)", async (subjectPathsComplete) => {
+    const measured = await measureRepairTickLegs(makeIo({
+      runScript: async () => ({ code: 1, tail: "failure with no named paths", subjectPaths: [], subjectPathsComplete }),
+    }), HEAD, { "lint:tsc": ["lint:tsc"] });
+    if (subjectPathsComplete === true) {
+      expect(measured!.legs[0]).toMatchObject({ subjectPaths: [], subjectPathsComplete: true });
+    } else {
+      expect(measured!.legs[0].subjectPathsComplete).not.toBe(true);
+    }
+    const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: awaitingFixerQueue(['lint:tsc']) }), {
+      runRepairTickLegs: async () => measured, log: vi.fn(), writeFrozenRepairQueue: vi.fn(async () => {}),
+    });
+    const row = result.repairQueue?.manifest?.rows.find((entry) => entry.legId === "lint:tsc");
+    expect(row).toMatchObject({ subjectPaths: [], subjectPathsComplete: subjectPathsComplete === true, admitCommand: null });
+  });
+
   it.each([39, 40, 41, 129])("retains all %i structured subjects outside truncated output and folds them into the queue", async (count) => {
     const files = Array.from({ length: count }, (_, i) => `packages/core/file${i}.ts`);
     const measured = await measureRepairTickLegs(makeIo({
-      runScript: async () => ({ code: 1, tail: "trailer only", subjectPaths: files }),
+      runScript: async () => ({ code: 1, tail: "trailer only", subjectPaths: files, subjectPathsComplete: true }),
     }), HEAD, { "lint:tsc": ["lint:tsc"] });
-    expect(measured!.legs[0]!.subjectPaths).toEqual(files);
+    expect(measured!.populationEvidence).toEqual({ status: 'complete', measuredLegCount: 1, failingSignatureCount: 1 });
+    expect(measured!.legs[0]).toMatchObject({ subjectPaths: files, subjectPathsComplete: true });
     const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: awaitingFixerQueue(['lint:tsc']) }), {
       runRepairTickLegs: async () => measured, log: vi.fn(), writeFrozenRepairQueue: vi.fn(async () => {}),
     });
@@ -117,6 +134,19 @@ describe("measureRepairTickLegs", () => {
       subjectPaths: files, subjectPathsTruncated: 0, admitCommand: expect.stringContaining(files.at(-1)!),
     });
   });
+  it.each([undefined, false])("keeps preview subjects incomplete when capture completeness is %s", async (subjectPathsComplete) => {
+    const files = Array.from({ length: 41 }, (_, i) => `packages/core/file${i}.ts`);
+    const measured = await measureRepairTickLegs(makeIo({
+      runScript: async () => ({ code: 1, tail: "trailer only", subjectPaths: files, subjectPathsComplete }),
+    }), HEAD, { "lint:tsc": ["lint:tsc"] });
+    const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: awaitingFixerQueue(['lint:tsc']) }), {
+      runRepairTickLegs: async () => measured, log: vi.fn(), writeFrozenRepairQueue: vi.fn(async () => {}),
+    });
+    expect(result.repairQueue?.manifest?.rows.find((row) => row.legId === "lint:tsc")).toMatchObject({
+      subjectPaths: files, subjectPathsComplete: false, admitCommand: null,
+    });
+  });
+
   it("runs EVERY leg with no short-circuit and reports the complete failing set", async () => {
     const runScript = vi.fn(async (script: string) => {
       if (script === "s2a") return { code: 1, tail: "boom" };
@@ -434,6 +464,7 @@ describe("measureRepairTickLegs", () => {
 // verdict line carried its tail, because the routing read tails only from test_runs.
 describe("repairTickLegFailureTails", () => {
   const measuredAtHead: RepairTickLegs = {
+    populationEvidence: { status: 'complete', measuredLegCount: 4, failingSignatureCount: 3 },
     head: HEAD,
     atMs: 1_000,
     ok: false,
@@ -574,6 +605,7 @@ describe("repairTickLegFailureTails", () => {
 
 describe("augmentWithRepairTickLegs", () => {
   const measured: RepairTickLegs = {
+    populationEvidence: { status: 'complete', measuredLegCount: 1, failingSignatureCount: 1 },
     head: HEAD,
     atMs: 1_000,
     ok: false,

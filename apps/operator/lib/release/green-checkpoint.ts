@@ -166,6 +166,7 @@ import { frozenLineageRef } from "@papercusp/operator-core/lib/release/repair-he
 import {
   parseRepairTickLegs,
   partitionSameHeadContradictions,
+  type RepairTickLegPopulationEvidence,
 } from "@papercusp/operator-core/lib/release/repair-tick-legs-snapshot";
 import type { LineageLedgerReconcileResult } from "@papercusp/operator-core/lib/release/frozen-lineage-ledger-reconcile";
 import {
@@ -755,6 +756,7 @@ export interface RepairTickLegRecord {
   outputTail?: string;
   /** Repo-relative failing paths captured before output truncation. */
   subjectPaths?: string[];
+  subjectPathsComplete?: boolean;
 }
 
 /** P-009: the cheap-legs measurement an `awaiting-fixer` hold tick took at repairHead, so
@@ -772,6 +774,7 @@ export interface RepairTickLegs {
   /** Registry ids of every leg that did not pass — complete, not a first-failure floor. */
   failingSignatures: string[];
   legs: RepairTickLegRecord[];
+  populationEvidence?: RepairTickLegPopulationEvidence;
 }
 
 /** P-008: one admitted path whose promoted frozen-lineage entry is not the entry currently
@@ -2101,6 +2104,8 @@ export function checkpointVerdictFromResult(
       status: leg.status,
       durationMs: leg.durationMs,
       ...(leg.outputTail ? { outputTail: leg.outputTail } : {}),
+      ...(leg.subjectPaths ? { subjectPaths: [...leg.subjectPaths] } : {}),
+      ...(leg.subjectPathsComplete === true ? { subjectPathsComplete: true } : {}),
     });
   }
 
@@ -2110,6 +2115,7 @@ export function checkpointVerdictFromResult(
       head: repairTickLegs.head,
       atMs: repairTickLegs.atMs,
       ok: repairTickLegs.ok,
+      ...(repairTickLegs.populationEvidence ? { populationEvidence: repairTickLegs.populationEvidence } : {}),
       failingSignatures: [...repairTickLegs.failingSignatures],
       legs: measuredLegs,
     },
@@ -18018,7 +18024,7 @@ export async function measureRepairTickLegs(
     runScript(
       script: string,
       workspace: string | null,
-    ): Promise<{ code: number; tail: string; subjectPaths?: string[] }>;
+    ): Promise<{ code: number; tail: string; subjectPaths?: string[]; subjectPathsComplete?: boolean }>;
     log(line: string): void;
     /** WI-6554700010029556: publish the leg now in flight (realCheckpointDeps writes it into the
      *  run-lock's phase.json) so a reader can name the leg without tailing the run log.
@@ -18093,6 +18099,7 @@ export async function measureRepairTickLegs(
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
     const subjectPaths = new Set<string>();
+    let subjectPathsComplete = true;
     let ranScript = false;
     // WI-10000288: distinguish "a script ran and declined to answer" from "a script ran and
     // verified", so a leg is reported `not-checked` only when NOTHING that ran verified.
@@ -18116,6 +18123,7 @@ export async function measureRepairTickLegs(
         availability = workspace ? undefined : io.scriptAvailability?.(script);
       } catch (e) {
         worst = "errored";
+        subjectPathsComplete = false;
         tails.push(
           `${label}: package.json inspection failed: ${e instanceof Error ? e.message : String(e)}`,
         );
@@ -18124,6 +18132,7 @@ export async function measureRepairTickLegs(
       if (availability === "absent") continue;
       if (availability === "unreadable") {
         worst = "errored";
+        subjectPathsComplete = false;
         tails.push(`${label}: package.json unreadable`);
         continue;
       }
@@ -18157,6 +18166,7 @@ export async function measureRepairTickLegs(
           tails.push(`${label}: NOT CHECKED (examined nothing — not gating)`);
         } else if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
+          subjectPathsComplete &&= r.subjectPathsComplete === true && Array.isArray(r.subjectPaths);
           for (const file of r.subjectPaths ?? extractSubjectPathsFromLegOutput(r.tail)) {
             subjectPaths.add(file);
           }
@@ -18174,6 +18184,7 @@ export async function measureRepairTickLegs(
             `in ${Math.max(0, now() - scriptStartedAt)}ms`,
         );
         worst = "errored";
+        subjectPathsComplete = false;
         tails.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
@@ -18190,7 +18201,8 @@ export async function measureRepairTickLegs(
       // names the digest was built to preserve — and with several legs joined, it dropped
       // every leg but the last.
       ...(tails.length ? { outputTail: tails.join(" | ").slice(0, 3000) } : {}),
-      ...(subjectPaths.size ? { subjectPaths: [...subjectPaths] } : {}),
+      ...(subjectPaths.size || (worst === "fail" && subjectPathsComplete) ? { subjectPaths: [...subjectPaths] } : {}),
+      ...(worst === "fail" && subjectPathsComplete ? { subjectPathsComplete: true } : {}),
     });
   }
   const failingSignatures = legs
@@ -18202,6 +18214,11 @@ export async function measureRepairTickLegs(
     ok: failingSignatures.length === 0,
     failingSignatures,
     legs,
+    populationEvidence: {
+      status: 'complete',
+      measuredLegCount: legs.filter((leg) => leg.status === 'pass' || leg.status === 'fail' || leg.status === 'errored').length,
+      failingSignatureCount: failingSignatures.length,
+    },
   };
 }
 
@@ -20312,6 +20329,7 @@ export interface PostSuiteLegRecord extends LegOutcome {
   id: string;
   /** Repo-relative failing paths captured from full command output before tailing. */
   subjectPaths?: string[];
+  subjectPathsComplete?: boolean;
   /** P-017 (R-14): one `<file>|<TS code or lint rule>` key per error in a FAILED leg, parsed
    *  from the full command output before tailing (`parseLegErrorKeys`). Absent when the leg
    *  passed or its output had no recognised error rows (the leg is then keyed on its id). */
@@ -22085,7 +22103,10 @@ export async function runPostSuiteLegs(
       id,
       status: outcome.status,
       durationMs,
-      ...(subjectPaths.length ? { subjectPaths } : {}),
+      ...(outcome.status === "failed" ? { subjectPaths } : {}),
+      ...(outcome.status === "failed" && commands.length > 0 && commands.length === spans.length &&
+        commands.every((command) => !command.errored && command.code !== null)
+        ? { subjectPathsComplete: true } : {}),
       ...(errorKeys.length ? { errorKeys } : {}),
       ...(outcome.skipReason ? { skipReason: outcome.skipReason } : {}),
       ...(identity
@@ -25842,6 +25863,7 @@ export function realCheckpointDeps(
             });
             return {
               code: r.code,
+              subjectPathsComplete: true,
               subjectPaths: extractSubjectPathsFromLegOutput(
                 stripAnsi(r.stdout + "\n" + r.stderr),
                 path.relative(cfg.checkpointRoot, invocation.cwd).replace(/\\/g, "/") || undefined,

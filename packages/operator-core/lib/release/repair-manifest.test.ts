@@ -84,7 +84,7 @@ describe('repair manifest — measured lint subjects survive persistence', () =>
   it('retains measured paths through rebuild and admission, and publishes newly actionable paths', () => {
     const empty = withRepairManifest(queue(), 1);
     const measured = withMeasuredLegSubjects(empty.queue, CANDIDATE, [
-      { id: 'lint:tsc', status: 'failed', subjectPaths: ['packages/web/src/broken.ts'] },
+      { id: 'lint:tsc', status: 'failed', subjectPaths: ['packages/web/src/broken.ts'], subjectPathsComplete: true },
     ], 2);
     const changed = withRepairManifest(empty.queue, 3, { subjectPaths: { 'lint:tsc': ['packages/web/src/broken.ts'] } });
     expect(changed.statusChanged).toBe(true);
@@ -135,7 +135,8 @@ describe('repair manifest — subject paths are evidence, never a guess', () => 
   });
 
   it('a lint leg mines the paths it REPORTED from its output tail (vendored / escaping tokens dropped)', () => {
-    const m = buildRepairManifest({ queue: queue(), nowMs: 10, legOutputs: { 'lint:tsc': TSC_OUTPUT } });
+    const m = buildRepairManifest({ queue: queue(), nowMs: 10, legOutputs: { 'lint:tsc': TSC_OUTPUT },
+      subjectPathsComplete: { 'lint:tsc': true } });
     const row = m.rows.find((r) => r.legId === 'lint:tsc')!;
     expect(row.subjectPaths).toEqual([
       'packages/operator-core/lib/release/x.ts',
@@ -238,7 +239,7 @@ describe('repair manifest — claims, rebuilds and the signature-change trigger'
   });
 
   it('withRepairManifest: first build changes the signature, an identical rebuild does not, a new leg does; claims survive', () => {
-    const first = withRepairManifest(queue(), 10);
+    const first = withRepairManifest(queue(), 10, { subjectPaths: { 'lint:tsc': ['packages/x/reported.ts'] } });
     expect(first.signatureChanged).toBe(true);
     expect(first.statusChanged).toBe(true);
     const claimed = claimRepairManifestLeg(first.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 11 });
@@ -274,7 +275,7 @@ describe('repair manifest — claims, rebuilds and the signature-change trigger'
   });
 
   it('a manifest built for a DIFFERENT candidate does not carry claims across', () => {
-    const first = withRepairManifest(queue(), 10);
+    const first = withRepairManifest(queue(), 10, { subjectPaths: { 'lint:tsc': ['packages/x/reported.ts'] } });
     const claimed = claimRepairManifestLeg(first.manifest, { legId: 'lint:tsc', actor: 'su-a', atMs: 11 });
     if (!claimed.ok) throw new Error('unreachable');
     const swapped = buildRepairManifest({ queue: queue({ candidate: HEAD2, repairHead: HEAD2 }), nowMs: 12, previous: claimed.manifest });
@@ -292,7 +293,7 @@ describe('repair manifest — claims, rebuilds and the signature-change trigger'
 describe('repair manifest — persistence and rendering', () => {
   it('parse round-trips a built manifest and rejects a malformed blob as ABSENT', () => {
     const q = queue({ repairHead: HEAD1, admissions: [admission()] });
-    const m = withRepairManifest(q, 10).manifest;
+    const m = withRepairManifest(q, 10, { subjectPaths: { 'lint:tsc': ['packages/x/reported.ts'] } }).manifest;
     const claimed = claimRepairManifestLeg(m, { legId: 'lint:tsc', actor: 'su-a', atMs: 11 });
     if (!claimed.ok) throw new Error('unreachable');
     const back = parseRepairManifest(JSON.parse(JSON.stringify(claimed.manifest)));
@@ -325,6 +326,39 @@ describe('repair manifest — persistence and rendering', () => {
     expect(row.admitCommand).toContain('packages/x/f44.ts');
   });
 
+  it.each([true, false, undefined])('keeps complete empty subjects distinct from unknown across restarts (%s)', (complete) => {
+    const previous = withRepairManifest(queue(), 2_000, {
+      subjectPaths: { 'lint:tsc': ['packages/x/previous.ts'] },
+    }).queue;
+    previous.manifest!.rows.find((row) => row.legId === 'lint:tsc')!.subjectPathsTruncated = 1;
+    let current = withMeasuredLegSubjects(previous, CANDIDATE, [
+      { id: 'lint:tsc', status: 'fail', subjectPaths: [], subjectPathsComplete: complete },
+    ], 3_000);
+    for (let restart = 0; restart < 3; restart += 1) {
+      current = { ...current, manifest: parseRepairManifest(JSON.parse(JSON.stringify(current.manifest)))! };
+      current = withRepairManifest(current, 4_000 + restart).queue;
+      const row = current.manifest!.rows.find((entry) => entry.legId === 'lint:tsc')!;
+      expect(row.subjectPaths).toEqual(complete === true ? [] : ['packages/x/previous.ts']);
+      expect(row.subjectPathsComplete).toBe(complete === true);
+      expect(row.subjectPathsTruncated).toBe(complete === true ? 0 : 1);
+      expect(row.admitCommand).toBeNull();
+      const claim = claimRepairManifestLeg(current.manifest!, { legId: 'lint:tsc', actor: 'su-a', atMs: 5_000 });
+      expect(claim.ok).toBe(complete === true);
+      if (claim.ok) expect(claim.paths).toEqual([]);
+      else expect(claim.reason).toBe('incomplete-subjects');
+    }
+  });
+
+  it('does not invent complete empty subjects when only a completeness marker is supplied', () => {
+    const measured = withMeasuredLegSubjects(queue(), CANDIDATE, [
+      { id: 'lint:tsc', status: 'fail', subjectPathsComplete: true },
+    ], 3_000);
+    const row = withRepairManifest(measured, 4_000).manifest.rows.find((entry) => entry.legId === 'lint:tsc')!;
+    expect(row.subjectPathsComplete).toBe(false);
+    expect(claimRepairManifestLeg(measured.manifest!, { legId: 'lint:tsc', actor: 'su-a', atMs: 5_000 }))
+      .toMatchObject({ ok: false, reason: 'incomplete-subjects' });
+  });
+
   it.each([39, 40, 41])('keeps %i structured paths through measurement, persistence, rebuild and claim', (count) => {
     // Root files, spaces and bracket characters are valid structured records, though
     // deliberately outside the free-text extractor's conservative grammar.
@@ -332,7 +366,7 @@ describe('repair manifest — persistence and rendering', () => {
       ...Array.from({ length: count - 3 }, (_, index) => `packages/x/file-${index}.ts`)];
     for (const ordered of [paths, [...paths].reverse()]) {
       const measured = withMeasuredLegSubjects(queue(), CANDIDATE, [
-        { id: 'lint:tsc', status: 'fail', subjectPaths: ordered },
+        { id: 'lint:tsc', status: 'fail', subjectPaths: ordered, subjectPathsComplete: true },
       ], 3_000);
       const stored = parseRepairManifest(JSON.parse(JSON.stringify(measured.manifest)))!;
       const rebuilt = withRepairManifest({ ...measured, manifest: stored }, 4_000);
@@ -374,6 +408,35 @@ describe('repair manifest — persistence and rendering', () => {
     }
   });
 
+  it.each([39, 40, 41])('refuses %i legacy subjects without completeness provenance across restarts', (count) => {
+    const paths = Array.from({ length: count }, (_, index) => `packages/x/legacy-${index}.ts`);
+    for (const ordered of [paths, [...paths].reverse()]) {
+      const built = withRepairManifest(queue(), 3_000, { subjectPaths: { 'lint:tsc': ordered } });
+      const legacy = JSON.parse(JSON.stringify(built.manifest));
+      for (const row of legacy.rows) {
+        if (row.legId === 'lint:tsc') delete row.subjectPathsComplete;
+      }
+      let current = { ...built.queue, manifest: parseRepairManifest(legacy)! };
+      for (let batch = 0; batch < 3; batch += 1) {
+        current = withRepairManifest(current, 4_000 + batch).queue;
+        current = { ...current, manifest: parseRepairManifest(JSON.parse(JSON.stringify(current.manifest)))! };
+        const row = current.manifest.rows.find((entry) => entry.legId === 'lint:tsc')!;
+        expect(row.subjectPaths).toEqual(ordered);
+        expect(row.admitCommand).toBeNull();
+        expect(claimRepairManifestLeg(current.manifest, {
+          legId: 'lint:tsc', actor: 'su-a', atMs: 5_000 + batch,
+        })).toMatchObject({ ok: false, reason: 'incomplete-subjects',
+          recovery: { legId: 'lint:tsc', head: CANDIDATE, recipe: 'npm run lint:tsc' } });
+      }
+      const complete = [...ordered, 'packages/x/decisive-after-legacy-boundary.ts'];
+      const recovered = withRepairManifest(current, 6_000, { subjectPaths: { 'lint:tsc': complete } });
+      const claimed = claimRepairManifestLeg(recovered.manifest, {
+        legId: 'lint:tsc', actor: 'su-a', atMs: 7_000,
+      });
+      expect(claimed.ok && claimed.paths).toEqual(complete);
+    }
+  });
+
   it('keeps legacy omissions sticky until complete structured remeasurement recovers the claim', () => {
     const built = withRepairManifest(queue(), 3_000, { subjectPaths: { 'lint:tsc': ['packages/x/known.ts'] } });
     const legacy = { ...built.manifest, rowsTruncated: 2, rows: built.manifest.rows.map((row) =>
@@ -390,7 +453,7 @@ describe('repair manifest — persistence and rendering', () => {
     expect(current.manifest.rows.find((row) => row.legId === 'lint:tsc')!.admitCommand).toBeNull();
     expect(renderRepairManifest(current.manifest)).toContain('INCOMPLETE: 1 missing; remeasure lint:tsc');
     const recovered = withMeasuredLegSubjects(current, CANDIDATE, [
-      { id: 'lint:tsc', status: 'fail', subjectPaths: ['packages/x/known.ts', 'packages/x/recovered.ts'] },
+      { id: 'lint:tsc', status: 'fail', subjectPaths: ['packages/x/known.ts', 'packages/x/recovered.ts'], subjectPathsComplete: true },
     ], 6_000);
     const claimed = claimRepairManifestLeg(recovered.manifest!, { legId: 'lint:tsc', actor: 'su-a', atMs: 7_000 });
     expect(claimed.ok && claimed.paths).toEqual(['packages/x/known.ts', 'packages/x/recovered.ts']);
@@ -440,6 +503,7 @@ describe('repair manifest — leg paths and the admission ledger are joined in O
       queue: laneQueue(),
       nowMs: 10,
       legOutputs: { '@papercusp/web :: test:lane-pure': LANE_OUTPUT },
+      subjectPathsComplete: { '@papercusp/web :: test:lane-pure': true },
       workspaceDirs: WORKSPACE_DIRS,
     });
     const row = m.rows[0]!;
@@ -513,6 +577,7 @@ describe('repair manifest — leg paths and the admission ledger are joined in O
       ].join('\n') },
       workspaceDirs: WORKSPACE_DIRS,
       legProjectDirs: { [id]: 'scripts' },
+      subjectPathsComplete: { [id]: true },
     }).manifest;
     const row = m.rows[0]!;
     expect(row.subjectPaths).toEqual([
@@ -539,6 +604,7 @@ describe('repair manifest — leg paths and the admission ledger are joined in O
         'src/hybrid.test.ts(1,1): error TS2322: bad value',
       ].join('\n') },
       workspaceDirs: WORKSPACE_DIRS,
+      subjectPathsComplete: { [id]: true },
     }).manifest;
     const row = m.rows[0]!;
     expect(row.subjectPaths).toEqual(['libs/generic/search/src/hybrid.test.ts']);

@@ -88,6 +88,22 @@ function legEntries(legs: Awaited<ReturnType<typeof runLegs>>['legs']) {
 }
 
 describe('green-checkpoint post-suite legs — verdict coverage', () => {
+  it('preserves a complete empty subject list from full post-suite output into the queue', async () => {
+    const { legs } = await runLegs('lint:mock-cast-escape');
+    const leg = legs.records.find((record) => record.id === 'lint:mock-cast-escape')!;
+    expect(leg).toMatchObject({ status: 'failed', subjectPaths: [], subjectPathsComplete: true });
+    const head = 'a'.repeat(40);
+    const queue = createFrozenCandidateRepairQueue({ candidate: head, base: null, nowMs: 1,
+      failingTests: [leg.id], signature: [{ id: leg.id, kind: 'lint-leg', recipe: `npm run ${leg.id}` }],
+    });
+    const measured = withMeasuredLegSubjects(queue, head, [leg], 2);
+    const persisted = withRepairManifest(parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(measured)))!, 3).queue;
+    expect(persisted.manifest.rows.find((row) => row.legId === leg.id))
+      .toMatchObject({ subjectPaths: [], subjectPathsComplete: true, subjectPathsTruncated: 0, admitCommand: null });
+    const claim = claimRepairManifestLeg(persisted.manifest, { legId: leg.id, actor: 'test-fixer', atMs: 4 });
+    expect(claim.ok && claim.paths).toEqual([]);
+  });
+
   it('freezes the same complete post-suite population before passing or failed outcomes', async () => {
     const { postSuiteContinuationPopulation } = await import('./green-checkpoint');
     const population = postSuiteContinuationPopulation();
@@ -120,7 +136,7 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     const leg = legs.records.find((record) => record.id === id)!;
     expect(leg.status).toBe('failed');
     expect(leg.executionIdentity?.result.output).not.toContain(file);
-    expect(leg.subjectPaths).toEqual(files);
+    expect(leg).toMatchObject({ subjectPaths: files, subjectPathsComplete: true });
     const head = 'a'.repeat(40);
     const queue = createFrozenCandidateRepairQueue({ candidate: head, base: null, nowMs: 1,
       failingTests: [id], signature: [{ id, kind: 'lint-leg', recipe: `npm run ${id}` }],
@@ -132,7 +148,7 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     expect(claimed.ok).toBe(true);
     if (!claimed.ok) throw new Error(claimed.reason);
     expect(claimed.paths).toEqual(files);
-    expect(persisted.manifest.rows.find((row) => row.legId === id)).toMatchObject({ subjectPaths: files, admitCommand: expect.stringContaining(file) });
+    expect(persisted.manifest.rows.find((row) => row.legId === id)).toMatchObject({ subjectPaths: files, subjectPathsComplete: true, admitCommand: expect.stringContaining(file) });
     const reading = await readGateCandidateFailures({ candidateSha: null, repairHeadSha: head, root: ROOT, queueLegs: persisted.legs });
     expect(reading.nonTestLegs.perLeg.map((row) => row.id)).toContain(id);
     const admitted = markFrozenRepairAdmitted(persisted, { atMs: 4, actor: 'test-fixer', source: { ref: 'staging', sha: 'b'.repeat(40) },

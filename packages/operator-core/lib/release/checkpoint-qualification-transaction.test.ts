@@ -76,6 +76,77 @@ function postgresJsonbOrder<T>(value: T): T {
   return Object.fromEntries(entries.map(([key, nested]) => [key, postgresJsonbOrder(nested)])) as T;
 }
 
+describe('lossless qualification populations', () => {
+  it.each([63, 64, 65])('compares every declared path across permutations and restarts (%i paths)', count => {
+    const paths = Array.from({ length: count }, (_, index) => `src/path-${index}.ts`);
+    const current = beginQualificationTransaction(null, {
+      attemptId: 'lossless-policy', declaredPaths: paths, nowMs: 100,
+    }).transaction;
+    const restored = parseCheckpointQualificationTransaction(postgresJsonbOrder(JSON.parse(JSON.stringify(current))))!;
+    expect(restored.candidatePolicy.declaredPaths).toEqual(paths);
+    for (const ordered of [paths, [...paths].reverse(), [...paths.slice(1), paths[0]]]) {
+      expect(qualificationIntentMatches(restored, { declaredPaths: [...ordered, ordered[0]] })).toBe(true);
+      const different = [...paths.slice(0, -1), 'src/decisive-replacement.ts'];
+      expect(qualificationIntentMatches(restored, { declaredPaths: different })).toBe(false);
+    }
+  });
+
+  it.each([23, 24, 25])('retains every blocker and its full event policy after restart (%i blockers)', count => {
+    const blockers = Array.from({ length: count }, (_, index) => ({
+      code: `blocker-${index}`, clearEvents: Array.from({ length: 65 }, (_, event) => `ready:${index}:${event}`),
+    }));
+    const waited = waitQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', reason: 'dependency-generation', blockers, nowMs: 200,
+    }).transaction;
+    const restored = parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(waited)))!;
+    expect(restored.blockers.map(({ code, clearEvents }) => ({ code, clearEvents }))).toEqual(blockers);
+    expect(projectCheckpointQualificationState(restored, 300).safeNextAction.waitEvents)
+      .toEqual(blockers.flatMap(blocker => blocker.clearEvents));
+    expect(waitQualificationTransaction(restored, {
+      attemptId: 'attempt-1', reason: 'dependency-generation',
+      blockers: blockers.map(blocker => ({ ...blocker, clearEvents: [...blocker.clearEvents].reverse() })), nowMs: 400,
+    }).status).toBe('idempotent');
+    const changed = blockers.map((blocker, index) => index === count - 1
+      ? { ...blocker, clearEvents: [...blocker.clearEvents.slice(0, -1), 'ready:decisive-replacement'] } : blocker);
+    const updated = waitQualificationTransaction(restored, {
+      attemptId: 'attempt-1', reason: 'dependency-generation', blockers: changed, nowMs: 500,
+    });
+    expect(updated.status).toBe('updated');
+    expect(projectCheckpointQualificationState(updated.transaction, 600).safeNextAction.waitEvents)
+      .toContain('ready:decisive-replacement');
+  });
+
+  it.each([31, 32, 33, 129])('retains all physical runs and evidence through %i restart batches', count => {
+    let current = begin();
+    for (let index = 0; index < count; index++) {
+      const reserved = reserveQualificationRunner(current, {
+        attemptId: current.attemptId, runnerId: `physical-${index}`, runId: `run-${index}`,
+        evidenceRefs: [`checkpoint-run:run-${index}`, `reserved:${index}`],
+        leaseDurationMs: 10, nowMs: 200 + index * 20,
+      });
+      expect(reserved.status).toBe('updated');
+      const waited = waitQualificationTransaction(reserved.transaction, {
+        attemptId: current.attemptId, runId: `run-${index}`, reason: 'dependency-generation',
+        evidenceRefs: [`waited:${index}`], nowMs: 210 + index * 20,
+      });
+      current = parseCheckpointQualificationTransaction(postgresJsonbOrder(JSON.parse(JSON.stringify(waited.transaction))))!;
+      expect(current.consumedPhysicalRuns).toHaveLength(index + 1);
+      expect(current.evidenceRefs).toEqual(expect.arrayContaining([`reserved:${index}`, `waited:${index}`]));
+    }
+    expect(current.consumedPhysicalRuns?.map(run => run.id))
+      .toEqual(Array.from({ length: count }, (_, index) => `physical-${index}`));
+    expect(current.evidenceRefs).toHaveLength(1 + count * 3);
+    expect(projectCheckpointQualificationState(current).consumedPhysicalRuns).toEqual(current.consumedPhysicalRuns);
+    // The consumer must recognize even the oldest ended run and never pass its id to a fresh runner.
+    const next = reserveQualificationRunner({ ...current, runId: 'run-0' }, {
+      attemptId: current.attemptId, runnerId: 'replacement', leaseDurationMs: 10, nowMs: 300 + count * 20,
+    });
+    expect(next.status).toBe('updated');
+    expect(next.transaction.runId).toBeNull();
+    expect(next.transaction.consumedPhysicalRuns).toEqual(current.consumedPhysicalRuns);
+  });
+});
+
 describe('executor identity recovery preserves qualification custody', () => {
   const fence = { attemptId: 'attempt-1', candidate: 'candidate-1', repairHead: null };
   const blocked = () => recordQualificationExecutorIdentityBlock(begin(), { ...fence, shaSource: 'dirty', nowMs: 200 }).transaction;
