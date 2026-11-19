@@ -88,7 +88,7 @@ describe('R-27 permanent finding reservation and independent recovery (real PG)'
   beforeAll(async () => {
     db = await createFreshPgDb('fanout_findings');
     await applyMigrationForTest(db.sql, fileURLToPath(new URL(
-      '../../../../../libs/papercusp/libs/db/sql/1639-substrate-fanout-deliveries.sql.DRAFT', import.meta.url)));
+      '../../../../../libs/papercusp/libs/db/sql/1639-substrate-fanout-deliveries.sql', import.meta.url)));
     await db.sql`CREATE TABLE harness_shared.test_fanout_findings (
       id text PRIMARY KEY, watchdog_key text NOT NULL, state text NOT NULL DEFAULT 'open')`;
     await db.sql`CREATE TABLE harness_shared.coord_entity_subscriptions (

@@ -448,6 +448,13 @@ const ALLOWLIST: Record<string, Classification> = {
       'ended), keyed by cleanup_run + subscription_id — provenance for audit/restore, not a live subscription, ' +
       'claim or presence-tied reader. Rebinding would rewrite whose row was cancelled.',
   },
+  'substrate_fanout_deliveries.subscriber_id': {
+    status: 'exempt',
+    reason:
+      'Recipient of a specific outbox delivery. Retry checks that recipient’s subscription and records ' +
+      'its outcome under the original delivery key. Carry preserves the recipient ID; across distinct ' +
+      'identities, transferring a claim does not transfer the recipient’s subscription or delivery history.',
+  },
   'event_wake_deliveries.subscriber_id': {
     status: 'exempt',
     reason: 'a delivery-history LOG row (what was sent to whom) — not a live subscription or claim.',
