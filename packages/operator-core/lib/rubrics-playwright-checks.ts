@@ -181,7 +181,7 @@ export async function runPortalPlaywrightChecks(opts: {
 }, deps: {
   process?: typeof runTestProcess;
   readRows?: typeof readHarnessTestRunEvidence;
-  connectLedger?: typeof postgres;
+  connectLedger?: (url: string, options: postgres.Options<{}>) => postgres.Sql<{}>;
   mutationFence?: typeof mutationProbeRefusal;
   restrictedFence?: typeof restrictedHoldRefusal;
 } = {}): Promise<PortalPlaywrightResult> {
