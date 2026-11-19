@@ -26,11 +26,12 @@ import { papercuspHome } from '@papercusp/host-platform/home';
 import { createReadStream, promises as fsp, readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
+import { z } from 'zod';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { CENSUS_DU_TIMEOUT_MS, censusDuArgs, DuOutputParser, resolveCensusBin, type DuRun } from './disk-consumer-census';
 import { CENSUS_FLOOR_BYTES, CENSUS_MAX_DEPTH, censusCommand, DuTreeAccumulator } from './usage';
-import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
+import { createRetentionPin, withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 /** How often a waiting step re-checks its walk. */
 export const CENSUS_WALK_POLL_MS = 15_000;
@@ -91,6 +92,9 @@ export class DetachedWalkAbandoned extends Error {
 }
 
 export interface DetachedWalkOptions {
+  /** Opt in only for a singleton, ordinary du invocation. The worker measures
+   * its own visibility context; this never certifies an ordered multi-root scan. */
+  endpoint?: CensusEndpointRequest;
   /** The shared transport also serves other maintained read-only collectors. */
   attribution?: { launchedBy: string; workItemId: string; title: string };
   /** Directory owning this walk (one per run and device): state.json plus per-attempt out/err/exit. */
@@ -358,12 +362,170 @@ export interface DetachedUsageRun {
   error?: string;
   walkNote?: string;
   output: UsageOutputEvidence;
+  endpoint?: { status: 'certified'; receipt: CensusEndpointReceipt; source: z.infer<typeof endpointSourceSchema> }
+    | { status: 'unknown'; reason: string };
+}
+
+const exactPath = z.string().min(1).refine(p => resolve(p) === p && !p.includes('\0'));
+const digest = z.string().regex(/^[a-f0-9]{64}$/);
+const clock = z.number().int().nonnegative().safe();
+export const censusEndpointRequestSchema = z.object({
+  parentRunId: z.string().uuid(), host: z.string().min(1), device: exactPath,
+  majorMinor: z.string().regex(/^\d+:\d+$/), producerBuildSha: z.string().regex(/^[a-f0-9]{40}$/),
+}).strict();
+export type CensusEndpointRequest = z.infer<typeof censusEndpointRequestSchema>;
+const endpointRootSchema = z.object({ path: exactPath, dev: z.string().regex(/^\d+$/),
+  ino: z.string().regex(/^[1-9]\d*$/), birthNs: z.string().regex(/^[1-9]\d*$/),
+  mountId: z.string().regex(/^[1-9]\d*$/) }).strict();
+const endpointContextSchema = z.object({
+  host: z.string().min(1), bootId: z.string().uuid(), mountNamespace: z.string().regex(/^mnt:\[\d+\]$/),
+  userNamespace: z.string().regex(/^user:\[\d+\]$/),
+  mounts: z.array(z.object({ id: z.string().regex(/^[1-9]\d*$/), record: z.string().min(1) }).strict()).min(1),
+  uid: clock, euid: clock, gid: clock, groups: z.array(clock),
+  node: exactPath, nodeVersion: z.string().min(1), du: exactPath, duSha256: digest,
+  argv: z.array(z.string()), accounting: z.literal('unique-inode-allocation'),
+  depth: z.literal('all'), floorBytes: z.literal(0), singleton: z.literal(true),
+  ancestors: z.array(endpointRootSchema).min(2),
+}).strict();
+const endpointSourceSchema = z.object({ path: exactPath, byteCount: clock, sha256: digest }).strict();
+export const censusEndpointReceiptSchema = z.object({
+  version: z.literal(1), request: censusEndpointRequestSchema, consumer: exactPath, attemptKey: z.string().uuid(),
+  startedAt: clock, finishedAt: clock, rootBytes: clock,
+  context: endpointContextSchema, exitCode: z.literal(0), diagnosticsBytes: z.literal(0),
+  classificationComplete: z.literal(true), snapshot: z.literal(false), additive: z.literal(false),
+  stdout: endpointSourceSchema, stderr: endpointSourceSchema,
+}).strict().superRefine((value, ctx) => {
+  const roots = value.context.ancestors;
+  if (value.finishedAt < value.startedAt || value.request.host !== value.context.host
+    || roots[0]?.path !== value.request.device || roots.at(-1)?.path !== value.consumer
+    || roots.some(root => !value.context.mounts.some(mount => mount.id === root.mountId))
+    || roots.some((root, i) => root.dev !== roots[0]?.dev || (i > 0 && dirname(root.path) !== roots[i - 1]?.path)))
+    ctx.addIssue({ code: 'custom', message: 'endpoint root, clock or host context mismatch' });
+  if (roots[0]) {
+    const d = BigInt(roots[0].dev);
+    const majorMinor = `${((d >> 8n) & 0xfffn) | ((d >> 32n) & ~0xfffn)}:${(d & 0xffn) | ((d >> 12n) & ~0xffn)}`;
+    if (majorMinor !== value.request.majorMinor) ctx.addIssue({ code: 'custom', message: 'endpoint device mismatch' });
+  }
+});
+export type CensusEndpointReceipt = z.infer<typeof censusEndpointReceiptSchema>;
+
+const endpointObservationSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('certified'), receipt: censusEndpointReceiptSchema, source: endpointSourceSchema }).strict(),
+  z.object({ status: z.literal('unknown'), reason: z.string().min(1) }).strict(),
+]);
+const endpointCandidateSchema = z.object({ consumer: exactPath, endpoint: endpointObservationSchema }).strict()
+  .refine(value => value.endpoint.status !== 'certified' || value.endpoint.receipt.consumer === value.consumer,
+    'candidate and receipt consumer mismatch');
+export type CensusEndpointCandidate = z.infer<typeof endpointCandidateSchema>;
+const populationRowSchema = z.object({ index: clock, candidate: endpointCandidateSchema,
+  disposition: z.enum(['retained', 'record-over-budget']) }).strict();
+const populationSchema = z.object({ version: z.literal(1), populationKey: z.string().uuid(), parentRunId: z.string().uuid(),
+  rows: z.array(populationRowSchema) }).strict();
+/** A bound on the new embedded representation only. Every full record is sealed
+ * and pinned before the run note can acknowledge this population. */
+export const CENSUS_ENDPOINT_ENVELOPE_BYTES = 65536;
+export const CENSUS_ENDPOINT_PREFIX = 'census-endpoints:';
+const endpointEnvelopeSchema = z.object({ version: z.literal(1), populationKey: z.string().uuid(), parentRunId: z.string().uuid(),
+  source: endpointSourceSchema, total: clock, embedded: clock, omitted: clock, rejected: clock,
+  records: z.array(populationRowSchema),
+  recovery: z.object({ tool: z.literal('capability:read'), byte_offset: z.literal(0), byte_limit: z.literal(4096),
+    follow: z.literal('Follow next_cursor to EOF; verify source byteCount and sha256 before using any record.') }).strict(),
+}).strict().refine(value => value.embedded === value.records.length && value.total === value.embedded + value.omitted,
+  'endpoint envelope population accounting mismatch');
+export type CensusEndpointEnvelope = z.infer<typeof endpointEnvelopeSchema>;
+export const censusEndpointEnvelopeNote = (envelope: CensusEndpointEnvelope): string =>
+  CENSUS_ENDPOINT_PREFIX + encodeURIComponent(JSON.stringify(envelope));
+
+export async function writeCensusEndpointEnvelope(candidates: readonly CensusEndpointCandidate[], opts: {
+  dir: string; parentRunId: string; now?: number;
+}): Promise<CensusEndpointEnvelope> {
+  const parentRunId = z.string().uuid().parse(opts.parentRunId), populationKey = randomUUID();
+  const ordered = candidates.map(value => endpointCandidateSchema.parse(value))
+    .sort((a, b) => a.consumer < b.consumer ? -1 : a.consumer > b.consumer ? 1 : 0);
+  if (ordered.some((value, i) => i > 0 && ordered[i - 1]!.consumer === value.consumer))
+    throw new Error('endpoint population repeats a consumer; preserve and reconcile its complete source');
+  for (const value of ordered) if (value.endpoint.status === 'certified' && value.endpoint.receipt.request.parentRunId !== parentRunId)
+    throw new Error('endpoint population parent run mismatch');
+  const rows = ordered.map((candidate, index) => ({ index, candidate,
+    disposition: Buffer.byteLength(encodeURIComponent(JSON.stringify(candidate))) > CENSUS_ENDPOINT_ENVELOPE_BYTES
+      ? 'record-over-budget' as const : 'retained' as const }));
+  const population = populationSchema.parse({ version: 1, populationKey, parentRunId, rows });
+  const files = usageAttemptFiles(opts.dir, populationKey), path = join(files.root, 'endpoint-population.json');
+  const bytes = Buffer.from(JSON.stringify(population)), now = opts.now ?? Date.now();
+  // Publication and retention share the existing deletion mutex. Failure to pin
+  // is a refusal to acknowledge, not permission to expose an unprotected source.
+  await withRetentionPinProtection(async () => {
+    await fsp.mkdir(files.root, { recursive: true });
+    const fd = await fsp.open(path, 'wx', 0o600);
+    try { await fd.writeFile(bytes); await fd.sync(); } finally { await fd.close(); }
+    const directory = await fsp.open(files.root, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
+    const paths = new Set([files.root]);
+    for (const value of ordered) if (value.endpoint.status === 'certified') paths.add(dirname(value.endpoint.source.path));
+    for (const source of paths) createRetentionPin({ path: source, owner: `system:disk-consumer-census:${parentRunId}`,
+      reason: 'Immutable scoped census replay evidence', expiresAt: new Date(now + 30 * 86400_000).toISOString() }, { nowMs: now });
+  }, { nowMs: now });
+  let envelope: CensusEndpointEnvelope = { version: 1, populationKey, parentRunId,
+    source: { path, byteCount: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
+    total: rows.length, embedded: 0, omitted: rows.length, rejected: rows.filter(row => row.disposition === 'record-over-budget').length,
+    records: [], recovery: { tool: 'capability:read', byte_offset: 0, byte_limit: 4096,
+      follow: 'Follow next_cursor to EOF; verify source byteCount and sha256 before using any record.' } };
+  for (const row of rows) {
+    if (row.disposition === 'record-over-budget') continue;
+    const next = { ...envelope, embedded: envelope.embedded + 1, omitted: envelope.omitted - 1, records: [...envelope.records, row] };
+    if (Buffer.byteLength(censusEndpointEnvelopeNote(next)) <= CENSUS_ENDPOINT_ENVELOPE_BYTES) envelope = next;
+  }
+  if (Buffer.byteLength(censusEndpointEnvelopeNote(envelope)) > CENSUS_ENDPOINT_ENVELOPE_BYTES)
+    throw new Error(`endpoint envelope identity exceeds embedded budget intact; resync from ${path}`);
+  return endpointEnvelopeSchema.parse(envelope);
+}
+
+/** The maintained reader drains the pinned source in byte pages to EOF. Embedded
+ * records alone never qualify an observation. Missing, changed or legacy sources
+ * yield one explicit resync result, without retrying a different population. */
+export async function readCensusEndpointEnvelope(note: string | null): Promise<
+  { status: 'verified'; envelope: CensusEndpointEnvelope; rows: z.infer<typeof populationRowSchema>[]; pages: number }
+  | { status: 'unknown'; reason: string; resync: 'request-new-census-population' }
+> {
+  try {
+    const tokens = note?.split('; ').filter(value => value.startsWith(CENSUS_ENDPOINT_PREFIX)) ?? [];
+    if (tokens.length !== 1) throw new Error('missing, duplicate or legacy endpoint envelope');
+    if (Buffer.byteLength(tokens[0]!) > CENSUS_ENDPOINT_ENVELOPE_BYTES) throw new Error('endpoint envelope exceeds embedded budget');
+    const envelope = endpointEnvelopeSchema.parse(JSON.parse(decodeURIComponent(tokens[0]!.slice(CENSUS_ENDPOINT_PREFIX.length))));
+    const fd = await fsp.open(envelope.source.path, 'r'), chunks: Buffer[] = [], hash = createHash('sha256');
+    let byteCount = 0, pages = 0;
+    try {
+      const before = await fd.stat({ bigint: true });
+      if (!before.isFile() || before.size !== BigInt(envelope.source.byteCount)) throw new Error('endpoint population length changed');
+      for (;;) {
+        const buffer = Buffer.alloc(4096), { bytesRead } = await fd.read(buffer, 0, buffer.length, byteCount);
+        if (bytesRead === 0) break;
+        const chunk = buffer.subarray(0, bytesRead); chunks.push(chunk); hash.update(chunk); byteCount += bytesRead; pages++;
+      }
+      const after = await fd.stat({ bigint: true }), current = await fsp.stat(envelope.source.path, { bigint: true });
+      if (JSON.stringify(outputFingerprint(before)) !== JSON.stringify(outputFingerprint(after))
+        || JSON.stringify(outputFingerprint(after)) !== JSON.stringify(outputFingerprint(current))) throw new Error('endpoint population replaced during recovery');
+    } finally { await fd.close(); }
+    if (byteCount !== envelope.source.byteCount || hash.digest('hex') !== envelope.source.sha256)
+      throw new Error('endpoint population digest changed');
+    const population = populationSchema.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    if (population.parentRunId !== envelope.parentRunId || population.populationKey !== envelope.populationKey
+      || population.rows.length !== envelope.total || population.rows.some((row, i) => row.index !== i)
+      || population.rows.filter(row => row.disposition === 'record-over-budget').length !== envelope.rejected
+      || envelope.records.some(row => JSON.stringify(row) !== JSON.stringify(population.rows[row.index])))
+      throw new Error('endpoint envelope/source population mismatch');
+    return { status: 'verified', envelope, rows: population.rows, pages };
+  } catch (error) {
+    return { status: 'unknown', reason: `${error instanceof Error ? error.message : String(error)}; resync required`,
+      resync: 'request-new-census-population' };
+  }
 }
 
 export interface UsageOutputEvidence {
   status: 'verified' | 'unknown';
   attemptKey: string | null;
   manifestPath: string | null;
+  manifest?: z.infer<typeof endpointSourceSchema>;
   stdout: { path: string; byteCount: number | null; sha256: string | null } | null;
   stderr: { path: string; byteCount: number | null; sha256: string | null } | null;
   error?: string;
@@ -401,7 +563,9 @@ export async function readUsageOutputEvidence(dir: string, state: DetachedWalkSt
   };
   try {
     if (!files) throw new Error('usage output attempt identity unavailable');
-    const manifest = JSON.parse(await fsp.readFile(files.manifest, 'utf8'));
+    const manifestBefore = await fsp.stat(files.manifest, { bigint: true });
+    const manifestBytes = await fsp.readFile(files.manifest);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
     if (manifest.version !== 1 || manifest.attemptKey !== state.attemptKey || manifest.captureComplete !== true) {
       throw new Error('usage output capture unavailable or incomplete');
     }
@@ -417,6 +581,11 @@ export async function readUsageOutputEvidence(dir: string, state: DetachedWalkSt
       return { channel, source: { path: files[channel], byteCount: entry.byteCount, sha256: entry.sha256 } };
     }));
     for (const { channel, source } of verified) output[channel] = source;
+    const manifestAfter = await fsp.stat(files.manifest, { bigint: true });
+    if (JSON.stringify(outputFingerprint(manifestBefore)) !== JSON.stringify(outputFingerprint(manifestAfter)))
+      throw new Error('usage terminal manifest changed; resync required');
+    output.manifest = { path: files.manifest, byteCount: manifestBytes.length,
+      sha256: createHash('sha256').update(manifestBytes).digest('hex') };
     output.status = 'verified';
   } catch (error) {
     output.error = `usage output UNKNOWN: ${error instanceof Error ? error.message : String(error)}; resync required`;
@@ -429,20 +598,56 @@ export async function readUsageOutputEvidence(dir: string, state: DetachedWalkSt
 // projection. A caller can leave and adopt later without losing either source.
 const USAGE_COLLECTOR = String.raw`
 const { spawn } = require('node:child_process');
-const { mkdirSync, openSync, writeFileSync, renameSync, closeSync, fsyncSync, statSync } = require('node:fs');
+const { mkdirSync, openSync, writeFileSync, renameSync, closeSync, fsyncSync, statSync, lstatSync, realpathSync,
+  readFileSync, readlinkSync } = require('node:fs');
+const { hostname } = require('node:os');
 const { createHash } = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
-const { resolve } = require('node:path');
-const { roots, files, attemptKey } = JSON.parse(process.argv[1]), progressPath = process.argv[2];
+const { resolve, dirname } = require('node:path');
+const { roots, files, attemptKey, endpoint, duPath } = JSON.parse(process.argv[1]), progressPath = process.argv[2];
 mkdirSync(files.root, { recursive: true });
 const captures = Object.fromEntries(['stdout', 'stderr'].map(channel => [channel, {
   fd: openSync(files[channel], 'wx', 0o600), path: files[channel], byteCount: 0, hash: createHash('sha256'),
 }]));
 const totals = new Map();
 const decoder = new StringDecoder('utf8');
+const utf8 = endpoint ? new TextDecoder('utf-8', { fatal: true }) : null;
 let pending = '', failure = '', records = 0, stdoutBytes = 0, captureComplete = true;
 let lastMetadataAt = null, lastMetadataPath = null, savedAt = 0;
 const startedAt = Date.now();
+function context() {
+  if (!endpoint) return null;
+  const consumer = roots[0], ancestors = [], selectedMounts = new Map();
+  const mounts = readFileSync('/proc/self/mountinfo', 'utf8').trim().split('\n').map(record => {
+    const fields = record.split(' ');
+    return { id: fields[0], path: fields[4].replace(/\\([0-7]{3})/g, (_, value) => String.fromCharCode(parseInt(value, 8))), record };
+  });
+  if (roots.length !== 1 || consumer === endpoint.device) throw new Error('endpoint requires a strict singleton subtree');
+  for (let path = consumer; ; path = dirname(path)) {
+    if (path !== endpoint.device && !path.startsWith(endpoint.device === '/' ? '/' : endpoint.device + '/'))
+      throw new Error('endpoint consumer is outside device');
+    const st = lstatSync(path, { bigint: true });
+    if (!st.isDirectory() || st.isSymbolicLink() || realpathSync(path) !== path || st.birthtimeNs <= 0n)
+      throw new Error('endpoint root identity unavailable');
+    const mount = mounts.filter(m => path === m.path || path.startsWith(m.path === '/' ? '/' : m.path + '/'))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    if (!mount) throw new Error('endpoint mount identity unavailable');
+    selectedMounts.set(mount.id, { id: mount.id, record: mount.record });
+    ancestors.unshift({ path, dev: String(st.dev), ino: String(st.ino), birthNs: String(st.birthtimeNs), mountId: mount.id });
+    if (path === endpoint.device) break;
+    if (dirname(path) === path) throw new Error('endpoint device not reached');
+  }
+  if (ancestors.some(p => p.dev !== ancestors[0].dev)) throw new Error('endpoint crosses a device');
+  return { host: hostname(), bootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+    mountNamespace: readlinkSync('/proc/self/ns/mnt'), userNamespace: readlinkSync('/proc/self/ns/user'),
+    mounts: [...selectedMounts.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    uid: process.getuid(), euid: process.geteuid(), gid: process.getgid(),
+    groups: process.getgroups().sort((a,b) => a-b), node: realpathSync(process.execPath), nodeVersion: process.version,
+    du: realpathSync(duPath), duSha256: createHash('sha256').update(readFileSync(duPath)).digest('hex'),
+    argv: process.argv.slice(3), accounting: 'unique-inode-allocation', depth: 'all', floorBytes: 0, singleton: true, ancestors };
+}
+let endpointBefore = null;
+try { endpointBefore = context(); } catch (error) { failure ||= error.message; }
 const child = spawn(process.argv[3], process.argv.slice(4), { stdio: ['ignore', 'pipe', 'pipe'] });
 function progress(finishedAt = null) {
   const at = Date.now();
@@ -466,6 +671,8 @@ child.stdout.on('data', chunk => {
   capture('stdout', chunk);
   stdoutBytes += chunk.length;
   if (failure) return;
+  try { utf8?.decode(chunk, { stream: true }); }
+  catch { stop('invalid endpoint UTF-8; full source retained'); return; }
   const rows = (pending + decoder.write(chunk)).split('\0'); pending = rows.pop() || '';
   for (const row of rows) {
     const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
@@ -483,9 +690,15 @@ child.stderr.on('data', chunk => capture('stderr', chunk));
 child.once('error', error => { failure ||= error.message; });
 child.once('close', (code, signal) => {
   clearInterval(heartbeat);
+  try { utf8?.decode(); } catch { failure ||= 'incomplete endpoint UTF-8; full source retained'; }
   pending += decoder.end();
   if (code !== 0 || signal || pending || totals.size !== roots.length) failure ||= 'incomplete usage walk';
   if (captures.stderr.byteCount) failure ||= 'usage walk diagnostics; full stderr retained';
+  let endpointAfter = null;
+  try {
+    endpointAfter = context();
+    if (JSON.stringify(endpointBefore) !== JSON.stringify(endpointAfter)) failure ||= 'endpoint context changed during walk';
+  } catch (error) { failure ||= error.message; }
   const entries = {};
   for (const channel of ['stdout', 'stderr']) {
     const entry = captures[channel];
@@ -495,9 +708,18 @@ child.once('close', (code, signal) => {
     entries[channel] = { path: entry.path, byteCount: entry.byteCount, sha256: entry.hash.digest('hex'),
       fingerprint: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String) };
   }
-  writeFileSync(files.manifest + '.part', JSON.stringify({ version: 1, attemptKey, captureComplete,
-    finishedAt: Date.now(), exitCode: code, signal, error: failure || null, ...entries }));
+  const finishedAt = Date.now();
+  const receipt = endpoint && !failure ? { version: 1, request: endpoint, consumer: roots[0], attemptKey,
+    startedAt, finishedAt, rootBytes: totals.get(roots[0]), context: endpointBefore, exitCode: 0, diagnosticsBytes: 0,
+    classificationComplete: true, snapshot: false, additive: false,
+    stdout: { path: entries.stdout.path, byteCount: entries.stdout.byteCount, sha256: entries.stdout.sha256 },
+    stderr: { path: entries.stderr.path, byteCount: entries.stderr.byteCount, sha256: entries.stderr.sha256 } } : null;
+  const terminal = openSync(files.manifest + '.part', 'wx', 0o600);
+  writeFileSync(terminal, JSON.stringify({ version: 1, attemptKey, captureComplete,
+    finishedAt, exitCode: code, signal, error: failure || null, endpoint: receipt, ...entries }));
+  fsyncSync(terminal); closeSync(terminal);
   renameSync(files.manifest + '.part', files.manifest);
+  const directory = openSync(files.root, 'r'); fsyncSync(directory); closeSync(directory);
   progress(Date.now());
   if (failure) { process.stderr.write(failure + '\n'); process.exitCode = 1; }
   else for (const [p, bytes] of totals) process.stdout.write(bytes + '\t' + p + '\0');
@@ -519,17 +741,23 @@ export async function runDetachedDuUsage(roots: readonly string[], opts: Detache
     return [p, st.dev, st.ino];
   }));
   const population = JSON.stringify(await identities());
-  const requestKey = createHash('sha256').update('root-usage-raw-v2\0' + population).digest('hex');
+  const endpoint = opts.endpoint ? censusEndpointRequestSchema.parse(opts.endpoint) : null;
+  if (endpoint && (roots.length !== 1 || roots[0] === endpoint.device || opts.command || opts.sudo))
+    throw new Error('endpoint certification requires one subtree and the ordinary unprivileged du producer');
+  const requestKey = createHash('sha256').update('root-usage-raw-v2\0' + population +
+    (endpoint ? '\0' + JSON.stringify(endpoint) : '')).digest('hex');
   const progressPath = join(opts.dir, 'usage-progress.json');
   const duArgs = ['--all', '--one-file-system', '--block-size=1', '--null', '--', ...roots];
-  const command = opts.command ?? ((args: string[]) => censusCommand('du', args, bins));
+  const command = opts.command ?? ((args: string[]) => censusCommand(duPath ?? 'du', args, bins));
   const bins = {
     ionice: await resolveCensusBin('ionice'), nice: await resolveCensusBin('nice'), sudo: opts.sudo ?? null,
   };
+  const duPath = endpoint ? await resolveCensusBin('du') : null;
+  if (endpoint && !duPath) throw new Error('endpoint du executable unavailable');
   return runDetachedWalk(roots[0]!, { ...opts, command: (args, attempt) => {
     const [cmd, argv] = command(args, attempt);
     return [process.execPath, ['-e', USAGE_COLLECTOR,
-      JSON.stringify({ roots, files: usageAttemptFiles(opts.dir, attempt.key), attemptKey: attempt.key }), progressPath, cmd, ...argv]];
+      JSON.stringify({ roots, files: usageAttemptFiles(opts.dir, attempt.key), attemptKey: attempt.key, endpoint, duPath }), progressPath, cmd, ...argv]];
   } }, duArgs, async (state, exitCode, overdue, failure) => {
     const files = walkAttemptFiles(opts.dir, state.attempt);
     let error = failure, pending = '', finishedAt: number | null = null;
@@ -562,12 +790,45 @@ export async function runDetachedDuUsage(roots: readonly string[], opts: Detache
     }
     try { if (JSON.stringify(await identities()) !== population) error ??= 'usage walk root identity changed'; }
     catch { error ??= 'usage walk root identity unavailable'; }
+    const certification = endpoint ? await readCensusEndpointReceipt(opts.dir, state, endpoint, output.manifest) : undefined;
+    if (certification?.status === 'certified' && certification.receipt.rootBytes !== bytes.get(roots[0]!))
+      error ??= 'endpoint inner/outer root total mismatch; resync required';
+    if (certification?.status === 'unknown') error ??= certification.reason;
     return {
       bytes: error ? null : bytes, complete: !error, startedAt: state.launchedAt, finishedAt,
       exitCode, timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS, output,
+      ...(certification ? { endpoint: error ? { status: 'unknown' as const, reason: error } : certification } : {}),
       ...(error ? { error } : {}), walkNote: walkNote(state),
     };
   }, requestKey);
+}
+
+/** Re-read one pinned attempt after adoption or a fresh-process restart. An old,
+ * malformed or changed source is UNKNOWN; calling this never starts a new walk.
+ * Certification describes a non-snapshot, non-additive singleton observation;
+ * the scoped comparison reader must independently qualify both failure scopes. */
+export async function readCensusEndpointReceipt(dir: string, state: DetachedWalkState, request: CensusEndpointRequest,
+  expected?: z.infer<typeof endpointSourceSchema>): Promise<NonNullable<DetachedUsageRun['endpoint']>> {
+  try {
+    const output = await readUsageOutputEvidence(dir, state);
+    if (output.status !== 'verified' || !output.manifest || !expected
+      || JSON.stringify(output.manifest) !== JSON.stringify(expected)) throw new Error('endpoint pinned source unavailable or changed');
+    const bytes = await fsp.readFile(output.manifest.path);
+    if (bytes.length !== expected.byteCount || createHash('sha256').update(bytes).digest('hex') !== expected.sha256)
+      throw new Error('endpoint manifest changed');
+    const terminal = JSON.parse(bytes.toString('utf8'));
+    const receipt = censusEndpointReceiptSchema.parse(terminal.endpoint);
+    if (JSON.stringify(receipt.request) !== JSON.stringify(censusEndpointRequestSchema.parse(request))
+      || receipt.attemptKey !== state.attemptKey || receipt.consumer !== state.root
+      || terminal.exitCode !== 0 || terminal.error !== null || terminal.signal !== null
+      || receipt.finishedAt !== terminal.finishedAt || receipt.startedAt < state.launchedAt
+      || JSON.stringify(receipt.stdout) !== JSON.stringify(output.stdout)
+      || JSON.stringify(receipt.stderr) !== JSON.stringify(output.stderr) || receipt.stderr.byteCount !== 0)
+      throw new Error('endpoint terminal/context/output mismatch');
+    return { status: 'certified', receipt, source: output.manifest };
+  } catch (error) {
+    return { status: 'unknown', reason: `endpoint UNKNOWN: ${error instanceof Error ? error.message : String(error)}; resync required` };
+  }
 }
 
 /** Read-only wait, also used by a checkpointed retention continuation outside

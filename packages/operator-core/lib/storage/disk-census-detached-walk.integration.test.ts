@@ -5,16 +5,23 @@
  * one, and a walk killed mid-run must be relaunched rather than read as a result.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { closeSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+import { closeSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runDuTree } from './disk-consumer-census';
+import { devToMajorMinor } from './usage';
 import {
   DetachedWalkAbandoned,
   readWalkState,
   readUsageOutputEvidence,
+  readCensusEndpointReceipt,
+  censusEndpointReceiptSchema,
+  writeCensusEndpointEnvelope,
+  readCensusEndpointEnvelope,
+  censusEndpointEnvelopeNote,
+  pruneCensusWalks,
   runDetachedDuWalk,
   runDetachedDuUsage,
   TIMEOUT_EXIT_STATUS,
@@ -22,6 +29,8 @@ import {
   walkProcessAlive,
   usageAttemptFiles,
   type WalkLauncher,
+  type CensusEndpointRequest,
+  type CensusEndpointCandidate,
 } from './disk-census-detached-walk';
 
 const linux = process.platform === 'linux';
@@ -61,6 +70,8 @@ async function waitUntil(pred: () => Promise<boolean> | boolean, ms = 10_000): P
 
 beforeAll(() => {
   base = mkdtempSync(join(tmpdir(), 'census-walk-int-'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(base, 'pins'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(base, 'mutexes'));
   tree = join(base, 'tree');
   for (const [rel, kb] of [
     ['a/one.bin', 64],
@@ -75,9 +86,190 @@ beforeAll(() => {
 
 afterAll(() => {
   rmSync(base, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 describe.skipIf(!linux)('detached census walk (real du, real processes)', () => {
+  function endpointRequest(): CensusEndpointRequest {
+    return { parentRunId: randomUUID(), host: hostname(), device: base,
+      majorMinor: devToMajorMinor(lstatSync(base).dev), producerBuildSha: 'a'.repeat(40) };
+  }
+
+  it.each([65535, 65536, 65537])('preserves the full population when the embedded envelope would be %i bytes', async target => {
+    const dir = join(base, `envelope-boundary-${target}`), parentRunId = randomUUID();
+    let length = target, envelope!: Awaited<ReturnType<typeof writeCensusEndpointEnvelope>>, expected = 0;
+    for (let i = 0; i < 4; i++) {
+      envelope = await writeCensusEndpointEnvelope([{ consumer: tree,
+        endpoint: { status: 'unknown', reason: 'x'.repeat(length) } }], { dir, parentRunId });
+      const population = JSON.parse(readFileSync(envelope.source.path, 'utf8'));
+      expected = Buffer.byteLength(censusEndpointEnvelopeNote({ ...envelope, embedded: 1, omitted: 0, records: population.rows }));
+      if (expected === target) break;
+      length += target - expected;
+    }
+    expect(expected).toBe(target);
+    expect(envelope.embedded).toBe(target <= 65536 ? 1 : 0);
+    expect(envelope.omitted).toBe(target <= 65536 ? 0 : 1);
+    expect(Buffer.byteLength(censusEndpointEnvelopeNote(envelope))).toBeLessThanOrEqual(65536);
+    const recovered = await readCensusEndpointEnvelope(censusEndpointEnvelopeNote(envelope));
+    expect(recovered.status).toBe('verified');
+    if (recovered.status !== 'verified') throw new Error(JSON.stringify(recovered));
+    expect(recovered.rows).toHaveLength(1); expect(recovered.pages).toBeGreaterThan(1);
+    expect(recovered.rows[0]!.candidate.endpoint).toEqual({ status: 'unknown', reason: 'x'.repeat(length) });
+  });
+
+  it('rejects an oversized identity intact and returns its complete source and explicit disposition', async () => {
+    const consumer = '/' + 'a'.repeat(70000);
+    const envelope = await writeCensusEndpointEnvelope([{ consumer, endpoint: { status: 'unknown', reason: 'unmeasured' } }],
+      { dir: join(base, 'envelope-oversized'), parentRunId: randomUUID() });
+    expect(envelope).toMatchObject({ total: 1, embedded: 0, omitted: 1, rejected: 1 });
+    const recovered = await readCensusEndpointEnvelope(censusEndpointEnvelopeNote(envelope));
+    expect(recovered.status).toBe('verified');
+    if (recovered.status !== 'verified') throw new Error(JSON.stringify(recovered));
+    expect(recovered.rows[0]).toMatchObject({ disposition: 'record-over-budget', candidate: { consumer } });
+  });
+
+  it('pins a complete population through the existing prune lifecycle for the replay retention window', async () => {
+    const root = join(base, 'envelope-prune'), dir = join(root, 'slot'), now = Date.now();
+    const envelope = await writeCensusEndpointEnvelope([{ consumer: tree, endpoint: { status: 'unknown', reason: 'unmeasured' } }],
+      { dir, parentRunId: randomUUID(), now });
+    await pruneCensusWalks({ root, now: now + 3 * 86400_000, keepMs: 0 });
+    expect((await readCensusEndpointEnvelope(censusEndpointEnvelopeNote(envelope))).status).toBe('verified');
+    await pruneCensusWalks({ root, now: now + 31 * 86400_000, keepMs: 0 });
+    expect((await readCensusEndpointEnvelope(censusEndpointEnvelopeNote(envelope))).status).toBe('unknown');
+  });
+
+  it('recovers a decisive late endpoint through many pages and preserves ordering across permutations and fresh processes', async () => {
+    const request = endpointRequest(), { launch } = countingLauncher();
+    const run = await runDetachedDuUsage([tree], { dir: join(base, 'envelope-certified'), launch, pollMs: 25, endpoint: request });
+    if (run.endpoint?.status !== 'certified') throw new Error(JSON.stringify(run));
+    const unknown: CensusEndpointCandidate[] = Array.from({ length: 101 }, (_, i) => ({
+      consumer: join(base, `a-candidate-${String(i).padStart(3, '0')}`), endpoint: { status: 'unknown', reason: 'x'.repeat(2000) } }));
+    const full = [...unknown, { consumer: tree, endpoint: run.endpoint }];
+    let firstRows: unknown;
+    for (const candidates of [full, [...full].reverse()]) {
+      const envelope = await writeCensusEndpointEnvelope(candidates, { dir: join(base, randomUUID()), parentRunId: request.parentRunId });
+      expect(envelope.total).toBe(102); expect(envelope.omitted).toBeGreaterThan(0);
+      expect(envelope.records.some(row => row.candidate.consumer === tree)).toBe(false);
+      const note = `du walked unprivileged (sudo -n unavailable); ${censusEndpointEnvelopeNote(envelope)}`;
+      const recovered = await readCensusEndpointEnvelope(note);
+      if (recovered.status !== 'verified') throw new Error(JSON.stringify(recovered));
+      expect(recovered.pages).toBeGreaterThan(40);
+      expect(recovered.rows.at(-1)?.candidate.endpoint.status).toBe('certified');
+      if (firstRows) expect(recovered.rows).toEqual(firstRows); else firstRows = recovered.rows;
+      const script = join(base, 'envelope-recovery.mts');
+      writeFileSync(script, `import { readCensusEndpointEnvelope } from ${JSON.stringify(new URL('./disk-census-detached-walk.ts', import.meta.url).href)};
+const result = await readCensusEndpointEnvelope(process.argv[2]);
+console.log(JSON.stringify(result.status === 'verified' ? { status: result.status, rows: result.rows.length, last: result.rows.at(-1).candidate.consumer } : result));`);
+      expect(JSON.parse(execFileSync(process.execPath, ['--import', 'tsx/esm', script, note], { encoding: 'utf8' })))
+        .toEqual({ status: 'verified', rows: 102, last: tree });
+      rmSync(envelope.source.path);
+      const missing = await readCensusEndpointEnvelope(note);
+      expect(missing).toMatchObject({ status: 'unknown', resync: 'request-new-census-population' });
+    }
+  }, 30_000);
+
+  it('refuses changed, malformed, duplicate and legacy envelopes instead of trusting an embedded prefix', async () => {
+    const envelope = await writeCensusEndpointEnvelope([{ consumer: tree, endpoint: { status: 'unknown', reason: 'unmeasured' } }],
+      { dir: join(base, 'envelope-damage'), parentRunId: randomUUID() });
+    const note = censusEndpointEnvelopeNote(envelope), bytes = readFileSync(envelope.source.path);
+    const changed = Buffer.from(bytes); changed[changed.length - 2] = 32; writeFileSync(envelope.source.path, changed);
+    for (const bad of [note, null, 'legacy; failure-coverage:bogus', note + '; ' + note,
+      note.replace('census-endpoints:', 'census-endpoints:%xx')])
+      expect(await readCensusEndpointEnvelope(bad)).toMatchObject({ status: 'unknown', resync: 'request-new-census-population' });
+  });
+
+  it('certifies a singleton with exact clocks, visibility, generation, accounting and pinned raw custody', async () => {
+    const request = endpointRequest(), dir = join(base, 'certified-singleton'), { launch, launches } = countingLauncher();
+    const run = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25, endpoint: request });
+    expect(run.complete).toBe(true);
+    expect(run.endpoint?.status).toBe('certified');
+    if (run.endpoint?.status !== 'certified') throw new Error(JSON.stringify(run));
+    const receipt = run.endpoint.receipt;
+    expect(receipt).toMatchObject({ version: 1, request, consumer: tree, rootBytes: run.bytes?.get(tree),
+      classificationComplete: true, snapshot: false, additive: false,
+      context: { singleton: true, accounting: 'unique-inode-allocation', floorBytes: 0, depth: 'all',
+        host: hostname(), uid: process.getuid!(), euid: process.geteuid!(), gid: process.getgid!() } });
+    expect(receipt.context.ancestors.map(p => p.path)).toEqual([base, tree]);
+    expect(receipt.context.argv).toContain(receipt.context.du);
+    expect(receipt.finishedAt).toBeGreaterThanOrEqual(receipt.startedAt);
+    const state = (await readWalkState(dir))!;
+    const recoveryScript = join(base, 'endpoint-recovery.mts');
+    writeFileSync(recoveryScript, `import { readCensusEndpointReceipt } from ${JSON.stringify(new URL('./disk-census-detached-walk.ts', import.meta.url).href)};
+const [dir, state, request, source] = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(await readCensusEndpointReceipt(dir, state, request, source)));`);
+    // A fresh reader recovers the pinned endpoint without launching or consulting
+    // mutable caller state. Its raw source remains valid after slot retirement.
+    rmSync(dir, { recursive: true });
+    expect(await readCensusEndpointReceipt(dir, state, request, run.endpoint.source)).toEqual(run.endpoint);
+    expect(JSON.parse(execFileSync(process.execPath, ['--import', 'tsx/esm', recoveryScript,
+      JSON.stringify([dir, state, request, run.endpoint.source])], { encoding: 'utf8' }))).toEqual(run.endpoint);
+    expect(launches).toEqual([1]);
+    for (const source of [receipt.stdout, receipt.stderr, run.endpoint.source]) {
+      const raw = readFileSync(source.path);
+      expect(raw.length).toBe(source.byteCount);
+      expect(createHash('sha256').update(raw).digest('hex')).toBe(source.sha256);
+    }
+  });
+
+  it.each(['population', 'command', 'sudo', 'version', 'identity'])('refuses %s rather than certifying a non-singleton or substituted producer', async fault => {
+    const request = endpointRequest(), dir = join(base, `endpoint-refuse-${fault}`), { launch, launches } = countingLauncher();
+    const roots = fault === 'population' ? [join(tree, 'a'), join(tree, 'c')] : [tree];
+    const endpoint = fault === 'version' ? { ...request, version: 2 } : fault === 'identity' ? { ...request, parentRunId: 'shortened' } : request;
+    await expect(runDetachedDuUsage(roots, { dir, launch, endpoint: endpoint as CensusEndpointRequest,
+      ...(fault === 'command' ? { command: slowDu(0) } : {}), ...(fault === 'sudo' ? { sudo: '/usr/bin/sudo' } : {}) })).rejects.toThrow();
+    expect(launches).toEqual([]);
+  });
+
+  it.each(['host', 'device'])('keeps a mismatched %s UNKNOWN with recoverable source', async mismatch => {
+    const request = endpointRequest(), { launch } = countingLauncher();
+    const endpoint = mismatch === 'host' ? { ...request, host: 'another-host' } : { ...request, majorMinor: '999:999' };
+    const run = await runDetachedDuUsage([tree], { dir: join(base, `endpoint-mismatch-${mismatch}`), launch, pollMs: 25, endpoint });
+    expect(run.complete).toBe(false); expect(run.bytes).toBeNull();
+    expect(run.endpoint?.status).toBe('unknown'); expect(run.output.status).toBe('verified');
+  });
+
+  it('rejects unknown versions, fields, generations and terminal changes while preserving the original pinned receipt', async () => {
+    const request = endpointRequest(), dir = join(base, 'endpoint-strict'), { launch } = countingLauncher();
+    const run = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25, endpoint: request });
+    if (run.endpoint?.status !== 'certified') throw new Error(JSON.stringify(run));
+    const receipt = run.endpoint.receipt;
+    for (const bad of [{ ...receipt, version: 2 }, { ...receipt, unexpected: true },
+      { ...receipt, exitCode: 1 }, { ...receipt, diagnosticsBytes: 1 },
+      { ...receipt, context: { ...receipt.context, singleton: false } },
+      { ...receipt, context: { ...receipt.context, mounts: [] } },
+      { ...receipt, context: { ...receipt.context, ancestors: receipt.context.ancestors.map(p => ({ ...p, birthNs: '0' })) } }]) {
+      expect(censusEndpointReceiptSchema.safeParse(bad).success).toBe(false);
+    }
+    const state = (await readWalkState(dir))!;
+    const path = run.endpoint.source.path, terminal = JSON.parse(readFileSync(path, 'utf8'));
+    terminal.endpoint.rootBytes++;
+    writeFileSync(path, JSON.stringify(terminal));
+    const read = await readCensusEndpointReceipt(dir, state, request, run.endpoint.source);
+    expect(read.status).toBe('unknown');
+    if (read.status === 'unknown') expect(read.reason).toContain('resync required');
+  });
+
+  it('independently counts cross-consumer links under both traversal orders and excludes link-only growth within a consumer', async () => {
+    const left = join(base, 'endpoint-link-left'), right = join(base, 'endpoint-link-right');
+    mkdirSync(left); mkdirSync(right); writeFileSync(join(left, 'original'), Buffer.alloc(128 * 1024, 9));
+    linkSync(join(left, 'original'), join(right, 'shared'));
+    const { launch } = countingLauncher();
+    for (const roots of [[left, right], [right, left]]) {
+      for (const root of roots) {
+        const run = await runDetachedDuUsage([root], { dir: join(base, randomUUID()), launch, pollMs: 25, endpoint: endpointRequest() });
+        expect(run.endpoint?.status).toBe('certified');
+        const expected = Number(execFileSync('du', ['-sxB1', root], { encoding: 'utf8' }).split('\t')[0]);
+        expect(run.bytes?.get(root)).toBe(expected);
+      }
+    }
+    const before = await runDetachedDuUsage([left], { dir: join(base, randomUUID()), launch, pollMs: 25, endpoint: endpointRequest() });
+    linkSync(join(left, 'original'), join(left, 'another-name'));
+    const after = await runDetachedDuUsage([left], { dir: join(base, randomUUID()), launch, pollMs: 25, endpoint: endpointRequest() });
+    expect(after.bytes?.get(left)).toBe(before.bytes?.get(left));
+    const countLinks = Number(execFileSync('du', ['-slxB1', left], { encoding: 'utf8' }).split('\t')[0]);
+    expect(countLinks).toBeGreaterThan(after.bytes!.get(left)!);
+  });
+
   it.each([0, 7, TIMEOUT_EXIT_STATUS])('propagates walk exit %i to the managed scope as well as its durable receipt', async (exitCode) => {
     let scopeExit!: Promise<number | null>;
     const launch: WalkLauncher = async (cmd, args) => {
