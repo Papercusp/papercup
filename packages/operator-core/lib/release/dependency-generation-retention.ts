@@ -104,14 +104,6 @@ export async function runDependencyGenerationRetention(): Promise<DependencyRete
         const consumers = [...frozenRefs].filter(([consumer]) =>
           resolveDependencyGenerationRetentionRoots(consumer).some((store) => existsSync(store) && realpathSync(store) === realpathSync(generationRoot)));
         if (consumers.some(([consumer]) => unsafeRoots.has(consumer))) throw new Error('frozen dependency custody is unknown; store retained');
-        for (const [consumer, refs] of consumers) {
-          const pins = join(generationRoot, '.pins');
-          const hasFrozenPins = existsSync(pins) && readdirSync(pins).some((name) =>
-            readFileSync(join(pins, name), 'utf8').includes('retention=frozen\n'));
-          if (refs.size === 0 && !hasFrozenPins) continue;
-          await run('bash', [script, '--integration', consumer, '--generation-root', generationRoot,
-            '--sync-frozen-refs', ...[...refs].flatMap((ref) => ['--frozen-ref', ref])], { timeout: 120_000 });
-        }
         // Each prune retains governed admission, including former stores.
         const result = await runGovernedOperation(
           {
@@ -123,11 +115,20 @@ export async function runDependencyGenerationRetention(): Promise<DependencyRete
             payloadRef: `dependency-generation-retention:${root}${retired ? `:${generationRoot}` : ''}`,
             metadata: { command: 'dependency-generation.sh --prune-only', generationRoot, retired },
           },
-          async () =>
-            run('bash', [script, '--integration', root, '--generation-root', generationRoot, '--prune-only', '--no-recorded-store-cascade',
+          async () => {
+            for (const [consumer, refs] of consumers) {
+              const pins = join(generationRoot, '.pins');
+              const hasFrozenPins = existsSync(pins) && readdirSync(pins).some((name) =>
+                readFileSync(join(pins, name), 'utf8').includes('retention=frozen\n'));
+              if (refs.size === 0 && !hasFrozenPins) continue;
+              await run('bash', [script, '--integration', consumer, '--generation-root', generationRoot,
+                '--sync-frozen-refs', ...[...refs].flatMap((ref) => ['--frozen-ref', ref])], { timeout: 120_000 });
+            }
+            return run('bash', [script, '--integration', root, '--generation-root', generationRoot, '--prune-only', '--no-recorded-store-cascade',
               ...(retired ? ['--retired-store'] : [])], {
               timeout: 120_000,
-            }),
+            });
+          },
         );
         report.stores.push({ integrationRoot: root, generationRoot, retired, status: 'pruned', ...outputReceipt(result.stdout, result.stderr) });
       } catch (error) {

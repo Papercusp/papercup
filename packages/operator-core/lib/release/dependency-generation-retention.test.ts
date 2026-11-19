@@ -93,7 +93,13 @@ describe('hourly dependency-generation retention discovery', () => {
     const store = join(fixture, 'store');
     mkdirSync(store);
     recordStore(store);
-    registry.frozenQueue.mockRejectedValue(new Error('queue unavailable'));
+    const second = join(fixture, 'second');
+    mkdirSync(second);
+    vi.stubEnv('PAPERCUSP_DEPENDENCY_GENERATION_ROOT', store);
+    registry.load.mockResolvedValue({ projects: [{ slug: 'project' }, { slug: 'second' }] });
+    registry.contentPath.mockImplementation((_registry: unknown, slug: string) => slug === 'project' ? integration : second);
+    registry.frozenQueue.mockResolvedValueOnce({ status: 'value', queue: { candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40) } })
+      .mockRejectedValueOnce(new Error('queue unavailable'));
     const report = await runDependencyGenerationRetention();
     expect(report.status).toBe('partial');
     expect(pruneArguments()).toEqual([]);
