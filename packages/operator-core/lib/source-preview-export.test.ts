@@ -2135,6 +2135,42 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(output).toContain('generation-complete');
   });
 
+  it.each([
+    ['work', 'io'], ['copy', 'written'], ['checksum read', 'read'],
+  ])('EI-29245652166290245: scopes %s counters to copy PID and starttime', async (kind, metric) => {
+    for (const nextCopy of ['101:1000', '100:2000']) {
+      const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
+        let tick = 0;
+        const timer = setInterval(() => {
+          tick++;
+          const copy = tick <= 10 ? '100:1000' : ${JSON.stringify(nextCopy)};
+          const value = tick <= 10 ? 29625 + tick : tick - 10;
+          console.log('[dependency-generation] ${kind} progress: node_modules copy=' + copy + ' ${metric}=' + value + 'MiB');
+          if (tick === 20) { clearInterval(timer); console.log('generation-complete'); process.exit(0); }
+        }, 100);
+      `], { cwd: tmp, env: childEnv(), timeoutMs: 1700, maxMs: 6000,
+        stallWindowMs: 500, extensionMs: 500 });
+      expect(output).toContain(`copy=100:1000 ${metric}=29635MiB`);
+      expect(output).toContain(`copy=${nextCopy} ${metric}=1MiB`);
+      expect(output).toContain('generation-complete');
+    }
+  });
+
+  it.each([
+    ['work', 'io'], ['copy', 'written'], ['checksum read', 'read'],
+  ])('EI-29245652166290245: rejects replayed and decreasing %s counters within one incarnation', async (kind, metric) => {
+    await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
+      let tick = 0;
+      console.log('[dependency-generation] ${kind} progress: node_modules copy=100:1000 ${metric}=29625MiB');
+      setInterval(() => {
+        tick++;
+        const value = tick % 2 ? 29625 : 15518;
+        console.log('[dependency-generation] ${kind} progress: node_modules copy=100:1000 ${metric}=' + value + 'MiB elapsed=' + tick + 's');
+      }, 100);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
+  });
+
   it.each(['work-io', 'tree-forms'])('rejects unchanged native-generation %s progress', async kind => {
     await expect(runVerifierDependencyCommand(process.execPath, ['-e', [
       'let tick = 0;',

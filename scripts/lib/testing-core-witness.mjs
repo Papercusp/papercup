@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync,
+import { appendFileSync, closeSync, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync,
   readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -270,6 +270,26 @@ export function qualifyTestingCoreConfigurationClosure(universe, consumed, retai
   }
 }
 
+/** Await the real qualifier without blocking the builder's event loop. The
+ * enclosing build owns its process/deadline budget; a separate wall-clock kill
+ * here can discard valid bytes while the build itself is still progressing.
+ * Inherit diagnostics rather than buffering or truncating a child's output.
+ * @returns {Promise<void>}
+ */
+export async function qualifyTestingCoreFinalBytes({ script, outfile, nodePath = process.execPath, env = process.env }) {
+  await new Promise((resolveResult, reject) => {
+    let failure;
+    const child = spawn(nodePath, [script, outfile, '--check'], { env, stdio: ['ignore', 'inherit', 'inherit'] });
+    child.once('error', error => { failure = error; });
+    child.once('close', (status, signal) => {
+      if (status === 0 && !failure) resolveResult();
+      else reject(new Error(['Testing core final bytes failed syntax/ASCII qualification:',
+        `status=${status}, signal=${signal ?? 'none'}`,
+        `error=${failure?.code ?? 'none'}: ${failure?.message ?? ''}`].join(' ')));
+    });
+  });
+}
+
 /** The shell calls this THROUGH bundle_host_esbuild under its existing cache
  * lease. The pinned API is evaluated from its retained buffer, with builtins
  * only; its single native service must name the pinned 0.25 binary. */
@@ -379,14 +399,8 @@ export async function prepareTestingCore({ root, compilerPath, argv,
     const temporary = outfile + '.new.' + randomUUID();
     try {
       writeFileSync(temporary, result.outputFiles[0].contents, { flag: 'wx' });
-      const escaped = spawnSync(process.execPath, [join(root, 'apps/operator/bin/ascii-escape-bundle.mjs'),
-        temporary, '--check'], { encoding: 'utf8', timeout: 30_000 });
-      assert.equal(escaped.status, 0, [
-        'Testing core final bytes failed syntax/ASCII qualification:',
-        `status=${escaped.status}, signal=${escaped.signal ?? 'none'}`,
-        `error=${escaped.error?.code ?? 'none'}: ${escaped.error?.message ?? ''}`,
-        escaped.stderr,
-      ].join(' '));
+      await phase('final-bytes', () => qualifyTestingCoreFinalBytes({
+        script: join(root, 'apps/operator/bin/ascii-escape-bundle.mjs'), outfile: temporary }));
       await phase('before-publication', async () => { custody.verifyInputs(); verifyPins(pins); });
       const artifactSha256 = digest(readFileSync(temporary));
       renameSync(temporary, outfile);
@@ -604,7 +618,20 @@ async function main(argv) {
   const [command, rootOrReceipt, compilerOrBinding, receiptPath, marker, ...compilerArgs] = argv;
   if (command === 'prepare') {
     assert.equal(marker, '--', 'Testing core prepare requires the shared compiler argv');
-    const receipt = await prepareTestingCoreFromSnapshot({ root: rootOrReceipt, compilerPath: compilerOrBinding, argv: compilerArgs });
+    const phase = async (name, operation) => {
+      const step = `testing-core-${name}`;
+      const record = (event, status) => {
+        process.stderr.write(`TESTING_CORE_BUILD_PHASE ${step} ${event}${status === undefined ? '' : ` status=${status}`}\n`);
+        if (process.env.BUNDLE_HOST_STEP_LOG) appendFileSync(process.env.BUNDLE_HOST_STEP_LOG,
+          JSON.stringify({ at: Date.now() / 1000, pid: process.pid, step, event,
+            ...(status === undefined ? {} : { status }) }) + '\n');
+      };
+      record('start');
+      let status = 78;
+      try { const result = await operation(); status = 0; return result; }
+      finally { record('end', status); }
+    };
+    const receipt = await prepareTestingCoreFromSnapshot({ root: rootOrReceipt, compilerPath: compilerOrBinding, argv: compilerArgs, phase });
     const body = JSON.stringify(receipt);
     writeFileSync(receiptPath, body, { mode: 0o600 });
     process.stdout.write(JSON.stringify({ witness: receipt.witness, receiptSha256: digest(body) }));

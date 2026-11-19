@@ -47,7 +47,7 @@ import assert from 'node:assert/strict';
 import { TAURI_VERIFIER_INPUTS as NATIVE_VERIFIER_INPUTS, normalizeVerifierInputs, validateCommittedVerifierInputs,
   measureVerifierSourceBytesFromGit } from './verifier-source-preflight.mjs';
 import { compilerOptionsFromArgs, createCompilerInputCustody } from './lib/compiler-input-custody.mjs';
-import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure, retainTestingCoreResolverMetadata,
+import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure, qualifyTestingCoreFinalBytes, retainTestingCoreResolverMetadata,
   createTestingCoreResolverNamespace, spawnTestingCoreCompiler, testingCoreResolverNamespaceIdentity,
   verifyTestingCoreInputs, verifyTestingCoreReceipt } from './lib/testing-core-witness.mjs';
 import { assertCommittedWorkspaceLockMatches, committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
@@ -2466,10 +2466,8 @@ export async function compileBgVerifierInvocation({ record, invocation, argv, ex
         await runPhase('bg.compiler.core-final-bytes', () => {
           const script = join(record.prepared.root, 'apps/operator/bin/ascii-escape-bundle.mjs');
           custody.readToolchainInput(script);
-          const escaped = spawnSync(actualNode.realpath, [script, options.outfile, '--check'], {
-            env: invocation.environment, encoding: 'utf8', timeout: 30_000,
-          });
-          assert.equal(escaped.status, 0, `BG testing core final bytes failed qualification: ${escaped.stderr}`);
+          return qualifyTestingCoreFinalBytes({ nodePath: actualNode.realpath, script,
+            outfile: options.outfile, env: invocation.environment });
         });
         custody.verifyInputs();
         coreReceipt = { schemaVersion: 'testing-core-producing-build-v1', root: record.prepared.root,

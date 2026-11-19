@@ -87,6 +87,26 @@ describe('testing core producing-build witness', () => {
     expect(readdirSync(dirname(f.outfile))).toEqual([]);
   });
 
+  it('awaits a slow valid final qualifier without blocking the build event loop', async () => {
+    const f = fixture();
+    const script = 'apps/operator/bin/ascii-escape-bundle.mjs';
+    f.put(script, 'await new Promise(resolve => setTimeout(resolve, 31_000));\n'
+      + readFileSync(join(f.root, script), 'utf8').replace(/^#![^\n]*\n/, ''));
+    const phases: string[] = [];
+    let responsive = false;
+    const timer = setTimeout(() => { responsive = true; }, 100);
+    try {
+      const receipt = await prepareTestingCore({ ...f, phase: async (name: string, run: () => Promise<unknown>) => {
+        phases.push(name);
+        return run();
+      } });
+      expect(responsive).toBe(true);
+      expect(phases).toContain('final-bytes');
+      expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);
+      expect(hash(readFileSync(f.outfile))).toBe(receipt.witness.artifactSha256);
+    } finally { clearTimeout(timer); }
+  }, 90_000);
+
   it('binds actual native compiler inputs, final bytes and a loadable plain-Node API', async () => {
     const f = fixture(), receipt = await prepareTestingCore(f);
     expect(verifyTestingCoreReceipt(receipt, receipt.witness)).toEqual(receipt.witness);

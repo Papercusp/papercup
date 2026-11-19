@@ -344,8 +344,18 @@ bundle_host_testing_core_fixture_opt_in() {
   [[ -n "${VITEST:-}" && "${PAPERCUSP_BUNDLE_HOST_UNWITNESSED_TESTING_CORE:-}" == 1 ]]
 }
 BUNDLE_HOST_TESTING_CORE_WORKER_ARGS=()
+bundle_host_record_testing_core_state() { # <fixed binding> <event>
+  # The host build can succeed while testing:run fails closed. Record that
+  # distinction at build time, before anybody has to discover it by calling it.
+  echo "TESTING_CORE_BUILD_STATE $1" >&2
+  if [[ -n "${BUNDLE_HOST_STEP_LOG:-}" ]]; then
+    printf '{"at":%s,"pid":%s,"step":"testing-core-witness","event":"%s","binding":"%s"}\n' \
+      "$EPOCHREALTIME" "$BASHPID" "$2" "$1" >> "$BUNDLE_HOST_STEP_LOG" || return 1
+  fi
+}
 bundle_host_degrade_testing_core() { # <repo root> <reason>
   echo "WARN(EI-28752668992567658): $2; building testing-core.worker.mjs UNWITNESSED — the bundled testing core refuses to run until a witnessed rebuild succeeds." >&2
+  bundle_host_record_testing_core_state "$BUNDLE_HOST_TESTING_CORE_DEGRADED" degraded || return 1
   (( ${#BUNDLE_HOST_TESTING_CORE_WORKER_ARGS[@]} > 0 )) || return 78
   bundle_host_esbuild "$1" "${BUNDLE_HOST_TESTING_CORE_WORKER_ARGS[@]}" >&2 || return 1
   BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE='--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined'
@@ -375,6 +385,7 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
   BUNDLE_HOST_TESTING_CORE_WORKER_ARGS=("${worker_args[@]}")
   if bundle_host_testing_core_fixture_opt_in; then
     echo 'WARN(EI-28774020156533677): VITEST fixture opt-in; building testing-core.worker.mjs UNWITNESSED (the bundled testing core fails closed).' >&2
+    bundle_host_record_testing_core_state "$BUNDLE_HOST_TESTING_CORE_FIXTURE" degraded || return 1
     bundle_host_esbuild "$repo_root" "${worker_args[@]}" >&2 || return 1
     BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE='--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined'
     BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
@@ -388,6 +399,7 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
   # instead of failing every host rebuild back to a stale last-known-good bundle.
   if ! git -C "$repo_root" cat-file -e "HEAD:scripts/lib/testing-core-witness.mjs" 2>/dev/null; then
     echo "WARN(WI-6554700010048115): scripts/lib/testing-core-witness.mjs has no committed version; building testing-core.worker.mjs UNWITNESSED until it is committed." >&2
+    bundle_host_record_testing_core_state "$BUNDLE_HOST_TESTING_CORE_UNWITNESSED" degraded || return 1
     bundle_host_esbuild "$repo_root" "${worker_args[@]}" >&2 || return 1
     BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE='--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined'
     BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
@@ -408,6 +420,7 @@ bundle_host_prepare_testing_core() { # <repo root> <out dir> [parent boundary ar
     BUNDLE_HOST_TESTING_CORE_WITNESS_DEFINE="$define"
     BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
     BUNDLE_HOST_TESTING_CORE_BINDING="$binding"
+    bundle_host_record_testing_core_state witnessed qualified || return 1
     return 0
   fi
   BUNDLE_HOST_TESTING_CORE_RECEIPT="$receipt"
