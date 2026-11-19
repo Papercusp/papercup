@@ -9,31 +9,41 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify as toYaml } from 'yaml';
 
-const fixture = vi.hoisted(() => ({
-  installed: '',
-  local: '',
-  active: new Map<string, { id: string; version: string }>(),
-}));
-
-vi.mock('../blueprint/installed-blueprints', async (importOriginal) => {
-  const { existsSync } = await import('node:fs');
-  const path = await import('node:path');
-  return {
-    ...(await importOriginal<Record<string, unknown>>()),
-    INSTALLED_BLUEPRINTS_DIR: () => fixture.installed,
-    // project-local → installed, the same precedence as the operator resolver.
-    operatorResolveExtends: () => (id: string) => {
-      for (const root of [fixture.local, fixture.installed]) {
+const fixture = vi.hoisted(() => {
+  const state = {
+    installed: '',
+    local: '',
+    active: new Map<string, { id: string; version: string }>(),
+  };
+  // project-local → installed, the same precedence as the operator resolver.
+  const resolverFactory = async () => {
+    const { existsSync } = await import('node:fs');
+    const path = await import('node:path');
+    return () => (id: string) => {
+      for (const root of [state.local, state.installed]) {
         const file = path.join(root, id, 'blueprint.yaml');
         if (existsSync(file)) return file;
       }
       return null;
-    },
+    };
   };
+  return Object.assign(state, { resolverFactory });
 });
+
+vi.mock('../blueprint/installed-blueprints', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  INSTALLED_BLUEPRINTS_DIR: () => fixture.installed,
+  operatorResolveExtends: await fixture.resolverFactory(),
+}));
+// The gate resolves through the identity resolver seam (WI-6554700010055768).
+// The spread original `identityResolveExtends` calls source.ts's own
+// `operatorResolveExtends` binding, which the mock above does not reach (the
+// gate returned [] for every fixture layer), so the fixture resolver is
+// installed at the seam the gate actually calls.
 vi.mock('../agent-identities/source', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   localDirs: () => [],
+  identityResolveExtends: await fixture.resolverFactory(),
 }));
 vi.mock('./blueprint-release', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
