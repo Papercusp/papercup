@@ -22,8 +22,9 @@
  *    `_gcBudgetMs` seams so we don't seed 100k+ rows.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   drainOutboxOnce,
   startOutboxDrain,
@@ -139,6 +140,9 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
       CREATE INDEX substrate_outbox_drain_idx
         ON harness_shared.substrate_outbox (workspace_id, harness_slug, drained_at, id);
     `);
+    await applyMigrationForTest(db.sql, fileURLToPath(new URL(
+      '../../../../../libs/papercusp/libs/db/sql/1632-substrate-outbox-fanout-retry.sql', import.meta.url,
+    )));
   }, 60_000);
 
   afterAll(async () => {
