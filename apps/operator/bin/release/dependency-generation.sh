@@ -2105,7 +2105,7 @@ dependency_generation_ref_pin_path() {
 
 dependency_generation_write_ref_pin_locked() {
   local generation_root="$1" integration_root="$2" label="$3" identity="$4" ref="$5"
-  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now checkout marker
+  local ttl="${DEPENDENCY_GENERATION_REF_PIN_TTL_SEC:-86400}" pin tmp now checkout marker retention="${6:-transient}" expires
   [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 2
   [[ "$label" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 2
   [[ "$ttl" =~ ^[0-9]+$ ]] || return 2
@@ -2127,10 +2127,52 @@ dependency_generation_write_ref_pin_locked() {
   mv "$tmp" "$marker" || return $?
   tmp="$pin.tmp.$$"
   now="$(date +%s)"
-  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\ncheckout=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\n' \
+  expires="$((now + ttl))"
+  [ "$retention" != frozen ] || expires=0
+  printf 'schema=1\nkind=ref\nhost=%s\nidentity=%s\ncheckout=%s\nlabel=%s\nintegration=%s\nref=%s\nupdated=%s\nexpires=%s\nretention=%s\n' \
     "$(dependency_generation_host)" "$identity" "$checkout" "$label" "$integration_root" "$ref" \
-    "$now" "$((now + ttl))" > "$tmp"
+    "$now" "$expires" "$retention" > "$tmp"
   mv "$tmp" "$pin"
+}
+
+# The caller has read the complete canonical queue. Refresh all of its references
+# before removing old pins; any missing selector leaves prior custody untouched.
+dependency_generation_sync_frozen_refs() {
+  local generation_root="$1" integration_root="$2" ref input identity label pin rc=0
+  shift 2
+  local refs=("$@") identities=()
+  for ref in "${refs[@]}"; do
+    [[ "$ref" =~ ^[0-9a-f]{40}$|^[0-9a-f]{64}$ ]] || return 2
+    input="$(dependency_generation_input_fingerprint_ref "$integration_root" "$ref")" || return $?
+    identities+=("$input")
+  done
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  for input in "${identities[@]}"; do
+    dependency_generation_select_input_fingerprint "$input" "$generation_root" || { rc=74; break; }
+  done
+  if [ "$rc" -eq 0 ]; then
+    local index=0
+    for ref in "${refs[@]}"; do
+      input="${identities[$index]}"
+      identity="$(dependency_generation_read_field "$generation_root/.inputs/$input" identity)"
+      label="$(printf 'frozen:%s' "$ref" | dependency_generation_sha256)"
+      dependency_generation_write_ref_pin_locked "$generation_root" "$integration_root" "$label" "$identity" "$ref" frozen || { rc=1; break; }
+      index=$((index + 1))
+    done
+  fi
+  if [ "$rc" -eq 0 ]; then
+    for pin in "$generation_root"/.pins/*; do
+      [ -f "$pin" ] || continue
+      [ "$(dependency_generation_read_field "$pin" retention)" = frozen ] || continue
+      [ "$(dependency_generation_read_field "$pin" integration)" = "$integration_root" ] || continue
+      ref="$(dependency_generation_read_field "$pin" ref)"
+      local present=''
+      for input in "${refs[@]}"; do [ "$input" != "$ref" ] || present=1; done
+      [ -n "$present" ] || rm -f -- "$pin" || rc=1
+    done
+  fi
+  dependency_generation_release_publish_lock
+  return "$rc"
 }
 
 # No-op without a label. Ordinary publication/selection can retain an input
@@ -2281,7 +2323,7 @@ dependency_generation_refresh_retention_state_locked() {
     if [ "$(dependency_generation_read_field "$pin" kind)" = 'ref' ]; then
       pin_expires="$(dependency_generation_read_field "$pin" expires)"
       if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || [[ ! "$pin_expires" =~ ^[0-9]+$ ]] \
-        || [ "$pin_expires" -le "$(date +%s)" ] \
+        || { [ "$(dependency_generation_read_field "$pin" retention)" != frozen ] && [ "$pin_expires" -le "$(date +%s)" ]; } \
         || ! dependency_generation_marker_matches "$generation_root/$identity" "$identity"; then
         dependency_generation_log "removing expired or stale ref pin $(basename "$pin") ($identity)"
         rm -f -- "$pin"
@@ -4688,7 +4730,7 @@ dependency_generation_main() {
   local remember_store='' retired_store='' skip_recorded_stores='' current_root='' old_root='' record line registered=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid='' live_input='' build_root=''
   local predict_ref='' predict_verdict='' predict_rc=0 line retain_as='' retain_input_as='' verifier_source=''
-  local workspace_dirs=()
+  local sync_frozen_refs='' frozen_refs=() workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --integration) integration_root="$2"; shift 2 ;;
@@ -4703,6 +4745,8 @@ dependency_generation_main() {
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       --predict-ref) predict_ref="$2"; shift 2 ;;
       --prune-only) prune_only='1'; shift ;;
+      --sync-frozen-refs) sync_frozen_refs=1; shift ;;
+      --frozen-ref) frozen_refs+=("$2"); shift 2 ;;
       --retired-store) retired_store='1'; shift ;;
       --no-recorded-store-cascade) skip_recorded_stores='1'; shift ;;
       --remember-store) remember_store="$2"; shift 2 ;;
@@ -4802,6 +4846,13 @@ dependency_generation_main() {
   # the root that override recorded for this integration root (WI-10005159),
   # before falling back to the integration checkout's local generation store.
   generation_root="$(dependency_generation_resolve_root "$integration_root" "$generation_root")"
+  if [ -n "$sync_frozen_refs" ]; then
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid$prune_only$retired_store$check_headroom$predict_ref$retain_as" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || return 2
+    dependency_generation_sync_frozen_refs "$generation_root" "$integration_root" "${frozen_refs[@]}"
+    return $?
+  fi
+  [ "${#frozen_refs[@]}" -eq 0 ] || return 2
   if [ -n "$prune_only" ]; then
     [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid" ] \
       && [ "${#workspace_dirs[@]}" -eq 0 ] || {
