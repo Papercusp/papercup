@@ -486,7 +486,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radius.detail).toContain('full=@t/consumer:cross-root-unrelatable-change');
   });
 
-  it.each([39, 40, 41])('applies the same complete radius cap to a %i-file root-bootstrap census', (count) => {
+  it.each([39, 40, 41])('applies the same complete radius cap to a %i-file root-bootstrap census', async (count) => {
     const fixture = mkdtempSync(join(tmpdir(), 'admission-bootstrap-boundary-'));
     try {
       init(fixture);
@@ -497,6 +497,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         'package.json': JSON.stringify({ private: true, workspaces: ['packages/*', 'pkg-consumer'] }),
         'scripts/affected-tests.mjs': readFileSync(resolve(import.meta.dirname, '../../../../scripts/affected-tests.mjs'), 'utf8'),
         'scripts/bootstrap.mjs': 'export const bootstrap = 1;\n',
+        'signature.test.ts': 'export const signature = 1;\n',
         'packages/operator-core/package.json': JSON.stringify({ name: '@papercusp/operator-core' }),
         'packages/operator-core/vitest.config.ts': 'export default {test:{include:["lib/**/*.test.ts"]}};\n',
         'pkg-consumer/package.json': JSON.stringify({ name: '@t/consumer', dependencies: { '@papercusp/operator-core': '*' } }),
@@ -510,7 +511,9 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         const match = /^(\d{6}) (\w+) ([0-9a-f]+)\t(.+)$/.exec(row)!;
         return { mode: match[1]!, type: match[2]!, sha: match[3]!, file: match[4]! };
       });
-      const census = top.filter(entry => entry.file.endsWith('.test.ts')).map(entry => entry.file).sort();
+      const census = top.filter(entry => entry.file.endsWith('.test.ts') &&
+        (entry.file.startsWith('packages/operator-core/') || entry.file.startsWith('pkg-consumer/')))
+        .map(entry => entry.file).sort();
       expect(census).toEqual([...providerFiles, consumerFile]);
       expect(census).toHaveLength(count);
       const legs = Object.fromEntries(census.map(file => [file,
@@ -525,6 +528,57 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         if (count > ADMISSION_RADIUS_CAP) {
           expect(radius).toMatchObject({ status: 'skipped', reason: `over-cap(${count}/40)`,
             guarded: [], reportOnly: [], legs: {} });
+          const producerSignature = [{ kind: 'test-file' as const, id: 'signature.test.ts' }, ...signature];
+          await resetAdmissionOffthread();
+          try {
+            const discovery = await runAdmissionJob({ kind: 'precheck-population', input: {
+              root: fixture, commit: frozen, signature: producerSignature, admittedPaths: ['scripts/bootstrap.mjs'],
+            } });
+            if (!discovery.ok) throw new Error(discovery.detail);
+            expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 1, jobsInline: 0, workerLive: true });
+            expect(discovery.population).toMatchObject({ files: ['signature.test.ts'],
+              radius: { status: 'skipped', reason: `over-cap(${census.length}/40)`,
+                detail: expect.stringContaining(`radius-files=${census.length}`), guarded: [], reportOnly: [], legs: {} } });
+            const initial = { ...createFrozenCandidateRepairQueue({ candidate: frozen, base: null,
+              failingTests: ['signature.test.ts'], nowMs: 10 }), signature: producerSignature };
+            let persisted: FrozenCandidateRepairQueue = { ...initial, admissionPrecheck: {
+              schemaVersion: 1, operationId: 'bootstrap-radius-operation', runnerTaskId: 'bootstrap-radius-task',
+              status: 'running', candidate: frozen, repairHead: frozen, builtCommit: frozen,
+              builtTree: git(fixture, 'rev-parse', `${frozen}^{tree}`), testEnvironment: ADMISSION_TEST_ENVIRONMENT,
+              actor: 'su-test', files: discovery.population.files, radius: discovery.population.radius,
+              startedAtMs: 10, updatedAtMs: 10, expiresAtMs: 60_000,
+            } };
+            const ran: string[] = [];
+            const outcome = await runAdmissionPrecheckWorker({ operationId: 'bootstrap-radius-operation',
+              taskId: 'bootstrap-radius-task', queueTarget: { workspaceId: 'radius-fixture', installSlug: 'papercusp' },
+              integrationRoot: fixture, checkpointRoot: join(fixture, 'unused-checkpoint'), expiresAtMs: 60_000,
+            }, {
+              getTask: async () => ({ state: 'running', confined: true }),
+              readQueue: async () => ({ status: 'value', queue: persisted }),
+              transition: async (_target, update) => {
+                const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(update(persisted))));
+                if (!parsed) throw new Error('managed round-trip lost the bootstrap operation');
+                persisted = parsed;
+              },
+              createRunner: () => async run => {
+                ran.push(...run.files);
+                return { ran: true, commit: run.commit, results: run.files.map(path => ({ path, status: 'pass' as const })) };
+              },
+              now: () => 30,
+            });
+            expect(ran).toEqual(['signature.test.ts']);
+            expect(ran.some(file => census.includes(file))).toBe(false);
+            expect(persisted.admissionPrecheck?.measurement?.results.map(row => row.path)).toEqual(ran);
+            expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false,
+              code: 'admission-precheck-unavailable', population: { radius: { status: 'skipped',
+                reason: `over-cap(${census.length}/40)` } } } });
+            expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', radius: {
+              status: 'skipped', reason: `over-cap(${census.length}/40)`,
+              detail: expect.stringContaining(`radius-files=${census.length}`) } });
+          } finally {
+            await resetAdmissionOffthread();
+            expect(admissionOffthreadStats().workerLive).toBe(false);
+          }
         } else {
           expect(radius).toMatchObject({ status: 'measured', reason: 'ok', legs,
             guarded: signature.length ? [] : census, reportOnly: signature.length ? census : [] });
@@ -533,7 +587,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it('native Vitest discovery independently checks measured bootstrap files and the skipped 41-file population', () => {
     const census = (dir: string): string[] => {
