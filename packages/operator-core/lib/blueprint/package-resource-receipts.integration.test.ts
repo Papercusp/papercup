@@ -35,8 +35,8 @@ beforeAll(async () => {
   if (existsSync(draft)) await db.adminSql.unsafe(readFileSync(draft, 'utf8'));
   const ownership = new URL('../../../../libs/papercusp/libs/db/sql/1645-blueprint-installation-human-ownership.sql.DRAFT', import.meta.url);
   if (existsSync(ownership)) await db.adminSql.unsafe(readFileSync(ownership, 'utf8'));
-  const scopes = new URL('../../../../libs/papercusp/libs/db/sql/1648-blueprint-installation-scoped-grants.sql', import.meta.url);
-  await db.adminSql.unsafe(readFileSync(existsSync(scopes) ? scopes : new URL(scopes.href + '.DRAFT'), 'utf8'));
+  const scopes = new URL('../../../../libs/papercusp/libs/db/sql/1648-blueprint-installation-scoped-grants.sql.DRAFT', import.meta.url);
+  if (existsSync(scopes)) await db.adminSql.unsafe(readFileSync(scopes, 'utf8'));
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
