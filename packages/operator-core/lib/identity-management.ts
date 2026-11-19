@@ -36,6 +36,7 @@ import { findLiveHostAsync, injectIntoHost } from './events/await/psu-pty-discov
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import { PrincipalCheckError, readRetainedRequestPrincipal,
   type HostRequestPrincipalResolver } from './auth/require-principal';
+import { readIdentityPermissionPopulation } from './capability-envelope/identity-grants-port';
 
 const HISTORY_LIMIT = IDENTITY_HISTORY_LIMIT;
 const TRANSITION_LIMIT = 30;
@@ -534,6 +535,14 @@ export async function mutateIdentityStack(input: IdentityMutationInput,
   request?: IdentityEditRequest): Promise<IdentityMutationResult> {
   const editor = input.action === 'preview' ? null : await readIdentityEditor(input.workspaceId, request);
   const sql = getOrgPg().sql;
+  // Measure BEFORE reading the target row/control anchor or compiling. A later
+  // registration (even with identical launch bytes), orphaned anchor, or changed
+  // applied receipt invalidates that compilation. This is the session source
+  // slice only, not a complete effective-permission or affected-owner proof.
+  const beforePopulation = input.action === 'preview' ? null
+    : await readIdentityPermissionPopulation(sql, input.workspaceId);
+  if (beforePopulation && beforePopulation.status !== 'ok')
+    throw new Error('The session identity population is unavailable; reload and review the new diff.');
   const rows = await sql<SessionRow[]>`
     SELECT a.id, a.coord_owner_id, a.mode,
            to_jsonb(a)->'launch_spec' AS launch_spec, b.control_state
@@ -578,17 +587,6 @@ export async function mutateIdentityStack(input: IdentityMutationInput,
       nudge: { queued: false, reason: null },
     };
   }
-  // agent-economy-flywheel P-016 (D-011): attach, switch and rollback activate the
-  // resulting stack, so a priced Cupboard identity release needs funds behind it.
-  // A detach only removes layers and never activates one, so it is never refused.
-  if (input.action !== 'detach') {
-    const { assertIdentityActivationFunded } = await import('./cupboard/identity-activation-gate-io');
-    await assertIdentityActivationFunded({
-      stack: rebuilt.artifact.stack,
-      repoDir: repoDir ?? undefined,
-      workspaceId: input.workspaceId,
-    });
-  }
   const nextRecord: SuLaunchSpecRecord = {
     ...record,
     stack: rebuilt.artifact.stack,
@@ -600,9 +598,19 @@ export async function mutateIdentityStack(input: IdentityMutationInput,
   };
   const anchor = await sql.begin(async (tx) => {
     const transaction = tx as unknown as Sql;
-    // Fence the actual before-image BEFORE the first package write. The UPDATE
+    // Acquire the existing canonical population lease BEFORE individual row
+    // locks: it serializes competing identity edits without lock upgrades and
+    // excludes new registrations/control anchors through desired activation.
+    // Do not pin the package journal here: preparation below owns independent
+    // journal transactions. Library/host-policy containment and full permission
+    // admission remain separate requirements, not consequences of this lease.
+    const currentPopulation = await readIdentityPermissionPopulation(transaction, input.workspaceId,
+      { expectedRevision: beforePopulation!.revision });
+    if (currentPopulation.status !== 'ok')
+      throw new Error('The session identity population changed concurrently; reload and review the new diff.');
+    // Fence the actual before-image BEFORE funding/cache or package writes. The UPDATE
     // below alone is too late: a losing concurrent edit would already have
-    // provisioned its resources. Keep the row locked through desired activation.
+    // provisioned its resources. Keep both fences through desired activation.
     const locked = await transaction<Array<{ id: number | string }>>`
       SELECT id FROM harness_shared.adv_sessions
        WHERE id = ${row.id}
@@ -616,6 +624,20 @@ export async function mutateIdentityStack(input: IdentityMutationInput,
     // Re-resolve only after the row-lock wait and all asynchronous compilation.
     // The target session is never evidence of the editor's identity.
     const currentEditor = await readIdentityEditor(input.workspaceId, request, editor!.revision);
+    // Funding admission may refresh a persistent pricing cache. It is already
+    // an effect, so it belongs inside the source fence, before provisioning.
+    // D-011: removing a layer alone needs no funding admission.
+    if (input.action !== 'detach') {
+      const { assertIdentityActivationFunded } = await import('./cupboard/identity-activation-gate-io');
+      await assertIdentityActivationFunded({
+        stack: rebuilt.artifact.stack,
+        repoDir: repoDir ?? undefined,
+        workspaceId: input.workspaceId,
+      });
+      // Funding can await remote offers; preserve the existing credential
+      // recheck immediately before the first package preparation effect.
+      await readIdentityEditor(input.workspaceId, request, editor!.revision);
+    }
     // The package journal owns independent transactions and compensation, so it
     // uses the pool, not this transaction. Its committed preparation receipts
     // must survive an activation failure for recovery. The launch row remains

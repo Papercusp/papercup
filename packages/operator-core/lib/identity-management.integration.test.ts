@@ -186,6 +186,7 @@ describe('identity mutation before-image fence', () => {
     mutationHost.editorCapabilities = ['*'];
     editor = { workspaceId: WORKSPACE, resolvePrincipal: await retainRequestPrincipal(new Headers(), WORKSPACE) };
     vi.clearAllMocks();
+    mutationHost.funded.mockReset().mockResolvedValue(undefined);
     mutationHost.rebuild.mockReset().mockResolvedValue(rebuilt);
     mutationHost.provision.mockReset().mockImplementation(async () => {
       await db.sql`INSERT INTO harness_shared.identity_mutation_effects VALUES (${afterRevision})`;
@@ -212,12 +213,121 @@ describe('identity mutation before-image fence', () => {
       return rebuilt;
     });
     await expect(mutateIdentityStack(input, editor)).rejects.toThrow('changed concurrently');
+    expect(mutationHost.funded).not.toHaveBeenCalled();
     expect(mutationHost.provision).not.toHaveBeenCalled();
     expect(mutationHost.activate).not.toHaveBeenCalled();
     expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
     const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
     expect(row!.launch_spec).toEqual(concurrent);
   });
+
+  it.each(['successor', 'control-anchor'] as const)(
+    'refuses a %s arriving during compilation before the first effect', async change => {
+      mutationHost.rebuild.mockImplementationOnce(async () => {
+        if (change === 'successor') {
+          // An identical body on a NEW registration is still a new wearer
+          // source. Locking the previously selected row cannot detect it.
+          await db.sql`INSERT INTO harness_shared.adv_sessions
+            (id, workspace_id, mode, coord_owner_id, launch_spec)
+            VALUES (101, ${WORKSPACE}, 'console', ${owner}, ${db.sql.json(original)})`;
+        } else {
+          await db.sql`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state)
+            VALUES (${owner}, ${WORKSPACE}, '{"activation":{"applied":{"stateRevision":"concurrent"}}}')`;
+        }
+        return rebuilt;
+      });
+      try {
+        await expect(mutateIdentityStack(input, editor)).rejects.toThrow('changed concurrently');
+        expect(mutationHost.funded).not.toHaveBeenCalled();
+        expect(mutationHost.provision).not.toHaveBeenCalled();
+        expect(mutationHost.activate).not.toHaveBeenCalled();
+        expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+        const rows = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions
+          WHERE workspace_id = ${WORKSPACE} AND coord_owner_id = ${owner}`;
+        expect(rows.map(row => row.launch_spec)).toEqual(rows.map(() => original));
+      } finally {
+        await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 101`;
+        await db.sql`DELETE FROM harness_shared.session_briefs WHERE owner_id = ${owner}`;
+      }
+    });
+
+  it.each(['new-wearer', 'new-anchor', 'anchor-update'] as const)(
+    'holds the canonical session population against %s throughout provisioning', async change => {
+      const other = owner + '-population-peer';
+      await db.sql`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state)
+        VALUES (${other}, ${WORKSPACE}, '{}')`;
+      const write = async () => db.sql.begin(async tx => {
+        await tx`SET LOCAL lock_timeout = '150ms'`;
+        if (change === 'new-wearer') {
+          await tx`INSERT INTO harness_shared.adv_sessions
+            (id, workspace_id, mode, coord_owner_id, launch_spec)
+            VALUES (102, ${WORKSPACE}, 'console', ${other}, '{}')`;
+        } else if (change === 'new-anchor') {
+          await tx`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state)
+            VALUES (${other + '-new'}, ${WORKSPACE}, '{}')`;
+        } else {
+          await tx`UPDATE harness_shared.session_briefs SET control_state = '{"changed":true}'
+            WHERE owner_id = ${other}`;
+        }
+      });
+      mutationHost.provision.mockImplementationOnce(async () => {
+        await expect(write()).rejects.toMatchObject({ code: '55P03' });
+        await db.sql`INSERT INTO harness_shared.identity_mutation_effects VALUES (${afterRevision})`;
+      });
+      try {
+        await expect(mutateIdentityStack(input, editor)).resolves.toMatchObject({ ok: true, changed: true });
+        expect(mutationHost.provision).toHaveBeenCalledTimes(1);
+        expect(mutationHost.activate).toHaveBeenCalledTimes(1);
+        // A successful retry AFTER commit proves the writer was fenced,
+        // rather than rejected by a malformed fixture or an unrelated lock.
+        await write();
+      } finally {
+        await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 102`;
+        await db.sql`DELETE FROM harness_shared.session_briefs
+          WHERE owner_id IN (${other}, ${other + '-new'})`;
+      }
+    });
+
+  it('fences funding cache effects and releases the population lease when funding refuses', async () => {
+    const other = owner + '-funding-peer';
+    const register = () => db.sql.begin(async tx => {
+      await tx`SET LOCAL lock_timeout = '150ms'`;
+      await tx`INSERT INTO harness_shared.adv_sessions
+        (id, workspace_id, mode, coord_owner_id, launch_spec)
+        VALUES (103, ${WORKSPACE}, 'console', ${other}, '{}')`;
+    });
+    mutationHost.funded.mockImplementationOnce(async () => {
+      // Funding can write a pricing cache, so its admission is already an
+      // effect boundary. A fence acquired only for provisioning is too late.
+      await expect(register()).rejects.toMatchObject({ code: '55P03' });
+      throw new Error('funding refused under population lease');
+    });
+    try {
+      await expect(mutateIdentityStack(input, editor)).rejects.toThrow('funding refused under population lease');
+      expect(mutationHost.provision).not.toHaveBeenCalled();
+      expect(mutationHost.activate).not.toHaveBeenCalled();
+      expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+      const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
+      expect(row!.launch_spec).toEqual(original);
+      await register();
+    } finally {
+      await db.sql`DELETE FROM harness_shared.adv_sessions WHERE id = 103`;
+    }
+  });
+
+  it.each(['revoked', 'narrowed'] as const)(
+    'rechecks an editor %s while funding awaits before provisioning', async change => {
+      mutationHost.funded.mockImplementationOnce(async () => {
+        if (change === 'revoked') mutationHost.editorRevoked = true;
+        else mutationHost.editorCapabilities = [];
+      });
+      await expect(mutateIdentityStack(input, editor)).rejects.toThrow(/editor (authority changed|credentials)/);
+      expect(mutationHost.provision).not.toHaveBeenCalled();
+      expect(mutationHost.activate).not.toHaveBeenCalled();
+      expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+      const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
+      expect(row!.launch_spec).toEqual(original);
+    });
 
   it('holds the session row against another writer throughout provisioning', async () => {
     mutationHost.provision.mockImplementationOnce(async () => {
@@ -274,6 +384,7 @@ describe('identity mutation before-image fence', () => {
       return rebuilt;
     });
     await expect(mutateIdentityStack(input, editor)).rejects.toThrow(/editor (authority changed|credentials)/);
+    expect(mutationHost.funded).not.toHaveBeenCalled();
     expect(mutationHost.provision).not.toHaveBeenCalled();
     expect(mutationHost.activate).not.toHaveBeenCalled();
     expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
