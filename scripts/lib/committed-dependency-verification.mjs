@@ -175,20 +175,80 @@ async function copyMetadata(helper, root, names, parent, deadline, environment, 
 // `work` contains the exact records already captured for the receipt lookup.
 // Re-reading them here adds two tree walks without providing a stronger check:
 // the caller still recaptures both trees after comparing the actual bytes.
-async function copyBytesMatch(helper, source, partial, work, deadline, environment) {
-  return (await command(helper, [source, partial, work], [
+async function copyBytesMatch(helper, source, partial, work, deadline, environment,
+  { binding, receipt, batchSize, racyWindowMs, progress }) {
+  const projected = (await command(helper, [source, partial, work], [
     'work="$4"',
     'if ! dependency_generation_records_projection "$work/unmatched" > "$work/source-view" ||',
     '   ! dependency_generation_records_projection "$work/predecessor" > "$work/target-view" ||',
     '   ! cmp -s "$work/source-view" "$work/target-view"; then printf "different\\n"; exit 0; fi',
-    'dependency_generation_incremental_verify "$2" "$3" "$work"',
-    'expected="$(awk -F "\\t" \'$2 == "f" { n++ } END { print n+0 }\' "$work/unmatched")"',
-    'actual="$(wc -l < "$work/verified")"',
-    'if [ "$expected" -eq "$actual" ]; then printf "equal\\n"; else printf "different\\n"; fi',
-  ].join('\n'), deadline, environment)).trim() === 'equal';
+    'printf "equal\\n"',
+  ].join('\n'), deadline, environment)).trim();
+  if (projected !== 'equal') return false;
+  const readFiles = name => readFileSync(join(work, name), 'utf8').split('\n')
+    .filter(Boolean).map(raw => parseRecord(raw, true)).filter(record => record.type === 'f');
+  const sources = readFiles('unmatched'), targets = readFiles('predecessor');
+  if (sources.length !== targets.length || sources.some((record, index) => record.path !== targets[index].path))
+    return false;
+  const devices = [directoryIdentity(source).dev, directoryIdentity(partial).dev];
+  // Reuse the verifier's private batch-journal contract. A large COPY chunk
+  // must not lose its entire checksum prefix when the enclosing budget ends.
+  // These entries never replace whole-chunk recaptures or final verification.
+  for (let offset = 0, index = 0; offset < sources.length; offset += batchSize, index++) {
+    if (Date.now() >= deadline) throw new Incomplete();
+    const batch = sources.slice(offset, offset + batchSize).map((record, position) =>
+      [record, targets[offset + position]]);
+    const metadata = digest(JSON.stringify(batch.map(records => records.map(record => record.raw))));
+    const path = join(dirname(receipt), 'comparison-' + digest(receipt) + '-' + String(index).padStart(8, '0') + '.json');
+    const cached = readJournal(path);
+    if (cached && (!Array.isArray(cached.proofs) || cached.proofs.length !== cached.files ||
+        !cached.proofs.every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))))
+      fail('invalid copy comparison byte proof');
+    const trusted = cached?.binding === binding && cached.metadata === metadata && cached.files === batch.length &&
+      Number.isFinite(cached.capturedAtMs) && cached.capturedAtMs <= Date.now() &&
+      batch.every(records => records.every(record =>
+        Number(record.mtime) * 1000 < cached.capturedAtMs - racyWindowMs &&
+        Number(record.ctime) * 1000 < cached.capturedAtMs - racyWindowMs));
+    progress.currentCopyComparisonBatch = { index, files: batch.length,
+      first: batch[0][0].path, last: batch.at(-1)[0].path };
+    if (trusted) progress.reusedCopyComparisonBatches = (progress.reusedCopyComparisonBatches ?? 0) + 1;
+    else {
+      const directory = mkdtempSync(join(work, 'batch-'));
+      try {
+        for (const [side, name] of ['unmatched', 'predecessor'].entries())
+          writeFileSync(join(directory, name), batch.map(records => records[side].raw).join('\n') + '\n', { mode: 0o600 });
+        const equal = (await command(helper, [source, partial, directory, String(batch.length)], [
+          'dependency_generation_incremental_verify "$2" "$3" "$4"',
+          'actual="$(wc -l < "$4/verified")"',
+          'if [ "$5" -eq "$actual" ]; then printf "equal\\n"; else printf "different\\n"; fi',
+        ].join('\n'), deadline, environment)).trim() === 'equal';
+        if (!equal) return false;
+        const sums = readFileSync(join(directory, 'live.sums'), 'utf8').split('\0').filter(Boolean);
+        if (sums.length !== batch.length || sums.some((sum, position) =>
+          !/^[a-f0-9]{64}  /.test(sum) || sum.slice(66) !== batch[position][0].raw.split('\t')[0]))
+          fail('invalid copy comparison checksum records');
+        // A partial attempt can persist this batch only after both captures
+        // still match. Timestamp-window checks also apply on the next reuse.
+        for (const records of batch) for (let side = 0; side < 2; side++) {
+          if (Date.now() >= deadline) throw new Incomplete();
+          assertMetadata(lstatSync(join(side ? partial : source, records[side].path), { bigint: true }),
+            records[side], devices[side], records[side].path, side ? 'destination' : 'donor', 'after-hash');
+        }
+        writeJournal(path, { schemaVersion, binding, metadata, capturedAtMs: Date.now(),
+          files: batch.length, proofs: sums.map(sum => sum.slice(0, 64)) });
+        progress.hashedCopyComparisonFiles = (progress.hashedCopyComparisonFiles ?? 0) + batch.length;
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    }
+    progress.verifiedCopyComparisonBatches = (progress.verifiedCopyComparisonBatches ?? 0) + 1;
+    console.error('COMMITTED_DEPENDENCY_COPY ' + JSON.stringify({
+      verifiedCopyComparisonBatches: progress.verifiedCopyComparisonBatches,
+      reusedCopyComparisonBatches: progress.reusedCopyComparisonBatches ?? 0,
+      currentCopyComparisonBatch: progress.currentCopyComparisonBatch }));
+  }
+  return true;
 }
 
-async function copyMissingTree(helper, source, partial, parent, deadline, environment, progress) {
+async function copyMissingTree(helper, source, partial, parent, deadline, environment, progress, batchSize, racyWindowMs) {
   const measured = async (stage, run) => {
     progress.copyStage = stage;
     const started = Date.now();
@@ -248,7 +308,8 @@ async function copyMissingTree(helper, source, partial, parent, deadline, enviro
         progress.reusedCopyChunks++;
         continue;
       }
-      if (await measured('compare-bytes', () => copyBytesMatch(helper, source, partial, work, deadline, environment))) {
+      if (await measured('compare-bytes', () => copyBytesMatch(helper, source, partial, work, deadline, environment,
+        { binding, receipt, batchSize, racyWindowMs, progress }))) {
         const after = await measured('source-recheck', () =>
           copyMetadata(helper, source, entries, parent, deadline, environment));
         const targetAfter = await measured('target-recheck', () =>
@@ -289,7 +350,7 @@ async function copyMissingTree(helper, source, partial, parent, deadline, enviro
     command(helper, [partial], 'dependency_generation_prune_ephemeral "$2"', deadline, environment));
 }
 
-async function census(helper, donor, destination, scratch, deadline, generation, workspaceDirs, progress, materializeMissing = false) {
+async function census(helper, donor, destination, scratch, deadline, generation, workspaceDirs, progress, materializeMissing = false, batchSize = 256) {
   if (progress) Object.assign(progress, { phase: 'tree-census', scannedTrees: 0, totalTrees: 0 });
   const readCensus = async (stage, args, script) => {
     if (progress) progress.censusStage = stage;
@@ -356,7 +417,7 @@ async function census(helper, donor, destination, scratch, deadline, generation,
       progress.censusStage = 'copy:' + path;
       const started = Date.now();
       try { await copyMissingTree(helper, join(donor, path), partial, partialParent,
-        deadline, process.env, progress); }
+        deadline, process.env, progress, batchSize, racyWindowMs); }
       finally { (progress.censusDurationsMs ??= {})['copy:' + path] = Date.now() - started; }
       directoryIdentity(partial);
       if (lstatSync(join(destination, path), { throwIfNoEntry: false }))
@@ -396,22 +457,28 @@ async function census(helper, donor, destination, scratch, deadline, generation,
   return { sourceInputs, racyWindowMs, trees };
 }
 
+function parseRecord(raw, copy = false) {
+  const parts = raw.split('\t');
+  if (parts.length !== 10 || !['f', 'd', 'l'].includes(parts[1])) fail('invalid census record');
+  const path = copy && parts[0].startsWith('./') ? parts[0].slice(2) : parts[0];
+  safeRelative(path);
+  return { raw, path, type: parts[1], mode: parts[2], uid: parts[3],
+    gid: parts[4], size: parts[5], mtime: parts[6], ino: parts[7], ctime: parts[8], link: parts[9] };
+}
+
 async function* records(file, deadline) {
   const signal = AbortSignal.timeout(Math.max(1, deadline - Date.now()));
   const stream = createReadStream(file, { signal });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const raw of lines) {
-      const parts = raw.split('\t');
-      if (parts.length !== 10 || !['f', 'd', 'l'].includes(parts[1])) fail('invalid census record');
-      safeRelative(parts[0]);
+      const record = parseRecord(raw);
       // Normalize the materializer's renamed npm lock and the release
       // checkout's source-lock copy, as dependency-generation-proof does.
       // Match tree-root records only; nested package data still participates.
-      if (parts[0] === '.papercusp-installed-package-lock.json' ||
-          parts[0] === '.papercusp-source-package-lock.json') continue;
-      yield { raw, path: parts[0], type: parts[1], mode: parts[2], uid: parts[3],
-        gid: parts[4], size: parts[5], mtime: parts[6], ino: parts[7], ctime: parts[8], link: parts[9] };
+      if (record.path === '.papercusp-installed-package-lock.json' ||
+          record.path === '.papercusp-source-package-lock.json') continue;
+      yield record;
     }
   } catch (error) {
     if (signal.aborted) throw new Incomplete();
@@ -575,7 +642,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
       const scratch = mkdtempSync(join(checkpoint, '.scan-'));
       try {
         context.verifySource();
-        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation, workspaceDirs, progress, options.materializeMissing);
+        const scan = await census(context.materializer, donor, destination, scratch, deadline, generation, workspaceDirs, progress, options.materializeMissing, batchSize);
         progress.phase = 'inspect-census';
         const population = await inspect(scan, donor, destination, deadline);
         progress.totalEntries = population.entries;
