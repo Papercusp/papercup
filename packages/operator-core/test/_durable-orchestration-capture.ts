@@ -466,6 +466,66 @@ export function captureDurableProcessBoundary<T extends {
   const attemptAccounting = { schemaVersion: 'gec-interrupted-attempts-v1',
     accountingScope: 'durable-and-dispatch-attempts', originalCaptureRef: path,
     census: accountAttempts('census'), invocations: accountAttempts('invocations') };
+  // The parent can close a NEW returned-operation population after actual
+  // process death. It cannot close pending SQL or promote a notice to a commit.
+  // Preserve every original classification/value and keep byte proof separate.
+  const sqlGaps = [...gaps];
+  const storage = original && object(original.storage) ? original.storage : null;
+  const diagnostics = storage && object(storage.diagnostics) ? storage.diagnostics : null;
+  const sqlRows = storage && Array.isArray(storage.rows) ? structuredClone(storage.rows) : [];
+  const sqlIds = populations.storage?.admittedIds ?? [];
+  const observations = original && Array.isArray(original.sqlObservations) ? original.sqlObservations : null;
+  if (!diagnostics || !Array.isArray(diagnostics.admissions)
+    || !isDeepStrictEqual(diagnostics.admissions.map(row => object(row) ? row.id : null), sqlIds)
+    || diagnostics.pending !== 0 || !isDeepStrictEqual(diagnostics.pendingIds, [])
+    || diagnostics.late !== false || diagnostics.captureFailed !== false || diagnostics.hooksIntact !== true
+    || !isDeepStrictEqual(diagnostics.serverMessagesPending, [])
+    || !isDeepStrictEqual(diagnostics.excludedUnexecutedIds, [])
+    || populations.storage?.unreturnedIds.length !== 0 || sqlRows.length !== sqlIds.length)
+    sqlGaps.push('storage:incomplete-sql-terminals');
+  if (!observations || observations.some(row => !object(row) || !sqlIds.includes(String(row.id))
+    || !['admission', 'submit', 'terminal', 'ready', 'notice'].includes(String(row.phase))
+    || typeof row.monotonicMs !== 'number' || !Number.isFinite(row.monotonicMs) || row.monotonicMs < 0))
+    sqlGaps.push('storage:missing-or-foreign-sql-observations');
+  for (const row of sqlRows) {
+    const sql = object(row) && object(row.sql) ? row.sql : null;
+    if (!object(row) || !sql || typeof sql.pool !== 'string' || !sql.pool.trim()
+      || typeof sql.queryHash !== 'string' || !/^[a-f0-9]{64}$/.test(sql.queryHash)
+      || !['ok', 'error'].includes(String(sql.status))) {
+      sqlGaps.push('storage:invalid-sql-terminal'); continue;
+    }
+    const events = (observations ?? []).filter(event => object(event) && event.id === row.id);
+    const phase = (name: string) => events.filter(event => object(event) && event.phase === name);
+    const admissions = phase('admission'), terminals = phase('terminal');
+    const terminal = terminals[0];
+    if (admissions.length !== 1 || terminals.length !== 1 || !object(terminal)
+      || events.some(event => !object(event) || event.pool !== sql.pool)
+      || typeof terminal.query !== 'string' || digest(terminal.query) !== sql.queryHash
+      || terminal.command !== sql.command || terminal.status !== sql.status
+      || events.some((event, index) => index > 0 && object(event) && object(events[index - 1])
+        && Number(event.monotonicMs) < Number(events[index - 1]!.monotonicMs)))
+      sqlGaps.push(String(row.id) + ':sql-terminal-mismatch');
+    if (sql.serverMessages !== undefined) {
+      const submits = phase('submit'), ready = phase('ready'), submit = submits[0], receipt = ready[0];
+      if (!object(sql.serverMessages) || submits.length !== 1 || ready.length !== 1
+        || !object(submit) || !object(receipt) || !object(terminal)
+        || typeof sql.backendProcessId !== 'number' || !Number.isSafeInteger(sql.backendProcessId) || sql.backendProcessId <= 0
+        || [submit, receipt, terminal].some(event => event.backendProcessId !== sql.backendProcessId)
+        || typeof submit.query !== 'string' || digest(submit.query) !== sql.queryHash
+        || receipt.query !== submit.query || receipt.serverMessageSourceRef !== sql.serverMessages.sourceRef
+        || receipt.transactionStatus !== sql.serverMessages.transactionStatus
+        || !['I', 'T', 'E'].includes(String(receipt.transactionStatus))
+        || events.indexOf(submit) >= events.indexOf(receipt) || events.indexOf(receipt) >= events.indexOf(terminal))
+        sqlGaps.push(String(row.id) + ':sql-ready-mismatch');
+    } else if (phase('submit').length || phase('ready').length)
+      sqlGaps.push(String(row.id) + ':unexpected-sql-protocol');
+  }
+  const storageTerminalAccounting = { schemaVersion: 'gec-sql-terminals-v1',
+    accountingScope: 'returned-sql-operations-only', acceptance: 'unmeasured',
+    scope: { ...scope }, sourceRef: sourceRef + '#storageTerminalAccounting', originalCaptureRef: path,
+    complete: sqlGaps.length === 0, gaps: sqlGaps, ids: [...sqlIds], rows: sqlRows,
+    storageOperations: sqlGaps.length === 0 ? sqlIds.length : null, storageBytes: null,
+    commitQualification: 'unchanged-original-evidence' };
   const processCapture = { kind: 'durable-process-boundary', acceptance: 'unmeasured',
     accountingScope: 'process-lifetime-and-admissions', scope: { ...scope }, sourceRef,
     originalCaptureRef: path, journal: original?.retentionJournal ?? null,
@@ -473,7 +533,7 @@ export function captureDurableProcessBoundary<T extends {
     process: { pid: child.pid, status: child.status, signal: child.signal, error: child.error?.message ?? null,
       stdout: child.stdout ?? null, stderr: child.stderr ?? null },
     terminal: expectedKill ? 'intentional-sigkill' : normalExit ? 'drained-exit' : 'unqualified',
-    complete, gaps, populations, attemptAccounting,
+    complete, gaps, populations, attemptAccounting, storageTerminalAccounting,
     values: { processWallMs: monotonicEndMs - monotonicStartMs,
       recorderJournalBytes: original?.retentionJournal.bytes ?? null,
       durableAdmissions: complete ? populations.census!.admittedIds.length : null,

@@ -238,6 +238,11 @@ describe('GEC frozen B durable consumer captures', () => {
         values: { durableAdmissions: capture.census.ids.length, dispatchAdmissions: capture.invocations.ids.length,
           storageAdmissions: capture.storage.ids.length } });
       expect(processCapture.values.processWallMs).toBeGreaterThan(0);
+      expect(processCapture.storageTerminalAccounting).toMatchObject({ schemaVersion: 'gec-sql-terminals-v1',
+        accountingScope: 'returned-sql-operations-only', complete: true, gaps: [],
+        storageOperations: capture.storage.ids.length, storageBytes: null,
+        commitQualification: 'unchanged-original-evidence' });
+      expect(processCapture.storageTerminalAccounting.rows).toEqual(capture.storage.rows);
       expect(processCapture.populations.invocations.unreturnedIds)
         .toEqual(mode === 'crash' ? capture.invocations.diagnostics.pendingIds : []);
       // Parent termination is not a child drain or a persisted-byte oracle.
