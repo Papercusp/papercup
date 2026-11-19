@@ -95,7 +95,11 @@ async function call(mcpName: string, args: Record<string, unknown>, ctxOver: Par
   const tool = lookupByMcpName(mcpName)!;
   expect(tool, `tool ${mcpName} registered`).toBeDefined();
   const role = (tool.agentRoles?.[0] as string) ?? 'architect';
-  const r = await dispatchProjectedTool(tool, mcpName, args, MAKE_CTX({ role, ...ctxOver }), {});
+  // Negotiate the single-operation envelope production uses (PROJECTED_DEPS):
+  // bare deps default a singleton call to batch-v1 (WI-6554700010056589).
+  const r = await dispatchProjectedTool(tool, mcpName, args, MAKE_CTX({ role, ...ctxOver }), {
+    batchResponseVersion: 'operation-v0',
+  });
   return { r, tool };
 }
 
@@ -260,7 +264,9 @@ describe('features:get', () => {
     const tool = lookupByMcpName('features:get')!;
     const ctx = MAKE_CTX();
     ctx.principal!.capabilities = new Set();
-    const r = await dispatchProjectedTool(tool, 'features:get', { slug: 'h1', feature_id: 'F-1' }, ctx, {});
+    const r = await dispatchProjectedTool(tool, 'features:get', { slug: 'h1', feature_id: 'F-1' }, ctx, {
+      batchResponseVersion: 'operation-v0',
+    });
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('missing_capability');
   });
