@@ -268,6 +268,25 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radiusFor(['pkg-b/src/util.ts'], { cap: 1 })).toMatchObject({ status: 'measured', guarded: ['pkg-b/src/util.test.ts'] });
   });
 
+  it.each([39, 40])('retains the complete %i-file ordinary radius and its report-only partition', (count) => {
+    const census = git(root, 'ls-tree', '-r', '--name-only', commit, '--', 'wide/src')
+      .split('\n').filter(file => file.endsWith('.test.ts')).sort();
+    expect(census).toHaveLength(41);
+    const admittedTests = census.slice(0, census.length - count);
+    const expected = census.slice(admittedTests.length);
+    const legs = Object.fromEntries(census.map(file => [file, '@t/wide']));
+    for (const admittedPaths of [
+      ['wide/src/core.ts', ...admittedTests],
+      [...admittedTests].reverse().concat('wide/src/core.ts'),
+    ]) {
+      expect(radiusFor(admittedPaths)).toMatchObject({ status: 'measured', reason: 'ok',
+        guarded: expected, reportOnly: [], legs, detail: expect.stringContaining(`radius-files=${count}`) });
+      expect(radiusFor(admittedPaths, { signature: [{ kind: 'workspace-task', id: '@t/wide :: test' }] }))
+        .toMatchObject({ status: 'measured', reason: 'ok', guarded: [], reportOnly: expected, legs,
+          detail: expect.stringContaining(`radius-files=${count}`) });
+    }
+  });
+
   it('the isolated real admission worker preserves the independently counted over-cap skip and shuts down', async () => {
     const census = git(root, 'ls-tree', '-r', '--name-only', commit, '--', 'wide/src')
       .split('\n').filter(file => file.endsWith('.test.ts'));
@@ -465,6 +484,55 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radius.legs).toEqual({ [expected[0]!]: '@papercusp/operator-core', [expected[1]!]: '@papercusp/operator-core', [expected[2]!]: '@t/consumer' });
     expect(radius.detail).toContain('full=@papercusp/operator-core:cross-root-unrelatable-change');
     expect(radius.detail).toContain('full=@t/consumer:cross-root-unrelatable-change');
+  });
+
+  it.each([39, 40, 41])('applies the same complete radius cap to a %i-file root-bootstrap census', (count) => {
+    const fixture = mkdtempSync(join(tmpdir(), 'admission-bootstrap-boundary-'));
+    try {
+      init(fixture);
+      const providerFiles = Array.from({ length: count - 1 }, (_, i) =>
+        `packages/operator-core/lib/fan-${String(i).padStart(2, '0')}.test.ts`);
+      const consumerFile = 'pkg-consumer/lib/consumer.test.ts';
+      put(fixture, {
+        'package.json': JSON.stringify({ private: true, workspaces: ['packages/*', 'pkg-consumer'] }),
+        'scripts/affected-tests.mjs': readFileSync(resolve(import.meta.dirname, '../../../../scripts/affected-tests.mjs'), 'utf8'),
+        'scripts/bootstrap.mjs': 'export const bootstrap = 1;\n',
+        'packages/operator-core/package.json': JSON.stringify({ name: '@papercusp/operator-core' }),
+        'packages/operator-core/vitest.config.ts': 'export default {test:{include:["lib/**/*.test.ts"]}};\n',
+        'pkg-consumer/package.json': JSON.stringify({ name: '@t/consumer', dependencies: { '@papercusp/operator-core': '*' } }),
+        'pkg-consumer/vitest.config.ts': 'export default {test:{include:["lib/**/*.test.ts"]}};\n',
+        ...Object.fromEntries([...providerFiles, consumerFile].map(file => [file, 'export const test = 1;\n'])),
+      });
+      git(fixture, 'add', '.');
+      git(fixture, 'commit', '-q', '-m', 'pinned bootstrap boundary');
+      const frozen = git(fixture, 'rev-parse', 'HEAD');
+      const top = git(fixture, 'ls-tree', '-r', '--full-tree', frozen).split('\n').map(row => {
+        const match = /^(\d{6}) (\w+) ([0-9a-f]+)\t(.+)$/.exec(row)!;
+        return { mode: match[1]!, type: match[2]!, sha: match[3]!, file: match[4]! };
+      });
+      const census = top.filter(entry => entry.file.endsWith('.test.ts')).map(entry => entry.file).sort();
+      expect(census).toEqual([...providerFiles, consumerFile]);
+      expect(census).toHaveLength(count);
+      const legs = Object.fromEntries(census.map(file => [file,
+        file === consumerFile ? '@t/consumer' : '@papercusp/operator-core']));
+      for (const signature of [[], [
+        { kind: 'workspace-task' as const, id: '@papercusp/operator-core :: test' },
+        { kind: 'workspace-task' as const, id: '@t/consumer :: test' },
+      ]]) {
+        const radius = ordinaryAdmissionRadius({ root: fixture, commit: frozen, top, signature,
+          admittedPaths: ['scripts/bootstrap.mjs'] });
+        expect(radius.detail).toContain(`radius-files=${count}`);
+        if (count > ADMISSION_RADIUS_CAP) {
+          expect(radius).toMatchObject({ status: 'skipped', reason: `over-cap(${count}/40)`,
+            guarded: [], reportOnly: [], legs: {} });
+        } else {
+          expect(radius).toMatchObject({ status: 'measured', reason: 'ok', legs,
+            guarded: signature.length ? [] : census, reportOnly: signature.length ? census : [] });
+        }
+      }
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('native Vitest discovery independently checks measured bootstrap files and the skipped 41-file population', () => {
