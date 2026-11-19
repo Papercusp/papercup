@@ -3076,6 +3076,11 @@ fs.writeFileSync('public/runtime-ready', asset);
       }, context);
       expect(paused.status).toBe('incomplete');
       expect(paused.progress).toMatchObject({ phase: 'materialize-missing', censusStage: 'copy:node_modules' });
+      expect(paused.progress.copyStage).toBe('copy-bytes');
+      expect(paused.progress.copyStepDurationsMs['copy-bytes']).toBeGreaterThan(0);
+      expect(paused.progress.copyStepCalls['copy-bytes']).toBe(1);
+      expect(paused.progress.currentCopyChunk).toMatchObject({ index: 0 });
+      expect(paused.progress.copyCacheMismatch).toEqual({ receipt: false });
       expect(existsSync(started)).toBe(true);
       expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
       expectUnpreparedRetainedMarker(f);
@@ -3180,6 +3185,9 @@ fs.writeFileSync('public/runtime-ready', asset);
       const reusable = changed === 'unchanged' || changed.endsWith('-ctime');
       expect(complete.progress.reusedCopyChunks).toBe(reusable ? 1 : 0);
       expect(complete.progress.contentMatchedCopyChunks).toBe(changed.endsWith('-ctime') ? 1 : 0);
+      expect(complete.progress.currentCopyChunk.index).toBe(0);
+      expect(complete.progress.copyCacheMismatch).toEqual({ receipt: true, binding: false,
+        source: changed.startsWith('source'), target: changed.startsWith('stage') });
       // A COPY metadata miss needs one capture per tree before checking bytes
       // and one afterward. The comparator must reuse those initial records.
       const scannedRoots = readFileSync(scans, 'utf8').trim().split('\n');
@@ -3199,6 +3207,102 @@ fs.writeFileSync('public/runtime-ready', asset);
       expect(existsSync(partial)).toBe(false);
     } finally { f.cleanup(); }
   }, 60_000);
+
+  it.each(['unchanged', 'source', 'stage', 'source-ctime', 'stage-ctime', 'future', 'corrupt'])
+    ('resumes COPY checksum batches after interruption and checks %s evidence', async changed => {
+      const f = retainedFixture();
+      const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+      const helper = join(f.parent, 'interrupt-comparison.sh');
+      const firstCopy = join(f.parent, 'first-copy');
+      const copyInterrupted = join(f.parent, 'copy-interrupted');
+      const compareInterrupted = join(f.parent, 'compare-interrupted');
+      const comparisons = join(f.parent, 'comparisons');
+      const partialParent = join(f.workRoot, '.git/committed-dependency-partials',
+        createHash('sha256').update('node_modules').digest('hex'));
+      for (let index = 0; index < 90; index++)
+        writeFileSync(join(f.root, 'node_modules', 'chunk-' + String(index).padStart(3, '0')), 'small dependency');
+      utimesSync(join(f.root, 'node_modules/alpha.txt'), 946684800, 946684800);
+      writeFileSync(helper, [
+        'source ' + JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')),
+        'eval "$(declare -f dependency_generation_incremental_verify | sed \'1s/dependency_generation_incremental_verify/original_incremental_verify/\')"',
+        'dependency_generation_incremental_verify() {',
+        '  awk -F "\\t" \'$2 == "f" { print $1; exit }\' "$3/unmatched" >> ' + JSON.stringify(comparisons),
+        '  if [ "$(wc -l < ' + JSON.stringify(comparisons) + ')" -eq 2 ] && [ ! -f ' + JSON.stringify(compareInterrupted) + ' ]; then',
+        '    touch ' + JSON.stringify(compareInterrupted),
+        '    return 124',
+        '  fi',
+        '  original_incremental_verify "$@"',
+        '}',
+        'rsync() {',
+        '  if [ -f ' + JSON.stringify(firstCopy) + ' ] && [ ! -f ' + JSON.stringify(copyInterrupted) + ' ]; then',
+        '    touch ' + JSON.stringify(copyInterrupted),
+        '    return 124',
+        '  fi',
+        '  command rsync "$@" || return $?',
+        '  touch ' + JSON.stringify(firstCopy),
+        '}',
+      ].join('\n'));
+      rmSync(join(f.workRoot, 'node_modules'), { recursive: true });
+      const context = { sourceCommit: f.head, materializer: helper, verifySource: () => {} };
+      const options = { ...f.options().resumeVerification, materializeMissing: true, batchSize: 8 };
+      const verify = () => verifyRetainedDependencies(f.root, f.workRoot, options, context);
+      try {
+        expect((await verify()).status).toBe('incomplete');
+        // Invalidate the first COPY receipt without changing its bytes, forcing
+        // the maintained comparator to visit several batches in that chunk.
+        const sibling = join(f.parent, 'snapshot-link');
+        linkSync(join(f.root, 'node_modules/alpha.txt'), sibling);
+        rmSync(sibling);
+        const paused = await verify();
+        expect(paused.status).toBe('incomplete');
+        expect(paused.progress.copyStage).toBe('compare-bytes');
+        expect(paused.progress.verifiedCopyComparisonBatches).toBe(1);
+        expect(paused.progress.currentCopyComparisonBatch.index).toBe(1);
+        expect(existsSync(compareInterrupted)).toBe(true);
+        expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+        expectUnpreparedRetainedMarker(f);
+        const journals = readdirSync(partialParent).filter(name => name.startsWith('comparison-'));
+        expect(journals).toHaveLength(1);
+        const journalPath = join(partialParent, journals[0]);
+        const firstBatchPath = readFileSync(comparisons, 'utf8').trim().split('\n')[0];
+        if (changed === 'future' || changed === 'corrupt') {
+          const saved = JSON.parse(readFileSync(journalPath, 'utf8'));
+          if (changed === 'future') saved.data.capturedAtMs = Date.now() + 3_600_000;
+          else saved.data.proofs[0] = 'not-a-byte-proof';
+          saved.sha256 = createHash('sha256').update(JSON.stringify(saved.data)).digest('hex');
+          writeFileSync(journalPath, JSON.stringify(saved));
+        } else if (changed !== 'unchanged') {
+          const target = join(changed.startsWith('source') ? join(f.root, 'node_modules') : join(partialParent, 'tree'), 'alpha.txt');
+          const before = statSync(target, { bigint: true });
+          if (changed.endsWith('-ctime')) {
+            linkSync(target, sibling);
+            rmSync(sibling);
+            expect(statSync(target, { bigint: true }).ctimeNs).not.toBe(before.ctimeNs);
+          } else {
+            writeFileSync(target, 'payload-v2');
+            utimesSync(target, Number(before.atimeNs) / 1e9, Number(before.mtimeNs) / 1e9);
+            expect(statSync(target, { bigint: true }).size).toBe(before.size);
+          }
+          expect(statSync(target, { bigint: true }).mtimeNs).toBe(before.mtimeNs);
+        }
+        if (changed === 'corrupt') {
+          await expect(verify()).rejects.toThrow('invalid copy comparison byte proof');
+          expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+          expectUnpreparedRetainedMarker(f);
+        } else {
+          const complete = await verify();
+          expect(complete.status).toBe('complete');
+          expect(complete.progress.hashedFiles).toBeGreaterThan(0);
+          expect(complete.progress.reusedCopyComparisonBatches ?? 0).toBe(changed === 'unchanged' ? 1 : 0);
+          const firstBatchCalls = readFileSync(comparisons, 'utf8').trim().split('\n')
+            .filter(path => path === firstBatchPath);
+          expect(firstBatchCalls).toHaveLength(changed === 'unchanged' ? 1 : 2);
+          expect(readFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'utf8'))
+            .toBe(changed === 'source' ? 'payload-v2' : 'payload-v1');
+          expect(existsSync(join(partialParent, 'tree'))).toBe(false);
+        }
+      } finally { f.cleanup(); }
+    }, 60_000);
 
   it.each(['.cache', '.vite', '.verdict-data', 'runtime-file'])('uses maintained pruning for %s churn while preserving byte verification', async kind => {
     const f = retainedFixture();
