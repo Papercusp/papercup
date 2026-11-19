@@ -730,7 +730,7 @@ function readPhaseWriterTree(root: string) {
     }
     files.push(path);
   }
-  const generated = new Set(['node_modules', 'dist', 'build', 'out', 'target', 'coverage', '.next', '.turbo']);
+  const generated = new Set(['node_modules', 'dist', 'out', 'target', 'coverage', '.next', '.turbo']);
   for (const path of [...new Set(files)].sort(compare)) {
     if (!PHASE_WRITER_ROOTS.some(prefix => path.startsWith(prefix))) {
       excluded.push({ path, reason: 'outside-declared-runtime-roots' }); continue;

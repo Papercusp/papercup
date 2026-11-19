@@ -1575,6 +1575,29 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it.each(['git checkout', 'archive'])('retains authored build directory writers in a %s', (tree) => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-build-source-'));
+    const path = 'packages/operator-core/lib/agent-tools/build/writer.ts';
+    try {
+      mkdirSync(join(root, path, '..'), { recursive: true });
+      writeFileSync(join(root, path), write);
+      if (tree === 'git checkout') {
+        execFileSync('git', ['init', '-q'], { cwd: root });
+        writeFileSync(join(root, '.gitignore'), 'build/\n');
+        execFileSync('git', ['add', '--force', '--', path], { cwd: root });
+      }
+
+      const inventory = inventoryPhaseWriterTree(root);
+      expect(inventory.sources.map(source => source.path)).toContain(path);
+      expect(inventory.excluded.some(source => source.path === path)).toBe(false);
+      const writer = inventory.sites.find(site => site.path === path && site.kind === 'sql');
+      expect(writer).toBeDefined();
+      const reviewed = inventory.sites.filter(site => site !== writer).map(site => review(site));
+      expect(() => assertPhaseWriterTreeCensus(root, reviewed)).toThrow('unclassified-writer');
+      expect(assertPhaseWriterTreeCensus(root, [...reviewed, review(writer!)]).ready).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('retains unsupported runtime sources without requiring recognizable SQL words', () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-unsupported-runtime-'));
     const inputs = [
