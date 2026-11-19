@@ -9,8 +9,10 @@
  * snapshot-fold.worker.ts's graph from 16 inputs to ~11,900, and nothing failed until the
  * next restart left bg-host down.
  *
- * The worker list is DERIVED from the bundler script (never hand-listed) and each worker is
- * built with the bundler's own flags, so this fails exactly when that restart would.
+ * The bounded worker list is DERIVED from the shared compiler loop (never hand-listed).
+ * The detached testing core deliberately exports the full runner and uses its separate
+ * witnessed compiler door; worker-scripts-bundled.test.ts executes that contract.
+ * Each bounded worker uses the bundler's own flags.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -68,7 +70,11 @@ const BUNDLER_FLAGS: BuildOptions = {
 
 function bundledWorkerSources(): string[] {
   const text = readFileSync(BUNDLER, 'utf8');
-  return [...text.matchAll(/"\$repo_root\/([^"]+(?:\.worker|-worker)\.(?:ts|mjs))"/g)].map((m) => m[1]!);
+  // A quoted worker path elsewhere can belong to another compiler profile.
+  // In particular, testing-core's full runner is not a bounded leaf worker.
+  const loop = /^  for source in \\\r?\n([\s\S]*?); do$/m.exec(text)?.[1];
+  if (!loop) throw new Error('bundle_host_workers bounded compiler loop could not be read');
+  return [...loop.matchAll(/"\$repo_root\/([^"]+(?:\.worker|-worker)\.(?:ts|mjs))"/g)].map((m) => m[1]!);
 }
 
 const firstLines = (err: unknown, n = 6): string => String((err as Error)?.message ?? err).split('\n').slice(0, n).join('\n');
@@ -165,6 +171,11 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
     expect(workers).toContain('packages/operator-core/lib/memory/bench/precision-bench-worker.ts');
     expect(workers).toContain('packages/operator-core/lib/role-codex-home.worker.ts');
     expect(workers).toContain('libs/test-config/src/verifier-source-worker.mjs');
+    // This source is present in the recipe under its separate witnessed door.
+    // A whole-script scan silently assigned it the bounded-leaf contract.
+    expect(readFileSync(BUNDLER, 'utf8'))
+      .toContain('"$repo_root/packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts"');
+    expect(workers).not.toContain('packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts');
     expect(workers.length).toBeGreaterThanOrEqual(2);
     expect(BUNDLER_FLAGS.external).toContain('@opentelemetry/exporter-logs-otlp-proto');
     expect(BUNDLER_FLAGS.external).toContain('@dbos-inc/dbos-sdk');
