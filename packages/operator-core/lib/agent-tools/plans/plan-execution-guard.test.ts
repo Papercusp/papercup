@@ -316,6 +316,33 @@ describe('implementation authority before direct writes (EI-27540173897381380)',
     expect(isPlanImplementationCall('write_stdin', { chars: 'touch x\n' })).toBe(true);
   });
   it.each([
+    'git cat-file -t 755838ff5d1',
+    "git cat-file -e '755838ff5d1^{commit}'",
+    "git rev-parse --verify --end-of-options '755838ff5d1^{commit}'",
+    "git -C '/tmp/exact source' rev-parse --verify '755838ff5d1^{commit}'",
+    'git branch --show-current',
+    'git rev-parse --show-toplevel',
+  ])('allows exact read-only Git identity before plan activation: %s', async cmd => {
+    const readBindings = vi.fn(async () => [binding]);
+    expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), {
+      readBindings, checkPlan: vi.fn(async () => ['plan_not_started']),
+    })).toBeNull();
+    expect(readBindings).not.toHaveBeenCalled();
+  });
+  it.each([
+    'git -c alias.ident=!touch ident',
+    'git -c core.fsmonitor=unsafe status', 'git --exec-path=/tmp cat-file -t 755838ff5d1',
+    'git cat-file --filters 755838ff5d1', 'git cat-file --batch-command',
+    "git rev-parse --verify 'HEAD^{commit}'", 'git branch new-branch', 'git checkout 755838ff5d1',
+    "git rev-parse --verify '755838ff5d1^{commit}' > saved-sha",
+    'git cat-file -t 755838ff5d1; touch output', 'git cat-file -t $(touch output)',
+    'git -C relative rev-parse --show-toplevel',
+    'node scripts/source-preview.mjs verifier-prepare --repo /repo --ref 755838ff5d1',
+  ])('keeps Git mutation, custom execution and raw source export behind plan authority: %s', cmd => {
+    expect(isPlanResearchCommand(cmd)).toBe(false);
+    expect(isPlanImplementationCall('exec_command', { cmd })).toBe(true);
+  });
+  it.each([
     'pwd\nrg -n scope source.ts\nsed -n \'1,20p\' source.ts\n',
     'cat source.ts\r\nhead -20 other.ts',
     '\n  \ncat source.ts\n',

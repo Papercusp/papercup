@@ -191,6 +191,7 @@ export function isPlanResearchCommand(command: unknown): boolean {
 
 function isReadOnlyPlanResearchInvocation(tokens: readonly string[]): boolean {
   const [tool, ...args] = tokens;
+  if (tool === 'git') return isReadOnlyGitIdentity(args);
   if (!tool || !readCommands.has(tool)) return false;
   if (args.some(arg => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg))) return false;
   if (tool !== 'sed') return true;
@@ -198,6 +199,22 @@ function isReadOnlyPlanResearchInvocation(tokens: readonly string[]): boolean {
       !/^(?:\d+|\$)(?:,(?:\d+|\$))?p$/.test(args[1] ?? '')) return false;
   const inputFiles = args.slice(2);
   return inputFiles.length > 0 && inputFiles.every(arg => arg.length > 0 && !arg.startsWith('-'));
+}
+
+/** Object identity only: no aliases, configuration, external diff/pager or writes. */
+function isReadOnlyGitIdentity(input: readonly string[]): boolean {
+  const args = [...input];
+  if (args[0] === '-C') {
+    if (!args[1]?.startsWith('/') || /[\r\n]/.test(args[1])) return false;
+    args.splice(0, 2);
+  }
+  if (args[0] === 'rev-parse' && args.length === 2 && args[1] === '--show-toplevel') return true;
+  if (args[0] === 'branch' && args.length === 2 && args[1] === '--show-current') return true;
+  if (args[0] === 'cat-file' && args.length === 3 && ['-t', '-e'].includes(args[1]!))
+    return /^[a-f0-9]{7,40}(?:\^\{commit\})?$/.test(args[2]!);
+  if (args[0] !== 'rev-parse' || args[1] !== '--verify') return false;
+  const ref = args[2] === '--end-of-options' && args.length === 4 ? args[3] : args.length === 3 ? args[2] : undefined;
+  return typeof ref === 'string' && /^[a-f0-9]{7,40}\^\{commit\}$/.test(ref);
 }
 
 const readOnlyPtoolTools = new Set([
