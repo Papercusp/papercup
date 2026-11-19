@@ -916,6 +916,15 @@ describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
       if (recordsOriginals) {
         // Both sides are produced independently by the maintained reporters in
         // the real worker run. No authored native OUT or inserted pass row.
+        expect(snapshot).toMatchObject({
+          workspaceName: env.PC_EXECUTED_SOURCE_MAP_WORKSPACE,
+          completionCheckpoint: {
+            schemaVersion: 1,
+            qualificationAttemptId: owner.attemptId,
+            runContext: input.runContext,
+            runnerIdentity: expect.stringMatching(/^proof-v3 .+/),
+          },
+        });
         expect(snapshot.nativeRun).toMatchObject({ terminalHook: 'onTestRunEnd', reason: 'passed',
           selectedPopulationMatched: true, unhandledErrorCount: 0 });
         const originals = await sql<Array<{ id: string; file_path: string; execution_details: unknown }>>`
