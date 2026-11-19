@@ -13,12 +13,13 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import {
   apiStoreConsumers,
+  censusOneDevice,
   diskCensusPassInFlight,
   pruneDiskCensus,
   readCompleteDiskConsumerCensus,
@@ -27,11 +28,14 @@ import {
   unattributedKey,
   writeCensusRun,
   type CensusDevice,
+  type CensusFilesystemIdentity,
+  type CensusDeviceView,
   type CensusSql,
 } from './disk-consumer-census';
 import { devToMajorMinor, type CensusConsumer } from './usage';
 import { detectDiskGrowthWarnings, runDiskHeadroomAlarmOnce, emitStorageGrowthToast,
   DISK_HEADROOM_OBSERVATION_ACTION, DISK_HEADROOM_EXERCISE_ACTION, diskHeadroomAlarmRuntimeIdentity,
+  DISK_CENSUS_INCOMPLETE_ACTION,
   measureNativeDiskHeadroomAlarm, type DiskHeadroomObservation } from './storage-growth-alarm';
 
 // Toast/audit persistence uses the real throwaway PG below. The host SSE sink
@@ -54,6 +58,200 @@ let fixture: string;
 let censusDatabaseUri: string;
 
 beforeEach(() => { invalidation.notify.mockClear(); });
+
+describe('independent consecutive-incomplete episodes (real PG)', () => {
+  afterEach(async () => {
+    const removed = await rootSql`DELETE FROM harness_shared.audit_log WHERE workspace_id LIKE 'episode-%' RETURNING subject`;
+    const subjects = removed.map(row => row.subject);
+    if (subjects.length) await rootSql`DELETE FROM harness_shared.toast_log WHERE id::text = ANY(${subjects}::text[])`;
+  });
+  const start = new Date('2026-11-19T00:00:00Z');
+  const identityFor = (host: string, mount = '/episode-device'): CensusFilesystemIdentity => ({
+    version: 1, host, device: mount, bootId: '00000000-0000-4000-8000-000000000001',
+    majorMinor: '0:0', rootDev: '1', rootIno: '2', rootBirthNs: '1000',
+  });
+  const write = async (host: string, index: number, complete: boolean, opts: {
+    id?: string; mount?: string; identity?: CensusFilesystemIdentity | null; note?: string; consumers?: CensusConsumer[];
+  } = {}) => {
+    const runId = opts.id ?? randomUUID(), mount = opts.mount ?? '/episode-device';
+    const finishedAt = new Date(start.getTime() + index * 1000);
+    await writeCensusRun(sql, { runId, host, device: device({ device: mount }), startedAt: finishedAt,
+      finishedAt, attributedBytes: 50 * G, complete,
+      note: opts.note ?? `du walked as root${complete ? '' : '; du timed out; sizes are lower bounds'}`,
+      consumers: opts.consumers ?? [dir(`${mount}/consumer`, G)],
+      filesystemIdentity: opts.identity === undefined ? identityFor(host, mount) : opts.identity });
+    return runId;
+  };
+  const read = async (host: string, client = sql) =>
+    (await readDiskConsumerCensus(client, { host, now: start })).devices[0]!;
+
+  it('certifies producer history only when filesystem identity survives the entire failed walk', async () => {
+    for (const replaced of [false, true]) {
+      const host = `episode-producer-${replaced}-${randomUUID()}`;
+      const identity = identityFor(host);
+      let inspected = 0;
+      const inspectFilesystem = vi.fn(async () => ({ ...identity, rootBirthNs: replaced && inspected++ ? '2000' : '1000' }));
+      const dev = device({ device: identity.device });
+      const outcome = await censusOneDevice({ host, devices: [dev], stores: [], sudo: null }, dev, {
+        sql, statDevice: null, inspectFilesystem, now: () => start,
+        runDu: async () => ({ summary: { rootBytes: 100, consumers: [], ownFiles: [], records: 1 },
+          deniedCount: 0, deniedSample: [], exitCode: 1, timedOut: false, privileged: true,
+          diagnostics: { lines: 0, missingPaths: [], other: 0, overflow: false } }),
+        reconcileFailures: async () => ({ status: 'unbounded', uncertainBytesUpperBound: null,
+          vanishedPaths: 0, shards: [], reason: 'unclassified failed walk remains unknown' }),
+      });
+      expect(outcome.run).toMatchObject({ complete: false });
+      expect(inspectFilesystem).toHaveBeenCalledTimes(2);
+      const note = (await rootSql`SELECT note FROM harness_shared.disk_census_runs WHERE host=${host}`)[0]!.note as string;
+      expect(note.includes('census-history:')).toBe(!replaced);
+      expect(note).toContain('sizes are lower bounds');
+      expect((await read(host)).incompleteEpisode).toMatchObject({ status: 'unknown' });
+    }
+  });
+
+  it('pins episode history across consumer pages and alarm recovery, and resyncs an inserted source', async () => {
+    const host = `episode-cursor-${randomUUID()}`;
+    const consumers = Array.from({ length: 31 }, (_, n) => dir(`/episode-device/c${String(n).padStart(3, '0')}`, G));
+    await write(host, 0, true); await write(host, 1, false); await write(host, 3, false, { consumers });
+    const page = (await readDiskConsumerCensus(sql, { host, now: start, limit: 7 })).devices[0]!;
+    expect(page).toMatchObject({ consumersOmitted: 24, incompleteEpisode: { status: 'open', consecutive: 2 } });
+    const savedCursor = page.nextConsumerCursor!;
+    const recovered = await readCompleteDiskConsumerCensus(sql, { host, now: start, limit: 7 });
+    expect(recovered.devices[0]!.consumers).toHaveLength(31);
+    expect(recovered.devices[0]!.incompleteEpisode).toEqual(page.incompleteEpisode);
+    const emitToast = vi.fn(async () => {});
+    const alarm = await runDiskHeadroomAlarmOnce({
+      readDiskCensus: async () => (await readCompleteDiskConsumerCensus(sql, { host, now: start, limit: 2 })).devices,
+      emitToast,
+    });
+    expect(alarm.censusIncomplete).toHaveLength(1);
+    expect(emitToast).toHaveBeenCalledOnce();
+    await write(host, 2, false);
+    await expect(readDiskConsumerCensus(sql, { cursor: savedCursor })).rejects.toMatchObject({ code: 'census_restart_required' });
+    expect((await read(host)).incompleteEpisode).toMatchObject({ status: 'unknown' });
+  });
+
+  it('opens once at 2, shares the episode at 3, survives restart/toast pruning and resets only on complete', async () => {
+    const host = `episode-${randomUUID()}`, workspaceId = host;
+    await write(host, 0, true);
+    const first = await write(host, 1, false);
+    expect((await read(host)).incompleteEpisode).toMatchObject({ status: 'pending', consecutive: 1, first: { runId: first }, trigger: null });
+    const trigger = await write(host, 2, false);
+    const opened = await read(host);
+    expect(opened.incompleteEpisode).toMatchObject({ status: 'open', consecutive: 2,
+      first: { runId: first, coverageIssues: ['walk-timeout'] }, trigger: { runId: trigger } });
+    expect(opened.complete).toBe(false);
+    expect(opened.consumers![0]!.growth24hBytes).toBeNull();
+    // Separate connections contend on the actual audit PK, not a process cache.
+    const concurrentSql = postgres(censusDatabaseUri, { max: 6, onnotice: () => {} });
+    const options = { db: drizzle(concurrentSql) as never, workspaceId };
+    const alarm = async (view: CensusDeviceView) => runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [view],
+      emitToast: (toast, observation) => emitStorageGrowthToast(toast, observation, options) });
+    try {
+      await Promise.all(Array.from({ length: 6 }, () => alarm(opened)));
+      expect((await rootSql`SELECT count(*)::int n FROM harness_shared.audit_log
+        WHERE workspace_id=${workspaceId} AND action=${DISK_CENSUS_INCOMPLETE_ACTION}`)[0]!.n).toBe(1);
+      const saved = (await rootSql`SELECT * FROM harness_shared.audit_log WHERE workspace_id=${workspaceId}`)[0]!;
+      expect(saved.details.incompleteEpisode).toMatchObject({ first: { runId: first }, trigger: { runId: trigger } });
+      expect(saved.details.notification.id).toBe(saved.subject);
+      expect(invalidation.notify).toHaveBeenCalledTimes(1);
+      await rootSql`DELETE FROM harness_shared.toast_log WHERE id::text=${saved.subject}`;
+      await write(host, 3, false);
+      const restartedSql = postgres(censusDatabaseUri, { max: 1, onnotice: () => {} });
+      try {
+        const third = await read(host, restartedSql as unknown as CensusSql);
+        expect(third.incompleteEpisode).toMatchObject({ status: 'open', consecutive: 3, first: { runId: first }, trigger: { runId: trigger } });
+        await alarm(third);
+        expect((await rootSql`SELECT count(*)::int n FROM harness_shared.toast_log WHERE id::text=${saved.subject}`)[0]!.n).toBe(0);
+        expect(invalidation.notify).toHaveBeenCalledTimes(1);
+      } finally { await restartedSql.end({ timeout: 5 }); }
+      await write(host, 4, true);
+      expect((await read(host)).incompleteEpisode).toMatchObject({ status: 'closed' });
+      await write(host, 5, false);
+      expect((await read(host)).incompleteEpisode).toMatchObject({ status: 'pending', consecutive: 1 });
+      const secondTrigger = await write(host, 6, false);
+      await alarm(await read(host));
+      const receipts = await rootSql`SELECT details FROM harness_shared.audit_log WHERE workspace_id=${workspaceId}`;
+      expect(receipts).toHaveLength(2);
+      expect(receipts.some(r => r.details.incompleteEpisode.trigger.runId === secondTrigger)).toBe(true);
+    } finally { await concurrentSql.end({ timeout: 5 }); }
+  });
+
+  it.each([99, 100, 101, 199, 200, 201])('drains %i consecutive rows to their decisive complete anchor across pages and fresh clients', async count => {
+    const host = `episode-pages-${count}-${randomUUID()}`;
+    const reset = await write(host, 0, true);
+    const runs: string[] = [];
+    for (let i = 1; i <= count; i++) runs.push(await write(host, i, false));
+    const client = postgres(censusDatabaseUri, { max: 1, onnotice: () => {} });
+    try {
+      expect((await read(host, client as unknown as CensusSql)).incompleteEpisode).toMatchObject({
+        status: 'open', resetRunId: reset, consecutive: count, first: { runId: runs[0] }, trigger: { runId: runs[1] },
+      });
+    } finally { await client.end({ timeout: 5 }); }
+  }, 120_000);
+
+  it('keeps history gaps, legacy/unknown metadata, replacement and out-of-order insertions UNKNOWN with resync', async () => {
+    for (const fault of ['pruned', 'legacy', 'version', 'identity', 'inserted'] as const) {
+      const host = `episode-${fault}-${randomUUID()}`;
+      await write(host, 0, true);
+      const first = await write(host, 1, false);
+      await write(host, 3, false);
+      if (fault === 'pruned') await rootSql`DELETE FROM harness_shared.disk_census_runs WHERE run_id=${first}`;
+      if (fault === 'legacy') await rootSql`UPDATE harness_shared.disk_census_runs SET note='du walked as root; du timed out' WHERE run_id=${first}`;
+      if (fault === 'version') {
+        const row = (await rootSql`SELECT note FROM harness_shared.disk_census_runs WHERE run_id=${first}`)[0]!;
+        await rootSql`UPDATE harness_shared.disk_census_runs SET note=${row.note.replace('%22version%22%3A1', '%22version%22%3A2')} WHERE run_id=${first}`;
+      }
+      if (fault === 'identity') await write(host, 4, false, { identity: { ...identityFor(host), rootBirthNs: '2000' } });
+      if (fault === 'inserted') await write(host, 2, false);
+      expect((await read(host)).incompleteEpisode, fault).toMatchObject({ status: 'unknown', recovery: expect.stringContaining('storage:census') });
+    }
+  });
+
+  it('isolates host/device identity, preserves note parsing and uses stable equal-time event order', async () => {
+    const host = `episode-isolation-${randomUUID()}`;
+    const [zero, one, two] = Array.from({ length: 3 }, () => randomUUID()).sort() as [string, string, string];
+    await write(host, 0, true, { id: zero });
+    await write(host, 1, false, { id: one });
+    await write(host, 1, false, { id: two });
+    await write(host, 0, true, { mount: '/other-device' });
+    await write(host, 1, false, { mount: '/other-device' });
+    const devices = (await readDiskConsumerCensus(sql, { host, now: start })).devices;
+    expect(devices.find(d => d.device === '/episode-device')!.incompleteEpisode).toMatchObject({ status: 'open', first: { runId: one }, trigger: { runId: two } });
+    expect(devices.find(d => d.device === '/other-device')!.incompleteEpisode).toMatchObject({ status: 'pending' });
+    // An unfinished row participates in neither reset nor streak count.
+    const unfinished = await write(host, 4, true);
+    await rootSql`UPDATE harness_shared.disk_census_runs SET started_at=finished_at + interval '1 hour' WHERE run_id=${unfinished}`;
+    expect((await read(host)).runId).toBe(two);
+    const legacy = `note-compat-${randomUUID()}`;
+    const baseAt = new Date(start.getTime() - 24 * HOUR);
+    await writeCensusRun(sql, { runId: randomUUID(), host: legacy, device: device({ device: '/episode-device' }),
+      startedAt: baseAt, finishedAt: baseAt, attributedBytes: 50 * G, complete: true, note: 'du walked as root',
+      consumers: [dir('/episode-device/consumer', 1)] });
+    await write(legacy, 0, true, { consumers: [dir('/episode-device/consumer', 2)] });
+    expect(await read(legacy)).toMatchObject({ complete: true, coverageIssues: [], baselineStatus: 'comparable',
+      consumers: [{ growth24hBytes: 1 }], incompleteEpisode: { status: 'closed' } });
+  });
+
+  it('rolls back both replay identity and notification on either failure and permits a safe retry', async () => {
+    const host = `episode-rollback-${randomUUID()}`;
+    await write(host, 0, true); await write(host, 1, false); await write(host, 2, false);
+    let observation: DiskHeadroomObservation | undefined;
+    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [await read(host)],
+      emitToast: async (_toast, saved) => { observation = saved; } });
+    const options = { db: drizzle(notificationSql) as never, workspaceId: host };
+    const toast = { level: 'warning', message: 'refuse-notification', description: 'must roll back replay identity' };
+    await expect(emitStorageGrowthToast(toast, observation, options)).rejects.toThrow();
+    expect((await rootSql`SELECT count(*)::int n FROM harness_shared.audit_log WHERE workspace_id=${host}`)[0]!.n).toBe(0);
+    await rootSql.unsafe('ALTER TABLE harness_shared.audit_log ADD CONSTRAINT refuse_episode_audit CHECK (false) NOT VALID');
+    try { await expect(emitStorageGrowthToast({ ...toast, message: 'evidence-refused' }, observation, options)).rejects.toThrow(); }
+    finally { await rootSql.unsafe('ALTER TABLE harness_shared.audit_log DROP CONSTRAINT refuse_episode_audit'); }
+    await emitStorageGrowthToast({ ...toast, message: 'episode-retry' }, observation, options);
+    const receipts = await rootSql`SELECT a.subject, t.id FROM harness_shared.audit_log a JOIN harness_shared.toast_log t ON t.id::text=a.subject
+      WHERE a.workspace_id=${host} AND a.action=${DISK_CENSUS_INCOMPLETE_ACTION}`;
+    expect(receipts).toHaveLength(1);
+  });
+});
 
 /** du's own number for one path — the comparison R-1's method names. */
 function duBytes(path: string): number {

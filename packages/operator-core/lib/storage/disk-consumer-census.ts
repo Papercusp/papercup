@@ -33,6 +33,7 @@ import { hostname } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
+import { z } from 'zod';
 import { alarmWatchedPaths } from './disk-space-alarm';
 import { getBuildInfo } from '../build-info';
 import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from '../dbos/routine-tick-overlap-guard';
@@ -101,6 +102,43 @@ export interface CensusDevice {
   sizeBytes: number;
   usedBytes: number;
   availBytes: number;
+}
+
+const censusFilesystemIdentitySchema = z.object({
+  version: z.literal(1), host: z.string().min(1).refine(value => !value.includes('\0')),
+  device: z.string().min(1).refine(value => resolve(value) === value && !value.includes('\0')),
+  bootId: z.string().uuid(), majorMinor: z.string().regex(/^\d+:\d+$/),
+  rootDev: z.string().regex(/^\d+$/), rootIno: z.string().regex(/^[1-9]\d*$/),
+  rootBirthNs: z.string().regex(/^[1-9]\d*$/),
+}).strict();
+export type CensusFilesystemIdentity = z.infer<typeof censusFilesystemIdentitySchema>;
+
+/** A boot-scoped filesystem identity, measured on both sides of the walk. A
+ * replaced mount/root, missing birth clock or inaccessible identity stays unknown. */
+export async function inspectCensusFilesystem(device: CensusDevice, host: string): Promise<CensusFilesystemIdentity | null> {
+  try {
+    if (resolve(device.device) !== device.device || await fsp.realpath(device.device) !== device.device) return null;
+    const root = await fsp.lstat(device.device, { bigint: true });
+    if (!root.isDirectory() || root.isSymbolicLink() || devToMajorMinor(Number(root.dev)) !== device.majorMinor) return null;
+    const result = censusFilesystemIdentitySchema.safeParse({ version: 1, host, device: device.device,
+      bootId: (await fsp.readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim(), majorMinor: device.majorMinor,
+      rootDev: String(root.dev), rootIno: String(root.ino), rootBirthNs: String(root.birthtimeNs) });
+    return result.success ? result.data : null;
+  } catch { return null; }
+}
+
+const CENSUS_HISTORY_PREFIX = 'census-history:';
+const censusHistorySchema = z.object({
+  version: z.literal(1), runId: z.string().uuid(), identity: censusFilesystemIdentitySchema,
+  previousRunId: z.string().uuid().nullable(),
+}).strict();
+function censusHistory(note: string | null) {
+  const records = note?.split('; ').filter(part => part.startsWith(CENSUS_HISTORY_PREFIX)) ?? [];
+  if (records.length !== 1) return null;
+  try {
+    const result = censusHistorySchema.safeParse(JSON.parse(decodeURIComponent(records[0]!.slice(CENSUS_HISTORY_PREFIX.length))));
+    return result.success ? result.data : null;
+  } catch { return null; }
 }
 
 async function readMountInfo(): Promise<string> {
@@ -1236,6 +1274,7 @@ export interface CensusDeps {
   devices?: CensusDevice[];
   runDu?: typeof runDuTree;
   reconcileFailures?: typeof reconcileCensusFailures;
+  inspectFilesystem?: typeof inspectCensusFilesystem;
   measurePostgres?: (sql: CensusSql) => Promise<ApiSizedStore | null>;
   measureDocker?: () => Promise<ApiSizedStore | null>;
   /** sudo binary for a privileged walk, or null for unprivileged; probed once per pass. */
@@ -1365,6 +1404,8 @@ export async function censusOneDevice(
     // Devices are resolved once per pass but walked one after another (a `/` walk takes
     // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
     // Re-sample statfs around this walk and reconcile against the midpoint.
+    const inspectFilesystem = deps.inspectFilesystem ?? inspectCensusFilesystem;
+    const identityBefore = await inspectFilesystem(resolved, host).catch(() => null);
     const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
     const walkStarted = Date.now();
     const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
@@ -1383,6 +1424,7 @@ export async function censusOneDevice(
     );
     const attributionMs = Date.now() - attributionStarted;
     const finishedAt = now();
+    const identityAfter = await inspectFilesystem(resolved, host).catch(() => null);
     // A root summary can exist even when du emitted only partial output before failing.
     // Only a confirmed successful child exit can certify the walk as complete.
     const complete =
@@ -1427,6 +1469,7 @@ export async function censusOneDevice(
       complete,
       note: notes.length ? notes.join('; ') : null,
       consumers,
+      filesystemIdentity: identityBefore && JSON.stringify(identityBefore) === JSON.stringify(identityAfter) ? identityBefore : null,
     });
     return {
       run: {
@@ -1459,6 +1502,7 @@ export async function writeCensusRun(
     consumers: readonly CensusConsumer[];
     /** Loaded producer identity; null preserves explicitly identity-less/legacy fixtures. */
     producerBuildSha?: string | null;
+    filesystemIdentity?: CensusFilesystemIdentity | null;
   },
 ): Promise<void> {
   // One row per consumer key: du never repeats a path, but keep the PK safe regardless.
@@ -1466,8 +1510,25 @@ export async function writeCensusRun(
   // Extend the existing run metadata instead of introducing a parallel ledger or
   // attributing historical rows to whatever build happens to grade them later.
   const build = run.producerBuildSha === undefined ? getBuildInfo().sha : run.producerBuildSha;
-  const note = build ? `census-producer:${encodeURIComponent(build)}; ${run.note ?? ''}` : run.note;
+  let note = build ? `census-producer:${encodeURIComponent(build)}; ${run.note ?? ''}` : run.note;
   await sql.begin(async (tx) => {
+    if (run.filesystemIdentity) {
+      const identity = censusFilesystemIdentitySchema.parse(run.filesystemIdentity);
+      if (identity.host !== run.host || identity.device !== run.device.device
+        || identity.majorMinor !== run.device.majorMinor || resolve(identity.device) !== identity.device)
+        throw new Error('Census filesystem identity does not match the saved run');
+      // Serialize adjacent producer receipts. Out-of-order historical insertion
+      // is detected by the reader's adjacency check, never silently merged.
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([run.host, run.device.device])}, 0))`;
+      const previous = await tx<{ run_id: string }>`SELECT run_id FROM harness_shared.disk_census_runs
+        WHERE host=${run.host} AND device=${run.device.device}
+          AND finished_at IS NOT NULL AND finished_at >= started_at
+          AND (finished_at, run_id) < (${run.finishedAt}::timestamptz, ${run.runId}::uuid)
+        ORDER BY finished_at DESC, run_id DESC LIMIT 1`;
+      const history = censusHistorySchema.parse({ version: 1, runId: run.runId, identity,
+        previousRunId: previous[0]?.run_id ?? null });
+      note = `${note ?? ''}; ${CENSUS_HISTORY_PREFIX}${encodeURIComponent(JSON.stringify(history))}`;
+    }
     await tx`
       INSERT INTO harness_shared.disk_census_runs
         (run_id, host, device, started_at, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note)
@@ -1502,6 +1563,8 @@ export type CensusBaselineStatus =
   | 'comparable' | 'latest-incomplete' | 'unavailable' | 'incomplete-candidates' | 'visibility-mismatch';
 
 export interface CensusDeviceView {
+  /** Independent of consumer qualification and physical-capacity projections. */
+  incompleteEpisode?: CensusIncompleteEpisode;
   /** A bounded affected-shard snapshot still leaves complete=false for a failed walk. */
   failureCoverage?: CensusFailureCoverage | null;
   device: string;
@@ -1555,6 +1618,66 @@ interface RunRow {
   attributed_bytes: string | number;
   complete: boolean;
   note: string | null;
+  finished_at_exact?: string;
+}
+
+export interface CensusIncompleteRunRef {
+  runId: string; finishedAt: string; note: string | null;
+  coverageIssues: CensusCoverageIssue[]; failureCoverage: CensusFailureCoverage | null;
+}
+export type CensusIncompleteEpisode =
+  | { status: 'unknown'; reason: string; recovery: string }
+  | { status: 'closed'; identity: CensusFilesystemIdentity }
+  | { status: 'pending' | 'open'; identity: CensusFilesystemIdentity; resetRunId: string;
+      first: CensusIncompleteRunRef; trigger: CensusIncompleteRunRef | null; consecutive: number; fingerprint: string };
+
+/** Drains finished history, with exact timestamp/UUID ordering and producer
+ * adjacency receipts. A missing/pruned/legacy link is UNKNOWN, not a fresh streak.
+ * The page size bounds query work; it never bounds the consecutive population. */
+async function readCensusIncompleteEpisode(sql: CensusSql, host: string, latest: RunRow): Promise<CensusIncompleteEpisode> {
+  const unknown = (reason: string): CensusIncompleteEpisode => ({ status: 'unknown', reason,
+    recovery: 'Restart storage:census after a whole-device complete run; retain or restore the referenced census history.' });
+  const head = censusHistory(latest.note);
+  if (!head || head.runId !== latest.run_id || head.identity.host !== host || head.identity.device !== latest.device)
+    return unknown('Filesystem identity/history receipt missing, malformed or mismatched');
+  if (latest.complete && censusScanIssues(latest.note).length === 0) return { status: 'closed', identity: head.identity };
+  let beforeTime: string | null = null, beforeRun: string | null = null;
+  let expected = latest.run_id;
+  let first: CensusIncompleteRunRef | null = null, trigger: CensusIncompleteRunRef | null = null, consecutive = 0;
+  const population = createHash('sha256');
+  for (;;) {
+    const page: RunRow[] = await sql<RunRow>`SELECT run_id, device, finished_at, finished_at::text AS finished_at_exact,
+        size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note
+      FROM harness_shared.disk_census_runs WHERE host=${host} AND device=${latest.device}
+        AND finished_at IS NOT NULL AND finished_at >= started_at
+        AND (finished_at, run_id) <= (${latest.finished_at_exact ?? latest.finished_at}::timestamptz, ${latest.run_id}::uuid)
+        AND (${beforeTime}::timestamptz IS NULL OR (finished_at, run_id) < (${beforeTime}::timestamptz, ${beforeRun}::uuid))
+      ORDER BY finished_at DESC, run_id DESC LIMIT ${BASELINE_PAGE_SIZE}`;
+    for (const run of page) {
+      const receipt = censusHistory(run.note);
+      if (run.run_id !== expected || !receipt || receipt.runId !== run.run_id
+        || JSON.stringify(receipt.identity) !== JSON.stringify(head.identity))
+        return unknown(`History gap, insertion or filesystem replacement at ${expected}`);
+      population.update(JSON.stringify(run));
+      const issues = censusScanIssues(run.note);
+      if (run.complete && issues.length === 0) {
+        if (!first) return unknown('Incomplete head changed while reading history');
+        return { status: consecutive >= 2 ? 'open' : 'pending', identity: head.identity, resetRunId: run.run_id,
+          first, trigger, consecutive, fingerprint: population.digest('hex') };
+      }
+      if (!issues.length) issues.push('incomplete-run');
+      trigger = first;
+      first = { runId: run.run_id, finishedAt: run.finished_at_exact ?? new Date(run.finished_at).toISOString(),
+        note: run.note, coverageIssues: issues, failureCoverage: readFailureCoverage(run.note) };
+      consecutive++;
+      if (receipt.previousRunId === null) return unknown('Retained history has no whole-device complete reset');
+      expected = receipt.previousRunId;
+    }
+    if (page.length < BASELINE_PAGE_SIZE) return unknown(`Referenced census history missing or pruned at ${expected}`);
+    const last: RunRow = page[page.length - 1]!;
+    beforeTime = last.finished_at_exact ?? new Date(last.finished_at).toISOString();
+    beforeRun = last.run_id;
+  }
 }
 
 async function consumersOf(sql: CensusSql, runId: string): Promise<CensusConsumer[]> {
@@ -1711,9 +1834,10 @@ async function readCensusSnapshot(
            started_at::text AS started_at_exact, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note
       FROM harness_shared.disk_census_runs
      WHERE host = ${host} ${device ? sql`AND device = ${device}` : sql``}
+       AND finished_at IS NOT NULL AND finished_at >= started_at
        AND (${cursor?.runId ?? null}::uuid IS NULL OR run_id = ${cursor?.runId ?? null}::uuid)
        ${opts.asOf ? sql`AND finished_at <= ${opts.asOf}` : sql``}
-     ORDER BY device, finished_at DESC, run_id`;
+     ORDER BY device, finished_at DESC, run_id DESC`;
   const devices: CensusDeviceView[] = [];
   if (cursor && latest.length !== 1) throw new CensusReadRestartError('Pinned census run was pruned or replaced.');
   for (const run of latest) {
@@ -1731,9 +1855,10 @@ async function readCensusSnapshot(
       : search.readableCount === 0 ? 'incomplete-candidates'
       : 'visibility-mismatch';
     const consumers = await consumersOf(sql, run.run_id);
+    const incompleteEpisode = await readCensusIncompleteEpisode(sql, host, run);
     const baselineConsumers = base ? await consumersOf(sql, base.run_id) : null;
     const fingerprint = createHash('sha256').update(JSON.stringify({ run, candidates: search.fingerprint,
-      consumers, baselineConsumers })).digest('hex');
+      consumers, baselineConsumers, incompleteEpisode })).digest('hex');
     if (cursor && cursor.fingerprint !== fingerprint) {
       throw new CensusReadRestartError('Pinned census source or baseline population changed; restart the read.');
     }
@@ -1754,6 +1879,7 @@ async function readCensusSnapshot(
     const unattributed = Math.max(0, used - attributed);
     if (unattributed >= CENSUS_COVERAGE_GAP_BYTES) coverageIssues.push('unattributed-bytes');
     devices.push({
+      incompleteEpisode,
       device: run.device,
       host,
       runId: run.run_id,

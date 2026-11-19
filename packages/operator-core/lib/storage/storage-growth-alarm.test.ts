@@ -222,6 +222,41 @@ describe('disk durable headroom (P-011 / R-9)', () => {
     ], ...over,
   });
 
+  it('notifies a second consecutive incomplete census independently of growth, floors and scoped successes', async () => {
+    const identity = { version: 1 as const, host: 'host', device: '/', bootId: '00000000-0000-4000-8000-000000000001',
+      majorMinor: '8:1', rootDev: '2049', rootIno: '2', rootBirthNs: '1000' };
+    const first = { runId: 'first', finishedAt: '2026-11-19T00:00:00Z', note: 'du timed out',
+      coverageIssues: ['walk-timeout' as const], failureCoverage: null };
+    const trigger = { ...first, runId: 'second', finishedAt: '2026-11-19T01:00:00Z' };
+    const incompleteEpisode = { status: 'open' as const, identity, resetRunId: 'reset', first, trigger,
+      consecutive: 2, fingerprint: 'pinned' };
+    const emitToast = vi.fn(async () => {});
+    const device = census({ complete: false, baselineAt: null, availBytes: 900e9, incompleteEpisode,
+      consumers: [{ consumer: '/qualified', kind: 'dir', depth: 1, bytes: 100, baselineBytes: 10, growth24hBytes: 90 }] });
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [device], emitToast });
+    expect(result).toMatchObject({ diskHeadroom: [], diskGrowth: [], diskProjectionUnknown: ['/'],
+      censusIncomplete: [{ device: '/', episode: incompleteEpisode }], censusIncompleteUnknown: [] });
+    expect(emitToast).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      message: 'Disk census remains incomplete — /', description: expect.stringContaining('Coverage remains UNKNOWN'),
+    }), expect.objectContaining({ incompleteEpisode, breaches: [], growth: [] }));
+    for (const status of ['pending', 'closed'] as const) {
+      emitToast.mockClear();
+      await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [{ ...device,
+        incompleteEpisode: status === 'closed' ? { status, identity } : { ...incompleteEpisode, status, trigger: null, consecutive: 1 },
+      }], emitToast });
+      expect(emitToast).not.toHaveBeenCalled();
+    }
+  });
+
+  it('retains explicit incomplete-history and delivery UNKNOWN without suppressing floor alarms', async () => {
+    const emitToast = vi.fn(async () => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [census({ availBytes: 1,
+      incompleteEpisode: { status: 'unknown', reason: 'history pruned', recovery: 'resync' },
+    })], emitToast });
+    expect(result.censusIncompleteUnknown).toEqual(['/: history pruned']);
+    expect(emitToast.mock.calls).toHaveLength(1);
+  });
+
   it('alarms at the decimal root/data floors and both real cold-tier mount names; equality passes', () => {
     const bad = [census({ availBytes: 250e9 - 1 }), census({ device: '/mnt/data', availBytes: 1e12 - 1 }),
       census({ device: '/mnt/cold-a', availBytes: 400e9 - 1 }), census({ device: '/mnt/cold-b', availBytes: 400e9 - 1 })];

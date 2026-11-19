@@ -42,11 +42,11 @@
  * so it can never affect the system it watches.
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { desc, inArray } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { getBuildInfo } from '../build-info';
 
@@ -64,7 +64,7 @@ import { computeStorageUsage, type StorageUsageRow } from './usage';
 import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
 import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
 import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
-import { CENSUS_RETENTION_DAYS, type CensusDeviceView } from './disk-consumer-census';
+import { CENSUS_RETENTION_DAYS, type CensusDeviceView, type CensusIncompleteEpisode } from './disk-consumer-census';
 import { samplePgTableSizes, recordPgTableSizeSample } from './pg-table-growth';
 import {
   comparableCensusWindowDays,
@@ -661,6 +661,7 @@ export function detectBreaches(rows: StorageUsageRow[]): StorageBreach[] {
 
 type StorageGrowthToast = { level: string; message: string; description: string };
 export const DISK_HEADROOM_OBSERVATION_ACTION = 'storage:disk-headroom-alarm';
+export const DISK_CENSUS_INCOMPLETE_ACTION = 'storage:disk-census-incomplete';
 export const DISK_HEADROOM_EXERCISE_ACTION = 'storage:disk-headroom-alarm-exercise';
 const HEADROOM_DEVICES = ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'] as const;
 const NATIVE_HEADROOM_FRESH_MS = 90 * 60_000;
@@ -866,6 +867,8 @@ export interface DiskHeadroomObservation {
   growth: DiskGrowthWarning[];
   projectionUnknown: string[];
   exercise?: { kind: 'synthetic-delivery'; id: string };
+  /** Independent census-health evidence, never physical-headroom acceptance. */
+  incompleteEpisode?: CensusIncompleteEpisode;
 }
 
 /** The notification and its native evidence share one transaction. Neither a
@@ -876,19 +879,41 @@ export async function emitStorageGrowthToast(t: StorageGrowthToast, observation?
   const tl = generated.toastLogInHarnessShared;
   const db = options.db ?? getOrgPg().db;
   const workspaceId = observation ? options.workspaceId ?? (await import('../workspace-registry')).activeWorkspaceId() : null;
-  await db.transaction(async tx => {
+  const episode = observation?.incompleteEpisode;
+  if (episode && (episode.status !== 'open' || !episode.trigger || observation?.exercise))
+    throw new Error('Incomplete census notification requires an authentic open episode');
+  const episodeId = episode?.status === 'open' ? createHash('sha256').update(JSON.stringify([
+    workspaceId, episode.identity, episode.resetRunId,
+  ])).digest('hex') : null;
+  const emitted = await db.transaction(async tx => {
+    const audit = generated.auditLogInHarnessShared;
+    // Reserve the replay identity in the existing audit ledger BEFORE notifying.
+    // Its PK serializes concurrent calls; a failed toast/audit rolls back the
+    // reservation. The receipt outlives toast-ring pruning, like census history.
+    if (episodeId) {
+      const reserved = await tx.insert(audit).values({ id: episodeId, ts: Date.now(),
+        actor: 'system:storage-growth-alarm', action: DISK_CENSUS_INCOMPLETE_ACTION,
+        subject: 'pending', workspaceId: workspaceId!, details: observation,
+      }).onConflictDoNothing().returning({ id: audit.id });
+      if (!reserved.length) return false;
+    }
     const [notification] = await tx.insert(tl).values({
       level: t.level, message: t.message, description: t.description, harnessSlug: null,
       createdAt: Date.now(), actionLabel: null, actionHref: null,
     }).returning({ id: tl.id });
     if (!notification) throw new Error('Storage alarm notification insert returned no identity');
-    if (observation) await tx.insert(generated.auditLogInHarnessShared).values({
-      id: randomUUID(), ts: Date.now(), actor: 'system:storage-growth-alarm',
-      action: observation.exercise ? DISK_HEADROOM_EXERCISE_ACTION : DISK_HEADROOM_OBSERVATION_ACTION,
-      subject: String(notification.id), workspaceId: workspaceId!,
-      details: { ...observation, notification: { id: String(notification.id), ...t } },
-    });
+    if (observation) {
+      const details = { ...observation, notification: { id: String(notification.id), ...t } };
+      if (episodeId) await tx.update(audit).set({ subject: String(notification.id), details }).where(eq(audit.id, episodeId));
+      else await tx.insert(audit).values({
+        id: randomUUID(), ts: Date.now(), actor: 'system:storage-growth-alarm',
+        action: observation.exercise ? DISK_HEADROOM_EXERCISE_ACTION : DISK_HEADROOM_OBSERVATION_ACTION,
+        subject: String(notification.id), workspaceId: workspaceId!, details,
+      });
+    }
+    return true;
   });
+  if (!emitted) return;
   // Bound the ring buffer (mirrors agent-governor-observer).
   void (async () => {
     const stale = await db.select({ id: tl.id }).from(tl).orderBy(desc(tl.createdAt)).offset(TOAST_RING_BUFFER);
@@ -1155,12 +1180,46 @@ async function runUnenforcedClassGrowthLeg(
   }
 }
 
+export interface CensusIncompleteAlarmResult {
+  censusIncomplete: Array<{ device: string; episode: CensusIncompleteEpisode }>;
+  censusIncompleteUnknown: string[];
+}
+
+/** Independent health leg: qualified consumers never reset whole-device failure.
+ * One durable onset is enforced by emitStorageGrowthToast's audit transaction. */
+async function runCensusIncompleteLeg(devices: readonly CensusDeviceView[],
+  emitToast: NonNullable<GrowthAlarmDeps['emitToast']>): Promise<CensusIncompleteAlarmResult> {
+  const result: CensusIncompleteAlarmResult = { censusIncomplete: [], censusIncompleteUnknown: [] };
+  for (const device of devices) {
+    const episode = device.incompleteEpisode;
+    if (!episode || episode.status === 'unknown') {
+      result.censusIncompleteUnknown.push(`${device.device}: ${episode?.status === 'unknown' ? episode.reason : 'census history unavailable'}`);
+      continue;
+    }
+    if (episode.status !== 'open' || !episode.trigger) continue;
+    try {
+      await emitToast({ level: 'warning', message: `Disk census remains incomplete — ${device.device}`,
+        description: `Two consecutive whole-device censuses failed to complete. First: ${episode.first.runId}; trigger: ${episode.trigger.runId}. ` +
+          `Coverage remains UNKNOWN (${episode.trigger.coverageIssues.join(', ')}). Inspect storage:census and its retained failure/recovery evidence; scoped measurements cannot clear this episode.`,
+      }, { schemaVersion: 1, observedAt: new Date().toISOString(), runtime: diskHeadroomAlarmRuntimeIdentity(),
+        floors: DISK_HEADROOM_FLOORS, horizonDays: DISK_GROWTH_HORIZON_DAYS, devices: [device],
+        breaches: [], growth: [], projectionUnknown: [device.device], incompleteEpisode: episode });
+      result.censusIncomplete.push({ device: device.device, episode });
+    } catch (error) {
+      result.censusIncompleteUnknown.push(`${device.device}: incomplete-episode notification failed`);
+      console.warn(`[storage-growth-alarm] incomplete census notification failed: ${String(error)}`);
+    }
+  }
+  return result;
+}
+
 /** Cheap persisted-history leg, also used by the existing 30-minute disk alarm. */
 export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'readDiskCensus' | 'emitToast'> & {
   exercise?: { devices: readonly CensusDeviceView[] };
 } = {}): Promise<{
   diskHeadroom: DiskHeadroomBreach[]; diskGrowth: DiskGrowthWarning[]; diskProjectionUnknown: string[];
-} & UnenforcedClassGrowthResult> {
+} & UnenforcedClassGrowthResult & CensusIncompleteAlarmResult> {
+  let incomplete: CensusIncompleteAlarmResult = { censusIncomplete: [], censusIncompleteUnknown: ['census unavailable'] };
   try {
     const devices = deps.exercise ? structuredClone(deps.exercise.devices) : await (deps.readDiskCensus ?? defaultReadDiskCensus)();
     if (deps.exercise && (!validExerciseDevices(devices) || !detectDiskHeadroom(devices).length ||
@@ -1168,6 +1227,9 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
       throw new Error('Exercise requires complete comparable four-volume inputs, floor breaches and growth with top growers');
     }
     const emitToast = deps.emitToast ?? defaultEmitToast;
+    // Consumer growth and floor-notification failures cannot suppress this leg.
+    incomplete = deps.exercise ? { censusIncomplete: [], censusIncompleteUnknown: [] }
+      : await runCensusIncompleteLeg(devices, emitToast);
     const diskHeadroom = detectDiskHeadroom(devices), diskGrowth = detectDiskGrowthWarnings(devices);
     const diskProjectionUnknown = devices.filter(d => diskGrowthRate(d) === null).map(d => d.device);
     if (diskHeadroom.length || diskGrowth.length) await emitToast(
@@ -1185,11 +1247,12 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
     return {
       diskHeadroom, diskGrowth, diskProjectionUnknown: devices.length ? diskProjectionUnknown : ['census unavailable'],
       ...unenforced,
+      ...incomplete,
     };
   } catch (err) {
     console.warn(`[storage-growth-alarm] disk headroom projection skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`);
     return { diskHeadroom: [], diskGrowth: [], diskProjectionUnknown: ['census read failed'],
-      unenforcedClassGrowth: [], unenforcedClassUnknown: ['census read failed'] };
+      unenforcedClassGrowth: [], unenforcedClassUnknown: ['census read failed'], ...incomplete };
   }
 }
 
@@ -1210,6 +1273,8 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   diskProjectionUnknown: string[];
   unenforcedClassGrowth: UnenforcedClassGrowthWarning[];
   unenforcedClassUnknown: string[];
+  censusIncomplete: CensusIncompleteAlarmResult['censusIncomplete'];
+  censusIncompleteUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
