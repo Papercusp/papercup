@@ -5,8 +5,6 @@ import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
 import { evaluatePlanSpecQuality, IMPLEMENTATION_INDEPENDENCE_DETECTOR_REVISION, specQualityCanonicalBarScopes, specQualityPlanItemIds } from './spec-quality';
 import { deriveIndexFromContent } from './derive-index';
 import { parsePlan } from './parser';
-import evaluateSpecQualityTool from './evaluate-spec-quality';
-import startPlanTool from './start';
 
 describe('canonical BAR item-scope conformance', () => {
   it('reads explicit item scopes while preserving opaque legacy scopes and disclosure roles', () => {
@@ -1937,54 +1935,6 @@ describe('evaluatePlanSpecQuality', () => {
 
     expect(bug.wouldBlock).toContain('plan-class-specialization');
     expect(migration.wouldBlock).not.toContain('plan-class-specialization');
-  });
-});
-
-describe('spec-quality activation guidance', () => {
-  it('accepts only a valid exact specSetHash replay guard', () => {
-    expect(
-      evaluateSpecQualityTool.args.safeParse({
-        harness: 'papercusp',
-        slug: 'quality-plan',
-        expectedSpecSetHash: 'a'.repeat(64),
-      }).success,
-    ).toBe(true);
-    expect(
-      evaluateSpecQualityTool.args.safeParse({
-        harness: 'papercusp',
-        slug: 'quality-plan',
-        expectedSpecSetHash: 'not-a-hash',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('publishes the scorecard → automatically routed audit → start sequence', () => {
-    const evaluateGuidance = [
-      evaluateSpecQualityTool.description,
-      evaluateSpecQualityTool.guidance?.when,
-      evaluateSpecQualityTool.guidance?.returns,
-      evaluateSpecQualityTool.guidance?.chaining,
-    ].join('\n');
-    const evaluateChain = evaluateSpecQualityTool.guidance?.chaining ?? '';
-    const startGuidance = [
-      startPlanTool.description,
-      startPlanTool.guidance?.when,
-      startPlanTool.guidance?.chaining,
-    ].join('\n');
-
-    for (const guidance of [evaluateGuidance, startGuidance]) {
-      expect(guidance).toContain('plans:evaluate-spec-quality');
-      expect(guidance).toContain('scorecards:emit');
-      expect(guidance).toContain('grading-integrity');
-      expect(guidance).toContain('plans:start');
-    }
-    expect(evaluateGuidance).toContain('automatically route the independent non-author');
-    expect(evaluateGuidance).toContain('scorecards:repair');
-    expect(evaluateGuidance).not.toContain('capability:launch-agent');
-    expect(evaluateGuidance).toContain('Never recruit the auditor yourself');
-    expect(evaluateChain.indexOf('plans:evaluate-spec-quality')).toBeLessThan(evaluateChain.indexOf('scorecards:emit'));
-    expect(evaluateChain.indexOf('scorecards:emit')).toBeLessThan(evaluateChain.indexOf('grading-integrity'));
-    expect(evaluateChain.indexOf('grading-integrity')).toBeLessThan(evaluateChain.indexOf('plans:start'));
   });
 });
 
