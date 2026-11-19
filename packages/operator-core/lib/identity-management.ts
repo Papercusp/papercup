@@ -37,7 +37,7 @@ import { findLiveHostAsync, injectIntoHost } from './events/await/psu-pty-discov
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import { PrincipalCheckError, readRetainedRequestPrincipal,
   type HostRequestPrincipalResolver } from './auth/require-principal';
-import { readIdentityPermissionPopulation } from './capability-envelope/identity-grants-port';
+import { readIdentityPermissionPopulation, readIdentityPermissionSources } from './capability-envelope/identity-grants-port';
 
 const HISTORY_LIMIT = IDENTITY_HISTORY_LIMIT;
 const TRANSITION_LIMIT = 30;
@@ -643,6 +643,22 @@ export async function mutateIdentityStack(input: IdentityMutationInput,
     // rollback or detach can expose an older/broader grant; neither bypasses
     // library protection merely because it removes a selected layer.
     requireProtectedIdentityLibrary(repoDir);
+    // The filesystem gate does not hold registry/pot/provider/flag/tool policy
+    // stable. Ask the canonical host source adapter for effect protection too;
+    // its current explicit refusal must reach this writer before funding or
+    // preparation. This prerequisite is not the full permission-change proof.
+    if (!record.harnessSlug) throw new PrincipalCheckError(403,
+      'identity host policy scope is unavailable; this edit was refused');
+    const hostSources = await readIdentityPermissionSources({
+      workspaceId: input.workspaceId,
+      harnessSlug: record.harnessSlug,
+      record: row.launch_spec,
+      applied: activationFromControl(row.control_state)?.applied,
+      pinForEffect: true,
+    });
+    if (hostSources.status !== 'ok') throw new PrincipalCheckError(403,
+      `Identity host policy cannot be held stable; this edit was refused: ${
+        hostSources.status === 'unavailable' ? hostSources.reason : 'identity host policy changed'}`);
     // Funding admission may refresh a persistent pricing cache. It is already
     // an effect, so it belongs inside the source fence, before provisioning.
     // D-011: removing a layer alone needs no funding admission.
