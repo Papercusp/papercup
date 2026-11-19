@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P001 controlled direct-node materialization baseline",
+  "framework": "operational",
+  "command": [
+    "npm",
+    "run",
+    "test:file",
+    "--",
+    "apps/operator/lib/release/proof-warming-runner-baseline.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-19T19:52:48.623Z",
+  "finishedAt": "2026-11-19T19:52:54.932Z",
+  "summary": "Controlled native fixture at one workload commit. Actual maintained materialization and published empty dependency generation yield equal direct-node runner identities. Linked worktrees share the proof object store; the clone does not. Actual NODE_OPTIONS disturbance changes identity. This does not establish npm-task compatibility or intended-child proof consumption.",
+  "assertions": [
+    {
+      "id": "same-source-commit",
+      "passed": true,
+      "evidence": "Every measured root's actual HEAD equals workloadSourceIdentity; see complete observations."
+    },
+    {
+      "id": "same-direct-node-runtime",
+      "passed": true,
+      "evidence": "Actual defaultRunnerIdentity and captureRuntimeProofIdentity were measured in each materialized root; no injected runner string."
+    },
+    {
+      "id": "object-store-fence",
+      "passed": true,
+      "evidence": "Actual git common-dir resolves equally for linked worktrees and differently for the source clone. This is eligibility evidence, not proof consumption."
+    },
+    {
+      "id": "invocation-negative",
+      "passed": true,
+      "evidence": "Real NODE_OPTIONS=--conditions=proof-warming-control changes the computed runtime identity at the same workload commit."
+    }
+  ],
+  "sourceTestRun": {
+    "id": 24020338,
+    "status": "pass",
+    "commitSha": "9129a487d4347cfa77068208f0d7bacd140a1789",
+    "startedAt": "2026-11-19T19:52:48.623Z",
+    "finishedAt": "2026-11-19T19:52:54.932Z",
+    "worktreeDirty": true,
+    "originalResultReference": {
+      "schemaVersion": "original-test-run-reference-v2",
+      "scope": "original-test-run-outcome-execution-and-configuration",
+      "testRunId": "24020338",
+      "sha256": "ccdb6a43cf7eafd7ef0e60c6096e3a065ff43091eced48d2ca3719f95f3821bb"
+    }
+  },
+  "implementationTreatment": "Maintained direct-node identity reader plus source-only materializer; controlled empty dependency generation, no implementation change.",
+  "remaining": [
+    "Measure actual maintained npm-task identity in the installed judging environment.",
+    "Exercise intended-child consumption of authentic warmed proofs.",
+    "Complete retained-progress baseline after owned snapshot identity defect is resolved.",
+    "Register this committed artifact with testing:record-run and bind its returned ledger record."
+  ],
+  "measurementRef": {
+    "tool": "reports:get",
+    "args": {
+      "id": "rpt_594ac694-9163-4e4d-90f8-bf22b6c5d711"
+    },
+    "bodySha256": "2cc94ac26e22a7c0e59ffaf5c17d08cb32ed06f90ffe7a0a3f3362a436cfd9d0",
+    "path": "/reports?sel=rpt_594ac694-9163-4e4d-90f8-bf22b6c5d711",
+    "jsonPointer": "/artifacts/0/measurement",
+    "omittedInline": "Complete original measurement moved to the existing workspace evidence report. Read and verify its complete JSON before evaluating the baseline; no path or identity is redacted, truncated, or reconstructed."
+  }
+}

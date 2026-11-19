@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P001 historical maintained checkpoint occupancy baseline",
+  "framework": "operational",
+  "command": [
+    "npm",
+    "run",
+    "test:file",
+    "--",
+    "apps/operator/lib/release/green-checkpoint-pure-proof-capture.test.ts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-11-19T17:38:03.645Z",
+  "finishedAt": "2026-11-19T17:38:03.833Z",
+  "summary": "Historical controlled fixture measures the maintained finalizer from durable verdict completion to actual filesystem-lock release. Capture and archive barriers keep the next lock acquisition out until release. Controlled timings describe this fixture only; there is no live-gate or improvement claim.",
+  "assertions": [
+    {
+      "id": "next-cannot-acquire-before-release",
+      "passed": true,
+      "evidence": "Maintained acquireCheckpointRunLock was invoked during capture and archive; both refused. See measurement boundary observations."
+    },
+    {
+      "id": "next-acquires-after-release",
+      "passed": true,
+      "evidence": "A real successor filesystem lock acquisition succeeded after the maintained release callback."
+    },
+    {
+      "id": "ordered-boundaries",
+      "passed": true,
+      "evidence": "Actual monotonic clocks preserve durable-verdict, capture, archive and lock-release order."
+    }
+  ],
+  "sourceTestRun": {
+    "id": 24012750,
+    "status": "pass",
+    "commitSha": "f5717c183aa5022afaf107c09beb6fb0ebecd36b",
+    "startedAt": "2026-11-19T17:38:03.645Z",
+    "finishedAt": "2026-11-19T17:38:03.833Z",
+    "worktreeDirty": true,
+    "originalResultReference": {
+      "schemaVersion": "original-test-run-reference-v2",
+      "scope": "original-test-run-outcome-execution-and-configuration",
+      "testRunId": "24012750",
+      "sha256": "ebe1bbf66d052f7d1565cab5e7cfc5a1363b8162d03f8d45fd65ad192452f0c6"
+    }
+  },
+  "implementationTreatment": "Maintained createNormalCheckpointFinalizer; real lock, controlled capture/archive barriers; no retention or reuse disabled.",
+  "workloadSourceIdentity": {
+    "kind": "native-test-source-bytes",
+    "sourceFiles": [
+      {
+        "path": "apps/operator/lib/release/green-checkpoint.ts",
+        "sha256": "0e86a67800763360ab718ac48fbec9631ca7d56a3913b192947bb88c8945a0bd"
+      },
+      {
+        "path": "apps/operator/lib/release/green-checkpoint-pure-proof-capture.test.ts",
+        "sha256": "c3216005ae8b7a8a1ac36c06f227cc0e8205930a84a93f53591f218554e99159"
+      }
+    ]
+  },
+  "remaining": [
+    "Compare the same fixed workload against an independently owned warming handoff.",
+    "Require strict improvement only for an evidenced occupancy gap.",
+    "Register this committed artifact with testing:record-run and bind its returned ledger record."
+  ],
+  "measurementRef": {
+    "tool": "reports:get",
+    "args": {
+      "id": "rpt_594ac694-9163-4e4d-90f8-bf22b6c5d711"
+    },
+    "bodySha256": "2cc94ac26e22a7c0e59ffaf5c17d08cb32ed06f90ffe7a0a3f3362a436cfd9d0",
+    "path": "/reports?sel=rpt_594ac694-9163-4e4d-90f8-bf22b6c5d711",
+    "jsonPointer": "/artifacts/1/measurement",
+    "omittedInline": "Complete original measurement moved to the existing workspace evidence report. Read and verify its complete JSON before evaluating the baseline; no path or identity is redacted, truncated, or reconstructed."
+  }
+}
