@@ -149,6 +149,23 @@ describe('scorecards:repair', () => {
     ]) expect(scorecardRepairArgs.safeParse(invalid).success).toBe(false);
   });
 
+  it('admits exact-card export preparation without accepting caller refs, commands or replacement receipts', async () => {
+    const ctx = makeContext();
+    const sourcePreparation = { exportFrom: '/canonical/repository', sourceRoot: '/new/source',
+      receiptPath: '/new/receipt.json', outputDir: '/new/output' };
+    const args = scorecardRepairArgs.parse({ targetIds: ['EI-target'], sourcePreparation });
+    await repairTool.handler(args, ctx);
+    expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx, recertifyStranded: false,
+      targetIds: ['EI-target'], sourcePreparation });
+    for (const invalid of [
+      { sourcePreparation }, { targetIds: [], sourcePreparation },
+      { targetIds: ['EI-target'], sourcePreparation: { ...sourcePreparation, ref: 'unrelated' } },
+      { targetIds: ['EI-target'], sourcePreparation: { ...sourcePreparation, command: 'other-exporter' } },
+      { targetIds: ['EI-target'], sourcePreparation: { ...sourcePreparation, receiptSha256: 'a'.repeat(64) } },
+      { targetIds: ['EI-target'], sourcePreparation, preparedSource: { sourceRoot: '/x', bundlePath: '/y' } },
+    ]) expect(scorecardRepairArgs.safeParse(invalid).success).toBe(false);
+  });
+
   it('carries the requested model pin into exact-target audit repair without changing caller identity', async () => {
     const ctx = makeContext();
     const gradingLaunch = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };

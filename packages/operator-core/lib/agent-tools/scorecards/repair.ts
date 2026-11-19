@@ -80,12 +80,17 @@ export const scorecardRepairArgs = z
       sourceRoot: z.string().min(1).max(4096),
       bundlePath: z.string().min(1).max(4096),
     }).strict().optional().describe('Existing maintained external host output and its frozen Git source. The dispatcher verifies the manifest, compiler inputs and target evaluator before retention.'),
-    sourcePreparation: z.object({
+    sourcePreparation: z.union([z.object({
       sourceRoot: z.string().min(1).max(4096),
       receiptPath: z.string().min(1).max(4096),
       receiptSha256: z.string().regex(/^[a-f0-9]{64}$/),
       outputDir: z.string().min(1).max(4096),
-    }).strict().optional().describe('Build a frozen exact evaluator through the maintained host builder before independent audit, including before plan start. Requires the original external verifier receipt and its SHA256, plus a new external output directory. Returns sourcePreparation task/log custody while building; repeat the identical call to qualify and dispatch after success. Failed attempts require an explicitly new outputDir.'),
+    }).strict(), z.object({
+      exportFrom: z.string().min(1).max(4096),
+      sourceRoot: z.string().min(1).max(4096),
+      receiptPath: z.string().min(1).max(4096),
+      outputDir: z.string().min(1).max(4096),
+    }).strict()]).optional().describe('Build a frozen exact evaluator through the maintained host builder before independent audit, including before plan start. Supply the original external verifier receipt and SHA256, or exportFrom with a physical repository and new external sourceRoot/receiptPath/outputDir to create the exact evaluator checkout, original receipt and maintained dependencies first. The evaluator ref comes from the targeted card. Returns sourcePreparation task/log custody during export or build; repeat the identical call after success. Failed attempts require new destinations.'),
     gradingLaunch: z
       .object({
         agent: z.literal('codex'),

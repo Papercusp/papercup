@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
@@ -99,16 +99,16 @@ export class GradingAuditRuntimeReadinessError extends Error {
   }
 }
 
-export interface GradingAuditSourcePreparation {
+export type GradingAuditSourcePreparation = {
   sourceRoot: string;
   receiptPath: string;
-  receiptSha256: string;
   outputDir: string;
-}
+} & ({ receiptSha256: string; exportFrom?: never } | { exportFrom: string; receiptSha256?: never });
 
 export interface GradingAuditSourcePreparationDiagnostic {
   taskId: string;
   state: string;
+  phase?: 'export' | 'build';
   logPath: string;
   preparedSource: { sourceRoot: string; bundlePath: string };
   taskRead: { tool: 'processes:list'; args: { taskId: string } };
@@ -121,20 +121,122 @@ export class GradingAuditSourcePreparationError extends Error {
   }
 }
 
-/** Reuse the task ledger as the restart-safe build receipt; never launch on an unknown read. */
-export async function prepareGradingAuditSource(input: {
-  workspaceId: string; evaluatorBuild: BuildInfo; sourcePreparation: GradingAuditSourcePreparation;
-  signal?: AbortSignal; deadlineAtMs?: number;
-}, deps: {
+// Fixed program, not caller-supplied commands. Source selection and receipt
+// production reuse the maintained exporters without editing the shared tree.
+const auditSourceExportWorker = `
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createScratchClone } from '@papercusp/operator-core/lib/scratch-git-clone';
+const [repo, ref, sourceRoot, receiptPath, scratchRoot] = process.argv.slice(1);
+const { prepareVerifierSource, prepareVerifierDependencies } = await import(pathToFileURL(join(repo, 'scripts/source-preview.mjs')).href);
+await createScratchClone({ source: repo, ref, destination: scratchRoot });
+const receipt = await prepareVerifierSource({ repo: scratchRoot, ref, dest: sourceRoot,
+  gitCheckout: true, requireDependencyCoherence: true, inputs: [
+    'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh',
+    'packages/operator-core/lib/release/grading-audit-runtime.ts',
+    'packages/operator-core/lib/agent-tools/scorecards/repair.ts',
+  ] });
+await writeFile(receiptPath, JSON.stringify(receipt) + '\\n', { flag: 'wx', mode: 0o600 });
+await prepareVerifierDependencies({ donor: repo, dest: sourceRoot, receipt });
+`;
+
+type AuditPreparationDeps = {
   readReceipt?: typeof readVerifierSourceReceipt;
   readTask?: typeof getTask;
   spawn?: typeof managedSpawn;
   qualify?: typeof qualifyPreparedGradingAuditSource;
   logDir?: string;
-} = {}) {
+};
+
+function auditPreparationEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key === 'NODE_OPTIONS' || key === 'NODE_PATH' || key.startsWith('BUNDLE_HOST_') ||
+        key.startsWith('PAPERCUSP_BUNDLE_') || key.startsWith('PAPERCUSP_SCRIPT_SNAPSHOT') || key.startsWith('VERIFY_TAURI_')) delete env[key];
+  }
+  return env;
+}
+
+/** Materialization is a prerequisite of preparation, not a quality waiver. */
+async function exportGradingAuditSource(input: {
+  workspaceId: string; evaluatorBuild: BuildInfo; sourcePreparation: GradingAuditSourcePreparation;
+  signal?: AbortSignal; deadlineAtMs?: number;
+}, deps: AuditPreparationDeps): Promise<string> {
   const request = input.sourcePreparation;
+  const repo = request.exportFrom!;
+  const sha = input.evaluatorBuild.sha;
+  if (!sha || !/^[a-f0-9]{7,40}$/.test(sha)) throw new Error('Audit export requires an exact evaluator Git ref');
+  const scratchRoot = request.sourceRoot + '.input';
+  const destinations = [request.sourceRoot, request.receiptPath, request.outputDir, scratchRoot];
+  for (const path of [repo, ...destinations]) {
+    if (!isAbsolute(path) || resolve(path) !== path) throw new Error('Audit export paths must be absolute and canonical');
+  }
+  if (realpathSync(repo) !== repo) throw new Error('Audit export repository must be physical');
+  const contains = (parent: string, child: string) => {
+    const rel = relative(parent, child);
+    return !rel || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  };
+  for (const path of destinations) {
+    if (realpathSync(dirname(path)) !== dirname(path)) throw new Error('Audit export parents must be physical');
+    if (contains(repo, path) || contains(path, repo) || destinations.some(other => other !== path &&
+        (contains(path, other) || contains(other, path)))) throw new Error('Audit export destinations must be distinct and outside source');
+  }
+  if (new Set(destinations).size !== destinations.length) throw new Error('Audit export destinations must be distinct');
+  const identity = { workspaceId: input.workspaceId,
+    evaluatorBuild: { sha, version: input.evaluatorBuild.version }, repo,
+    sourceRoot: request.sourceRoot, receiptPath: request.receiptPath, outputDir: request.outputDir, scratchRoot };
+  const taskId = createHash('sha256').update(JSON.stringify(identity)).digest('hex');
+  const logDir = deps.logDir ?? papercuspPath('checkpoint-logs');
+  const logPath = join(logDir, `grading-audit-export-${taskId}.log`);
+  const diagnostic = (state: string): GradingAuditSourcePreparationDiagnostic => ({
+    taskId, state, phase: 'export', logPath,
+    preparedSource: { sourceRoot: request.sourceRoot, bundlePath: join(request.outputDir, 'hono-host.mjs') },
+    taskRead: { tool: 'processes:list', args: { taskId } },
+  });
+  let task = await (deps.readTask ?? getTask)(taskId);
+  if (task) {
+    if (task.workspaceId !== input.workspaceId || !isDeepStrictEqual(task.detail.gradingAuditExport, identity))
+      throw new Error('Audit export task identity differs');
+    if (task.state === 'exited' && task.exitCode === 0) {
+      if (realpathSync(request.receiptPath) !== request.receiptPath || !statSync(request.receiptPath).isFile())
+        throw new Error('Original audit export receipt must be a physical file');
+      return createHash('sha256').update(readFileSync(request.receiptPath)).digest('hex');
+    }
+    throw new GradingAuditSourcePreparationError(diagnostic(task.state));
+  }
+  if (destinations.some(path => existsSync(path))) throw new Error('Audit export destination already exists without task custody');
+  mkdirSync(logDir, { recursive: true, mode: 0o700 });
+  const fd = openSync(logPath, 'ax', 0o600);
+  try {
+    const args = ['--import', 'tsx', '--input-type=module', '-e', auditSourceExportWorker,
+      repo, sha, request.sourceRoot, request.receiptPath, scratchRoot];
+    const spawned = await (deps.spawn ?? managedSpawn)(process.execPath, args, {
+      class: 'build', title: `grading-audit-export:${taskId}`, argv: [process.execPath, ...args],
+      cwd: repo, launchedBy: 'system:grading-audit-dispatch', logPath,
+      runtimeMaxSec: 15 * 60, detail: { gradingAuditExport: identity },
+    }, { workspaceId: input.workspaceId, taskId, requireRegistration: true, requireConfinement: true,
+      signal: input.signal, deadlineEpochMs: input.deadlineAtMs,
+      spawnOptions: { cwd: repo, env: auditPreparationEnv(), detached: true, stdio: ['ignore', fd, fd] },
+    });
+    spawned.child.unref();
+    task = spawned.row;
+  } finally { closeSync(fd); }
+  throw new GradingAuditSourcePreparationError(diagnostic(task.state));
+}
+
+/** Reuse the task ledger as the restart-safe build receipt; never launch on an unknown read. */
+export async function prepareGradingAuditSource(input: {
+  workspaceId: string; evaluatorBuild: BuildInfo; sourcePreparation: GradingAuditSourcePreparation;
+  signal?: AbortSignal; deadlineAtMs?: number;
+}, deps: AuditPreparationDeps = {}) {
   if (input.signal?.aborted || Date.now() >= (input.deadlineAtMs ?? Infinity))
     throw new Error('Audit source preparation caller budget exhausted');
+  const supplied = input.sourcePreparation;
+  if (supplied.exportFrom !== undefined && supplied.receiptSha256 !== undefined)
+    throw new Error('Choose original receipt or exact source export');
+  const request = { ...supplied, receiptSha256: supplied.exportFrom !== undefined
+    ? await exportGradingAuditSource(input, deps) : supplied.receiptSha256 };
   for (const path of [request.sourceRoot, request.receiptPath, request.outputDir]) {
     if (!isAbsolute(path) || resolve(path) !== path) throw new Error('Audit preparation paths must be absolute and canonical');
   }
@@ -146,7 +248,7 @@ export async function prepareGradingAuditSource(input: {
   if (!outputRelative || (outputRelative !== '..' && !outputRelative.startsWith(`..${sep}`) && !isAbsolute(outputRelative)))
     throw new Error('Audit preparation output must be outside frozen source');
   const receiptDigest = () => createHash('sha256').update(readFileSync(request.receiptPath)).digest('hex');
-  if (!/^[a-f0-9]{64}$/.test(request.receiptSha256) || receiptDigest() !== request.receiptSha256)
+  if (!request.receiptSha256 || !/^[a-f0-9]{64}$/.test(request.receiptSha256) || receiptDigest() !== request.receiptSha256)
     throw new Error('Original audit source receipt digest differs');
   const receipt = await (deps.readReceipt ?? readVerifierSourceReceipt)(sourceRoot, request.receiptPath, { signal: input.signal });
   const sha = input.evaluatorBuild.sha;
@@ -180,11 +282,7 @@ export async function prepareGradingAuditSource(input: {
   try {
     const builder = join(sourceRoot, 'apps/operator/bin/bundle-host.sh');
     const args = [builder, 'bin/hono-host.ts', bundlePath, 'development'];
-    const env = { ...process.env };
-    for (const key of Object.keys(env)) {
-      if (key === 'NODE_OPTIONS' || key === 'NODE_PATH' || key.startsWith('BUNDLE_HOST_') ||
-          key.startsWith('PAPERCUSP_BUNDLE_') || key.startsWith('PAPERCUSP_SCRIPT_SNAPSHOT') || key.startsWith('VERIFY_TAURI_')) delete env[key];
-    }
+    const env = auditPreparationEnv();
     env.VERIFY_TAURI_SOURCE_RECEIPT = request.receiptPath;
     env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
     const spawned = await (deps.spawn ?? managedSpawn)('/bin/bash', args, {

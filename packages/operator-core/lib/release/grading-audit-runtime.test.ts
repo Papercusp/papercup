@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
@@ -141,6 +141,121 @@ describe('pre-start exact evaluator source preparation (EI-29076811994262641)', 
     const deps = { readTask, spawn, qualify, logDir: join(f.root, 'logs') };
     return { ...f, input, deps, receipt, unref, row: () => row! };
   }
+
+  async function exportFixture() {
+    const f = await preparationFixture();
+    const input = { ...f.input, sourcePreparation: {
+      exportFrom: f.sourceRoot, sourceRoot: join(f.root, 'exported-source'),
+      receiptPath: join(f.root, 'exported-receipt.json'), outputDir: f.input.sourcePreparation.outputDir,
+    } };
+    const rows = new Map<string, TaskRow>();
+    const readTask = vi.fn(async (id: string) => rows.get(id) ?? null);
+    const spawn = vi.fn<typeof import('../task-manager/managed-spawn').managedSpawn>(async (_command, _argv, spec, options) => {
+      const row = { taskId: options!.taskId!, workspaceId: 'ws', state: 'running', detail: spec.detail!,
+        exitCode: null, logPath: spec.logPath } as TaskRow;
+      rows.set(row.taskId, row);
+      return { taskId: row.taskId, row, child: { unref: f.unref }, confined: true } as never;
+    });
+    const finishExport = () => {
+      cpSync(f.sourceRoot, input.sourcePreparation.sourceRoot, { recursive: true });
+      cpSync(f.input.sourcePreparation.receiptPath, input.sourcePreparation.receiptPath);
+      const row = [...rows.values()][0]!;
+      row.state = 'exited'; row.exitCode = 0;
+    };
+    return { ...f, input, rows, finishExport, deps: { ...f.deps, readTask, spawn } };
+  }
+
+  it('exports the card evaluator through one confined managed task before any receipt read or builder launch', async () => {
+    const f = await exportFixture();
+    vi.stubEnv('NODE_OPTIONS', '--import=untrusted');
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', 'unrelated-source');
+    const readReceipt = vi.fn();
+    const deps = { ...f.deps, readReceipt };
+    await expect(prepareGradingAuditSource(f.input, deps)).rejects.toMatchObject({ diagnostic: {
+      phase: 'export', state: 'running', taskRead: { tool: 'processes:list' },
+      preparedSource: { sourceRoot: f.input.sourcePreparation.sourceRoot },
+    } });
+    await expect(prepareGradingAuditSource(f.input, deps)).rejects.toMatchObject({ diagnostic: { phase: 'export', state: 'running' } });
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+    const [command, argv, spec, options] = f.deps.spawn.mock.calls[0]!;
+    expect(command).toBe(process.execPath);
+    expect(argv.slice(0, 5)).toEqual(['--import', 'tsx', '--input-type=module', '-e', expect.any(String)]);
+    expect(argv.slice(5)).toEqual([f.sourceRoot, f.evaluatorBuild.sha,
+      f.input.sourcePreparation.sourceRoot, f.input.sourcePreparation.receiptPath, f.input.sourcePreparation.sourceRoot + '.input']);
+    expect(argv[4]).toContain('prepareVerifierSource');
+    expect(argv[4]).toContain('prepareVerifierDependencies');
+    expect(spec).toMatchObject({ class: 'build', runtimeMaxSec: 900,
+      detail: { gradingAuditExport: { evaluatorBuild: f.evaluatorBuild, repo: f.sourceRoot } } });
+    expect(options).toMatchObject({ workspaceId: 'ws', requireRegistration: true, requireConfinement: true });
+    expect(options!.spawnOptions!.env).not.toHaveProperty('NODE_OPTIONS');
+    expect(options!.spawnOptions!.env).not.toHaveProperty('VERIFY_TAURI_SOURCE_REF');
+    expect(readReceipt).not.toHaveBeenCalled();
+    expect(f.deps.qualify).not.toHaveBeenCalled();
+  });
+
+  it('verifies the original exported receipt before building and resumes both stages without duplicate work', async () => {
+    const f = await exportFixture();
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toBeInstanceOf(GradingAuditSourcePreparationError);
+    f.finishExport();
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toMatchObject({ diagnostic: { state: 'running' } });
+    expect(f.deps.spawn).toHaveBeenCalledTimes(2);
+    const build = [...f.rows.values()][1]!;
+    expect(build.detail.gradingAuditPreparation).toMatchObject({
+      sourceRoot: f.input.sourcePreparation.sourceRoot,
+      receiptPath: f.input.sourcePreparation.receiptPath,
+      receiptSha256: createHash('sha256').update(readFileSync(f.input.sourcePreparation.receiptPath)).digest('hex'),
+    });
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toMatchObject({ diagnostic: { taskId: build.taskId } });
+    build.state = 'exited'; build.exitCode = 0;
+    await expect(prepareGradingAuditSource(f.input, f.deps)).resolves.toMatchObject({ sourceSha: f.sourceSha });
+    expect(f.deps.qualify).toHaveBeenCalledWith({ sourceRoot: f.input.sourcePreparation.sourceRoot,
+      bundlePath: join(f.input.sourcePreparation.outputDir, 'hono-host.mjs') }, f.evaluatorBuild);
+    writeFileSync(join(f.input.sourcePreparation.sourceRoot, 'entry.ts'), 'changed exported input');
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('changed entry.ts');
+    expect(f.deps.spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['stranded', 'killed', 'unaccounted', 'timed_out', 'exited'] as const)('retains %s export custody without relaunch or build', async state => {
+    const f = await exportFixture();
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toBeInstanceOf(GradingAuditSourcePreparationError);
+    const row = [...f.rows.values()][0]!;
+    row.state = state; row.exitCode = 1;
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toMatchObject({ diagnostic: { phase: 'export', state } });
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+    expect(f.deps.qualify).not.toHaveBeenCalled();
+  });
+
+  it('refuses unknown export custody, wrong identities and overlapping or preexisting destinations before launch', async () => {
+    const f = await exportFixture();
+    f.deps.readTask.mockRejectedValueOnce(new Error('export ledger unavailable'));
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('export ledger unavailable');
+    await expect(prepareGradingAuditSource({ ...f.input, evaluatorBuild: { sha: 'HEAD', version: 'x' } }, f.deps))
+      .rejects.toThrow('exact evaluator Git ref');
+    await expect(prepareGradingAuditSource({ ...f.input, sourcePreparation: {
+      ...f.input.sourcePreparation, outputDir: join(f.sourceRoot, 'new-output') } }, f.deps))
+      .rejects.toThrow('outside source');
+    await expect(prepareGradingAuditSource({ ...f.input, sourcePreparation: {
+      ...f.input.sourcePreparation, receiptPath: f.input.sourcePreparation.sourceRoot } }, f.deps))
+      .rejects.toThrow('distinct');
+    mkdirSync(f.input.sourcePreparation.sourceRoot);
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('without task custody');
+    expect(f.deps.spawn).not.toHaveBeenCalled();
+    rmSync(f.input.sourcePreparation.sourceRoot, { recursive: true });
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toBeInstanceOf(GradingAuditSourcePreparationError);
+    [...f.rows.values()][0]!.detail.gradingAuditExport = { workspaceId: 'different' };
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toThrow('task identity differs');
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an exported checkout for a different evaluator before builder launch', async () => {
+    const f = await exportFixture();
+    await expect(prepareGradingAuditSource(f.input, f.deps)).rejects.toBeInstanceOf(GradingAuditSourcePreparationError);
+    f.finishExport();
+    const receipt = { ...f.receipt, sourceCommit: 'a'.repeat(40) };
+    const readReceipt = vi.fn().mockResolvedValue(receipt);
+    await expect(prepareGradingAuditSource(f.input, { ...f.deps, readReceipt })).rejects.toThrow('exact evaluator Git checkout');
+    expect(f.deps.spawn).toHaveBeenCalledOnce();
+  });
 
   it('runs only the maintained builder with original receipt, bounded task custody and no inherited build overrides', async () => {
     const f = await preparationFixture();
