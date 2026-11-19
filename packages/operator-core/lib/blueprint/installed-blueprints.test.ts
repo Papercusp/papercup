@@ -34,7 +34,11 @@ const composeMock = vi.hoisted(() => {
   const resolver = vi.fn((_id: string): string | null => null);
   return { fn: vi.fn(() => resolver), resolver };
 });
-vi.mock('@papercusp/blueprint-distribution', () => ({ makeComposedResolveExtends: composeMock.fn }));
+// Keep the real supersession policy: inventory must apply resolution's verdict.
+vi.mock('@papercusp/blueprint-distribution', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/blueprint-distribution')>(),
+  makeComposedResolveExtends: composeMock.fn,
+}));
 
 import {
   INSTALLED_BLUEPRINTS_DIR,
@@ -108,6 +112,29 @@ describe('complete blueprint library source inventory (P-002)', () => {
     ]);
     expect(availableBlueprintSources(options)).toEqual([{ id: 'shared', tier: 'local', file: join(dirs[2], 'shared', 'blueprint.yaml') }]);
     expect(readBlueprintSourcePopulation({ ...options, expectedRevision: result.revision })).toEqual(result);
+  });
+
+  it('keeps a built-in over an older or invalid installed copy, exactly as resolution does (WI-6554700010054458)', () => {
+    const { dirs } = fixture();
+    const [builtin, installed] = [0, 1].map(tier => join(dirs[tier], 'shared', 'blueprint.yaml'));
+    writeFileSync(builtin, 'id: shared\nversion: 0.2.0\nslots: []\n');
+    for (const [text, reason] of [['id: shared\nversion: 0.1.2\nslots: []\n', 'older-version'],
+      ['id: shared\nversion: 0.2.0\nvisibility: public\nslots: []\n', 'invalid-source']] as const) {
+      writeFileSync(installed, text);
+      const supersededInstalled = { file: installed, reason, detail: expect.any(String) };
+      expect(availableBlueprintSources()).toEqual([{ id: 'shared', tier: 'builtin', file: builtin, supersededInstalled }]);
+      const population = readBlueprintSourcePopulation();
+      if (population.status !== 'ok') throw new Error('fixture inventory unavailable');
+      expect(population.sources.map(({ tier, selected }) => ({ tier, selected })))
+        .toEqual([{ tier: 'builtin', selected: true }, { tier: 'installed', selected: false }]);
+      expect(population.sources[0]!.supersededInstalled).toEqual(supersededInstalled);
+      // Strict order on request, and a local tier is never superseded.
+      expect(availableBlueprintSources({ supersedes: null })).toEqual([{ id: 'shared', tier: 'installed', file: installed }]);
+      expect(availableBlueprintSources({ localDirs: [dirs[2]] }))
+        .toEqual([{ id: 'shared', tier: 'local', file: join(dirs[2], 'shared', 'blueprint.yaml') }]);
+    }
+    writeFileSync(installed, 'id: shared\nversion: 0.3.0\nslots: []\n');
+    expect(availableBlueprintSources()).toEqual([{ id: 'shared', tier: 'installed', file: installed }]);
   });
 
   it.each([false, true])('refuses an unprotected effect read even with a matching revision (mutex held: %s)', async held => {

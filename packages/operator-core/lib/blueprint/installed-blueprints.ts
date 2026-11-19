@@ -20,7 +20,12 @@ import {
   loadBlueprintFromFile,
   type ResolveExtendsPath,
 } from '@papercusp/orchestrator/blueprint';
-import { makeComposedResolveExtends } from '@papercusp/blueprint-distribution';
+import {
+  builtinSupersedesInstalled,
+  makeComposedResolveExtends,
+  type BuiltinSupersession,
+  type SupersessionInput,
+} from '@papercusp/blueprint-distribution';
 import { papercuspRoot } from '../papercusp-root';
 import { physicalPath } from '../agent-tools/locks/external-path';
 
@@ -66,6 +71,25 @@ export interface BlueprintSourceLocation {
   id: string;
   tier: 'builtin' | 'installed' | 'local';
   file: string;
+  /** Set on a built-in entry kept over an installed copy of the same id: the
+   * resolver's `builtinSupersedesInstalled` verdict (WI-6554700010054458). */
+  supersededInstalled?: { file: string; reason: BuiltinSupersession['reason']; detail: string };
+}
+
+/** Resolution's installed-vs-built-in policy; `null` keeps strict tier order. */
+export type BlueprintSupersedesPolicy = ((input: SupersessionInput) => BuiltinSupersession | null) | null;
+
+/** When an installed copy would override the current built-in entry, ask the
+ * SAME policy the composed resolver applies, so inventory never advertises a
+ * source that resolution skips. Local tiers are never superseded. */
+function supersededByBuiltin(current: BlueprintSourceLocation | undefined, installedFile: string,
+  policy: BlueprintSupersedesPolicy | undefined): BlueprintSourceLocation['supersededInstalled'] | null {
+  // Only an installed copy that overlaps a built-in reaches the policy.
+  if (current?.tier !== 'builtin') return null;
+  const decide = policy === undefined ? builtinSupersedesInstalled : policy;
+  if (!decide) return null;
+  const verdict = decide({ id: current.id, installedFile, builtinFile: current.file });
+  return verdict ? { file: verdict.installedFile, reason: verdict.reason, detail: verdict.detail } : null;
 }
 
 /** Keep inventory and resolution on the same registered distribution tiers. */
@@ -96,10 +120,17 @@ export function blueprintMutationRoots(paths: readonly string[], opts: { localDi
 }
 
 /** The existing file catalog, with the same local → installed → built-in precedence as resolution. */
-export function availableBlueprintSources(opts: { localDirs?: string[] } = {}): BlueprintSourceLocation[] {
+export function availableBlueprintSources(opts: {
+  localDirs?: string[]; supersedes?: BlueprintSupersedesPolicy;
+} = {}): BlueprintSourceLocation[] {
   const selected = new Map<string, BlueprintSourceLocation>();
   for (const { root, tier } of blueprintSourceRoots(opts)) {
-    for (const id of listBlueprintIdsIn(root)) selected.set(id, { id, tier, file: join(root, id, 'blueprint.yaml') });
+    for (const id of listBlueprintIdsIn(root)) {
+      const file = join(root, id, 'blueprint.yaml');
+      const current = selected.get(id);
+      const superseded = tier === 'installed' ? supersededByBuiltin(current, file, opts.supersedes) : null;
+      selected.set(id, superseded ? { ...current!, supersededInstalled: superseded } : { id, tier, file });
+    }
   }
   return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -121,6 +152,7 @@ export function availableBlueprintSources(opts: { localDirs?: string[] } = {}): 
  */
 export function readBlueprintSourcePopulation(opts: {
   localDirs?: string[]; expectedRevision?: string; pinForEffect?: boolean;
+  supersedes?: BlueprintSupersedesPolicy;
 } = {}) {
   if (opts.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(opts.expectedRevision))
     throw new Error('blueprint population requires an exact content revision');
@@ -171,7 +203,14 @@ export function readBlueprintSourcePopulation(opts: {
       }
     }
     const selected = new Map<string, typeof sources[number]>();
-    for (const source of sources) selected.set(source.id, source);
+    for (const source of sources) {
+      // Same verdict as resolution: a built-in kept over an installed copy stays selected.
+      const current = selected.get(source.id);
+      const superseded = source.tier === 'installed'
+        ? supersededByBuiltin(current, source.file, opts.supersedes) : null;
+      if (superseded) current!.supersededInstalled = superseded;
+      else selected.set(source.id, source);
+    }
     for (const source of selected.values()) source.selected = true;
     const revision = digest({ roots, sources });
     return opts.expectedRevision !== undefined && opts.expectedRevision !== revision
