@@ -3,13 +3,14 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
+import postgres from 'postgres';
 import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { runTestProcess, type TestFilesCoreResult } from './agent-tools/testing/run';
 import { mutationProbeRefusal } from './agent-tools/testing/mutation-probe-fence';
 import { restrictedHoldRefusal } from './agent-tools/testing/restricted-hold-fence';
 import { parkedAuditScorecardEnvironment } from './agent-tools/coordination/parked-agent-audit-oracles';
-import { mergeDistilledRuns, readHarnessTestRunEvidence, type HarnessTestRunEvidence } from './testing-run-store';
+import { mergeDistilledRuns, readHarnessTestRunEvidence, type HarnessTestRunEvidence, type HarnessTestRunIdQuery } from './testing-run-store';
 import type { RecordedTestCase } from './testing-case-filter';
 
 export interface PortalPlaywrightRoute { kind: 'portal-playwright'; root: string; file: string }
@@ -180,6 +181,7 @@ export async function runPortalPlaywrightChecks(opts: {
 }, deps: {
   process?: typeof runTestProcess;
   readRows?: typeof readHarnessTestRunEvidence;
+  connectLedger?: typeof postgres;
   mutationFence?: typeof mutationProbeRefusal;
   restrictedFence?: typeof restrictedHoldRefusal;
 } = {}): Promise<PortalPlaywrightResult> {
@@ -223,8 +225,19 @@ export async function runPortalPlaywrightChecks(opts: {
       ...diagnostics, routerOutput: outcome.output.slice(-2000), ...(outcome.taskId ? { taskId: outcome.taskId } : {}),
       ...(outcome.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}) };
   if (!sourceUnchanged()) return { ...refuse('route_error', 'Playwright spec/config source changed during execution'), ...diagnostics };
-  const rows = await (deps.readRows ?? readHarnessTestRunEvidence)({ workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug, runGroupId: runId, filePaths: files });
+  // The application can own a private database while its reporter writes to
+  // the durable test ledger. Read the same pinned destination as the reporter,
+  // rather than the application's ambient getOrgPg() connection.
+  const ledger = (deps.connectLedger ?? postgres)(env.PAPERCUSP_TEST_RUNS_DB_URL,
+    { max: 1, connect_timeout: 5, idle_timeout: 1 });
+  let rows: HarnessTestRunEvidence[] | null;
+  try {
+    rows = await (deps.readRows ?? readHarnessTestRunEvidence)({ workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug, runGroupId: runId, filePaths: files,
+      sql: ledger as unknown as NonNullable<HarnessTestRunIdQuery['sql']> });
+  } finally {
+    await ledger.end({ timeout: 1 });
+  }
   if (!sourceUnchanged()) return { ...refuse('route_error', 'Playwright spec/config source changed while reading reporter evidence'), ...diagnostics };
   return { ...judgePortalPlaywrightRows({ route: { root, files }, runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug,
     rows }), ...diagnostics };
