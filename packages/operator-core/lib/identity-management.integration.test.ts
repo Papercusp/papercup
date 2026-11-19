@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { parseSuLaunchSpecRecord } from './su-persona-render';
@@ -58,7 +61,8 @@ vi.mock('./cupboard/identity-activation-gate-io', () => ({
 }));
 vi.mock('./events/await/psu-pty-discovery', () => ({ findLiveHostAsync: async () => null }));
 
-vi.mock('./agent-identities/source', () => ({
+vi.mock('./agent-identities/source', async original => ({
+  ...await original<typeof import('./agent-identities/source')>(),
   listIdentitySources: vi.fn(async () => ({
     ok: true,
     identities: [],
@@ -67,14 +71,14 @@ vi.mock('./agent-identities/source', () => ({
     scanned: 0,
     nextAfter: null,
   })),
-  getIdentitySource: vi.fn(),
 }));
 
 vi.mock('./spawn-config', () => ({
   resolveProjectDir: vi.fn(async () => null),
 }));
 
-import { mutateIdentityStack, readIdentitySurface } from './identity-management';
+import { mutateIdentityStack, previewNamedIdentityComposition, readIdentitySurface,
+  saveNamedIdentityComposition } from './identity-management';
 import { retainRequestPrincipal } from './auth/require-principal';
 import type { IdentityEditRequest } from './identity-management';
 
@@ -228,6 +232,40 @@ describe('identity mutation before-image fence', () => {
       FROM harness_shared.adv_sessions WHERE id = 100`;
     expect(row).toEqual({ object_matches: true, string_matches: false });
   });
+
+  it.each(['populated', 'empty'] as const)(
+    'refuses a named composition with an unprotected host census before filesystem effects (%s workspace)', async population => {
+      const root = await mkdtemp(join(tmpdir(), 'named-identity-host-census-'));
+      const library = join(root, '.papercusp', 'blueprints');
+      const component = join(library, 'zz-census-domain');
+      const named = { id: 'zz-census-composition', repoDir: root,
+        componentRefs: ['domain:zz-census-domain'] };
+      try {
+        await mkdir(component, { recursive: true });
+        await writeFile(join(component, 'blueprint.yaml'), JSON.stringify({
+          id: 'zz-census-domain', extends: 'identity-root', version: '1.0.0', slots: [{ slot: 'domain' }],
+        }));
+        // Real source parsing/resolution must succeed before testing admission.
+        expect((await previewNamedIdentityComposition(named)).components).toHaveLength(1);
+        if (population === 'empty') {
+          await db.sql`DELETE FROM harness_shared.adv_sessions WHERE workspace_id = ${WORKSPACE}`;
+          await db.sql`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WORKSPACE}`;
+        }
+        // Only library protection is hypothetical. The canonical population
+        // adapter and READ COMMITTED PostgreSQL transaction remain real.
+        await expect(saveNamedIdentityComposition(named, editor)).rejects.toMatchObject({
+          status: 403, message: expect.stringContaining('identity host policy effect protection is unavailable'),
+        });
+        await expect(readFile(join(library, named.id))).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(mutationHost.funded).not.toHaveBeenCalled();
+        expect(mutationHost.provision).not.toHaveBeenCalled();
+        expect(mutationHost.activate).not.toHaveBeenCalled();
+        expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('refuses an unprotected real library before funding, preparation or activation and releases its session lease', async () => {
     mutationHost.protectedLibraryFixture = false;

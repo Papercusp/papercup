@@ -325,6 +325,28 @@ export async function saveNamedIdentityComposition(input: Parameters<typeof prev
   const prepared = await previewNamedIdentityComposition(input);
   await readIdentityEditor(request!.workspaceId, request, editor.revision);
   requireProtectedIdentityLibrary(root);
+  // A named stack can be used by sessions and shared installations beyond this
+  // library. The source mutex and a local preview prove none of their policy,
+  // ownership or retained-context state. Join the canonical population before
+  // the first mkdir, including the empty-session case. The source adapter must
+  // supply effect protection; its current explicit refusal is not bypassed by
+  // an authenticated editor or a hypothetical protected library.
+  return getOrgPg().sql.begin(async tx => {
+  try {
+    const population = await readIdentityPermissionPopulation(tx as unknown as Sql, request!.workspaceId, {
+      pinForEffect: true, includeIdentitySources: true, includePackageResources: true,
+      includeWorkspaceUsers: true, includeHostAuthorities: true, includeScopedPolicies: true,
+      includeInheritedPolicies: true, includeVaultSources: true,
+      includeBlueprintSources: { localDirs: [parent] },
+    });
+    if (population.status !== 'ok') throw new Error('identity permission population changed');
+  } catch (error) {
+    throw new PrincipalCheckError(403, `Identity host population cannot be held stable; this edit was refused: ${
+      error instanceof Error ? error.message : 'identity permission population is unavailable'}`);
+  }
+  // Any population-lock wait precedes the final credential check. This gate is
+  // a prerequisite; complete effective before/after admission is still required.
+  await readIdentityEditor(request!.workspaceId, request, editor.revision);
   await mkdir(parent, { recursive: true });
   const actualParent = await realpath(parent);
   const within = relative(root, actualParent);
@@ -344,6 +366,7 @@ export async function saveNamedIdentityComposition(input: Parameters<typeof prev
   }
   return { ok: true as const, id: prepared.id, preview: prepared.preview,
     components: prepared.components };
+  });
   });
 }
 
