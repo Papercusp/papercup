@@ -158,11 +158,13 @@ export interface RubricRescoreOutcome {
  * The scheduled re-score has no agent MCP context, so its probes go through
  * dispatchPaletteTarget, whose guard classes dev:pg_query as high-tier (raw SQL) and refuses it
  * with confirmation_required unless confirmed. Every scheduled fire on 2026-10-13 lost all 13 sql
- * probe rows that way. Confirming is safe for exactly this tool: the probe layer has already
+ * probe rows that way. Confirming is safe for this tool: the probe layer has already
  * accepted only a single SELECT or WITH...SELECT, and dev:pg_query runs it in a READ ONLY
- * transaction with a row cap and statement timeout. Any other tool keeps the unconfirmed path.
+ * transaction with a row cap and statement timeout. dev:pipeline_position is also a pure
+ * read, but inherits intel:read's high tier; its conformance probes need the same explicit
+ * confirmation. This exact allowlist does not confirm other high-tier or destructive tools.
  */
-export const RESCORE_CONFIRMED_PROBE_TOOLS: ReadonlySet<string> = new Set(['dev:pg_query']);
+export const RESCORE_CONFIRMED_PROBE_TOOLS: ReadonlySet<string> = new Set(['dev:pg_query', 'dev:pipeline_position']);
 
 /** The default re-score probe dispatcher (palette chokepoint, harness-scoped). */
 export function rescoreProbeDispatcher(

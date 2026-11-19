@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { lookupByMcpName, tierFor } from '@papercusp/agent-mcp';
 import '../../agent-tools/dev/pg_query';
+import '../../agent-tools/dev/pipeline_position';
 import { projectedToolToCapability } from '../../capabilities/from-tooldef';
 import { paletteInvokeGuard, type dispatchPaletteTarget } from '../../capabilities/invoke';
 import { RESCORE_CONFIRMED_PROBE_TOOLS, rescoreProbeDispatcher } from './rubric-rescore-action';
@@ -91,8 +92,25 @@ describe('rubric re-score: default probe dispatcher', () => {
     expect(guardFor('dev:pg_query', calls[0].confirmed === true).allow).toBe(true);
   });
 
-  it('confirms nothing except dev:pg_query, and omits an absent harness', async () => {
-    expect([...RESCORE_CONFIRMED_PROBE_TOOLS]).toEqual(['dev:pg_query']);
+  it('admits a read-only pipeline conformance probe through the real high-tier palette guard', async () => {
+    expect(guardFor('dev:pipeline_position', false)).toMatchObject({ allow: false, code: 'confirmation_required' });
+    const calls: DispatchOpts[] = [];
+    const args = { path: 'packages/operator-core/lib/endpoint-route/routes/transport/_mcp-result-replay.ts',
+      sourceRuntimeOnly: true };
+    await rescoreProbeDispatcher('papercusp', recordingDispatch(calls), 'delivery-workspace')('dev:pipeline_position', args);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ name: 'dev:pipeline_position', args, harness: 'papercusp' });
+    expect(guardFor('dev:pipeline_position', calls[0].confirmed === true).allow).toBe(true);
+  });
+
+  it('does not add automatic confirmation to a coordinated restart', async () => {
+    const calls: DispatchOpts[] = [];
+    await rescoreProbeDispatcher('papercusp', recordingDispatch(calls))('dev:restart', { target: 'staging' });
+    expect(calls[0].confirmed).toBeUndefined();
+  });
+
+  it('confirms only the reviewed read-only tools, and omits an absent harness', async () => {
+    expect([...RESCORE_CONFIRMED_PROBE_TOOLS]).toEqual(['dev:pg_query', 'dev:pipeline_position']);
     const calls: DispatchOpts[] = [];
     await rescoreProbeDispatcher(undefined, recordingDispatch(calls))('state:read', { cell: 'git.pipelinePosition' });
     expect(calls[0].confirmed).toBeUndefined();
