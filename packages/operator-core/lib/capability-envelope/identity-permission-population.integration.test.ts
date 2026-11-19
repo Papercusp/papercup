@@ -168,7 +168,7 @@ describe('joined session identity policy sources', () => {
        expected_resources, phase, human_ownership, scoped_grants)
       VALUES (${workspaceId}, ${dependentId}, 'wearer', ${value.specificationRevision}, ${value.stateRevision}, '{}',
         ${options.phase ?? 'applied'}, ${options.omitHumanOwner ? null : sql.json(ownership)},
-        ${options.scope === 'unknown' ? null : sql.json({ schemaVersion: 1, layers })})`;
+        ${options.omitHumanOwner || options.scope === 'unknown' ? null : sql.json({ schemaVersion: 1, layers })})`;
     return dependentId;
   }
   beforeEach(() => {
