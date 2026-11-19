@@ -922,7 +922,7 @@ describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
             schemaVersion: 1,
             qualificationAttemptId: owner.attemptId,
             runContext: input.runContext,
-            runnerIdentity: expect.stringMatching(/^proof-v3 .+/),
+            reporterRunnerIdentity: input.runnerIdentity,
           },
         });
         expect(snapshot.nativeRun).toMatchObject({ terminalHook: 'onTestRunEnd', reason: 'passed',
@@ -1173,6 +1173,29 @@ describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
       expect(await recordStoredQualificationComposedVerdict(target, resumed, { candidate, runId: resumed.runId,
         reason: 'advanced', green: true, terminalEvent: { status: 'real-native-guard-post-composition', detail: { scenario, signal } } }, options))
         .toMatchObject({ status: 'updated', transaction: { outcome: { kind: 'green' }, currentPhysicalRunner: null } });
+      // P001 records the already-working baseline through the maintained
+      // producer, durable qualification row, and actual replacement child.
+      // Equality is a preservation result, never an improvement claim.
+      console.info('P001_RETAINED_PROGRESS_BASELINE', JSON.stringify({
+        schemaVersion: 1, plane: 'native-producer-postgres-successor-fixture',
+        implementation: { sourceFiles: [
+          join(sourceRoot, 'packages/operator-core/lib/release/checkpoint-qualification-transaction.ts'),
+          join(root, 'scripts/lib/partial-task-resume.mjs'),
+          join(root, 'libs/test-config/src/executed-source-map-reporter.ts'),
+        ].map(path => ({ path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') })) },
+        workloadManifest: input.manifest, workloadSourceIdentity: candidate,
+        runtime: captureRuntimeProofIdentity({ root, environment: env, executable: process.execPath }),
+        runnerIdentity: input.runnerIdentity, disturbance: { scenario, signal },
+        producingRun: owner.runId, replacementRun: replacement.runId,
+        retained: [{ unitId: bankedFile, completionId: bankedId }],
+        intendedChild: { pid: second.child.pid, selected: remaining,
+          executed: completed.nativeRun.files.map((file: { testFile: string }) => file.testFile),
+          bankedFileExecuted: completed.nativeRun.files.some((file: { testFile: string }) => file.testFile === bankedFile),
+          terminalHook: completed.nativeRun.terminalHook },
+        observedAtMs: Date.now(),
+        elapsedFromFirstQuantumMs: Date.now() - quantumStartedAtMs,
+        preservation: 'one authentic completed file retained; successor executes only the remaining test',
+      }));
     } finally {
       for (const child of children) stop(child);
       if (dependencyLease) execFileSync('bash', ['-c',

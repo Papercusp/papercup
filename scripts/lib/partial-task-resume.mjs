@@ -534,10 +534,17 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
       completionIntegrity.sha256 !== jsonSha256(body))
     return refused("snapshot-integrity-invalid");
   const context = snapshot.completionCheckpoint, native = snapshot.nativeRun;
+  // A registered producer can report what ran even when its workers cannot
+  // establish the runner identity required for reuse or current evidence.
+  const observedReporterOnly = context?.runnerIdentity === null &&
+    validIdentity(context.reporterRunnerIdentity) && context.reporterRunnerIdentity === expected?.runnerIdentity &&
+    context.runContext === expected?.runContext && snapshot.recordedSha === expected?.sourceCommit &&
+    expected?.producerPath !== undefined;
   if (!validIdentity(expected?.attemptId) || context?.schemaVersion !== 1 ||
       context.qualificationAttemptId !== expected.attemptId ||
       snapshot.workspaceName !== expected.workspaceName || !validIdentity(expected.root) ||
-      !validIdentity(snapshot.recordedSha) || !validIdentity(context.runContext) || !validIdentity(context.runnerIdentity))
+      !validIdentity(snapshot.recordedSha) || !validIdentity(context.runContext) ||
+      (!validIdentity(context.runnerIdentity) && !observedReporterOnly))
     return refused("snapshot-identity-mismatch");
   let producer;
   if (expected.producerPath !== undefined) {

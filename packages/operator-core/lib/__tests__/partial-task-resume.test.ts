@@ -958,6 +958,26 @@ describe('native durable continuation outcomes', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   };
 
+  it('recovers a registered native outcome without granting authority to an unmatched worker runtime', () => {
+    const { observed, physical, checkpoint } = currentFixture(({ native }) => {
+      native.completionCheckpoint.reporterRunnerIdentity = native.completionCheckpoint.runnerIdentity;
+      native.completionCheckpoint.runnerIdentity = null;
+    });
+    expect(observed).toMatchObject({ status: 'ready', currentEvidence: [], receipts: [{ state: 'pass',
+      proof: { runnerIdentity: null } }] });
+    expect(evaluatePartialTaskContinuation(checkpoint, physical, { currentEvidence: observed.currentEvidence }))
+      .toMatchObject({ verdict: 'incomplete', current: [], reused: ['guard'], run: ['a'] });
+
+    const unregistered = snapshot();
+    Object.assign(unregistered.completionCheckpoint, { runnerIdentity: null, reporterRunnerIdentity: 'proof-v3 node' });
+    expect(read(unregistered, { runnerIdentity: 'proof-v3 node', runContext: 'ci' }))
+      .toMatchObject({ status: 'refused', reason: 'snapshot-identity-mismatch' });
+    expect(currentFixture(({ native }) => {
+      native.completionCheckpoint.runnerIdentity = null;
+      native.completionCheckpoint.reporterRunnerIdentity = 'foreign reporter';
+    }).observed).toMatchObject({ status: 'refused', reason: 'snapshot-identity-mismatch' });
+  });
+
   it('composes exact current and retained evidence while keeping current runtime closure unmeasured', () => {
     const { observed, physical, checkpoint } = currentFixture();
     expect(observed).toMatchObject({ status: 'ready', currentEvidence: [{ scope: 'current-execution' }], receipts: [{ proof: {
