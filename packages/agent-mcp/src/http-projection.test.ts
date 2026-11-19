@@ -209,6 +209,10 @@ describe('handleHttpToolRequest', () => {
 
   it('returns 429 for quota_exceeded', async () => {
     registerProjectedTool(makeTool({ rolesQuota: { worker: { perChunk: 1 } } }));
+    // A finite quota is admitted atomically: dispatch requires reserveQuota and,
+    // without it, fails closed with quota_admission_unavailable (500) before any
+    // count is compared. A full window answers allowed:false → quota_exceeded.
+    const reserveQuota = vi.fn(async () => ({ allowed: false as const, count: 1 }));
     const res = await handleHttpToolRequest(
       MAKE_REQ({
         headers: {
@@ -222,12 +226,15 @@ describe('handleHttpToolRequest', () => {
         deps: {
           // Real Papercusp policy: worker → chunk:<id> window, perChunk cap.
           computeQuotaWindow: papercuspComputeQuotaWindow,
-          readQuotaState: vi.fn(async () => ({ count: 1 })),
+          reserveQuota,
         },
       }),
     );
     expect(res.status).toBe(429);
     expect((res.body as { error: { code: string } }).error.code).toBe('quota_exceeded');
+    expect(reserveQuota).toHaveBeenCalledWith(
+      expect.objectContaining({ windowKey: expect.stringContaining('ck_X'), limit: 1 }),
+    );
   });
 
   it('returns 504 for timeout', async () => {
