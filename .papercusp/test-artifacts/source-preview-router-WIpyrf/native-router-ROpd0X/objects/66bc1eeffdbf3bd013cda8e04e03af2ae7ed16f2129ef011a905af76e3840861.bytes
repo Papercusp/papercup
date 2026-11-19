@@ -1,0 +1,16 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.8 [39m[90m/home/marsh-office/papercupai-workspace/papercusp/packages/operator-core[39m
+
+ [32m✓[39m lib/source-preview-export.test.ts [2m([22m[2m714 tests[22m[2m | [22m[33m699 skipped[39m[2m)[22m[33m 4926[2mms[22m[39m
+     [33m[2m✓[22m[39m equals the installer selection over the same clean commit, minus node_modules [33m 658[2mms[22m[39m
+     [33m[2m✓[22m[39m refuses an unresolvable gitlink and leaves no export behind [33m 525[2mms[22m[39m
+     [33m[2m✓[22m[39m is deterministic: exporting the same commit twice yields identical bytes [33m 751[2mms[22m[39m
+     [33m[2m✓[22m[39m exports only committed content, never uncommitted working-tree edits [33m 477[2mms[22m[39m
+     [33m[2m✓[22m[39m uses the pinned dependency graph and leaves dirty source, index and branch unchanged (D-007) [33m 802[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m15 passed[39m[22m[2m | [22m[33m699 skipped[39m[90m (714)[39m
+[2m   Start at [22m 04:57:21
+[2m   Duration [22m 13.36s[2m (transform 4.21s, setup 927ms, import 6.18s, tests 4.93s, environment 0ms)[22m
+
+JSON report written to /tmp/pcv/papercusp-test-files-report-b7b1In/group-0.json
