@@ -227,7 +227,11 @@ describe('dedicated acceptance judge lifecycle', () => {
           contextTier: 'trimmed',
           tx: {},
         },
-        {},
+        // Production MCP dispatch answers a single call in the legacy operation shape
+        // (PROJECTED_DEPS.batchResponseVersion = 'operation-v0' in projected-tool-deps.ts);
+        // bare `{}` deps select the tooldef default, the batch-v1 envelope, which nests the
+        // payload and is not the real-wrapper path this case pins.
+        { batchResponseVersion: 'operation-v0' },
       );
 
       expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);

@@ -192,7 +192,10 @@ describe('code:run registration (B-CX-2A)', () => {
     ['script', ['Use fixed-string search or separate `-e` patterns']],
   ])('preserves the concise %s discovery contract: %j', (field, required) => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
-    const schema = tool?.inputSchema as { properties?: Record<string, { description?: string }> } | undefined;
+    // Read the business operation schema, not the projected `inputSchema`: that is the batch-v1
+    // envelope, which hoists shared field schemas into `$defs` and leaves `{ $ref }` stubs (no
+    // `description`) under `properties` — the same accessor plans/audit.test.ts uses.
+    const schema = tool?.operationInputSchema as { properties?: Record<string, { description?: string }> } | undefined;
     const description = schema?.properties?.[field as string]?.description ?? '';
     for (const fragment of required as string[]) expect(description).toContain(fragment);
   });
@@ -261,7 +264,7 @@ describe('code:run registration (B-CX-2A)', () => {
   it('documents the explicit final-media return contract', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      (tool?.operationInputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
       '';
     // code:run is a FLOOR tool with almost no seat headroom, so its script description is the
     // compact form: pin the contract tokens it still carries, not the earlier long-form prose.
@@ -283,7 +286,8 @@ describe('code:run registration (B-CX-2A)', () => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');
     const inputsDescription =
-      (tool.inputSchema as { properties?: { inputs?: { description?: string } } }).properties?.inputs?.description ?? '';
+      (tool.operationInputSchema as { properties?: { inputs?: { description?: string } } } | undefined)?.properties?.inputs
+        ?.description ?? '';
     expect(inputsDescription).toContain('deeply frozen');
     expect(inputsDescription).toContain('Clone nested values before mutation');
     expect(inputsDescription).toContain('use store/load for state the script updates');
