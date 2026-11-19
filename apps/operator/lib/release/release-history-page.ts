@@ -1307,13 +1307,13 @@ export function renderProductDownloads(releases: HydratedRelease[], unavailable?
     const slot = latest.get(key)!;
     if (slot.version === release.row.version) slot.artifacts.push(artifact);
   }
-  const product = (kind: ReleaseArtifact['product'], platform?: string, unavailable?: string) => {
+  const product = (kind: ReleaseArtifact['product'], platform?: string, unavailableCopy?: string) => {
     const rows = [...latest.values()].flatMap(({ artifacts, version }) => artifacts
       .filter(artifact => artifact.product === kind && (!platform || artifact.platform === platform)
         && isListedArtifact(artifact)).map(artifact => ({ artifact, version })));
     return rows.length ? rows.map(({ artifact, version }) =>
       `<h4>${escapeHtml(artifact.platform)} · ${escapeHtml(version)}</h4>${renderDownloadTable([artifact], unavailable)}`).join('\n')
-      : `<p>${unavailable ?? 'No download is published for this product yet.'}</p>`;
+      : `<p>${unavailableCopy ?? 'No download is published for this product yet.'}</p>`;
   };
   const choices = [['server', 'Desktop Server'], ['gui', 'Desktop GUI'], ['psu', 'PSU + PUI'],
     ['android', 'Android'], ['iphone', 'iPhone']];
