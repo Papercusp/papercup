@@ -26,6 +26,15 @@ export const AUTHORITY_KINDS = [
 ] as const;
 export type AuthorityKind = typeof AUTHORITY_KINDS[number];
 export interface AuthorityRef { kind: AuthorityKind; id: string }
+/** Host-resolved positive grants and the SAME layer's upper bound. A maximum
+ * cannot supply missing grants. Keep the joint tool/action/resource relation:
+ * unioning each category separately would create cross-layer permissions. */
+export interface IdentityAuthorityContribution {
+  id: string;
+  revision: string;
+  grants: Partial<Record<GovernedCategory, CategoryRule>>;
+  maximum: Partial<Record<GovernedCategory, CategoryRule>>;
+}
 export interface AuthorityPolicy extends AuthorityRef {
   /** Opaque revision pinned by the authority's canonical writer. */
   revision: string;
@@ -34,6 +43,11 @@ export interface AuthorityPolicy extends AuthorityRef {
   rules?: Partial<Record<GovernedCategory, CategoryRule>>;
   /** Canonical, expiring exceptions belong only to the authority declaring them. */
   exceptions?: readonly PolicyException[];
+  /** Identity only. Each complete grant is bounded by its own maximum before
+   * union; rules/exceptions on this policy then narrow that entire union.
+   * The canonical loader must pin all contributing sources in revision.
+   * Omission preserves the existing single-grant contract; [] grants nothing. */
+  contributions?: readonly IdentityAuthorityContribution[];
 }
 export interface AuthoritySnapshot {
   /** Complete, host-derived policy population, including absent optional levels. */
@@ -67,6 +81,7 @@ export interface AuthorityTrace {
   value: string;
   outcome: PolicyTraceStep['outcome'];
   pattern?: string;
+  contribution?: { id: string; revision: string; stage: 'grant' | 'maximum' };
 }
 export type EffectivePermissionDecision = {
   allowed: boolean;
@@ -129,13 +144,27 @@ function snapshotProblem(snapshot: AuthoritySnapshot): { code: 'authority-unavai
     const policy = snapshot.policies.find(entry => keyOf(entry) === keyOf(ref));
     if (!policy || !validText(policy.revision) || policy.state === 'unavailable') return unavailable(`unreadable authority ${keyOf(ref)}`);
     if (policy.exceptions !== undefined && !Array.isArray(policy.exceptions)) return malformed('invalid authority exceptions');
+    if (policy.contributions !== undefined) {
+      if (policy.kind !== 'identity' || !Array.isArray(policy.contributions)) return malformed('invalid identity contributions');
+      if (policy.contributions.some((contribution: IdentityAuthorityContribution) => !contribution || !validText(contribution.id) ||
+          !validText(contribution.revision)) || !unique(policy.contributions.map((contribution: IdentityAuthorityContribution) => contribution.id)))
+        return malformed('invalid or duplicate identity contribution');
+      for (const contribution of policy.contributions) {
+        const layer = { layerId: contribution.id, level: 'workspace', version: 1 };
+        if (!isWellFormedLayer({ ...layer, rules: contribution.grants }) ||
+            !isWellFormedLayer({ ...layer, rules: contribution.maximum })) return malformed('invalid identity contribution rules');
+        if (['tools', 'actions', 'resources'].some(category =>
+          contribution.grants[category as GovernedCategory]?.allow === undefined))
+          return unavailable('identity contribution must explicitly grant tools, actions and resources');
+      }
+    }
     if (policy.state === 'not-applicable') {
       if (['identity', 'user', 'vault', 'platform'].includes(ref.kind)) return unavailable(`required authority cannot be absent: ${keyOf(ref)}`);
       if (policy.rules !== undefined || policy.exceptions !== undefined) return malformed('absent authority carries rules or exceptions');
     } else if (policy.state !== 'present' || !isWellFormedLayer(policyLayer(policy))) {
       return malformed(`invalid authority policy ${keyOf(ref)}`);
     }
-    if (policy.kind === 'identity' &&
+    if (policy.kind === 'identity' && policy.contributions === undefined &&
         ['tools', 'actions', 'resources'].some(category =>
           policy.rules?.[category as GovernedCategory]?.allow === undefined)) {
       return unavailable('identity grant must explicitly cover tools, actions and resources');
@@ -191,6 +220,24 @@ export function evaluateEffectivePermission(
   let decidingAuthority: AuthorityRef | undefined;
   for (const policy of policies) {
     if (policy.state === 'not-applicable') continue;
+    if (policy.contributions !== undefined) {
+      let contributionAllows = false;
+      for (const contribution of policy.contributions) {
+        const base = { layerId: contribution.id, level: 'workspace' as const, version: 1 };
+        const grant = evaluateInheritedPolicy([{ ...base, rules: contribution.grants }], governed, now);
+        const maximum = evaluateInheritedPolicy([{ ...base, rules: contribution.maximum }], governed, now);
+        contributionAllows ||= grant.allow && maximum.allow;
+        for (const [stage, verdict] of [['grant', grant], ['maximum', maximum]] as const) {
+          trace.push(...verdict.trace.map(step => ({
+            authority: { kind: policy.kind, id: policy.id, revision: policy.revision },
+            contribution: { id: contribution.id, revision: contribution.revision, stage },
+            category: step.category, value: step.value, outcome: step.outcome,
+            ...(step.pattern ? { pattern: step.pattern } : {}),
+          })));
+        }
+      }
+      if (!contributionAllows && !decidingAuthority) decidingAuthority = { kind: policy.kind, id: policy.id };
+    }
     const verdict = evaluateInheritedPolicy([policyLayer(policy)], governed, now);
     trace.push(...verdict.trace.map(step => ({
       authority: { kind: policy.kind, id: policy.id, revision: policy.revision },

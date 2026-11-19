@@ -22,6 +22,93 @@ function fixture(): AuthoritySnapshot {
   };
 }
 
+describe('P-002 correlated identity contributions', () => {
+  function contributed(): AuthoritySnapshot {
+    const current = fixture();
+    current.policies[0] = {
+      ...current.policies[0], rules: {}, contributions: [
+        { id: 'network-layer', revision: 'network:1', grants: {
+          tools: { allow: ['capability:bash'] }, actions: { allow: ['net:connect'] },
+          resources: { allow: [resourcePermissionValue(request.resource)] },
+        }, maximum: {} },
+        { id: 'store-layer', revision: 'store:1', grants: {
+          tools: { allow: ['store:write'] }, actions: { allow: ['record:write'] },
+          resources: { allow: ['store:write:record'] },
+        }, maximum: {} },
+      ],
+    };
+    return current;
+  }
+
+  it('permits each complete contribution without creating cross-layer tool/action/resource grants', () => {
+    const current = contributed();
+    expect(evaluateEffectivePermission(current, request).allowed).toBe(true);
+    const store: PermissionRequest = { tool: 'store:write', action: 'record:write',
+      resource: { kind: 'store', operation: 'write', target: 'record' } };
+    expect(evaluateEffectivePermission(current, store).allowed).toBe(true);
+    for (const crossed of [
+      { ...store, tool: request.tool }, { ...request, action: store.action },
+      { ...request, resource: store.resource },
+    ]) expect(evaluateEffectivePermission(current, crossed)).toMatchObject({
+      allowed: false, code: 'denied', decidingAuthority: { kind: 'identity' },
+    });
+  });
+
+  it('applies each own maximum before the union, then applies stack floors to the union', () => {
+    const current = contributed();
+    const identity = current.policies[0];
+    const network = identity.contributions![0];
+    network.maximum = { actions: { allow: [] } };
+    expect(evaluateEffectivePermission(current, request).allowed).toBe(false);
+    identity.contributions = [...identity.contributions!, {
+      ...structuredClone(network), id: 'second-network-layer', maximum: {},
+    }];
+    expect(evaluateEffectivePermission(current, request).allowed).toBe(true);
+    identity.rules = { resources: { deny: [resourcePermissionValue(request.resource)] } };
+    expect(evaluateEffectivePermission(current, request)).toMatchObject({
+      allowed: false, decidingAuthority: { kind: 'identity' },
+      trace: expect.arrayContaining([expect.objectContaining({ category: 'resources', outcome: 'deny-rule' })]),
+    });
+  });
+
+  it('never turns a maximum or a tool-only ask into positive action/resource authority', () => {
+    for (const category of ['tools', 'actions', 'resources'] as const) {
+      const current = contributed();
+      const contribution = current.policies[0].contributions![0];
+      delete contribution.grants[category];
+      contribution.maximum = { tools: { allow: ['*'] }, actions: { allow: ['*'] }, resources: { allow: ['*'] } };
+      expect(evaluateEffectivePermission(current, request)).toMatchObject({ allowed: false, code: 'authority-unavailable' });
+    }
+  });
+
+  it('checks scoped arguments jointly and keeps another independent authority binding', () => {
+    const current = contributed();
+    current.policies[0].contributions![0].maximum = { providers: { allow: ['approved'] } };
+    expect(evaluateEffectivePermission(current, { ...request, constraints: { providers: ['approved'] } }).allowed).toBe(true);
+    expect(evaluateEffectivePermission(current, { ...request, constraints: { providers: ['other'] } }).allowed).toBe(false);
+    current.policies.find(policy => policy.kind === 'platform')!.rules = { actions: { allow: [] } };
+    expect(evaluateEffectivePermission(current, request)).toMatchObject({
+      allowed: false, decidingAuthority: { kind: 'platform' },
+    });
+  });
+
+  it('treats a known empty union as deny-all and refuses malformed or duplicate contributions', () => {
+    const empty = contributed();
+    empty.policies[0].contributions = [];
+    expect(evaluateEffectivePermission(empty, request)).toMatchObject({ allowed: false, code: 'denied' });
+    for (const failure of ['duplicate', 'malformed-maximum', 'malformed-grant', 'missing-revision', 'wrong-kind'] as const) {
+      const current = contributed();
+      const identity = current.policies[0];
+      if (failure === 'duplicate') identity.contributions = [identity.contributions![0], identity.contributions![0]];
+      if (failure === 'malformed-maximum') identity.contributions![0].maximum = { tools: { allow: 42 } } as never;
+      if (failure === 'malformed-grant') identity.contributions![0].grants = { tools: { allow: 42 } } as never;
+      if (failure === 'missing-revision') identity.contributions![0].revision = '';
+      if (failure === 'wrong-kind') current.policies[1].contributions = identity.contributions;
+      expect(evaluateEffectivePermission(current, request)).toMatchObject({ allowed: false, code: 'authority-malformed' });
+    }
+  });
+});
+
 describe('effective authority contract (P-024)', () => {
   it('preserves a declaring authority exception until expiry without lifting another authority', () => {
     const snapshot = fixture();
