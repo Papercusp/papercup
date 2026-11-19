@@ -293,6 +293,31 @@ describe('session confinement — exact assignment arguments', () => {
     expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
       completion: { ...completion, verification: { coverage: { population: ['task'], checked: ['task'], residue: ['none'] } } } }).allowed).toBe(true);
   });
+  it('permits a canonical work outcome on the assigned completion, with or without coverage', () => {
+    const workOutcome = 'other-no-new-change';
+    const coverage = { population: ['task'], checked: ['task'], residue: [] };
+    const request = { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification: { workOutcome } } };
+    expect(evaluate('work_items:complete', request).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...request,
+      completion: { ...completion, verification: { workOutcome, coverage } } }).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...request, id: 'F-neighbor' }))
+      .toMatchObject({ allowed: false, matchedGlob: 'outside-exact-work-item' });
+    expect(evaluate('work_items:complete', { ...request, harness: 'other' })).toMatchObject({ allowed: false });
+    expect(evaluate('work_items:complete', { ...request,
+      completion: { ...completion, verification: { workOutcome, coverage: { ...coverage, residue: ['WI-other'] } } } }))
+      .toMatchObject({ allowed: false });
+  });
+  it.each([null, 1, '', 'unknown', ['introduced-change'], { outcome: 'introduced-change' }].map(
+    workOutcome => ({ workOutcome }),
+  ))(
+    'refuses an invalid work outcome even with valid coverage %j', ({ workOutcome }) => {
+      const coverage = { population: ['task'], checked: ['task'], residue: [] };
+      expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+        completion: { ...completion, verification: { workOutcome, coverage } } }))
+        .toMatchObject({ allowed: false, matchedGlob: 'outside-exact-work-item' });
+    },
+  );
   it.each([null, [], {}, { probes: [] },
     { coverage: null }, { coverage: [] }, { coverage: { population: [], residue: [] } },
     { coverage: { population: ['task'], checked: [{ ref: 'WI-other' }], residue: [] } },

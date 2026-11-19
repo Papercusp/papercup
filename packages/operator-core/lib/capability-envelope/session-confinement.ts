@@ -62,6 +62,7 @@
  * Server-or-bundle-safe: pure, no I/O.
  */
 import { CHANGE_KINDS } from '../change-kind-catalog';
+import { CompletionWorkOutcomeSchema } from '../coord-lifecycle/records';
 import { matchesAny } from './policy';
 import { BENCH_PRIVATE_FIXTURE_TOOL, benchFixtureProductCall, validBenchFixtureReadBoundary,
   type BenchFixtureReadBoundary } from '../external-bench/private-fixture-reads';
@@ -390,20 +391,25 @@ function withinWorkItemBoundary(toolName: string, args: unknown,
   if (completion.verification !== undefined) {
     const verification = completion.verification;
     if (!verification || typeof verification !== 'object' || Array.isArray(verification) ||
-        Object.keys(verification).some(key => key !== 'coverage')) return false;
-    const coverage = (verification as Record<string, unknown>).coverage;
-    if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
-    const row = coverage as Record<string, unknown>;
-    const keys = ['population', 'checked', 'notChecked', 'notApplicable', 'residue'];
-    if (Object.keys(row).some(key => !keys.includes(key)) ||
-        !Array.isArray(row.population) || !row.population.length ||
-        keys.some(key => row[key] !== undefined && (!Array.isArray(row[key]) ||
-          !(row[key] as unknown[]).every(value => typeof value === 'string' && value.trim().length > 0)))) return false;
-    // Coverage is inert description; the completion tool validates its partition.
-    // Residue references can trigger cross-item ownership reads, so a confined
-    // assignment may submit only the maintained zero-residue forms.
-    if (!Array.isArray(row.residue) || row.residue.length > 0 &&
-        !(row.residue.length === 1 && row.residue[0] === 'none')) return false;
+        Object.keys(verification).some(key => key !== 'coverage' && key !== 'workOutcome')) return false;
+    const { coverage, workOutcome } = verification as Record<string, unknown>;
+    // The outcome is a declaration on this item. The completion handler owns
+    // the rules for when it is required and how it is recorded.
+    if (workOutcome !== undefined && !CompletionWorkOutcomeSchema.safeParse(workOutcome).success) return false;
+    if (coverage === undefined && workOutcome === undefined) return false;
+    if (coverage !== undefined) {
+      if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
+      const row = coverage as Record<string, unknown>;
+      const keys = ['population', 'checked', 'notChecked', 'notApplicable', 'residue'];
+      if (Object.keys(row).some(key => !keys.includes(key)) ||
+          !Array.isArray(row.population) || !row.population.length ||
+          keys.some(key => row[key] !== undefined && (!Array.isArray(row[key]) ||
+            !(row[key] as unknown[]).every(value => typeof value === 'string' && value.trim().length > 0)))) return false;
+      // The completion tool validates the coverage partition. Residue can
+      // trigger cross-item reads, so confined calls may report only zero residue.
+      if (!Array.isArray(row.residue) || row.residue.length > 0 &&
+          !(row.residue.length === 1 && row.residue[0] === 'none')) return false;
+    }
   }
   // The completion tool reads named files server-side. Keep those proof reads
   // inside the assignment checkout, including on platforms with backslashes.
