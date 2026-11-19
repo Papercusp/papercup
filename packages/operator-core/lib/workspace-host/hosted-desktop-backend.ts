@@ -61,6 +61,7 @@ import type {
   HostedDesktopSocket,
   HostedDesktopViewer,
 } from './hosted-session-host';
+import { HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES } from './hosted-session-host';
 
 /**
  * KasmVNC serves its RFB websocket on the noVNC/websockify convention path.
@@ -360,19 +361,39 @@ export async function dialDesktopSocket(
 
   const dataListeners = new Set<(data: Buffer) => void>();
   const closeListeners = new Set<(reason: string) => void>();
+  const pending: Buffer[] = [];
+  let pendingBytes = 0;
   let closed = false;
+  let closeReason = '';
 
   const fireClose = (reason: string): void => {
     if (closed) return;
     closed = true;
+    closeReason = reason;
+    pending.length = 0;
+    pendingBytes = 0;
     for (const listener of [...closeListeners]) listener(reason);
   };
 
   socket.on('message', (data, isBinary) => {
     void isBinary;
+    if (closed) return;
     const buffer = toBuffer(data);
     if (!buffer || buffer.byteLength === 0) return;
-    for (const listener of [...dataListeners]) listener(buffer);
+    // KasmVNC can send its greeting in the upgrade turn. The host also awaits
+    // current authorization after dial(), before subscribing. Preserve those
+    // bytes: RFB cannot request a greeting that the transport already dropped.
+    if (dataListeners.size > 0 && pending.length === 0) {
+      for (const listener of [...dataListeners]) listener(buffer);
+    } else {
+      if (pendingBytes + buffer.byteLength > HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES) {
+        fireClose('desktop_startup_backpressure');
+        try { socket.close(1009, 'desktop_startup_backpressure'); } catch { /* already gone */ }
+        return;
+      }
+      pending.push(buffer);
+      pendingBytes += buffer.byteLength;
+    }
   });
   socket.on('close', (code) => fireClose(`desktop_socket_closed_${code}`));
 
@@ -417,6 +438,8 @@ export async function dialDesktopSocket(
     });
   });
 
+  if (closed) throw new HostedDesktopDialError('desktop_dial_failed', closeReason);
+
   return {
     send(data: Buffer): boolean {
       if (closed || socket.readyState !== socket.OPEN) return false;
@@ -437,10 +460,23 @@ export async function dialDesktopSocket(
     },
     onData(listener: (data: Buffer) => void): () => void {
       dataListeners.add(listener);
+      // openDesktop publishes desktop.ready after registering its callbacks.
+      // Flush in the next microtask so the ready frame is queued first; newly
+      // arriving bytes stay behind the buffered greeting until it is drained.
+      if (pending.length > 0) queueMicrotask(() => {
+        while (!closed && pending.length > 0 && dataListeners.size > 0) {
+          const data = pending.shift()!;
+          pendingBytes -= data.byteLength;
+          for (const current of [...dataListeners]) current(data);
+        }
+      });
       return () => dataListeners.delete(listener);
     },
     onClose(listener: (reason: string) => void): () => void {
       closeListeners.add(listener);
+      if (closed) queueMicrotask(() => {
+        if (closeListeners.has(listener)) listener(closeReason);
+      });
       return () => closeListeners.delete(listener);
     },
   };

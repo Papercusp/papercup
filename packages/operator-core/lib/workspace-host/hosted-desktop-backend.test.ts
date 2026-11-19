@@ -16,6 +16,7 @@ import {
 } from './hosted-desktop-backend';
 import type { SandboxDesktop } from '../agent-tools/computer/desktop-provisioner';
 import { toRecord, type DesktopSessionRecord } from '../desktop/desktop-session-registry';
+import { HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES } from './hosted-session-host';
 
 class FakeWire implements HostedDesktopWireSocket {
   readonly OPEN = 1;
@@ -320,6 +321,72 @@ describe('dialDesktopSocket', () => {
     expect(seen).toEqual([Buffer.from([1, 2, 3])]);
     expect(socket.send(Buffer.from([9]))).toBe(true);
     expect(wire.sent).toEqual([Buffer.from([9])]);
+  });
+
+  it.each(['upgrade', 'authorized-handoff'] as const)(
+    'preserves the RFB greeting received during %s until the adapter publishes ready',
+    async (phase) => {
+      const wire = new FakeWire('ws://x', {});
+      const greeting = Buffer.from('RFB 003.008\n');
+      const socket = await dialDesktopSocket(dialInput, {
+        createSocket: () => {
+          queueMicrotask(() => {
+            wire.emitOpen();
+            if (phase === 'upgrade') wire.emitMessage(greeting);
+          });
+          return wire;
+        },
+      });
+      // openDesktop awaits a fresh grant check after dial() and before onData().
+      if (phase === 'authorized-handoff') wire.emitMessage(greeting);
+      const events: string[] = [];
+      socket.onData(data => events.push(data.toString()));
+      events.push('desktop.ready');
+      wire.emitMessage(Buffer.from('next bytes'));
+      await Promise.resolve();
+      expect(events).toEqual(['desktop.ready', 'RFB 003.008\n', 'next bytes']);
+      socket.close();
+    },
+  );
+
+  it('bounds startup bytes and reports a handoff-time close to a late subscriber', async () => {
+    const wire = new FakeWire('ws://x', {});
+    const socket = await dialDesktopSocket(dialInput, {
+      createSocket: () => {
+        queueMicrotask(() => wire.emitOpen());
+        return wire;
+      },
+    });
+    wire.emitMessage(Buffer.alloc(HOSTED_HOST_MAX_DESKTOP_FRAME_BYTES));
+    wire.emitMessage(Buffer.from([1]));
+    const reasons: string[] = [];
+    const seen: Buffer[] = [];
+    socket.onClose(reason => reasons.push(reason));
+    socket.onData(data => seen.push(data));
+    await Promise.resolve();
+    expect(wire.closedWith).toEqual({ code: 1009, reason: 'desktop_startup_backpressure' });
+    expect(reasons).toEqual(['desktop_startup_backpressure']);
+    expect(seen).toEqual([]);
+    expect(socket.send(Buffer.from([1]))).toBe(false);
+  });
+
+  it('discards a held greeting when the viewer detaches before delivery', async () => {
+    const wire = new FakeWire('ws://x', {});
+    const socket = await dialDesktopSocket(dialInput, {
+      createSocket: () => {
+        queueMicrotask(() => wire.emitOpen());
+        return wire;
+      },
+    });
+    wire.emitMessage(Buffer.from('RFB 003.008\n'));
+    const seen: Buffer[] = [];
+    const remove = socket.onData(data => seen.push(data));
+    remove();
+    socket.close();
+    socket.onData(data => seen.push(data));
+    await Promise.resolve();
+    expect(seen).toEqual([]);
+    expect(wire.closedWith).toEqual({ code: 1000, reason: 'viewer_detached' });
   });
 
   it('reports send failure once the pipe is gone, so the adapter can close the channel', async () => {
