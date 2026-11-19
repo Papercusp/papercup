@@ -1616,6 +1616,18 @@ describe('test-files router', () => {
           PLAYWRIGHT_BROWSERS_PATH: '/tmp/router-child-home/.cache/ms-playwright' });
     });
 
+    it('enables settlement diagnostics for retained runs while preserving an explicit opt-out', () => {
+      const env = Object.freeze({ PAPERCUSP_TEST_ARTIFACT_DIR: '/tmp/retained-run' });
+      for (const value of [undefined, '', ' ']) {
+        expect(perGroupVitestEnv({ ...env, PAPERCUSP_TEST_REPORTER_STAGE_TRACE: value }, 0, 1)
+          .PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('1');
+      }
+      expect(perGroupVitestEnv({ ...env, PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '0' }, 0, 1)
+        .PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBe('0');
+      expect(perGroupVitestEnv({}, 0, 1).PAPERCUSP_TEST_REPORTER_STAGE_TRACE).toBeUndefined();
+      expect(env).toEqual({ PAPERCUSP_TEST_ARTIFACT_DIR: '/tmp/retained-run' });
+    });
+
     it.each([undefined, 'production', 'development'])('establishes test mode for Vitest children inherited from %s', nodeEnv => {
       const env = Object.freeze({ NODE_ENV: nodeEnv, PAPERCUSP_TEST_RUN_RECEIPT_FILE: '/tmp/receipt.jsonl' });
       const child = perGroupVitestEnv(env, 0, 1);

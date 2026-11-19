@@ -31,6 +31,8 @@ function recordingReporter(intervalMs = 30_000) {
   const lines: string[] = [];
   const reporter = new TestProgressHeartbeatReporter({
     intervalMs,
+    stageTrace: false,
+    trace: false,
     now: () => clock,
     write: (line: string) => lines.push(line),
   });
@@ -83,13 +85,38 @@ describe('TestProgressHeartbeatReporter — a per-test progress signal the watch
 
   it('bounds case diagnostics and excludes filtered cases from the trace budget', () => {
     const lines: string[] = [];
-    const reporter = new TestProgressHeartbeatReporter({ trace: true, write: (line: string) => lines.push(line) });
+    const reporter = new TestProgressHeartbeatReporter({ trace: true, stageTrace: false,
+      write: (line: string) => lines.push(line) });
     const skipped = { fullName: 'filtered', result: () => ({ state: 'skipped' }) };
     for (let i = 0; i < 100; i++) reporter.onTestCaseResult(skipped);
     for (let i = 0; i < 40; i++) reporter.onTestCaseReady({ fullName: 'x'.repeat(2000) });
-    const traces = lines.filter(line => line.startsWith('TEST_FILE_CASE_TRACE '));
+    const traces = lines.filter(line => line.startsWith('TEST_FILE_CASE_TRACE ') && !line.includes('trace-exhausted'));
     expect(traces).toHaveLength(32);
     expect(traces.every(line => line.length < 800)).toBe(true);
+    expect(lines.filter(line => line.includes('trace-exhausted'))).toEqual([
+      'TEST_FILE_CASE_TRACE {"event":"trace-exhausted","limit":32,"coverage":"partial"}\n',
+    ]);
+  });
+
+  it('retains later active cases in diagnostic runs and marks their eventual coverage limit', () => {
+    const lines: string[] = [];
+    const reporter = new TestProgressHeartbeatReporter({ stageTrace: true,
+      write: (line: string) => lines.push(line) });
+    const testCase = (name: string) => ({ fullName: name, module: { moduleId: '/repo/later.test.ts' },
+      result: () => ({ state: 'passed' }) });
+    for (let i = 0; i < 40; i++) {
+      reporter.onTestCaseReady(testCase(`earlier ${i}`));
+      reporter.onTestCaseResult(testCase(`earlier ${i}`));
+    }
+    reporter.onTestCaseReady(testCase('actual later active case'));
+    expect(lines.at(-1)).toContain('"name":"actual later active case"');
+    expect(lines.at(-1)).toContain('"event":"started"');
+    for (let i = 0; i < 4200; i++) reporter.onTestCaseReady(testCase(`bounded ${i}`));
+    expect(lines.filter(line => line.includes('"event":"started"') || line.includes('"event":"finished"')))
+      .toHaveLength(4096);
+    expect(lines.filter(line => line.includes('trace-exhausted'))).toEqual([
+      'TEST_FILE_CASE_TRACE {"event":"trace-exhausted","limit":4096,"coverage":"partial"}\n',
+    ]);
   });
 
   it('keeps case tracing silent when disabled and tolerates malformed diagnostics', () => {

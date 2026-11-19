@@ -665,6 +665,12 @@ export function perGroupVitestEnv(env, groupIndex, groupCount, { vitestArgs = []
   // home cache. Keep explicit PLAYWRIGHT_BROWSERS_PATH overrides, but pin the
   // implicit default before passing this environment to Vitest or Node workers.
   const testEnv = withPlaywrightBrowserCache({ ...env, NODE_ENV: 'test' });
+  // Retained runs must identify reporter settlement and cases beyond the
+  // startup trace prefix before a watchdog can remove that evidence.
+  if (env.PAPERCUSP_TEST_ARTIFACT_DIR?.trim()
+    && !testEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE?.trim()) {
+    testEnv.PAPERCUSP_TEST_REPORTER_STAGE_TRACE = '1';
+  }
   // Vitest initializes hanging-process in onInit, after loading its config.
   // Preload that SAME tracker when requested, so resources opened by config
   // imports also have creation stacks when onProcessTimeout reports them.

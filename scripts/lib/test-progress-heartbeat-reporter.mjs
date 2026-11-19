@@ -26,7 +26,8 @@ export default class TestProgressHeartbeatReporter {
     intervalMs = TEST_PROGRESS_HEARTBEAT_INTERVAL_MS,
     now = () => Date.now(),
     write = (line) => process.stderr.write(line),
-    trace = ['1', 'vitest-descendant'].includes(process.env.PAPERCUSP_TEST_STARTUP_TRACE),
+    stageTrace = process.env.PAPERCUSP_TEST_REPORTER_STAGE_TRACE === '1',
+    trace = stageTrace || ['1', 'vitest-descendant'].includes(process.env.PAPERCUSP_TEST_STARTUP_TRACE),
   } = {}) {
     this.intervalMs = intervalMs;
     this.now = now;
@@ -34,7 +35,11 @@ export default class TestProgressHeartbeatReporter {
     this.completedCases = 0;
     this.lastEmitAt = null;
     this.trace = trace;
-    this.traceRemaining = 32;
+    // Startup output is only a prefix. Diagnostic runs need later case
+    // transitions too, otherwise their last startup case looks like a stall.
+    this.traceLimit = stageTrace ? 4096 : 32;
+    this.traceRemaining = this.traceLimit;
+    this.traceExhausted = false;
   }
 
   traceCase(event, testCase) {
@@ -44,8 +49,16 @@ export default class TestProgressHeartbeatReporter {
       const failed = result?.state === 'failed';
       // A later test can outlive the parent's deadline. Preserve completed
       // failures immediately, even after optional startup tracing is exhausted.
-      if (!failed && (!this.trace || this.traceRemaining <= 0)) return;
       if (result?.state === 'skipped') return;
+      if (!failed && !this.trace) return;
+      if (!failed && this.traceRemaining <= 0) {
+        if (!this.traceExhausted) {
+          this.traceExhausted = true;
+          this.write(`TEST_FILE_CASE_TRACE ${JSON.stringify({ event: 'trace-exhausted',
+            limit: this.traceLimit, coverage: 'partial' })}\n`);
+        }
+        return;
+      }
       if (!failed) this.traceRemaining -= 1;
       this.write(`TEST_FILE_CASE_TRACE ${JSON.stringify({ event,
         file: String(testCase.module?.moduleId ?? '').slice(-300),
