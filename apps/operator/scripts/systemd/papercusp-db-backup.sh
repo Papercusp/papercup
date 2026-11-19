@@ -222,27 +222,52 @@ PC_BACKUP_WATCH_SEC="${PC_BACKUP_WATCH_SEC:-15}"        # mid-flight free-space 
 # ITS OWN filesystem — a guard that measures the wrong volume is worse than no
 # guard, because it reports headroom that does not exist where we are writing.
 fs_avail_gb() {
-  local kb measurement measurement_rc measurement_detail measurement_outcome
-  if measurement=$(timeout --kill-after=1s 4s df --output=avail -k "$PGOUT" 2>&1); then
+  local blocks block_size measurement measurement_rc measurement_detail measurement_outcome
+  local max_integer=9223372036854775807
+  local measurement_started_epoch="$EPOCHREALTIME" measurement_finished_epoch
+  # statfs reads this path directly; df additionally reads the mount table.
+  # %a excludes reserved blocks and %S is their size, matching df's availability.
+  if measurement=$(LC_ALL=C timeout --verbose --kill-after=1s 4s stat -f -c '%a %S' -- "$PGOUT" 2>&1); then
     measurement_rc=0
   else
     measurement_rc=$?
   fi
-  kb=$(printf '%s\n' "$measurement" | tail -1 | tr -d '[:space:]')
-  if [ "$measurement_rc" -ne 0 ] || ! [[ "$kb" =~ ^[0-9]+$ ]]; then
-    case "$measurement_rc" in
-      0) measurement_outcome=invalid-output ;;
-      124) measurement_outcome=wall-timeout ;;
-      137) measurement_outcome=wall-timeout-kill ;;
-      *) measurement_outcome=failed ;;
-    esac
-    measurement_detail=$(printf '%s' "$measurement" | tr '\r\n' ' ')
-    measurement_detail=${measurement_detail:0:240}
-    log "SPACE MEASUREMENT FAILED: df_status=$measurement_rc probe_outcome=$measurement_outcome path=$PGOUT detail=${measurement_detail:-<empty>}"
-    # Unknown space still refuses a dump, but must not masquerade as measured 0.
-    return 1
+  measurement_finished_epoch="$EPOCHREALTIME"
+  if [ "$measurement_rc" -eq 0 ] && [[ "$measurement" =~ ^(0|[1-9][0-9]*)[[:blank:]]+([1-9][0-9]*)$ ]]; then
+    blocks="${BASH_REMATCH[1]}"
+    block_size="${BASH_REMATCH[2]}"
+    # Bash arithmetic is signed 64-bit. Refuse unrepresentable values before
+    # evaluation so an overflowing observation cannot become plausible headroom.
+    if [ "${#blocks}" -gt 19 ] || [ "${#block_size}" -gt 19 ] \
+      || { [ "${#blocks}" -eq 19 ] && [[ "$blocks" > "$max_integer" ]]; } \
+      || { [ "${#block_size}" -eq 19 ] && [[ "$block_size" > "$max_integer" ]]; }; then
+      measurement_outcome=arithmetic-overflow
+    elif (( blocks > max_integer / block_size )); then
+      measurement_outcome=arithmetic-overflow
+    else
+      echo $(( blocks * block_size / 1073741824 ))
+      return 0
+    fi
   fi
-  echo $(( kb / 1048576 ))
+  case "$measurement_rc" in
+    0) measurement_outcome="${measurement_outcome:-invalid-output}" ;;
+    124) measurement_outcome=wall-timeout ;;
+    137)
+      # SIGKILL can originate outside timeout. Require its own escalation
+      # report before claiming a deadline killed this observer.
+      if [[ "$measurement" == *'sending signal KILL'* ]]; then
+        measurement_outcome=wall-timeout-kill
+      else
+        measurement_outcome=signal-kill
+      fi
+      ;;
+    *) measurement_outcome=failed ;;
+  esac
+  measurement_detail=$(printf '%s' "$measurement" | tr '\r\n' ' ')
+  measurement_detail=${measurement_detail:0:240}
+  log "SPACE MEASUREMENT FAILED: stat_status=$measurement_rc probe_outcome=$measurement_outcome path=$PGOUT probe_started_epoch=$measurement_started_epoch probe_finished_epoch=$measurement_finished_epoch invocation=${INVOCATION_ID:-unknown} source=${BACKUP_SELF:-unknown} detail=${measurement_detail:-<empty>}"
+  # Unknown space still refuses a dump, but must not masquerade as measured 0.
+  return 1
 }
 
 # Databases that are NOT real state: per-test, scratch, repro, e2e, gym fixtures.

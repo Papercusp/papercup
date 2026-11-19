@@ -293,29 +293,33 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
     }
   });
 
-  it.each(['success', 'zero', 'failure-with-output', 'malformed', 'hang', 'hang-ignore-term'])('distinguishes valid zero from an unavailable space measurement: %s', (mode) => {
+  it.each(['success', 'zero', 'failure-with-output', 'malformed', 'hang', 'hang-ignore-term', 'signal-kill'])('distinguishes valid zero from an unavailable space measurement: %s', (mode) => {
     const root = mkdtempSync(join(tmpdir(), 'backup-space-deadline-'));
     try {
-      const df = join(root, 'df');
-      writeFileSync(df, [
+      const stat = join(root, 'stat');
+      writeFileSync(stat, [
         '#!/bin/bash',
-        'printf "Avail\\n"',
-        '[ "$MEASURE_MODE" != zero ] || { printf "0\\n"; exit 0; }',
+        '[ "$MEASURE_MODE" != zero ] || { printf "0 4096\\n"; exit 0; }',
         '[ "$MEASURE_MODE" != malformed ] || { printf "not-a-number\\n"; exit 0; }',
-        'printf "2097152\\n"',
+        'printf "524288 4096\\n"',
         '[ "$MEASURE_MODE" != failure-with-output ] || exit 1',
+        '[ "$MEASURE_MODE" != signal-kill ] || kill -KILL $$',
         '[ "$MEASURE_MODE" != hang-ignore-term ] || trap "" TERM',
         '[[ "$MEASURE_MODE" != hang* ]] || exec /bin/sleep 30',
       ].join('\n'));
-      chmodSync(df, 0o755);
+      chmodSync(stat, 0o755);
+      // A direct statfs observation must remain usable when df cannot read
+      // unrelated mount metadata. The old df implementation fails this fixture.
+      writeFileSync(join(root, 'df'), '#!/bin/bash\nexec /bin/sleep 30\n');
+      chmodSync(join(root, 'df'), 0o755);
       const run = spawnSync('timeout', ['--kill-after=1s', '2s', 'bash', '-c', [
         'set -uo pipefail',
         'PGOUT=/fixture/backup-volume',
         'log() { printf "%s\\n" "$*" >&2; }',
         'timeout() {',
-        '  [ "$1" = --kill-after=1s ] && [ "$2" = 4s ] || return 98',
-        '  shift 2',
-        '  command timeout --kill-after=0.1s 0.1s "$@"',
+        '  [ "$1" = --verbose ] && [ "$2" = --kill-after=1s ] && [ "$3" = 4s ] || return 98',
+        '  shift 3',
+        '  command timeout --verbose --kill-after=0.1s 0.1s "$@"',
         '}',
         functionBody('fs_avail_gb'),
         'fs_avail_gb',
@@ -331,9 +335,48 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         expect(run.stderr).toBe('');
       } else {
         expect(run.stderr).toContain('SPACE MEASUREMENT FAILED:');
-        expect(run.stderr).toContain(`df_status=${mode === 'malformed' ? 0 : mode === 'hang' ? 124 : mode === 'hang-ignore-term' ? 137 : 1}`);
-        expect(run.stderr).toContain(`probe_outcome=${mode === 'malformed' ? 'invalid-output' : mode === 'hang' ? 'wall-timeout' : mode === 'hang-ignore-term' ? 'wall-timeout-kill' : 'failed'}`);
+        expect(run.stderr).toContain(`stat_status=${mode === 'malformed' ? 0 : mode === 'hang' ? 124 : mode === 'hang-ignore-term' || mode === 'signal-kill' ? 137 : 1}`);
+        expect(run.stderr).toContain(`probe_outcome=${mode === 'malformed' ? 'invalid-output' : mode === 'hang' ? 'wall-timeout' : mode === 'hang-ignore-term' ? 'wall-timeout-kill' : mode === 'signal-kill' ? 'signal-kill' : 'failed'}`);
+        expect(run.stderr).toMatch(/probe_started_epoch=\d+\.\d+ probe_finished_epoch=\d+\.\d+/);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['1073741823 1', '0', null],
+    ['1073741824 1', '1', null],
+    ['1073741825 1', '1', null],
+    ['9223372036854775806 1', '8589934591', null],
+    ['9223372036854775807 1', '8589934591', null],
+    ['9223372036854775808 1', '', 'arithmetic-overflow'],
+    ['4611686018427387904 2', '', 'arithmetic-overflow'],
+    ['1 9223372036854775808', '', 'arithmetic-overflow'],
+    ['1 0', '', 'invalid-output'],
+    ['1 4096 extra', '', 'invalid-output'],
+    ['1 4096\n2 4096', '', 'invalid-output'],
+    ['01 4096', '', 'invalid-output'],
+  ] as const)('converts a complete filesystem observation or rejects it intact: %s', (measurement, expected, failure) => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-space-arithmetic-'));
+    try {
+      writeFileSync(join(root, 'stat'), '#!/bin/bash\nprintf "%s\\n" "$MEASUREMENT"\n');
+      chmodSync(join(root, 'stat'), 0o755);
+      const run = spawnSync('bash', ['-c', [
+        'set -uo pipefail',
+        'PGOUT=/fixture/backup-volume',
+        'log() { printf "%s\\n" "$*" >&2; }',
+        functionBody('fs_avail_gb'),
+        'fs_avail_gb',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 4_000,
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, MEASUREMENT: measurement },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect(run.status, run.stderr).toBe(failure ? 1 : 0);
+      expect(run.stdout.trim()).toBe(expected);
+      if (failure) expect(run.stderr).toContain(`stat_status=0 probe_outcome=${failure}`);
+      else expect(run.stderr).toBe('');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -342,14 +385,13 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
   it.each(['unavailable', 'zero', 'low'])('aborts safely with the correct space diagnosis: %s', (mode) => {
     const root = mkdtempSync(join(tmpdir(), 'backup-space-diagnosis-'));
     try {
-      const df = join(root, 'df');
-      writeFileSync(df, [
+      const stat = join(root, 'stat');
+      writeFileSync(stat, [
         '#!/bin/bash',
-        '[ "$MEASURE_MODE" != unavailable ] || { printf "fixture df unavailable\\n" >&2; exit 1; }',
-        'printf "Avail\\n"',
-        'if [ "$MEASURE_MODE" = zero ]; then printf "0\\n"; else printf "1048576\\n"; fi',
+        '[ "$MEASURE_MODE" != unavailable ] || { printf "fixture stat unavailable\\n" >&2; exit 1; }',
+        'if [ "$MEASURE_MODE" = zero ]; then printf "0 4096\\n"; else printf "262144 4096\\n"; fi',
       ].join('\n'));
-      chmodSync(df, 0o755);
+      chmodSync(stat, 0o755);
       const run = spawnSync('timeout', ['--kill-after=1s', '2s', 'bash', '-c', [
         'set -uo pipefail',
         'PGOUT=/fixture/backup-volume',
@@ -375,7 +417,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       expect(run.status, run.stderr).toBe(0);
       expect(run.stdout).toContain('watchdog returned:');
       if (mode === 'unavailable') {
-        expect(run.stderr).toContain('df_status=1 probe_outcome=failed');
+        expect(run.stderr).toContain('stat_status=1 probe_outcome=failed');
         expect(run.stderr).toContain('unable to measure free space');
         expect(run.stderr).toContain('diagnostic reason=space-unreadable');
         expect(run.stderr).not.toContain('free space fell to');
@@ -392,9 +434,9 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
   it.each(['preflight', 'per-artifact'])('refuses %s admission when free space cannot be measured', (boundary) => {
     const root = mkdtempSync(join(tmpdir(), 'backup-space-admission-'));
     try {
-      const df = join(root, 'df');
-      writeFileSync(df, '#!/bin/bash\nprintf "fixture df unavailable\\n" >&2\nexit 1\n');
-      chmodSync(df, 0o755);
+      const stat = join(root, 'stat');
+      writeFileSync(stat, '#!/bin/bash\nprintf "fixture stat unavailable\\n" >&2\nexit 1\n');
+      chmodSync(stat, 0o755);
       const preflight = source.match(/^(?:if ! )?PC_FREE_GB=\$\(fs_avail_gb\)[\s\S]*?^log "headroom ok:.*$/m)?.[0];
       expect(preflight).toBeTruthy();
       const run = spawnSync('bash', ['-c', [
@@ -416,7 +458,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       });
       expect(run.error, run.stderr).toBeUndefined();
       expect(run.status, run.stderr).toBe(1);
-      expect(run.stderr).toContain('df_status=1 probe_outcome=failed');
+      expect(run.stderr).toContain('stat_status=1 probe_outcome=failed');
       expect(run.stderr).toContain('unable to measure free space');
       expect(run.stderr).not.toContain('UNEXPECTED DATABASE ACCESS');
       expect(run.stderr).not.toContain('only 0 GiB free');
