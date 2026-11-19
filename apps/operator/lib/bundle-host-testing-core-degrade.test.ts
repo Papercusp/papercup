@@ -115,15 +115,18 @@ function fixture(helper: 'committed' | 'untracked'): Fixture {
   return { repo, out, log, stub };
 }
 
-interface Run { status: number | null; stdout: string; stderr: string; calls: string[]; vars: Record<string, string> }
+interface Run { status: number | null; stdout: string; stderr: string; calls: string[]; vars: Record<string, string>; states: { step: string; event: string; binding: string }[] }
 
 function run(fx: Fixture, extraEnv: Record<string, string> = {}, prepareTwice = false): Run {
+  writeFileSync(join(fx.out, 'build-steps.jsonl'), '');
   const harness = [
     'set -euo pipefail',
     'HOST_COMMON_EXTERNALS=(--external:common)',
     'NATIVE_PKGS=(native-pkg)',
     "HOST_BANNER='/* banner */'",
     'HOST_BANNER_DEFINES=(--define:__banner=1)',
+    // The slice calls the outer compiler resolver before entering its subshell.
+    'bundle_host_prepare_esbuild() { :; }',
     // Stub esbuild: logs its receipt env + outfile; prints a binding only when asked to witness.
     'bundle_host_esbuild() {',
     '  printf "esbuild receipt=%s args=%s\\n" "${BUNDLE_HOST_TESTING_CORE_PREPARE_RECEIPT:-}" "$*" >> "$LOG"',
@@ -142,7 +145,8 @@ function run(fx: Fixture, extraEnv: Record<string, string> = {}, prepareTwice = 
     encoding: 'utf8',
     // A minimal env: an inherited BUNDLE_HOST_TESTING_CORE_* would take the reuse branch.
     env: { NODE_ENV: 'test', PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: process.env.HOME ?? tmpdir(),
-      LOG: fx.log, STUB: fx.stub, REPO: fx.repo, OUT: fx.out, ...extraEnv },
+      LOG: fx.log, STUB: fx.stub, REPO: fx.repo, OUT: fx.out,
+      BUNDLE_HOST_STEP_LOG: join(fx.out, 'build-steps.jsonl'), ...extraEnv },
   });
   const vars: Record<string, string> = {};
   for (const line of result.stdout.split('\n')) {
@@ -150,7 +154,8 @@ function run(fx: Fixture, extraEnv: Record<string, string> = {}, prepareTwice = 
     if (m) vars[m[1]] = m[2];
   }
   const calls = readFileSync(fx.log, 'utf8').split('\n').filter(Boolean);
-  return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls, vars };
+  const states = readFileSync(join(fx.out, 'build-steps.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls, vars, states };
 }
 
 describe('WI-6554700010048115 — host testing-core step without a committed witness helper', () => {
@@ -162,6 +167,7 @@ describe('WI-6554700010048115 — host testing-core step without a committed wit
     expect(r.stderr).toContain(`${WARN_TAG}: ${HELPER} has no committed version`);
     expect(r.vars.DEFINE).toBe('--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined');
     expect(r.vars.BINDING).toBe('unwitnessed:helper-not-committed');
+    expect(r.states).toContainEqual(expect.objectContaining({ step: 'testing-core-witness', event: 'degraded', binding: r.vars.BINDING }));
     expect(r.vars.RECEIPT).toBe(join(fx.out, 'testing-core.worker.witness.json'));
     // The worker is still compiled, but never asked to produce a witness receipt…
     const esbuild = r.calls.filter(c => c.startsWith('esbuild '));
@@ -200,6 +206,8 @@ describe('WI-6554700010048115 — host testing-core step without a committed wit
     const receipt = join(fx.out, 'testing-core.worker.witness.json');
     expect(r.calls.filter(c => c.startsWith('esbuild '))[0]).toContain(`esbuild receipt=${receipt} args=`);
     expect(r.vars.BINDING).toBe('sha256:fixture-binding');
+    expect(r.states).toContainEqual(expect.objectContaining({ step: 'testing-core-witness', event: 'qualified', binding: 'witnessed' }));
+    expect(r.states.some(state => state.event === 'degraded')).toBe(false);
     expect(r.vars.DEFINE).toBe('--define:__PAPERCUSP_TESTING_CORE_WITNESS__="witnessed"');
     const helperCalls = r.calls.filter(c => c.startsWith('helper '));
     expect(helperCalls).toEqual([
@@ -220,6 +228,8 @@ describe('WI-6554700010048115 — host testing-core step without a committed wit
     expect(r.stderr).toContain('WARN(EI-28752668992567658): the producing witness refused the worker build');
     expect(r.vars.DEFINE).toBe('--define:__PAPERCUSP_TESTING_CORE_WITNESS__=undefined');
     expect(r.vars.BINDING).toBe('unwitnessed:custody-refused');
+    expect(r.stderr).toContain('TESTING_CORE_BUILD_STATE unwitnessed:custody-refused');
+    expect(r.states).toContainEqual(expect.objectContaining({ step: 'testing-core-witness', event: 'degraded', binding: r.vars.BINDING }));
     const esbuild = r.calls.filter(c => c.startsWith('esbuild '));
     expect(esbuild).toHaveLength(2);
     expect(esbuild[1]).toContain('esbuild receipt= args=');
@@ -231,6 +241,7 @@ describe('WI-6554700010048115 — host testing-core step without a committed wit
     const fx = fixture('committed');
     const r = run(fx, { HELPER_EXIT: '9', ESBUILD_EXIT: '3' });
     expect(r.vars.PREPARE_RC).toBe('1');
+    expect(r.states).toContainEqual(expect.objectContaining({ event: 'degraded', binding: 'unwitnessed:custody-refused' }));
   });
 
   it('a witness VERIFY refusal after a witnessed build degrades loudly instead of failing the host', () => {
@@ -242,6 +253,7 @@ describe('WI-6554700010048115 — host testing-core step without a committed wit
     expect(r.stderr).toContain(
       'WARN(EI-28752668992567658): the producing testing-core interval changed after the witnessed worker build',
     );
+    expect(r.states.map(state => state.event)).toEqual(['qualified', 'degraded']);
     const esbuild = r.calls.filter(c => c.startsWith('esbuild '));
     expect(esbuild).toHaveLength(2);
     expect(esbuild[0]).toContain(`esbuild receipt=${join(fx.out, 'testing-core.worker.witness.json')} args=`);
