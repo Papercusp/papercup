@@ -67,6 +67,7 @@ import { tryBuildSpawnContext, __buildMcpToolContext_forTests } from '../../endp
 import { mintAccessToken, _resetPowerUserTokenKeyCache } from '../../power-user-token';
 import { signSpawnParams, _resetSpawnSigningKeyCache, _resetVerifiedSpawns } from '../../spawn-signing';
 import { mintAppKey } from '../../connected-apps/key';
+import { setSessionConfinementResolver } from '../../capability-envelope/session-confinement-port';
 
 const WS = 'p001-host-authority';
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -170,6 +171,10 @@ async function rotateFromIndependentProcess(keyName: string) {
 }
 
 beforeAll(async () => {
+  // Host boot installs the session-confinement resolver; an unpinned PI
+  // session resolves to no confinement. Without one, a ctx carrying
+  // uiClientId fails closed in memory:search (frozen_memory_unavailable).
+  setSessionConfinementResolver(async () => undefined);
   pins = sourcePaths.map(path => ({ path, sha256: sha(readFileSync(new URL('../../../../../' + path, import.meta.url))) }));
   db = await createFreshPgDb('p001-host-authority'); // Setup failure fails; no passing early returns.
   seams.sql = db.sql;
@@ -301,6 +306,7 @@ describe('P001 actual additional host authority branches', () => {
 });
 
 afterAll(async () => {
+  setSessionConfinementResolver(undefined);
   let sourceStable = false;
   let cleanup = 'not-attempted';
   try {
