@@ -54,7 +54,8 @@ import { isHookReleasedOperationContinuationCall } from '../released-operation-c
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { identityWearerRole } from '../agent-identities/wearer-authority';
 import { narrowedLaunchSpecToAppliedPairSql } from './identity-receipt-narrowing';
-import type { IdentityAuthorityRestriction } from '../governance-policy/effective-authority';
+import { authoritySnapshotProblem, type AuthorityPolicy, type AuthoritySnapshot,
+  type IdentityAuthorityRestriction } from '../governance-policy/effective-authority';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -907,6 +908,106 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
 }
 
 /** The pot/role ceiling an identity reaction's capability is narrowed to (P-018, D-027 §4). */
+/** Host-local retained-context seam. The adapter must enumerate every retained
+ * vault independently of the policies it can read, including a measured empty
+ * context. This function is never accepted in serialized tool/HTTP arguments. */
+export type IdentityRetainedContextReader = (tx: TransactionSql, scope: {
+  workspaceId: string; ownerId: string; sessionId: string; harnessSlug: string; phase: 'applied' | 'desired';
+}) => Promise<({ status: 'ok'; policies: readonly AuthorityPolicy[] } &
+  Pick<AuthoritySnapshot, 'contextRevision' | 'contextVaultIds'>) | { status: 'unavailable'; reason: string }>;
+
+/** Assemble ONE wearer's canonical authority snapshot in the existing source
+ * transaction. Installation ownership selects the user; login claims do not
+ * invent ownership. Independent host enrollment supplies required floors, and
+ * the scoped-policy census also retains every stored platform floor.
+ *
+ * A complete snapshot is still optimistic: the pot/provider/tool sources and
+ * retained-context adapter have no shared effect lease. Never use this read as
+ * edit admission. pinForEffect refuses before invoking even an empty adapter;
+ * expectedRevision only compares a previously measured optimistic snapshot. */
+export async function readIdentityAuthoritySnapshot(sql: Sql, input: {
+  workspaceId: string; ownerId: string; phase: 'applied' | 'desired';
+  readContext?: IdentityRetainedContextReader; expectedRevision?: string; pinForEffect?: boolean;
+}) {
+  input = { ...input };
+  const unavailable = (reason: string) => ({ status: 'unavailable' as const, reason });
+  if (input.pinForEffect === true) return unavailable(HOST_POLICY_EFFECT_PROTECTION_UNAVAILABLE);
+  const exact = (value: unknown): value is string => typeof value === 'string' && !!value.trim() &&
+    value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value);
+  if (![input.workspaceId, input.ownerId].every(exact) || input.workspaceId === '*' ||
+      !['applied', 'desired'].includes(input.phase) ||
+      (input.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(input.expectedRevision)))
+    return unavailable('exact authority snapshot scope is required');
+  const readContext = input.readContext;
+  if (typeof readContext !== 'function') return unavailable('retained context authority source is unavailable');
+  const read = async (tx: Sql) => {
+    // Stream through the existing latest-launch/anchor join, retaining its
+    // unknowns and full-history pins instead of inventing another selector.
+    const selected: Array<IdentityPermissionSessionSource & { identitySources?: IdentityPermissionSourceRead }> = [];
+    const population = await readIdentityPermissionPopulation(tx, input.workspaceId, {
+      includeIdentitySources: true, includePackageResources: true, includeWorkspaceUsers: true,
+      includeHostAuthorities: true, includeInheritedPolicies: true,
+      visit: session => { if (session.ownerId === input.ownerId) selected.push(session); },
+    });
+    if (population.status !== 'ok') return unavailable('identity authority population changed');
+    if (selected.length !== 1 || !selected[0].sessionId)
+      return unavailable('exact session authority source is unavailable');
+    const session = selected[0];
+    const source = session.identitySources;
+    if (source?.status !== 'ok') return unavailable('canonical identity authority source is unavailable');
+    const permission = source.permissionInputs[input.phase];
+    const installation = source.installations?.[input.phase];
+    if (permission.status !== 'ok' || installation?.status !== 'known' || !installation.humanOwnerId)
+      return unavailable('exact installation grants and human ownership are unavailable');
+    const humanOwnerId = installation.humanOwnerId;
+    if (!population.hostAuthorities?.requiredUserIds.includes(humanOwnerId) ||
+        !population.workspaceUsers?.users.some(user => user.userId === humanOwnerId &&
+          user.userPresent && user.active === true && user.claimRevisions.length > 0))
+      return unavailable('installation human owner has no enrolled workspace user authority');
+    const { loadScopedPolicyAuthorities } = await import('../governance-policy/store');
+    const scoped = await loadScopedPolicyAuthorities({ workspaceId: input.workspaceId, userId: humanOwnerId,
+      platformIds: 'workspace', requiredPlatformIds: population.hostAuthorities.requiredPlatformIds }, tx);
+    if (scoped.status !== 'ok') return unavailable('required user or platform policy is unavailable');
+    const record = object(session.launchSpec);
+    if (!exact(record?.harnessSlug)) return unavailable('session authority harness is unavailable');
+    const context = structuredClone(await readContext(tx as unknown as TransactionSql, {
+      workspaceId: input.workspaceId, ownerId: input.ownerId, sessionId: session.sessionId!,
+      harnessSlug: record.harnessSlug, phase: input.phase,
+    }));
+    if (context?.status !== 'ok') return unavailable('retained context authorities are unavailable');
+    if (!Array.isArray(context.policies) || context.policies.some(policy => policy?.kind !== 'vault') ||
+        !Array.isArray(context.contextVaultIds))
+      return unavailable('retained context adapter supplied malformed vault authorities');
+    const identity: AuthorityPolicy = { kind: 'identity', id: input.ownerId,
+      revision: source.revision, state: 'present', rules: {},
+      contributions: permission.contributions, restrictions: permission.restrictions };
+    const policies = [identity, ...scoped.policies, ...population.inheritedPolicies!.policies, ...context.policies];
+    const snapshot: AuthoritySnapshot = {
+      required: [...policies.filter(policy => policy.kind !== 'vault').map(({ kind, id }) => ({ kind, id })),
+        ...context.contextVaultIds.map(id => ({ kind: 'vault' as const, id }))],
+      policies, contextRevision: context.contextRevision, contextVaultIds: [...context.contextVaultIds],
+    };
+    const problem = authoritySnapshotProblem(snapshot);
+    if (problem) return unavailable(problem.reason);
+    // Context resolution may wait on another backend; recheck external policy
+    // after that wait. MVCC only stabilizes this transaction's database inputs.
+    const current = await readIdentityPermissionSources({ workspaceId: input.workspaceId,
+      harnessSlug: record.harnessSlug, record: session.launchSpec, applied: source.applied,
+      expectedRevision: source.revision, installation: {
+        tx: tx as unknown as TransactionSql, ownerId: input.ownerId } });
+    if (current.status !== 'ok') return unavailable('identity authority changed during retained context resolution');
+    const revision = createHash('sha256').update(canonicalJson({ phase: input.phase,
+      populationRevision: population.revision, scopedRevision: scoped.revision, snapshot })).digest('hex');
+    return input.expectedRevision !== undefined && input.expectedRevision !== revision
+      ? { status: 'stale' as const, revision }
+      : { status: 'ok' as const, revision, consistency: 'optimistic' as const, snapshot,
+        source: { ownerId: input.ownerId, sessionId: session.sessionId, humanOwnerId,
+          dependentId: installation.dependentId, populationRevision: population.revision } };
+  };
+  return typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function'
+    ? read(sql) : sql.begin('isolation level repeatable read read only', tx => read(tx as unknown as Sql));
+}
+
 export interface IdentityReactionCeiling {
   potSlug: string;
   ceilings: readonly RoleEnvelope[];

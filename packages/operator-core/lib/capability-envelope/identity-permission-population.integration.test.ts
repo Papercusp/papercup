@@ -6,7 +6,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { readIdentityPermissionPopulation, readIdentityPermissionSources, type IdentityGrantPolicy, type IdentityPermissionSessionSource } from './identity-grants-port';
+import { readIdentityAuthoritySnapshot, readIdentityPermissionPopulation, readIdentityPermissionSources,
+  type IdentityGrantPolicy, type IdentityPermissionSessionSource, type IdentityRetainedContextReader } from './identity-grants-port';
+import { authoritySnapshotProblem, evaluateEffectivePermission } from '../governance-policy/effective-authority';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
 import { sessionPackageDependentId } from '../blueprint/session-package-resources';
@@ -318,6 +320,111 @@ describe('joined session identity policy sources', () => {
     const result = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
       visit: () => { if (kind === 'change') writePot([]); else identityHost.registry = null; } });
     expect(result.status).toBe('stale');
+  });
+
+  async function seedSnapshot() {
+    const receipts = await seedIdentity(true);
+    await scopedInstallation(receipts.applied);
+    await scopedInstallation(receipts.desired, { phase: 'preparing', action: 'write' });
+    await sql`INSERT INTO harness_shared.users VALUES ('explicit-human', true, 'human', 'unused')`;
+    await sql`INSERT INTO harness_shared.user_sessions VALUES ('claim', 'explicit-human', 'ws',
+      ARRAY['*'], '2035-01-01', now())`;
+    for (const [kind, subject] of [['user', 'explicit-human'], ['platform', 'fixed-floor']] as const) {
+      await sql`INSERT INTO harness_shared.governance_host_authority_bindings
+        (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+        VALUES ('ws', ${kind}, ${subject}, 'explicit-human', ${'e'.repeat(64)}, 'explicit snapshot enrollment')`;
+      await upsertScopedPolicyAuthority({ kind, subjectId: subject, workspaceId: 'ws', rules: {},
+        actor: 'fixture', reason: 'snapshot authority', expectedVersion: 0 }, sql);
+    }
+    await upsertLayer({ layerId: 'snapshot-org', level: 'organization', scopeRef: 'org', parentLayerId: null,
+      rules: {}, actor: 'fixture', reason: 'snapshot chain' }, sql);
+    await upsertLayer({ layerId: 'snapshot-ws', level: 'workspace', scopeRef: 'ws', parentLayerId: 'snapshot-org',
+      rules: {}, actor: 'fixture', reason: 'snapshot chain' }, sql);
+  }
+  const emptyContext: IdentityRetainedContextReader = async () => ({ status: 'ok',
+    contextRevision: 'measured-empty-context:1', contextVaultIds: [], policies: [] });
+  const snapshotInput = () => ({ workspaceId: 'ws', ownerId: 'wearer', phase: 'applied' as const,
+    readContext: emptyContext });
+
+  it('assembles canonical authority kinds without granting tools from scoped actions', async () => {
+    await seedSnapshot();
+    const result = await readIdentityAuthoritySnapshot(sql, snapshotInput());
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'ok', consistency: 'optimistic', source: {
+      ownerId: 'wearer', sessionId: '1', humanOwnerId: 'explicit-human',
+    } });
+    if (result.status !== 'ok') throw new Error('snapshot unavailable');
+    expect(authoritySnapshotProblem(result.snapshot)).toBeNull();
+    expect(new Set(result.snapshot.required.map(ref => ref.kind))).toEqual(new Set([
+      'identity', 'user', 'organization', 'department', 'workspace', 'platform',
+    ]));
+    expect(result.snapshot.policies).toContainEqual(expect.objectContaining({ kind: 'department', state: 'not-applicable' }));
+    expect(result.snapshot.policies.find(policy => policy.kind === 'identity')).toMatchObject({ contributions: [{
+      id: 'prior-identity', grants: { tools: { allow: [] }, actions: { allow: ['read'] },
+        resources: { allow: ['store:read:mailbox'] } },
+    }] });
+    expect(evaluateEffectivePermission(result.snapshot, { tool: 'mail:send', action: 'read',
+      resource: { kind: 'store', operation: 'read', target: 'mailbox' } })).toMatchObject({ allowed: false,
+      code: 'denied', decidingAuthority: { kind: 'identity' } });
+    const desired = await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), phase: 'desired' });
+    expect(desired).toMatchObject({ status: 'ok', snapshot: { policies: expect.arrayContaining([
+      expect.objectContaining({ kind: 'identity', contributions: [expect.objectContaining({ id: 'next-identity',
+        grants: expect.objectContaining({ actions: { allow: ['write'] } }) })] }),
+    ]) } });
+    if (desired.status === 'ok') expect(desired.revision).not.toBe(result.revision);
+  });
+
+  it.each(['owner', 'user', 'enrollment', 'floor'] as const)('refuses missing %s authority', async missing => {
+    await seedSnapshot();
+    if (missing === 'owner') await sql`UPDATE harness_shared.blueprint_package_installations SET human_ownership = NULL`;
+    if (missing === 'user') await sql`UPDATE harness_shared.users SET is_active = false`;
+    if (missing === 'enrollment') await sql`DELETE FROM harness_shared.governance_host_authority_bindings WHERE kind = 'user'`;
+    if (missing === 'floor') await sql`DELETE FROM harness_shared.governance_policy_layers WHERE level = 'platform'`;
+    expect(await readIdentityAuthoritySnapshot(sql, snapshotInput())).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('requires independent retained-context evidence and the exact vault policy population', async () => {
+    await seedSnapshot();
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), readContext: undefined }))
+      .toMatchObject({ status: 'unavailable' });
+    const readContext: IdentityRetainedContextReader = async () => ({ status: 'ok',
+      contextRevision: 'retained-vault:1', contextVaultIds: ['vault-a'], policies: [] });
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), readContext }))
+      .toMatchObject({ status: 'unavailable', reason: expect.stringContaining('unreadable authority') });
+    const known: IdentityRetainedContextReader = async () => ({ status: 'ok',
+      contextRevision: 'retained-vault:1', contextVaultIds: ['vault-a'], policies: [
+        { kind: 'vault', id: 'vault-a', revision: 'vault-policy:1', state: 'present', rules: {} },
+      ] });
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), readContext: known }))
+      .toMatchObject({ status: 'ok', snapshot: { contextVaultIds: ['vault-a'] } });
+  });
+
+  it('pins stored policy and context changes without claiming an effect lease', async () => {
+    await seedSnapshot();
+    const before = await readIdentityAuthoritySnapshot(sql, snapshotInput());
+    if (before.status !== 'ok') throw new Error(JSON.stringify(before));
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), expectedRevision: before.revision })).toEqual(before);
+    const contextChanged: IdentityRetainedContextReader = async () => ({ status: 'ok', policies: [],
+      contextVaultIds: [], contextRevision: 'measured-empty-context:2' });
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), readContext: contextChanged,
+      expectedRevision: before.revision })).toMatchObject({ status: 'stale' });
+    await upsertScopedPolicyAuthority({ kind: 'platform', subjectId: 'fixed-floor', workspaceId: 'ws',
+      rules: { actions: { allow: [] } }, actor: 'fixture', reason: 'tightened floor', expectedVersion: 1 }, sql);
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), expectedRevision: before.revision }))
+      .toMatchObject({ status: 'stale' });
+    const adapter = vi.fn(emptyContext);
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), readContext: adapter, pinForEffect: true }))
+      .toMatchObject({ status: 'unavailable', reason: 'identity host policy effect protection is unavailable' });
+    expect(adapter).not.toHaveBeenCalled();
+  });
+
+  it('rechecks host policy after an asynchronous retained-context read', async () => {
+    await seedSnapshot();
+    const readContext: IdentityRetainedContextReader = async () => {
+      writePot([]);
+      return { status: 'ok', contextRevision: 'measured-empty-context:1', contextVaultIds: [], policies: [] };
+    };
+    expect(await readIdentityAuthoritySnapshot(sql, { ...snapshotInput(), readContext }))
+      .toMatchObject({ status: 'unavailable', reason: 'identity authority changed during retained context resolution' });
   });
 
   it.each(['pin', 'revision'])('refuses an unprotected %s before visiting even an empty population', async kind => {
