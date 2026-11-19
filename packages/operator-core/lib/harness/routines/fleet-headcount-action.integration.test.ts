@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FleetLaunchTransaction } from '../../agent-fleets-store';
-import { ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS } from '../../dbos/routines-sweep-step-overrun';
 
 const mocks = vi.hoisted(() => ({
   getFlag: vi.fn(),
@@ -134,6 +133,23 @@ vi.mock('./session-interruption-runtime', () => ({
 vi.mock('./loop', () => ({
   getLoopStatuses: (...args: unknown[]) => mocks.loopStatuses(...args),
 }));
+// The diagnostic-overrun cases run on REAL timers: this is an *.integration.test.ts, so
+// scripts/check-fake-timers-in-integration-tests.mjs forbids faking setTimeout here. They
+// shrink the budget instead — the real overrun helper runs; only `budgetMs` is overridden,
+// and only while `overrunBudget.ms` is set (every other case keeps the production budget).
+const overrunBudget = vi.hoisted(() => ({ ms: undefined as number | undefined }));
+vi.mock('../../dbos/routines-sweep-step-overrun', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../dbos/routines-sweep-step-overrun')>();
+  const runSweepStepWithOverrunBudget: typeof actual.runSweepStepWithOverrunBudget = (stepName, operation, options = {}) =>
+    actual.runSweepStepWithOverrunBudget(
+      stepName,
+      operation,
+      overrunBudget.ms === undefined ? options : { ...options, budgetMs: overrunBudget.ms },
+    );
+  return { ...actual, runSweepStepWithOverrunBudget };
+});
+const OVERRUN_TEST_BUDGET_MS = 5;
+const OVERRUN_WAIT = { timeout: 10_000, interval: 10 };
 
 import { FLEET_HEADCOUNT_BOOT_FAILURE_HOLD_MS, runFleetHeadcountGovernor } from './fleet-headcount-action';
 
@@ -579,8 +595,14 @@ describe('deliberate loop-end is a headcount repair admission fence', () => {
 });
 
 describe('fleet headcount diagnostic overrun phases', () => {
+  beforeEach(() => {
+    overrunBudget.ms = OVERRUN_TEST_BUDGET_MS;
+  });
+  afterEach(() => {
+    overrunBudget.ms = undefined;
+  });
+
   it('reports a pending top-level target read and preserves success when diagnostic logging throws', async () => {
-    vi.useFakeTimers();
     let resolveTargets: ((targets: ReturnType<typeof grantedTarget>[]) => void) | undefined;
     mocks.listTargets.mockImplementationOnce(() => new Promise((resolve) => {
       resolveTargets = resolve;
@@ -599,15 +621,14 @@ describe('fleet headcount diagnostic overrun phases', () => {
     });
 
     try {
-      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
-      expect(warn).toHaveBeenCalledWith(
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
         '[routines-sweep-step] exceeded diagnostic budget; step is still running',
         expect.objectContaining({
           stepName: 'fleet-headcount-governor:target-list',
           workflowId: 'wf-target-list',
           phase: 'still-running',
         }),
-      );
+      ), OVERRUN_WAIT);
       resolveTargets?.([]);
       await expect(action).resolves.toBeUndefined();
       expect(warn).toHaveBeenCalledWith(
@@ -625,12 +646,10 @@ describe('fleet headcount diagnostic overrun phases', () => {
       resolveTargets?.([]);
       await action.catch(() => {});
       warn.mockRestore();
-      vi.useRealTimers();
     }
   });
 
   it('keeps a pending pre-claim interruption sweep ahead of the attempt claim', async () => {
-    vi.useFakeTimers();
     let resolveRecovery: ((result: { protectedOwnerIds: string[] }) => void) | undefined;
     mocks.liveMemberIds.mockResolvedValue([]);
     mocks.recoverInterruptions.mockImplementationOnce(() => new Promise((resolve) => {
@@ -646,15 +665,14 @@ describe('fleet headcount diagnostic overrun phases', () => {
     });
 
     try {
-      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
-      expect(warn).toHaveBeenCalledWith(
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
         '[routines-sweep-step] exceeded diagnostic budget; step is still running',
         expect.objectContaining({
           stepName: 'fleet-headcount:fleet-a:interruption-sweep-before-claim',
           workflowId: 'wf-interruption-sweep',
           phase: 'still-running',
         }),
-      );
+      ), OVERRUN_WAIT);
       expect(mocks.claimAttempt).not.toHaveBeenCalled();
       resolveRecovery?.({ protectedOwnerIds: ['original-member'] });
       await expect(action).resolves.toBeUndefined();
@@ -678,12 +696,10 @@ describe('fleet headcount diagnostic overrun phases', () => {
       resolveRecovery?.({ protectedOwnerIds: [] });
       await action.catch(() => {});
       warn.mockRestore();
-      vi.useRealTimers();
     }
   });
 
   it('preserves the target-read rejection and records its terminal diagnostic outcome', async () => {
-    vi.useFakeTimers();
     let rejectTargets: ((error: Error) => void) | undefined;
     mocks.listTargets.mockImplementationOnce(() => new Promise((_, reject) => {
       rejectTargets = reject;
@@ -699,15 +715,14 @@ describe('fleet headcount diagnostic overrun phases', () => {
     });
 
     try {
-      await vi.advanceTimersByTimeAsync(ROUTINES_SWEEP_STEP_OVERRUN_BUDGET_MS);
-      expect(warn).toHaveBeenCalledWith(
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(
         '[routines-sweep-step] exceeded diagnostic budget; step is still running',
         expect.objectContaining({
           stepName: 'fleet-headcount-governor:target-list',
           workflowId: 'wf-target-list-failure',
           phase: 'still-running',
         }),
-      );
+      ), OVERRUN_WAIT);
       rejectTargets?.(failure);
       await expect(action).rejects.toBe(failure);
       expect(mocks.listTargets).toHaveBeenCalledTimes(1);
@@ -724,7 +739,6 @@ describe('fleet headcount diagnostic overrun phases', () => {
       rejectTargets?.(failure);
       await action.catch(() => {});
       warn.mockRestore();
-      vi.useRealTimers();
     }
   });
 
