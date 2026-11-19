@@ -40,9 +40,9 @@ function alive(pid: number): boolean {
 }
 
 describe('test router scope lifetime (host-memory-reduction-2026-09-27 P-008)', () => {
-  it.skipIf(!userScopesWork)(
-    'kills a fixture that detached into its own process group and still holds the stdout pipe',
-    async () => {
+  it.skipIf(!userScopesWork).each(['exit', 'deadline'] as const)(
+    'kills a detached stdout holder when its parent reaches %s',
+    async (mode) => {
       const dir = mkdtempSync(join(tmpdir(), 'scope-reap-'));
       const pidFile = join(dir, 'straggler.pid');
       const lines: string[] = [];
@@ -50,22 +50,36 @@ describe('test router scope lifetime (host-memory-reduction-2026-09-27 P-008)', 
       // `close` never fires and the run hangs until its watchdog — which then misses the
       // straggler too, because it signals only the Vitest process group.
       const script = [
-        `setsid bash -c 'echo $$ >"$1"; while :; do sleep 0.2; done' _ "$1" </dev/null &`,
-        'for _ in $(seq 1 100); do [ -s "$1" ] && exit 0; sleep 0.05; done',
-        'exit 3',
+        ...(mode === 'deadline' ? ['trap "" TERM'] : []),
+        `setsid bash -c 'trap "" TERM; echo $$ >"$1"; while :; do sleep 0.2; done' _ "$1" </dev/null &`,
+        `for _ in $(seq 1 100); do [ -s "$1" ] && ${mode === 'deadline' ? 'break' : 'exit 0'}; sleep 0.05; done`,
+        '[ -s "$1" ] || exit 3',
+        ...(mode === 'deadline' ? ['echo scope-ready', 'while :; do sleep 0.2; done'] : ['exit 3']),
       ].join('\n');
       try {
+        const childCutoffAtMs = Date.now() + 5_000;
         const result = await runCapturedTestProcess('bash', ['-c', script, '_', pidFile], {
           cwd: dir,
-          env,
+          env: { ...env, PAPERCUSP_TEST_ARTIFACT_DIR: dir,
+            ...(mode === 'deadline' ? {
+              PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(childCutoffAtMs),
+              PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(childCutoffAtMs + 30_000),
+            } : {}) },
           files: [],
           timeoutMs: 30_000,
           watchdogMaxMs: 30_000,
+          killGraceMs: 200,
           onProgress: (line: string) => lines.push(line),
           governedProcessImpl: (_governedOptions: unknown, run: Function) =>
             run(undefined, undefined, { inherited: true }),
         });
-        expect(result).toMatchObject({ status: 0, timedOut: false });
+        if (mode === 'deadline') {
+          expect(result).toMatchObject({ timedOut: true, rawStreams: { complete: true } });
+          expect(result.stdout).toContain('scope-ready');
+          expect(lines.some(line => line.startsWith('TEST_FILE_PROGRESS state=timeout '))).toBe(true);
+        } else {
+          expect(result).toMatchObject({ status: 0, timedOut: false });
+        }
 
         const straggler = Number(readFileSync(pidFile, 'utf8'));
         expect(straggler).toBeGreaterThan(1);
@@ -75,7 +89,9 @@ describe('test router scope lifetime (host-memory-reduction-2026-09-27 P-008)', 
         }
         expect(alive(straggler)).toBe(false);
         expect(lines.find((line) => line.startsWith('TEST_FILE_LEAKED_PROCESSES'))).toMatch(
-          /^TEST_FILE_LEAKED_PROCESSES scope=papercusp-test-\d+-[0-9a-z]+-\d+\.scope tasks=[1-9]\d* reason=exit /,
+          mode === 'deadline'
+            ? /^TEST_FILE_LEAKED_PROCESSES scope=papercusp-test-\d+-[0-9a-z]+-\d+\.scope tasks=[1-9]\d* reason=(?:timeout|exit) /
+            : /^TEST_FILE_LEAKED_PROCESSES scope=papercusp-test-\d+-[0-9a-z]+-\d+\.scope tasks=[1-9]\d* reason=exit /,
         );
       } finally {
         // A failed assertion must not leave the very leak this file guards against.
