@@ -327,6 +327,31 @@ describe('tracked-files helper (WI-6730)', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('refuses a Git path whose bytes collide with a valid UTF-8 path', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tracked-files-raw-path-'));
+    const valid = 'writer-\uFFFD.ts';
+    const invalid = Buffer.concat([Buffer.from('writer-'), Buffer.from([0xff]), Buffer.from('.ts')]);
+    const invalidPath = Buffer.concat([Buffer.from(`${root}/`), invalid]);
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+    try {
+      git('init', '-q');
+      writeFileSync(join(root, valid), 'export const valid = true;\n');
+      writeFileSync(invalidPath, 'export const omitted = true;\n');
+      const error = `Invalid UTF-8 in Git path record under ${root} (hex: ${invalid.toString('hex')})`;
+      expect(() => listFilesIncludingUntracked(root)).toThrow(error);
+      git('add', '-A');
+      expect(() => listTrackedFiles(root)).toThrow(error);
+      expect(() => listFilesIncludingUntracked(root)).toThrow(error);
+
+      rmSync(invalidPath);
+      git('add', '-A');
+      expect(listTrackedFiles(root).files).toEqual([valid]);
+      expect(listFilesIncludingUntracked(root).files).toEqual([valid]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('omits a tracked path rm-ed from disk but not yet swept, and keeps a dangling tracked symlink (WI-10004173)', () => {
     // THE REGRESSION, measured 2026-09-30: an agent deleted 11 tracked files with plain
     // `rm` on the shared tree. Until git-sync committed the deletion the index still
@@ -491,6 +516,14 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
       'ls-files inspects only synthetic temporary repository indexes for diagnostics and candidate-state assertions; reads name fixture files independently, never enumerate the shared tree.',
     ],
     [
+      'packages/operator-core/lib/harness/git-sync/custody-source-artifact.ts',
+      'snapshotSource checks each index path with lstat and records ENOENT as [path, null] in the custody digest before any content read.',
+    ],
+    [
+      'packages/operator-core/lib/release/host-graph-no-static-tsx-import.test.ts',
+      'runtimeSources requires existsSync in its chained source predicate before returning paths to the import graph reader.',
+    ],
+    [
       'apps/operator/lib/release/runtime-workspace-build-coverage.ts',
       'release code (must not import scripts/); every manifest read is try/catch → continue.',
     ],
@@ -624,6 +657,7 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
       `These files enumerate \`git ls-files\` and read files without dropping index entries that are\n` +
         `gone from disk. On the shared tree a plain \`rm\` stays in the index until git-sync commits it,\n` +
         `so each read of such an entry throws ENOENT for every agent that runs the guard meanwhile.\n` +
+        offenders.map((path) => `  ${JSON.stringify(path)}\n`).join('') +
         `FIX: wrap the enumerated list — presentOnDisk(list, root) from scripts/lib/tracked-files.mjs —\n` +
         `or filter it with existsSync. If a file is safe without it, add it to ALLOW WITH A REASON.`,
     ).toEqual([]);
