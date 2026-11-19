@@ -12,6 +12,7 @@ import { packageResourceKey } from '../blueprint/package-resource-receipts';
 import { sessionPackageDependentId } from '../blueprint/session-package-resources';
 import { upsertLayer, upsertLayerInTx, upsertScopedPolicyAuthority } from '../governance-policy/store';
 import { readPersonalAuthorityPopulation } from '../personal-vault/store';
+import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 
 // Only the built-in distribution path is redirected. Inventory, filesystem IO,
 // content hashing, population reads and PostgreSQL transactions remain real.
@@ -21,6 +22,21 @@ vi.mock('@papercusp/orchestrator/blueprint', async importOriginal => {
   return { ...actual, builtinBlueprintPath: (id: string) => blueprintPaths.builtin
     ? `${blueprintPaths.builtin}/${id}/blueprint.yaml` : actual.builtinBlueprintPath(id) };
 });
+
+// Redirect only the host registry to a private, real pot document. The source
+// adapter, artifact replay, pot parsing and per-role ceiling reads stay real.
+const identityHost = vi.hoisted(() => ({ registry: null as unknown, reads: 0 }));
+vi.mock('../operator-state-pg', async importOriginal => ({
+  ...await importOriginal<typeof import('../operator-state-pg')>(),
+  readOperatorState: async (key: string) => {
+    if (key !== 'harness_registry') throw new Error(`unexpected host store ${key}`);
+    identityHost.reads++;
+    return identityHost.registry;
+  },
+}));
+vi.mock('@papercusp/flags/server', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/flags/server')>(), getFlag: async () => false,
+}));
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -92,6 +108,104 @@ async function seed() {
     ('ws', 'orphan', '{}'), ('foreign', 'foreign-anchor', '{}')`;
 }
 const txSql = (tx: postgres.TransactionSql) => tx as unknown as postgres.Sql;
+
+describe('joined session identity policy sources', () => {
+  let root: string;
+  let potFile: string;
+  function writePot(capabilities: string[] = ['mail:send']) {
+    writeFileSync(potFile, JSON.stringify({ id: 'population-pot', version: '1.0.0',
+      fleet: { workerRoles: [{ id: 'su', capabilities }, { id: 'worker', capabilities: [] }] } }));
+  }
+  function receipt(id: string) {
+    const specificationArtifact = compileAgentSpecification({
+      source: { id, workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+      prompt: { role: 'worker', text: id },
+    });
+    return { specificationArtifact, specificationRevision: specificationArtifact.specificationRevision,
+      stateRevision: `state-${id}` };
+  }
+  async function seedIdentity() {
+    const applied = receipt('prior-identity'), desired = receipt('next-identity');
+    await sql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
+      VALUES (1, 'ws', 'wearer', ${sql.json({ workspaceId: 'ws', harnessSlug: 'fixture', role: 'su',
+        ...desired, identityHistory: [applied] })})`;
+    await sql`INSERT INTO harness_shared.session_briefs VALUES ('ws', 'wearer', ${sql.json({ activation: {
+      applied: { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision },
+    } })})`;
+    return { applied, desired };
+  }
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'identity-population-host-'));
+    mkdirSync(join(root, '.papercusp'), { recursive: true });
+    potFile = join(root, '.papercusp', 'blueprint.yaml');
+    writePot();
+    identityHost.registry = { projects: [{ slug: 'fixture', path: root, harness_kind: 'hive' }] };
+    identityHost.reads = 0;
+  });
+  afterEach(() => {
+    identityHost.registry = null;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('streams both exact receipts with their canonical policy and returns compact references', async () => {
+    const { applied, desired } = await seedIdentity();
+    const visited: unknown[] = [];
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
+      visit: session => { visited.push(session.identitySources); } });
+    expect(result).toMatchObject({ status: 'ok', identitySources: { consistency: 'optimistic',
+      sessions: [{ ownerId: 'wearer', sessionId: '1', status: 'ok', revision: expect.any(String) }] } });
+    expect(visited).toMatchObject([{ status: 'ok', layers: {
+      applied: [{ ref: 'prior-identity', contentHash: applied.specificationArtifact.inputs[0]!.contentHash }],
+      desired: [{ ref: 'next-identity', contentHash: desired.specificationArtifact.inputs[0]!.contentHash }],
+    }, policy: { potSlug: 'fixture', ceilings: [expect.anything(), { allowCapabilities: ['mail:send'] }] } }]);
+    expect(JSON.stringify(result)).not.toContain('specificationArtifact');
+    expect(identityHost.reads).toBe(2);
+  });
+
+  it('retains every unknown, unowned and orphaned session source', async () => {
+    await seed();
+    const visited: unknown[] = [];
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
+      visit: session => { visited.push(session.identitySources); } });
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('population unavailable');
+    expect(result.identitySources?.sessions).toHaveLength(result.sessions.length);
+    expect(result.identitySources?.sessions.every(source => source.status === 'unavailable')).toBe(true);
+    expect(visited).toHaveLength(result.sessions.length);
+    expect(result.identitySources?.sessions).toContainEqual(expect.objectContaining({
+      ownerId: 'orphan', sessionId: null, status: 'unavailable', reason: expect.any(String),
+    }));
+  });
+
+  it('includes a changed host ceiling in the aggregate revision', async () => {
+    await seedIdentity();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true });
+    writePot([]);
+    const after = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true });
+    expect(after.status).toBe('ok');
+    expect(after.revision).not.toBe(before.revision);
+  });
+
+  it.each(['change', 'unavailable'])('detects host policy %s during traversal', async kind => {
+    await seedIdentity();
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
+      visit: () => { if (kind === 'change') writePot([]); else identityHost.registry = null; } });
+    expect(result.status).toBe('stale');
+  });
+
+  it.each(['pin', 'revision'])('refuses an unprotected %s before visiting even an empty population', async kind => {
+    const before = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true });
+    const visit = vi.fn();
+    await expect(sql.begin(async tx => {
+      await readIdentityPermissionPopulation(txSql(tx), 'ws', { includeIdentitySources: true, visit,
+        ...(kind === 'pin' ? { pinForEffect: true } : { expectedRevision: before.revision }) });
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('unprotected-host')`;
+    })).rejects.toThrow('identity host policy effect protection is unavailable');
+    expect(visit).not.toHaveBeenCalled();
+    expect(identityHost.reads).toBe(0);
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+});
 
 describe('P-002 optimistic blueprint source join and unprotected effect refusal', () => {
   let root: string;
