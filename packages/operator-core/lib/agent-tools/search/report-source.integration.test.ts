@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { runFullTextSearch, runHybridSearch } from '@papercusp/search';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { createReportSearchSource, revalidateReportSourceVersions } from './report-source';
@@ -49,6 +49,59 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     await indexReport(db.adminSql, report, documentEmbedder);
     return report;
   }
+
+  async function publishProfileFixture(body: string) {
+    const report = await publish('workspace', body);
+    // Coverage below measures the database-wide active profile. Remove this test's alternate profiles.
+    onTestFinished(async () => {
+      await db.adminSql.begin(async tx => {
+        await tx`DELETE FROM harness_shared.text_chunks
+          WHERE surface = 'report' AND parent_key = ${[workspaceId, report.reportId]}::text[]`;
+        await tx`DELETE FROM harness_shared.report_library
+          WHERE workspace_id = ${workspaceId} AND report_id = ${report.reportId}`;
+      });
+    });
+    return report;
+  }
+
+  it('retries an indexed report without invoking the embedder', async () => {
+    const report = await publishProfileFixture('multi-chunk report '.repeat(400));
+    const key = [workspaceId, report.reportId];
+    const counting = { ...documentEmbedder, embed: vi.fn(embed) };
+    const retry = await indexReport(db.adminSql, report, counting);
+    expect(retry.chunks).toBeGreaterThan(1);
+    expect(retry.embedded).toBe(0);
+    expect(counting.embed).not.toHaveBeenCalled();
+
+    // A partially indexed edition resumes at the missing vector, even at the tail.
+    await db.adminSql`UPDATE harness_shared.text_chunks SET embedding = NULL
+      WHERE surface = 'report' AND parent_key = ${key}::text[] AND chunk_idx = ${retry.chunks - 1}`;
+    expect((await indexReport(db.adminSql, report, counting)).embedded).toBe(1);
+    expect(counting.embed).toHaveBeenCalledTimes(1);
+
+    for (const changed of [{ ...counting, profileId: 'revised-profile@v2' },
+      { ...counting, profileId: 'revised-profile@v2', mode: 'different-space' }]) {
+      counting.embed.mockClear();
+      expect((await indexReport(db.adminSql, report, changed)).embedded).toBe(retry.chunks);
+      expect(counting.embed).toHaveBeenCalledTimes(retry.chunks);
+      counting.embed.mockClear();
+      expect((await indexReport(db.adminSql, report, changed)).embedded).toBe(0);
+      expect(counting.embed).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps a competing profile update when an earlier embedding finishes late', async () => {
+    const report = await publishProfileFixture('single-chunk report');
+    const newer = { ...documentEmbedder, profileId: 'newer-profile@v2' };
+    const delayed = { ...documentEmbedder, profileId: 'delayed-profile@v2', embed: async (text: string) => {
+      expect((await indexReport(db.adminSql, report, newer)).embedded).toBe(1);
+      return vector(text);
+    } };
+    expect((await indexReport(db.adminSql, report, delayed)).embedded).toBe(0);
+    const [row] = await db.adminSql`SELECT embedding_profile FROM harness_shared.text_chunks
+      WHERE surface = 'report' AND parent_key = ${[workspaceId, report.reportId]}::text[] AND chunk_idx = 0`;
+    expect(row.embedding_profile).toBe(newer.profileId);
+  });
 
   it('revalidates disappeared report lifecycles without disclosing hidden replacements or revoked sources', async () => {
     const report = await publish('workspace');
