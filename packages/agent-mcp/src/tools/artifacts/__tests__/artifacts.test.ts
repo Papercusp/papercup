@@ -22,7 +22,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const sqlImpl = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const sqlTag = (...args: unknown[]) => sqlImpl(...args);
 
-import { lookupByMcpName, type UnifiedToolContext } from '@papercusp/tooldef';
+import { lookupByMcpName, type DispatchProjectedDeps, type UnifiedToolContext } from '@papercusp/tooldef';
 import { dispatchProjectedTool } from '@papercusp/tooldef';
 
 const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext => ({
@@ -42,6 +42,17 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
 // Unwrap the house bulk envelope from a dispatched ToolResult.
 const envelopeOf = (r: { result?: { content?: unknown[] } | null }) =>
   JSON.parse((r.result!.content![0] as { text: string }).text);
+
+// Shared dispatch deps. `operation-v0` keeps the single-operation envelope these
+// tests read; bare deps negotiate the universal batch-v1 envelope instead. The
+// write tools (save/append/delete) carry a finite role quota, and dispatch
+// admits quota atomically: without `reserveQuota` it fails closed with
+// `quota_admission_unavailable` before the handler runs. These tests exercise
+// the handlers and role gates, not quota, so every call is admitted.
+const DISPATCH_DEPS: DispatchProjectedDeps = {
+  batchResponseVersion: 'operation-v0',
+  reserveQuota: async () => ({ allowed: true, settle: async () => {} }),
+};
 
 // Side-effect-import the 4 tool modules once. They self-register into the
 // projection registry; subsequent tests re-use the same registrations.
@@ -69,7 +80,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { slug: 'test', rel_path: 'memory/raw.md' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(true);
     const env = envelopeOf(r);
@@ -92,7 +103,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { slug: 'test', rel_path: 'memory/raw.md' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     const item = envelopeOf(r).results[0];
     expect(item.found).toBe(true);
@@ -110,7 +121,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { slug: 'test', rel_path: 'evidence/acceptance.json' },
       MAKE_CTX({ role: 'judge' }),
-      {},
+      DISPATCH_DEPS,
     );
 
     expect(r.ok).toBe(true);
@@ -132,7 +143,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { slug: 'test', rel_path: 'big.md', offset: 4000, max_chars: 4000 },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     const item = envelopeOf(r).results[0];
     expect(item.found).toBe(true);
@@ -150,7 +161,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { slug: 'test', rel_path: 'small.md' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     const item = envelopeOf(r).results[0];
     expect(Object.keys(item).sort()).toEqual(
@@ -165,7 +176,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { slug: 'test', rel_path: '.papercusp/memory/raw.md' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(envelopeOf(r).results[0].rel_path).toBe('memory/raw.md');
   });
@@ -177,7 +188,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { rel_path: 'memory/raw.md' },
       MAKE_CTX({ harnessSlug: 'fallback-slug' }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(envelopeOf(r).results[0].slug).toBe('fallback-slug');
   });
@@ -192,7 +203,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { items: [{ slug: 'test', rel_path: 'a.md' }, { slug: 'test', rel_path: 'b.md' }] },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     const env = envelopeOf(r);
     expect(env.counts).toEqual({ ok: 2, failed: 0 });
@@ -211,7 +222,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { rel_path: 'memory/raw.md' },
       MAKE_CTX({ harnessSlug: undefined }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('precondition_failed');
@@ -225,7 +236,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { rel_path: 'memory/raw.md' },
       MAKE_CTX({ harnessSlug: 'bad slug/with spaces' }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('precondition_failed');
@@ -241,7 +252,7 @@ describe('artifacts:load', () => {
       'artifacts:load',
       { items: [{ rel_path: 'a.md' }] },
       MAKE_CTX({ harnessSlug: undefined }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(true);
     const env = envelopeOf(r);
@@ -268,7 +279,7 @@ describe('artifacts:save', () => {
       'artifacts:save',
       { slug: 'test', rel_path: 'a.md', content: 'hello' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(true);
     const item = envelopeOf(r).results[0];
@@ -285,7 +296,7 @@ describe('artifacts:save', () => {
       'artifacts:save',
       { slug: 'test', rel_path: 'unicode.md', content },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(true);
     const item = envelopeOf(r).results[0];
@@ -300,7 +311,7 @@ describe('artifacts:save', () => {
       'artifacts:save',
       { items: [{ slug: 'test', rel_path: 'a.md', content: 'aa' }, { slug: 'test', rel_path: 'b.md', content: 'bbb' }] },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     const env = envelopeOf(r);
     expect(env.counts).toEqual({ ok: 2, failed: 0 });
@@ -317,7 +328,7 @@ describe('artifacts:save', () => {
       'artifacts:save',
       { slug: 'test', rel_path: 'a.md', content: 'x' },
       MAKE_CTX({ role: 'validator' }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('role_not_allowed');
@@ -333,7 +344,7 @@ describe('artifacts:append', () => {
       'artifacts:append',
       { slug: 'test', rel_path: 'log.md', suffix: ' + appended' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(true);
     const item = envelopeOf(r).results[0];
@@ -349,7 +360,7 @@ describe('artifacts:append', () => {
       'artifacts:append',
       { slug: 'test', rel_path: 'log.md', suffix: 'new content' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(envelopeOf(r).results[0].total_bytes).toBe('new content'.length);
   });
@@ -368,7 +379,7 @@ describe('artifacts:delete', () => {
       'artifacts:delete',
       { slug: 'test', rel_path: 'a.md' },
       MAKE_CTX({ role: 'worker', chunkId: 'ck_T' }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(false);
     expect(r.error?.code).toBe('role_not_allowed');
@@ -387,7 +398,7 @@ describe('artifacts:delete', () => {
       'artifacts:delete',
       { slug: 'test', rel_path: 'a.md' },
       MAKE_CTX({ role: 'architect' }),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(true);
     expect(envelopeOf(r).results[0].deleted).toBe(true);
@@ -402,7 +413,7 @@ describe('artifacts:* — slug validation', () => {
       'artifacts:load',
       { slug: 'has space', rel_path: 'a.md' },
       MAKE_CTX(),
-      {},
+      DISPATCH_DEPS,
     );
     expect(r.ok).toBe(false);
     // Schema-validation failures are caller-class `invalid_input` (EI-334).
