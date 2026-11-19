@@ -3216,15 +3216,17 @@ dependency_generation_copy_with_progress() (
       reported="$written"
       read_reported="$read_bytes"
       dependency_generation_publish_copy_progress "copy:$pid:$copy_epoch:$written:$read_bytes"
+      # Counters belong to this unreaped copy incarnation. The same destination
+      # can be copied again with fewer bytes; PID alone can also be recycled.
       if [ "$reflink" = --exec ]; then
         dependency_generation_log \
-          "work progress: ${dest##*/tree/} io=$((written / 1048576))MiB elapsed=$((now - started))s"
+          "work progress: ${dest##*/tree/} copy=$pid:$copy_epoch io=$((written / 1048576))MiB elapsed=$((now - started))s"
       else
         dependency_generation_log \
-          "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
+          "copy progress: ${dest##*/tree/} copy=$pid:$copy_epoch written=$((written / 1048576))MiB elapsed=$((now - started))s"
       fi
       if [ "$reflink" = --rsync-checksum ]; then
-        dependency_generation_log "checksum read progress: ${dest##*/tree/} read=$((read_bytes / 1048576))MiB"
+        dependency_generation_log "checksum read progress: ${dest##*/tree/} copy=$pid:$copy_epoch read=$((read_bytes / 1048576))MiB"
       fi
     fi
   done
