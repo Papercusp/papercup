@@ -177,6 +177,8 @@ export function bundleFromRollouts(input: {
       primaryResolvedPct: outcome.primaryResolvedPct,
       primaryMeanScore: outcome.primaryMeanScore,
       conditionalResolvedPct: outcome.conditionalResolvedPct,
+      threeAttemptReliability: input.assignedTaskIds ? outcome.threeAttemptReliability : null,
+      repeatVariability: outcome.repeatVariability,
       assignmentSource: input.assignedTaskIds && input.assignedSeeds ? 'frozen' : 'observed',
       infraExcluded: rows.length - outcome.gradedAttempts,
       ...costs,

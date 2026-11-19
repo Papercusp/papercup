@@ -25,6 +25,21 @@ function rr(over: Record<string, unknown> = {}) {
 }
 
 describe('bundleFromRollouts', () => {
+  it('exports complete-triplet coverage without changing the assigned primary denominator', () => {
+    const input = { runId: 'triplets', suite: 'terminal-bench-2.1', createdAt: '2026-11-19',
+      arms: ['a', 'b'], models: {}, assignedTaskIds: ['complete', 'partial', 'absent'], assignedSeeds: [0, 1, 2],
+      runResults: [0, 1, 2].map(seed => rr({ taskId: 'complete', seed })).concat(
+        [0, 1].map(seed => rr({ taskId: 'partial', seed, resolved: false, graderStatus: 'failed' }))) };
+    const b = JSON.parse(JSON.stringify(bundleFromRollouts(input)));
+    expect(b.arms[0]).toMatchObject({ assignedTasks: 3, assignedAttempts: 9, absentAttempts: 4,
+      primaryResolvedPct: 1 / 3, threeAttemptReliability: { assignedTasks: 3, completeTriplets: 1,
+        incompleteTriplets: 2, completeTaskIds: ['complete'], incompleteTaskIds: ['partial', 'absent'],
+        solveAllThree: 1, solveAnyOfThree: 1, solveAllThreeRate: 1, solveAnyOfThreeRate: 1, meanAtThree: 1 } });
+    expect(b.arms[1].threeAttemptReliability).toMatchObject({ completeTriplets: 0,
+      incompleteTriplets: 3, solveAllThreeRate: null, solveAnyOfThreeRate: null, meanAtThree: null });
+    expect(bundleFromRollouts({ ...input, assignedTaskIds: undefined }).arms[0].threeAttemptReliability).toBeNull();
+  });
+
   it('uses complete assigned-task cost and retains tied Pareto and task winners', () => {
     const rows = ['a', 'b', 'c'].flatMap(arm => ['t1', 't2'].flatMap(taskId => [0, 1].map(seed =>
       rr({ arm, taskId, seed, costUsd: arm === 'c' ? 2 : 1 }))));

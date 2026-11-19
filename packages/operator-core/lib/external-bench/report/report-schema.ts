@@ -26,7 +26,7 @@
  */
 
 import type { ArmContamination } from '../contamination';
-import type { AttemptOutcomeCounts } from '@papercusp/bench-metrics';
+import type { AttemptOutcomeCounts, AttemptVariability, ThreeAttemptReliability } from '@papercusp/bench-metrics';
 
 /** A monotonic schema version so an old viewer can refuse / a new viewer can branch. */
 export const BENCH_REPORT_SCHEMA_VERSION = 1;
@@ -150,6 +150,9 @@ export interface BenchReportArmSummary {
   primaryResolvedPct?: number | null;
   primaryMeanScore?: number | null;
   conditionalResolvedPct?: number | null;
+  /** Complete scored triplets, with one shared population for both reliability views. */
+  threeAttemptReliability?: ThreeAttemptReliability | null;
+  repeatVariability?: AttemptVariability;
   /** Observed rosters cannot establish that assignments were never attempted. */
   assignmentSource?: 'frozen' | 'observed';
   /** Attempts without a usable official measurement, including generation failure. */

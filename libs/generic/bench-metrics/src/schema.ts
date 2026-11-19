@@ -250,6 +250,28 @@ export interface PassAtKPoint {
   skipped: number;
 }
 
+/** Conditional reliability over one explicit frozen three-seed assignment. */
+export interface ThreeAttemptReliability {
+  assignedTasks: number;
+  completeTriplets: number;
+  incompleteTriplets: number;
+  /** Both reliability views use exactly this scored task population. */
+  completeTaskIds: string[];
+  incompleteTaskIds: string[];
+  solveAllThree: number;
+  solveAnyOfThree: number;
+  solveAllThreeRate: number | null;
+  solveAnyOfThreeRate: number | null;
+  /** Conditional diagnostic; incomplete tasks remain in the product primary. */
+  meanAtThree: number | null;
+}
+
+/** Descriptive disagreement over the named measured tasks; unknown is never zero. */
+export interface AttemptVariability {
+  taskIds: string[];
+  disagreementRate: number | null;
+}
+
 /** The aggregated result for ONE arm on ONE suite. */
 export interface ArmReport {
   arm: ArmId;
@@ -276,6 +298,10 @@ export interface ArmReport {
   /** pass@k / pass^k at the protocol k's (same k for every arm). */
   passAtK: PassAtKPoint[];
   passHatK: PassAtKPoint[];
+  /** Only available for an explicit frozen task roster and exactly three seeds. */
+  threeAttemptReliability?: ThreeAttemptReliability | null;
+  /** Two distinct attempts of the same arm disagree, averaged over tasks with n >= 2. */
+  repeatVariability?: AttemptVariability;
   cost: CostAccount;
 }
 
@@ -288,6 +314,11 @@ export interface ArmDelta {
   accuracyDelta: number | null;
   /** Paired candidate-minus-baseline interval after collapsing seeds per task. */
   accuracyDeltaCi: Interval | null;
+  /** A directional descriptive interval never establishes confirmatory superiority. */
+  accuracyDeltaInterpretation?: 'unmeasured' | 'inconclusive' |
+    'descriptive-treatment-higher' | 'descriptive-baseline-higher';
+  /** One random scored attempt from each arm disagrees, over their shared measured tasks. */
+  swapVariability?: AttemptVariability;
   uncertainty: {
     status: 'measured' | 'missing-grade' | 'insufficient-independent-units' | 'unregistered-policy';
     taskPairs: number;

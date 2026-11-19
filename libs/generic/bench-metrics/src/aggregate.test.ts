@@ -47,6 +47,42 @@ function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number
 }
 
 describe('shared assigned outcome projection', () => {
+  it('uses one complete scored-triplet population for both reliability views', () => {
+    const assignedTaskIds = ['all', 'some', 'none', 'partial', 'invalid', 'generation'];
+    const rows = assignedTaskIds.flatMap(taskId => [2, 4, 6].flatMap(seed => {
+      if (taskId === 'partial' && seed === 6) return [];
+      const resolved = taskId === 'all' || taskId === 'some' && seed === 2;
+      return [mk({ taskId, seed, resolved, graderStatus: resolved ? 'passed' : 'failed',
+        ...(taskId === 'invalid' && seed === 6 ? { resolved: null, graderStatus: 'invalid' } : {}),
+        ...(taskId === 'generation' && seed === 6
+          ? { resolved: null, graderStatus: 'error', generationStatus: 'timeout' } : {}) })];
+    }));
+    const opts = { assignedTaskIds, assignedSeeds: [2, 4, 6] };
+    const outcomes = summarizeAssignedOutcomes(rows, opts);
+    expect(outcomes).toMatchObject({ assignedTasks: 6, assignedAttempts: 18, absentAttempts: 1,
+      primaryResolvedPct: null, missingMeasurements: 1 });
+    expect(outcomes.threeAttemptReliability).toEqual({ assignedTasks: 6, completeTriplets: 3,
+      incompleteTriplets: 3, completeTaskIds: ['all', 'some', 'none'],
+      incompleteTaskIds: ['partial', 'invalid', 'generation'], solveAllThree: 1, solveAnyOfThree: 2,
+      solveAllThreeRate: 1 / 3, solveAnyOfThreeRate: 2 / 3, meanAtThree: (1 + 1 / 3) / 3 });
+    expect(aggregateArm(rows, 'terminal-bench-2.1', 'papercusp', opts).threeAttemptReliability)
+      .toEqual(outcomes.threeAttemptReliability);
+    expect(() => summarizeAssignedOutcomes([...rows, rows[0]], opts)).toThrow('duplicate');
+  });
+
+  it('discloses an empty triplet population without zero-valued reliability claims', () => {
+    const outcomes = summarizeAssignedOutcomes([], { assignedTaskIds: ['absent'], assignedSeeds: [0, 1, 2] });
+    expect(outcomes).toMatchObject({ assignedTasks: 1, assignedAttempts: 3, primaryResolvedPct: 0,
+      threeAttemptReliability: { completeTriplets: 0, incompleteTriplets: 1, completeTaskIds: [],
+        incompleteTaskIds: ['absent'], solveAllThreeRate: null, solveAnyOfThreeRate: null, meanAtThree: null } });
+    const rows = [mk({ seed: 0 }), mk({ seed: 1 }), mk({ seed: 2 })];
+    expect(summarizeAssignedOutcomes(rows).threeAttemptReliability).toBeNull();
+    expect(summarizeAssignedOutcomes(rows, { assignedSeeds: [0, 1, 2] }).threeAttemptReliability).toBeNull();
+    expect(buildSuiteReport(rows, { assignedSeeds: [0, 1, 2] }).arms[0].threeAttemptReliability).toBeNull();
+    expect(summarizeAssignedOutcomes(rows.slice(0, 2), { assignedTaskIds: ['t1'], assignedSeeds: [0, 1] })
+      .threeAttemptReliability).toBeNull();
+  });
+
   it('matches canonical binary scoring and distinguishes budget outcome from grader outage', () => {
     const rows = [mk({ seed: 0, resolved: true, graderStatus: 'passed' }),
       mk({ taskId: 't2', seed: 0, resolved: null, generationStatus: 'timeout', graderStatus: 'error' })];
@@ -187,6 +223,56 @@ describe('aggregateArm', () => {
 });
 
 describe('buildSuiteReport', () => {
+  it('matches pinned HLB repeat-versus-swap formulas with task weighting and measured populations', () => {
+    // scoring.py@f07159ad, SHA256 58cfb353c641c77addb4fd3b7197c501fc8e139bd27db28cfadc1eb64ec18af7:
+    // rerun_flip=2k(n-k)/(n(n-1)); swap_flip=pA(1-pB)+pB(1-pA).
+    const rows = [0, 1, 2].flatMap(seed => [
+      mk({ taskId: 'repeated', seed, arm: 'papercusp', resolved: seed === 0 }),
+      mk({ taskId: 'repeated', seed, arm: 'baseline-b-native', resolved: seed !== 2 }),
+    ]).concat([
+      mk({ taskId: 'single', seed: 0, arm: 'papercusp', resolved: true }),
+      mk({ taskId: 'single', seed: 0, arm: 'baseline-b-native', resolved: false }),
+      mk({ taskId: 'treatment-only', seed: 0, arm: 'papercusp', resolved: true }),
+      mk({ taskId: 'baseline-only', seed: 0, arm: 'baseline-b-native', resolved: false }),
+    ]);
+    const opts = { assignedTaskIds: ['repeated', 'single', 'treatment-only', 'baseline-only', 'absent'],
+      assignedSeeds: [0, 1, 2], assignedArms: ['papercusp', 'baseline-b-native'], bootstrapIterations: 1000 };
+    const report = buildSuiteReport(rows, opts);
+    expect(report.arms.map(arm => arm.repeatVariability)).toEqual([
+      { taskIds: ['repeated'], disagreementRate: 2 / 3 },
+      { taskIds: ['repeated'], disagreementRate: 2 / 3 },
+    ]);
+    expect(report.deltas[0].swapVariability!.taskIds).toEqual(['repeated', 'single']);
+    expect(report.deltas[0].swapVariability!.disagreementRate).toBeCloseTo((5 / 9 + 1) / 2);
+    const absent = buildSuiteReport([], { ...opts, runId: 'empty', suite: 'terminal-bench-2.1' });
+    expect(absent.arms[0].repeatVariability).toEqual({ taskIds: [], disagreementRate: null });
+    expect(absent.deltas[0].swapVariability).toEqual({ taskIds: [], disagreementRate: null });
+  });
+
+  it.each([
+    [[true, true, true], [false, false, false], 'descriptive-treatment-higher'],
+    [[false, false, false], [true, true, true], 'descriptive-baseline-higher'],
+    [[true, false, true], [true, false, true], 'inconclusive'],
+    [[true, false, false], [false, true, false], 'inconclusive'],
+  ] as const)('labels paired interval direction without superiority or equivalence claims (%s, %s)',
+    (treatment, baseline, expected) => {
+      const taskIds = ['a', 'b', 'c'];
+      const rows = taskIds.flatMap((taskId, i) => [
+        mk({ taskId, seed: 0, arm: 'papercusp', resolved: treatment[i], graderStatus: treatment[i] ? 'passed' : 'failed' }),
+        mk({ taskId, seed: 0, arm: 'baseline-b-native', resolved: baseline[i], graderStatus: baseline[i] ? 'passed' : 'failed' }),
+      ]);
+      const report = buildSuiteReport(rows, { assignedTaskIds: taskIds, assignedSeeds: [0],
+        assignedArms: ['papercusp', 'baseline-b-native'], bootstrapIterations: 1000 });
+      expect(report.deltas[0].accuracyDeltaInterpretation).toBe(expected);
+      if (expected === 'inconclusive') {
+        expect(report.deltas[0].accuracyDeltaCi!.lower).toBeLessThanOrEqual(0);
+        expect(report.deltas[0].accuracyDeltaCi!.upper).toBeGreaterThanOrEqual(0);
+      }
+      const missing = buildSuiteReport(rows.map((row, i) => i ? row : { ...row, resolved: null, graderStatus: 'error' as const }),
+        { assignedTaskIds: taskIds, assignedSeeds: [0], assignedArms: ['papercusp', 'baseline-b-native'] });
+      expect(missing.deltas[0]).toMatchObject({ accuracyDeltaCi: null, accuracyDeltaInterpretation: 'unmeasured' });
+    });
+
   it('retains tasks absent from both arms and absent assigned seeds', () => {
     const report = buildSuiteReport([
       mk({ taskId: 'a', seed: 1, resolved: true, graderStatus: 'passed' }),

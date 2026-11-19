@@ -23,6 +23,8 @@ import type {
   ArmId,
   BenchSuite,
   PassAtKPoint,
+  ThreeAttemptReliability,
+  AttemptVariability,
 } from './schema';
 import { meanPassAtK } from './pass-k';
 import { wilsonInterval, pairedBootstrapCI } from './intervals';
@@ -164,14 +166,45 @@ export function summarizeAssignedOutcomes(rows: readonly AssignedOutcomeRow[],
   }
   const counts = [...byTask.values()].map(task => ({ ...task, n: Math.max(task.n, 1) }));
   const mean = (values: number[]) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
-  const conditionalCounts = [...conditional.values()];
+  const conditionalTasks = assignedIds.flatMap(taskId => {
+    const task = conditional.get(taskId);
+    return task ? [{ taskId, ...task }] : [];
+  });
+  const conditionalCounts = conditionalTasks.map(({ n, c, scoreSum }) => ({ n, c, scoreSum }));
+  const repeated = conditionalTasks.filter(task => task.n >= 2);
+  // Pinned upstream scoring.py rerun_flip (f07159ad): unbiased within-task
+  // disagreement, averaged over tasks rather than over the attempt stream.
+  const repeatVariability: AttemptVariability = {
+    taskIds: repeated.map(task => task.taskId),
+    disagreementRate: mean(repeated.map(task => 2 * task.c * (task.n - task.c) / (task.n * (task.n - 1)))),
+  };
   const assignedAttempts = counts.reduce((sum, task) => sum + task.n, 0);
-  return { counts, conditionalCounts, assignedTasks: counts.length, assignedAttempts,
+  let threeAttemptReliability: ThreeAttemptReliability | null = null;
+  if (opts.assignedTaskIds && assignedSeeds?.size === 3) {
+    const completeTaskIds = assignedIds.filter(id => conditional.get(id)?.n === 3);
+    const incompleteTaskIds = assignedIds.filter(id => conditional.get(id)?.n !== 3);
+    const complete = completeTaskIds.map(id => conditional.get(id)!);
+    const solveAllThree = complete.filter(task => task.c === 3).length;
+    const solveAnyOfThree = complete.filter(task => task.c > 0).length;
+    threeAttemptReliability = {
+      assignedTasks: assignedIds.length,
+      completeTriplets: complete.length,
+      incompleteTriplets: incompleteTaskIds.length,
+      completeTaskIds,
+      incompleteTaskIds,
+      solveAllThree,
+      solveAnyOfThree,
+      solveAllThreeRate: complete.length ? solveAllThree / complete.length : null,
+      solveAnyOfThreeRate: complete.length ? solveAnyOfThree / complete.length : null,
+      meanAtThree: mean(complete.map(task => task.scoreSum / 3)),
+    };
+  }
+  return { counts, conditionalCounts, conditionalTasks, repeatVariability, assignedTasks: counts.length, assignedAttempts,
     attempts: rows.length, absentAttempts: assignedAttempts - rows.length,
     absentTasks: counts.filter(task => !task.observed).length,
     gradedAttempts: conditionalCounts.reduce((sum, task) => sum + task.n, 0),
     resolved: counts.reduce((sum, task) => sum + task.c, 0), missingMeasurements, outcomes,
-    measurementComplete: missingMeasurements === 0,
+    measurementComplete: missingMeasurements === 0, threeAttemptReliability,
     primaryResolvedPct: missingMeasurements ? null : mean(counts.map(task => task.c / task.n)),
     primaryMeanScore: missingMeasurements ? null : mean(counts.map(task => task.scoreSum / task.n)),
     conditionalResolvedPct: mean(conditionalCounts.map(task => task.c / task.n)),
@@ -232,6 +265,8 @@ export function aggregateArm(
     resolvedRateWilson,
     passAtK,
     passHatK,
+    threeAttemptReliability: outcomes.threeAttemptReliability,
+    repeatVariability: outcomes.repeatVariability,
     cost,
   };
 }
@@ -288,14 +323,18 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
   }
   const assignedTaskIds = opts.assignedTaskIds ?? [...new Set(rows.map(row => row.taskId))];
   const sampling = reportSampling(assignedTaskIds, opts);
-  const arms = armIds.map((arm) =>
-    aggregateArm(
+  const arms = armIds.map((arm) => {
+    const report = aggregateArm(
       rows.filter((r) => r.arm === arm),
       suite,
       arm,
       { ...opts, assignedTaskIds },
-    ),
-  );
+    );
+    // The shared primary uses an observed fallback for legacy rows, but that
+    // fallback is not evidence of a frozen reliability population.
+    if (!opts.assignedTaskIds) report.threeAttemptReliability = null;
+    return report;
+  });
 
   // Cost/accuracy Pareto: accuracy = pass@1, cost = mean $ per task-attempt.
   const rawPoints = arms.filter((a) => a.passAt1 != null && a.attempts > 0 && !a.cost.missingMeasurements).map((a) => ({
@@ -324,13 +363,27 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
       const status = missingMeasurements ? 'missing-grade' : sampling.unit === 'unregistered' ? 'unregistered-policy'
         : sampling.independentUnits! < 2 ? 'insufficient-independent-units' : 'measured';
       const efficiencyMeasured = !!tPoint && !!bPoint;
+      const accuracyDeltaCi = status === 'measured' ? pairedInterval(
+        bOutcomes.counts.map(task => task.c / task.n), tOutcomes.counts.map(task => task.c / task.n), assignedTaskIds, sampling) : null;
+      const baselineTasks = new Map(bOutcomes.conditionalTasks.map(task => [task.taskId, task]));
+      const sharedTasks = tOutcomes.conditionalTasks.filter(task => baselineTasks.has(task.taskId));
+      const swapRates = sharedTasks.map(task => {
+        const baselineTask = baselineTasks.get(task.taskId)!;
+        const p = task.c / task.n;
+        const q = baselineTask.c / baselineTask.n;
+        return p * (1 - q) + q * (1 - p);
+      });
       deltas.push({
         suite,
         treatment: treatmentArm,
         baseline: a.arm,
         accuracyDelta: treatment.passAt1 === null || a.passAt1 === null ? null : treatment.passAt1 - a.passAt1,
-        accuracyDeltaCi: status === 'measured' ? pairedInterval(
-          bOutcomes.counts.map(task => task.c / task.n), tOutcomes.counts.map(task => task.c / task.n), assignedTaskIds, sampling) : null,
+        accuracyDeltaCi,
+        accuracyDeltaInterpretation: !accuracyDeltaCi ? 'unmeasured'
+          : accuracyDeltaCi.lower <= 0 && accuracyDeltaCi.upper >= 0 ? 'inconclusive'
+          : accuracyDeltaCi.lower > 0 ? 'descriptive-treatment-higher' : 'descriptive-baseline-higher',
+        swapVariability: { taskIds: sharedTasks.map(task => task.taskId),
+          disagreementRate: swapRates.length ? swapRates.reduce((sum, rate) => sum + rate, 0) / swapRates.length : null },
         uncertainty: { status, taskPairs: assignedTaskIds.length, independentUnits: sampling.independentUnits,
           missingMeasurements, baselineObservedAttempts: a.attempts, treatmentObservedAttempts: treatment.attempts,
           baselineAbsentAttempts: bOutcomes.absentAttempts, treatmentAbsentAttempts: tOutcomes.absentAttempts },
