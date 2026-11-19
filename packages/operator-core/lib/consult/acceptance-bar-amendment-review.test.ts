@@ -1959,15 +1959,85 @@ describe('inspectFreshAmendmentReviewer', () => {
     if (!answered) expect(result).toMatchObject({ nativeRef: '/retained/reviewer-1.jsonl', reason: 'account-walled' });
   });
 
-  it('keeps a blocked timeout unknown without authenticated late proof', async () => {
+  it('keeps a blocked timeout unknown without authenticated task custody', async () => {
     const retained = retainedLaunch();
     retained.summary.tasks[0]!.kickoffProof.persisted = false;
     const readTaskState = vi.fn(async () => 'exited' as const);
     expect(await inspectFreshAmendmentReviewer({ ...legacyInput, reviewer: {
       ...legacyInput.reviewer, state: 'blocked', reason: 'kickoff-unverified', nativeRef: 'unknown',
-    } }, { readRetainedLaunch: vi.fn(async () => retained), readTaskState })).toMatchObject({ state: 'unknown' });
+    } }, { readRetainedLaunch: vi.fn(async () => retained), recoverTask: vi.fn(async () => null),
+      readTaskState })).toMatchObject({ state: 'unknown' });
     expect(readTaskState).not.toHaveBeenCalled();
   });
+
+  const failedKickoffInput = { ...legacyInput, reviewer: {
+    ...legacyInput.reviewer, state: 'blocked', reason: 'kickoff-unverified',
+    ownerId: 'reviewer-owner', nativeRef: 'unknown',
+  } };
+  function failedKickoffLaunch() {
+    const retained = retainedLaunch();
+    retained.summary.tasks[0]!.kickoffProof.persisted = false;
+    return retained;
+  }
+
+  it.each(['exited', 'timed_out', 'ended_unobserved'] as const)(
+    'recovers known failed-kickoff custody from its exact terminal system task (%s)', async (taskState) => {
+      const recoverTask = vi.fn(async () => ({ taskId: 'reviewer-1', ownerId: 'reviewer-owner' }));
+      const readTaskState = vi.fn(async () => taskState);
+      const hasLaterPost = vi.fn(async () => false);
+      const reviewer = structuredClone(failedKickoffInput.reviewer);
+      expect(await inspectFreshAmendmentReviewer({ ...failedKickoffInput, reviewer }, {
+        readRetainedLaunch: vi.fn(async () => failedKickoffLaunch()), recoverTask, readTaskState, hasLaterPost,
+      })).toEqual({ state: 'reclaimable', taskId: 'reviewer-1', taskState, reason: 'task-ended' });
+      expect(recoverTask).toHaveBeenCalledWith(input.workspaceId, legacyInput.reviewer.idempotencyKey);
+      expect(readTaskState).toHaveBeenCalledWith('reviewer-1');
+      expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: input.workspaceId,
+        previewPostRef: input.previewPostRef, authorId: 'reviewer-owner' });
+      expect(reviewer).toEqual(failedKickoffInput.reviewer);
+    },
+  );
+
+  it('retains a terminal failed-kickoff reviewer answer after the exact evidence boundary', async () => {
+    const readReply = vi.fn(async () => ({ state: 'later-post' as const,
+      replyPostRef: 'thread-post:51', disposition: 'objection' as const }));
+    expect(await inspectFreshAmendmentReviewer({ ...failedKickoffInput, reviewEvidencePost: 'thread-post:50' }, {
+      readRetainedLaunch: vi.fn(async () => failedKickoffLaunch()),
+      recoverTask: vi.fn(async () => ({ taskId: 'reviewer-1', ownerId: 'reviewer-owner' })),
+      readTaskState: vi.fn(async () => 'exited' as const), readReply,
+    })).toMatchObject({ state: 'later-post', replyPostRef: 'thread-post:51', disposition: 'objection' });
+    expect(readReply).toHaveBeenCalledWith({ workspaceId: input.workspaceId,
+      previewPostRef: input.previewPostRef, authorId: 'reviewer-owner', afterPostRef: 'thread-post:50' });
+  });
+
+  it.each(['pending', 'running', null] as const)(
+    'does not reclaim a known failed kickoff without a terminal state (%s)', async (taskState) => {
+      const hasLaterPost = vi.fn(async () => false);
+      const analyzeTranscript = vi.fn();
+      expect(await inspectFreshAmendmentReviewer(failedKickoffInput, {
+        readRetainedLaunch: vi.fn(async () => failedKickoffLaunch()),
+        recoverTask: vi.fn(async () => ({ taskId: 'reviewer-1', ownerId: 'reviewer-owner' })),
+        readTaskState: vi.fn(async () => taskState), hasLaterPost, analyzeTranscript,
+      })).toMatchObject({ state: 'unknown' });
+      expect(hasLaterPost).not.toHaveBeenCalled();
+      expect(analyzeTranscript).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['task', 'owner', 'ambiguous', 'unavailable'] as const)(
+    'keeps known failed-kickoff custody unknown when recovery is %s', async (conflict) => {
+      const readTaskState = vi.fn(async () => 'exited' as const);
+      const recoverTask = vi.fn(async () => {
+        if (conflict === 'unavailable') throw new Error('launch ledger unavailable');
+        if (conflict === 'ambiguous') return null;
+        return { taskId: conflict === 'task' ? 'different-task' : 'reviewer-1',
+          ownerId: conflict === 'owner' ? 'different-owner' : 'reviewer-owner' };
+      });
+      expect(await inspectFreshAmendmentReviewer(failedKickoffInput, {
+        readRetainedLaunch: vi.fn(async () => failedKickoffLaunch()), recoverTask, readTaskState,
+      })).toMatchObject({ state: 'unknown' });
+      expect(readTaskState).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not infer legacy custody when its retained launch is unavailable', async () => {
     for (const readRetainedLaunch of [vi.fn(async () => null), vi.fn(async () => { throw new Error('unavailable'); })]) {

@@ -369,7 +369,15 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
           if (scenario === 'replaced-after-reconcile') {
             expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
               data: 'FRESH_CONTROL', deliveryId: 'fresh-control' })).toMatchObject({ ok: true, reason: 'accepted' });
-            expect(await waitForOutput(captured, 'FRESH_SUBMIT:FRESH_CONTROL')).toBe(true);
+            const freshOutput = () => captured().replace(/\r\n/g, '\n');
+            expect(await waitForOutput(freshOutput, '\nFRESH_CONTROL\n')).toBe(true);
+            const output = freshOutput();
+            const submitPrefix = 'FRESH_SUBMIT:';
+            expect(output).toContain(submitPrefix);
+            const submitted = output.slice(output.indexOf(submitPrefix) + submitPrefix.length);
+            const origin = leadingTurnOriginMarker(submitted);
+            expect(origin).toMatch(/^⟦turn-origin:host-control nonce:/);
+            expect(submitted).toBe(`${origin}\nFRESH_CONTROL\n`);
           }
           // Even an exact late predecessor row cannot certify that the new
           // child accepted this wake. Keep its ID safe from a second paste.

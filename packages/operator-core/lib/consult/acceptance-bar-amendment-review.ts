@@ -683,12 +683,12 @@ export async function inspectFreshAmendmentReviewer(
   let nativeRef = typeof reviewer?.nativeRef === 'string' && reviewer.nativeRef !== 'unknown' ? reviewer.nativeRef : undefined;
   let ownerId = typeof reviewer?.ownerId === 'string' ? reviewer.ownerId : undefined;
   const blockedKickoff = reviewer?.state === 'blocked' && reviewer.reason === 'kickoff-unverified';
-  if (blockedKickoff && !taskId && reviewer.launcherId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR &&
-      typeof reviewer.idempotencyKey === 'string' && PREVIEW_POST_REF.test(input.previewPostRef) &&
-      (input.reviewEvidencePost === undefined || PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
+  const recoverTerminalReviewer = async (expectedOwnerId = ownerId): Promise<FreshAmendmentReviewerHealth> => {
     try {
-      const task = await (deps.recoverTask ?? recoverFreshReviewerTask)(input.workspaceId, reviewer.idempotencyKey);
-      if (!task || (ownerId && ownerId !== task.ownerId)) return { state: 'unknown', reason: 'legacy reviewer custody is ambiguous' };
+      const task = await (deps.recoverTask ?? recoverFreshReviewerTask)(input.workspaceId, reviewer!.idempotencyKey as string);
+      if (!task || (taskId && taskId !== task.taskId) || (expectedOwnerId && expectedOwnerId !== task.ownerId)) {
+        return { state: 'unknown', ...(taskId ? { taskId } : {}), reason: 'legacy reviewer custody is ambiguous' };
+      }
       const taskState = await (deps.readTaskState ?? readLedgerTaskState)(task.taskId);
       if (!taskState || !isTerminalState(taskState)) return { state: 'unknown', taskId: task.taskId, reason: 'legacy reviewer is not verified terminal' };
       const args = { workspaceId: input.workspaceId, previewPostRef: input.previewPostRef, authorId: task.ownerId,
@@ -701,6 +701,11 @@ export async function inspectFreshAmendmentReviewer(
     } catch {
       return { state: 'unknown', reason: 'legacy reviewer custody could not be read' };
     }
+  };
+  if (blockedKickoff && !taskId && reviewer.launcherId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR &&
+      typeof reviewer.idempotencyKey === 'string' && PREVIEW_POST_REF.test(input.previewPostRef) &&
+      (input.reviewEvidencePost === undefined || PREVIEW_POST_REF.test(input.reviewEvidencePost))) {
+    return recoverTerminalReviewer();
   }
   let recoveredKickoff = false;
   // Older amend receipts omitted these fields even though the original launch
@@ -726,6 +731,15 @@ export async function inspectFreshAmendmentReviewer(
     const task = tasks.length === 1 ? tasks[0] : undefined;
     const proof = task?.kickoffProof && typeof task.kickoffProof === 'object'
       ? task.kickoffProof as Record<string, unknown> : undefined;
+    // A failed kickoff has no native proof to recover. As for a missing-task
+    // receipt, only the exact system launch's unique task and terminal state
+    // can settle custody; this does not turn the failed launch into a success.
+    if (blockedKickoff && launch?.launchedBy === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR &&
+        tasks.length <= 1 && proof?.persisted !== true &&
+        (!task || (typeof task.ownerId === 'string' && task.ownerId.trim() &&
+          (!ownerId || ownerId === task.ownerId)))) {
+      return recoverTerminalReviewer(task ? task.ownerId as string : ownerId);
+    }
     if (launch?.launchedBy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR ||
       typeof task?.ownerId !== 'string' || !task.ownerId.trim() ||
       proof?.persisted !== true || typeof proof.nativeRef !== 'string' || !proof.nativeRef.trim() ||

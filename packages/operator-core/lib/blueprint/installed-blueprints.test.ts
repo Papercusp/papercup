@@ -114,11 +114,14 @@ describe('complete blueprint library source inventory (P-002)', () => {
     expect(readBlueprintSourcePopulation({ ...options, expectedRevision: result.revision })).toEqual(result);
   });
 
-  it('keeps a built-in over an older or invalid installed copy, exactly as resolution does (WI-6554700010054458)', () => {
+  it('keeps a built-in over an invalid installed copy, exactly as resolution does (WI-6554700010054458)', () => {
     const { dirs } = fixture();
     const [builtin, installed] = [0, 1].map(tier => join(dirs[tier], 'shared', 'blueprint.yaml'));
     writeFileSync(builtin, 'id: shared\nversion: 0.2.0\nslots: []\n');
-    for (const [text, reason] of [['id: shared\nversion: 0.1.2\nslots: []\n', 'older-version'],
+    // A VALID older install keeps first-hit order: supersession never re-targets a copy that loads.
+    writeFileSync(installed, 'id: shared\nversion: 0.1.2\nslots: []\n');
+    expect(availableBlueprintSources()).toEqual([{ id: 'shared', tier: 'installed', file: installed }]);
+    for (const [text, reason] of [
       ['id: shared\nversion: 0.2.0\nvisibility: public\nslots: []\n', 'invalid-source']] as const) {
       writeFileSync(installed, text);
       const supersededInstalled = { file: installed, reason, detail: expect.any(String) };
