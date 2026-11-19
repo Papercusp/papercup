@@ -83,7 +83,7 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
       gateBypass: { role: true, capability: true, quota: true },
       transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
       ...caller,
-    } as never, {});
+    } as never, { batchResponseVersion: 'operation-v0' });
     expect(dispatched.ok).toBe(true);
     expect(input).toEqual(originalInput);
     const data = dispatched.result?.structuredContent as { results: Record<string, unknown>[] } | undefined;

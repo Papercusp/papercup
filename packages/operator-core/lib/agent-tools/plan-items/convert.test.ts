@@ -57,7 +57,7 @@ const mcpBody = async (input: Record<string, unknown>) => {
     transport: 'mcp',
     requestedFormat: 'json',
     requestedStructured: true,
-  } as never, {});
+  } as never, { batchResponseVersion: 'operation-v0' });
   expect(dispatched.ok).toBe(true);
   expect(input).toEqual(originalInput);
   const data = dispatched.result?.structuredContent as Out['data'] | undefined;
