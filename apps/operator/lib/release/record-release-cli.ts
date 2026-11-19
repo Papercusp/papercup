@@ -1505,7 +1505,18 @@ export async function generateSite(
     hydratedAll.push({ row, items, plans, internalCount });
   }
 
-  const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact };
+  // A restoration can retain missing historical records without advertising dead
+  // downloads. Keep this alongside the generated site so later regenerations
+  // preserve the measured availability until those exact files are recovered.
+  const unavailablePath = path.join(outDir, 'unavailable-downloads.json');
+  const unavailableDownloads = fs.existsSync(unavailablePath)
+    ? new Map<string, string>(Object.entries(JSON.parse(fs.readFileSync(unavailablePath, 'utf8'))))
+    : undefined;
+  if (unavailableDownloads && [...unavailableDownloads].some(([key, reason]) =>
+    !key || typeof reason !== 'string' || !reason.trim())) {
+    throw new Error('unavailable-downloads.json must map complete relative download paths to non-empty recovery reasons');
+  }
+  const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact, unavailableDownloads };
   let pages = 0;
   if (want('assets')) await buildReleaseHistoryAssets(outDir);
   if (want('changes')) {

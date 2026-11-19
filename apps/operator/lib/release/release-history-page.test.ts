@@ -84,6 +84,37 @@ function hydrated(over: Partial<HydratedRelease> = {}): HydratedRelease {
   };
 }
 
+describe('release download recovery', () => {
+  it('keeps missing download metadata and history while rendering an explicit recovery path', () => {
+    const release = hydrated();
+    const artifact = release.row.artifacts[0]!;
+    const unavailableDownloads = new Map([[artifact.url, 'The former storage account is disabled; recovery is in progress.']]);
+    const opts = { generatedAt: GENERATED_AT, analytics: null, redact: [], unavailableDownloads };
+    const html = renderIndexHtml([release], opts);
+    expect(html).not.toContain(`href="${artifact.url}"`);
+    expect(html).toContain(artifact.name);
+    expect(html).toContain(artifact.sha256);
+    expect(html).toContain('Temporarily unavailable:');
+    expect(html).toContain('href="unavailable-downloads.json"');
+    const history = JSON.parse(renderHistoryJson([release], opts));
+    expect(history.releases[0].artifacts[0]).toMatchObject({
+      url: artifact.url, sha256: artifact.sha256, available: false,
+      unavailable_reason: unavailableDownloads.get(artifact.url),
+    });
+    expect(release.row.artifacts[0]).not.toHaveProperty('available');
+  });
+
+  it('keeps recovered downloads clickable and does not advertise an unavailable PUI archive', () => {
+    const release = hydrated();
+    const html = renderIndexHtml([release], {
+      generatedAt: GENERATED_AT, analytics: null, redact: [],
+      unavailableDownloads: new Map([['pui/index.html', 'Archive recovery is in progress.']]),
+    });
+    expect(html).toContain(`href="${release.row.artifacts[0]!.url}"`);
+    expect(html).not.toContain('href="pui/index.html"');
+  });
+});
+
 describe('work items expand to their full body (WI-5525)', () => {
   it('wraps an item in a click-to-expand <details> when it has a body', () => {
     const html = renderIndexHtml(

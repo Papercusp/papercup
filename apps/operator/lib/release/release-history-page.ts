@@ -94,6 +94,8 @@ export interface Analytics {
 
 export interface PageOptions {
   generatedAt: Date;
+  /** Confirmed missing downloads remain in history, with an explicit recovery notice. */
+  unavailableDownloads?: ReadonlyMap<string, string>;
   /** Omit/null to generate a page with no beacon at all (local preview, tests). */
   analytics?: Analytics | null;
   /**
@@ -717,14 +719,16 @@ const PLATFORM_SECTIONS: ReadonlyArray<{ label: string; platforms: string[]; des
  *  Server is a first-class table, never a prose link (owner ask 2026-07-19). The
  *  platform is the section header and the component is a sub-header, so neither is
  *  a table column here. */
-function renderDownloadTable(list: ReleaseArtifact[]): string {
+function renderDownloadTable(list: ReleaseArtifact[], unavailable: ReadonlyMap<string, string> = new Map()): string {
   if (list.length === 0) return '';
   const rows = list
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(
       (a) => `      <tr>
-        <td><a href="${escapeHtml(encodeArtifactPath(a.url))}">${escapeHtml(a.name)}</a></td>
+        <td>${unavailable.has(a.url)
+          ? `<span>${escapeHtml(a.name)}</span><br><span class="warn">Temporarily unavailable: ${escapeHtml(unavailable.get(a.url)!)}</span>`
+          : `<a href="${escapeHtml(encodeArtifactPath(a.url))}">${escapeHtml(a.name)}</a>`}</td>
         <td>${escapeHtml(formatBytes(a.size))}</td>
         <td class="sha">${escapeHtml(a.sha256 || '—')}</td>
       </tr>`,
@@ -794,6 +798,7 @@ function renderPlatformSection(
   desktop: boolean,
   list: ReleaseArtifact[],
   noteHtml?: string,
+  unavailable?: ReadonlyMap<string, string>,
 ): string {
   const app = list.filter((a) => a.product === 'gui' || a.product === 'mobile');
   const server = list.filter((a) => a.product === 'server');
@@ -804,11 +809,11 @@ function renderPlatformSection(
   if (noteHtml) parts.push(noteHtml);
   if (app.length > 0) {
     if (labelComponents) parts.push(`<h4 class="component-h">App</h4>`);
-    parts.push(renderDownloadTable(app));
+    parts.push(renderDownloadTable(app, unavailable));
   }
   if (server.length > 0) {
     if (labelComponents) parts.push(`<h4 class="component-h">Papercusp Server</h4>`);
-    parts.push(renderDownloadTable(server));
+    parts.push(renderDownloadTable(server, unavailable));
   }
   if (desktop) parts.push(platformRequirementNote(label, app.length > 0, server.length > 0));
   // Gatekeeper blocks EVERY mac build we ship (ad-hoc signed) — the note belongs on
@@ -831,6 +836,7 @@ function renderPlatformSection(
 function renderArtifacts(
   artifacts: ReleaseArtifact[],
   platformNotes: ReadonlyMap<string, string> = new Map(),
+  unavailable?: ReadonlyMap<string, string>,
 ): string {
   const real = artifacts.filter(isListedArtifact);
   if (real.length === 0) {
@@ -842,10 +848,10 @@ function renderArtifacts(
   for (const sec of PLATFORM_SECTIONS) {
     const list = real.filter((a) => sec.platforms.includes(a.platform));
     const note = sec.platforms.map((p) => platformNotes.get(p)).find(Boolean);
-    if (list.length > 0) sections.push(renderPlatformSection(sec.label, sec.desktop, list, note));
+    if (list.length > 0) sections.push(renderPlatformSection(sec.label, sec.desktop, list, note, unavailable));
   }
   const other = real.filter((a) => !known.has(a.platform));
-  if (other.length > 0) sections.push(renderPlatformSection('Other', true, other));
+  if (other.length > 0) sections.push(renderPlatformSection('Other', true, other, undefined, unavailable));
 
   return sections.join('\n');
 }
@@ -1188,6 +1194,7 @@ function renderRelease(
   isCurrent: boolean,
   maxWorkItems?: number,
   card?: ReleaseCard,
+  unavailable?: ReadonlyMap<string, string>,
 ): string {
   const { row } = rel;
   const hasHotfixes = card !== undefined && card.hotfixes.length > 0;
@@ -1214,7 +1221,7 @@ function renderRelease(
   </div>
   <p class="meta">${meta.join(' · ')}</p>
   <details class="release-downloads"><summary>Archived downloads for ${escapeHtml(row.version)}</summary>
-  ${renderArtifacts(artifacts, platformNotes)}
+  ${renderArtifacts(artifacts, platformNotes, unavailable)}
   </details>
   ${changelog}
   ${hasHotfixes ? renderHotfixChangelogs(card) : ''}
@@ -1292,7 +1299,7 @@ export function renderHoldingHtml(opts: PageOptions): string {
 
 /** The whole history — every release, newest first. */
 /** Product choices reuse the recorded release artifacts; PUI retains its own accepted feed. */
-export function renderProductDownloads(releases: HydratedRelease[]): string {
+export function renderProductDownloads(releases: HydratedRelease[], unavailable?: ReadonlyMap<string, string>): string {
   const latest = new Map<string, { artifacts: ReleaseArtifact[]; version: string }>();
   for (const release of releases) for (const artifact of release.row.artifacts) {
     const key = `${artifact.product}:${artifact.platform}`;
@@ -1305,7 +1312,7 @@ export function renderProductDownloads(releases: HydratedRelease[]): string {
       .filter(artifact => artifact.product === kind && (!platform || artifact.platform === platform)
         && isListedArtifact(artifact)).map(artifact => ({ artifact, version })));
     return rows.length ? rows.map(({ artifact, version }) =>
-      `<h4>${escapeHtml(artifact.platform)} · ${escapeHtml(version)}</h4>${renderDownloadTable([artifact])}`).join('\n')
+      `<h4>${escapeHtml(artifact.platform)} · ${escapeHtml(version)}</h4>${renderDownloadTable([artifact], unavailable)}`).join('\n')
       : `<p>${unavailable ?? 'No download is published for this product yet.'}</p>`;
   };
   const choices = [['server', 'Desktop Server'], ['gui', 'Desktop GUI'], ['psu', 'PSU + PUI'],
@@ -1320,7 +1327,9 @@ export function renderProductDownloads(releases: HydratedRelease[]): string {
       + '<section><h4>Linux</h4><div id="psu-linux"><p>See the verified Linux x86_64 package on the PSU + PUI download page.</p></div></section>'
       + '<section><h4>Windows (WSL2)</h4><p><strong>Uses the same download as Linux.</strong> Install WSL2, open its Linux terminal, then install the Linux x86_64 package there. There is no separate Windows executable.</p><div id="psu-windows"></div></section>'
       + '<section><h4>macOS</h4><div id="psu-mac-arm"><p>Apple Silicon: no verified standalone download is published yet.</p></div><div id="psu-mac-intel"><p>Intel: no verified standalone download is published yet.</p></div></section></div>'
-      + '<p><a href="pui/index.html">Download PSU bundled with PUI</a> · <a href="#download-server">Desktop Server downloads</a></p>'
+      + (unavailable?.has('pui/index.html')
+        ? '<p>PSU + PUI downloads are temporarily unavailable while the release archive is recovered. <a href="#download-server">Desktop Server downloads</a></p>'
+        : '<p><a href="pui/index.html">Download PSU bundled with PUI</a> · <a href="#download-server">Desktop Server downloads</a></p>')
       + '<h4>Connect using the menus</h4><ol><li>Install the package for your computer, then run <code>psu</code>.</li><li>In <strong>Where should psu run?</strong>, select your cloud desktop. First time? Choose <strong>Papercusp cloud — sign in to use a hosted workspace</strong>, sign in in your browser, then select your desktop.</li><li>Choose Claude, Codex, OMP, or PUI (the Papercusp TUI) in the launcher.</li></ol>'
       + '<p>For an installed local server, choose <strong>Local — this computer</strong>. Windows console packages run inside WSL2.</p>',
     android: '<p>Install the Android app to connect from your phone.</p>' + product('mobile', 'android-universal', 'The previous Android builds were withdrawn. A replacement download is not published yet.'),
@@ -1369,18 +1378,19 @@ export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions):
     const release = card.base;
     const previewLimit = Math.min(inlineWorkItemsRemaining, release.items.length);
     inlineWorkItemsRemaining -= previewLimit;
-    return renderRelease(release, card.newestIndex === 0, previewLimit, card);
+    return renderRelease(release, card.newestIndex === 0, previewLimit, card, opts.unavailableDownloads);
   });
   const body =
     releases.length === 0
       ? `<h1>Papercusp releases</h1>
 <p class="sub">No releases have been recorded yet.</p>
 ${renderVideo()}
-${renderProductDownloads(releases)}`
+${renderProductDownloads(releases, opts.unavailableDownloads)}`
       : `<h1>Papercusp releases</h1>
 <p class="sub">Beta builds for testers. This page is unlisted — please don't share the link.</p>
 ${renderVideo()}
-${renderProductDownloads(releases)}
+${opts.unavailableDownloads?.size ? '<p class="warn">Some historical downloads are temporarily unavailable while the release archive is recovered. Their names, sizes and checksums remain below. <a href="unavailable-downloads.json">View the complete recovery list</a>.</p>' : ''}
+${renderProductDownloads(releases, opts.unavailableDownloads)}
 ${releaseSections.join('\n')}`;
 
   const footer = `<footer>Generated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;
@@ -1430,6 +1440,10 @@ export function renderHistoryJson(releases: HydratedRelease[], opts: PageOptions
           url: a.url,
           size: a.size,
           sha256: a.sha256,
+          ...(opts.unavailableDownloads?.has(a.url) ? {
+            available: false,
+            unavailable_reason: opts.unavailableDownloads.get(a.url),
+          } : {}),
           ...(a.desktopInterface ? { desktopInterface: a.desktopInterface } : {}),
         })),
     })),
