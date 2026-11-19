@@ -165,6 +165,7 @@ export function reviewedDurableDbosSql(sources: Partial<Record<'systemDatabase' 
     ]) add(queryHash!, `${ref}#${anchor}`, 'read', 'SELECT');
     for (const [queryHash, command] of [
       ['a8402858d4f1e1d27afee976520485ebb4b96a5387355b823f0d0b8079729032', 'BEGIN'],
+      ['7fb4b5a7dca2722fffe493de75ebb4273e8edfc3aeb099770827ce15a1eec517', 'BEGIN'],
       ['79663c1d3b43ceaf9ee728e501c64b57ae2e4d6cb36ff5c65eddcda1de27342f', 'COMMIT'],
       [createHash('sha256').update('ROLLBACK').digest('hex'), 'ROLLBACK'],
     ] as const) add(queryHash, `${ref}#transaction-boundaries`, 'control', command);

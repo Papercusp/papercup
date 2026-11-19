@@ -100,7 +100,7 @@ describe('source-reviewed DBOS nonpersisting SQL', () => {
         '../../../../node_modules/@dbos-inc/dbos-sdk/dist/src/' + file, import.meta.url))).digest('hex')).toBe(sources[name]);
     }
     const original = reviewedDurableDbosSql(sources);
-    expect(original).toHaveLength(23);
+    expect(original).toHaveLength(24);
     expect(new Set(original.map(row => row.queryHash)).size).toBe(original.length);
     expect(original.every(row => row.status === 'ok' && ['read', 'control'].includes(row.kind))).toBe(true);
     original[0]!.queryHash = 'changed';
@@ -211,6 +211,53 @@ describe('source-reviewed DBOS nonpersisting SQL', () => {
         .toEqual([['read', null], ['unknown', null], ['unknown', null], ['unknown', null], ['unknown', null],
           ['read', null], ['unknown', null], ['unknown', null], ['unknown', null]]);
     } finally { tap.restore(); }
+  });
+
+  it('recognizes the installed READ COMMITTED boundary without accepting changed SQL, writers or terminals', async () => {
+    const { observeGroundedStoreOperations } = await import('../grounded-evidence-measurement');
+    const source = readFileSync(new URL(
+      '../../../../node_modules/@dbos-inc/dbos-sdk/dist/src/system_database.js', import.meta.url), 'utf8');
+    expect(createHash('sha256').update(source).digest('hex')).toBe(sources.systemDatabase);
+    const method = source.slice(source.indexOf('    async initWorkflowStatusStandalone('));
+    const statement = method.slice(method.indexOf("client.query('") + "client.query('".length,
+      method.indexOf("');"));
+    expect(statement).toBe('BEGIN ISOLATION LEVEL READ COMMITTED');
+    class Query {
+      _results = { command: 'BEGIN', rowCount: null };
+      values: unknown[] = [];
+      constructor(readonly text: string) {}
+      submit(connection: { bind(config: { values: unknown[]; valueMapper(value: unknown, index: number): unknown }): void }) {
+        connection.bind({ values: this.values, valueMapper: value => value });
+      }
+      handleReadyForQuery() {}
+      handleError(error: Error) { return error; }
+    }
+    class Client {
+      query(text: string) {
+        const query = new Query(text);
+        query.submit({ bind: config => { config.values.forEach((value, index) => config.valueMapper(value, index)); } });
+        return query;
+      }
+    }
+    const scope: GroundedMeasurementScope = { workspaceId: 'w', harness: 'h', potId: 'p', runId: 'r',
+      ownerId: 'isolation-boundary', caseId: 'C5', arm: 'pre', iteration: 1, manifestHash: 'm', fixtureHash: 'f',
+      sourceFingerprint: 's', testFingerprint: 't', runtimeFingerprint: 'r', configFingerprint: 'c' };
+    for (const fault of ['original', 'changed-query', 'unreviewed-writer', 'wrong-command', 'error'] as const) {
+      const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [], sourceRef: 'test:isolation-boundary',
+        attemptId: fault, nodePostgres: [{ pool: 'dbos', clientPrototype: Client.prototype,
+          queryPrototype: Query.prototype, serializerSourceRef: 'unused-no-bind' }],
+        nonPersistingSql: reviewedDurableDbosSql({ systemDatabase:
+          fault === 'unreviewed-writer' ? 'changed-source' : sources.systemDatabase }) });
+      try {
+        const query = tap.run(() => new Client().query(statement + (fault === 'changed-query' ? ' ' : '')));
+        if (fault === 'error') query.handleError(new Error('original-query-error'));
+        else { if (fault === 'wrong-command') query._results.command = 'UPDATE'; query.handleReadyForQuery(); }
+        const capture = tap.seal();
+        expect(capture.complete, fault).toBe(true);
+        expect(capture.rows.map(row => [row.kind, row.persistedBytes]), fault)
+          .toEqual([[fault === 'original' ? 'control' : 'unknown', null]]);
+      } finally { tap.restore(); }
+    }
   });
 
   it('qualifies original application-name claim bytes while keeping other positive SDK writes unknown', async () => {
