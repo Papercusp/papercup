@@ -166,7 +166,7 @@ export interface GroundedServerSqlWrite {
  * wall-clock matching, SQL prefix inference, or caller-authored commit claims.
  * Unknown transaction statements (including savepoints) invalidate that entire
  * transaction; a new reviewed BEGIN is required before it can qualify again. */
-function qualifyGroundedServerWrites(rows: GroundedStorageOperation[], complete: boolean,
+export function qualifyGroundedServerWrites(rows: GroundedStorageOperation[], complete: boolean,
   registrations: readonly GroundedServerSqlWrite[]) {
   if (!registrations.length) return;
   const transactions = new Map<string, { valid: boolean; transactionId: string | null;

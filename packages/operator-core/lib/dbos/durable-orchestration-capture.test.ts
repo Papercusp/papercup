@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureDurableProcessBoundary, composeDurableCaptureCensus, createDurableCaptureRecorder, materializeDurableCapture, reconstructDurableCapture,
   retainDurableCapture, reviewedDurableDbosSqlWrites, reviewedDurableDbosSql, reviewedDurableFixturePayloadSql,
-  reviewedDurableServerValues } from '../../test/_durable-orchestration-capture';
+  reviewedDurableServerValues, qualifyDurableSqlTerminalBytes } from '../../test/_durable-orchestration-capture';
 import type { GroundedCensus, GroundedInvocation, GroundedMeasurementScope, GroundedSqlObservation } from '../grounded-evidence-measurement';
 
 const directories: string[] = [];
@@ -602,16 +602,39 @@ describe('parent-owned durable process boundary', () => {
     ownerId: 'capture-unit', caseId: 'J3', arm: 'pre', iteration: 1, manifestHash: 'manifest', fixtureHash: 'fixture',
     sourceFingerprint: 'source', testFingerprint: 'test', runtimeFingerprint: 'runtime', configFingerprint: 'config' };
   function child(path: string, fault: string) {
+    if (fault.startsWith('sql-bytes')) {
+      const systemDatabase = 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b';
+      const serverMessageSourceRef = 'source:pg/lib/client.js@4d8f863700d5a94c443edf9186f546c555486a66d0575806a2fe792c43911a46#NoticeResponse+ReadyForQuery';
+      const catalog = ['workflow_status', 'operation_outputs', 'application_versions']
+        .map(table_name => ({ table_name, column_name: 'application_name' }));
+      const columns = { workflow_status: ['application_name'], operation_outputs: ['application_name'],
+        application_versions: ['application_name'] };
+      const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+      const fixture = reviewedDurableServerValues({ systemDatabase, serverMessageSourceRef, columns,
+        marker: digest(JSON.stringify({ scope, mode: 'crash', runKey: scope.runId, pid: process.pid })),
+        catalogSourceRef: path.replace(/\.json$/, '') + '.server-values.json#catalog@sha256:' + digest(JSON.stringify(catalog)) });
+      writeFileSync(path.replace(/\.json$/, '') + '.server-values.json', JSON.stringify({ kind: 'dbos-server-value-setup',
+        scope, mode: 'crash', runKey: scope.runId, producerPid: process.pid, complete: true, exclusive: true,
+        systemDatabase, serverMessageSourceRef, columns, catalog, fixture }));
+    }
     const source = `
       import fs from 'node:fs';
+      import { createHash } from 'node:crypto';
       const { createDurableCaptureRecorder } = await import(process.env.CAPTURE_MODULE);
       const scope = JSON.parse(process.env.CAPTURE_SCOPE), fault = process.env.CAPTURE_FAULT;
       if (fault.startsWith('sql-')) {
         const { observeGroundedStoreOperations } = await import(process.env.MEASUREMENT_MODULE);
+        const { reviewedDurableDbosSql } = await import(process.env.CAPTURE_MODULE);
+        const byteMode = fault.startsWith('sql-bytes');
+        const setupPath = process.env.CAPTURE_PATH.replace(/\\.json$/, '') + '.server-values.json';
+        const setupBytes = byteMode ? fs.readFileSync(setupPath) : null;
+        const setup = setupBytes ? JSON.parse(setupBytes.toString('utf8')) : null;
+        const digest = value => createHash('sha256').update(value).digest('hex');
+        const statement = 'UPDATE "dbos".application_versions\\n         SET application_name = $1\\n         WHERE version_name = $2 AND application_name IS NULL';
         const recorder = createDurableCaptureRecorder(process.env.CAPTURE_PATH);
         class Query {
           values = []; _results;
-          constructor(text) { this.text = text; this._results = { command: text.startsWith('SELECT') ? 'SELECT' : 'INSERT', rowCount: 1 }; }
+          constructor(text) { this.text = text; this._results = { command: text.split(' ')[0], rowCount: 1 }; }
           submit(connection) { connection.bind({ valueMapper: value => value }); }
           handleReadyForQuery() {} handleError() {}
         }
@@ -625,17 +648,30 @@ describe('parent-owned durable process boundary', () => {
         const sqlObservations = [];
         const tap = observeGroundedStoreOperations({ scope, deps: {}, operations: [],
           sourceRef: process.env.CAPTURE_PATH, attemptId: 'actual-sql',
-          nodePostgres: [{ pool: 'actual-client', clientPrototype: Client.prototype, queryPrototype: Query.prototype,
-            serializerSourceRef: 'original-mapper', serverMessageSourceRef: 'original-client' }],
+          nodePostgres: [{ pool: byteMode ? 'child-dbos-all-clients' : 'actual-client', clientPrototype: Client.prototype, queryPrototype: Query.prototype,
+            serializerSourceRef: 'original-mapper', serverMessageSourceRef: setup?.serverMessageSourceRef ?? 'original-client' }],
+          ...(byteMode ? { serverSqlWrites: setup.fixture.serverSqlWrites,
+            nonPersistingSql: reviewedDurableDbosSql({ systemDatabase: setup.systemDatabase }) } : {}),
           onSqlObservation: row => sqlObservations.push(row) });
         const client = new Client();
-        for (const text of ['SELECT 1', 'INSERT INTO fixture DEFAULT VALUES']) {
-          tap.run(() => client.query(text)); client._handleReadyForQuery({ status: 'I' });
+        const texts = byteMode ? ['BEGIN', statement, ...(fault === 'sql-bytes-uncommitted' ? []
+          : [fault === 'sql-bytes-rollback' ? 'ROLLBACK' : 'COMMIT'])] : ['SELECT 1', 'INSERT INTO fixture DEFAULT VALUES'];
+        for (const text of texts) {
+          tap.run(() => client.query(text));
+          if (byteMode && text === statement) client._handleNotice({ message: 'GEC-SERVER-VALUES-v1', severity: 'NOTICE', code: '00000',
+            detail: JSON.stringify({ marker: setup.fixture.serverSqlWrites[0].marker, backend: 321,
+              queryHash: digest(statement), schema: 'dbos', table: 'application_versions', operation: 'UPDATE',
+              transactionId: '100', rowId: '(0,1)', values: [{ column: 'application_name', changed: true,
+                hex: Buffer.from('λ.😺').toString('hex') }] }) });
+          client._handleReadyForQuery({ status: byteMode && (text === 'BEGIN' || text === statement) ? 'T' : 'I' });
         }
         if (fault === 'sql-pending') tap.run(() => client.query('SELECT pending'));
         const settled = fault === 'sql-exit';
         const census = () => ({ scope, sourceRef: process.env.CAPTURE_PATH, complete: settled, ids: [], rows: [] });
         const capture = { processId: process.pid, sqlObservations,
+          ...(byteMode ? { mode: 'crash', sdkSourceHashes: { systemDatabase: setup.systemDatabase },
+            serverValueFixture: { sourceRef: setupPath + '@sha256:' + digest(setupBytes), producerPid: setup.producerPid,
+              serverMessageSourceRef: setup.serverMessageSourceRef, fixture: setup.fixture } } : {}),
           processTermination: settled ? null : { pid: process.pid, signal: 'SIGKILL' },
           boundary: settled ? { scope, sourceRef: process.env.CAPTURE_PATH, drained: true } : null,
           census: census(), invocations: census(), storage: settled ? tap.seal() : tap.snapshot() };
@@ -648,6 +684,9 @@ describe('parent-owned durable process boundary', () => {
         if (fault === 'sql-server-pending') capture.storage.diagnostics.serverMessagesPending.push(capture.storage.ids[0]);
         if (fault === 'sql-duplicate-terminal') capture.sqlObservations.push({ ...sqlObservations.find(row => row.phase === 'terminal') });
         if (fault === 'sql-fragment-exclusion') capture.storage.diagnostics.excludedUnexecutedIds.push('unproven-fragment');
+        if (fault === 'sql-bytes-ready-loss') capture.sqlObservations = sqlObservations.filter(row => row.phase !== 'ready');
+        if (fault === 'sql-bytes-notice-loss') capture.sqlObservations = sqlObservations.filter(row => row.phase !== 'notice');
+        if (fault === 'sql-bytes-query') capture.sqlObservations.find(row => row.phase === 'terminal').query += ' changed';
         recorder.retain(capture);
         if (!settled) process.kill(process.pid, 'SIGKILL');
       } else if (fault.startsWith('attempt-')) {
@@ -841,6 +880,40 @@ describe('parent-owned durable process boundary', () => {
       storageBytes: null });
     expect(processCapture.storageTerminalAccounting.gaps.length).toBeGreaterThan(0);
     expect(reconstructDurableCapture(path)).toHaveProperty('storage.complete', false);
+  });
+
+  it.each(['commit', 'rollback', 'uncommitted', 'ready-loss', 'notice-loss', 'query', 'source', 'parent'])
+  ('derives a separate retained SQL byte edition with %s evidence', fault => {
+    const { path } = fixture();
+    const mode = ['source', 'parent', 'commit'].includes(fault) ? 'kill' : fault;
+    const { child: result } = captureDurableProcessBoundary(path, scope, () => child(path, 'sql-bytes-' + mode));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.signal, result.stderr).toBe('SIGKILL');
+    const original = reconstructDurableCapture(path), tape = readFileSync(path + '.journal');
+    const parentBytes = readFileSync(path + '.process.json');
+    if (fault === 'source') {
+      const setupPath = path.replace(/\.json$/, '') + '.server-values.json';
+      const setup = JSON.parse(readFileSync(setupPath, 'utf8'));
+      setup.fixture.serverSqlWrites[0].sourceRef += ':changed'; writeFileSync(setupPath, JSON.stringify(setup));
+    }
+    if (fault === 'parent') {
+      const parent = JSON.parse(parentBytes.toString('utf8')); parent.process.pid++;
+      writeFileSync(path + '.process.json', JSON.stringify(parent));
+    }
+    const edition = qualifyDurableSqlTerminalBytes(path, scope);
+    expect(edition.complete, JSON.stringify(edition.gaps)).toBe(fault === 'commit');
+    expect(edition.storageBytes).toBe(fault === 'commit' ? Buffer.byteLength('λ.😺') : null);
+    if (fault === 'commit') {
+      expect(edition.gaps).toEqual([]);
+      expect(edition.rows.find(row => row.kind === 'write')).toMatchObject({ persistedBytes: Buffer.byteLength('λ.😺'),
+        sql: { serverWrite: { outcome: 'committed', commitQueryId: edition.ids.at(-1) } } });
+    }
+    expect(original.storage).toMatchObject({ complete: false });
+    expect(original).toHaveProperty('storage.rows', expect.arrayContaining([expect.objectContaining({
+      kind: 'write', persistedBytes: null })]));
+    expect(reconstructDurableCapture(path)).toEqual(original);
+    expect(readFileSync(path + '.journal')).toEqual(tape);
+    if (fault !== 'parent') expect(readFileSync(path + '.process.json')).toEqual(parentBytes);
   });
 });
 
