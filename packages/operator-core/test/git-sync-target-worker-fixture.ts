@@ -23,11 +23,13 @@ import { inWorkspaceTxn } from '../lib/agent-tools/locks/in-workspace-txn';
 import { registerAwait, listActiveAwaits } from '../lib/events/await/store';
 import { emitAwaitedEvent } from '../lib/events/await/engine';
 
-const root = process.env.FRICTION_SOURCE_ROOT!;
+// with-test-pg scrubs ambient application variables. Fixture inputs cross that
+// boundary explicitly in argv, just like the existing metadata scenario flag.
+const root = process.argv.find(arg => arg.startsWith('--source-root='))?.slice('--source-root='.length)!;
 assert.ok(root, 'explicit source root required for the bundled private fixture');
 const workspace = process.env.PAPERCUSP_WORKSPACE_ID!;
 const workerMode = process.argv.includes('--worker');
-const releaseScenario = process.env.FRICTION_RELEASE_CONTINUATION === '1';
+const releaseScenario = process.argv.includes('--release-continuation');
 const metadataScenario = process.argv.includes('--metadata-repair');
 const privateRoot = dirname(process.env.HOME!);
 assert.match(workspace, /^test-runtime-/);
@@ -157,7 +159,7 @@ export async function runGitSyncTargetWorkerFixture() {
   let scenarioFailure: unknown;
   try {
     const requestPort = await listen(createServer(getRequestListener(handler)));
-    child = fork(import.meta.filename, ['--worker'], { cwd: root, execArgv: [],
+    child = fork(import.meta.filename, ['--worker', `--source-root=${root}`], { cwd: root, execArgv: [],
       env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_BACKGROUND_WORKERS: '1', PAPERCUSP_SERVING_BUILD: 'staging' },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     child.stdout!.on('data', data => process.stdout.write(data));

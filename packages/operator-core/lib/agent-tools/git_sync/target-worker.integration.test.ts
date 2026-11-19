@@ -50,10 +50,11 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
     },
     execute: async (observe, evidenceDir) => {
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
-        process.execPath, bundle, ...(metadataRepair ? ['--metadata-repair'] : [])], {
+        process.execPath, bundle, `--source-root=${root}`,
+        ...(releaseContinuation ? ['--release-continuation'] : []),
+        ...(metadataRepair ? ['--metadata-repair'] : [])], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FRICTION_WORKER_EVIDENCE: evidenceDir,
-          FRICTION_SOURCE_ROOT: root, FRICTION_RELEASE_CONTINUATION: releaseContinuation ? '1' : '0' },
+        env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' },
       });
       observe(child);
       const result = await captureIsolatedWorker(child, evidenceDir, options);

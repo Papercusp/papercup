@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
+
+const originalArgv = process.argv;
 
 const state = vi.hoisted(() => ({
   primary: new Error('request listener failed'),
@@ -63,7 +66,8 @@ vi.mock('../lib/events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
 
 beforeEach(() => {
   vi.resetModules();
-  vi.stubEnv('FRICTION_SOURCE_ROOT', '/fixture/source');
+  process.argv = [...originalArgv, '--source-root=/fixture/source'];
+  vi.stubEnv('FRICTION_SOURCE_ROOT', undefined);
   vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'test-runtime-cleanup-proof');
   vi.stubEnv('PAPERCUSP_PG_PORT', '65432');
   vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '1');
@@ -71,10 +75,22 @@ beforeEach(() => {
   vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
   vi.stubEnv('PAPERCUSP_EMBED_SIDECAR_MODE', '0');
 });
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { process.argv = originalArgv; vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+it('requires an explicit source-root argument even when an ambient source root is present', async () => {
+  process.argv = originalArgv;
+  vi.stubEnv('FRICTION_SOURCE_ROOT', '/ambient/source');
+  await expect(import('./git-sync-target-worker-fixture'))
+    .rejects.toThrow('explicit source root required for the bundled private fixture');
+});
 
 it.each([false, true])('retains the original worker scenario failure when cleanup fails: %s', async cleanupFails => {
   state.cleanupFails = cleanupFails;
+  const inherited = isolatedRuntimeInheritedEnvironment({
+    FRICTION_SOURCE_ROOT: '/ambient/source', FRICTION_RELEASE_CONTINUATION: '1',
+  }, isolatedRuntimeEvidenceKeys('owned-test-db-directory'));
+  expect(inherited.environment).toEqual({});
+  expect(inherited.discardedKeys).toEqual(['FRICTION_RELEASE_CONTINUATION', 'FRICTION_SOURCE_ROOT']);
   vi.spyOn(console, 'log').mockImplementation(() => {});
   const { runGitSyncTargetWorkerFixture } = await import('./git-sync-target-worker-fixture');
   const reported = await runGitSyncTargetWorkerFixture().catch(error => error);
