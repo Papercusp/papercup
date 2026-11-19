@@ -444,11 +444,11 @@ listen();`, 120);
     } finally { await run.stop(); }
   }, 12000);
 
-  it('halts repeated short crashes instead of spinning until its lifetime expires', async () => {
+  it.each([0, 30_000, 120_000])('halts repeated crashes with %sms uptime instead of resetting the budget', async uptimeMs => {
     const f = fixture();
     const locator: GradingAuditRuntimeLocator = { ...f.source,
       baseUrl: 'http://127.0.0.1:45187', issueIds: ['EI-a'],
-      expiresAtSec: Math.floor(Date.now() / 1000) + 60 };
+      expiresAtSec: Math.floor(Date.now() / 1000) + 3600 };
     const args = gradingAuditRuntimeSupervisorArgs(locator);
     const children: EventEmitter[] = [];
     const spawnChild = vi.fn(() => {
@@ -476,6 +476,7 @@ listen();`, 120);
       });
       expect(spawnChild).toHaveBeenCalledTimes(1);
       for (let attempt = 1; attempt <= 5; attempt += 1) {
+        await vi.advanceTimersByTimeAsync(uptimeMs);
         children[attempt - 1].emit('exit', 42, null);
         if (attempt === 5) break;
         expect(exit).not.toHaveBeenCalled();
@@ -486,8 +487,10 @@ listen();`, 120);
         expect(spawnChild).toHaveBeenCalledTimes(attempt + 1);
       }
       expect(exit).toHaveBeenCalledExactlyOnceWith(1);
-      expect(error).toHaveBeenCalledWith('[grading-audit-supervisor] restart budget exhausted');
+      expect(error).toHaveBeenCalledWith('[grading-audit-supervisor] restart budget exhausted; resume through scorecards:repair');
       expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(spawnChild).toHaveBeenCalledTimes(5);
     } finally { vi.useRealTimers(); }
   });
 

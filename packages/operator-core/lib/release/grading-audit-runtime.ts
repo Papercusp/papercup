@@ -472,7 +472,7 @@ const { spawn } = require('node:child_process');
 const { readFileSync } = require('node:fs');
 const { createHash } = require('node:crypto');
 const config = JSON.parse(process.argv[1]);
-let child = null, retry = null, escalation = null, stopping = false, shortExits = 0;
+let child = null, retry = null, escalation = null, stopping = false, restarts = 0;
 const log = message => console.error('[grading-audit-supervisor] ' + message);
 const finish = code => {
   clearTimeout(retry); clearTimeout(escalation); clearTimeout(deadline);
@@ -498,7 +498,6 @@ const start = () => {
       log('bundle digest changed; refusing launch'); return finish(1);
     }
   } catch (error) { log('bundle read failed: ' + error.message); return finish(1); }
-  const started = Date.now();
   child = spawn(process.execPath, [config.bundlePath], { stdio: 'inherit' });
   log('started child pid=' + child.pid);
   child.once('error', error => { log('child spawn failed: ' + error.message); finish(1); });
@@ -506,10 +505,12 @@ const start = () => {
     child = null;
     if (stopping) return finish(0);
     if (Date.now() >= config.expiresAtSec * 1000) return stop('absolute deadline');
-    shortExits = Date.now() - started < 30000 ? shortExits + 1 : 0;
-    log('child exited code=' + code + ' signal=' + signal + ' shortExits=' + shortExits);
-    if (shortExits >= 5) { log('restart budget exhausted'); return finish(1); }
-    retry = setTimeout(start, Math.min(5000, 100 * 2 ** shortExits));
+    // Watchdog recycles routinely take longer than 30 seconds. Uptime alone
+    // does not prove audit progress and must not reset the failure budget.
+    restarts += 1;
+    log('child exited code=' + code + ' signal=' + signal + ' restarts=' + restarts);
+    if (restarts >= 5) { log('restart budget exhausted; resume through scorecards:repair'); return finish(1); }
+    retry = setTimeout(start, Math.min(5000, 100 * 2 ** restarts));
   });
 };
 start();

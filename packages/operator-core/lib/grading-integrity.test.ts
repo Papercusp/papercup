@@ -1,4 +1,7 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 
@@ -523,6 +526,23 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     expect(f.d.confirmReservation).toHaveBeenCalledTimes(2);
     expect(f.d.wake).toHaveBeenCalledTimes(2);
     expect(f.stored.size).toBe(2);
+  });
+
+  it('continues a second interrupted turn on the same runtime and lease without duplicating concurrent wakes', async () => {
+    const f = fixture();
+    const runtime = { taskId: 'same-supervisor', baseUrl: 'http://127.0.0.1:33015',
+      evaluatorBuild: { sha: 'exact-build', version: '1.2.3' }, bundleSha256: 'b'.repeat(64),
+      expiresAtSec: 4102444800 };
+    const input = { ...f.input, runtime, resumeParked: true, resumeAfterTurn: 'first-native-turn' };
+    const first = await notifyRetainedGradingAuditor(input, f.d);
+    const results = await Promise.all(Array.from({ length: 4 }, () =>
+      notifyRetainedGradingAuditor({ ...input, resumeAfterTurn: 'second-native-turn' }, f.d)));
+    expect(results.map(r => r.state).sort()).toEqual(['already-delivered', 'already-delivered', 'already-delivered', 'delivered']);
+    expect(results[0]!.msgId).not.toBe(first.msgId);
+    expect(f.d.wake).toHaveBeenCalledTimes(2);
+    expect(f.d.confirmReservation).toHaveBeenCalledTimes(2);
+    expect(f.stored.size).toBe(2);
+    expect(f.d.send.mock.calls[1]![1].body).toContain('does not invalidate completed audit work');
   });
 
   it.each(['owner', 'target', 'label-boundary', 'task-state', 'workspace', 'fingerprint', 'lease-key', 'task-class'])
@@ -3038,6 +3058,53 @@ describe('dispatchPendingGradingAudits', () => {
     expect(f.d.launch).not.toHaveBeenCalled();
     expect(f.d.route).not.toHaveBeenCalled();
     expect(f.killTask).not.toHaveBeenCalled();
+  });
+
+  it.each(['interrupted', 'resumed', 'new-completion', 'foreign-session', 'foreign-endpoint', 'tool-quote', 'malformed',
+    'long-record-15999', 'long-record-16000', 'long-record-16001'])
+  ('uses only an owner-bound completed native runtime interruption as a new wake epoch (%s)', async mode => {
+    const f = parkedAuditorFixture();
+    f.d.listScorecards.mockResolvedValue([card('EI-parked', {
+      evidenceFingerprint: 'exact-fingerprint',
+      gradedGeneration: { deployedSha: '2222222', hostStartedAt: null,
+        bootHeadSha: null, scoutCodeHash: null, staleHost: false },
+    })]);
+    const sessionId = 'exact-native-session';
+    const auditor = { taskId: 'retained', workspaceId: 'ws-test', class: 'agent-session', state: 'running',
+      sessionId, logPath: '/tmp/auditor.log', startedAt: new Date().toISOString(),
+      detail: { label: f.prior.key, coordOwnerId: 'su-independent' } } as unknown as TaskRow;
+    f.d.listTasks.mockResolvedValue([auditor]);
+    const longRecord = mode.startsWith('long-record-');
+    const root = longRecord ? mkdtempSync(join(tmpdir(), 'audit-native-')) : null;
+    const nativePath = root ? join(root, 'native.jsonl') : '/tmp/exact-native.jsonl';
+    const endpoint = mode === 'foreign-endpoint' ? 'http://127.0.0.1:11111' : 'http://127.0.0.1:45187';
+    const final = { type: 'event_msg', timestamp: '2026-11-19T15:44:22.993Z',
+      payload: { type: 'task_complete', turn_id: 'completed-turn', last_agent_message: endpoint + ' unreachable: connection refused' } };
+    const transcript = [
+      JSON.stringify({ type: 'session_meta', payload: { id: mode === 'foreign-session' ? 'foreign' : sessionId } }),
+      ...(longRecord ? [JSON.stringify({ type: 'response_item', payload: {
+        type: 'function_call_output', output: 'x'.repeat(Number(mode.split('-').at(-1))),
+      } })] : []),
+      JSON.stringify(mode === 'tool-quote' ? { type: 'response_item', payload: { type: 'function_call_output', output: final } } : final),
+      ...(mode === 'resumed' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } })] : []),
+      ...(mode === 'new-completion' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } })] : []),
+      ...(mode === 'malformed' ? ['{'] : []),
+    ].join('\n');
+    try {
+      if (root) writeFileSync(nativePath, transcript + '\n');
+      const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f,
+        listNativeSessionsByTranscriptHandles: async () => [{ id: 123, sessionId, agent: 'codex', coordOwnerId: 'su-independent' }],
+        findCodexRolloutPath: async () => nativePath,
+        readLogTail: longRecord ? undefined : path => path === nativePath ? transcript : '',
+        readLogMtimeMs: () => Date.now(), terminalLogMaxRechecks: 0,
+      });
+      expect(result.receipts[0]).toMatchObject({ state: 'deduped' });
+      const notice = f.d.notifyRetainedAuditor.mock.calls[0]![0];
+      if (mode === 'interrupted' || longRecord) expect(notice.resumeAfterTurn).toMatch(/^[a-f0-9]{64}$/);
+      else expect(notice).not.toHaveProperty('resumeAfterTurn');
+      expect(f.d.launch).not.toHaveBeenCalled();
+      expect(f.killTask).not.toHaveBeenCalled();
+    } finally { if (root) rmSync(root, { recursive: true, force: true }); }
   });
 
   it('suppresses a retained wake when the same auditor already refused the unchanged basis', async () => {
