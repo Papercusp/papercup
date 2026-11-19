@@ -2531,13 +2531,13 @@ describe('immutable dependency generation', () => {
     writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
     mkdirSync(join(integration, 'patches'));
     writeFileSync(join(integration, 'patches/pkg.patch'), 'original patch\n');
-    commitFixture(integration, 'installed donor');
+    commitAllFixture(integration, 'installed donor');
     const donor = publish(integration);
     expect(donor.status, donor.stderr).toBe(0);
     const generationRoot = join(integration, '.papercusp/dependency-generations');
     rmSync(join(generationRoot, '.inputs'), { recursive: true });
     writeFileSync(join(integration, 'patches/pkg.patch'), 'candidate patch\n');
-    const candidate = commitFixture(integration, 'different patch');
+    const candidate = commitAllFixture(integration, 'different patch');
     writeFileSync(join(integration, 'package-lock.json'), lockWith({
       'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
     }));
