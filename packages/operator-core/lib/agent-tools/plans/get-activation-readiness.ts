@@ -265,8 +265,9 @@ export async function createPlanActivationReadinessRequest(params: Parameters<ty
   };
 }
 
-export async function readPlanActivationReadiness(params: Parameters<typeof createPlanActivationReadinessRequest>[0]) {
-  return (await createPlanActivationReadinessRequest(params)).collect();
+export async function readPlanActivationReadiness(params: Parameters<typeof createPlanActivationReadinessRequest>[0],
+  options?: ActivationReadinessCollectOptions) {
+  return (await createPlanActivationReadinessRequest(params)).collect(params.signal, options);
 }
 
 /** Production adapter: every capability below is a canonical read/pure evaluator. */

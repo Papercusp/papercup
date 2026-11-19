@@ -2,7 +2,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { seedPlan, setupPlanPgFixture, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 import { readPlanActivationReadiness, createPlanActivationReadinessRequest, previewPlanStartConsult,
-  collectActivationReadiness, ACTIVATION_STAGE_IDS,
+  collectActivationReadiness, ACTIVATION_STAGE_IDS, PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS,
   type ActivationReadinessBasis, type ActivationReadinessReaders } from './get-activation-readiness';
 import { checkPlanAdmission, configurePlanAdmissionCertificateSource,
   configurePlanAdmissionPolicySource, configurePlanAdmissionShadowSink } from './plan-admission-gate';
@@ -21,8 +21,8 @@ import startTool from './start';
 import { autoStartAfterActivationAudit } from './auto-start-after-audit';
 import { conformanceActivationVerdict } from '../../spec-conformance/activation-gate';
 
-const advice = vi.hoisted(() => ({ compute: vi.fn(), route: vi.fn() }));
-vi.mock('../search/embedder', () => ({ buildQueryEmbedderResolved: async () => null }));
+const advice = vi.hoisted(() => ({ compute: vi.fn(), route: vi.fn(), embed: vi.fn() }));
+vi.mock('../search/embedder', () => ({ buildQueryEmbedderResolved: advice.embed }));
 vi.mock('../../consult/plan-start-consult', async orig => {
   const actual = await orig<typeof import('../../consult/plan-start-consult')>();
   advice.compute.mockImplementation(actual.planStartConsult);
@@ -77,6 +77,7 @@ afterAll(async () => { configurePlanAdmissionPolicySource(null); configurePlanAd
   configurePlanAdmissionCertificateSource(null); await fx?.dispose(); });
 beforeEach(async () => {
   advice.compute.mockClear();
+  advice.embed.mockReset().mockResolvedValue(null);
   advice.route.mockReset().mockResolvedValue({ qualified: [], snapshot: { candidates: [] } });
   slug = 'readiness-draft-' + ++serial;
   shadow.mockClear();
@@ -103,6 +104,21 @@ beforeEach(async () => {
 });
 
 describe('activation readiness application-read-only boundary', () => {
+  it('forwards a bounded audit diagnostic deadline through the production collector', async () => {
+    const { consult: _fixtureAdvice, ...params } = request();
+    const controller = new AbortController();
+    const deadlineMs = Date.now() + 2_000;
+    const before = await snapshot();
+    await readPlanActivationReadiness({ ...params, signal: controller.signal }, { deadlineMs });
+    expect(advice.embed).toHaveBeenCalledWith(expect.objectContaining({
+      warmOnly: true, embeddingDeadlineMs: deadlineMs - PLAN_ACTIVATION_PREVIEW_POST_EMBED_RESERVE_MS,
+    }));
+    expect(await snapshot()).toEqual(before);
+    controller.abort(new Error('audit caller cancelled'));
+    await expect(readPlanActivationReadiness({ ...params, signal: controller.signal }, { deadlineMs }))
+      .rejects.toThrow('audit caller cancelled');
+  });
+
   it('pins the same live contract as spec quality while retaining superseded and retired history', async () => {
     const write = { harnessSlug: harness, planSlug: slug, planItemId: 'P-001',
       behavior: 'A changed input is rejected before a write.', behaviorClass: 'boundary' as const,

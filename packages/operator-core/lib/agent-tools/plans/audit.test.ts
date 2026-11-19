@@ -5,7 +5,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
-import type { ToolResult } from '@papercusp/tooldef';
+import { createPhaseTracker, type ToolResult } from '@papercusp/tooldef';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const { mockOrgSql, mockOrgSqlArray } = vi.hoisted(() => {
@@ -169,6 +169,14 @@ const mockEmitPlanEvent = vi.mocked(emitPlanEventForCaller);
 const mockReuseResolvers = vi.mocked(defaultReuseReferenceResolvers);
 const mockAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const mockListScorecards = vi.mocked(listScorecards);
+
+function projectedAuditOperation() {
+  // The strict-client inputSchema merges singleton and universal batch fields.
+  // The registry also exposes the exact business operation without that envelope.
+  const schema = lookupByMcpName('plans:audit')?.operationInputSchema;
+  expect(schema).toBeDefined();
+  return schema;
+}
 
 function priorActivationAudit(activation: NonNullable<PlanAudit['activation']>): PlanAudit {
   return {
@@ -709,8 +717,7 @@ describe('plans:audit D-008 writer contract', () => {
   });
 
   it('projects path as required for code/test citation branches', () => {
-    const projected = lookupByMcpName('plans:audit');
-    const schema = projected?.inputSchema as {
+    const schema = projectedAuditOperation() as {
       properties?: {
         items?: {
           items?: {
@@ -1166,9 +1173,7 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('publishes the required planTargets destination grammar on the nested field', () => {
-    const projected = lookupByMcpName('plans:audit');
-    expect(projected).toBeDefined();
-    const schema = projected?.inputSchema as {
+    const schema = projectedAuditOperation() as {
       properties?: {
         mappings?: {
           items?: {
@@ -1213,7 +1218,7 @@ describe('plans:audit phase:activation', () => {
     // field descriptions, so the bounded top-level description must carry the
     // refusal rule even when callers never request the full JSON schema.
     expect(projected?.description?.slice(0, 320)).toContain('any nonempty `unresolvedBlockers` list refuses the audit and records nothing');
-    const schema = projected?.inputSchema as {
+    const schema = projectedAuditOperation() as {
       properties?: {
         unresolvedBlockers?: { description?: string };
         summary?: { description?: string };
@@ -1491,13 +1496,61 @@ describe('plans:audit phase:activation', () => {
   });
 
   it('retains a primary activation refusal when the complete diagnostic cannot initialize', async () => {
-    vi.mocked(readPlanActivationReadiness).mockRejectedValueOnce(new Error('diagnostic reader offline'));
-    const result = ((await tool.handler({ ...activationArgs(), unresolvedBlockers: ['missing source'] } as never, ctx)) as { data: any }).data;
-    expect(result.ok).toBe(false);
-    expect(result.activationReadiness).toMatchObject({ ready: false, freshness: 'unknown',
-      counts: { total: 14, returned: 14, omitted: 0 } });
-    expect(result.activationReadiness.stages).toContainEqual(expect.objectContaining({ id: 'conformance' }));
-    expect(mockRecordActivation).not.toHaveBeenCalled();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(readPlanActivationReadiness).mockRejectedValueOnce(new Error('diagnostic reader offline'));
+      const result = ((await tool.handler({ ...activationArgs(), unresolvedBlockers: ['missing source'] } as never, ctx)) as { data: any }).data;
+      expect(result.ok).toBe(false);
+      expect(result.activationReadiness).toMatchObject({ ready: false, freshness: 'unknown',
+        counts: { total: 14, returned: 14, omitted: 0 } });
+      expect(result.activationReadiness.stages).toContainEqual(expect.objectContaining({ id: 'conformance' }));
+      expect(mockRecordActivation).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('diagnostic reader offline'));
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(['recorded', 'plan-busy'] as const)('returns the %s outcome when optional diagnostics stall', async outcome => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    if (outcome === 'plan-busy') mockRecordActivation.mockResolvedValueOnce({
+      ok: false, error: 'plan_busy', message: 'The current plan write owns the lock.',
+    });
+    const metadata = vi.fn();
+    const phases = createPhaseTracker();
+    let finishDiagnostic!: (value: ReturnType<typeof unavailableActivationReadiness>) => void;
+    vi.mocked(readPlanActivationReadiness).mockReturnValueOnce(new Promise(resolve => {
+      finishDiagnostic = resolve;
+    }));
+    let settled = false;
+    const pending = tool.handler(activationArgs() as never, {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(),
+      role: 'operator', workspaceId: 'test-workspace', tx: vi.fn(), metadata, phases,
+    } as never).then(result => { settled = true; return result; });
+    try {
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(settled).toBe(true);
+      const result = (await pending as { data: any }).data;
+      expect(result).toMatchObject(outcome === 'recorded'
+        ? { ok: true, auditSeq: 2, auditedPlanRevision: { id: 41, seq: 6 } }
+        : { ok: false, error: 'plan_busy' });
+      expect(result.activationReadiness).toMatchObject({ ready: false, freshness: 'unknown',
+        counts: { total: 14, returned: 14, omitted: 0 } });
+      expect(result.activationReadiness.stages.every((stage: { status: string }) => stage.status === 'unknown')).toBe(true);
+      expect(vi.mocked(readPlanActivationReadiness).mock.calls.at(-1)?.[0].signal?.aborted).toBe(true);
+      expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ planAuditOutcome: expect.objectContaining(
+        outcome === 'recorded' ? { ok: true, auditSeq: 2 } : { ok: false, error: 'plan_busy' }),
+      }));
+      expect(phases.intervals()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ phase: 'plans:audit:canonical-outcome' }),
+        expect.objectContaining({ phase: 'plans:audit:activation-diagnostics' }),
+      ]));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded 2000ms'));
+    } finally {
+      finishDiagnostic(unavailableActivationReadiness('test cleanup'));
+      await pending;
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it('previews activation validation without recording audit, repair, clause, consult, or event writes', async () => {

@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,20 @@ import { desktopPortalPlugin } from '../../desktop-portal-plugin';
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const hook = (plugin: object, name: string) => (plugin as Record<string, Function>)[name];
 const temporary: string[] = [];
-afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { force: true, recursive: true }); });
+// The output guard refuses ANY symlinked ancestor, so this suite must never depend on
+// the host's real ~/.papercusp layout: a disk-offload that turned the host's
+// desktop-candidates root into a symlink made every "allowed" path look like a
+// traversal (WI-6554700010053996). Each test gets a private, symlink-free HOME;
+// homedir() honours HOME on POSIX at call time.
+beforeEach(() => {
+  const home = realpathSync(mkdtempSync(resolve(tmpdir(), 'desktop-portal-home-')));
+  temporary.push(home);
+  vi.stubEnv('HOME', home);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const path of temporary.splice(0)) rmSync(path, { force: true, recursive: true });
+});
 
 function source() {
   const portalRoot = mkdtempSync(resolve(tmpdir(), 'desktop-portal-plugin-'));

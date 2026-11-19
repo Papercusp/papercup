@@ -21,7 +21,8 @@
 import { z } from 'zod';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { trackPhase, type AbortCompletionContext, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { getOrgPg } from '@papercusp/db-org';
 import { isNonCodeAuditVerdict, resolveVerification, withVerificationResolver } from '../../plan-verification-profile';
@@ -1136,7 +1137,7 @@ export default defineTool({
 
       const writeConformance = conformanceRefusal(false);
       if (writeConformance) return writeConformance;
-      const recorded = await recordCurrentActivationAudit({
+      const recorded = await trackPhase(ctx.phases, 'plans:audit:activation-write', () => recordCurrentActivationAudit({
         workspaceId,
         planSlug: args.slug,
         harnessSlug: harnessSlug ?? '',
@@ -1144,7 +1145,7 @@ export default defineTool({
         classRef: activationClassRef,
         activation,
         summary: args.summary ?? null,
-      });
+      }));
       if (!recorded.ok) {
         return { data: {
           slug: args.slug,
@@ -1152,6 +1153,11 @@ export default defineTool({
           ...recorded,
         } };
       }
+      // Keep the committed identity in the existing invocation ledger before
+      // advisory source checks, event delivery, or nested activation can delay a reply.
+      ctx.metadata?.({ planAuditRecorded: { slug: args.slug, harness: harnessSlug,
+        phase: 'activation', auditSeq: recorded.audit.auditSeq,
+        auditedPlanRevision: recorded.auditedPlanRevision } });
 
       // plan-item-provenance P-004: plan_audits has no change trigger, so this — the sole
       // activation-audit writer — pushes the provenance view itself after the commit.
@@ -1332,7 +1338,7 @@ export default defineTool({
       // running the real plans:start (start gate, dependencies, spec quality, consult).
       // A refusal leaves it draft and is reported here; it never fails the audit.
       const { autoStartAfterActivationAudit } = await import('./auto-start-after-audit');
-      const autoStart = await autoStartAfterActivationAudit({
+      const autoStart = await trackPhase(ctx.phases, 'plans:audit:auto-start', () => autoStartAfterActivationAudit({
         slug: args.slug,
         harness: harnessSlug,
         planContent: currentPlan?.content,
@@ -1341,7 +1347,7 @@ export default defineTool({
           // A machine-consumed nested call retains the full canonical receipt.
           return startTool.handler(startArgs as never, { ...ctx, transport: undefined } as never);
         },
-      });
+      }));
 
       return { data: {
         ok: true as const,
@@ -1949,24 +1955,33 @@ export default defineTool({
       libraryShipCheck: libraryShipCheckSummary,
     } };
     };
-    const result = await attempt();
+    const result = await trackPhase(ctx.phases, 'plans:audit:canonical-outcome', attempt);
     if (args.phase !== 'activation') return result;
+    // A diagnostic is optional; persist the primary refusal/receipt first so
+    // telemetry can still recover it if the caller disconnects during collection.
+    ctx.metadata?.({ planAuditOutcome: result.data });
     const autoStart = 'autoStart' in result.data ? result.data.autoStart as AutoStartOutcome : undefined;
     if (autoStart?.attempted && !autoStart.started && autoStart.receipt?.activationReadiness) {
       return { ...result, data: { ...result.data, activationReadiness: autoStart.receipt.activationReadiness } };
     }
     // Preserve the audit's original refusal and any writes already recorded.
     // Validation previews suppress advisory routing as well as audit writes.
-    let activationReadiness;
-    try {
-      activationReadiness = await readPlanActivationReadiness({
+    const diagnosticTimeoutMs = 2_000;
+    const deadlineMs = Date.now() + diagnosticTimeoutMs;
+    const fallback = unavailableActivationReadiness(new Error('Activation-audit diagnostic deadline exceeded.'));
+    const diagnostic = await trackPhase(ctx.phases, 'plans:audit:activation-diagnostics', () =>
+      withBoundedTimeout(signal => readPlanActivationReadiness({
         workspaceId: sctx.workspaceId ?? activeWorkspaceId(), harnessSlug: harnessSlug ?? '',
         planSlug: args.slug, requesterId: resolveAgentIdentity(sctx).ownerId,
+        signal,
         ...(autoStart?.attempted && autoStart.started ? { consultReceipt: autoStart.activationConsult } : {}),
         ...(dryRun ? { consult: { outcome: 'unavailable' as const, error: 'consult_preview_unavailable' as const,
           message: 'Consult routing is not measured in a validation preview.' } } : {}),
-      });
-    } catch (error) { activationReadiness = unavailableActivationReadiness(error); }
+      }, { deadlineMs }), { timeoutMs: diagnosticTimeoutMs, signal: ctx.signal, fallback,
+        label: 'plans:audit activation diagnostics' }));
+    const activationReadiness = diagnostic.reason === 'error' ? unavailableActivationReadiness(diagnostic.error)
+      : diagnostic.reason === 'aborted' ? unavailableActivationReadiness(new Error('Activation-audit diagnostics cancelled.'))
+      : diagnostic.value;
     return { ...result, data: { ...result.data, activationReadiness } };
   },
 });
