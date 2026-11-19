@@ -21,6 +21,7 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   clearBlueprintReprojectionState,
   getEffectiveBlueprint,
+  projectBlueprintToPg,
   readBlueprintFromPg,
   readBlueprintReprojectionAttempt,
   readOrProjectBlueprintHash,
@@ -31,6 +32,12 @@ import type { HarnessConfig } from '@papercusp/orchestrator';
 let db: FreshPgDb;
 let dir: string;
 let blueprintPath: string;
+
+// The catalog invalidation emitted by a projection uses the org pool.
+vi.mock('@papercusp/db-org', async original => ({
+  ...await original<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: db.sql }),
+}));
 
 /** A standalone (no-extends) blueprint declaring a coding-style dispatch policy. */
 const YAML = `
@@ -163,6 +170,73 @@ describe('getEffectiveBlueprint — the dispatch-policy read path of the orchest
     expect(bp?.dispatch?.concurrency).toBe(3);
   });
 
+  it('refreshes a changed ancestor across restart and ignores an unrelated sibling', async () => {
+    const harnessSlug = 'ancestor-refresh';
+    const project = join(dir, harnessSlug);
+    const root = join(project, 'blueprint.yaml');
+    for (const id of ['local-parent', 'middle', 'sibling']) {
+      mkdirSync(join(project, 'blueprints', id), { recursive: true });
+    }
+    const ancestor = join(project, 'blueprints/local-parent/blueprint.yaml');
+    writeFileSync(ancestor, LOCAL_PARENT_YAML);
+    writeFileSync(join(project, 'blueprints/middle/blueprint.yaml'), 'id: middle\nextends: local-parent\n');
+    writeFileSync(root, LOCAL_CHILD_YAML.replace('extends: local-parent', 'extends: middle'));
+    const opts = { workspaceId: 'default', harnessSlug, blueprintPath: root };
+    const get = () => getEffectiveBlueprint(db.sql as never, opts);
+    const hash = () => readOrProjectBlueprintHash(db.sql as never, 'default', harnessSlug);
+    expect((await get())?.dispatch?.concurrency).toBe(3);
+    const original = await hash();
+    const timestamp = await projectedAtOf(harnessSlug);
+    const firstAttempt = readBlueprintReprojectionAttempt('default', harnessSlug);
+    writeFileSync(join(project, 'blueprints/sibling/blueprint.yaml'), LOCAL_PARENT_YAML.replace('local-parent', 'sibling'));
+    expect(await hash()).toBe(original);
+    expect(readBlueprintReprojectionAttempt('default', harnessSlug)).toBe(firstAttempt);
+    clearBlueprintReprojectionState();
+    expect(await hash()).toBe(original);
+    expect(await projectedAtOf(harnessSlug)).toBe(timestamp);
+
+    clearBlueprintReprojectionState();
+    writeFileSync(ancestor, LOCAL_PARENT_YAML.replace('concurrency: 3', 'concurrency: 8'));
+    // Restored files may have an mtime older than the stored projection.
+    utimesSync(ancestor, new Date(0), new Date(0));
+    const [currentHash, current] = await Promise.all([hash(), get()]);
+    expect(currentHash).not.toBe(original);
+    expect(current?.dispatch?.concurrency).toBe(8);
+    expect((await readBlueprintFromPg(db.sql as never, 'default', harnessSlug))?.dispatch?.concurrency).toBe(8);
+  });
+
+  it('retains the valid child for an invalid or missing parent and recovers when it returns', async () => {
+    const harnessSlug = 'parent-recovery';
+    const project = join(dir, harnessSlug);
+    const root = join(project, 'blueprint.yaml');
+    const parents = join(project, 'blueprints', 'local-parent');
+    const parent = join(parents, 'blueprint.yaml');
+    mkdirSync(parents, { recursive: true });
+    writeFileSync(parent, LOCAL_PARENT_YAML);
+    writeFileSync(root, LOCAL_CHILD_YAML);
+    const get = () => getEffectiveBlueprint(db.sql as never, { workspaceId: 'default', harnessSlug, blueprintPath: root });
+    const hash = () => readOrProjectBlueprintHash(db.sql as never, 'default', harnessSlug);
+    expect((await get())?.dispatch?.concurrency).toBe(3);
+    const original = await hash();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      writeFileSync(parent, 'invalid: [');
+      expect(await hash()).toBe(original);
+      expect((await get())?.dispatch?.concurrency).toBe(3);
+      expect(readBlueprintReprojectionAttempt('default', harnessSlug)?.ok).toBe(false);
+      expect(warn).toHaveBeenCalledTimes(1);
+      rmSync(parent);
+      expect(await hash()).toBe(original);
+      expect(readBlueprintReprojectionAttempt('default', harnessSlug)?.error).toContain('local-parent');
+      expect(warn).toHaveBeenCalledTimes(2);
+      writeFileSync(parent, LOCAL_PARENT_YAML.replace('concurrency: 3', 'concurrency: 6'));
+      expect((await get())?.dispatch?.concurrency).toBe(6);
+      expect(await hash()).not.toBe(original);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('a cached row follows its source file: an edit after projection is re-projected (WI-10006722)', async () => {
     clearBlueprintReprojectionState();
     const path = join(dir, '.papercusp', 'drift.yaml');
@@ -242,5 +316,19 @@ describe('getEffectiveBlueprint — the dispatch-policy read path of the orchest
       cfg: { parallelWorkers: { max: 2 } } as HarnessConfig,
     });
     expect(tightened.cap).toBe(2);
+  });
+
+  it('keeps a source-less explicit projection when an older fallback file is supplied', async () => {
+    const harnessSlug = 'explicit-policy';
+    const path = join(dir, 'fallback.yaml');
+    writeFileSync(path, YAML);
+    utimesSync(path, new Date(0), new Date(0));
+    const opts = { workspaceId: 'default', harnessSlug, blueprintPath: path };
+    const original = await getEffectiveBlueprint(db.sql as never, opts);
+    const blueprint = { ...original!, dispatch: { ...original!.dispatch!, concurrency: 9 } };
+    const pinned = await projectBlueprintToPg(db.sql as never, { workspaceId: 'default', harnessSlug, blueprint });
+    clearBlueprintReprojectionState();
+    expect((await getEffectiveBlueprint(db.sql as never, opts))?.dispatch?.concurrency).toBe(9);
+    expect(await readOrProjectBlueprintHash(db.sql as never, 'default', harnessSlug)).toBe(pinned.contentHash);
   });
 });
