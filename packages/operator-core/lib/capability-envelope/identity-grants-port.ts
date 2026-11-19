@@ -529,6 +529,11 @@ export interface IdentityPermissionSessionSource {
   controlState: unknown;
 }
 
+type IdentityPermissionSourceRead = Awaited<ReturnType<typeof readIdentityPermissionSources>>;
+type IdentityPermissionSourceRef = Pick<IdentityPermissionSessionSource, 'ownerId' | 'sessionId'> & (
+  { status: 'ok' | 'stale'; revision: string } | { status: 'unavailable'; reason: string }
+);
+
 /** Complete stored session slice for P-002. Reuse the execution door's latest
  * launch-row ordering and readIdentityPermissionSources for each record. This
  * is source evidence, not permission or human ownership: null/malformed bodies,
@@ -560,7 +565,12 @@ export interface IdentityPermissionSessionSource {
  * This source is optimistic, outside PostgreSQL's MVCC snapshot: a second scan
  * detects changes during traversal, but cannot exclude arbitrary writers.
  * It therefore refuses every pinned/effect read, even with an equal revision
- * or a held cooperative mutex. These source joins do not authorize a change.
+ * or a held cooperative mutex. includeIdentitySources streams the canonical
+ * applied/desired identity and host policy for EACH session, retaining unknowns
+ * and returning only compact references. These policies are also outside MVCC;
+ * a second traversal detects changes, but cannot supply effect protection.
+ * Even an empty joined population refuses an effect pin. These source joins
+ * do not authorize a change or establish human ownership.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -582,8 +592,9 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
   options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
     includeWorkspaceUsers?: boolean; includeHostAuthorities?: boolean; includeScopedPolicies?: boolean;
     includeInheritedPolicies?: boolean; includeVaultSources?: boolean;
+    includeIdentitySources?: boolean;
     includeBlueprintSources?: { localDirs: readonly string[] };
-    visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
+    visit?: (session: IdentityPermissionSessionSource & { identitySources?: IdentityPermissionSourceRead }) => void | Promise<void> } = {}) {
   options = { ...options };
   if (options.includeBlueprintSources !== undefined) {
     const roots = options.includeBlueprintSources?.localDirs;
@@ -598,6 +609,10 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
   const pinned = options.pinForEffect === true || options.expectedRevision !== undefined;
   const transaction = typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function';
   if (pinned && !transaction) throw new Error('pinned identity population requires an existing transaction');
+  // No registry/flag/pot/provider/tool-catalog lease exists. An empty session
+  // result cannot manufacture one, and visitors must never run under that claim.
+  if (pinned && options.includeIdentitySources)
+    throw new Error(HOST_POLICY_EFFECT_PROTECTION_UNAVAILABLE);
   const read = async (tx: Sql) => {
     let blueprintSources: Extract<ReturnType<typeof readBlueprintSourcePopulation>, { status: 'ok' }> | undefined;
     if (options.includeBlueprintSources) {
@@ -624,8 +639,25 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       throw new Error('identity population workspace is not visible to this connection');
     const sessions: Array<Omit<IdentityPermissionSessionSource, 'launchSpec' | 'controlState'>> = [];
     const packageRevisions: Array<{ applied: unknown; desired: unknown }> = [];
-    const hash = createHash('sha256').update(canonicalJson({ workspaceId }));
-    const query = tx<Array<IdentityPermissionSessionSource & { packageRevisions: { applied: unknown; desired: unknown } }>>`
+    const identitySourceRefs: IdentityPermissionSourceRef[] = [];
+    const identitySource = async (session: IdentityPermissionSessionSource): Promise<IdentityPermissionSourceRead> => {
+      if (!session.ownerId || !session.sessionId || !session.anchorPresent)
+        return { status: 'unavailable', reason: 'session identity owner or control anchor is unavailable' };
+      const record = object(session.launchSpec);
+      const applied = object(object(object(session.controlState)?.activation)?.applied);
+      return readIdentityPermissionSources({ workspaceId,
+        harnessSlug: typeof record?.harnessSlug === 'string' ? record.harnessSlug : '',
+        record, applied: applied as KernelExecutionRevision | null });
+    };
+    const identityRef = (session: IdentityPermissionSessionSource,
+      source: IdentityPermissionSourceRead): IdentityPermissionSourceRef => ({
+      ownerId: session.ownerId, sessionId: session.sessionId,
+      ...(source.status === 'unavailable' ? { status: source.status, reason: source.reason }
+        : { status: source.status, revision: source.revision }),
+    });
+    const hash = createHash('sha256').update(canonicalJson({ workspaceId,
+      ...(options.includeIdentitySources ? { includeIdentitySources: true } : {}) }));
+    const query = () => tx<Array<IdentityPermissionSessionSource & { packageRevisions: { applied: unknown; desired: unknown } }>>`
       WITH launches AS (
         SELECT a.id, a.coord_owner_id, to_jsonb(a)->'launch_spec' AS launch_spec,
           row_number() OVER (PARTITION BY a.coord_owner_id ORDER BY a.id DESC) AS ordinal
@@ -646,15 +678,22 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
         CASE WHEN ${options.includePackageResources === true} THEN jsonb_build_object('applied', n.applied_pair,
           'desired', jsonb_build_object('specificationRevision', n.launch_spec->'specificationRevision',
             'stateRevision', n.launch_spec->'stateRevision')) ELSE NULL::jsonb END AS "packageRevisions",
-        CASE WHEN ${options.visit !== undefined} THEN ${narrowedLaunchSpecToAppliedPairSql(tx)} ELSE NULL::jsonb END AS "launchSpec",
-        CASE WHEN ${options.visit !== undefined} THEN n.control_state ELSE NULL::jsonb END AS "controlState"
+        CASE WHEN ${options.visit !== undefined || options.includeIdentitySources === true} THEN ${narrowedLaunchSpecToAppliedPairSql(tx)} ELSE NULL::jsonb END AS "launchSpec",
+        CASE WHEN ${options.visit !== undefined || options.includeIdentitySources === true} THEN n.control_state ELSE NULL::jsonb END AS "controlState"
         FROM joined n ORDER BY n.owner_id NULLS LAST, n.id NULLS LAST`;
-    for await (const batch of query.cursor(8)) {
+    for await (const batch of query().cursor(8)) {
       for (const { launchSpec, controlState, packageRevisions: revisions, ...ref } of batch) {
         sessions.push(ref);
         if (options.includePackageResources) packageRevisions.push(revisions);
         hash.update('\n').update(canonicalJson(ref));
-        await options.visit?.({ ...ref, launchSpec, controlState });
+        const session = { ...ref, launchSpec, controlState };
+        const identitySources = options.includeIdentitySources ? await identitySource(session) : undefined;
+        if (identitySources) {
+          const sourceRef = identityRef(session, identitySources);
+          identitySourceRefs.push(sourceRef);
+          hash.update('\n').update(canonicalJson({ identitySource: sourceRef }));
+        }
+        await options.visit?.({ ...session, ...(identitySources ? { identitySources } : {}) });
       }
     }
     // Do not compose independently committed source snapshots into one census.
@@ -778,6 +817,22 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       hash.update('\n').update(canonicalJson({ blueprintSourceRevision: current.revision }));
       if (current.status === 'stale') return { status: 'stale' as const, revision: hash.digest('hex') };
     }
+    if (options.includeIdentitySources) {
+      // Re-query the SAME database snapshot rather than retaining raw artifacts
+      // for every wearer. Only external host policy is fresh on this pass. A
+      // visitor can collect evidence, but cannot turn the first pass into a lease.
+      let index = 0;
+      for await (const batch of query().cursor(8)) {
+        for (const session of batch) {
+          const current = identityRef(session, await identitySource(session));
+          if (!isDeepStrictEqual(current, identitySourceRefs[index++])) {
+            hash.update('\n').update(canonicalJson({ changedIdentitySource: current }));
+            return { status: 'stale' as const, revision: hash.digest('hex') };
+          }
+        }
+      }
+      if (index !== identitySourceRefs.length) throw new Error('identity source population changed within snapshot');
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
@@ -786,6 +841,8 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
         ...(scopedPolicies ? { scopedPolicies } : {}),
         ...(inheritedPolicies ? { inheritedPolicies, inheritedPolicyOwners } : {}),
         ...(vaultSources ? { vaultSources } : {}),
+        ...(options.includeIdentitySources ? { identitySources: {
+          consistency: 'optimistic' as const, sessions: identitySourceRefs } } : {}),
         ...(blueprintSources ? { blueprintSources: { ...blueprintSources, consistency: 'optimistic' as const } } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',

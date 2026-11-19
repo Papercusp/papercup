@@ -6,13 +6,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
+import { readIdentityPermissionPopulation, readIdentityPermissionSources, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
 import { sessionPackageDependentId } from '../blueprint/session-package-resources';
 import { upsertLayer, upsertLayerInTx, upsertScopedPolicyAuthority } from '../governance-policy/store';
 import { readPersonalAuthorityPopulation } from '../personal-vault/store';
-import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { compileAgentSpecification, loadBlueprintFromFile } from '@papercusp/orchestrator/blueprint';
 
 // Only the built-in distribution path is redirected. Inventory, filesystem IO,
 // content hashing, population reads and PostgreSQL transactions remain real.
@@ -114,7 +114,11 @@ describe('joined session identity policy sources', () => {
   let potFile: string;
   function writePot(capabilities: string[] = ['mail:send']) {
     writeFileSync(potFile, JSON.stringify({ id: 'population-pot', version: '1.0.0',
+      workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
       fleet: { workerRoles: [{ id: 'su', capabilities }, { id: 'worker', capabilities: [] }] } }));
+    // Fail at fixture construction with the canonical loader's real diagnostic,
+    // before the source adapter turns policy-load errors into an unavailable read.
+    expect(loadBlueprintFromFile(potFile).validation.ok).toBe(true);
   }
   function receipt(id: string) {
     const specificationArtifact = compileAgentSpecification({
@@ -126,9 +130,13 @@ describe('joined session identity policy sources', () => {
   }
   async function seedIdentity() {
     const applied = receipt('prior-identity'), desired = receipt('next-identity');
+    const record = { workspaceId: 'ws', harnessSlug: 'fixture', role: 'su',
+      ...desired, identityHistory: [applied] };
+    const pair = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
+    const source = await readIdentityPermissionSources({ workspaceId: 'ws', harnessSlug: 'fixture', record, applied: pair });
+    expect(source.status, JSON.stringify(source)).toBe('ok');
     await sql`INSERT INTO harness_shared.adv_sessions (id, workspace_id, coord_owner_id, launch_spec)
-      VALUES (1, 'ws', 'wearer', ${sql.json({ workspaceId: 'ws', harnessSlug: 'fixture', role: 'su',
-        ...desired, identityHistory: [applied] })})`;
+      VALUES (1, 'ws', 'wearer', ${sql.json(JSON.parse(JSON.stringify(record)) as postgres.JSONValue)})`;
     await sql`INSERT INTO harness_shared.session_briefs VALUES ('ws', 'wearer', ${sql.json({ activation: {
       applied: { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision },
     } })})`;
@@ -149,14 +157,15 @@ describe('joined session identity policy sources', () => {
 
   it('streams both exact receipts with their canonical policy and returns compact references', async () => {
     const { applied, desired } = await seedIdentity();
+    identityHost.reads = 0;
     const visited: unknown[] = [];
     const result = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
       visit: session => { visited.push(session.identitySources); } });
-    expect(result).toMatchObject({ status: 'ok', identitySources: { consistency: 'optimistic',
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'ok', identitySources: { consistency: 'optimistic',
       sessions: [{ ownerId: 'wearer', sessionId: '1', status: 'ok', revision: expect.any(String) }] } });
     expect(visited).toMatchObject([{ status: 'ok', layers: {
-      applied: [{ ref: 'prior-identity', contentHash: applied.specificationArtifact.inputs[0]!.contentHash }],
-      desired: [{ ref: 'next-identity', contentHash: desired.specificationArtifact.inputs[0]!.contentHash }],
+      applied: [{ ref: 'prior-identity', contentHash: applied.specificationArtifact.inputs.find(entry => entry.kind === 'blueprint-layer')!.contentHash }],
+      desired: [{ ref: 'next-identity', contentHash: desired.specificationArtifact.inputs.find(entry => entry.kind === 'blueprint-layer')!.contentHash }],
     }, policy: { potSlug: 'fixture', ceilings: [expect.anything(), { allowCapabilities: ['mail:send'] }] } }]);
     expect(JSON.stringify(result)).not.toContain('specificationArtifact');
     expect(identityHost.reads).toBe(2);
