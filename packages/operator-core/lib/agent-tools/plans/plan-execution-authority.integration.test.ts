@@ -418,13 +418,22 @@ describe('canonical successful-start revision authority (real PG)', () => {
     }
   });
 
-  it('compares timestamp projections in one catalog read without admitting changed or malformed instants', async () => {
+  it('overlaps the graph and timestamp reads and rejects changed or malformed instants', async () => {
     await db.sql`UPDATE harness_shared.harness_plans SET created_at='2026-11-05T18:19:03.691104Z'`;
     await issue();
     let catalogReads = 0;
+    let graphReadPending = false;
+    const overlaps: boolean[] = [];
     connection.sql = new Proxy(db.sql, { apply(target, thisArg, args) {
       const text = Array.isArray(args[0]) ? args[0].join('') : '';
-      if (text.includes('AS normalized')) catalogReads++;
+      if (text.includes('SELECT n.feature_id, n.item_kind, n.plan_slug, n.plan_line_id')) {
+        graphReadPending = true;
+        return Promise.resolve(Reflect.apply(target, thisArg, args)).finally(() => { graphReadPending = false; });
+      }
+      if (text.includes('AS normalized')) {
+        catalogReads++;
+        overlaps.push(graphReadPending);
+      }
       return Reflect.apply(target, thisArg, args);
     } });
     try {
@@ -440,6 +449,7 @@ describe('canonical successful-start revision authority (real PG)', () => {
         '{inputs,created_at}', '"invalid instant"')::text`;
       expect(await readPlanExecutionStart(binding, scope.workspaceId)).toEqual(['plan_start_revision_invalid']);
       expect(catalogReads).toBe(3);
+      expect(overlaps).toEqual([true, true, true]);
     } finally { connection.sql = db.sql; }
   });
 

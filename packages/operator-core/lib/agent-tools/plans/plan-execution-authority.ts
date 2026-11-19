@@ -127,17 +127,22 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
     const scope = { workspaceId, harnessSlug: row.harness_slug, planSlug: binding.planSlug };
     if (receipt.schema !== 'plan-execution-start-v1' || !isDeepStrictEqual(receipt.scope, scope)
       || typeof receipt.body !== 'string') return ['plan_start_revision_invalid'];
-    const items = await readPlanLineItems(
-      sql,
-      { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug },
-      { items: row.items, content: row.content },
-    );
-    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, items)))
+    // Both validations use the row and receipt read above. Start the catalog
+    // read with the graph read so their round trips do not serialize on the
+    // native guard's deadline. Keep the meaning check first for refusal precedence.
+    const [lines, inputs] = await Promise.allSettled([
+      readPlanLineItems(sql,
+        { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug },
+        { items: row.items, content: row.content }),
+      normalizeExecutionTimestamps(sql, [receipt.inputs, executionPlanInputs(row)]),
+    ]);
+    if (lines.status === 'rejected') return ['plan_start_revision_invalid'];
+    if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, lines.value)))
       return ['plan_start_revision_stale'];
-    // Compare both fresh projections in one catalog query. Serial round trips here
-    // consume the native guard's deadline even when its continuation verdict is warm.
-    const [stored, current] = await normalizeExecutionTimestamps(sql, [receipt.inputs, row]);
-    if (!isDeepStrictEqual(executionPlanInputs(stored!), executionPlanInputs(current!)))
+    if (inputs.status === 'rejected') return ['plan_start_revision_invalid'];
+    const [stored, current] = inputs.value;
+    if (!stored || !current) return ['plan_start_revision_invalid'];
+    if (!isDeepStrictEqual(executionPlanInputs(stored), current))
       return ['plan_start_revision_stale'];
     return [];
   } catch { return ['plan_start_revision_invalid']; }
