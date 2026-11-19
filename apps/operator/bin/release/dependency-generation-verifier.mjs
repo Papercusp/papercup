@@ -135,6 +135,8 @@ function files(root, rel) {
 // This intentionally prefers a rebuild to guessing a compiler's import graph.
 function sourceInput(path) {
   return !path.split('/').some(p => ['node_modules', 'dist', '.papercusp', '.next'].includes(p)
+    // Match the dependency helper's swap siblings, which contain partial installs.
+    || /^node_modules\.(?:deploy|generation)-(?:tmp|old)\./.test(p)
     || p.startsWith('.verifier-') || p.startsWith('.papercusp-'));
 }
 function archiveSource(root) {

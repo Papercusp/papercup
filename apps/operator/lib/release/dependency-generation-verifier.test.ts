@@ -833,6 +833,32 @@ describe('D012 native generation closure', () => {
     expect(existsSync(join(f.store, '.leases')) ? readdirSync(join(f.store, '.leases')) : []).toEqual([]);
   }, 120_000);
 
+  it('ignores dependency swap debris in build inputs while retaining real source inputs', () => {
+    const f = fixture();
+    const before = buildInputs(f.donor);
+    for (const path of [
+      'node_modules.generation-tmp.3951061',
+      'packages/cli/node_modules.generation-old.3951061',
+      'node_modules.deploy-tmp.3951061',
+      'packages/cli/node_modules.deploy-old.3951061',
+    ]) {
+      write(f.donor, path + '/patches/abandoned.patch', 'partial install');
+      mkdirSync(join(f.donor, path, '.bin'), { recursive: true });
+      symlinkSync('../missing/cli.cjs', join(f.donor, path, '.bin/broken'));
+    }
+    expect(buildInputs(f.donor)).toEqual(before);
+    write(f.donor, 'patches/real.patch', 'real input');
+    write(f.donor, 'node_modules.generation-tmp-not-a-swap/source.ts', 'real source');
+    const inputs = buildInputs(f.donor);
+    expect(inputs.map((input: { path: string }) => input.path)).toEqual(expect.arrayContaining([
+      'patches/real.patch', 'node_modules.generation-tmp-not-a-swap/source.ts',
+    ]));
+    write(f.donor, 'patches/real.patch', 'changed input');
+    expect(buildInputs(f.donor)).not.toEqual(inputs);
+    symlinkSync('missing-source.ts', join(f.donor, 'dangling-source.ts'));
+    expect(() => buildInputs(f.donor)).toThrow();
+  });
+
   it.each([32, 300])('reports advancing source and input censuses without changing custody (%s files)', async count => {
     const f = fixture();
     for (let index = 0; index < count; index++) write(f.donor, 'inputs/' + index + '.txt', String(index));
