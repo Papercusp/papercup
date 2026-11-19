@@ -279,7 +279,8 @@ export function qualifyTestingCoreConfigurationClosure(universe, consumed, retai
 export async function qualifyTestingCoreFinalBytes({ script, outfile, nodePath = process.execPath, env = process.env }) {
   await new Promise((resolveResult, reject) => {
     let failure;
-    const child = spawn(nodePath, [script, outfile, '--check'], { env, stdio: ['ignore', 'inherit', 'inherit'] });
+    // The prepare CLI reserves stdout for its JSON binding.
+    const child = spawn(nodePath, [script, outfile, '--check'], { env, stdio: ['ignore', 2, 'inherit'] });
     child.once('error', error => { failure = error; });
     child.once('close', (status, signal) => {
       if (status === 0 && !failure) resolveResult();

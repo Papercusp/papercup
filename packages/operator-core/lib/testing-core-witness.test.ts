@@ -54,6 +54,25 @@ function fixture() {
 }
 
 describe('testing core producing-build witness', () => {
+  it('keeps final qualification diagnostics out of the CLI witness binding', () => {
+    const f = fixture();
+    const cli = join(repoRoot, 'scripts/lib/testing-core-witness.mjs');
+    const receipt = join(dirname(f.outfile), 'receipt.json');
+    const prepared = spawnSync(process.execPath, [cli, 'prepare', f.root, f.compilerPath, receipt, '--', ...f.argv],
+      { encoding: 'utf8' });
+    expect(prepared.error).toBeUndefined();
+    expect(prepared.status, prepared.stderr).toBe(0);
+    expect(prepared.stderr).toContain('ascii-escape:');
+    const bytes = readFileSync(receipt, 'utf8');
+    const { witness } = JSON.parse(bytes);
+    expect(JSON.parse(prepared.stdout)).toEqual({ witness, receiptSha256: hash(bytes) });
+
+    const defined = spawnSync(process.execPath, [cli, 'define', receipt, prepared.stdout], { encoding: 'utf8' });
+    expect(defined.error).toBeUndefined();
+    expect(defined.status, defined.stderr).toBe(0);
+    expect(defined.stdout).toBe('--define:__PAPERCUSP_TESTING_CORE_WITNESS__=' + JSON.stringify(witness));
+  });
+
   it('keeps the legacy reporter in the serving checkout after core relocation', async () => {
     const f = fixture();
     const source = ts.createSourceFile('run.ts', readFileSync(join(repoRoot,
