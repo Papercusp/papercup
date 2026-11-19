@@ -82,6 +82,8 @@ export interface AdmissionRadius {
    * (WI-6554700010029981); the verdict reports them as `reportOnlyDeferred`.
    */
   reportOnly: string[];
+  /** Complete selected census refused before measurement; never added to execution files. */
+  unmeasuredFiles?: string[];
   /** Test file (radius or admitted) → its leg: the owning npm workspace name, when known. */
   legs: Record<string, string>;
 }
@@ -170,6 +172,7 @@ export function precheckPopulation(input: {
       guarded,
       reportOnly,
       legs,
+      ...(input.radius.unmeasuredFiles ? { unmeasuredFiles: [...input.radius.unmeasuredFiles] } : {}),
     };
   }
   return {

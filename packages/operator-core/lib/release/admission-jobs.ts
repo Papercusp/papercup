@@ -499,7 +499,13 @@ export function ordinaryAdmissionRadius(input: {
     ].join('; ');
     // R24 bounds the complete ordinary radius, including report-only files.
     // Execution grouping belongs to admitted tests and cannot waive this guard.
-    if (radius.length > cap) return result('skipped', `over-cap(${radius.length}/${cap})`, detail);
+    if (radius.length > cap) return {
+      ...result('skipped', `over-cap(${radius.length}/${cap})`, detail),
+      // Refusal bounds execution, not the identity census. The managed operation
+      // persists these paths beside its immutable builtCommit/builtTree pins so
+      // a reader can recover the complete refused population after a restart.
+      unmeasuredFiles: radius.map(({ file }) => file).sort(),
+    };
     const guarded: string[] = [];
     const reportOnly: string[] = [];
     for (const { file, leg } of radius) {

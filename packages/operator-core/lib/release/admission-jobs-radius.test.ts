@@ -260,9 +260,10 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(radius).toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)', detail: expect.stringContaining('radius-files=41') });
     expect(radius.guarded).toEqual([]);
     expect(radius.reportOnly).toEqual([]);
+    expect(radius.unmeasuredFiles).toEqual(expected);
     expect(radiusFor(['wide/src/core.ts'], { cap: 1 })).toMatchObject({ status: 'skipped', reason: 'over-cap(41/1)', guarded: [] });
     expect(radiusFor(['wide/src/core.ts'], { signature: [{ kind: 'workspace-task', id: '@t/wide :: test' }] }))
-      .toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [] });
+      .toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [], unmeasuredFiles: expected });
     const boundary = radiusFor(['wide/src/core.ts', expected[0]!]);
     expect(boundary).toMatchObject({ status: 'measured', reason: 'ok', guarded: expected.slice(1) });
     expect(radiusFor(['pkg-b/src/util.ts'], { cap: 1 })).toMatchObject({ status: 'measured', guarded: ['pkg-b/src/util.test.ts'] });
@@ -281,6 +282,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     ]) {
       expect(radiusFor(admittedPaths)).toMatchObject({ status: 'measured', reason: 'ok',
         guarded: expected, reportOnly: [], legs, detail: expect.stringContaining(`radius-files=${count}`) });
+      expect(radiusFor(admittedPaths)).not.toHaveProperty('unmeasuredFiles');
       expect(radiusFor(admittedPaths, { signature: [{ kind: 'workspace-task', id: '@t/wide :: test' }] }))
         .toMatchObject({ status: 'measured', reason: 'ok', guarded: [], reportOnly: expected, legs,
           detail: expect.stringContaining(`radius-files=${count}`) });
@@ -297,7 +299,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         root, commit, signature: [], admittedPaths: ['wide/src/core.ts', 'pkg-b/src/util.test.ts'],
       } })).toMatchObject({ ok: true, population: {
         files: ['pkg-b/src/util.test.ts'],
-        radius: { status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [] },
+        radius: { status: 'skipped', reason: 'over-cap(41/40)', guarded: [], reportOnly: [], unmeasuredFiles: census.sort() },
       } });
       expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 1, jobsInline: 0, workerLive: true });
     } finally {
@@ -313,14 +315,24 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
       admittedPaths: ['wide/src/core.ts', 'pkg-b/src/util.test.ts'] });
     if (!discovery.ok) throw new Error(discovery.detail);
     const population = discovery.population;
+    const census = git(root, 'ls-tree', '-r', '--name-only', commit, '--', 'wide/src')
+      .split('\n').filter(file => file.endsWith('.test.ts')).sort();
     expect(population.files).toEqual(['pkg-a/lib/alias.test.ts', 'pkg-b/src/util.test.ts']);
     expect(population.radius).toMatchObject({ status: 'skipped', reason: 'over-cap(41/40)' });
+    expect(population.radius?.unmeasuredFiles).toEqual(census);
     let persisted: FrozenCandidateRepairQueue = { ...initial, updatedAtMs: 10, admissionPrecheck: {
       schemaVersion: 1, operationId: 'radius-operation', runnerTaskId: 'radius-task', status: 'running',
       candidate: commit, repairHead: commit, builtCommit: commit, builtTree: git(root, 'rev-parse', `${commit}^{tree}`),
       testEnvironment: ADMISSION_TEST_ENVIRONMENT, actor: 'su-test', files: population.files, radius: population.radius,
       startedAtMs: 10, updatedAtMs: 10, expiresAtMs: 60_000,
     } };
+    // A fresh consumer reads identities directly from persisted pins + census;
+    // it does not rerun discovery against mutable working-tree bytes.
+    for (let restart = 0; restart < 3; restart += 1) {
+      persisted = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(persisted)))!;
+      expect(persisted.admissionPrecheck?.radius?.unmeasuredFiles).toEqual(census);
+      expect(persisted.admissionPrecheck?.builtCommit).toBe(commit);
+    }
     const ran: string[] = [];
     const outcome = await runAdmissionPrecheckWorker({ operationId: 'radius-operation', taskId: 'radius-task',
       queueTarget: { workspaceId: 'radius-fixture', installSlug: 'papercusp' },
@@ -346,6 +358,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: false,
       code: 'admission-precheck-unavailable', population: { radius: { status: 'skipped', reason: 'over-cap(41/40)' } } } });
     expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', radius: { status: 'skipped', reason: 'over-cap(41/40)' } });
+    expect(persisted.admissionPrecheck?.radius?.unmeasuredFiles).toEqual(census);
   });
 
   it('retains related tests when independent pinned workspaces share a package name', async () => {
@@ -527,7 +540,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         expect(radius.detail).toContain(`radius-files=${count}`);
         if (count > ADMISSION_RADIUS_CAP) {
           expect(radius).toMatchObject({ status: 'skipped', reason: `over-cap(${count}/40)`,
-            guarded: [], reportOnly: [], legs: {} });
+            guarded: [], reportOnly: [], legs: {}, unmeasuredFiles: census });
           const producerSignature = [{ kind: 'test-file' as const, id: 'signature.test.ts' }, ...signature];
           await resetAdmissionOffthread();
           try {
@@ -539,6 +552,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
             expect(discovery.population).toMatchObject({ files: ['signature.test.ts'],
               radius: { status: 'skipped', reason: `over-cap(${census.length}/40)`,
                 detail: expect.stringContaining(`radius-files=${census.length}`), guarded: [], reportOnly: [], legs: {} } });
+            expect(discovery.population.radius?.unmeasuredFiles).toEqual(census);
             const initial = { ...createFrozenCandidateRepairQueue({ candidate: frozen, base: null,
               failingTests: ['signature.test.ts'], nowMs: 10 }), signature: producerSignature };
             let persisted: FrozenCandidateRepairQueue = { ...initial, admissionPrecheck: {
@@ -548,6 +562,16 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
               actor: 'su-test', files: discovery.population.files, radius: discovery.population.radius,
               startedAtMs: 10, updatedAtMs: 10, expiresAtMs: 60_000,
             } };
+            // Recovery is a queue read after restart, independent of source
+            // retention or a mutable checkout. The decisive consumer test is
+            // beyond the 40-file boundary in both signature partitions.
+            rmSync(join(fixture, 'pkg-consumer'), { recursive: true, force: true });
+            for (let restart = 0; restart < 3; restart += 1) {
+              persisted = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(persisted)))!;
+              expect(persisted.admissionPrecheck?.radius?.unmeasuredFiles).toEqual(census);
+              expect(persisted.admissionPrecheck?.radius?.unmeasuredFiles?.at(-1)).toBe(consumerFile);
+              expect(persisted.admissionPrecheck?.builtCommit).toBe(frozen);
+            }
             const ran: string[] = [];
             const outcome = await runAdmissionPrecheckWorker({ operationId: 'bootstrap-radius-operation',
               taskId: 'bootstrap-radius-task', queueTarget: { workspaceId: 'radius-fixture', installSlug: 'papercusp' },
@@ -575,6 +599,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
             expect(persisted.admissionPrecheck).toMatchObject({ status: 'failed', radius: {
               status: 'skipped', reason: `over-cap(${census.length}/40)`,
               detail: expect.stringContaining(`radius-files=${census.length}`) } });
+            expect(persisted.admissionPrecheck?.radius?.unmeasuredFiles).toEqual(census);
           } finally {
             await resetAdmissionOffthread();
             expect(admissionOffthreadStats().workerLive).toBe(false);
@@ -582,6 +607,7 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
         } else {
           expect(radius).toMatchObject({ status: 'measured', reason: 'ok', legs,
             guarded: signature.length ? [] : census, reportOnly: signature.length ? census : [] });
+          expect(radius).not.toHaveProperty('unmeasuredFiles');
         }
       }
     } finally {

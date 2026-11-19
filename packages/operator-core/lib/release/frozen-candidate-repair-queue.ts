@@ -2290,6 +2290,8 @@ function parseAdmissionRadius(value: unknown, files: readonly unknown[]): Admiss
   const reportOnly = list(row.reportOnly, false);
   if (!guarded || !reportOnly || guarded.some((file) => reportOnly.includes(file))) return null;
   if (row.status !== 'measured' && guarded.length + reportOnly.length > 0) return null;
+  const unmeasuredFiles = row.unmeasuredFiles === undefined ? undefined : list(row.unmeasuredFiles, false);
+  if (unmeasuredFiles === null || (unmeasuredFiles !== undefined && row.status !== 'skipped')) return null;
   if (!row.legs || typeof row.legs !== 'object' || Array.isArray(row.legs)) return null;
   const legs: Record<string, string> = {};
   for (const [file, leg] of Object.entries(row.legs as Record<string, unknown>)) {
@@ -2303,6 +2305,7 @@ function parseAdmissionRadius(value: unknown, files: readonly unknown[]): Admiss
     guarded,
     reportOnly,
     legs,
+    ...(unmeasuredFiles !== undefined ? { unmeasuredFiles } : {}),
   };
 }
 
