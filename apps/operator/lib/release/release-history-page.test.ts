@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import {
   assertReleaseHistoryIndexSizeBudget,
@@ -25,7 +26,6 @@ import { groupItemsByPlan, isUserFacing, type ReleaseRow, type ShippedItem, type
 import { DISCORD_URL, INSTRUCTIONS_MD } from './release-instructions';
 import { partialScopeApprovalNote } from './release-partial-scope';
 import { HOLDING_PAGE_MARKER, PUBLISHED_CONTACT_EMAIL } from './release-content-scrub';
-import { DEMO_VIDEO_SRC } from './release-video';
 import { releaseHistoryStem } from './release-project-history';
 
 const ANALYTICS: Analytics = { host: 'https://flags.example.com', projectKey: 'phc_test' };
@@ -85,6 +85,33 @@ function hydrated(over: Partial<HydratedRelease> = {}): HydratedRelease {
 }
 
 describe('release download recovery', () => {
+  it.each(['digest', 'legacy', 'other host'])('checks %s PUI archive URLs against the published layout', async (layout) => {
+    const baseURI = 'https://releases.example.test/channel/index.html';
+    const version = '0.1.0';
+    const target = 'linux-x86_64';
+    const archiveSha256 = 'a'.repeat(64);
+    const folder = layout === 'legacy' ? '' : `${archiveSha256}/`;
+    const url = new URL(`pui/${version}/${folder}pui-${version}-${target}.tar.gz`, baseURI);
+    if (layout === 'other host') url.hostname = 'unrelated.example.test';
+    const archiveUrl = url.href;
+    const hrefs: string[] = [];
+    const script = renderProductDownloads([]).match(/<script data-product-downloads>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeDefined();
+    runInNewContext(script!, {
+      URL,
+      location: { hash: '' },
+      window: { addEventListener() {} },
+      document: {
+        baseURI,
+        getElementById: () => ({ replaceChildren() {} }),
+        createElement: () => ({ appendChild() {}, set href(value: string) { hrefs.push(value); } }),
+      },
+      fetch: async () => ({ ok: true, json: async () => ({ artifacts: { [target]: { target, version, archiveSha256, archiveUrl } } }) }),
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(hrefs).toEqual(layout === 'other host' ? [] : [archiveUrl, archiveUrl]);
+  });
+
   it('keeps missing download metadata and history while rendering an explicit recovery path', () => {
     const release = hydrated();
     const artifact = release.row.artifacts[0]!;
@@ -112,6 +139,7 @@ describe('release download recovery', () => {
     });
     expect(html).toContain(`href="${release.row.artifacts[0]!.url}"`);
     expect(html).not.toContain('href="pui/index.html"');
+    expect(html).not.toContain("fetch('pui/latest.json')");
   });
 });
 
@@ -755,8 +783,7 @@ describe('the homepage demo video [owner 2026-07-27: "add the same video that is
   const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
 
   it('renders the same cut the homepage plays, with the homepage\'s own attributes', () => {
-    expect(html).toContain(DEMO_VIDEO_SRC);
-    expect(html).toContain('clips.papercusp.com');
+    expect(html).toContain('src="video/papercusp-self-improvement-draft6-5.mp4"');
     expect(html).toContain('controls autoplay muted playsinline preload="metadata"');
     expect(html).toContain('id="demoVid"');
   });
@@ -777,11 +804,9 @@ describe('the homepage demo video [owner 2026-07-27: "add the same video that is
     expect(html).not.toContain('poster="video/');
   });
 
-  it('does NOT inline the 32MB video — it stays on the CDN the homepage uses', () => {
-    // Copying it under the secret path would add 32MB to every publish and give
-    // us a second copy to keep in sync, for no gain.
+  it('loads the separately published video from the release host', () => {
     expect(html).not.toContain('data:video/');
-    expect(html).toMatch(/src="https:\/\/clips\.papercusp\.com\/[^"]+\.mp4"/);
+    expect(html).toMatch(/src="video\/[^"]+\.mp4"/);
   });
 
   it('needs no JavaScript to appear — <video> is markup, like everything else here', () => {
@@ -1246,7 +1271,7 @@ describe('renderHoldingHtml — what it keeps, and what it must not leak', () =>
 
   it('keeps the video, the Discord invite and a contact mailto', () => {
     const html = renderHoldingHtml(opts);
-    expect(html).toContain(DEMO_VIDEO_SRC);
+    expect(html).toContain('src="video/papercusp-self-improvement-draft6-5.mp4"');
     expect(html).toContain(DISCORD_URL);
     expect(html).toContain(`mailto:${PUBLISHED_CONTACT_EMAIL}`);
   });

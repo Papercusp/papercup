@@ -75,7 +75,7 @@ import {
 } from './release-content-scrub';
 import { ROBOT_BG_DATA_URI } from './release-bg';
 import { DISCORD_URL, INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
-import { DEMO_VIDEO_LABEL, DEMO_VIDEO_POSTER_DATA_URI, DEMO_VIDEO_SRC } from './release-video';
+import { DEMO_VIDEO_LABEL, DEMO_VIDEO_POSTER_DATA_URI } from './release-video';
 import { releaseHistoryStem } from './release-project-history';
 import { partialScopeApprovalDirectiveId } from './release-partial-scope';
 
@@ -1077,13 +1077,12 @@ ${previewNote}${body}${internal}
  * either way. Index page only — a plan page is a wall of text, not a landing.
  */
 function renderVideo(): string {
-  // The poster is our own generated base64 (safe attribute alphabet); the src
-  // and label go through escapeHtml on principle — they are lifted from the
-  // site's HTML by a script, and "it is ours" is how injection bugs start.
+  // The approved demo is published separately beside the release downloads.
+  // Keep the player independent of the legacy homepage video's origin.
   return `<section class="demo">
   <video id="demoVid" controls autoplay muted playsinline preload="metadata"
     poster="${DEMO_VIDEO_POSTER_DATA_URI}"
-    src="${escapeHtml(DEMO_VIDEO_SRC)}"
+    src="video/papercusp-self-improvement-draft6-5.mp4"
     aria-label="${escapeHtml(DEMO_VIDEO_LABEL)}"></video>
 </section>`;
 }
@@ -1300,6 +1299,7 @@ export function renderHoldingHtml(opts: PageOptions): string {
 /** The whole history — every release, newest first. */
 /** Product choices reuse the recorded release artifacts; PUI retains its own accepted feed. */
 export function renderProductDownloads(releases: HydratedRelease[], unavailable?: ReadonlyMap<string, string>): string {
+  const puiUnavailable = unavailable?.has('pui/index.html') ?? false;
   const latest = new Map<string, { artifacts: ReleaseArtifact[]; version: string }>();
   for (const release of releases) for (const artifact of release.row.artifacts) {
     const key = `${artifact.product}:${artifact.platform}`;
@@ -1324,10 +1324,12 @@ export function renderProductDownloads(releases: HydratedRelease[], unavailable?
     psu: '<p>Connect to your Papercusp cloud desktop from your console. Launch PSU, select your cloud desktop and connect Claude, Codex, OMP, or the Papercusp TUI to it.</p>'
       + '<p><strong>Already installed Desktop Server?</strong> PSU and PUI are included. Use the separate package below when connecting from another computer or using a cloud desktop without installing the server.</p>'
       + '<div id="psu-downloads" class="psu-platforms">'
-      + '<section><h4>Linux</h4><div id="psu-linux"><p>See the verified Linux x86_64 package on the PSU + PUI download page.</p></div></section>'
+      + '<section><h4>Linux</h4><div id="psu-linux">'
+      + (puiUnavailable ? '' : '<p>See the verified Linux x86_64 package on the PSU + PUI download page.</p>')
+      + '</div></section>'
       + '<section><h4>Windows (WSL2)</h4><p><strong>Uses the same download as Linux.</strong> Install WSL2, open its Linux terminal, then install the Linux x86_64 package there. There is no separate Windows executable.</p><div id="psu-windows"></div></section>'
       + '<section><h4>macOS</h4><div id="psu-mac-arm"><p>Apple Silicon: no verified standalone download is published yet.</p></div><div id="psu-mac-intel"><p>Intel: no verified standalone download is published yet.</p></div></section></div>'
-      + (unavailable?.has('pui/index.html')
+      + (puiUnavailable
         ? '<p>PSU + PUI downloads are temporarily unavailable while the release archive is recovered. <a href="#download-server">Desktop Server downloads</a></p>'
         : '<p><a href="pui/index.html">Download PSU bundled with PUI</a> · <a href="#download-server">Desktop Server downloads</a></p>')
       + '<h4>Connect using the menus</h4><ol><li>Install the package for your computer, then run <code>psu</code>.</li><li>In <strong>Where should psu run?</strong>, select your cloud desktop. First time? Choose <strong>Papercusp cloud — sign in to use a hosted workspace</strong>, sign in in your browser, then select your desktop.</li><li>Choose Claude, Codex, OMP, or PUI (the Papercusp TUI) in the launcher.</li></ol>'
@@ -1343,7 +1345,7 @@ ${choices.map(([id, label]) => `<input type="radio" name="download-product" id="
 (function () {
   function selectFromLink() { var id = location.hash.slice(1); var input = document.getElementById(id.replace('download-', 'choose-')); if (input && input.name === 'download-product') input.checked = true; }
   selectFromLink(); window.addEventListener('hashchange', selectFromLink);
-  fetch('pui/latest.json').then(function (response) { if (!response.ok) throw new Error('unavailable'); return response.json(); }).then(function (manifest) {
+  ${puiUnavailable ? '' : `fetch('pui/latest.json').then(function (response) { if (!response.ok) throw new Error('unavailable'); return response.json(); }).then(function (manifest) {
     var releases = manifest.artifacts || {}; if (!manifest.artifacts && manifest.target) releases[manifest.target] = manifest;
     var platforms = [
       ['linux-x86_64', 'psu-linux', 'Linux x86_64'],
@@ -1354,14 +1356,17 @@ ${choices.map(([id, label]) => `<input type="radio" name="download-product" id="
     platforms.forEach(function (platform) {
       var target = platform[0];
       var release = releases[target]; if (!release || release.target !== target || !/^[0-9]+\\.[0-9]+\\.[0-9]+(?:[+-][0-9A-Za-z.-]+)?$/.test(release.version) || !/^[a-f0-9]{64}$/.test(release.archiveSha256 || '')) return;
-      var expected = new URL('pui/' + release.version + '/pui-' + release.version + '-' + target + '.tar.gz', document.baseURI);
-      if (release.archiveUrl !== expected.href) return;
+      var versionPath = 'pui/' + release.version + '/';
+      var filename = 'pui-' + release.version + '-' + target + '.tar.gz';
+      var legacy = new URL(versionPath + filename, document.baseURI);
+      var current = new URL(versionPath + release.archiveSha256 + '/' + filename, document.baseURI);
+      if (release.archiveUrl !== current.href && release.archiveUrl !== legacy.href) return;
       var list = document.createElement('div');
-      var row = document.createElement('p'); var link = document.createElement('a'); link.href = expected.href; link.textContent = 'Download ' + platform[2] + ' — PSU + PUI ' + release.version; row.appendChild(link); list.appendChild(row);
+      var row = document.createElement('p'); var link = document.createElement('a'); link.href = release.archiveUrl; link.textContent = 'Download ' + platform[2] + ' — PSU + PUI ' + release.version; row.appendChild(link); list.appendChild(row);
       var checksum = document.createElement('p'); checksum.textContent = 'SHA-256: ' + release.archiveSha256; list.appendChild(checksum);
       document.getElementById(platform[1]).replaceChildren(list);
     });
-  }).catch(function () { /* The ordinary download link remains available. */ });
+  }).catch(function () { /* The ordinary download link remains available. */ });`}
 })();
 </script>`;
 }
