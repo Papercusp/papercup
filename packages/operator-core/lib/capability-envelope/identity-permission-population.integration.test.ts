@@ -1,8 +1,10 @@
 // @vitest-environment node
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { readIdentityPermissionPopulation, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
@@ -10,6 +12,15 @@ import { packageResourceKey } from '../blueprint/package-resource-receipts';
 import { sessionPackageDependentId } from '../blueprint/session-package-resources';
 import { upsertLayer, upsertLayerInTx, upsertScopedPolicyAuthority } from '../governance-policy/store';
 import { readPersonalAuthorityPopulation } from '../personal-vault/store';
+
+// Only the built-in distribution path is redirected. Inventory, filesystem IO,
+// content hashing, population reads and PostgreSQL transactions remain real.
+const blueprintPaths = vi.hoisted(() => ({ builtin: null as string | null }));
+vi.mock('@papercusp/orchestrator/blueprint', async importOriginal => {
+  const actual = await importOriginal<typeof import('@papercusp/orchestrator/blueprint')>();
+  return { ...actual, builtinBlueprintPath: (id: string) => blueprintPaths.builtin
+    ? `${blueprintPaths.builtin}/${id}/blueprint.yaml` : actual.builtinBlueprintPath(id) };
+});
 
 let sql: postgres.Sql;
 beforeAll(async () => {
@@ -81,6 +92,97 @@ async function seed() {
     ('ws', 'orphan', '{}'), ('foreign', 'foreign-anchor', '{}')`;
 }
 const txSql = (tx: postgres.TransactionSql) => tx as unknown as postgres.Sql;
+
+describe('P-002 optimistic blueprint source join and unprotected effect refusal', () => {
+  let root: string;
+  let dirs: string[];
+  let localDirs: string[];
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'identity-library-population-'));
+    dirs = [join(root, 'builtin'), join(root, 'blueprints'), join(root, 'local')];
+    blueprintPaths.builtin = dirs[0]!;
+    vi.stubEnv('PAPERCUSP_HOME', root);
+    for (const dir of dirs) {
+      mkdirSync(join(dir, 'shared'), { recursive: true });
+      writeFileSync(join(dir, 'shared', 'blueprint.yaml'), 'id: shared\nslots: []\n');
+      writeFileSync(join(dir, 'shared', 'prompt.md'), 'original');
+    }
+    localDirs = [dirs[2]!, join(root, 'absent')];
+  });
+  afterEach(() => {
+    blueprintPaths.builtin = null;
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const joined = () => ({ includeBlueprintSources: { localDirs } });
+
+  it('retains hidden and malformed library sources, absent roots and the complete session slice', async () => {
+    await seed();
+    writeFileSync(join(dirs[0]!, 'shared', 'blueprint.yaml'), 'invalid: [');
+    const before = await readIdentityPermissionPopulation(sql, 'ws');
+    const result = await readIdentityPermissionPopulation(sql, 'ws', joined());
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') throw new Error('library fixture unavailable');
+    expect(result.sessions).toEqual(before.status === 'ok' ? before.sessions : []);
+    expect(result.blueprintSources).toMatchObject({ consistency: 'optimistic', sources: [
+      { tier: 'builtin', selected: false }, { tier: 'installed', selected: false }, { tier: 'local', selected: true },
+    ] });
+    expect(result.blueprintSources!.roots).toContainEqual(expect.objectContaining({
+      root: localDirs[1], state: 'absent', canonicalRoot: null,
+    }));
+    expect(result.revision).not.toBe(before.revision);
+  });
+
+  it.each([0, 1, 2, 3])('includes hidden content and first root insertion in the aggregate revision (%i)', async tier => {
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined());
+    if (tier < 3) writeFileSync(join(dirs[tier]!, 'shared', 'prompt.md'), 'modified');
+    else mkdirSync(localDirs[1]!);
+    const after = await readIdentityPermissionPopulation(sql, 'ws', joined());
+    expect(after.status).toBe('ok');
+    expect(after.revision).not.toBe(before.revision);
+  });
+
+  it('freezes the requested root cohort before an asynchronous session visitor', async () => {
+    await seed();
+    const options = joined();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', options);
+    let visited = false;
+    const after = await readIdentityPermissionPopulation(sql, 'ws', { ...options, visit: async () => {
+      if (!visited) { visited = true; options.includeBlueprintSources.localDirs.splice(0); }
+    } });
+    expect(visited).toBe(true);
+    expect(after).toEqual(before);
+  });
+
+  it('refuses a library that changes while the session slice is traversed', async () => {
+    await seed();
+    let visited = false;
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { ...joined(), visit: async () => {
+      if (!visited) { visited = true; writeFileSync(join(dirs[0]!, 'shared', 'prompt.md'), 'modified'); }
+    } });
+    expect(result.status).toBe('stale');
+  });
+
+  it.each(['pin', 'revision'])('refuses an unprotected %s effect read before visitor or effect', async mode => {
+    await seed();
+    const before = await readIdentityPermissionPopulation(sql, 'ws', joined());
+    let visits = 0;
+    await expect(sql.begin(async tx => {
+      await readIdentityPermissionPopulation(txSql(tx), 'ws', { ...joined(),
+        ...(mode === 'pin' ? { pinForEffect: true } : { expectedRevision: before.revision }),
+        visit: () => { visits++; },
+      });
+      await tx`INSERT INTO harness_shared.population_effects VALUES ('unprotected')`;
+    })).rejects.toThrow('blueprint source effect protection is unavailable');
+    expect(visits).toBe(0);
+    expect(await sql`SELECT * FROM harness_shared.population_effects`).toEqual([]);
+  });
+
+  it('refuses an unreadable library instead of silently dropping it from the join', async () => {
+    symlinkSync(join(dirs[0]!, 'shared'), join(dirs[1]!, 'alias'));
+    await expect(readIdentityPermissionPopulation(sql, 'ws', joined())).rejects.toThrow('blueprint source population is unavailable');
+  });
+});
 
 describe('P-002 vault stored-source join', () => {
   const joined = { includeVaultSources: true };

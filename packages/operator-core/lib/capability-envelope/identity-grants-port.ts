@@ -5,7 +5,7 @@
  */
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { Sql, TransactionSql } from 'postgres';
 import {
   loadBlueprintFromFile,
@@ -36,7 +36,7 @@ import type { CapabilityEnvelopeOverrides } from '../capability-envelope-overrid
 import type { HarnessRegistry } from '../harness-registry';
 import { readOperatorState } from '../operator-state-pg';
 import { systemDistinctId } from '../flag-distinct-id';
-import { operatorResolveExtends } from '../blueprint/installed-blueprints';
+import { operatorResolveExtends, readBlueprintSourcePopulation } from '../blueprint/installed-blueprints';
 import { potSlugsForHarnesses } from '../memory/hive-scope';
 import { identityGrantToolFailure, resolveIdentityGrantEnvelope, type IdentityGrantFailure } from './blueprint-envelopes';
 import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
@@ -543,8 +543,12 @@ export interface IdentityPermissionSessionSource {
  * grants, privacy rules and the FULL disclosure ledger, including released
  * windows. That stored source does not establish retained context (unrestricted
  * reads are not logged), synthesize vault policy, or prove external backend
- * state. Library still needs its guarded source join. These source joins do not
- * authorize a permission change.
+ * state. includeBlueprintSources joins the registered filesystem tiers and
+ * explicit host-supplied local roots, retaining hidden tiers and absent roots.
+ * This source is optimistic, outside PostgreSQL's MVCC snapshot: a second scan
+ * detects changes during traversal, but cannot exclude arbitrary writers.
+ * It therefore refuses every pinned/effect read, even with an equal revision
+ * or a held cooperative mutex. These source joins do not authorize a change.
  *
  * A pinned read serializes effect leases and holds both tables against updates
  * AND new wearers until the caller commits. Acquire this before package preparation, whose independent
@@ -566,8 +570,16 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
   options: { expectedRevision?: string; pinForEffect?: boolean; includePackageResources?: boolean;
     includeWorkspaceUsers?: boolean; includeHostAuthorities?: boolean; includeScopedPolicies?: boolean;
     includeInheritedPolicies?: boolean; includeVaultSources?: boolean;
+    includeBlueprintSources?: { localDirs: readonly string[] };
     visit?: (session: IdentityPermissionSessionSource) => void | Promise<void> } = {}) {
   options = { ...options };
+  if (options.includeBlueprintSources !== undefined) {
+    const roots = options.includeBlueprintSources?.localDirs;
+    if (!Array.isArray(roots) || roots.some(root => typeof root !== 'string' ||
+        !isAbsolute(root) || root.includes('\0')))
+      throw new Error('blueprint source join requires explicit absolute local roots');
+    options.includeBlueprintSources = { localDirs: [...roots] };
+  }
   if (!workspaceId || workspaceId !== workspaceId.trim() ||
       (options.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(options.expectedRevision)))
     throw new Error('identity population requires an exact workspace and revision');
@@ -575,6 +587,14 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
   const transaction = typeof (sql as unknown as Partial<TransactionSql>).savepoint === 'function';
   if (pinned && !transaction) throw new Error('pinned identity population requires an existing transaction');
   const read = async (tx: Sql) => {
+    let blueprintSources: Extract<ReturnType<typeof readBlueprintSourcePopulation>, { status: 'ok' }> | undefined;
+    if (options.includeBlueprintSources) {
+      const population = readBlueprintSourcePopulation({ localDirs: [...options.includeBlueprintSources.localDirs],
+        pinForEffect: pinned });
+      if (population.status !== 'ok') throw new Error(`blueprint source population is unavailable: ${
+        population.status === 'unavailable' ? population.reason : population.status}`);
+      blueprintSources = population;
+    }
     const [isolation] = await tx<Array<{ isolation: string }>>`SELECT current_setting('transaction_isolation') AS isolation`;
     if (pinned) {
       if (isolation?.isolation !== 'read committed')
@@ -738,6 +758,14 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       vaultSources = population;
       hash.update('\n').update(canonicalJson({ vaultSourceRevision: vaultSources.revision }));
     }
+    if (blueprintSources) {
+      const current = readBlueprintSourcePopulation({ localDirs: [...options.includeBlueprintSources!.localDirs],
+        expectedRevision: blueprintSources.revision });
+      if (current.status === 'unavailable')
+        throw new Error(`blueprint source population is unavailable: ${current.reason}`);
+      hash.update('\n').update(canonicalJson({ blueprintSourceRevision: current.revision }));
+      if (current.status === 'stale') return { status: 'stale' as const, revision: hash.digest('hex') };
+    }
     const revision = hash.digest('hex');
     return options.expectedRevision !== undefined && revision !== options.expectedRevision
       ? { status: 'stale' as const, revision }
@@ -745,7 +773,8 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
         ...(workspaceUsers ? { workspaceUsers } : {}), ...(hostAuthorities ? { hostAuthorities } : {}),
         ...(scopedPolicies ? { scopedPolicies } : {}),
         ...(inheritedPolicies ? { inheritedPolicies, inheritedPolicyOwners } : {}),
-        ...(vaultSources ? { vaultSources } : {}) };
+        ...(vaultSources ? { vaultSources } : {}),
+        ...(blueprintSources ? { blueprintSources: { ...blueprintSources, consistency: 'optimistic' as const } } : {}) };
   };
   return transaction ? read(sql) : sql.begin('isolation level repeatable read read only',
     tx => read(tx as unknown as Sql));

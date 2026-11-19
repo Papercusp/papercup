@@ -115,11 +115,17 @@ export function availableBlueprintSources(opts: { localDirs?: string[] } = {}): 
  * human-owner census or permission grant. The host must supply every affected
  * checkout's local roots and guard these roots against writes before using the
  * revision for admission. A matching expectedRevision does not acquire a lease.
+ * pinForEffect explicitly refuses: the cooperative runtime mutex does not
+ * exclude native edits, root replacement or unconfined filesystem writers.
  * Missing roots are represented explicitly, never proof of absent authority.
  */
-export function readBlueprintSourcePopulation(opts: { localDirs?: string[]; expectedRevision?: string } = {}) {
+export function readBlueprintSourcePopulation(opts: {
+  localDirs?: string[]; expectedRevision?: string; pinForEffect?: boolean;
+} = {}) {
   if (opts.expectedRevision !== undefined && !/^[a-f0-9]{64}$/.test(opts.expectedRevision))
     throw new Error('blueprint population requires an exact content revision');
+  if (opts.pinForEffect === true) return { status: 'unavailable' as const,
+    reason: 'blueprint source effect protection is unavailable' };
   const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const scan = (path: string): { revision: string; declaration?: boolean;
     children?: Map<string, { revision: string; file: boolean; declaration?: boolean }> } => {

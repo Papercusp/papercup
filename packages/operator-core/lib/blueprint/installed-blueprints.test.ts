@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { withBlueprintSourceMutation } from './source-lock';
 
 const rootMock = vi.hoisted(() => ({ fn: vi.fn(() => '/home/u/.papercusp') }));
 vi.mock('../papercusp-root', () => ({ papercuspRoot: rootMock.fn }));
@@ -107,6 +108,22 @@ describe('complete blueprint library source inventory (P-002)', () => {
     ]);
     expect(availableBlueprintSources(options)).toEqual([{ id: 'shared', tier: 'local', file: join(dirs[2], 'shared', 'blueprint.yaml') }]);
     expect(readBlueprintSourcePopulation({ ...options, expectedRevision: result.revision })).toEqual(result);
+  });
+
+  it.each([false, true])('refuses an unprotected effect read even with a matching revision (mutex held: %s)', async held => {
+    const { root, dirs, options, read } = fixture();
+    const before = read();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(root, 'locks'));
+    vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+    try {
+      const probe = async () => expect(readBlueprintSourcePopulation({ ...options,
+        expectedRevision: before.revision, pinForEffect: true })).toMatchObject({
+        status: 'unavailable', reason: 'blueprint source effect protection is unavailable',
+      });
+      if (held) await withBlueprintSourceMutation(dirs, probe);
+      else await probe();
+      expect(readBlueprintSourcePopulation({ ...options, pinForEffect: false })).toEqual(before);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.each([0, 1, 2])('detects same-size content edits in tier %i even with the original mtime', tier => {
