@@ -15,6 +15,7 @@ import { listFleetRunsFull, getCoordTrace } from './fleet';
 import type { DbScope } from './db';
 import { buildCampaignBundle, campaignEntryFromRollout, writeCampaignBundle, type LabelCorrectionInput } from './campaign-bundle';
 import { classifyPreregisteredFreshness } from './freshness';
+import { buildHarnessLeaderboardDiagnostic } from '@papercusp/bench-metrics';
 
 /**
  * P-022 / D-009: write a run as a DATED campaign bundle (every task's trace pointer + scorer output, with a
@@ -57,11 +58,23 @@ export async function exportRunBundle(
   runId: string,
   // compareTo: the study this run's evidence would be pooled with. The manifest then records whether the
   // run's frozen protocol still matches it (P-006 evidence freshness); drift makes it stale, not current.
-  opts: { repoRoot?: string; compareTo?: { runId: string } } & DbScope = {},
+  opts: { repoRoot?: string; compareTo?: { runId: string }; hlbCompanionRunId?: string } & DbScope = {},
 ): Promise<ExportResult> {
   const repoRoot = opts.repoRoot ?? REPO_ROOT;
   const scope: DbScope = { sql: opts.sql, workspaceId: opts.workspaceId };
   const results = await listRunResults({ runId, ...scope });
+
+  // Validate the exact current cohorts before writing any export files. Reuse
+  // the existing store/report path; historical public rows cannot enter this macro.
+  const prereg = await getPrereg({ runId }, scope);
+  const reports = buildRunReports(results, prereg);
+  const companionReports = opts.hlbCompanionRunId ? buildRunReports(
+    await listRunResults({ runId: opts.hlbCompanionRunId, ...scope }),
+    await getPrereg({ runId: opts.hlbCompanionRunId }, scope)) : null;
+  if (companionReports && (reports.length !== 1 || companionReports.length !== 1)) {
+    throw new Error('HLB diagnostic requires exactly two current frozen suite reports');
+  }
+  const upstreamDiagnostic = companionReports ? buildHarnessLeaderboardDiagnostic([...reports, ...companionReports]) : undefined;
 
   const rolloutFiles: string[] = [];
   const arms = new Set<string>();
@@ -102,7 +115,6 @@ export async function exportRunBundle(
     fleetArms.add(fr.arm);
   }
 
-  const prereg = await getPrereg({ runId }, scope);
   const comparison = opts.compareTo ? await getPrereg({ runId: opts.compareTo.runId }, scope) : null;
   const freshness = opts.compareTo
     ? { comparedToRunId: opts.compareTo.runId, comparedToPreregHash: comparison?.preregHash ?? null,
@@ -116,7 +128,8 @@ export async function exportRunBundle(
     preregFile: prereg?.filePath ?? null,
     preregistration: prereg,
     freshness,
-    reports: buildRunReports(results, prereg),
+    reports,
+    upstreamDiagnostic,
     suites: [...suites].sort(),
     arms: [...arms].sort(),
     seeds: [...seeds].sort((a, b) => a - b),

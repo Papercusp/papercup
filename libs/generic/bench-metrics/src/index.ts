@@ -91,7 +91,7 @@ export { accountTokens, verifyIsoBudget, budgetExceeded, isScored, type IsoBudge
 
 // Report builder — the importable aggregation surface for the Evaluation UI (P-020).
 export {
-  aggregateArm, buildSuiteReport, classifyAttemptOutcome, summarizeAssignedOutcomes,
+  aggregateArm, buildSuiteReport, buildHarnessLeaderboardDiagnostic, classifyAttemptOutcome, summarizeAssignedOutcomes,
   type AggregateOpts, type AssignedOutcomeRow, type AttemptOutcome, type AttemptOutcomeCounts,
 } from './aggregate';
 

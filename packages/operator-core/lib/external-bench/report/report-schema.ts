@@ -26,7 +26,7 @@
  */
 
 import type { ArmContamination } from '../contamination';
-import type { AttemptOutcomeCounts, AttemptVariability, ThreeAttemptReliability } from '@papercusp/bench-metrics';
+import type { AttemptOutcomeCounts, AttemptVariability, ScoredTaskMeanAtThree, ThreeAttemptReliability } from '@papercusp/bench-metrics';
 
 /** A monotonic schema version so an old viewer can refuse / a new viewer can branch. */
 export const BENCH_REPORT_SCHEMA_VERSION = 1;
@@ -56,6 +56,16 @@ export interface BenchReportRollout {
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
+  /** Unknown cache categories remain null; total already includes them. */
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
+  priceTableVersion?: string | null;
+  /** Normalized or estimated cost is never evidence of an actual bill. */
+  billedCostUsd?: number | null;
+  preregHash?: string | null;
+  traceRefs?: string[];
+  rawGraderOutputRef?: string | null;
+  graderDetail?: unknown;
   wallMs: number;
   turns?: number;
   // ── replay fingerprint ──
@@ -153,6 +163,7 @@ export interface BenchReportArmSummary {
   /** Complete scored triplets, with one shared population for both reliability views. */
   threeAttemptReliability?: ThreeAttemptReliability | null;
   repeatVariability?: AttemptVariability;
+  upstreamMeanAtThree?: ScoredTaskMeanAtThree | null;
   /** Observed rosters cannot establish that assignments were never attempted. */
   assignmentSource?: 'frozen' | 'observed';
   /** Attempts without a usable official measurement, including generation failure. */

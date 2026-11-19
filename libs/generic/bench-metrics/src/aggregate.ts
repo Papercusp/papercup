@@ -25,6 +25,7 @@ import type {
   PassAtKPoint,
   ThreeAttemptReliability,
   AttemptVariability,
+  ScoredTaskMeanAtThree,
 } from './schema';
 import { meanPassAtK } from './pass-k';
 import { wilsonInterval, pairedBootstrapCI } from './intervals';
@@ -180,6 +181,7 @@ export function summarizeAssignedOutcomes(rows: readonly AssignedOutcomeRow[],
   };
   const assignedAttempts = counts.reduce((sum, task) => sum + task.n, 0);
   let threeAttemptReliability: ThreeAttemptReliability | null = null;
+  let upstreamMeanAtThree: ScoredTaskMeanAtThree | null = null;
   if (opts.assignedTaskIds && assignedSeeds?.size === 3) {
     const completeTaskIds = assignedIds.filter(id => conditional.get(id)?.n === 3);
     const incompleteTaskIds = assignedIds.filter(id => conditional.get(id)?.n !== 3);
@@ -198,13 +200,21 @@ export function summarizeAssignedOutcomes(rows: readonly AssignedOutcomeRow[],
       solveAnyOfThreeRate: complete.length ? solveAnyOfThree / complete.length : null,
       meanAtThree: mean(complete.map(task => task.scoreSum / 3)),
     };
+    upstreamMeanAtThree = {
+      rate: mean(conditionalTasks.map(task => task.c / task.n)),
+      assignedTasks: assignedIds.length,
+      scoredTaskIds: conditionalTasks.map(task => task.taskId),
+      unscoredTaskIds: assignedIds.filter(id => !conditional.has(id)),
+      scoredAttempts: conditionalTasks.reduce((sum, task) => sum + task.n, 0),
+      completeTriplets: complete.length,
+    };
   }
   return { counts, conditionalCounts, conditionalTasks, repeatVariability, assignedTasks: counts.length, assignedAttempts,
     attempts: rows.length, absentAttempts: assignedAttempts - rows.length,
     absentTasks: counts.filter(task => !task.observed).length,
     gradedAttempts: conditionalCounts.reduce((sum, task) => sum + task.n, 0),
     resolved: counts.reduce((sum, task) => sum + task.c, 0), missingMeasurements, outcomes,
-    measurementComplete: missingMeasurements === 0, threeAttemptReliability,
+    measurementComplete: missingMeasurements === 0, threeAttemptReliability, upstreamMeanAtThree,
     primaryResolvedPct: missingMeasurements ? null : mean(counts.map(task => task.c / task.n)),
     primaryMeanScore: missingMeasurements ? null : mean(counts.map(task => task.scoreSum / task.n)),
     conditionalResolvedPct: mean(conditionalCounts.map(task => task.c / task.n)),
@@ -267,6 +277,7 @@ export function aggregateArm(
     passHatK,
     threeAttemptReliability: outcomes.threeAttemptReliability,
     repeatVariability: outcomes.repeatVariability,
+    upstreamMeanAtThree: outcomes.upstreamMeanAtThree,
     cost,
   };
 }
@@ -332,7 +343,10 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
     );
     // The shared primary uses an observed fallback for legacy rows, but that
     // fallback is not evidence of a frozen reliability population.
-    if (!opts.assignedTaskIds) report.threeAttemptReliability = null;
+    if (!opts.assignedTaskIds) {
+      report.threeAttemptReliability = null;
+      report.upstreamMeanAtThree = null;
+    }
     return report;
   });
 
@@ -416,5 +430,45 @@ export function buildSuiteReport(rows: readonly TaskRunResult[], opts: Aggregate
     isoBudget: { ok: iso.ok, budgetTokens: iso.budgetTokens, violations: iso.violations },
     protocolKs: ks,
     sampling,
+  };
+}
+
+/** Pinned HLB scoring.py cell/macro semantics over the two separately retained
+ * current suite reports. This diagnostic never replaces their product primary. */
+export function buildHarnessLeaderboardDiagnostic(reports: readonly SuiteReport[]) {
+  const suites = ['terminal-bench-2.1', 'deep-swe'];
+  const suiteOf = (report: SuiteReport) => report.harnessLeaderboard?.suite ?? report.suite;
+  if (!reports.length || reports.length > 2 || new Set(reports.map(suiteOf)).size !== reports.length ||
+      reports.some(r => !suites.includes(suiteOf(r)) || !r.harnessLeaderboard ||
+        r.assignment?.basis !== 'frozen' || !r.assignment.protocolCommitted || r.assignment.seeds?.length !== 3)) {
+    throw new Error('HLB diagnostic requires distinct current frozen three-attempt suite reports');
+  }
+  const first = reports[0];
+  const source = first.harnessLeaderboard!;
+  if (reports.some(r => r.harnessLeaderboard!.sourceRevision !== source.sourceRevision ||
+      r.harnessLeaderboard!.cohortFingerprint !== source.cohortFingerprint ||
+      JSON.stringify([...r.assignment!.arms].sort()) !== JSON.stringify([...first.assignment!.arms].sort()))) {
+    throw new Error('HLB diagnostic: incompatible current cohorts');
+  }
+  return {
+    label: 'upstream-compatible-two-suite-macro' as const,
+    claim: 'descriptive-only' as const,
+    sourceRevision: source.sourceRevision,
+    cohortFingerprint: source.cohortFingerprint,
+    arms: first.assignment!.arms.map(arm => {
+      const cells = suites.map(suite => {
+        const report = reports.find(r => suiteOf(r) === suite);
+        const diagnostic = report?.arms.find(r => r.arm === arm)?.upstreamMeanAtThree ?? null;
+        return { suite, protocolHash: report?.harnessLeaderboard?.protocolHash ?? null,
+          excludedTaskIds: report?.harnessLeaderboard?.excludedTaskIds ?? null, diagnostic };
+      });
+      const measured = cells.filter(cell => cell.diagnostic?.rate != null);
+      return { arm,
+        // Upstream macro omits empty cells; make that omission impossible to hide.
+        value: measured.length ? measured.reduce((sum, cell) => sum + cell.diagnostic!.rate!, 0) / measured.length : null,
+        complete: cells.every(cell => cell.diagnostic !== null && cell.diagnostic.completeTriplets === cell.diagnostic.assignedTasks) &&
+          reports.every(r => r.harnessLeaderboard!.comparison === 'full-board-descriptive'),
+        includedSuites: measured.map(cell => cell.suite), cells };
+    }),
   };
 }

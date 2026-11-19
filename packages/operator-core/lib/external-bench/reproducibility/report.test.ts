@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TaskRunResult } from '@papercusp/bench-metrics';
 import type { PreregRecord } from './schema';
 import { buildRunReports } from './store';
-import { currentProtocolFixture } from './_protocol-test-fixture';
+import { currentProtocolFixture, hlbProtocolFixture } from './_protocol-test-fixture';
 
 const prereg = (config: Record<string, unknown> = {}): PreregRecord => ({
   runId: 'assigned-run', preregHash: 'frozen-hash', suites: ['swe-bench-pro'],
@@ -18,6 +18,31 @@ const result = (over: Partial<TaskRunResult> = {}): TaskRunResult => ({
 });
 
 describe('preregistered product reports', () => {
+  it('uses task bootstrap for TB and canonical frozen repository clusters for DeepSWE', () => {
+    const tb = hlbProtocolFixture('assigned-run');
+    const frozen = (p: typeof tb) => ({ ...prereg({ ...p }), suites: [p.sourceProfile.suite] });
+    const terminal = buildRunReports([], frozen(tb))[0];
+    expect(terminal.sampling).toMatchObject({ unit: 'task', independentUnits: 3, repositoryByTask: null });
+    expect(terminal.harnessLeaderboard).toMatchObject({ sourceRevision: tb.sourceProfile.sourceRevision,
+      protocolHash: 'frozen-hash', excludedTaskIds: tb.exclusions });
+    const deep = hlbProtocolFixture('assigned-run', 'deep-swe');
+    expect(buildRunReports([], frozen(deep))[0].sampling.unit).toBe('unregistered');
+    deep.sampling = { unit: 'repository', ci: 0.95, bootstrapSeed: 17, bootstrapIterations: 2000,
+      taskRepositories: { [deep.taskIds[0]]: 'https://github.com/Org/Repo.git',
+        [deep.taskIds[1]]: 'git@github.com:org/repo.git', [deep.taskIds[2]]: 'github.com/other/repo' } };
+    const report = buildRunReports([], frozen(deep))[0];
+    expect(report.sampling).toMatchObject({ unit: 'repository', independentUnits: 2,
+      repositoryByTask: { [deep.taskIds[0]]: 'github.com/org/repo', [deep.taskIds[1]]: 'github.com/org/repo',
+        [deep.taskIds[2]]: 'github.com/other/repo' } });
+    expect(report.harnessLeaderboard!.cohortFingerprint).toBe(terminal.harnessLeaderboard!.cohortFingerprint);
+    deep.arms[0].runtime.promptHash = 'e'.repeat(64);
+    expect(buildRunReports([], frozen(deep))[0].harnessLeaderboard!.cohortFingerprint)
+      .not.toBe(terminal.harnessLeaderboard!.cohortFingerprint);
+    delete deep.sampling.taskRepositories[deep.taskIds[0]];
+    expect(() => buildRunReports([], frozen(deep))).toThrow();
+    expect(() => buildRunReports([], { ...frozen(tb), suites: ['frontier-swe'] })).toThrow('source profile');
+  });
+
   it('reports the maintained structured-arm protocol with absent assignments preserved', () => {
     const protocol = currentProtocolFixture('assigned-run');
     protocol.taskIds = ['a', 'b'];

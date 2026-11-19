@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aggregateArm, buildSuiteReport, classifyAttemptOutcome, summarizeAssignedOutcomes } from './aggregate';
+import { aggregateArm, buildSuiteReport, buildHarnessLeaderboardDiagnostic, classifyAttemptOutcome, summarizeAssignedOutcomes } from './aggregate';
 import type { TaskRunResult, ArmId, GraderStatus } from './schema';
 
 let seq = 0;
@@ -47,6 +47,38 @@ function attempt(taskId: string, arm: ArmId, resolved: boolean, tokensIn: number
 }
 
 describe('shared assigned outcome projection', () => {
+  it('matches pinned upstream cell and equal-suite macro with unequal populations and partial triplets', () => {
+    // scoring.py f07159ad cell: mean(k/n per scored task), macro: mean(nonempty cell rates).
+    // TB: mean(2/3, 1)=5/6 despite 3 vs 1 scored attempts; DeepSWE: 1/3.
+    const cell = (suite: string, tasks: string[], values: Record<string, boolean[]>) => {
+      const rows = Object.entries(values).flatMap(([taskId, resolved]) => resolved.map((value, seed) =>
+        mk({ suite, taskId, seed, resolved: value, graderStatus: value ? 'passed' : 'failed' })));
+      const report = buildSuiteReport(rows, { suite, assignedTaskIds: tasks, assignedSeeds: [0, 1, 2], assignedArms: ['papercusp'] });
+      report.assignment!.protocolCommitted = true;
+      report.harnessLeaderboard = { sourceRevision: 'f07159ad073de40bb8d13da9d09ed831e265266f',
+        cohortFingerprint: 'matched', protocolHash: suite, comparison: 'full-board-descriptive', excludedTaskIds: ['excluded'] };
+      return report;
+    };
+    const tb = cell('terminal-bench-2.1', ['yes', 'no', 'absent'], { yes: [true, true, false], no: [true] });
+    const ds = cell('deep-swe', ['one'], { one: [true, false, false] });
+    expect(tb.arms[0].upstreamMeanAtThree).toEqual({ rate: (2 / 3 + 1) / 2, assignedTasks: 3,
+      scoredTaskIds: ['yes', 'no'], unscoredTaskIds: ['absent'], scoredAttempts: 4, completeTriplets: 1 });
+    expect(tb.arms[0].threeAttemptReliability!.meanAtThree).toBeCloseTo(2 / 3);
+    expect(tb.arms[0].passAt1).toBeCloseTo(1 / 3);
+    const diagnostic = buildHarnessLeaderboardDiagnostic([ds, tb]);
+    expect(diagnostic.arms[0].value).toBeCloseTo(7 / 12);
+    expect(diagnostic).toMatchObject({ claim: 'descriptive-only', arms: [{ complete: false,
+      includedSuites: ['terminal-bench-2.1', 'deep-swe'] }] });
+    expect(diagnostic.arms[0].cells.every(cell => cell.excludedTaskIds?.[0] === 'excluded')).toBe(true);
+    expect(buildHarnessLeaderboardDiagnostic([tb]).arms[0]).toMatchObject({ value: (2 / 3 + 1) / 2, complete: false });
+    ds.harnessLeaderboard!.cohortFingerprint = 'public-historical';
+    expect(() => buildHarnessLeaderboardDiagnostic([ds, tb])).toThrow('cohorts');
+    expect(() => buildHarnessLeaderboardDiagnostic([{ ...tb, suite: 'frontier-swe' }])).toThrow('current frozen');
+    expect(() => buildHarnessLeaderboardDiagnostic([tb, tb])).toThrow('distinct');
+    tb.assignment!.protocolCommitted = false;
+    expect(() => buildHarnessLeaderboardDiagnostic([tb])).toThrow('current frozen');
+  });
+
   it('uses one complete scored-triplet population for both reliability views', () => {
     const assignedTaskIds = ['all', 'some', 'none', 'partial', 'invalid', 'generation'];
     const rows = assignedTaskIds.flatMap(taskId => [2, 4, 6].flatMap(seed => {

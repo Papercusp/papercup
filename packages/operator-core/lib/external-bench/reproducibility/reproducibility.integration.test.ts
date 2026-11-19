@@ -22,6 +22,7 @@ import { emitRollout, emitFromAttempt, rolloutIdFor } from './emit';
 import { listRunResults, listSuites, getRollout, getPrereg, getRunReports } from './store';
 import { emitFleetRun, fleetRunIdFor, listFleetRuns, getCoordTrace } from './fleet';
 import { exportRunBundle } from './export';
+import { buildBundleFromPg } from '../report/report-builder-pg';
 import type { EmitRolloutInput } from './schema';
 import type { ArmAttempt, BenchTask, GradeResult } from '../types';
 import { currentProtocolFixture, controlledProtocolFixture, hlbProtocolFixture } from './_protocol-test-fixture';
@@ -243,6 +244,68 @@ describe('emitRollout', () => {
 });
 
 describe('current frozen rollout emission', () => {
+  it('round-trips HLB diagnostic and accounting through actual PG, portable JSON and the existing export', async () => {
+    const scope = { sql, workspaceId: WS };
+    const protocols = [hlbProtocolFixture('hlb-accounting-tb'), hlbProtocolFixture('hlb-accounting-ds', 'deep-swe')];
+    for (const protocol of protocols) {
+      protocol.priceSchedule.rates[0].cacheWriteUsdPerMillion = 1.25;
+      if (protocol.sourceProfile.suite === 'deep-swe') protocol.sampling = {
+        unit: 'repository', ci: 0.95, bootstrapSeed: 17, bootstrapIterations: 2000,
+        taskRepositories: Object.fromEntries(protocol.taskIds.map((id, i) =>
+          [id, i === 0 ? 'https://github.com/Org/Repo.git' : i === 1 ? 'git@github.com:org/repo.git' : 'github.com/other/repo'])),
+      };
+      const { preregHash } = await preregister({ runId: protocol.runId, config: protocol,
+        suites: [protocol.sourceProfile.suite], repoRoot, ...scope });
+      // Synthetic committed-protocol witness in disposable PG only; no git command.
+      await sql`UPDATE harness_shared.benchmark_prereg SET git_committed = true,
+        git_commit_sha = ${'a'.repeat(40)} WHERE run_id = ${protocol.runId} AND workspace_id = ${WS}`;
+      for (const seed of protocol.seeds) {
+        const base = input({ preregHash });
+        const resolved = protocol.sourceProfile.suite === 'terminal-bench-2.1';
+        const armMeta = { costUsdMeasurementMissing: true, retries: [{ ordinal: 0, wallClockMs: 70,
+          tokensIn: 5, tokensOut: 2, traceRef: 'trace:retry', status: 'infra-error' }],
+          nativeCostAccounting: { billedCostUsd: null, sourceEstimateUsd: 99 } };
+        const emitted: EmitRolloutInput = { ...base, runId: protocol.runId, suite: protocol.sourceProfile.suite,
+          taskId: protocol.taskIds[0], seed,
+          generation: { ...base.generation, modelId: protocol.arms[0].model, tokensIn: 10, tokensOut: 4,
+            tokensCacheRead: 3, tokensCacheWrite: 2, tokensTotal: 19, wallClockMs: 140,
+            armMeta, trajectoryRef: 'trace:final' },
+          grading: { ...base.grading, family: protocol.grader.family, version: protocol.grader.version,
+            resolved, status: resolved ? 'passed' : 'failed' } };
+        await emitRollout(emitted, scope);
+        await emitRollout(emitted, scope); // Retry persistence never mints an independent generation slot.
+      }
+      const rows = await listRunResults({ runId: protocol.runId, ...scope });
+      expect(rows).toHaveLength(3);
+      expect(rows[0]).toMatchObject({ tokensIn: 10, tokensOut: 4, tokensTotal: 19,
+        tokensCacheRead: 3, tokensCacheWrite: 2, wallClockMs: 140, preregHash });
+      const bundle = await buildBundleFromPg(protocol.runId, { readers: {
+        listRunResults: ({ runId }) => listRunResults({ runId, ...scope }),
+        getPrereg: runId => getPrereg({ runId }, scope), getRollout: id => getRollout(id, scope),
+      } });
+      const portable = JSON.parse(JSON.stringify(bundle));
+      expect(portable.rollouts[0]).toMatchObject({ tokensTotal: 19, tokensCacheRead: 3, tokensCacheWrite: 2,
+        wallMs: 140, preregHash, billedCostUsd: null, costUsd: null, trajectoryRef: 'trace:final',
+        armMeta: { retries: [{ traceRef: 'trace:retry', wallClockMs: 70 }] } });
+      expect(portable.rollouts[0].rawGraderOutputRef).toMatch(/^rollout:.*#grader$/);
+      expect(portable.rollouts[0].costKnownSubtotalUsd).toBeCloseTo(0.000022);
+      expect(portable.arms[0]).toMatchObject({ assignedTasks: 3, assignedAttempts: 9, attempts: 3,
+        absentAttempts: 6, costUsd: null, upstreamMeanAtThree: { completeTriplets: 1 } });
+    }
+    const exported = await exportRunBundle(protocols[0].runId, { repoRoot, ...scope,
+      hlbCompanionRunId: protocols[1].runId });
+    const manifest = JSON.parse(readFileSync(join(repoRoot, exported.manifestPath), 'utf8'));
+    expect(manifest.upstreamDiagnostic).toMatchObject({ claim: 'descriptive-only', arms: [
+      { arm: 'papercusp', value: 0.5, complete: false }, { arm: 'baseline', value: null, complete: false },
+    ] });
+    expect(manifest.reports[0].sampling.unit).toBe('task');
+    expect(manifest.reports[0].arms[0].passAt1).toBeCloseTo(1 / 3);
+    const deep = await getRunReports(protocols[1].runId, scope);
+    expect(deep[0].sampling).toMatchObject({ unit: 'repository', independentUnits: 2 });
+    await expect(exportRunBundle(protocols[0].runId, { repoRoot, ...scope, hlbCompanionRunId: RUN }))
+      .rejects.toThrow('current frozen');
+  });
+
   async function frozenInput(name: string, model = 'configured-alias') {
     const protocol = currentProtocolFixture(`current-emit-${name}`);
     protocol.arms.forEach(arm => { arm.model = model; });

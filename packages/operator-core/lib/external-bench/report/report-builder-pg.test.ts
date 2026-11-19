@@ -100,6 +100,28 @@ describe('buildBundleFromPg', () => {
     expect(defaults.getBenchRunDetail).toHaveBeenCalledWith('r1', { workspaceId: 'bench-private' });
   });
 
+  it('round-trips cache, retry, trace and protocol provenance without inventing billed dollars', async () => {
+    const rows = await fakeReaders().listRunResults({ runId: 'r1' });
+    const retry = { attempt: 0, tokensIn: 5, tokensOut: 2, wallClockMs: 70,
+      status: 'infra-error', traceRef: 'trace:retry-0' };
+    const row = { ...rows[0], preregHash: 'exact-protocol', tokensIn: 10, tokensOut: 4,
+      tokensCacheRead: 3, tokensCacheWrite: 2, tokensTotal: 19, wallClockMs: 140,
+      priceTableVersion: 'frozen-prices', traceRefs: ['trace:final', 'trace:retry-0'],
+      rawGraderOutputRef: 'rollout:roll-1#grader', graderDetail: { reward: 1, verifier: 'sha256:pinned' },
+      armMeta: { retries: [retry], costUsdMeasurementMissing: true,
+        nativeCostAccounting: { billedCostUsd: null, sourceEstimateUsd: 99, basis: 'frozen-normalized-native-source' } } };
+    const bundle = JSON.parse(JSON.stringify(await buildBundleFromPg('r1', { readers: fakeReaders({
+      listRunResults: async () => [row], getRollout: async () => null,
+    }) })));
+    expect(bundle.rollouts[0]).toMatchObject({ tokensIn: 10, tokensOut: 4, tokensTotal: 19,
+      tokensCacheRead: 3, tokensCacheWrite: 2, wallMs: 140, priceTableVersion: 'frozen-prices',
+      preregHash: 'exact-protocol', traceRefs: ['trace:final', 'trace:retry-0'],
+      rawGraderOutputRef: row.rawGraderOutputRef, graderDetail: row.graderDetail,
+      billedCostUsd: null, costUsd: null, costKnownSubtotalUsd: 2, armMeta: row.armMeta });
+    expect(bundle.rollouts).toHaveLength(1); // Retries stay charged provenance, never independent seeds.
+    expect(bundle.arms[0]).toMatchObject({ attempts: 1, costUsd: null, costKnownSubtotalUsd: 2 });
+  });
+
   it('assembles a bundle from the live store: rollups, replay fingerprint, coord + spawn', async () => {
     const b = (await buildBundleFromPg('r1', { readers: fakeReaders() }))!;
     expect(b).not.toBeNull();

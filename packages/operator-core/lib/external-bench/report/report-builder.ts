@@ -63,6 +63,13 @@ interface RunResultLike {
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
+  tokensCacheRead?: number | null;
+  tokensCacheWrite?: number | null;
+  priceTableVersion?: string;
+  preregHash?: string;
+  traceRefs?: string[];
+  rawGraderOutputRef?: string | null;
+  graderDetail?: unknown;
   wallClockMs: number;
   turns?: number;
   failToPass?: Array<{ test: string; passed: boolean }> | null;
@@ -140,6 +147,17 @@ export function bundleFromRollouts(input: {
       tokensIn: rr.tokensIn,
       tokensOut: rr.tokensOut,
       tokensTotal: rr.tokensTotal,
+      tokensCacheRead: rr.tokensCacheRead ?? null,
+      tokensCacheWrite: rr.tokensCacheWrite ?? null,
+      priceTableVersion: rr.priceTableVersion ?? null,
+      preregHash: rr.preregHash ?? input.prereg?.hash ?? null,
+      traceRefs: rr.traceRefs ? [...rr.traceRefs] : undefined,
+      rawGraderOutputRef: rr.rawGraderOutputRef ?? null,
+      graderDetail: rr.graderDetail ?? ro?.graderOutput ?? null,
+      billedCostUsd: (() => {
+        const billed = (rr.armMeta?.nativeCostAccounting as { billedCostUsd?: unknown } | undefined)?.billedCostUsd;
+        return typeof billed === 'number' && Number.isFinite(billed) && billed >= 0 ? billed : null;
+      })(),
       wallMs: rr.wallClockMs,
       turns: rr.turns,
       modelId: ro?.modelId ?? input.models[rr.arm] ?? 'unknown',
@@ -179,6 +197,7 @@ export function bundleFromRollouts(input: {
       conditionalResolvedPct: outcome.conditionalResolvedPct,
       threeAttemptReliability: input.assignedTaskIds ? outcome.threeAttemptReliability : null,
       repeatVariability: outcome.repeatVariability,
+      upstreamMeanAtThree: input.assignedTaskIds ? outcome.upstreamMeanAtThree : null,
       assignmentSource: input.assignedTaskIds && input.assignedSeeds ? 'frozen' : 'observed',
       infraExcluded: rows.length - outcome.gradedAttempts,
       ...costs,

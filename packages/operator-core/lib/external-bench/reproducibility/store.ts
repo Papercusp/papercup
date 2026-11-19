@@ -4,6 +4,7 @@
  * Evaluation UI consume one type with no per-caller mapping. Also reads the
  * rollout cards + prereg rows (P-010-owned artifacts).
  */
+import { createHash } from 'node:crypto';
 import { buildSuiteReport, type AggregateOpts, type SuiteReport, type TaskRunResult, type TestOutcome } from '@papercusp/bench-metrics';
 import type { PreregRecord, RolloutRecord } from './schema';
 import { currentProtocolFromConfig, currentProtocolPriceTable } from './schema';
@@ -232,10 +233,27 @@ export function resolveRunReportAssignment(rows: readonly Pick<TaskRunResult,
         }
       }
       assignment.priceTable = currentProtocolPriceTable(currentProtocol, rows);
-      assignment.requireRegisteredSampling = true;
+      // TB tasks are the independent units. DeepSWE needs a registered source
+      // repository map; never infer repository membership from task-name prefixes.
+      const hlbSuite = currentProtocol.sourceProfile?.suite;
+      if (hlbSuite && prereg.suites[0] !== hlbSuite &&
+          !(hlbSuite === 'terminal-bench-2.1' && prereg.suites[0] === 'terminal-bench')) {
+        throw new Error('benchmark report: HLB source profile differs from frozen suite');
+      }
+      assignment.requireRegisteredSampling = hlbSuite !== 'terminal-bench-2.1';
       if (currentProtocol.sampling) {
         const sampling = currentProtocol.sampling;
-        assignment.repositoryByTask = Object.fromEntries(assignedTaskIds.map(id => [id, sampling.taskRepositories[id]]));
+        if (hlbSuite !== 'terminal-bench-2.1') {
+          assignment.repositoryByTask = Object.fromEntries(assignedTaskIds.map(id => {
+            const repository = sampling.taskRepositories[id];
+            // Canonicalize aliases of a frozen identity, without inferring groups.
+            const normalized = hlbSuite === 'deep-swe' ? repository.trim()
+              .replace(/^git@([^:]+):/, '$1/').replace(/^(?:https?|ssh|git):\/\/(?:git@)?/, '')
+              .replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase() : repository;
+            if (!normalized || /[\s?#]/.test(normalized)) throw new Error('benchmark report: invalid repository identity');
+            return [id, normalized];
+          }));
+        }
         assignment.ci = sampling.ci;
         assignment.bootstrapSeed = sampling.bootstrapSeed;
         assignment.bootstrapIterations = sampling.bootstrapIterations;
@@ -260,6 +278,19 @@ export function buildRunReports(rows: TaskRunResult[], prereg: PreregRecord | nu
     if (assignment.priceTable) report.priceTableVersion = assignment.priceTable.version;
     if (prereg) report.assignment = {
       ...report.assignment!, preregHash: prereg.preregHash, protocolCommitted: prereg.gitCommitted,
+    };
+    const protocol = prereg ? currentProtocolFromConfig(prereg.config) : null;
+    const profile = protocol?.sourceProfile;
+    if (protocol && profile) report.harnessLeaderboard = {
+      suite: profile.suite,
+      sourceRevision: profile.sourceRevision,
+      // Setup identity is shared; official task/verifier pins remain suite-specific.
+      cohortFingerprint: createHash('sha256').update(canonicalJson({
+        sourceRevision: profile.sourceRevision, stage: profile.stage, comparison: profile.comparison,
+        arms: protocol.arms, context: protocol.context, models: profile.models,
+        modelRegistry: profile.modelRegistry, priceSchedule: protocol.priceSchedule,
+      })).digest('hex'),
+      protocolHash: prereg!.preregHash, comparison: profile.comparison, excludedTaskIds: [...protocol.exclusions],
     };
     return report;
   });

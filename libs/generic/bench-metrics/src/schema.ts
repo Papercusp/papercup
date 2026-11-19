@@ -272,6 +272,17 @@ export interface AttemptVariability {
   disagreementRate: number | null;
 }
 
+/** Upstream cell semantics: scored attempts collapse within each task first.
+ * Partial triplets contribute here, with coverage disclosed alongside the rate. */
+export interface ScoredTaskMeanAtThree {
+  rate: number | null;
+  assignedTasks: number;
+  scoredTaskIds: string[];
+  unscoredTaskIds: string[];
+  scoredAttempts: number;
+  completeTriplets: number;
+}
+
 /** The aggregated result for ONE arm on ONE suite. */
 export interface ArmReport {
   arm: ArmId;
@@ -302,6 +313,7 @@ export interface ArmReport {
   threeAttemptReliability?: ThreeAttemptReliability | null;
   /** Two distinct attempts of the same arm disagree, averaged over tasks with n >= 2. */
   repeatVariability?: AttemptVariability;
+  upstreamMeanAtThree?: ScoredTaskMeanAtThree | null;
   cost: CostAccount;
 }
 
@@ -355,6 +367,15 @@ export interface SuiteReport {
   suite: BenchSuite;
   /** Frozen table used for normalized token cost, distinct from actual bills. */
   priceTableVersion?: string;
+  /** Populated only from a validated current immutable HLB protocol. */
+  harnessLeaderboard?: {
+    suite?: 'terminal-bench-2.1' | 'deep-swe';
+    sourceRevision: string;
+    cohortFingerprint: string;
+    protocolHash: string;
+    comparison: 'incomplete-descriptive' | 'full-board-descriptive' | 'withheld-confirmatory';
+    excludedTaskIds: string[];
+  };
   /** Explicitly distinguish a frozen population from legacy observed-only evidence. */
   assignment?: {
     basis: 'frozen' | 'observed';

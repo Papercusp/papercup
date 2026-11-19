@@ -38,7 +38,12 @@ interface TaskRunResultRow {
   rolloutId?: string;
   modelId?: string;
   preregHash?: string;
-  tokensCacheWrite?: number;
+  tokensCacheWrite?: number | null;
+  tokensCacheRead?: number | null;
+  priceTableVersion?: string;
+  traceRefs?: string[];
+  rawGraderOutputRef?: string | null;
+  graderDetail?: unknown;
   tokensIn: number;
   tokensOut: number;
   tokensTotal: number;
@@ -193,6 +198,13 @@ export async function buildBundleFromPg(
       tokensIn: rr.tokensIn,
       tokensOut: rr.tokensOut,
       tokensTotal: rr.tokensTotal,
+      tokensCacheRead: rr.tokensCacheRead,
+      tokensCacheWrite: rr.tokensCacheWrite,
+      priceTableVersion: rr.priceTableVersion,
+      preregHash: rr.preregHash,
+      traceRefs: rr.traceRefs,
+      rawGraderOutputRef: rr.rawGraderOutputRef,
+      graderDetail: rr.graderDetail,
       wallClockMs: rr.wallClockMs,
       turns: rr.turns,
       failToPass: rr.failToPass ?? null,
