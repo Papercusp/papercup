@@ -5054,7 +5054,7 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
       `for i in 1 2 3; do printf '%1048576s' '' >> "$ROOT/sink"; sleep 1.2; done`,
     );
     expect(result.stdout, result.stderr).toContain('RC=0');
-    expect(result.stderr).toMatch(/copy progress: node_modules written=[1-9]\d*MiB elapsed=\d+s/);
+    expect(result.stderr).toMatch(/copy progress: node_modules copy=\d+:\d+ written=[1-9]\d*MiB elapsed=\d+s/);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('stays silent while a copy writes nothing, so a wedged copy still reads as wedged', () => {
