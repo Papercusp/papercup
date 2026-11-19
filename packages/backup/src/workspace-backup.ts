@@ -616,7 +616,7 @@ export class WorkspaceBackup {
         const eventId = await steps.runStep('backup-resume-hook-identity', async () => {
           const [priorHook] = await sql<{ id: string | number }[]>`
             SELECT id FROM harness_shared.backup_events
-             WHERE workspace_id = ${this.workspaceId} AND snapshot_id = ${snapshotRowId}
+             WHERE workspace_id = ${this.workspaceId} AND snapshot_id = ${snapshotRowId!}
                AND kind = 'hook_pg_dump' ORDER BY id DESC LIMIT 1
           `;
           if (!priorHook) return null;
