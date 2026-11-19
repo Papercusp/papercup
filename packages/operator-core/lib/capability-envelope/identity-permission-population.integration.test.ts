@@ -148,7 +148,7 @@ describe('joined session identity policy sources', () => {
   }
   async function scopedInstallation(value: ReturnType<typeof receipt>, options: {
     attemptId?: string; phase?: string; scope?: 'exact' | 'hash' | 'ref' | 'missing' | 'extra' | 'unknown';
-    action?: string; workspaceId?: string;
+    action?: string; workspaceId?: string; omitHumanOwner?: boolean;
   } = {}) {
     const workspaceId = options.workspaceId ?? 'ws';
     const dependentId = sessionPackageDependentId('wearer', value, options.attemptId);
@@ -167,7 +167,7 @@ describe('joined session identity policy sources', () => {
       (workspace_id, dependent_id, owner_id, specification_revision, state_revision,
        expected_resources, phase, human_ownership, scoped_grants)
       VALUES (${workspaceId}, ${dependentId}, 'wearer', ${value.specificationRevision}, ${value.stateRevision}, '{}',
-        ${options.phase ?? 'applied'}, ${sql.json(ownership)},
+        ${options.phase ?? 'applied'}, ${options.omitHumanOwner ? null : sql.json(ownership)},
         ${options.scope === 'unknown' ? null : sql.json({ schemaVersion: 1, layers })})`;
     return dependentId;
   }
@@ -322,19 +322,23 @@ describe('joined session identity policy sources', () => {
     expect(result.status).toBe('stale');
   });
 
-  async function seedSnapshot() {
+  async function seedSnapshot(missing?: 'owner' | 'user' | 'enrollment' | 'floor') {
     const receipts = await seedIdentity(true);
-    await scopedInstallation(receipts.applied);
+    await scopedInstallation(receipts.applied, { omitHumanOwner: missing === 'owner' });
     await scopedInstallation(receipts.desired, { phase: 'preparing', action: 'write' });
-    await sql`INSERT INTO harness_shared.users VALUES ('explicit-human', true, 'human', 'unused')`;
+    await sql`INSERT INTO harness_shared.users VALUES ('explicit-human', ${missing !== 'user'}, 'human', 'unused')`;
     await sql`INSERT INTO harness_shared.user_sessions VALUES ('claim', 'explicit-human', 'ws',
       ARRAY['*'], '2035-01-01', now())`;
     for (const [kind, subject] of [['user', 'explicit-human'], ['platform', 'fixed-floor']] as const) {
-      await sql`INSERT INTO harness_shared.governance_host_authority_bindings
-        (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
-        VALUES ('ws', ${kind}, ${subject}, 'explicit-human', ${'e'.repeat(64)}, 'explicit snapshot enrollment')`;
-      await upsertScopedPolicyAuthority({ kind, subjectId: subject, workspaceId: 'ws', rules: {},
-        actor: 'fixture', reason: 'snapshot authority', expectedVersion: 0 }, sql);
+      if (kind !== 'user' || missing !== 'enrollment') {
+        await sql`INSERT INTO harness_shared.governance_host_authority_bindings
+          (workspace_id, kind, subject_id, human_owner_id, request_principal_revision, reason)
+          VALUES ('ws', ${kind}, ${subject}, 'explicit-human', ${'e'.repeat(64)}, 'explicit snapshot enrollment')`;
+      }
+      if (kind !== 'platform' || missing !== 'floor') {
+        await upsertScopedPolicyAuthority({ kind, subjectId: subject, workspaceId: 'ws', rules: {},
+          actor: 'fixture', reason: 'snapshot authority', expectedVersion: 0 }, sql);
+      }
     }
     await upsertLayer({ layerId: 'snapshot-org', level: 'organization', scopeRef: 'org', parentLayerId: null,
       rules: {}, actor: 'fixture', reason: 'snapshot chain' }, sql);
@@ -373,13 +377,14 @@ describe('joined session identity policy sources', () => {
     if (desired.status === 'ok') expect(desired.revision).not.toBe(result.revision);
   });
 
-  it.each(['owner', 'user', 'enrollment', 'floor'] as const)('refuses missing %s authority', async missing => {
-    await seedSnapshot();
-    if (missing === 'owner') await sql`UPDATE harness_shared.blueprint_package_installations SET human_ownership = NULL`;
-    if (missing === 'user') await sql`UPDATE harness_shared.users SET is_active = false`;
-    if (missing === 'enrollment') await sql`DELETE FROM harness_shared.governance_host_authority_bindings WHERE kind = 'user'`;
-    if (missing === 'floor') await sql`DELETE FROM harness_shared.governance_policy_layers WHERE level = 'platform'`;
-    expect(await readIdentityAuthoritySnapshot(sql, snapshotInput())).toMatchObject({ status: 'unavailable' });
+  it.each([
+    ['owner', 'exact installation grants and human ownership are unavailable'],
+    ['user', 'installation human owner has no enrolled workspace user authority'],
+    ['enrollment', 'installation human owner has no enrolled workspace user authority'],
+    ['floor', 'required user or platform policy is unavailable'],
+  ] as const)('refuses unavailable %s authority', async (missing, reason) => {
+    await seedSnapshot(missing);
+    expect(await readIdentityAuthoritySnapshot(sql, snapshotInput())).toEqual({ status: 'unavailable', reason });
   });
 
   it('requires independent retained-context evidence and the exact vault policy population', async () => {
