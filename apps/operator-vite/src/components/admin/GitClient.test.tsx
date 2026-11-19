@@ -73,7 +73,7 @@ import { buildTestPassReuseHealth, parseTestPassReuseHealth } from '@papercusp/o
 afterEach(() => cleanup());
 
 describe('GitClient', () => {
-  it('shows verdict starvation separately from a small historical red streak', () => {
+  it('shows last-green age and promotion hold separately from verdict starvation and red streak', () => {
     mockResult = { data: [{ ...snapshot, gate: {
       ...snapshot.gate, consecutiveNoVerdict: 7,
       fireHistory: { windowHours: 24, fires: 74, verdictRecords: 0, noVerdictAborts: 7, skippedStarts: 46 },
@@ -84,6 +84,7 @@ describe('GitClient', () => {
     expect(screen.getByText('no verdict')).toBeTruthy();
     expect(screen.getByTestId('gate-fire-history').textContent).toContain('74 activation requests · 0 verdict records');
     expect(screen.getByTestId('gate-no-verdict-streak').textContent).toBe('7 consecutive abort(s)');
+    expect(screen.getByText('last green').nextElementSibling?.textContent).toBe('3h ago');
     expect(screen.getByTestId('gate-hold-duration').textContent).toBe('2h');
     expect(screen.getByTestId('gate-current-blocker').textContent).toBe('Waiting for the candidate dependency generation');
   });
