@@ -33,8 +33,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:
 import { tmpdir } from 'node:os';
 
 import { pathToFileURL } from 'node:url';
-import { createFrozenCandidateRepairQueue, markFrozenRepairAdmitted } from '@papercusp/operator-core/lib/release/frozen-candidate-repair-queue';
-import { withMeasuredLegSubjects, withRepairManifest } from '@papercusp/operator-core/lib/release/repair-manifest';
+import { createFrozenCandidateRepairQueue, markFrozenRepairAdmitted, parseFrozenCandidateRepairQueue } from '@papercusp/operator-core/lib/release/frozen-candidate-repair-queue';
+import { claimRepairManifestLeg, withMeasuredLegSubjects, withRepairManifest } from '@papercusp/operator-core/lib/release/repair-manifest';
 import { readGateCandidateFailures } from '@papercusp/operator-core/lib/gate-candidate-failures';
 import {
   runPostSuiteLegs,
@@ -101,8 +101,9 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     expect(postSuiteContinuationPopulation().units).toHaveLength(pass.legs.records.length);
     expect(fail.legs.ok).toBe(false);
   });
-  it('P036: a seeded real lint violation survives output truncation into manifest, admission and named per-leg evidence', async () => {
+  it.each([39, 40, 41])('a seeded real lint violation after %i full-stream subjects survives persistence, claim and admission', async (count) => {
     const file = 'packages/operator-core/lib/seeded-violation.test.ts';
+    const files = [...Array.from({ length: count - 1 }, (_, index) => `packages/core/broken-${index}.ts`), file];
     const { findMockCastEscapesInText } = await import(pathToFileURL(join(ROOT, 'scripts/check-mock-cast-escape.mjs')).href);
     const findings = findMockCastEscapesInText('vi.mocked(fn).mockResolvedValue({} as never);', file);
     expect(findings).toHaveLength(1);
@@ -110,7 +111,7 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     const exec: CheckpointExec = async (cmd, args) => {
       if (cmd === 'git') return { code: 1, stdout: '', stderr: '' };
       return npmScriptOf(cmd, args) === id
-        ? { code: 1, stdout: `${file}:1: mock cast escape\n${'generic trailer\n'.repeat(600)}`, stderr: '' }
+        ? { code: 1, stdout: `${files.map((path) => `${path}:1: mock cast escape`).join('\n')}\n${'generic trailer\n'.repeat(600)}`, stderr: '' }
         : ok;
     };
     const legs = await runPostSuiteLegs(ROOT, process.env, exec, '@papercusp/operator-vite', {
@@ -119,14 +120,19 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     const leg = legs.records.find((record) => record.id === id)!;
     expect(leg.status).toBe('failed');
     expect(leg.executionIdentity?.result.output).not.toContain(file);
-    expect(leg.subjectPaths).toEqual([file]);
+    expect(leg.subjectPaths).toEqual(files);
     const head = 'a'.repeat(40);
     const queue = createFrozenCandidateRepairQueue({ candidate: head, base: null, nowMs: 1,
       failingTests: [id], signature: [{ id, kind: 'lint-leg', recipe: `npm run ${id}` }],
     });
     const measured = withMeasuredLegSubjects(queue, head, legs.records, 2);
-    const persisted = withRepairManifest(measured, 3).queue;
-    expect(persisted.manifest.rows.find((row) => row.legId === id)).toMatchObject({ subjectPaths: [file], admitCommand: expect.stringContaining(file) });
+    const reparsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(measured)))!;
+    const persisted = withRepairManifest(reparsed, 3).queue;
+    const claimed = claimRepairManifestLeg(persisted.manifest, { legId: id, actor: 'test-fixer', atMs: 3 });
+    expect(claimed.ok).toBe(true);
+    if (!claimed.ok) throw new Error(claimed.reason);
+    expect(claimed.paths).toEqual(files);
+    expect(persisted.manifest.rows.find((row) => row.legId === id)).toMatchObject({ subjectPaths: files, admitCommand: expect.stringContaining(file) });
     const reading = await readGateCandidateFailures({ candidateSha: null, repairHeadSha: head, root: ROOT, queueLegs: persisted.legs });
     expect(reading.nonTestLegs.perLeg.map((row) => row.id)).toContain(id);
     const admitted = markFrozenRepairAdmitted(persisted, { atMs: 4, actor: 'test-fixer', source: { ref: 'staging', sha: 'b'.repeat(40) },

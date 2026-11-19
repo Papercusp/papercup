@@ -104,17 +104,17 @@ function holdResult(overrides: Partial<CheckpointResult> = {}): CheckpointResult
 }
 
 describe("measureRepairTickLegs", () => {
-  it("P036: retains bounded structured subjects outside truncated output and folds them into the queue", async () => {
-    const files = Array.from({ length: 50 }, (_, i) => `packages/core/file${i}.ts`);
+  it.each([39, 40, 41, 129])("retains all %i structured subjects outside truncated output and folds them into the queue", async (count) => {
+    const files = Array.from({ length: count }, (_, i) => `packages/core/file${i}.ts`);
     const measured = await measureRepairTickLegs(makeIo({
       runScript: async () => ({ code: 1, tail: "trailer only", subjectPaths: files }),
     }), HEAD, { "lint:tsc": ["lint:tsc"] });
-    expect(measured!.legs[0]!.subjectPaths).toEqual(files.slice(0, 40));
+    expect(measured!.legs[0]!.subjectPaths).toEqual(files);
     const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: awaitingFixerQueue(['lint:tsc']) }), {
       runRepairTickLegs: async () => measured, log: vi.fn(), writeFrozenRepairQueue: vi.fn(async () => {}),
     });
     expect(result.repairQueue?.manifest?.rows.find((row) => row.legId === "lint:tsc")).toMatchObject({
-      subjectPaths: files.slice(0, 40), admitCommand: expect.stringContaining(files[0]!),
+      subjectPaths: files, subjectPathsTruncated: 0, admitCommand: expect.stringContaining(files.at(-1)!),
     });
   });
   it("runs EVERY leg with no short-circuit and reports the complete failing set", async () => {

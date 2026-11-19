@@ -3011,7 +3011,11 @@ export default defineTool({
                   holder: outcome.holder,
                   detail: `Leg ${legId} is held by ${outcome.holder.actor} — coordinate with the holder (coord:send), never contest a live claim.`,
                 }
-              : {
+              : outcome.reason === 'incomplete-subjects' ? {
+                  row: outcome.row,
+                  recovery: outcome.recovery,
+                  detail: `Leg ${legId} has incomplete legacy subject evidence. Re-run ${outcome.recovery.recipe} at ${outcome.recovery.head}, persist its complete structured subjectPaths, then retry claim-leg.`,
+                } : {
                   row: outcome.row,
                   detail: `Leg ${legId} is already ${outcome.row.statusLabel}; there is nothing left to claim on it.`,
                 }),

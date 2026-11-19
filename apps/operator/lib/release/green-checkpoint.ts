@@ -72,7 +72,7 @@ import {
 } from "./fork-base-inherited-tests";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
-import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
+import { extractSubjectPathsFromLegOutput, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
 import { npmWorkspaceDirsByName } from "@papercusp/operator-core/lib/release/npm-workspace-dirs";
 import { FLAKY_QUARANTINE_KIND } from "@papercusp/operator-core/lib/release/verdict-flip-quarantine";
 import {
@@ -18158,7 +18158,7 @@ export async function measureRepairTickLegs(
         } else if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
           for (const file of r.subjectPaths ?? extractSubjectPathsFromLegOutput(r.tail)) {
-            if (subjectPaths.size < REPAIR_MANIFEST_SUBJECT_PATH_CAP) subjectPaths.add(file);
+            subjectPaths.add(file);
           }
           tails.push(
             `${label}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
@@ -22075,7 +22075,7 @@ export async function runPostSuiteLegs(
             path.relative(treeDir, command.cwd).replace(/\\/g, "/") || undefined,
             Object.values(npmWorkspaceDirsByName(treeDir)),
           ),
-        ))].slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP)
+        ))]
       : [];
     const exitCode =
       commands.find((command) => command.code !== 0)?.code ??
@@ -25846,7 +25846,7 @@ export function realCheckpointDeps(
                 stripAnsi(r.stdout + "\n" + r.stderr),
                 path.relative(cfg.checkpointRoot, invocation.cwd).replace(/\\/g, "/") || undefined,
                 Object.values(npmWorkspaceDirsByName(cfg.checkpointRoot)),
-              ).slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP),
+              ),
               // WI-10002075: digest-first, never a blind tail — a red lint leg's last
               // 300 chars are its generic trailer, not the files it named.
               // WI-10007516: BOTH streams — `stderr || stdout` dropped vitest's stdout

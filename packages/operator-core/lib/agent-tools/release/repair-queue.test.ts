@@ -3158,6 +3158,17 @@ describe('release:repair-queue', () => {
       expect(result).toMatchObject({ ok: false, refused: true, reason: 'no-such-leg', legIds: [manifestRow.legId] });
     });
 
+    it('refuses a partial legacy path claim with remeasurement recovery and no state or presence write', async () => {
+      const partial = { ...manifest, rows: [{ ...manifestRow, subjectPathsTruncated: 1 }] };
+      mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, manifest: partial } });
+      const result = body(await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never));
+      expect(result).toMatchObject({ ok: false, claimed: false, refused: true, reason: 'incomplete-subjects',
+        recovery: { legId: manifestRow.legId, head: queue.repairHead, recipe: manifestRow.recipe } });
+      expect(result.detail).toContain('complete structured subjectPaths');
+      expect(mocks.write).not.toHaveBeenCalled();
+      expect(mocks.presence).not.toHaveBeenCalled();
+    });
+
     it('refuses no-manifest when the queue has not been re-derived yet, and no-frozen-queue when nothing is frozen', async () => {
       const noManifest = body(
         await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never, { role: 'su' } as never),

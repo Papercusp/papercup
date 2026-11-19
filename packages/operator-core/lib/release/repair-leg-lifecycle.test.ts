@@ -196,7 +196,7 @@ describe('P-002 / D-005 — a non-test leg has the lifecycle a test file has', (
     expect(summarizeRepairLegs(legs).measured).toBe(true);
   });
 
-  it('EI-23917645695738835: a leg OUTSIDE the signature measured passing is still skipped — the cap rule survives the fix', () => {
+  it('EI-23917645695738835: a leg OUTSIDE the signature measured passing is still skipped — the admission rule survives the fix', () => {
     const legs = applyRepairLegMeasurements([], {
       measurements: [measure('lint:perf', 'pass')],
       head: HEAD_B,
@@ -237,7 +237,7 @@ describe('P-002 / D-005 — a non-test leg has the lifecycle a test file has', (
     expect(nextRound[0]!.failingRounds).toBe(2);
   });
 
-  it('the cap retains the EARLIEST-admitted legs, never a tail slice', () => {
+  it('retains both the baseline and later failures across the historical cap', () => {
     let legs: FrozenRepairLegState[] = [];
     for (let round = 1; round <= FROZEN_REPAIR_LEG_CAP + 5; round += 1) {
       legs = applyRepairLegMeasurements(legs, {
@@ -247,10 +247,9 @@ describe('P-002 / D-005 — a non-test leg has the lifecycle a test file has', (
         nowMs: T0 + round,
       });
     }
-    expect(legs).toHaveLength(FROZEN_REPAIR_LEG_CAP);
-    // The baseline survives; the newest admissions are what the cap sheds.
+    expect(legs).toHaveLength(FROZEN_REPAIR_LEG_CAP + 5);
     expect(legs[0]!.id).toBe('lint:leg-001');
-    expect(legs.some((leg) => leg.id === `lint:leg-${String(FROZEN_REPAIR_LEG_CAP + 5).padStart(3, '0')}`)).toBe(false);
+    expect(legs.at(-1)!.id).toBe(`lint:leg-${String(FROZEN_REPAIR_LEG_CAP + 5).padStart(3, '0')}`);
   });
 });
 
@@ -365,5 +364,87 @@ describe('P-002 — legs on the queue itself', () => {
     expect(summary.measured).toBe(false);
     expect(summary.shrinkTotal).toBeNull();
     expect(summary.scope).toContain('unmeasured is not passing');
+  });
+
+  it.each([31, 32, 33, 127, 128, 129, 199, 200, 201])(
+    'retains all %i leg identities through queue persistence and resolves the last one independently',
+    (count) => {
+      // Every id shares more than the old 200-character prefix. Truncation would merge
+      // them, and dropping later admissions would lose the decisive last failure.
+      const ids = Array.from({ length: count }, (_, index) =>
+        `lint:${'shared-prefix-'.repeat(17)}${String(index).padStart(3, '0')}`);
+      for (const ordered of [ids, [...ids].reverse()]) {
+        let current = queue();
+        for (let offset = 0; offset < ordered.length; offset += 3) {
+          current = recordFrozenRepairLegMeasurement(current, {
+            measurements: ordered.slice(offset, offset + 3).map((id) => measure(id, 'fail')),
+            head: HEAD_A,
+            nowMs: T0 + offset + 1,
+          });
+          current = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(current)))!;
+          expect(current).not.toBeNull();
+        }
+        expect(current.legs).toHaveLength(count);
+        expect(summarizeFrozenRepairLegs(current).failingLegIds).toEqual([...ids].sort());
+
+        const last = ids.at(-1)!;
+        current = recordFrozenRepairLegMeasurement(current, {
+          measurements: [measure(last, 'pass')], head: HEAD_B, nowMs: T0 + count + 1,
+        });
+        current = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(current)))!;
+        const summary = summarizeFrozenRepairLegs(current);
+        expect(summary.admittedLegs).toBe(count);
+        expect(summary.fixedLegIds).toEqual([last]);
+        expect(summary.failingLegIds).toEqual(ids.filter((id) => id !== last).sort());
+        expect(current.legs!.find((leg) => leg.id === ids[0])!.state).toBe('failing');
+      }
+    },
+  );
+
+  it.each([127, 128, 129, 199, 200, 201])('preserves an id of length %i through signature admission and parsing', (length) => {
+    const id = `lint:${'x'.repeat(length - 5)}`;
+    const legs = applyRepairLegMeasurements([], {
+      measurements: [measure(id, 'pass')], signatureIds: [id], head: HEAD_B, round: 1, nowMs: T0,
+    });
+    expect(parseRepairLegStates(JSON.parse(JSON.stringify(legs)))[0]!.id).toBe(id);
+    expect(summarizeRepairLegs(legs).fixedLegIds).toEqual([id]);
+  });
+
+  it.each([31, 32, 33])('keeps legacy completeness unknown after %i retained admissions and later partial passes', (count) => {
+    const ids = Array.from({ length: count }, (_, index) => `lint:legacy-${index}`);
+    const measured = recordFrozenRepairLegMeasurement(queue(), {
+      measurements: ids.map((id) => measure(id, 'fail')), head: HEAD_A, nowMs: T0 + 1,
+    });
+    const legacy = JSON.parse(JSON.stringify(measured));
+    delete legacy.legEvidence;
+    let current = parseFrozenCandidateRepairQueue(legacy)!;
+    for (const [index, id] of ids.entries()) {
+      current = recordFrozenRepairLegMeasurement(current, {
+        measurements: [measure(id, 'pass')], head: HEAD_B, nowMs: T0 + index + 2,
+      });
+      current = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(current)))!;
+      expect(summarizeFrozenRepairLegs(current).evidenceStatus).toBe('unknown');
+      expect(summarizeFrozenRepairLegs(current).shrinkTotal).toBeNull();
+    }
+    const summary = summarizeFrozenRepairLegs(current);
+    expect(summary.failingLegs).toBe(0);
+    expect(summary.scope).toContain('INCOMPLETE');
+    expect(summary.recovery).toContain('complete leg registry');
+  });
+
+  it('retains unreadable lifecycle source through queue persistence instead of claiming a complete zero', () => {
+    const malformed = [{ id: 'lint:lost', state: 'maybe' }, null, 'legacy-leg'];
+    const raw = { ...queue(), legs: [...admitted(), ...malformed] };
+    let current = parseFrozenCandidateRepairQueue(raw)!;
+    for (let batch = 0; batch < 4; batch += 1) {
+      current = recordFrozenRepairLegMeasurement(current, {
+        measurements: [measure('lint:tsc', 'pass')], head: HEAD_B, nowMs: T0 + batch + 1,
+      });
+      current = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(current)))!;
+      expect(current.legEvidence).toEqual({ status: 'unknown', unreadableEntries: malformed });
+      expect(summarizeFrozenRepairLegs(current)).toMatchObject({
+        evidenceStatus: 'unknown', unreadableEntries: 3, shrinkTotal: null,
+      });
+    }
   });
 });

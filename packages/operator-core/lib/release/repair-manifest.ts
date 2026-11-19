@@ -47,9 +47,8 @@ import {
 import type { FrozenRepairLegState, RepairLegMeasurement } from './repair-leg-lifecycle';
 
 export const REPAIR_MANIFEST_SCHEMA_VERSION = 1 as const;
-/** Row cap — mirrors FROZEN_REPAIR_LEG_CAP's order of magnitude; the signature is already capped upstream. */
+/** Historical bounds, retained for interpreting legacy persisted evidence. */
 export const REPAIR_MANIFEST_ROW_CAP = 64;
-/** Subject-path cap per leg: a lint leg reporting hundreds of files is rendered as the first N + a count. */
 export const REPAIR_MANIFEST_SUBJECT_PATH_CAP = 40;
 
 export type RepairManifestStatus =
@@ -71,7 +70,7 @@ export interface RepairManifestRow {
   recipe: string;
   /** Repo-relative paths the leg names; the admission allowlist a fixer would pass. */
   subjectPaths: string[];
-  /** How many subject paths the cap hid (0 when none). */
+  /** Missing paths in legacy evidence. Sticky until a complete structured measurement replaces it. */
   subjectPathsTruncated: number;
   subjectSource: RepairManifestSubjectSource;
   status: RepairManifestStatus;
@@ -201,20 +200,33 @@ function toRepoRelativeLegPath(
   return `${workspaceDir}/${minedPath}`;
 }
 
+/** Structured records already name paths: do not re-interpret them as diagnostic prose. */
+function normalizeStructuredSubjects(paths: readonly string[]): string[] {
+  return [...new Set(paths.filter((path) =>
+    !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(path) && !/[\r\n\0]/.test(path),
+  ).map(normalizeRepoPath).filter((path) =>
+    path.length > 0 && !path.split('/').includes('..') &&
+    !path.split('/').includes('node_modules'),
+  ))];
+}
+
 function resolveSubjectPaths(
   entry: RepairSignatureEntry,
   input: BuildRepairManifestInput,
-): { paths: string[]; source: RepairManifestSubjectSource } {
+): { paths: string[]; source: RepairManifestSubjectSource; truncated: number } {
+  const previous = input.previous?.candidate === input.queue.candidate
+    ? input.previous.rows.find((row) => row.legId === entry.id && row.kind === entry.kind && row.workspace === entry.workspace)
+    : undefined;
   const supplied = input.subjectPaths?.[entry.id];
   if (supplied && supplied.length > 0) {
-    const normalized = Array.from(new Set(supplied.map((p) => normalizeRepoPath(p)).filter((p) => p.length > 0)));
-    if (normalized.length > 0) return { paths: normalized, source: 'supplied' };
+    const normalized = normalizeStructuredSubjects(supplied);
+    if (normalized.length > 0) return { paths: normalized, source: 'supplied', truncated: 0 };
   }
   if (entry.kind === 'test-file') {
     const p = normalizeRepoPath(entry.id);
-    if (p) return { paths: [p], source: 'leg-id' };
+    if (p) return { paths: [p], source: 'leg-id', truncated: 0 };
   }
-  if (entry.kind === 'seed') return { paths: [], source: 'none' };
+  if (entry.kind === 'seed') return { paths: [], source: 'none', truncated: 0 };
   const dirs = input.workspaceDirs;
   const workspaceDir = (entry.workspace ? dirs?.[entry.workspace] : undefined)
     ?? input.legProjectDirs?.[entry.id];
@@ -225,18 +237,20 @@ function resolveSubjectPaths(
   const mined = extractSubjectPathsFromLegOutput(input.legOutputs?.[entry.id], workspaceDir, knownDirs);
   if (mined.length > 0) {
     // The extractor maps a known project root to repo-relative paths before this row is built.
-    return { paths: mined, source: 'leg-output' };
+    return {
+      paths: normalizeStructuredSubjects([...(previous?.subjectPaths ?? []), ...mined]),
+      source: 'leg-output', truncated: previous?.subjectPathsTruncated ?? 0,
+    };
   }
   // Rebuilding a queue after an admission must not erase evidence already measured
   // for this candidate. Never inherit paths from a different candidate, kind or workspace.
-  const previous = input.previous?.candidate === input.queue.candidate
-    ? input.previous.rows.find((row) => row.legId === entry.id && row.kind === entry.kind && row.workspace === entry.workspace)
-    : undefined;
   if (previous) {
-    const paths = extractSubjectPathsFromLegOutput(previous.subjectPaths.join('\n'));
-    if (paths.length) return { paths, source: previous.subjectSource };
+    return {
+      paths: normalizeStructuredSubjects(previous.subjectPaths), source: previous.subjectSource,
+      truncated: previous.subjectPathsTruncated,
+    };
   }
-  return { paths: [], source: 'none' };
+  return { paths: [], source: 'none', truncated: 0 };
 }
 
 /** Attach structured paths at the same CAS boundary as the measured queue transition. */
@@ -260,8 +274,7 @@ export function withMeasuredLegSubjects(
   const subjectPaths: Record<string, string[]> = {};
   for (const leg of legs) {
     if (leg.status !== 'failed' && leg.status !== 'fail' && leg.status !== 'errored') continue;
-    const paths = extractSubjectPathsFromLegOutput((leg.subjectPaths ?? []).join('\n'))
-      .slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP);
+    const paths = normalizeStructuredSubjects(leg.subjectPaths ?? []);
     if (paths.length) subjectPaths[leg.id] = paths;
   }
   return Object.keys(subjectPaths).length
@@ -305,10 +318,8 @@ export function buildRepairManifest(input: BuildRepairManifestInput): RepairMani
     for (const row of input.previous.rows) previousRows.set(row.legId, row);
   }
   const rows: RepairManifestRow[] = [];
-  const capped = signature.slice(0, REPAIR_MANIFEST_ROW_CAP);
-  for (const entry of capped) {
+  for (const entry of signature) {
     const subject = resolveSubjectPaths(entry, input);
-    const visible = subject.paths.slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP);
     const state = legState(queue.legs, entry.id);
     let status: RepairManifestStatus;
     if (state && state.state === 'fixed') {
@@ -330,18 +341,19 @@ export function buildRepairManifest(input: BuildRepairManifestInput): RepairMani
         : status.kind === 'admitted'
           ? `admitted-in-#${status.admission}@${shortSha(status.toRepairHead)}`
           : 'red-at-candidate';
-    const prior = previousRows.get(entry.id);
+    const previousRow = previousRows.get(entry.id);
+    const prior = previousRow?.kind === entry.kind && previousRow.workspace === entry.workspace ? previousRow : undefined;
     rows.push({
       legId: entry.id,
       kind: entry.kind,
       ...(entry.workspace ? { workspace: entry.workspace } : {}),
       recipe: entry.recipe,
-      subjectPaths: visible,
-      subjectPathsTruncated: Math.max(0, subject.paths.length - visible.length),
+      subjectPaths: subject.paths,
+      subjectPathsTruncated: subject.truncated,
       subjectSource: subject.source,
       status,
       statusLabel,
-      admitCommand: subject.paths.length > 0 ? renderAdmitCommand(subject.paths) : null,
+      admitCommand: subject.paths.length > 0 && subject.truncated === 0 ? renderAdmitCommand(subject.paths) : null,
       claim: prior?.claim ?? null,
     });
   }
@@ -352,7 +364,7 @@ export function buildRepairManifest(input: BuildRepairManifestInput): RepairMani
     signatureFingerprint: repairSignatureFingerprint(signature),
     builtAtMs: input.nowMs,
     rows,
-    rowsTruncated: Math.max(0, signature.length - capped.length),
+    rowsTruncated: 0,
   };
 }
 
@@ -384,6 +396,7 @@ export function withRepairManifest<Q extends BuildRepairManifestInput['queue'] &
   const statusChanged =
     signatureChanged || manifest.rows.some((r) =>
       prevLabels.get(r.legId) !== r.statusLabel ||
+      previous?.rows.find((prior) => prior.legId === r.legId)?.subjectPathsTruncated !== r.subjectPathsTruncated ||
       JSON.stringify(previous?.rows.find((prior) => prior.legId === r.legId)?.subjectPaths) !== JSON.stringify(r.subjectPaths),
     );
   return { queue: { ...queue, manifest }, manifest, signatureChanged, statusChanged };
@@ -393,7 +406,8 @@ export type ClaimRepairManifestLegResult =
   | { ok: true; manifest: RepairManifest; row: RepairManifestRow; paths: string[]; released?: boolean }
   | { ok: false; reason: 'no-such-leg'; legIds: string[] }
   | { ok: false; reason: 'held-by-other'; holder: RepairManifestClaim; row: RepairManifestRow }
-  | { ok: false; reason: 'already-green'; row: RepairManifestRow };
+  | { ok: false; reason: 'already-green'; row: RepairManifestRow }
+  | { ok: false; reason: 'incomplete-subjects'; row: RepairManifestRow; recovery: { legId: string; head: string; recipe: string } };
 
 /**
  * Claiming a leg claims its paths (D-007). Idempotent for the same actor; refuses a leg another
@@ -419,6 +433,12 @@ export function claimRepairManifestLeg(
   if (row.status.kind === 'green') return { ok: false, reason: 'already-green', row };
   if (row.claim && row.claim.actor !== input.actor) {
     return { ok: false, reason: 'held-by-other', holder: row.claim, row };
+  }
+  if (row.subjectPathsTruncated !== 0) {
+    return {
+      ok: false, reason: 'incomplete-subjects', row,
+      recovery: { legId: row.legId, head: manifest.repairHead, recipe: row.recipe },
+    };
   }
   const nextRow: RepairManifestRow = {
     ...row,
@@ -551,7 +571,8 @@ export function renderRepairManifest(manifest: RepairManifest, opts: { heading?:
         ? row.kind === 'seed'
           ? '(whole gate — no path)'
           : '(unknown — name the paths you fix)'
-        : row.subjectPaths.join('<br>') + (row.subjectPathsTruncated ? `<br>… +${row.subjectPathsTruncated} more` : '');
+        : row.subjectPaths.join('<br>') + (row.subjectPathsTruncated ?
+          `<br>INCOMPLETE: ${row.subjectPathsTruncated} missing; remeasure ${row.legId} at ${manifest.repairHead} with ${row.recipe}` : '');
     const claim = row.claim ? `${row.claim.actor} (${new Date(row.claim.atMs).toISOString()})` : '—';
     const admit = row.admitCommand ? `\`${row.admitCommand}\`` : '—';
     lines.push(`| ${row.legId} | ${row.kind} | ${row.statusLabel} | ${paths} | ${claim} | ${admit} |`);

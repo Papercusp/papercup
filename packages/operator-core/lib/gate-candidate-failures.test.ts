@@ -1031,7 +1031,8 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
     },
   ];
 
-  async function read(opts: { queueLegs?: readonly FrozenRepairLegState[]; repairTickLegs?: typeof legsSnap | null } = {}) {
+  async function read(opts: { queueLegs?: readonly FrozenRepairLegState[]; repairTickLegs?: typeof legsSnap | null;
+    queueLegEvidence?: { status: 'complete' | 'unknown'; unreadableEntries?: readonly unknown[] } } = {}) {
     return readGateCandidateFailures({
       candidateSha: CANDIDATE,
       candidateRunGroupId: CANDIDATE_RUN_GROUP,
@@ -1042,8 +1043,23 @@ describe('P-003 — the named per-leg surface that replaced postSuiteMeasured', 
       git: fakeGit({}),
       repairTickLegs: opts.repairTickLegs === undefined ? legsSnap : opts.repairTickLegs,
       ...(opts.queueLegs ? { queueLegs: opts.queueLegs } : {}),
+      queueLegEvidence: opts.queueLegEvidence,
     });
   }
+
+  it('retains unknown lifecycle completeness in the actual candidate consumer with or without a recent tick', async () => {
+    const fixed = queueLegs.map((leg) => ({ ...leg, state: 'fixed' as const }));
+    for (const repairTickLegs of [null, legsSnap]) {
+      const result = await read({ queueLegs: fixed, repairTickLegs,
+        queueLegEvidence: { status: 'unknown', unreadableEntries: [{ id: 'lint:unreadable' }] },
+      });
+      expect(result.nonTestLegs.shrink).toMatchObject({ evidenceStatus: 'unknown', unreadableEntries: 1, shrinkTotal: null });
+      expect(result.nonTestLegs.shrink.scope).toContain('INCOMPLETE');
+      expect(result.nonTestLegs.shrink.recovery).toContain('complete leg registry');
+    }
+    const complete = await read({ queueLegs: fixed, queueLegEvidence: { status: 'complete' } });
+    expect(complete.nonTestLegs.shrink.shrinkTotal).toBe(fixed.length);
+  });
 
   it('C2 FALSIFIER: with NO tick snapshot, queue-admitted FAILING legs still surface by name and stay outstanding (not measuring is not a pass)', async () => {
     // Before C2 (EI-22270968007901491) `nonTestLegs` was null whenever no repair-tick

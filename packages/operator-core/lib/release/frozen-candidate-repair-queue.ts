@@ -11,11 +11,12 @@
 
 import {
   applyRepairLegMeasurements,
-  parseRepairLegStates,
+  parseRepairLegEvidence,
   summarizeRepairLegs,
   type FrozenRepairLegState,
   type RepairLegMeasurement,
   type RepairLegShrinkSummary,
+  type RepairLegEvidence,
 } from './repair-leg-lifecycle';
 // P-021: a runtime cycle by design (repair-manifest.ts imports `normalizeRepoPath` from here);
 // neither side touches the other at module-evaluation time, so ESM resolves it cleanly.
@@ -739,6 +740,8 @@ export interface FrozenCandidateRepairQueue {
    * absent, which reads as "no leg measurement recorded" — never as "no legs are failing".
    */
   legs?: readonly FrozenRepairLegState[];
+  /** Sticky legacy/malformed lifecycle uncertainty; unreadable source stays recoverable here. */
+  legEvidence?: RepairLegEvidence;
   /**
    * P-001 / D-002 / D-006 — the ADMISSION LEDGER: every plumbing commit that advanced
    * `repairHead`, in order. Under D-002 `repairHead` moves ONLY by an entry here (fast-forward
@@ -2598,6 +2601,7 @@ export function createFrozenCandidateQueue(
   return {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: 'ready-to-test',
+    legEvidence: { status: 'complete' },
     candidate: input.candidate,
     qualificationAttemptId: nonBlank(input.qualificationAttemptId) ? input.qualificationAttemptId : null,
     base: input.base,
@@ -2748,7 +2752,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ? undefined : parseFrozenRepairSelectiveCoverage(row.selectiveCoverage, row.candidate);
   // P-002 legs are observability on the same terms as rounds above: malformed entries are
   // dropped individually, never failing the parse of a live queue.
-  const legs = parseRepairLegStates(row.legs);
+  const { legs, evidence: legEvidence } = parseRepairLegEvidence(row.legs, row.legEvidence);
   const manifest = parseRepairManifest(row.manifest);
   // P-010: a row PERSISTED as blocked by the deleted 8h wall-clock hold is returned to
   // verification on read. The hold no longer exists, so no decision could ever un-wedge such a
@@ -2813,6 +2817,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
     ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),
     ...(legs.length > 0 ? { legs } : {}),
+    legEvidence,
     ...(admissions.length > 0 ? { admissions } : {}),
     ...(retestRequested ? { retestRequested } : {}),
     ...(unmeasuredRetestHead !== undefined ? { unmeasuredRetestHead } : {}),
@@ -4105,18 +4110,20 @@ export function retireRepairSignatureOnLegPass(
  * holding a queue never has to know which file the lifecycle lives in.
  */
 export function summarizeFrozenRepairLegs(queue: FrozenCandidateRepairQueue | null): RepairLegShrinkSummary {
-  return summarizeRepairLegs(queue?.legs);
+  return summarizeRepairLegs(queue?.legs, queue?.legEvidence);
 }
 
 export {
   applyRepairLegMeasurements,
   parseRepairLegStates,
+  parseRepairLegEvidence,
   partitionRepairSignatures,
   summarizeRepairLegs,
   FROZEN_REPAIR_LEG_CAP,
   type FrozenRepairLegState,
   type RepairLegMeasurement,
   type RepairLegShrinkSummary,
+  type RepairLegEvidence,
   type RepairLegStatus,
   type RepairSignaturePartition,
 } from './repair-leg-lifecycle';

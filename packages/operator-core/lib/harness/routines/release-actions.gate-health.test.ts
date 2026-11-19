@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { buildGateSuiteMeasurement } from '../../release/test-pass-reuse-report';
 import type { RatchetShadowHealth } from '../../release/ratchet-shadow';
+import { parseRepairTickLegs } from '../../release/repair-tick-legs-snapshot';
 
 // EI-19329732364513693: trackGateStall now measures candidate staleness via git whenever a
 // candidate is passed. Keep this file HERMETIC — without this mock, every existing test that
@@ -100,6 +101,18 @@ const fakeSql = {
       const prev = typeof seededGh?.consecutiveNoVerdict === 'number' ? (seededGh.consecutiveNoVerdict as number) : 0;
       latestHeadlineHealth = { ...seededGh, consecutiveNoVerdict: prev + 1 };
       return Promise.resolve([{ streak: prev + 1, alerted: seededGh?.noVerdictAlerted === true }]);
+    }
+    if (/UPDATE\s+harness_shared\.routines/i.test(query) && query.includes("'{gate_health,repairTickLegs}'")) {
+      // Apply the production filter+append to live state instead of merely capturing
+      // parameters: later reads and ticks must see exactly what this write retained.
+      const prior = latestHeadlineHealth ?? seededGh ?? {};
+      const measured = new Set(params[3] as string[]);
+      const failing = Array.isArray(prior.failingTests) ? prior.failingTests as string[] : [];
+      seededGh = { ...prior, failingTestsMeasured: true,
+        repairTickLegs: JSON.parse(String(params[2])),
+        failingTests: [...failing.filter((id) => !measured.has(id)), ...JSON.parse(String(params[4]))],
+      };
+      latestHeadlineHealth = seededGh;
     }
     if (/UPDATE\s+harness_shared\.routines/i.test(query) && /\{gate_health\}/.test(query)) {
       if (query.includes("jsonb_build_object('lastSuiteMeasurement'")) {
@@ -2405,7 +2418,7 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     expect(write!.params[3]).toEqual(['lint:tsc', 'lint:migrations']);
     expect(JSON.parse(write!.params[4] as string)).toEqual(['lint:tsc']);
     const provenance = JSON.parse(write!.params[2] as string) as Record<string, unknown>;
-    expect(provenance).toMatchObject({ head: 'c'.repeat(12), atMs: 111, ok: false, failingSignatures: ['lint:tsc'] });
+    expect(provenance).toMatchObject({ head: 'c'.repeat(40), atMs: 111, ok: false, failingSignatures: ['lint:tsc'] });
     // and this tick must NOT also stamp the historical false — that is the exact staleness
     // this item exists to kill.
     const falseStamp = calls.find((c) => /failingTestsMeasured/.test(c.query) && /'false'::jsonb/.test(c.query));
@@ -2441,7 +2454,7 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     ]);
   });
 
-  it('bounds the persisted legs to 32 and FRONT-slices a long outputTail', async () => {
+  it('retains every persisted leg while FRONT-slicing the diagnostic output preview', async () => {
     const long = `first/file.ts(1,1): error TS1000${'F'.repeat(2500)}`;
     await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
       repairTickLegs: {
@@ -2456,11 +2469,47 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     });
     const write = calls.find((c) => /failingTestsMeasured/.test(c.query) && /'true'::jsonb/.test(c.query));
     const provenance = JSON.parse(write!.params[2] as string) as { legs: Array<{ outputTail: string }> };
-    expect(provenance.legs).toHaveLength(32);
+    expect(provenance.legs).toHaveLength(40);
     // FRONT, not tail (WI-10002075): summarizeLegOutput puts the file names first, so
     // truncating from the end would discard exactly what this evidence exists to carry.
     expect(provenance.legs[0].outputTail).toBe(long.slice(0, 1000));
     expect(provenance.legs[0].outputTail).toContain('first/file.ts');
+  });
+
+  it.each([19, 20, 21, 31, 32, 33])('D010: persists all %i failing identities across repeated measurements and retires only measured passes', async (count) => {
+    const ids = Array.from({ length: count }, (_, index) => `lint:${'shared-prefix-'.repeat(17)}${index}`);
+    for (const ordered of [ids, [...ids].reverse()]) {
+      seededGh = { consecutiveReds: 1, failingTests: ['lib/unmeasured.test.ts', 'lint:now-passes'] };
+      latestHeadlineHealth = null;
+      for (let offset = 0; offset < ordered.length; offset += 3) {
+        const batch = ordered.slice(offset, offset + 3);
+        await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+          repairTickLegs: { ...tickLegs, failingSignatures: batch,
+            legs: [...batch.map((id) => ({ id, status: 'fail' as const, durationMs: 1 })),
+              { id: 'lint:now-passes', status: 'pass', durationMs: 1 }],
+          },
+        });
+      }
+      expect((seededGh!.failingTests as string[]).sort()).toEqual(['lib/unmeasured.test.ts', ...ids].sort());
+      // One whole measurement crosses the old append20, persistence32 and id128 bounds.
+      const paths = Array.from({ length: 41 }, (_, index) => `packages/x/file-${index}.ts`);
+      await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+        repairTickLegs: { ...tickLegs, failingSignatures: ordered,
+          legs: ordered.map((id) => ({ id, status: 'fail' as const, durationMs: 1, subjectPaths: paths })),
+        },
+      });
+      const snapshot = parseRepairTickLegs(JSON.parse(JSON.stringify(seededGh!.repairTickLegs)))!;
+      expect(snapshot.failingSignatures).toEqual(ordered);
+      expect(snapshot.legs.map((leg) => leg.id)).toEqual(ordered);
+      expect((seededGh!.repairTickLegs as { legs: { subjectPaths: string[] }[] }).legs.at(-1)!.subjectPaths).toEqual(paths);
+      const last = ordered.at(-1)!;
+      await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+        repairTickLegs: { ...tickLegs, failingSignatures: [], ok: true,
+          legs: [{ id: last, status: 'pass', durationMs: 1 }],
+        },
+      });
+      expect((seededGh!.failingTests as string[]).sort()).toEqual(['lib/unmeasured.test.ts', ...ids.filter((id) => id !== last)].sort());
+    }
   });
 
   it('without a measurement, the hold still stamps failingTestsMeasured false (unchanged behaviour)', async () => {

@@ -6609,6 +6609,7 @@ export async function gitPipelinePosition(
     // One tick says what it just ran; only the lifecycle says whether a leg's own
     // re-run has since passed — which is the half "did its fix land" needs.
     queueLegs: persistedQueue?.legs ?? null,
+    queueLegEvidence: persistedQueue?.legEvidence,
     // WI-6554700010009052: the typed queue signature exists before the first repair tick
     // creates queue.legs; candidateFailures uses its lint-leg entries as the initial red set.
     queueSignature: persistedQueue?.signature ?? null,

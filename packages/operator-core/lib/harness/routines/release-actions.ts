@@ -2445,29 +2445,29 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
     };
   }
   if (v.postSuiteLegs?.length) {
-    detail.postSuiteLegs = v.postSuiteLegs.slice(0, 32).map((leg) => ({
-      id: leg.id.slice(0, 128),
+    detail.postSuiteLegs = v.postSuiteLegs.map((leg) => ({
+      id: leg.id,
       status: leg.status,
       durationMs: Math.max(0, Math.floor(leg.durationMs)),
       ...(leg.skipReason ? { skipReason: leg.skipReason.slice(0, 500) } : {}),
-      ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
+      ...(leg.subjectPaths?.length ? { subjectPaths: [...leg.subjectPaths] } : {}),
       ...(leg.executionIdentity
         ? {
             executionIdentity: {
-              runId: leg.executionIdentity.runId.slice(0, 128),
-              candidate: leg.executionIdentity.candidate.slice(0, 64),
-              treeDir: leg.executionIdentity.treeDir.slice(0, 1000),
-              cwd: leg.executionIdentity.cwd.slice(0, 1000),
-              headAtStart: leg.executionIdentity.headAtStart.slice(0, 64),
+              runId: leg.executionIdentity.runId,
+              candidate: leg.executionIdentity.candidate,
+              treeDir: leg.executionIdentity.treeDir,
+              cwd: leg.executionIdentity.cwd,
+              headAtStart: leg.executionIdentity.headAtStart,
               dependencies: {
                 nodeModules: {
-                  hash: leg.executionIdentity.dependencies.nodeModules.hash?.slice(0, 128) ?? null,
+                  hash: leg.executionIdentity.dependencies.nodeModules.hash ?? null,
                   inode: leg.executionIdentity.dependencies.nodeModules.inode,
-                  source: leg.executionIdentity.dependencies.nodeModules.source.slice(0, 1000),
+                  source: leg.executionIdentity.dependencies.nodeModules.source,
                 },
               },
               setup: {
-                identity: leg.executionIdentity.setup.identity.slice(0, 200),
+                identity: leg.executionIdentity.setup.identity,
                 output: leg.executionIdentity.setup.output.slice(-1000),
               },
               result: {
@@ -2484,19 +2484,19 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   // P-009: persist the awaiting-fixer hold tick's cheap-legs measurement WITH ITS LEG NAMES —
   // this row IS the per-fire ledger entry that makes non-test legs SQL-visible during repair
   // (test_runs is structurally test-file-only, so without this the legs vanish for the whole
-  // hold). Bounded like every sibling block; rides the EXISTING kind/status, no new kind.
+  // hold). Structured identities and populations remain complete; only diagnostic previews clip.
   if (v.repairTickLegs) {
     detail.repairTickLegs = {
-      head: v.repairTickLegs.head.slice(0, 12),
+      head: v.repairTickLegs.head,
       atMs: v.repairTickLegs.atMs,
       ok: v.repairTickLegs.ok,
-      failingSignatures: v.repairTickLegs.failingSignatures.slice(0, 20).map((s) => s.slice(0, 128)),
-      legs: v.repairTickLegs.legs.slice(0, 32).map((leg) => ({
-        id: leg.id.slice(0, 128),
+      failingSignatures: [...v.repairTickLegs.failingSignatures],
+      legs: v.repairTickLegs.legs.map((leg) => ({
+        id: leg.id,
         status: leg.status,
         durationMs: Math.max(0, Math.floor(leg.durationMs)),
         ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 500) } : {}),
-        ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
+        ...(leg.subjectPaths?.length ? { subjectPaths: [...leg.subjectPaths] } : {}),
       })),
     };
   }
@@ -5247,15 +5247,14 @@ export async function trackGateStall(
               ctx.installSlug,
               inconclusivePayload,
               JSON.stringify({
-                head: tickLegs.head.slice(0, 12),
+                head: tickLegs.head,
                 atMs: tickLegs.atMs,
                 ok: tickLegs.ok,
-                failingSignatures: tickLegs.failingSignatures.slice(0, 20),
+                failingSignatures: [...tickLegs.failingSignatures],
                 // WI-10002091: persist the PER-LEG records too. Every consumer already expects
                 // them and this is the only writer that can supply them:
                 //   · `repair-tick-legs-snapshot.ts` DECLARES `legs: RepairTickLegSnapshot[]`
-                //     and documents it "Bounded to 32 by the writer" — a bound only this line
-                //     can apply, and which was never applied because the field was never written;
+                //     and consumes the complete named population;
                 //   · `readRepairTickLegOutputs` (P-021) reads `legs[].outputTail` as "the only
                 //     evidence of WHICH files a lint / post-suite leg reported", so omitting the
                 //     field made that reader return {} FOREVER and rendered every repair manifest
@@ -5265,16 +5264,16 @@ export async function trackGateStall(
                 // above: per WI-10002075 each tail is digest-first (summarizeLegOutput), so
                 // truncating from the end would discard exactly the file names the digest exists
                 // to preserve.
-                legs: tickLegs.legs.slice(0, 32).map((leg) => ({
-                  id: leg.id.slice(0, 128),
+                legs: tickLegs.legs.map((leg) => ({
+                  id: leg.id,
                   status: leg.status,
                   durationMs: Math.max(0, Math.floor(leg.durationMs)),
                   ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 1000) } : {}),
-                  ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
+                  ...(leg.subjectPaths?.length ? { subjectPaths: [...leg.subjectPaths] } : {}),
                 })),
               }),
               measuredIds,
-              JSON.stringify(tickLegs.failingSignatures.slice(0, 20)),
+              JSON.stringify(tickLegs.failingSignatures),
               JSON.stringify(candidateSnapshot),
               ctx.workspaceId,
             ],
@@ -6911,7 +6910,7 @@ async function readRepairTickLegOutputs(
   sql: Pick<import('../../work-items').OrgSql, 'unsafe'>,
   target: GateVerdictTarget,
   repairHead: string,
-): Promise<{ legOutputs: Record<string, string>; previousManifest: unknown }> {
+): Promise<{ legOutputs: Record<string, string>; subjectPaths: Record<string, string[]>; previousManifest: unknown }> {
   try {
     const rows = (await sql.unsafe(
       `SELECT metadata->'gate_health'->'repairTickLegs' AS legs,
@@ -6924,19 +6923,21 @@ async function readRepairTickLegOutputs(
     const previousManifest = Array.isArray(rows) ? rows[0]?.manifest : null;
     const raw = Array.isArray(rows) ? rows[0]?.legs : undefined;
     const head = raw && typeof raw === 'object' ? (raw as { head?: unknown }).head : null;
-    if (typeof head !== 'string' || head.length < 12 || !repairHead.startsWith(head)) return { legOutputs: {}, previousManifest };
+    if (typeof head !== 'string' || head.length < 12 || !repairHead.startsWith(head)) return { legOutputs: {}, subjectPaths: {}, previousManifest };
     const legs = raw && typeof raw === 'object' && Array.isArray((raw as { legs?: unknown }).legs)
       ? ((raw as { legs: unknown[] }).legs as Array<Record<string, unknown>>)
       : [];
     const out: Record<string, string> = {};
+    const subjectPaths: Record<string, string[]> = {};
     for (const leg of legs) {
       if (!leg || typeof leg.id !== 'string' || (leg.status !== 'fail' && leg.status !== 'errored')) continue;
-      const paths = Array.isArray(leg.subjectPaths) ? leg.subjectPaths.filter((p): p is string => typeof p === 'string').slice(0, 40) : [];
-      out[leg.id] = [...paths, typeof leg.outputTail === 'string' ? leg.outputTail : ''].join('\n');
+      const paths = Array.isArray(leg.subjectPaths) ? leg.subjectPaths.filter((p): p is string => typeof p === 'string') : [];
+      if (paths.length) subjectPaths[leg.id] = paths;
+      out[leg.id] = typeof leg.outputTail === 'string' ? leg.outputTail : '';
     }
-    return { legOutputs: out, previousManifest };
+    return { legOutputs: out, subjectPaths, previousManifest };
   } catch {
-    return { legOutputs: {}, previousManifest: null };
+    return { legOutputs: {}, subjectPaths: {}, previousManifest: null };
   }
 }
 
@@ -7180,6 +7181,7 @@ export async function writeFrozenCandidateRepairQueue(
     const evidence = await readRepairTickLegOutputs(sql, target, queue.repairHead);
     manifested = withRepairManifest(queue, Date.now(), {
       legOutputs: evidence.legOutputs,
+      subjectPaths: evidence.subjectPaths,
       workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
       // This root scripts project is outside npm workspaces.
       legProjectDirs: { 'lint:tsc:scripts': 'scripts' },

@@ -990,7 +990,7 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
     );
     const params = update![1] as unknown[];
     expect(params).toHaveLength(7);
-    expect(JSON.parse(String(params[2]))).toMatchObject({ head: 'd'.repeat(12), ok: false, failingSignatures: ['lint:tsc'] });
+    expect(JSON.parse(String(params[2]))).toMatchObject({ head: 'd'.repeat(40), ok: false, failingSignatures: ['lint:tsc'] });
     expect(JSON.parse(String(params[5]))).toMatchObject({ schemaVersion: 1, candidate, failingTestsMeasured: true });
   });
 });
@@ -4545,9 +4545,9 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       },
     });
     // The hold tick's ledger row must carry the LEG NAMES (test_runs structurally cannot),
-    // bounded exactly like every sibling detail block.
+    // with the complete measurement identity.
     expect(d.repairTickLegs).toMatchObject({
-      head: 'd'.repeat(12),
+      head: 'd'.repeat(40),
       atMs: 5,
       ok: false,
       failingSignatures: ['lint:tsc'],
@@ -4686,21 +4686,21 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       };
     };
     const legs = d.postSuiteLegs as SerializedLeg[];
-    expect(legs).toHaveLength(32);
-    expect(legs[0].id).toHaveLength(128);
+    expect(legs).toHaveLength(35);
+    expect(legs.map((leg) => leg.id)).toEqual(Array.from({ length: 35 }, (_, index) => `leg-${index}-${'i'.repeat(200)}`));
     expect(legs[0].durationMs).toBe(12);
     expect(legs[0].skipReason).toHaveLength(500);
     expect(legs[0].executionIdentity).toMatchObject({
-      runId: 'r'.repeat(128),
-      candidate: 'c'.repeat(64),
-      headAtStart: 'h'.repeat(64),
+      runId: 'r'.repeat(200),
+      candidate: 'c'.repeat(80),
+      headAtStart: 'h'.repeat(80),
       result: { status: 'failed', exit: 'completed', exitCode: 1 },
     });
-    expect(legs[0].executionIdentity.treeDir).toHaveLength(1000);
-    expect(legs[0].executionIdentity.cwd).toHaveLength(1000);
-    expect(legs[0].executionIdentity.dependencies.nodeModules.hash).toHaveLength(128);
-    expect(legs[0].executionIdentity.dependencies.nodeModules.source).toHaveLength(1000);
-    expect(legs[0].executionIdentity.setup.identity).toHaveLength(200);
+    expect(legs[0].executionIdentity.treeDir).toBe('/tree/'.padEnd(1200, 't'));
+    expect(legs[0].executionIdentity.cwd).toBe('/cwd/'.padEnd(1200, 'w'));
+    expect(legs[0].executionIdentity.dependencies.nodeModules.hash).toBe('d'.repeat(200));
+    expect(legs[0].executionIdentity.dependencies.nodeModules.source).toBe('/deps/'.padEnd(1200, 'd'));
+    expect(legs[0].executionIdentity.setup.identity).toBe('u'.repeat(300));
     expect(legs[0].executionIdentity.setup.output).toHaveLength(1000);
     expect(legs[0].executionIdentity.result.output).toHaveLength(2000);
     expect(d.repairQueue).toMatchObject({ phase: 'awaiting-fixer', fixerSpawnId: 'fixer-1' });
@@ -4722,16 +4722,19 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   // answerable. If the retry accounting stops at the broadcast, /admin/git and every gate
   // history reader still cannot tell a retry-absorbed green from a clean one — which IS the
   // defect, merely moved one layer down.
-  it('P036: persists structured failing paths independently from bounded output tails', () => {
-    const paths = ['packages/core/first.ts', 'packages/core/second.ts'];
+  it.each([31, 32, 33])('persists %i complete leg identities and path populations independently from output previews', (count) => {
+    const paths = Array.from({ length: 41 }, (_, index) => `packages/core/file-${index}.ts`);
+    const ids = Array.from({ length: count }, (_, index) => `lint:${'shared-prefix-'.repeat(17)}${index}`);
     const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
-      postSuiteLegs: [{ id: 'lint:tsc', status: 'failed', durationMs: 1, subjectPaths: paths }],
-      repairTickLegs: { head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: ['lint:tsc'],
-        legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 1, subjectPaths: paths, outputTail: 'first/file.ts ' + 'x'.repeat(2000) }],
+      postSuiteLegs: ids.map((id) => ({ id, status: 'failed', durationMs: 1, subjectPaths: paths })),
+      repairTickLegs: { head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: ids,
+        legs: ids.map((id) => ({ id, status: 'fail', durationMs: 1, subjectPaths: paths, outputTail: 'first/file.ts ' + 'x'.repeat(2000) })),
       },
     });
-    expect(detail.postSuiteLegs).toEqual([expect.objectContaining({ subjectPaths: paths })]);
-    expect(detail.repairTickLegs).toMatchObject({ legs: [expect.objectContaining({ subjectPaths: paths, outputTail: expect.stringMatching(/^first\/file.ts/) })] });
+    expect(detail.postSuiteLegs).toEqual(ids.map((id) => expect.objectContaining({ id, subjectPaths: paths })));
+    expect(detail.repairTickLegs).toMatchObject({ head: 'a'.repeat(40), failingSignatures: ids,
+      legs: ids.map((id) => expect.objectContaining({ id, subjectPaths: paths, outputTail: expect.stringMatching(/^first\/file.ts/) })),
+    });
   });
 
   it('EI-18685042025868279: buildCheckpointDetail persists cleanGreen:FALSE — the one value a truthiness check would silently drop', () => {
@@ -5185,12 +5188,14 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     signature: [],
   };
 
-  it.each(['current', 'foreign', 'missing'] as const)('P036: writer admits only %s-head lint path evidence', async (kind) => {
+  it.each(['current', 'foreign', 'missing'] as const)('writer admits complete structured paths only from the %s-head measurement', async (kind) => {
+    const paths = ['package.json', 'packages/core/file with spaces.ts',
+      ...Array.from({ length: 39 }, (_, index) => `packages/core/violating-${index}.ts`)];
     const lintQueue = { ...queue, failingTests: ['lint:tsc'], signature: [{ id: 'lint:tsc', kind: 'lint-leg' as const,
       recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: queue.repairHead }] };
     fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: {
       ...(kind === 'missing' ? {} : { head: kind === 'current' ? queue.repairHead.slice(0, 12) : 'f'.repeat(12) }),
-      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: ['packages/core/violating.ts'], outputTail: 'generic trailer' }],
+      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: paths, outputTail: 'generic trailer' }],
     } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
     await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
     const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
@@ -5199,7 +5204,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     if (!Array.isArray(params)) throw new Error('queue write must carry positional SQL parameters');
     const persisted = JSON.parse(String(params[2])).repair_queue;
     const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc');
-    expect(row.subjectPaths).toEqual(kind === 'current' ? ['packages/core/violating.ts'] : []);
+    expect(row.subjectPaths).toEqual(kind === 'current' ? paths : []);
     expect(row.admitCommand !== null).toBe(kind === 'current');
   });
 
@@ -5271,6 +5276,7 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       // coverage field, so absence materializes as blocked rather than green.
       selectiveCoverageBlocked: true,
       failureFrontierCompleteness: 'unknown',
+      legEvidence: { status: 'unknown' },
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import {
   PURE_PROOF_CAPTURE_HARD_GRACE_MS,
   SELF_WATCHDOG_MS,
   createNormalCheckpointFinalizer,
+  acquireCheckpointRunLock,
   archivePureProofCapture,
   readGatePromotionDecision,
   stampGatePromotion,
@@ -87,6 +89,84 @@ describe('CLI normal finalization and pure-proof capture', () => {
     captured.resolve();
     await done;
     expect(h.deps.releaseAndExit).toHaveBeenCalledExactlyOnceWith(0);
+  });
+
+  it('records the maintained baseline from durable verdict completion to actual lock release', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'checkpoint-occupancy-baseline-'));
+    const lockDir = join(dir, 'run.lock');
+    const lock = acquireCheckpointRunLock(lockDir);
+    const captureEntered = deferred<void>();
+    const captured = deferred<void>();
+    const archiveEntered = deferred<void>();
+    const archived = deferred<void>();
+    const boundaries: Record<string, number> = {};
+    let successor: ReturnType<typeof acquireCheckpointRunLock> | undefined;
+    expect(lock.acquired).toBe(true);
+    try {
+      const h = finalizer({
+        emitResult: vi.fn(async (verdict) => {
+          writeFileSync(join(dir, 'verdict.json'), JSON.stringify(verdict));
+          boundaries.terminalEmissionCompletedMs = performance.now();
+        }),
+        captureProofs: vi.fn(async () => {
+          boundaries.captureStartedMs = performance.now();
+          captureEntered.resolve();
+          await captured.promise;
+          boundaries.captureCompletedMs = performance.now();
+        }),
+        archiveCapture: vi.fn(async () => {
+          boundaries.archiveStartedMs = performance.now();
+          archiveEntered.resolve();
+          await archived.promise;
+          boundaries.archiveCompletedMs = performance.now();
+        }),
+        releaseAndExit: vi.fn((code) => {
+          expect(code).toBe(0);
+          lock.release();
+          boundaries.lockReleasedMs = performance.now();
+        }),
+      });
+      const done = h.finalize(result);
+      await captureEntered.promise;
+      expect(acquireCheckpointRunLock(lockDir).acquired).toBe(false);
+      captured.resolve();
+      await archiveEntered.promise;
+      expect(acquireCheckpointRunLock(lockDir).acquired).toBe(false);
+      archived.resolve();
+      await done;
+      successor = acquireCheckpointRunLock(lockDir);
+      expect(successor.acquired).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, 'verdict.json'), 'utf8'))).toEqual(result);
+      const ordered = Object.values(boundaries);
+      expect(ordered).toEqual([...ordered].sort((a, b) => a - b));
+      const sourceFiles = ['green-checkpoint.ts', 'green-checkpoint-pure-proof-capture.test.ts'].map((file) => ({
+        path: `apps/operator/lib/release/${file}`,
+        sha256: createHash('sha256').update(readFileSync(new URL(`./${file}`, import.meta.url))).digest('hex'),
+      }));
+      // Native test output is retained with the test-run record. This is a
+      // controlled fixture baseline, with real filesystem lock acquisition;
+      // it is not a live gate measurement or an improvement claim.
+      console.info('P001_CHECKPOINT_OCCUPANCY_BASELINE', JSON.stringify({
+        schemaVersion: 1,
+        implementation: 'maintained-createNormalCheckpointFinalizer',
+        sourceFiles,
+        runtime: { node: process.version, platform: process.platform, arch: process.arch, execPath: process.execPath },
+        workloadManifest: ['durable-verdict-write', 'capture-barrier', 'archive-barrier', 'actual-lock-release'],
+        disturbance: { capture: 'deferred barrier', archive: 'deferred barrier', clock: 'real monotonic milliseconds' },
+        verdict: result,
+        boundaries,
+        checkpointHeldAfterVerdictMs: boundaries.lockReleasedMs - boundaries.terminalEmissionCompletedMs,
+        captureMs: boundaries.captureCompletedMs - boundaries.captureStartedMs,
+        archiveMs: boundaries.archiveCompletedMs - boundaries.archiveStartedMs,
+        nextAcquiredDuringCapture: false,
+        nextAcquiredDuringArchive: false,
+        nextAcquiredAfterRelease: successor.acquired,
+      }));
+    } finally {
+      successor?.release();
+      lock.release();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('refuses a signal/crash-owned terminal path without emitting or capturing', async () => {

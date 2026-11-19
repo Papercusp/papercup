@@ -42,11 +42,8 @@
  * name and its own scope sentence.
  */
 
-/** How many legs may be persisted on one queue. Mirrors the writer's own 32-leg bound. */
+/** Historical bound, retained for identifying potentially incomplete legacy evidence. */
 export const FROZEN_REPAIR_LEG_CAP = 32;
-
-/** Longest persisted leg id. A registry id is short; anything longer is truncated, not dropped. */
-const MAX_LEG_ID_CHARS = 200;
 
 export type RepairLegStatus = 'pass' | 'fail' | 'errored';
 
@@ -90,12 +87,21 @@ export interface FrozenRepairLegState {
   regressions?: number;
 }
 
+/** Completeness travels with the existing queue, including the source of unreadable rows. */
+export interface RepairLegEvidence {
+  status: 'complete' | 'unknown';
+  unreadableEntries?: readonly unknown[];
+}
+
 /**
  * The shrink reading over legs. Every count is bounded by what was actually MEASURED, and
  * `measured` is checked first because zero-of-nothing and zero-of-something are different
  * answers wearing the same digit.
  */
 export interface RepairLegShrinkSummary {
+  evidenceStatus?: RepairLegEvidence['status'];
+  unreadableEntries?: number;
+  recovery?: string;
   /** False when NO leg measurement has ever been applied. NEVER read as "no legs failing". */
   measured: boolean;
   /** Distinct legs ever admitted to this cycle. The shrink baseline. */
@@ -133,15 +139,13 @@ function validTimestampValue(value: unknown): value is number {
 }
 
 /**
- * Trim to the cap while ALWAYS retaining the earliest-admitted legs. A plain tail slice would
- * drop the baseline the shrink is measured against — the same trap `capConvergenceRounds`
- * documents — so ordering is by admission, oldest first.
+ * Stable admission order without discarding later failures. The complete population is
+ * the shrink baseline; a work/display budget must not change which legs exist.
  */
-function capLegs(legs: readonly FrozenRepairLegState[]): FrozenRepairLegState[] {
-  const ordered = [...legs].sort((a, b) =>
+function orderLegs(legs: readonly FrozenRepairLegState[]): FrozenRepairLegState[] {
+  return [...legs].sort((a, b) =>
     a.admittedRound !== b.admittedRound ? a.admittedRound - b.admittedRound : a.id.localeCompare(b.id),
   );
-  return ordered.slice(0, FROZEN_REPAIR_LEG_CAP);
 }
 
 /**
@@ -175,7 +179,7 @@ export function applyRepairLegMeasurements(
      *
      * Passing the signature ids lets a measured pass RESOLVE such a leg. It does not weaken
      * rule 2 in the module docblock: silence still changes nothing, and a leg outside the
-     * signature still takes the skip, so the cap is not filled with legs that never failed.
+     * signature still takes the skip, so the baseline includes only admitted legs.
      */
     signatureIds?: readonly string[];
   },
@@ -184,19 +188,18 @@ export function applyRepairLegMeasurements(
   const signatureIds = new Set(
     (input.signatureIds ?? [])
       .filter((id) => nonBlankString(id))
-      .map((id) => id.trim().slice(0, MAX_LEG_ID_CHARS)),
+      .map((id) => id.trim()),
   );
 
   for (const measurement of input.measurements) {
     if (!nonBlankString(measurement.id)) continue;
-    const id = measurement.id.trim().slice(0, MAX_LEG_ID_CHARS);
+    const id = measurement.id.trim();
     const failing = measurement.status === 'fail' || measurement.status === 'errored';
     const prior = byId.get(id);
 
     if (!prior) {
       // A PASSING leg with no prior state was never admitted, so there is nothing to record.
-      // Persisting every green leg would fill the cap with legs that never failed and evict
-      // the ones that did — the baseline loss capLegs exists to prevent.
+      // Persisting every green leg would incorrectly expand the failure baseline.
       //
       // EXCEPT when the SIGNATURE already names it failing: that leg WAS admitted to the
       // failing set (at freeze, from the candidate), it simply never got a `legs` row
@@ -264,7 +267,7 @@ export function applyRepairLegMeasurements(
     });
   }
 
-  return capLegs([...byId.values()]);
+  return orderLegs([...byId.values()]);
 }
 
 /**
@@ -292,7 +295,7 @@ export function parseRepairLegStates(value: unknown): FrozenRepairLegState[] {
     const regressions =
       Number.isInteger(row.regressions) && (row.regressions as number) > 0 ? (row.regressions as number) : undefined;
     legs.push({
-      id: (row.id as string).slice(0, MAX_LEG_ID_CHARS),
+      id: (row.id as string).trim(),
       state: row.state,
       admittedRound: row.admittedRound as number,
       admittedHead: row.admittedHead,
@@ -306,14 +309,57 @@ export function parseRepairLegStates(value: unknown): FrozenRepairLegState[] {
       ...(regressions ? { regressions } : {}),
     });
   }
-  return capLegs(legs);
+  return orderLegs(legs);
+}
+
+/**
+ * Queue readers retain malformed source instead of silently turning it into absence.
+ * A legacy population has no completeness attestation: later partial measurements cannot
+ * reconstruct the historical admissions the old cap may already have removed.
+ */
+export function parseRepairLegEvidence(value: unknown, stored: unknown): {
+  legs: FrozenRepairLegState[]; evidence: RepairLegEvidence;
+} {
+  const marker = stored && typeof stored === 'object' && !Array.isArray(stored)
+    ? stored as Record<string, unknown> : null;
+  const unreadable: unknown[] = Array.isArray(marker?.unreadableEntries) ? [...marker.unreadableEntries] : [];
+  if (stored !== undefined && (!marker || (marker.status !== 'complete' && marker.status !== 'unknown') ||
+    (marker.unreadableEntries !== undefined && !Array.isArray(marker.unreadableEntries)))) {
+    unreadable.push({ malformedLegEvidence: stored });
+  }
+  const legs: FrozenRepairLegState[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const parsed = parseRepairLegStates([entry])[0];
+      if (!parsed || seen.has(parsed.id)) unreadable.push(entry);
+      else { seen.add(parsed.id); legs.push(parsed); }
+    }
+  } else if (value !== undefined) unreadable.push(value);
+  return {
+    legs: orderLegs(legs),
+    evidence: {
+      status: marker?.status === 'complete' && unreadable.length === 0 ? 'complete' : 'unknown',
+      ...(unreadable.length ? { unreadableEntries: unreadable } : {}),
+    },
+  };
 }
 
 /** PURE: the shrink reading over a cycle's legs. */
-export function summarizeRepairLegs(legs: readonly FrozenRepairLegState[] | undefined): RepairLegShrinkSummary {
+export function summarizeRepairLegs(
+  legs: readonly FrozenRepairLegState[] | undefined, evidence?: RepairLegEvidence,
+): RepairLegShrinkSummary {
   const all = legs ?? [];
+  const evidenceSummary = evidence ? {
+    evidenceStatus: evidence.status,
+    unreadableEntries: evidence.unreadableEntries?.length ?? 0,
+    ...(evidence.status === 'unknown' ? {
+      recovery: 'Remeasure the complete leg registry at the repair head. Historical admission completeness remains unknown until a new repair cycle.',
+    } : {}),
+  } : {};
   if (all.length === 0) {
     return {
+      ...evidenceSummary,
       measured: false,
       admittedLegs: 0,
       fixedLegs: 0,
@@ -330,16 +376,19 @@ export function summarizeRepairLegs(legs: readonly FrozenRepairLegState[] | unde
   const failing = all.filter((leg) => leg.state === 'failing');
   const fixed = all.filter((leg) => leg.state === 'fixed');
   return {
+    ...evidenceSummary,
     measured: true,
     admittedLegs: all.length,
     fixedLegs: fixed.length,
     failingLegs: failing.length,
     failingLegIds: failing.map((leg) => leg.id).sort(),
     fixedLegIds: fixed.map((leg) => leg.id).sort(),
-    shrinkTotal: all.length - failing.length,
+    shrinkTotal: evidence?.status === 'unknown' ? null : all.length - failing.length,
     regressedLegs: all.filter((leg) => (leg.regressions ?? 0) > 0).length,
     lastMeasuredAtMs: all.reduce((newest, leg) => (leg.lastMeasuredAtMs > newest ? leg.lastMeasuredAtMs : newest), 0),
-    scope: LEG_SCOPE_SENTENCE,
+    scope: evidence?.status === 'unknown'
+      ? `INCOMPLETE historical leg evidence; counts describe retained observations only. ${LEG_SCOPE_SENTENCE}`
+      : LEG_SCOPE_SENTENCE,
   };
 }
 

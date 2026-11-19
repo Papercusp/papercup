@@ -79,6 +79,7 @@ import {
   summarizeRepairLegs,
   type FrozenRepairLegState,
   type RepairLegShrinkSummary,
+  type RepairLegEvidence,
   type RepairLegStatus,
 } from './release/repair-leg-lifecycle';
 import {
@@ -427,6 +428,8 @@ export interface ReadGateCandidateFailuresOpts {
    * the latter can say whether a leg's fix has landed.
    */
   queueLegs?: readonly FrozenRepairLegState[] | null;
+  /** Completeness of that lifecycle, including recoverable malformed/legacy evidence. */
+  queueLegEvidence?: RepairLegEvidence;
   /**
    * WI-6554700010009052: the persisted candidate signature is the first record of a red
    * lint leg. It exists before the first repair tick has populated either queueLegs or
@@ -509,6 +512,7 @@ function unavailable(
 export function unmeasuredNonTestLegs(
   queueLegs?: readonly FrozenRepairLegState[] | null,
   queueSignature?: readonly RepairSignatureEntry[] | null,
+  queueLegEvidence?: RepairLegEvidence,
 ): GateCandidateFailures['nonTestLegs'] {
   const perLeg = buildPerLeg(null, queueLegs, queueSignature);
   const outstanding = outstandingLegIds(perLeg, null);
@@ -529,7 +533,7 @@ export function unmeasuredNonTestLegs(
     reading,
     perLeg,
     outstanding,
-    shrink: summarizeRepairLegs(queueLegs ?? undefined),
+    shrink: summarizeRepairLegs(queueLegs ?? undefined, queueLegEvidence),
   };
 }
 
@@ -546,8 +550,9 @@ function buildNonTestLegs(
   repairHeadSha: string | null,
   queueLegs?: readonly FrozenRepairLegState[] | null,
   queueSignature?: readonly RepairSignatureEntry[] | null,
+  queueLegEvidence?: RepairLegEvidence,
 ): GateCandidateFailures['nonTestLegs'] {
-  if (!snap) return unmeasuredNonTestLegs(queueLegs, queueSignature);
+  if (!snap) return unmeasuredNonTestLegs(queueLegs, queueSignature, queueLegEvidence);
   const current = repairTickLegsCurrent(snap, repairHeadSha);
   const failing = snap.legs.filter((l) => l.status !== 'pass');
   const reading =
@@ -566,7 +571,7 @@ function buildNonTestLegs(
     reading,
     perLeg,
     outstanding: outstandingLegIds(perLeg, current),
-    shrink: summarizeRepairLegs(queueLegs ?? undefined),
+    shrink: summarizeRepairLegs(queueLegs ?? undefined, queueLegEvidence),
   };
 }
 
@@ -1111,7 +1116,7 @@ export async function readGateCandidateFailures(
   const nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'] = opts.repairTickLegs
     ? 'measured'
     : 'not-recorded';
-  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs, opts.queueSignature);
+  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs, opts.queueSignature, opts.queueLegEvidence);
   if (opts.repairQueueRead?.status === 'unreadable') {
     return unavailable(
       `${describeUnreadableFrozenCandidateRepairQueue(opts.repairQueueRead)}; ` +
