@@ -32,7 +32,7 @@ function makeFakeSql(opts: { failInsert?: boolean; insertReceipt?: { count?: unk
     if (Array.isArray(first) && Object.prototype.hasOwnProperty.call(first, 'raw')) {
       const text = (first as unknown as string[]).join(' ? ');
       statements.push(text);
-      if (/INSERT INTO/.test(text)) {
+      if (/INSERT INTO harness_shared.psu_pty_host_events/.test(text)) {
         if (opts.failInsert) return Promise.reject(new Error('insert boom'));
         inserts.push({ text, values: rest });
         // The UNNEST insert binds one array per column and every column array has the same
@@ -48,6 +48,7 @@ function makeFakeSql(opts: { failInsert?: boolean; insertReceipt?: { count?: unk
     // the UNNEST form had been replaced, so fail loudly instead of quietly supporting both.
     throw new Error('unexpected sql() helper call — the ingest insert must bind via unnest');
   }) as never;
+  Object.assign(sql as object, { begin: (work: (tx: typeof sql) => unknown) => work(sql) });
 
   return { sql, statements, inserts, insertedCount: () => inserted };
 }
