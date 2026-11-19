@@ -133,7 +133,8 @@ function policyLayer(policy: AuthorityPolicy): PolicyLayer {
     ...(policy.exceptions !== undefined ? { exceptions: [...policy.exceptions] } : {}) };
 }
 
-function snapshotProblem(snapshot: AuthoritySnapshot): { code: 'authority-unavailable' | 'authority-malformed'; reason: string } | null {
+/** Shared structural gate for canonical loaders and permission evaluation. */
+export function authoritySnapshotProblem(snapshot: AuthoritySnapshot): { code: 'authority-unavailable' | 'authority-malformed'; reason: string } | null {
   const unavailable = (reason: string) => ({ code: 'authority-unavailable' as const, reason });
   const malformed = (reason: string) => ({ code: 'authority-malformed' as const, reason });
   if (!snapshot || !Array.isArray(snapshot.required) || !Array.isArray(snapshot.policies) ||
@@ -219,7 +220,7 @@ export function evaluateEffectivePermission(
     resource: { kind: request.resource.kind, operation: request.resource.operation, target: request.resource.target },
     ...(request.constraints !== undefined ? { constraints } : {}),
   };
-  const problem = snapshotProblem(snapshot);
+  const problem = authoritySnapshotProblem(snapshot);
   if (problem) return { allowed: false, ...problem, request: trustedRequest, revisions: null, trace: [] };
   const governed: GovernedRequest = {
     ...constraints,
@@ -290,7 +291,7 @@ export function authorityRevisionIsCurrent(token: AuthorityRevisionVector | null
   if (!token || typeof token !== 'object' || !validText(token.contextRevision) ||
       !Array.isArray(token.authorities) || token.authorities.some(ref => !ref ||
         !AUTHORITY_KINDS.includes(ref.kind) || !validText(ref.id) || !validText(ref.revision)) ||
-      snapshotProblem(snapshot) || token.contextRevision !== snapshot.contextRevision ||
+      authoritySnapshotProblem(snapshot) || token.contextRevision !== snapshot.contextRevision ||
       token.authorities.length !== snapshot.policies.length || !unique(token.authorities.map(keyOf))) return false;
   return snapshot.policies.every(policy => token.authorities.some(ref => keyOf(ref) === keyOf(policy) && ref.revision === policy.revision));
 }
