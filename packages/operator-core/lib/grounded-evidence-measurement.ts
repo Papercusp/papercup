@@ -95,6 +95,12 @@ export interface GroundedInvocation {
   purpose: 'retrieval' | 'authoring' | 'other' | 'unknown';
   purposeRef: string;
 }
+export type GroundedAttemptDisposition = 'pending' | 'returned' | 'error' | 'interrupted';
+export interface GroundedDurableAttempt {
+  id: string;
+  source: 'live' | 'recorded' | 'unknown';
+  disposition?: GroundedAttemptDisposition;
+}
 // Some reviewed upserts report a positive affected count for an unchanged
 // payload. Those writers can prove only zero-row no-ops from CommandComplete.
 type GroundedPersistedRows = number | 'zero-only';
@@ -303,7 +309,7 @@ export interface GroundedMeasurementInput {
   } | null;
   models?: GroundedCensus<GroundedModelUsage>;
   invocations?: GroundedCensus<GroundedInvocation>;
-  durable?: GroundedCensus<{ id: string; source: 'live' | 'recorded' }>;
+  durable?: GroundedCensus<GroundedDurableAttempt>;
   storage?: GroundedCensus<GroundedStorageOperation>;
   contracts?: GroundedCensus<GroundedContractChange>;
 }
@@ -1685,7 +1691,7 @@ export function observeGroundedToolDispatch<Rest extends unknown[], Result>(inpu
   dispatch: (tool: string, args: unknown, ...rest: Rest) => Promise<Result>;
 }) {
   const ids: string[] = [], rows: GroundedInvocation[] = [];
-  const admissions: GroundedInvocation[] = [];
+  const admissions: Array<GroundedInvocation & { disposition: GroundedAttemptDisposition }> = [];
   const outstanding = new Set<string>();
   let pending = 0, sealed = false, late = false, captureFailed = false;
   const notify = () => { try { input.onObservation?.(); } catch { captureFailed = true; } };
@@ -1697,11 +1703,12 @@ export function observeGroundedToolDispatch<Rest extends unknown[], Result>(inpu
     let originalArgs: unknown;
     try { originalArgs = structuredClone(args); }
     catch { originalArgs = null; captureFailed = true; }
-    const row: GroundedInvocation = { id, tool, args: originalArgs,
+    const row: GroundedInvocation & { disposition: GroundedAttemptDisposition } = { id, tool, args: originalArgs,
       boundary: input.boundary, originRef: input.originRef,
-      purpose: registration?.purpose ?? 'unknown', purposeRef: registration?.purposeRef ?? '' };
+      purpose: registration?.purpose ?? 'unknown', purposeRef: registration?.purposeRef ?? '', disposition: 'pending' };
     admissions.push(row); outstanding.add(id); notify();
-    try { return await input.dispatch(tool, args, ...rest); }
+    try { const result = await input.dispatch(tool, args, ...rest); row.disposition = 'returned'; return result; }
+    catch (error) { row.disposition = 'error'; throw error; }
     finally { rows.push(row); outstanding.delete(id); pending--; notify(); }
   };
   const capture = () => ({ scope: { ...input.scope }, sourceRef: input.sourceRef,
@@ -1715,34 +1722,41 @@ export function observeGroundedToolDispatch<Rest extends unknown[], Result>(inpu
  * return/throw behavior. This does not guess DBOS persistence byte counts. */
 export function observeGroundedDurableHost<T extends { runStep<R>(name: string, fn: () => Promise<R>): Promise<R> }>(input: {
   scope: GroundedMeasurementScope; host: T; sourceRef: string; attemptId: string;
+  onObservation?: () => void;
 }) {
-  const ids: string[] = [], rows: Array<{ id: string; source: 'live' | 'recorded' }> = [];
-  let pending = 0, sealed = false, late = false;
+  const ids: string[] = [], rows: GroundedDurableAttempt[] = [], admissions: GroundedDurableAttempt[] = [];
+  const outstanding = new Set<string>();
+  let pending = 0, sealed = false, late = false, captureFailed = false;
+  const notify = () => { try { input.onObservation?.(); } catch { captureFailed = true; } };
   const runStep = async <R>(name: string, fn: () => Promise<R>): Promise<R> => {
     late ||= sealed;
     const id = `${input.attemptId}:durable:${ids.length + 1}:${name}`;
     ids.push(id); pending++;
-    let live = false;
+    const row: GroundedDurableAttempt = { id, source: 'unknown', disposition: 'pending' };
+    admissions.push(row); outstanding.add(id); notify();
     try {
-      const result = await input.host.runStep(name, async () => { live = true; return fn(); });
-      rows.push({ id, source: live ? 'live' : 'recorded' });
+      const result = await input.host.runStep(name, async () => { row.source = 'live'; notify(); return fn(); });
+      if (row.source === 'unknown') row.source = 'recorded';
+      row.disposition = 'returned';
       return result;
-    } finally { pending--; }
+    } catch (error) { row.disposition = 'error'; throw error; }
+    finally { rows.push(row); outstanding.delete(id); pending--; notify(); }
   };
   const host = new Proxy(input.host, { get(target, key) {
     if (key === 'runStep') return runStep;
     const value = Reflect.get(target, key, target);
     return typeof value === 'function' ? value.bind(target) : value;
   } });
-  const capture = (complete: boolean): GroundedCensus<{ id: string; source: 'live' | 'recorded' }> => ({
-    scope: { ...input.scope }, sourceRef: input.sourceRef, complete,
+  const capture = () => ({
+    scope: { ...input.scope }, sourceRef: input.sourceRef, complete: sealed && pending === 0 && !late && !captureFailed,
     ids: [...ids], rows: rows.map(row => ({ ...row })),
+    diagnostics: { pending, pendingIds: [...outstanding], late, captureFailed, admissions: admissions.map(row => ({ ...row })) },
   });
   return { host,
     // Retain admitted work before a producer can die. A snapshot never closes
     // admission or certifies a drain, even when no step happens to be pending.
-    snapshot: () => capture(false),
-    seal: () => { sealed = true; return capture(pending === 0 && !late); },
+    snapshot: capture,
+    seal: () => { sealed = true; return capture(); },
   };
 }
 

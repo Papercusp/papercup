@@ -153,6 +153,7 @@ if (process.env.DURABLE_CRASH_GEC_SCOPE) {
   const original = DBOS.runStep.bind(DBOS);
   const optionsByName = new Map<string, Parameters<typeof DBOS.runStep>[1]>();
   const tap = observeGroundedDurableHost({ scope, sourceRef: path, attemptId: `${runKey}:${mode}`,
+    onObservation: () => retain(false),
     host: { runStep<R>(name: string, fn: () => Promise<R>) { return original(fn, optionsByName.get(name)); } } });
   const admittedAt = new Date().toISOString(), monotonicStartMs = performance.now();
   const sqlObservations: import('../lib/grounded-evidence-measurement').GroundedSqlObservation[] = [];

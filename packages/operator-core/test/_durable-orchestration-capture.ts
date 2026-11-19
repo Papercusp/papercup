@@ -5,7 +5,7 @@ import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { GroundedCensus, GroundedMeasurementScope, GroundedNonPersistingSql, observeGroundedStoreOperations } from '../lib/grounded-evidence-measurement';
 
-const crashFixtureSourceHash = 'a4b1bc623d29fbd30fa950357b79c8770fa5abbb955767cba9f34848cd61f904';
+const crashFixtureSourceHash = '9f3a9ecfe52dcdb28eddc2de674cb308c74a1e16967055a1e5d6e6bab614eb27';
 const fixtureSerializerSourceRef = 'source:postgres/src/connection.js@37fd9fb939eb686e75745dfaffaeea7ac6f697902cc8985e9894270ac7de0eeb'
   + '+types.js@1883bd4536eab1c94b9e708d325b13708b0f18ec80020e3a825f34a72f603b81#Bind';
 
@@ -421,6 +421,50 @@ export function captureDurableProcessBoundary<T extends {
       unreturnedIds: admittedIds.filter(id => !terminalIds.includes(id)) };
   }
   const complete = gaps.length === 0;
+  // A distinct edition over NEW recorder admissions. The child remains
+  // unsealed; only this parent observed the end of its process lifetime.
+  // Historical captures lack dispositions and cannot qualify via this path.
+  const accountAttempts = (key: 'census' | 'invocations') => {
+    const failures = [...gaps];
+    const census = original && object(original[key]) ? original[key] : null;
+    const diagnostics = census && object(census.diagnostics) ? census.diagnostics : null;
+    const population = populations[key];
+    const admissions = diagnostics?.admissions;
+    const rows: Array<{ id: string; disposition: 'returned' | 'error' | 'interrupted'; [key: string]: unknown }> = [];
+    if (!population || !diagnostics || !Array.isArray(admissions)
+      || !isDeepStrictEqual(admissions.map(row => object(row) ? row.id : null), population.admittedIds)
+      || !Array.isArray(diagnostics.pendingIds)
+      || !isDeepStrictEqual([...diagnostics.pendingIds].sort(), [...population.unreturnedIds].sort())
+      || diagnostics.pending !== population.unreturnedIds.length
+      || diagnostics.late !== false || diagnostics.captureFailed !== false) {
+      failures.push(key + ':missing-attempt-accounting');
+    } else {
+      for (const admission of admissions) {
+        if (!object(admission) || typeof admission.id !== 'string') {
+          failures.push(key + ':invalid-attempt'); continue;
+        }
+        const returned = (census!.rows as Array<{ id: string }>).find(row => row.id === admission.id);
+        const disposition = admission.disposition === 'pending' && !returned && expectedKill ? 'interrupted'
+          : returned && isDeepStrictEqual(returned, admission)
+            && (admission.disposition === 'returned' || admission.disposition === 'error') ? admission.disposition : null;
+        if (!disposition) { failures.push(key + ':unqualified-attempt-disposition'); continue; }
+        if (key === 'census' && admission.source !== 'live' && admission.source !== 'recorded')
+          failures.push(key + ':unknown-replay-source');
+        if (key === 'invocations' && (typeof admission.tool !== 'string' || !admission.tool.trim()
+          || !['consumer', 'internal', 'control'].includes(String(admission.boundary))
+          || !['retrieval', 'authoring', 'other'].includes(String(admission.purpose))
+          || typeof admission.originRef !== 'string' || !admission.originRef.trim()
+          || typeof admission.purposeRef !== 'string' || !admission.purposeRef.trim()))
+          failures.push(key + ':unknown-caller-purpose');
+        rows.push({ ...structuredClone(admission), id: admission.id, disposition });
+      }
+    }
+    return { scope: { ...scope }, sourceRef: sourceRef + '#attemptAccounting/' + key,
+      complete: failures.length === 0, ids: [...(population?.admittedIds ?? [])], rows, gaps: failures };
+  };
+  const attemptAccounting = { schemaVersion: 'gec-interrupted-attempts-v1',
+    accountingScope: 'durable-and-dispatch-attempts', originalCaptureRef: path,
+    census: accountAttempts('census'), invocations: accountAttempts('invocations') };
   const processCapture = { kind: 'durable-process-boundary', acceptance: 'unmeasured',
     accountingScope: 'process-lifetime-and-admissions', scope: { ...scope }, sourceRef,
     originalCaptureRef: path, journal: original?.retentionJournal ?? null,
@@ -428,7 +472,7 @@ export function captureDurableProcessBoundary<T extends {
     process: { pid: child.pid, status: child.status, signal: child.signal, error: child.error?.message ?? null,
       stdout: child.stdout ?? null, stderr: child.stderr ?? null },
     terminal: expectedKill ? 'intentional-sigkill' : normalExit ? 'drained-exit' : 'unqualified',
-    complete, gaps, populations,
+    complete, gaps, populations, attemptAccounting,
     values: { processWallMs: monotonicEndMs - monotonicStartMs,
       recorderJournalBytes: original?.retentionJournal.bytes ?? null,
       durableAdmissions: complete ? populations.census!.admittedIds.length : null,

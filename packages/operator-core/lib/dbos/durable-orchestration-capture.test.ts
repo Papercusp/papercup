@@ -87,7 +87,7 @@ afterEach(() => {
 });
 
 describe('source-reviewed DBOS nonpersisting SQL', () => {
-  const crashFixtureHash = 'a4b1bc623d29fbd30fa950357b79c8770fa5abbb955767cba9f34848cd61f904';
+  const crashFixtureHash = '9f3a9ecfe52dcdb28eddc2de674cb308c74a1e16967055a1e5d6e6bab614eb27';
   const sources = {
     systemDatabase: 'de943d85e4414114a6bb01b079051b0e59940a4911cf9e54f05e41f24011b02b',
     databaseUtils: 'deff0db24fad793b10ad21314a8333c2b4398e4c26c25a6cedd8e24fbff54ca4',
@@ -559,6 +559,46 @@ describe('parent-owned durable process boundary', () => {
       import fs from 'node:fs';
       const { createDurableCaptureRecorder } = await import(process.env.CAPTURE_MODULE);
       const scope = JSON.parse(process.env.CAPTURE_SCOPE), fault = process.env.CAPTURE_FAULT;
+      if (fault.startsWith('attempt-')) {
+        const { observeGroundedDurableHost, observeGroundedToolDispatch } = await import(process.env.MEASUREMENT_MODULE);
+        const recorder = createDurableCaptureRecorder(process.env.CAPTURE_PATH);
+        let termination = null;
+        const capture = (settled = false) => ({ processId: process.pid, processTermination: termination,
+          boundary: settled ? { scope, sourceRef: process.env.CAPTURE_PATH, drained: true } : null,
+          census: settled ? tap.seal() : tap.snapshot(), invocations: settled ? inv.seal() : inv.snapshot(),
+          storage: { scope, sourceRef: process.env.CAPTURE_PATH, complete: settled, ids: [], rows: [] } });
+        const retain = () => recorder.retain(capture());
+        const tap = observeGroundedDurableHost({ scope, sourceRef: process.env.CAPTURE_PATH, attemptId: 'actual',
+          onObservation: retain, host: { async runStep(name, fn) {
+            if (name === 'replay') return 'recorded';
+            if (name === 'unknown') throw new Error('host refused before callback');
+            return fn();
+          } } });
+        const inv = observeGroundedToolDispatch({ scope, sourceRef: process.env.CAPTURE_PATH, attemptId: 'actual',
+          boundary: 'internal', originRef: 'original:transport', onObservation: retain,
+          registrations: { read: { purpose: 'retrieval', purposeRef: 'original:read' } },
+          dispatch: async (_tool, args) => args.pending ? new Promise(() => {}) : 'original' });
+        await tap.host.runStep('returned', async () => inv.dispatch('read', {}));
+        await tap.host.runStep('replay', async () => { throw new Error('replay repeated callback'); });
+        try { await tap.host.runStep('failed', async () => { throw new Error('original live failure'); }); } catch {}
+        if (fault === 'attempt-unknown') {
+          try { await tap.host.runStep('unknown', async () => 'never'); } catch {}
+        }
+        if (fault === 'attempt-exit') { recorder.retain(capture(true)); }
+        else {
+          void tap.host.runStep('pending', () => inv.dispatch('read', { pending: true }));
+          termination = { pid: process.pid, signal: 'SIGKILL' };
+          const final = capture();
+          if (fault === 'attempt-lost-admission') final.census.diagnostics.admissions.pop();
+          if (fault === 'attempt-lost-terminal') final.census.rows.shift();
+          if (fault === 'attempt-false-pending') final.invocations.diagnostics.pendingIds.length = 0;
+          if (fault === 'attempt-false-return') final.invocations.diagnostics.admissions.at(-1).disposition = 'returned';
+          if (fault === 'attempt-loss') final.census.diagnostics.captureFailed = true;
+          if (fault === 'attempt-unknown-purpose') final.invocations.diagnostics.admissions.at(-1).purpose = 'unknown';
+          recorder.retain(final);
+          process.kill(process.pid, 'SIGKILL');
+        }
+      } else {
       const census = () => ({ scope, sourceRef: process.env.CAPTURE_PATH, complete: false,
         ids: ['returned', 'pending'], rows: [{ id: 'returned', source: 'live' }] });
       const capture = { processId: process.pid, boundary: null, census: census(), invocations: census(), storage: census(),
@@ -579,10 +619,12 @@ describe('parent-owned durable process boundary', () => {
       createDurableCaptureRecorder(process.env.CAPTURE_PATH).retain(capture);
       if (fault === 'partial') fs.appendFileSync(process.env.CAPTURE_PATH + '.journal', '{"partial":');
       if (!fault.startsWith('exit')) process.kill(process.pid, 'SIGKILL');
+      }
     `;
     return spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source], {
       cwd: new URL('../..', import.meta.url), timeout: 20_000, encoding: 'utf8',
       env: { ...process.env, CAPTURE_PATH: path, CAPTURE_FAULT: fault, CAPTURE_SCOPE: JSON.stringify(scope),
+        MEASUREMENT_MODULE: new URL('../grounded-evidence-measurement.ts', import.meta.url).href,
         CAPTURE_MODULE: new URL('../../test/_durable-orchestration-capture.ts', import.meta.url).href },
     });
   }
@@ -629,6 +671,45 @@ describe('parent-owned durable process boundary', () => {
     expect(() => captureDurableProcessBoundary(path, scope, () => { throw failure; })).toThrow(failure);
     expect(JSON.parse(readFileSync(path + '.process.json', 'utf8'))).toMatchObject({
       state: 'launch-threw', complete: false, error: failure.message });
+  });
+
+  it.each(['attempt-kill', 'attempt-exit'])('qualifies a separate %s attempt edition from actual recorder observations', fault => {
+    const { path, original } = fixture();
+    const { processCapture, child: result } = captureDurableProcessBoundary(path, scope, () => child(path, fault));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(processCapture.complete, JSON.stringify(processCapture.gaps)).toBe(true);
+    const edition = processCapture.attemptAccounting;
+    expect(edition).toMatchObject({ schemaVersion: 'gec-interrupted-attempts-v1',
+      census: { complete: true, gaps: [] }, invocations: { complete: true, gaps: [] } });
+    expect(edition.census.rows.map(row => [row.source, row.disposition])).toEqual([
+      ['live', 'returned'], ['recorded', 'returned'], ['live', 'error'],
+      ...(fault === 'attempt-kill' ? [['live', 'interrupted']] : []),
+    ]);
+    expect(edition.invocations.rows.map(row => row.disposition)).toEqual(fault === 'attempt-kill'
+      ? ['returned', 'interrupted'] : ['returned']);
+    expect(readFileSync(path, 'utf8')).toBe(original);
+    const retained = reconstructDurableCapture(path);
+    expect(retained.census).toMatchObject({ complete: fault === 'attempt-exit' });
+    if (fault === 'attempt-kill') {
+      expect(retained.boundary).toBeNull();
+      expect(retained).toHaveProperty('census.diagnostics.admissions',
+        expect.arrayContaining([expect.objectContaining({ source: 'live', disposition: 'pending' })]));
+      expect(retained).toHaveProperty('census.rows.length', 3);
+    }
+  });
+
+  it.each(['attempt-unknown', 'attempt-lost-admission', 'attempt-lost-terminal', 'attempt-false-pending',
+    'attempt-false-return', 'attempt-loss', 'attempt-unknown-purpose'])
+  ('refuses incomplete or misclassified attempt accounting after %s', fault => {
+    const { path } = fixture();
+    const { processCapture, child: result } = captureDurableProcessBoundary(path, scope, () => child(path, fault));
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.signal).toBe('SIGKILL');
+    const edition = processCapture.attemptAccounting;
+    const target = fault.startsWith('attempt-false') || fault === 'attempt-unknown-purpose' ? edition.invocations : edition.census;
+    expect(target.complete).toBe(false);
+    expect(target.gaps.length).toBeGreaterThan(0);
+    expect(reconstructDurableCapture(path).boundary).toBeNull();
   });
 
   it('retains and reports a child startup failure before its first journal frame', () => {

@@ -1641,7 +1641,41 @@ describe('GEC.N1-N8 persisted slice regression and cost', () => {
     const failed = observeGroundedDurableHost({ scope, host: original, sourceRef: 'host:failure', attemptId: 'attempt2' });
     await expect(failed.host.runStep('failure', async () => { throw new Error('original failure'); })).rejects.toThrow('original failure');
     input.durable = failed.seal();
+    expect(input.durable.rows).toMatchObject([{ source: 'live', disposition: 'error' }]);
+    expect(measureGroundedEvidence(input).values.durableSteps).toBe(1);
+    const refusal = new Error('host refused before callback');
+    const unknown = observeGroundedDurableHost({ scope, sourceRef: 'host:unknown', attemptId: 'attempt3',
+      host: { async runStep<R>(_name: string, _fn: () => Promise<R>): Promise<R> { throw refusal; } } });
+    await expect(unknown.host.runStep('refusal', callback)).rejects.toBe(refusal);
+    input.durable = unknown.seal();
+    expect(input.durable.rows).toMatchObject([{ source: 'unknown', disposition: 'error' }]);
     expect(measureGroundedEvidence(input).values.durableSteps).toBeNull();
+  });
+
+  it('retains durable admission and callback entry before death, and rejects recorder loss or late work', async () => {
+    const observations: unknown[] = [];
+    let settle!: () => void;
+    const observed = observeGroundedDurableHost({ scope, sourceRef: 'host:interruption', attemptId: 'pending',
+      host: { async runStep<R>(_name: string, fn: () => Promise<R>) { return fn(); } },
+      onObservation: (): void => { observations.push(observed.snapshot()); } });
+    const pending = observed.host.runStep('live', () => new Promise<void>(resolve => { settle = resolve; }));
+    expect(observations).toMatchObject([
+      { rows: [], diagnostics: { pending: 1, admissions: [{ source: 'unknown', disposition: 'pending' }] } },
+      { rows: [], diagnostics: { pending: 1, admissions: [{ source: 'live', disposition: 'pending' }] } },
+    ]);
+    const crash = observed.snapshot();
+    crash.diagnostics.admissions[0]!.source = 'recorded';
+    expect(observed.snapshot().diagnostics.admissions[0]!.source).toBe('live');
+    expect(observed.seal().complete).toBe(false);
+    settle(); await pending;
+    expect(observed.seal().complete).toBe(true);
+    await observed.host.runStep('late', async () => 'original');
+    expect(observed.seal()).toMatchObject({ complete: false, diagnostics: { late: true } });
+    const failed = observeGroundedDurableHost({ scope, sourceRef: 'host:lost', attemptId: 'lost',
+      host: { async runStep<R>(_name: string, fn: () => Promise<R>) { return fn(); } },
+      onObservation: () => { throw new Error('retention failed'); } });
+    expect(await failed.host.runStep('kept', async () => 'original')).toBe('original');
+    expect(failed.seal()).toMatchObject({ complete: false, diagnostics: { captureFailed: true } });
   });
 });
 
