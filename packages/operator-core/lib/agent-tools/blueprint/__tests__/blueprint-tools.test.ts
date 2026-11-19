@@ -85,10 +85,18 @@ describe('blueprint:validate', () => {
 
   it('validates an abstract identity supplied inline', async () => {
     const r = await run(validateTool, {
-      source: 'id: inline-identity\nextends: base\nslots:\n  - slot: practice\n',
+      source: 'id: inline-identity\nextends: identity-root\nslots:\n  - slot: practice\n',
     });
     expect(r.ok).toBe(true);
     expect(r.summary).toMatchObject({ id: 'inline-identity', sourceKind: 'identity', runnable: false, slots: ['practice'] });
+  });
+
+  it('rejects an inline identity extending a workspace blueprint', async () => {
+    const r = await run(validateTool, {
+      source: 'id: inline-identity\nextends: base\nslots:\n  - slot: practice\n',
+    });
+    expect(r.ok).toBe(false);
+    expect(r.parseError).toContain('identity "inline-identity" cannot extend workspace blueprint "base"');
   });
 
   it('reports a parse error for malformed source', async () => {
