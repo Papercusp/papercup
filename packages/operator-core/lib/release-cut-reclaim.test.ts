@@ -748,12 +748,31 @@ describe('gather + execute against a real temporary repo', () => {
     expect(adopted.cap.beforeBytes).toBeGreaterThan(0);
     expect(adopted.cap.afterBytes).toBe(adopted.cap.beforeBytes);
     expect(slot.launches).toHaveLength(1);
+    const evidence = JSON.parse(JSON.stringify(adopted.cap.usageOutputs[0]));
+    expect(evidence.status).toBe('verified');
+    expect(evidence.recovery.tool).toBe('capability:read');
+    const rawBeforeReplacement = fs.readFileSync(evidence.stdout.path);
+    expect(rawBeforeReplacement.length).toBe(evidence.stdout.byteCount);
+    expect(rawBeforeReplacement.toString()).toContain(tree);
+    const archiveRoot = slot.dir + '.evidence';
+    const expired = path.join(archiveRoot, 'expired-unreferenced');
+    const pinned = path.join(archiveRoot, 'expired-referenced');
+    fs.mkdirSync(expired); fs.mkdirSync(pinned);
+    fs.writeFileSync(path.join(pinned, 'stdout'), 'referenced source');
+    const old = new Date(Date.now() - 3 * 24 * 3600_000);
+    fs.utimesSync(expired, old, old); fs.utimesSync(pinned, old, old);
     // Consumed terminal evidence cannot be reused, even if the path set matches.
-    const next = await reclaimCutWorktrees(changed, {}, { usageWalk: slot.usageWalk });
+    const next = await reclaimCutWorktrees(changed, {}, { usageWalk: slot.usageWalk,
+      pinProtection: p => p === pinned });
     expect(next.ok).toBe(true);
     expect(next.cap.retainedPaths).toEqual([tree, other]);
     expect(slot.launches).toHaveLength(2);
     expect((await readWalkState(slot.dir))?.requestKey).not.toBe(original.requestKey);
+    expect(next.cap.usageOutputs[0]?.attemptKey).not.toBe(evidence.attemptKey);
+    expect(fs.readFileSync(evidence.stdout.path)).toEqual(rawBeforeReplacement);
+    expect(fs.existsSync(evidence.manifestPath)).toBe(true);
+    expect(fs.existsSync(expired)).toBe(false);
+    expect(fs.readFileSync(path.join(pinned, 'stdout'), 'utf8')).toBe('referenced source');
     expect(receipt.delegates[0].detail.pendingWalk).toEqual(pendingWalk);
     await slot.finished();
   });

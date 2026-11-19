@@ -24,7 +24,7 @@ import { papercuspHome } from '@papercusp/host-platform/home';
  * its record can never interleave with its replacement.
  */
 import { createReadStream, promises as fsp, readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
@@ -64,6 +64,8 @@ export interface DetachedWalkState {
   adoptions: number;
   /** Exact ordered population/identity and output contract for a multi-root usage walk. */
   requestKey?: string;
+  /** Immutable attempt identity, also used by inner collectors' evidence files. */
+  attemptKey?: string;
 }
 
 export interface WalkLaunch {
@@ -101,7 +103,7 @@ export interface DetachedWalkOptions {
   graceMs?: number;
   maxAttempts?: number;
   /** Builds the walk command from du's arguments; tests substitute a slow or failing du. */
-  command?: (duArgs: string[]) => [string, string[]];
+  command?: (duArgs: string[], attempt: { dir: string; attempt: number; key: string }) => [string, string[]];
   launch?: WalkLauncher;
   isAlive?: (state: DetachedWalkState) => boolean;
   /** Ends an overdue walk; defaults to SIGTERM to its process group, identity-checked. */
@@ -295,9 +297,10 @@ export async function runDetachedWalk<T>(
 
   async function launchAttempt(walkRoot: string, attempt: number, adoptions: number): Promise<void> {
     const files = walkAttemptFiles(dir, attempt);
+    const attemptKey = randomUUID();
     await Promise.all([files.out, files.err, files.exit, `${files.exit}.part`].map((p) => fsp.rm(p, { force: true })));
     const [cmd, args] = opts.command
-      ? opts.command(duArgs)
+      ? opts.command(duArgs, { dir, attempt, key: attemptKey })
       : censusCommand('du', duArgs, {
           ionice: await resolveCensusBin('ionice'),
           nice: await resolveCensusBin('nice'),
@@ -320,6 +323,7 @@ export async function runDetachedWalk<T>(
       launchedAt,
       deadlineAt: launchedAt + timeoutMs,
       adoptions,
+      attemptKey,
       ...(requestKey ? { requestKey } : {}),
     };
     // Recorded BEFORE the fork: a crash between here and the pid write reads as a vanished
@@ -353,19 +357,90 @@ export interface DetachedUsageRun {
   timedOut: boolean;
   error?: string;
   walkNote?: string;
+  output: UsageOutputEvidence;
 }
 
-// This collector runs INSIDE the existing managed census scope. It keeps du's one
-// cross-root inode table, but persists only root totals and a bounded progress row,
-// rather than gigabytes of --all output. Neither stderr nor partial records renew
-// its inactivity timer. The caller may leave; timeout(1) still bounds the worker.
+export interface UsageOutputEvidence {
+  status: 'verified' | 'unknown';
+  attemptKey: string | null;
+  manifestPath: string | null;
+  stdout: { path: string; byteCount: number | null; sha256: string | null } | null;
+  stderr: { path: string; byteCount: number | null; sha256: string | null } | null;
+  error?: string;
+  /** The existing byte reader preserves binary/NUL data. Follow next_cursor to EOF
+   * and compare the complete byte count and digest, never concatenate text previews. */
+  recovery: { tool: 'capability:read'; byte_offset: 0; byte_limit: 4096; follow: string };
+  restart: string;
+}
+
+/** Evidence is a sibling of the replaceable slot. Consuming/replacing state.json
+ * must never invalidate a previously returned source reference. The enclosing
+ * census-run retention policy and its explicit pins still govern its lifetime. */
+export function usageAttemptFiles(dir: string, attemptKey: string) {
+  const root = join(`${dir}.evidence`, attemptKey);
+  return { root, stdout: join(root, 'stdout'), stderr: join(root, 'stderr'), manifest: join(root, 'terminal.json') };
+}
+
+function outputFingerprint(stat: import('node:fs').BigIntStats): string[] {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String);
+}
+
+/** Validate the terminal writer's sealed byte counts and file identities without
+ * replaying a potentially multi-GB scan inside the caller's short wait budget.
+ * The SHA256 is computed over every raw byte by the worker; EOF recovery verifies
+ * it independently. ctime guards same-size edits even when mtime is restored. */
+export async function readUsageOutputEvidence(dir: string, state: DetachedWalkState): Promise<UsageOutputEvidence> {
+  const files = state.attemptKey ? usageAttemptFiles(dir, state.attemptKey) : null;
+  const output: UsageOutputEvidence = {
+    status: 'unknown', attemptKey: state.attemptKey ?? null, manifestPath: files?.manifest ?? null,
+    stdout: files ? { path: files.stdout, byteCount: null, sha256: null } : null,
+    stderr: files ? { path: files.stderr, byteCount: null, sha256: null } : null,
+    recovery: { tool: 'capability:read', byte_offset: 0, byte_limit: 4096,
+      follow: 'Use stdout.path or stderr.path as file_path; follow next_cursor until eof and verify byteCount/sha256.' },
+    restart: 'Retire the terminal slot through its owning census continuation and request a fresh measurement; retain this evidence.',
+  };
+  try {
+    if (!files) throw new Error('usage output attempt identity unavailable');
+    const manifest = JSON.parse(await fsp.readFile(files.manifest, 'utf8'));
+    if (manifest.version !== 1 || manifest.attemptKey !== state.attemptKey || manifest.captureComplete !== true) {
+      throw new Error('usage output capture unavailable or incomplete');
+    }
+    const verified = await Promise.all((['stdout', 'stderr'] as const).map(async channel => {
+      const entry = manifest[channel];
+      if (!entry || entry.path !== files[channel] || !Number.isSafeInteger(entry.byteCount) || entry.byteCount < 0 ||
+          !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error(`invalid usage ${channel} receipt`);
+      const stat = await fsp.stat(files[channel], { bigint: true });
+      if (!stat.isFile() || stat.size !== BigInt(entry.byteCount) ||
+          JSON.stringify(outputFingerprint(stat)) !== JSON.stringify(entry.fingerprint)) {
+        throw new Error(`usage ${channel} evidence changed; resync required`);
+      }
+      return { channel, source: { path: files[channel], byteCount: entry.byteCount, sha256: entry.sha256 } };
+    }));
+    for (const { channel, source } of verified) output[channel] = source;
+    output.status = 'verified';
+  } catch (error) {
+    output.error = `usage output UNKNOWN: ${error instanceof Error ? error.message : String(error)}; resync required`;
+  }
+  return output;
+}
+
+// This collector runs INSIDE the existing managed census scope. Raw inner du
+// stdout/stderr are retained intact; the outer stdout is only the root-total
+// projection. A caller can leave and adopt later without losing either source.
 const USAGE_COLLECTOR = String.raw`
 const { spawn } = require('node:child_process');
-const { writeFileSync, renameSync } = require('node:fs');
+const { mkdirSync, openSync, writeFileSync, renameSync, closeSync, fsyncSync, statSync } = require('node:fs');
+const { createHash } = require('node:crypto');
+const { StringDecoder } = require('node:string_decoder');
 const { resolve } = require('node:path');
-const roots = JSON.parse(process.argv[1]), progressPath = process.argv[2];
+const { roots, files, attemptKey } = JSON.parse(process.argv[1]), progressPath = process.argv[2];
+mkdirSync(files.root, { recursive: true });
+const captures = Object.fromEntries(['stdout', 'stderr'].map(channel => [channel, {
+  fd: openSync(files[channel], 'wx', 0o600), path: files[channel], byteCount: 0, hash: createHash('sha256'),
+}]));
 const totals = new Map();
-let pending = '', stderr = '', failure = '', records = 0, stdoutBytes = 0;
+const decoder = new StringDecoder('utf8');
+let pending = '', failure = '', records = 0, stdoutBytes = 0, captureComplete = true;
 let lastMetadataAt = null, lastMetadataPath = null, savedAt = 0;
 const startedAt = Date.now();
 const child = spawn(process.argv[3], process.argv.slice(4), { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -373,40 +448,58 @@ function progress(finishedAt = null) {
   const at = Date.now();
   if (finishedAt === null && at - savedAt < 1000) return;
   savedAt = at;
-  const row = { startedAt, finishedAt, heartbeatAt: at, metadataRecords: records, stdoutBytes,
+  const row = { startedAt, finishedAt, heartbeatAt: at, metadataRecords: records, stdoutBytes, attemptKey,
     completedRoots: totals.size, totalRoots: roots.length, lastMetadataAt,
     lastMetadataPath, error: failure || null };
   writeFileSync(progressPath + '.part', JSON.stringify(row));
   renameSync(progressPath + '.part', progressPath);
 }
 function stop(reason) { failure ||= reason; child.kill('SIGKILL'); }
+function capture(channel, chunk) {
+  const entry = captures[channel];
+  try { writeFileSync(entry.fd, chunk); entry.hash.update(chunk); entry.byteCount += chunk.length; }
+  catch (error) { captureComplete = false; stop('usage raw capture failed: ' + error.message); }
+}
 progress();
 const heartbeat = setInterval(() => progress(), 1000);
-child.stdout.setEncoding('utf8');
 child.stdout.on('data', chunk => {
+  capture('stdout', chunk);
+  stdoutBytes += chunk.length;
   if (failure) return;
-  stdoutBytes += Buffer.byteLength(chunk);
-  const rows = (pending + chunk).split('\0'); pending = rows.pop() || '';
+  const rows = (pending + decoder.write(chunk)).split('\0'); pending = rows.pop() || '';
   for (const row of rows) {
     const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
-    if (tab < 1 || !/^\d+$/.test(value) || !Number.isSafeInteger(n) || resolve(p) !== p ||
+    if (Buffer.byteLength(row) > 65536 || tab < 1 || !/^\d+$/.test(value) || !Number.isSafeInteger(n) || resolve(p) !== p ||
         !roots.some(root => p === root || p.startsWith(root + '/')) || totals.has(p)) {
       stop('invalid usage walk output'); return;
     }
-    records++; lastMetadataAt = Date.now(); lastMetadataPath = p.slice(-1024);
+    records++; lastMetadataAt = Date.now(); lastMetadataPath = p;
     if (roots.includes(p)) totals.set(p, n);
   }
-  if (pending.length > 65536) { stop('oversized usage walk record'); return; }
+  if (Buffer.byteLength(pending) > 65536) { stop('oversized usage walk record; full source retained'); return; }
   progress();
 });
-child.stderr.setEncoding('utf8');
-child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
+child.stderr.on('data', chunk => capture('stderr', chunk));
 child.once('error', error => { failure ||= error.message; });
 child.once('close', (code, signal) => {
   clearInterval(heartbeat);
+  pending += decoder.end();
   if (code !== 0 || signal || pending || totals.size !== roots.length) failure ||= 'incomplete usage walk';
+  if (captures.stderr.byteCount) failure ||= 'usage walk diagnostics; full stderr retained';
+  const entries = {};
+  for (const channel of ['stdout', 'stderr']) {
+    const entry = captures[channel];
+    try { fsyncSync(entry.fd); closeSync(entry.fd); }
+    catch (error) { captureComplete = false; failure ||= 'usage raw capture finalization failed: ' + error.message; }
+    const stat = statSync(entry.path, { bigint: true });
+    entries[channel] = { path: entry.path, byteCount: entry.byteCount, sha256: entry.hash.digest('hex'),
+      fingerprint: [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String) };
+  }
+  writeFileSync(files.manifest + '.part', JSON.stringify({ version: 1, attemptKey, captureComplete,
+    finishedAt: Date.now(), exitCode: code, signal, error: failure || null, ...entries }));
+  renameSync(files.manifest + '.part', files.manifest);
   progress(Date.now());
-  if (failure) { process.stderr.write(failure + '\n' + stderr); process.exitCode = 1; }
+  if (failure) { process.stderr.write(failure + '\n'); process.exitCode = 1; }
   else for (const [p, bytes] of totals) process.stdout.write(bytes + '\t' + p + '\0');
 });
 `;
@@ -426,16 +519,17 @@ export async function runDetachedDuUsage(roots: readonly string[], opts: Detache
     return [p, st.dev, st.ino];
   }));
   const population = JSON.stringify(await identities());
-  const requestKey = createHash('sha256').update('root-usage-v1\0' + population).digest('hex');
+  const requestKey = createHash('sha256').update('root-usage-raw-v2\0' + population).digest('hex');
   const progressPath = join(opts.dir, 'usage-progress.json');
   const duArgs = ['--all', '--one-file-system', '--block-size=1', '--null', '--', ...roots];
   const command = opts.command ?? ((args: string[]) => censusCommand('du', args, bins));
   const bins = {
     ionice: await resolveCensusBin('ionice'), nice: await resolveCensusBin('nice'), sudo: opts.sudo ?? null,
   };
-  return runDetachedWalk(roots[0]!, { ...opts, command: args => {
-    const [cmd, argv] = command(args);
-    return [process.execPath, ['-e', USAGE_COLLECTOR, JSON.stringify(roots), progressPath, cmd, ...argv]];
+  return runDetachedWalk(roots[0]!, { ...opts, command: (args, attempt) => {
+    const [cmd, argv] = command(args, attempt);
+    return [process.execPath, ['-e', USAGE_COLLECTOR,
+      JSON.stringify({ roots, files: usageAttemptFiles(opts.dir, attempt.key), attemptKey: attempt.key }), progressPath, cmd, ...argv]];
   } }, duArgs, async (state, exitCode, overdue, failure) => {
     const files = walkAttemptFiles(opts.dir, state.attempt);
     let error = failure, pending = '', finishedAt: number | null = null;
@@ -452,24 +546,25 @@ export async function runDetachedDuUsage(roots: readonly string[], opts: Detache
       }
       if (pending.length > 65536) error = 'oversized usage walk root record';
     });
-    let stderr = '';
-    await streamInto(files.err, chunk => { stderr = (stderr + chunk).slice(-4096); });
+    const output = await readUsageOutputEvidence(opts.dir, state);
+    if (output.status !== 'verified') error ??= output.error;
     try {
       const progress = JSON.parse(await fsp.readFile(progressPath, 'utf8'));
       if (Number.isSafeInteger(progress.startedAt) && progress.startedAt >= state.launchedAt &&
           Number.isSafeInteger(progress.finishedAt) && progress.finishedAt >= progress.startedAt &&
           progress.finishedAt <= (opts.now ?? Date.now)() && progress.error === null &&
           Number.isSafeInteger(progress.metadataRecords) && progress.metadataRecords >= roots.length &&
-          progress.totalRoots === roots.length && progress.completedRoots === roots.length) finishedAt = progress.finishedAt;
+          progress.attemptKey === state.attemptKey && progress.totalRoots === roots.length &&
+          progress.completedRoots === roots.length) finishedAt = progress.finishedAt;
     } catch { /* Missing terminal metadata cannot certify a complete measurement. */ }
     if (overdue || exitCode !== 0 || pending || bytes.size !== roots.length || finishedAt === null) {
-      error ??= `incomplete usage walk (exit ${exitCode}): ${stderr}`;
+      error ??= `incomplete usage walk (exit ${exitCode}); full diagnostics referenced by output`;
     }
     try { if (JSON.stringify(await identities()) !== population) error ??= 'usage walk root identity changed'; }
     catch { error ??= 'usage walk root identity unavailable'; }
     return {
       bytes: error ? null : bytes, complete: !error, startedAt: state.launchedAt, finishedAt,
-      exitCode, timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS,
+      exitCode, timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS, output,
       ...(error ? { error } : {}), walkNote: walkNote(state),
     };
   }, requestKey);
@@ -547,7 +642,9 @@ export function detachedCensusWalker(
  * than `keepMs`. Never touches anything outside `root`. Returns the directories removed.
  */
 export async function pruneCensusWalks(
-  opts: { root?: string; runKey?: string; keepMs?: number; now?: number } = {},
+  opts: { root?: string; runKey?: string; keepMs?: number; now?: number;
+    /** Internal retention owners reuse their held mutex and its validated pin snapshot. */
+    retentionMutexHeld?: boolean; pinProtection?: (path: string) => boolean } = {},
 ): Promise<number> {
   const root = resolve(opts.root ?? censusWalkRoot());
   const cutoff = (opts.now ?? Date.now()) - (opts.keepMs ?? CENSUS_WALK_KEEP_MS);
@@ -561,7 +658,7 @@ export async function pruneCensusWalks(
   // Pin publication and the entire removal share the existing retention mutex.
   // A referenced child also protects its containing attempt/run directory.
   // Unreadable pin state rejects before any evidence can be removed.
-  return withRetentionPinProtection(async isPinned => {
+  const prune = async (isPinned: (path: string) => boolean) => {
     const candidates = await Promise.all(entries.map(async name => {
       const path = resolve(root, name);
       if (!path.startsWith(root + sep) || isPinned(path)) return null;
@@ -578,5 +675,10 @@ export async function pruneCensusWalks(
       return 1;
     }));
     return removed.reduce<number>((total, count) => total + count, 0);
-  }, { nowMs: opts.now });
+  };
+  if (opts.retentionMutexHeld) {
+    if (!opts.pinProtection) throw new Error('census evidence pruning requires the held retention pin snapshot');
+    return prune(opts.pinProtection);
+  }
+  return withRetentionPinProtection(prune, { nowMs: opts.now });
 }

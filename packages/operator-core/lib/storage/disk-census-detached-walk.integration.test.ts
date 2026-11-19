@@ -5,7 +5,8 @@
  * one, and a walk killed mid-run must be relaunched rather than read as a result.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { closeSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -13,11 +14,13 @@ import { runDuTree } from './disk-consumer-census';
 import {
   DetachedWalkAbandoned,
   readWalkState,
+  readUsageOutputEvidence,
   runDetachedDuWalk,
   runDetachedDuUsage,
   TIMEOUT_EXIT_STATUS,
   walkAttemptFiles,
   walkProcessAlive,
+  usageAttemptFiles,
   type WalkLauncher,
 } from './disk-census-detached-walk';
 
@@ -117,7 +120,7 @@ describe.skipIf(!linux)('detached census walk (real du, real processes)', () => 
     expect(await scopeExit).toBe(125);
   });
 
-  it('preserves ordered cross-root hardlink allocation and stores only root totals', async () => {
+  it('preserves ordered hardlink allocation, projecting totals while retaining complete source', async () => {
     const roots = [join(base, 'usage pinned'), join(base, 'usage\nevictable')];
     roots.forEach(root => mkdirSync(root));
     writeFileSync(join(roots[0]!, 'shared'), Buffer.alloc(128 * 1024, 7));
@@ -136,6 +139,11 @@ describe.skipIf(!linux)('detached census walk (real du, real processes)', () => 
     const output = readFileSync(walkAttemptFiles(dir, 1).out, 'utf8');
     expect(output.split('\0').filter(Boolean)).toHaveLength(2);
     expect(output).not.toContain('/f299');
+    expect(run.output.status).toBe('verified');
+    const raw = readFileSync(run.output.stdout!.path);
+    expect(raw.toString()).toContain('/f299');
+    expect(run.output.stdout).toMatchObject({ byteCount: raw.length, sha256: createHash('sha256').update(raw).digest('hex') });
+    expect(run.output.stderr?.byteCount).toBe(0);
     const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
     expect(progress.metadataRecords).toBeGreaterThan(300);
     expect(progress.completedRoots).toBe(2);
@@ -166,6 +174,115 @@ describe.skipIf(!linux)('detached census walk (real du, real processes)', () => 
     expect(first.launches).toEqual([1]);
     expect(second.launches).toEqual([]);
     expect((await readWalkState(dir))?.adoptions).toBe(1);
+    expect(run.output.status).toBe('verified');
+    expect(run.output.attemptKey).toBe(state.attemptKey);
+    expect(readFileSync(run.output.stdout!.path, 'utf8')).toContain(tree);
+  });
+
+  it.each([4095, 4096, 4097, 16_385])('recovers all %i diagnostic bytes, including binary and early/late evidence, across fresh page readers', async size => {
+    const diagnostic = Buffer.alloc(size, 120);
+    Buffer.from('early\0\xff').copy(diagnostic);
+    Buffer.from('\xf0\x9f\x8c\x8dlate', 'latin1').copy(diagnostic, size - 8);
+    const dir = join(base, `raw-stderr-${size}`), { launch, launches } = countingLauncher();
+    const stdout = Buffer.from(`7\t${tree}\0`);
+    const run = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25,
+      command: () => [process.execPath, ['-e',
+        'process.stdout.write(Buffer.from(process.argv[1],"base64")); process.stderr.write(Buffer.from(process.argv[2],"base64"));',
+        stdout.toString('base64'), diagnostic.toString('base64')]],
+    });
+    expect(run.complete).toBe(false); expect(run.bytes).toBeNull();
+    expect(run.output.status).toBe('verified');
+    const reference = run.output.stderr!;
+    expect(reference.byteCount).toBe(size);
+    const pages: Buffer[] = [];
+    for (let offset = 0; offset < reference.byteCount!;) {
+      // Reopen at every page, as a fresh continuation using capability:read does.
+      const fd = openSync(reference.path, 'r'), page = Buffer.alloc(4096);
+      try {
+        const n = readSync(fd, page, 0, page.length, offset);
+        expect(n).toBeGreaterThan(0); pages.push(page.subarray(0, n)); offset += n;
+      } finally { closeSync(fd); }
+    }
+    const recovered = Buffer.concat(pages);
+    expect(recovered).toEqual(diagnostic);
+    expect(createHash('sha256').update(recovered).digest('hex')).toBe(reference.sha256);
+    const second = await runDetachedDuUsage([tree], { dir, launch });
+    expect(second.output).toEqual(run.output); expect(launches).toEqual([1]);
+  });
+
+  it.each([65535, 65536, 65537])('retains the entire %i-byte semantic record across split UTF8/NUL and the record boundary', async length => {
+    const prefix = `1\t${tree}/`;
+    const record = prefix + 'x'.repeat(length - Buffer.byteLength(prefix) - Buffer.byteLength('🌍')) + '🌍';
+    const raw = Buffer.from(`${record}\0` + `7\t${tree}\0`);
+    const dir = join(base, `raw-record-${length}`), { launch } = countingLauncher();
+    // Split in the multibyte character and before the record delimiter.
+    const split = Buffer.byteLength(record) - 2;
+    const run = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25,
+      command: () => [process.execPath, ['-e',
+        'const b=Buffer.from(process.argv[1],"base64"), n=Number(process.argv[2]); process.stdout.write(b.subarray(0,n)); setTimeout(()=>process.stdout.write(b.subarray(n)),20);',
+        raw.toString('base64'), String(split)]],
+    });
+    expect(run.complete).toBe(length <= 65536);
+    expect(run.output.status).toBe('verified');
+    expect(readFileSync(run.output.stdout!.path)).toEqual(raw);
+    expect(run.output.stdout!.byteCount).toBe(raw.length);
+    if (length <= 65536) {
+      const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
+      expect(progress.lastMetadataPath).toBe(tree);
+      expect(run.bytes).toEqual(new Map([[tree, 7]]));
+    } else expect(run.bytes).toBeNull();
+  });
+
+  it.each(['missing', 'same-size-edit', 'replacement', 'manifest', 'capture-failed'])('returns UNKNOWN/resync after %s source damage without launching another scan', async damage => {
+    const dir = join(base, `raw-damage-${damage}`), { launch, launches } = countingLauncher();
+    const run = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25 });
+    expect(run.complete).toBe(true);
+    const rawPath = run.output.stdout!.path;
+    if (damage === 'missing') rmSync(rawPath);
+    else if (damage === 'same-size-edit') {
+      const raw = readFileSync(rawPath); raw[0] = raw[0] === 49 ? 50 : 49; writeFileSync(rawPath, raw);
+    } else if (damage === 'replacement') {
+      const raw = readFileSync(rawPath); rmSync(rawPath); writeFileSync(rawPath, raw);
+    } else if (damage === 'manifest') rmSync(run.output.manifestPath!);
+    else {
+      const manifest = JSON.parse(readFileSync(run.output.manifestPath!, 'utf8'));
+      manifest.captureComplete = false; writeFileSync(run.output.manifestPath!, JSON.stringify(manifest));
+    }
+    const adopted = await runDetachedDuUsage([tree], { dir, launch });
+    expect(adopted.complete).toBe(false); expect(adopted.bytes).toBeNull();
+    expect(adopted.output.status).toBe('unknown'); expect(adopted.output.error).toContain('resync required');
+    expect(adopted.output.restart).toContain('fresh measurement'); expect(launches).toEqual([1]);
+  });
+
+  it('keeps immutable evidence recoverable when a consumed slot is removed and reused', async () => {
+    const dir = join(base, 'raw-slot-lifecycle'), { launch } = countingLauncher();
+    const first = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25 });
+    const oldState = (await readWalkState(dir))!;
+    const raw = readFileSync(first.output.stdout!.path);
+    rmSync(dir, { recursive: true });
+    const second = await runDetachedDuUsage([tree], { dir, launch, pollMs: 25 });
+    expect(second.output.attemptKey).not.toBe(first.output.attemptKey);
+    expect(readFileSync(first.output.stdout!.path)).toEqual(raw);
+    expect(await readUsageOutputEvidence(dir, oldState)).toEqual(first.output);
+    expect(usageAttemptFiles(dir, oldState.attemptKey!).stdout).toBe(first.output.stdout!.path);
+  });
+
+  it('refuses a capture-open failure before starting du and exposes UNKNOWN recovery', async () => {
+    const dir = join(base, 'raw-open-failure'), marker = join(base, 'must-not-run-du');
+    const { launch } = countingLauncher();
+    const run = await runDetachedDuUsage([tree], { dir, pollMs: 25,
+      launch: async (cmd, args, meta) => {
+        const state = (await readWalkState(dir))!;
+        const files = usageAttemptFiles(dir, state.attemptKey!);
+        mkdirSync(files.stdout, { recursive: true });
+        return launch(cmd, args, meta);
+      },
+      command: () => ['sh', ['-c', 'touch "$1"', 'capture-must-precede-command', marker]],
+    });
+    expect(run.complete).toBe(false); expect(run.bytes).toBeNull();
+    expect(run.output.status).toBe('unknown');
+    expect(run.output.error).toContain('resync required');
+    expect(() => readFileSync(marker)).toThrow();
   });
 
   it('adopts a managed usage scan after more than 10s without metadata and keeps its heartbeat', async () => {

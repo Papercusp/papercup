@@ -58,8 +58,8 @@ import { DEFAULT_RECLAIM_RUN_BUDGET_MS, type RetentionCapReceipt } from './stora
 import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import { CENSUS_DU_TIMEOUT_MS, inspectRetentionTrees, RetentionAllocationCounter } from './storage/disk-consumer-census';
-import { DetachedWalkAbandoned, readWalkState, runDetachedDuUsage, walkAttemptFiles, walkProcessAlive,
-  type DetachedWalkOptions } from './storage/disk-census-detached-walk';
+import { DetachedWalkAbandoned, pruneCensusWalks, readWalkState, runDetachedDuUsage, walkAttemptFiles, walkProcessAlive,
+  type DetachedWalkOptions, type UsageOutputEvidence } from './storage/disk-census-detached-walk';
 import type { PendingRetentionCensus } from './storage/retention-census-walk';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
@@ -1355,10 +1355,16 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
  * The existing census lifetime also bounds the age of an unconsumed terminal receipt.
  * The enclosing retention mutex serializes every slot read, launch and consumption.
  * A second slot mutex adds admission work and a separate deadline without protection. */
-async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: number, opts: Omit<DetachedWalkOptions, 'signal'>) {
+async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: number, opts: Omit<DetachedWalkOptions, 'signal'>,
+  onOutput: (output: UsageOutputEvidence) => void, isPinned: (path: string) => boolean) {
   const remaining = () => notAfterMs - Date.now();
   if (!Number.isFinite(notAfterMs) || remaining() <= 0) throw new Error('release-cut usage run deadline exhausted');
   const state = await readWalkState(opts.dir);
+  // Reuse census evidence's two-day retention and the owner's existing pin mutex.
+  // Current-attempt evidence survives even with an old timestamp; referenced old
+  // attempts survive until their explicit pins expire.
+  await pruneCensusWalks({ root: `${opts.dir}.evidence`, retentionMutexHeld: true,
+    pinProtection: p => path.basename(p) === state?.attemptKey || isPinned(p) });
   // The wrapper may die before writing exit.<attempt>. Its verified process
   // death permits retirement, never adoption of its incomplete allocation.
   const terminal = !!state && !walkProcessAlive(state);
@@ -1384,6 +1390,9 @@ async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: num
       await fs.promises.rm(opts.dir, { recursive: true, force: true });
       result = await run();
     }
+    // Keep the exact source handles in the ordinary retention receipt before
+    // failure classification or consumption of the replaceable state slot.
+    onOutput(result.output);
     if (!result.complete || !result.bytes || result.finishedAt === null) {
       const ended = await readWalkState(opts.dir);
       if (ended && (fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit) || !walkProcessAlive(ended))) {
@@ -1461,10 +1470,11 @@ async function reclaimCutWorktreesUnlocked(
   const cap: Omit<RetentionCapReceipt, 'beforeBytes' | 'afterBytes' | 'overByBytes' | 'pinnedBytes' | 'pinnedOverageBytes'> & {
     beforeBytes: number | null; afterBytes: number | null; overByBytes: number | null;
     pinnedBytes: number | null; pinnedOverageBytes: number | null; retainedPaths: string[];
+    usageOutputs: UsageOutputEvidence[];
   } = {
     root: plan.canonicalRoot ?? '', classId: 'release-cut-worktrees', maxBytes,
     beforeBytes: null, afterBytes: null, overByBytes: null, pinnedBytes: null,
-    pinnedOverageBytes: null, pinnedPaths, retainedPaths: [],
+    pinnedOverageBytes: null, pinnedPaths, retainedPaths: [], usageOutputs: [],
   };
   const errors = [...plan.failClosed];
   let pendingWalk: PendingRetentionCensus | undefined;
@@ -1512,7 +1522,9 @@ async function reclaimCutWorktreesUnlocked(
     roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
     if (!roots.length) return new Map<string, number>();
     // notify-classification: {"classification":"durable","reason":"Managed usage measurement can reach notification callbacks; preserve their terminal obligation until its owner proves the delivery path.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-    return deps.usageWalk ? measureDetachedCutUsage(roots, notAfterMs, deps.usageWalk) : measureCutUsage(roots, notAfterMs);
+    return deps.usageWalk ? measureDetachedCutUsage(roots, notAfterMs, deps.usageWalk,
+      output => cap.usageOutputs.push(output), deps.pinProtection!)
+      : measureCutUsage(roots, notAfterMs);
   };
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
