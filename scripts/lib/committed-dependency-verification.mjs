@@ -189,8 +189,21 @@ async function copyBytesMatch(helper, source, partial, work, deadline, environme
 }
 
 async function copyMissingTree(helper, source, partial, parent, deadline, environment, progress) {
+  const measured = async (stage, run) => {
+    progress.copyStage = stage;
+    const started = Date.now();
+    try { return await run(); }
+    finally {
+      const elapsedMs = Date.now() - started;
+      progress.copyStageElapsedMs = elapsedMs;
+      (progress.copyStepDurationsMs ??= {})[stage] =
+        (progress.copyStepDurationsMs[stage] ?? 0) + elapsedMs;
+      (progress.copyStepCalls ??= {})[stage] = (progress.copyStepCalls[stage] ?? 0) + 1;
+    }
+  };
   let groups;
-  try { groups = dependencyCopyGroups(source, Math.max(1, deadline - Date.now())); }
+  try { groups = await measured('hardlink-census', () =>
+    dependencyCopyGroups(source, Math.max(1, deadline - Date.now()))); }
   catch (error) { if (error.code === 'ETIMEDOUT') throw new Incomplete(); throw error; }
   const names = groups.flat();
   for (const name of names) safeRelative(name);
@@ -214,22 +227,32 @@ async function copyMissingTree(helper, source, partial, parent, deadline, enviro
   // donor ctime churn. Advance uncopied chunks first. Receipts affect ordering
   // only: every completed chunk is still rechecked before publication, then
   // the full retained-tree verifier independently decides readiness.
-  const pending = chunks.map(entries => {
+  const pending = chunks.map((entries, index) => {
     const receipt = join(parent, 'copy-' + digest(JSON.stringify(entries)) + '.json');
-    return { entries, receipt, cached: readJournal(receipt) };
+    return { entries, index, receipt, cached: readJournal(receipt) };
   }).sort((a, b) => Number(Boolean(a.cached)) - Number(Boolean(b.cached)));
-  for (const { entries, receipt, cached } of pending) {
+  for (const { entries, index, receipt, cached } of pending) {
+    progress.currentCopyChunk = { index, entries: entries.length,
+      first: entries[0], last: entries.at(-1), receipt: relative(parent, receipt) };
+    progress.copyCacheMismatch = { receipt: Boolean(cached) };
     const work = mkdtempSync(join(parent, '.compare-'));
     try {
-      const before = await copyMetadata(helper, source, entries, parent, deadline, environment, join(work, 'unmatched'));
-      const target = await copyMetadata(helper, partial, entries, parent, deadline, environment, join(work, 'predecessor'));
+      const before = await measured('source-metadata', () =>
+        copyMetadata(helper, source, entries, parent, deadline, environment, join(work, 'unmatched')));
+      const target = await measured('target-metadata', () =>
+        copyMetadata(helper, partial, entries, parent, deadline, environment, join(work, 'predecessor')));
+      if (cached) Object.assign(progress.copyCacheMismatch, {
+        binding: cached.binding !== binding, source: cached.source !== before, target: cached.target !== target,
+      });
       if (cached?.binding === binding && cached.source === before && cached.target === target) {
         progress.reusedCopyChunks++;
         continue;
       }
-      if (await copyBytesMatch(helper, source, partial, work, deadline, environment)) {
-        const after = await copyMetadata(helper, source, entries, parent, deadline, environment);
-        const targetAfter = await copyMetadata(helper, partial, entries, parent, deadline, environment);
+      if (await measured('compare-bytes', () => copyBytesMatch(helper, source, partial, work, deadline, environment))) {
+        const after = await measured('source-recheck', () =>
+          copyMetadata(helper, source, entries, parent, deadline, environment));
+        const targetAfter = await measured('target-recheck', () =>
+          copyMetadata(helper, partial, entries, parent, deadline, environment));
         if (before === after && target === targetAfter)
           writeJournal(receipt, { schemaVersion, binding, source: after, target: targetAfter });
         else rmSync(receipt, { force: true });
@@ -241,18 +264,20 @@ async function copyMissingTree(helper, source, partial, parent, deadline, enviro
       const fd = openSync(selection, 'wx', 0o600);
       try { writeFileSync(fd, entries.join('\0') + '\0'); } finally { closeSync(fd); }
       try {
-        await command(helper, [source, partial, selection], [
+        await measured('copy-bytes', () => command(helper, [source, partial, selection], [
           'dependency_generation_acquire_copy_lock "retained dependency resume"',
           'trap dependency_generation_release_copy_lock EXIT',
           'dependency_generation_check_headroom "$2" "$3"',
           'mapfile -d "" -t filters < <(dependency_generation_prune_ephemeral --rsync-filters)',
           'dependency_generation_copy_with_progress "$2" "$3" --rsync-checksum "${filters[@]}" --from0 --recursive --files-from="$4"',
-        ].join('\n'), deadline, environment);
-        const after = await copyMetadata(helper, source, entries, parent, deadline, environment);
+        ].join('\n'), deadline, environment));
+        const after = await measured('source-recheck', () =>
+          copyMetadata(helper, source, entries, parent, deadline, environment));
         // A copy is untrusted preparation. Cache churn may alter directory
         // metadata; only the full byte/census verifier decides readiness.
         if (before === after) writeJournal(receipt, { schemaVersion, binding, source: after,
-          target: await copyMetadata(helper, partial, entries, parent, deadline, environment) });
+          target: await measured('target-recheck', () =>
+            copyMetadata(helper, partial, entries, parent, deadline, environment)) });
         else rmSync(receipt, { force: true });
         progress.copiedChunks++;
         console.error('COMMITTED_DEPENDENCY_COPY ' + JSON.stringify({ copiedChunks: progress.copiedChunks,
@@ -260,7 +285,8 @@ async function copyMissingTree(helper, source, partial, parent, deadline, enviro
       } finally { rmSync(selection, { force: true }); }
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
-  await command(helper, [partial], 'dependency_generation_prune_ephemeral "$2"', deadline, environment);
+  await measured('prune', () =>
+    command(helper, [partial], 'dependency_generation_prune_ephemeral "$2"', deadline, environment));
 }
 
 async function census(helper, donor, destination, scratch, deadline, generation, workspaceDirs, progress, materializeMissing = false) {

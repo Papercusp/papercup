@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -113,11 +113,30 @@ describe('exact Playwright reporter evidence', () => {
 });
 
 describe('governed Playwright invocation', () => {
+  afterEach(() => vi.unstubAllEnvs());
   const success: RouterOutcome = { code: 0, signal: null, timedOut: false, aborted: false, output: '' };
   const options = { root, files: [absolute], ...scope, actorId: 'su-authenticated', timeoutMs: 45000 };
   const deps = (outcome = success) => ({ process: vi.fn().mockResolvedValue(outcome),
     readRows: vi.fn().mockResolvedValue([row()]), mutationFence: vi.fn().mockResolvedValue(null),
     restrictedFence: vi.fn().mockResolvedValue(null) });
+  it('reads the reporter ledger rather than the isolated application database', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgresql://reporter.test/results');
+    vi.stubEnv('DATABASE_URL', 'postgresql://application.test/private');
+    const ledger = Object.assign(vi.fn(), { end: vi.fn().mockResolvedValue(undefined) });
+    const injected = { ...deps(), connectLedger: vi.fn().mockReturnValue(ledger) };
+    expect(await runPortalPlaywrightChecks(options, injected)).toMatchObject({ ok: true, testRunIds: [41] });
+    expect(injected.connectLedger).toHaveBeenCalledWith('postgresql://reporter.test/results', expect.any(Object));
+    expect(injected.process.mock.calls[0]![5].PAPERCUSP_TEST_RUNS_DB_URL).toBe('postgresql://reporter.test/results');
+    expect(injected.readRows).toHaveBeenCalledWith(expect.objectContaining({ sql: ledger }));
+    expect(ledger.end).toHaveBeenCalledOnce();
+  });
+  it('closes the reporter ledger connection when the evidence reader fails', async () => {
+    const ledger = Object.assign(vi.fn(), { end: vi.fn().mockResolvedValue(undefined) });
+    const injected = { ...deps(), connectLedger: vi.fn().mockReturnValue(ledger) };
+    injected.readRows.mockRejectedValue(new Error('ledger unavailable'));
+    await expect(runPortalPlaywrightChecks(options, injected)).rejects.toThrow('ledger unavailable');
+    expect(ledger.end).toHaveBeenCalledOnce();
+  });
   it('uses the maintained script with literal filters, reporter and concrete scope', async () => {
     const injected = deps();
     expect(await runPortalPlaywrightChecks(options, injected)).toMatchObject({ ok: true, testRunIds: [41] });
