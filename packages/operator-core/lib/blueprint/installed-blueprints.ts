@@ -21,7 +21,6 @@ import {
   type ResolveExtendsPath,
 } from '@papercusp/orchestrator/blueprint';
 import {
-  builtinSupersedesInstalled,
   makeComposedResolveExtends,
   type BuiltinSupersession,
   type SupersessionInput,
@@ -86,7 +85,8 @@ function supersededByBuiltin(current: BlueprintSourceLocation | undefined, insta
   policy: BlueprintSupersedesPolicy | undefined): BlueprintSourceLocation['supersededInstalled'] | null {
   // Only an installed copy that overlaps a built-in reaches the policy.
   if (current?.tier !== 'builtin') return null;
-  const decide = policy === undefined ? builtinSupersedesInstalled : policy;
+  // OPT-IN, like the resolver: omitted means strict tier order (WI-6554700010054458).
+  const decide = policy ?? null;
   if (!decide) return null;
   const verdict = decide({ id: current.id, installedFile, builtinFile: current.file });
   return verdict ? { file: verdict.installedFile, reason: verdict.reason, detail: verdict.detail } : null;

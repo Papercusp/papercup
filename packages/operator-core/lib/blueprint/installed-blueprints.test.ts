@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { builtinSupersedesInstalled } from '@papercusp/blueprint-distribution';
 import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withBlueprintSourceMutation } from './source-lock';
@@ -124,16 +125,19 @@ describe('complete blueprint library source inventory (P-002)', () => {
     for (const [text, reason] of [
       ['id: shared\nversion: 0.2.0\nvisibility: public\nslots: []\n', 'invalid-source']] as const) {
       writeFileSync(installed, text);
+      // OPT-IN: by default even an invalid installed copy keeps strict tier order.
+      expect(availableBlueprintSources()).toEqual([{ id: 'shared', tier: 'installed', file: installed }]);
+      const opt = { supersedes: builtinSupersedesInstalled };
       const supersededInstalled = { file: installed, reason, detail: expect.any(String) };
-      expect(availableBlueprintSources()).toEqual([{ id: 'shared', tier: 'builtin', file: builtin, supersededInstalled }]);
-      const population = readBlueprintSourcePopulation();
+      expect(availableBlueprintSources(opt)).toEqual([{ id: 'shared', tier: 'builtin', file: builtin, supersededInstalled }]);
+      const population = readBlueprintSourcePopulation(opt);
       if (population.status !== 'ok') throw new Error('fixture inventory unavailable');
       expect(population.sources.map(({ tier, selected }) => ({ tier, selected })))
         .toEqual([{ tier: 'builtin', selected: true }, { tier: 'installed', selected: false }]);
       expect(population.sources[0]!.supersededInstalled).toEqual(supersededInstalled);
       // Strict order on request, and a local tier is never superseded.
       expect(availableBlueprintSources({ supersedes: null })).toEqual([{ id: 'shared', tier: 'installed', file: installed }]);
-      expect(availableBlueprintSources({ localDirs: [dirs[2]] }))
+      expect(availableBlueprintSources({ ...opt, localDirs: [dirs[2]] }))
         .toEqual([{ id: 'shared', tier: 'local', file: join(dirs[2], 'shared', 'blueprint.yaml') }]);
     }
     writeFileSync(installed, 'id: shared\nversion: 0.3.0\nslots: []\n');
