@@ -78,18 +78,27 @@ const h = vi.hoisted(() => {
     hostLookups: [] as string[],
     injected: [] as Array<{ sock: string; msg: unknown }>,
     protectedLibraryFixture: true,
+    protectedHostPolicyFixture: true,
   };
 });
 
 // This file isolates the real session/control transaction. Its success cases
-// assume protected library input, without claiming full permission admission.
-// The explicit refusal regression uses the real reader instead of that fixture.
+// assume protected library and host-policy inputs, without claiming full
+// permission admission. Refusal regressions use the corresponding real reader.
 vi.mock('./blueprint/installed-blueprints', async original => {
   const actual = await original<typeof import('./blueprint/installed-blueprints')>();
   return { ...actual, readBlueprintSourcePopulation: (options: Parameters<typeof actual.readBlueprintSourcePopulation>[0]) =>
     h.protectedLibraryFixture
       ? { status: 'ok', revision: 'c'.repeat(64), roots: [], sources: [] }
       : actual.readBlueprintSourcePopulation(options) };
+});
+
+vi.mock('./capability-envelope/identity-grants-port', async original => {
+  const actual = await original<typeof import('./capability-envelope/identity-grants-port')>();
+  return { ...actual, readIdentityPermissionSources: (...args: Parameters<typeof actual.readIdentityPermissionSources>) =>
+    h.protectedHostPolicyFixture
+      ? Promise.resolve({ status: 'ok', revision: 'd'.repeat(64) })
+      : actual.readIdentityPermissionSources(...args) };
 });
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -262,6 +271,7 @@ afterAll(async () => db?.cleanup(), 300_000);
 
 beforeEach(() => {
   h.protectedLibraryFixture = true;
+  h.protectedHostPolicyFixture = true;
   h.duringRebuild = null;
   h.goalAuthorityFailure = null;
   h.tagFailure = null;
@@ -278,7 +288,7 @@ async function seedSession(owner: string, stack: readonly string[],
     v: 1,
     agent: 'claude',
     workspaceId: WS,
-    harnessSlug: null,
+    harnessSlug: 'identity-mutation-fixture',
     contextSize: 'trimmed',
     stack: current.stack,
     ...(selectedIdentity ? { selectedIdentity } : {}),
@@ -345,6 +355,22 @@ const mutate = async (owner: string, action: 'switch' | 'rollback' | 'detach' | 
   }, { workspaceId: WS, resolvePrincipal: await retainRequestPrincipal(new Headers(), WS) });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
+  it.each(['switch', 'detach'] as const)('refuses unprotected host policy on %s before persisting a stack or publishing activation', async action => {
+    const owner = 'su-identity-host-policy-refused-' + action;
+    await seedSession(owner, ENGINEER);
+    const before = await launchSpec(owner);
+    const beforeBrief = await brief(owner);
+    const beforeEvents = await activationEvents(owner);
+    h.protectedHostPolicyFixture = false;
+    await expect(mutate(owner, action, action === 'detach' ? 'papercusp-engineer' : 'writer'))
+      .rejects.toThrow('identity host policy effect protection is unavailable');
+    expect(await launchSpec(owner)).toEqual(before);
+    expect(await activationEvents(owner)).toEqual(beforeEvents);
+    expect(await brief(owner)).toEqual(beforeBrief);
+    expect(h.hostLookups).toEqual([]);
+    expect(h.injected).toEqual([]);
+  });
+
   it.each(['switch', 'detach'] as const)('refuses an unprotected library on %s before persisting a stack or publishing a desired activation', async action => {
     const owner = 'su-identity-library-refused-' + action;
     await seedSession(owner, ENGINEER);

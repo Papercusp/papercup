@@ -13,17 +13,26 @@ const mutationHost = vi.hoisted(() => ({
   editorRevoked: false,
   editorCapabilities: ['*'],
   protectedLibraryFixture: true,
+  protectedHostPolicyFixture: true,
 }));
 
 // These tests isolate the real PostgreSQL SESSION fence, not full permission
 // admission. Successful effect cases explicitly supply hypothetical library
-// protection. The refusal case below calls the real source reader unchanged.
+// and host-policy protection. Refusal cases call the corresponding real reader.
 vi.mock('./blueprint/installed-blueprints', async original => {
   const actual = await original<typeof import('./blueprint/installed-blueprints')>();
   return { ...actual, readBlueprintSourcePopulation: (options: Parameters<typeof actual.readBlueprintSourcePopulation>[0]) =>
     mutationHost.protectedLibraryFixture
       ? { status: 'ok', revision: 'c'.repeat(64), roots: [], sources: [] }
       : actual.readBlueprintSourcePopulation(options) };
+});
+
+vi.mock('./capability-envelope/identity-grants-port', async original => {
+  const actual = await original<typeof import('./capability-envelope/identity-grants-port')>();
+  return { ...actual, readIdentityPermissionSources: (...args: Parameters<typeof actual.readIdentityPermissionSources>) =>
+    mutationHost.protectedHostPolicyFixture
+      ? Promise.resolve({ status: 'ok', revision: 'd'.repeat(64) })
+      : actual.readIdentityPermissionSources(...args) };
 });
 
 vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => mutationHost.editorRevoked ? null : ({
@@ -182,7 +191,7 @@ describe('identity mutation before-image fence', () => {
   const afterRevision = 'b'.repeat(64);
   const input = { workspaceId: WORKSPACE, ownerId: owner, action: 'rollback' as const,
     operatorBaseUrl: 'http://operator.test', modeSection: '' };
-  const original = { v: 1, agent: 'codex', workspaceId: WORKSPACE, contextSize: 'trimmed',
+  const original = { v: 1, agent: 'codex', workspaceId: WORKSPACE, harnessSlug: 'schema-test-harness', contextSize: 'trimmed',
     stack: ['domain:current'], specificationRevision: beforeRevision, stateRevision: 'before',
     specificationArtifact: { specificationRevision: beforeRevision, configuration: {}, inputs: [] },
     identityHistory: [{ stack: ['domain:prior'], specificationRevision: afterRevision, stateRevision: 'prior',
@@ -195,6 +204,7 @@ describe('identity mutation before-image fence', () => {
 
   beforeEach(async () => {
     mutationHost.protectedLibraryFixture = true;
+    mutationHost.protectedHostPolicyFixture = true;
     mutationHost.editorRevoked = false;
     mutationHost.editorCapabilities = ['*'];
     editor = { workspaceId: WORKSPACE, resolvePrincipal: await retainRequestPrincipal(new Headers(), WORKSPACE) };
@@ -247,6 +257,32 @@ describe('identity mutation before-image fence', () => {
     expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
     const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
     expect(row!.launch_spec).toEqual(concurrent);
+  });
+
+  it('refuses an unprotected real host policy before funding, preparation or activation and releases its session lease', async () => {
+    mutationHost.protectedHostPolicyFixture = false;
+    await expect(mutateIdentityStack(input, editor)).rejects.toThrow('identity host policy effect protection is unavailable');
+    expect(mutationHost.funded).not.toHaveBeenCalled();
+    expect(mutationHost.provision).not.toHaveBeenCalled();
+    expect(mutationHost.activate).not.toHaveBeenCalled();
+    expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+    const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
+    expect(row!.launch_spec).toEqual(original);
+    await db.sql.begin(async tx => {
+      await tx`SET LOCAL lock_timeout = '150ms'`;
+      await tx`LOCK TABLE harness_shared.adv_sessions, harness_shared.session_briefs IN ACCESS EXCLUSIVE MODE`;
+    });
+  });
+
+  it('refuses an unknown host-policy scope without defaulting an operator session to a harness', async () => {
+    const unscoped = { ...original, harnessSlug: null };
+    await db.sql`UPDATE harness_shared.adv_sessions SET launch_spec = ${db.sql.json(unscoped)} WHERE id = 100`;
+    await expect(mutateIdentityStack(input, editor)).rejects.toThrow('identity host policy scope is unavailable');
+    expect(mutationHost.funded).not.toHaveBeenCalled();
+    expect(mutationHost.provision).not.toHaveBeenCalled();
+    expect(mutationHost.activate).not.toHaveBeenCalled();
+    const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
+    expect(row!.launch_spec).toEqual(unscoped);
   });
 
   it.each(['successor', 'control-anchor'] as const)(

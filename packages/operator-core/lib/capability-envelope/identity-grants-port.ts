@@ -69,9 +69,13 @@ interface PolicyInput {
   harnessSlug: string;
   role?: string;
   classRefs: readonly string[];
+  /** A fresh policy read is not a lease over its independently mutable sources. */
+  pinForEffect?: boolean;
 }
 
 type PolicyReader = (input: PolicyInput) => Promise<IdentityGrantPolicy>;
+
+const HOST_POLICY_EFFECT_PROTECTION_UNAVAILABLE = 'identity host policy effect protection is unavailable';
 
 interface IdentityGrantKernelState extends KernelContextState {
   /** Set only when the control anchor's adv_sessions join found no row. */
@@ -394,8 +398,13 @@ async function readEnvelopeOverrides(workspaceId: string): Promise<CapabilityEnv
     : {};
 }
 
-/** Reads existing stores; missing or failed policy reads must reach the caller. */
+/** Reads existing stores; missing or failed policy reads must reach the caller.
+ * This is an optimistic execution-policy read. The registry, pot source files,
+ * override flag, provider bindings and projected tool catalog do not share an
+ * effect lease. Neither freshness nor policyRevision can supply that protection.
+ * Refuse a requested effect pin before accessing any of those sources. */
 export const readIdentityGrantPolicy: PolicyReader = async (input) => {
+  if (input.pinForEffect === true) throw new Error(HOST_POLICY_EFFECT_PROTECTION_UNAVAILABLE);
   const { potSlug, roles } = await readAdministratorPotRoles(input.workspaceId, input.harnessSlug);
   // A library install may omit a role only for an unambiguous single-role pot.
   // The installed package never supplies the administrator role selection.
@@ -435,15 +444,18 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
  * scoped action/resource grants or human ownership.
  *
  * The host supplies the stored record and applied pair. An expected revision
- * rechecks this slice after an asynchronous wait; the writer still must hold
- * the complete source vector's transaction/lease through its first effect. */
+ * rechecks this slice after an asynchronous wait; it is not an effect lease.
+ * pinForEffect explicitly refuses until the complete host-policy source vector
+ * can be held through the first effect, including when a supplied PolicyReader
+ * returns equal bytes or the expectedRevision matches. */
 export async function readIdentityPermissionSources(
   input: { workspaceId: string; harnessSlug: string; record: unknown;
-    applied: KernelExecutionRevision | null | undefined; expectedRevision?: string },
+    applied: KernelExecutionRevision | null | undefined; expectedRevision?: string; pinForEffect?: boolean },
   readPolicy: PolicyReader = readIdentityGrantPolicy,
 ) {
   const { workspaceId, harnessSlug, expectedRevision } = input;
   const unavailable = (reason: string) => ({ status: 'unavailable' as const, reason });
+  if (input.pinForEffect === true) return unavailable(HOST_POLICY_EFFECT_PROTECTION_UNAVAILABLE);
   const valid = (value: unknown): value is string => typeof value === 'string' &&
     !!value.trim() && value === value.trim();
   if (!valid(workspaceId) || !valid(harnessSlug) ||

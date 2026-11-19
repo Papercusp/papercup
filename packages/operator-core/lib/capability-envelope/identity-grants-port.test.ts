@@ -199,6 +199,20 @@ describe('P-002 canonical identity permission sources', () => {
     expect(f.artifact.inputs.find(entry => entry.kind === 'blueprint-layer')?.document?.id).toBe('grant-port');
     expect((await readIdentityPermissionSources({ ...value, expectedRevision: result.revision }, async () => f.policy)).status).toBe('unavailable');
   });
+
+  it('refuses an effect read even when its optimistic revision still matches', async () => {
+    const { read, value } = input();
+    const before = await readIdentityPermissionSources(value, read);
+    if (before.status !== 'ok') throw new Error('sources not loaded');
+    read.mockClear();
+    const pinned = { ...value, expectedRevision: before.revision, pinForEffect: true };
+    expect(await readIdentityPermissionSources(pinned, read)).toMatchObject({
+      status: 'unavailable', reason: 'identity host policy effect protection is unavailable',
+    });
+    // A supplied reader returning the same policy is not a lease on the host
+    // registry, pot files, flags, provider bindings or runtime tool catalog.
+    expect(read).not.toHaveBeenCalled();
+  });
 });
 
 describe('P-005 current identity grants at the common kernel seat', () => {
@@ -1009,6 +1023,14 @@ describe('P-005 production policy reader', () => {
       workspaceId: 'ws-a', potSlug: 'sales-pot', classId: 'crm.email', classVersion: '1.0.0',
       providerKinds: ['tool', 'recipe'],
     });
+  });
+
+  it.each([false, true])('refuses host policy effect protection before reads (empty class set=%s)', async empty => {
+    const input = prepare();
+    const pinned = { ...input, classRefs: empty ? [] : input.classRefs, pinForEffect: true };
+    await expect(readIdentityGrantPolicy(pinned)).rejects.toThrow('identity host policy effect protection is unavailable');
+    for (const read of [io.state, io.load, io.source, io.flag, io.binding, io.tools])
+      expect(read).not.toHaveBeenCalled();
   });
 
   it('the identity source adapter defaults to the same fresh canonical policy reader', async () => {
