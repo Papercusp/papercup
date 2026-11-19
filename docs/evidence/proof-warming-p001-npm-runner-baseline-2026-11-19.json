@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P001 controlled maintained npm-task materialization baseline",
+  "framework": "operational",
+  "command": ["npm", "run", "test:file", "--", "apps/operator/lib/release/proof-warming-runner-baseline.test.ts"],
+  "exitCode": 0,
+  "startedAt": "2026-11-19T20:25:44.479Z",
+  "finishedAt": "2026-11-19T20:25:56.511Z",
+  "summary": "The native fixture measured the maintained npm-task predictor against the real installed judging Vitest executable in three source materializations of one fixture commit. Actual npm-task identities match. A real NODE_OPTIONS disturbance changes identity. Only linked worktrees share the object store. Intended-child proof consumption remains unverified.",
+  "assertions": [
+    {"id": "same-source-commit", "passed": true, "evidence": "Actual HEAD in each maintained materialization equals measurement.workloadSourceIdentity in the complete report."},
+    {"id": "actual-npm-task-runtime", "passed": true, "evidence": "captureNpmTaskRuntimeIdentity and defaultRunnerIdentity with the actual task tuple returned measured runtime identities in every root; no injected identity string."},
+    {"id": "same-npm-task-identity", "passed": true, "evidence": "The checkpoint worktree, linked judging worktree and separate clone have equal measured npmRunnerIdentity values."},
+    {"id": "npm-invocation-negative", "passed": true, "evidence": "A real NODE_OPTIONS condition changes the maintained npm-task identity at the same fixture commit."},
+    {"id": "object-store-fence", "passed": true, "evidence": "Actual resolved Git common directories match for linked worktrees and differ for the separate clone. This establishes eligibility only."}
+  ],
+  "sourceTestRun": {
+    "id": 24020997,
+    "status": "pass",
+    "commitSha": "fb61c5407cdd4029148b0a782552b730f7f10f87",
+    "startedAt": "2026-11-19T20:25:44.479Z",
+    "finishedAt": "2026-11-19T20:25:56.511Z",
+    "worktreeDirty": true,
+    "originalResultReference": {"schemaVersion": "original-test-run-reference-v2", "scope": "original-test-run-outcome-execution-and-configuration", "testRunId": "24020997", "sha256": "8d99221fe86056ad359a5abece994cc785562a18f8dd29f672c6f3062abad149"}
+  },
+  "testSource": {"path": "apps/operator/lib/release/proof-warming-runner-baseline.test.ts", "sha256": "dfed556c58a00797e1c85836c19a4abe68677e68c5de48264dc2ebc5cbe16b28"},
+  "implementationTreatment": "Maintained npm-task runtime predictor and source-only materializer; actual installed judging Vitest executable and published controlled empty dependency generation. No product implementation change and no intended-child consumption claim.",
+  "remaining": ["Exercise intended-child consumption of authentic warmed proofs.", "Complete retained-progress baseline after the owned snapshot identity defect is resolved.", "Register this committed artifact with testing:record-run and bind its returned ledger record."],
+  "measurementRef": {
+    "tool": "reports:get",
+    "args": {"id": "rpt_e3e6825c-5dc6-43ca-b361-80fa75779dd3"},
+    "bodySha256": "57c45aef15fc63c4dcb51f25617c15edca92d89d54b3c4d85e70a1bb6d4cb05e",
+    "path": "/reports?sel=rpt_e3e6825c-5dc6-43ca-b361-80fa75779dd3",
+    "jsonPointer": "/measurement",
+    "omittedInline": "Complete observations, installed executable identity, source identities, and raw native output remain in the workspace report. Follow this reference and verify the complete JSON before evaluating the baseline; no identity is redacted or truncated."
+  }
+}
