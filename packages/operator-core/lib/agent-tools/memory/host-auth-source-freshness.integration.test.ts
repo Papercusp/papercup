@@ -46,14 +46,22 @@ vi.mock('../../memory/surfaced-outcomes', async original => ({
 }));
 // This unit measures the PI host/context boundary and generic capability gate.
 // Operator kernel, quota and telemetry need their own migrated runtime fixture.
+// Bare deps are not neutral: dispatch would return the universal-batch batch-v1
+// envelope and fail closed with quota_admission_unavailable, so negotiate the
+// single-operation shape and admit every quota reservation (WI-6554700010056589).
 vi.mock('../../projected-tool-deps', async original => ({
-  ...await original<typeof import('../../projected-tool-deps')>(), PROJECTED_DEPS: {},
+  ...await original<typeof import('../../projected-tool-deps')>(),
+  PROJECTED_DEPS: {
+    batchResponseVersion: 'operation-v0',
+    reserveQuota: async () => ({ allowed: true, settle: async () => {} }),
+  },
 }));
 
 import './search';
 import { tryBuildSpawnContext, __buildMcpToolContext_forTests } from '../../endpoint-route/routes/transport/_mcp-host';
 import { invalidate, _resetAuthCacheForTests } from '../../../../agent-mcp/src/auth';
 import { getSessionUser, getSessionUserOrDefault, SESSION_COOKIE, _resetLastSeenDebounceForTests } from '../../auth';
+import { setSessionConfinementResolver } from '../../capability-envelope/session-confinement-port';
 
 const WS = 'p001-host-auth';
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -132,6 +140,10 @@ async function call(token: string, query = '?principal=pi&workspace=' + WS, cook
 }
 
 beforeAll(async () => {
+  // Host boot installs the session-confinement resolver; an unpinned PI
+  // session resolves to no confinement. Without one, a ctx carrying
+  // uiClientId fails closed in memory:search (frozen_memory_unavailable).
+  setSessionConfinementResolver(async () => undefined);
   pins = sources.map(path => ({ path, sha256: sha(readFileSync(new URL('../../../../../' + path, import.meta.url))) }));
   db = await createFreshPgDb('p001-host-auth'); // Setup failure fails this suite; no early-return skip.
   seams.sql = db.sql;
@@ -229,6 +241,7 @@ describe('P001 SDK → host PI authentication → actual memory dispatcher', () 
 });
 
 afterAll(async () => {
+  setSessionConfinementResolver(undefined);
   let sourceStable = false;
   let cleanup = 'not-attempted';
   try {
