@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRetentionPin } from '../../../../scripts/lib/retention-pins.mjs';
 import {
   censusWalkDir,
   DetachedWalkAbandoned,
@@ -27,8 +28,11 @@ const ROOT = '/srv/census-root';
 let dir: string;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'census-walk-unit-'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(dir, 'leases'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(dir, 'mutexes'));
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -285,5 +289,34 @@ describe('census walk directories', () => {
 
   it('returns 0 when the walk root does not exist yet', async () => {
     expect(await pruneCensusWalks({ root: join(dir, 'absent') })).toBe(0);
+  });
+
+  it.each(['own', 'stale'].flatMap(mode => ['same', 'ancestor', 'descendant'].map(relation => ({ mode, relation }))))(
+    'preserves a pinned $mode run with a $relation pin', async ({ mode, relation }) => {
+    const root = join(dir, 'walks');
+    const now = Date.now();
+    const old = new Date(now - 3 * 24 * 60 * 60 * 1000);
+    const run = join(root, 'referenced');
+    const evidence = join(run, 'root', 'err.1');
+    mkdirSync(join(run, 'root'), { recursive: true });
+    writeFileSync(evidence, 'diagnostic source');
+    const path = relation === 'ancestor' ? root : relation === 'descendant' ? evidence : run;
+    createRetentionPin({ path, owner: 'census-consumer', reason: 'referenced diagnostic evidence',
+      expiresAt: new Date(now + 3600_000).toISOString() }, { nowMs: now });
+    utimesSync(run, old, old);
+    expect(await pruneCensusWalks({ root, runKey: mode === 'own' ? 'referenced' : undefined, now })).toBe(0);
+    expect(readFileSync(evidence, 'utf8')).toBe('diagnostic source');
+  });
+
+  it('refuses pruning when pin state is unreadable, preserving eligible run evidence', async () => {
+    const root = join(dir, 'walks');
+    const run = join(root, 'done-run');
+    mkdirSync(run, { recursive: true });
+    writeFileSync(join(run, 'err.1'), 'source must survive');
+    const leases = join(dir, 'leases');
+    mkdirSync(leases);
+    writeFileSync(join(leases, 'lease-agent-pin-broken.tsv'), 'not a valid retention pin');
+    await expect(pruneCensusWalks({ root, runKey: 'done-run' })).rejects.toThrow('retention pins unreadable');
+    expect(readFileSync(join(run, 'err.1'), 'utf8')).toBe('source must survive');
   });
 });

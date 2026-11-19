@@ -30,6 +30,7 @@ import { join, resolve, sep } from 'node:path';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { CENSUS_DU_TIMEOUT_MS, censusDuArgs, DuOutputParser, resolveCensusBin, type DuRun } from './disk-consumer-census';
 import { CENSUS_FLOOR_BYTES, CENSUS_MAX_DEPTH, censusCommand, DuTreeAccumulator } from './usage';
+import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 /** How often a waiting step re-checks its walk. */
 export const CENSUS_WALK_POLL_MS = 15_000;
@@ -557,19 +558,25 @@ export async function pruneCensusWalks(
   } catch {
     return 0;
   }
-  let removed = 0;
-  for (const name of entries) {
-    const path = resolve(root, name);
-    if (!path.startsWith(root + sep)) continue;
-    let stale = false;
-    try {
-      stale = (await fsp.stat(path)).mtimeMs < cutoff;
-    } catch {
-      continue;
-    }
-    if (name !== own && !stale) continue;
-    await fsp.rm(path, { recursive: true, force: true });
-    removed += 1;
-  }
-  return removed;
+  // Pin publication and the entire removal share the existing retention mutex.
+  // A referenced child also protects its containing attempt/run directory.
+  // Unreadable pin state rejects before any evidence can be removed.
+  return withRetentionPinProtection(async isPinned => {
+    const candidates = await Promise.all(entries.map(async name => {
+      const path = resolve(root, name);
+      if (!path.startsWith(root + sep) || isPinned(path)) return null;
+      try {
+        return name === own || (await fsp.stat(path)).mtimeMs < cutoff ? path : null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }
+    }));
+    const removed = await Promise.all(candidates.map(async path => {
+      if (path === null) return 0;
+      await fsp.rm(path, { recursive: true, force: true });
+      return 1;
+    }));
+    return removed.reduce<number>((total, count) => total + count, 0);
+  }, { nowMs: opts.now });
 }
