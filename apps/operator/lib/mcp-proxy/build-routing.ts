@@ -142,6 +142,9 @@ export const CURRENT_BUILD_DEFAULT_TOOLS: readonly string[] = [
   // Plan audits, content writes, starts and progress reflections share an authority fence.
   // Older release writers lack its transaction-scoped preservation marker and
   // revoke a valid start when an item is merely claimed, released or completed.
+  // Readiness reads must use that same build: otherwise direct plans:get can
+  // report an unresolved pinned rubric while tools:invoke reads it on staging.
+  "plans:get",
   "plans:audit",
   "plans:start",
   "plans:set-content",

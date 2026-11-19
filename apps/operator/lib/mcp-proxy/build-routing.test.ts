@@ -344,7 +344,7 @@ describe("current-build defaults for release repair-plane tools", () => {
       "release:repair-queue", "release:test-downgrade",
       "consult:get_feedback", "consult:reply", "consult:decline", "consult:close", "consult:routing-health",
       "locks:release",
-      "plans:audit", "plans:start", "plans:set-content", "plans:set-status",
+      "plans:get", "plans:audit", "plans:start", "plans:set-content", "plans:set-status",
       "work_items:claim", "work_items:release", "work_items:complete", "work_items:set_state",
     ]);
   });
@@ -370,6 +370,8 @@ describe("current-build defaults for release repair-plane tools", () => {
           inputSchema: { type: "object", properties: { native_edit_proof: { properties: {} } } },
         },
         { name: "coord:presence", description: "main-only guidance" },
+        { name: "plans:get", description: "legacy plan diagnostics",
+          _meta: { "papercusp/servingGeneration": "generation:main" } },
         { name: "tools:invoke", description: "legacy invocation wrapper" },
         { name: "tools:find", description: "legacy discovery wrapper" },
       ], contentType));
@@ -393,6 +395,8 @@ describe("current-build defaults for release repair-plane tools", () => {
           },
         },
         { name: "coord:presence", description: "staging-only guidance" },
+        { name: "plans:get", description: "current plan diagnostics",
+          _meta: { "papercusp/servingGeneration": "generation:staging" } },
         { name: "tools:invoke", _meta: { "papercusp/servingGeneration": "generation:staging" } },
         { name: "tools:find", _meta: { "papercusp/servingGeneration": "generation:staging" } },
       ], contentType));
@@ -413,7 +417,8 @@ describe("current-build defaults for release repair-plane tools", () => {
         inputSchema: { properties: { reason: { type: "string" } } },
       });
       expect(listed.find((tool) => tool.name === "coord:presence")?.description).toBe("main-only guidance");
-      for (const name of ["tools:invoke", "tools:find"])
+      expect(listed.find((tool) => tool.name === "plans:get")?.description).toBe("current plan diagnostics");
+      for (const name of ["tools:invoke", "tools:find", "plans:get"])
         expect(listed.find((tool) => tool.name === name)).toMatchObject({
           _meta: { "papercusp/servingGeneration": "generation:staging" },
         });
@@ -493,6 +498,51 @@ describe("current-build defaults for release repair-plane tools", () => {
     expect(currentBuildDefaultTool({ name: "release:test-downgrade", arguments: { op: "list" } })).not.toBeNull();
   });
 
+  it("keeps plan acceptance reads on the same build through direct, wrapped and scripted calls", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const staging = await listen(stubOperator("staging", seen));
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), port(staging)));
+    const args = { slug: "pinned-acceptance", harness: "subject-harness", shipReadiness: true };
+    const forms = [
+      call("plans:get", args),
+      call("plans_get", JSON.stringify(args)),
+      call("tools:invoke", { name: "plans:get", args }),
+      call("code:run", { script: `return tools.plans.get(${JSON.stringify(args)});` }),
+    ];
+    for (const form of forms) {
+      const response = await post(p, JSON.stringify(form));
+      expect(JSON.parse(response.body)).toMatchObject({ result: { servedBy: "staging" } });
+      expect(JSON.parse(seen.at(-1)!.body).params._meta[MCP_BUILD_META_KEY]).toBe("staging");
+    }
+    expect(seen.map(entry => entry.label)).toEqual(forms.map(() => "staging"));
+
+    // The default must still permit an intentional read of the release build.
+    const release = await post(p, JSON.stringify(call("plans:get", { ...args, build: "main" })));
+    expect(JSON.parse(release.body)).toMatchObject({ result: { servedBy: "main" } });
+    expect(JSON.parse(seen.at(-1)!.body).params.arguments).toEqual(args);
+    // An unrelated namespace's short `get` verb must not move its script.
+    expect(applyMcpBuildSelector(buf(call("code:run", { script: "return tools.tasks.get({});" })), {
+      defaultToCurrentBuild: true,
+    })).toEqual({ kind: "none" });
+  });
+
+  it("does not return a stale release plan verdict when current plan diagnostics are unavailable", async () => {
+    const seen: Array<{ label: string; body: string }> = [];
+    const main = await listen(stubOperator("main", seen));
+    const stagingDown = await freePort();
+    const p = await proxyFor(() => staticMcpProxyTargets("127.0.0.1", port(main), stagingDown), 100);
+    const response = await post(p, JSON.stringify(call("plans:get", {
+      slug: "pinned-acceptance", harness: "subject-harness", shipReadiness: true,
+    })));
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toMatchObject({
+      error: "staging_unavailable", forwardingResult: "not_applied",
+      defaultedBy: { tools: ["plans:get"] },
+    });
+    expect(seen).toEqual([]);
+  });
+
   it.each(["plans:start", "plans:set-status", "work_items:claim", "work_items:release", "work_items:complete", "work_items:set_state"])(
     "keeps %s on the writer that preserves execution authority",
     async (name) => {
@@ -509,8 +559,9 @@ describe("current-build defaults for release repair-plane tools", () => {
     },
   );
 
-  it("routes nested progress writers without matching unrelated start or claim verbs", () => {
+  it("routes nested plan reads and progress writers without matching unrelated start or claim verbs", () => {
     for (const script of [
+      "return tools.plans.get({});",
       "return tools.plans.start({});", "return tools.plans.setStatus({});",
       "return tools.work_items.claim({});", "return tools.workItems.release({});",
       "return tools['work_items']['complete']({});", "return tools.workItems.setState({});",
@@ -518,7 +569,7 @@ describe("current-build defaults for release repair-plane tools", () => {
       expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }))
         .toMatchObject({ kind: "routed", build: "staging" });
     }
-    for (const script of ["return tools.pot.start({});", "return tools.resource.claim({});", "return tools.plans.get({});"]) {
+    for (const script of ["return tools.pot.start({});", "return tools.resource.claim({});", "return tools.tasks.get({});"]) {
       expect(applyMcpBuildSelector(buf(call("code:run", { script })), { defaultToCurrentBuild: true }))
         .toEqual({ kind: "none" });
     }
