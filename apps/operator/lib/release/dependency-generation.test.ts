@@ -5810,6 +5810,72 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
 // P-012 (WI-10004927): a changed tree is rebuilt from the predecessor's copy plus
 // the paths whose live source record changed, instead of one full copy.
 describe('P-012: incremental copy of a changed dependency tree', () => {
+  it.each(['advancing', 'stalled', 'archive-failure', 'extract-failure'] as const)(
+    'EI-29240789757322111: supervises the changed-file tar pipeline (%s)',
+    activity => {
+      const root = mkdtempSync(join(tmpdir(), 'dependency-incremental-tar-'));
+      roots.push(root);
+      mkdirSync(join(root, 'src'), { recursive: true });
+      mkdirSync(join(root, 'seed'), { recursive: true });
+      writeFileSync(join(root, 'seed/payload'), 'old\n');
+      writeFileSync(join(root, 'src/payload'), 'x'.repeat(1_048_576));
+      const wrapper = [
+        'set -uo pipefail; source "$SCRIPT"',
+        'dependency_generation_source_records_impl "$ROOT/seed" "$ROOT/seed.records" || exit 1',
+        'gzip -c "$ROOT/seed.records" > "$ROOT/seed.records.gz"',
+        'dependency_generation_source_records_impl "$ROOT/src" "$ROOT/live.records" || exit 1',
+        'eval "__orig_$(declare -f dependency_generation_log)"; dependency_generation_log() { __orig_dependency_generation_log "$@"; printf "%s\\n" "$*" >> "$ROOT/log"; }',
+        'tar() {',
+        '  echo "$BASHPID" >> "$ROOT/tar-pids"',
+        '  if [ "$3" = --format=posix ] && [ "$ACTIVITY" = archive-failure ]; then return 23; fi',
+        '  if [ "$3" = -xpf ]; then',
+        '    case "$ACTIVITY" in',
+        '      extract-failure) return 24 ;;',
+        '      stalled) command sleep 60 ;;',
+        // Real writes in the tar subtree keep the consumer alive until the
+        // supervisor observes them. No elapsed-time-only heartbeat is accepted.
+        '      advancing) local i; for i in $(seq 1 100); do',
+        '        printf "%1048576s" "" >> "$ROOT/tar-sink"',
+        '        grep -qE "work progress: node_modules io=[1-9]" "$ROOT/log" 2>/dev/null && break',
+        '        command sleep 0.1',
+        '      done; grep -qE "work progress: node_modules io=[1-9]" "$ROOT/log" || return 25 ;;',
+        '    esac',
+        '  fi',
+        '  command tar "$@"',
+        '}',
+        'rc=0; dependency_generation_copy_incremental "$ROOT/src" "$ROOT/build/tree/node_modules" "$ROOT/seed" "$ROOT/seed.records.gz" 9999999999999999999 "$ROOT/live.records" "$ROOT/work" || rc=$?',
+        'echo RC=$rc',
+        // Success and error paths must relinquish the real copy lock.
+        'flock -n "$DEPENDENCY_GENERATION_COPY_LOCK" true && echo LOCK_RELEASED',
+        'while read -r pid; do if [ -r "/proc/$pid/stat" ]; then state=$(awk \'{print $3}\' "/proc/$pid/stat"); [ "$state" = Z ] || { echo SURVIVING_TAR; kill -KILL "$pid"; }; fi; done < "$ROOT/tar-pids"',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', wrapper], {
+        encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+        env: { ...process.env, SCRIPT, ROOT: root, ACTIVITY: activity,
+          DEPENDENCY_GENERATION_COPY_LOCK: join(root, 'copy.lock'),
+          DEPENDENCY_GENERATION_INCREMENTAL_SEED_REFLINK: 'auto',
+          DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1',
+          DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: '2' },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('LOCK_RELEASED');
+      expect(result.stdout).not.toContain('SURVIVING_TAR');
+      if (activity === 'advancing') {
+        expect(result.stdout, result.stderr).toContain('RC=0');
+        expect(result.stderr).toMatch(/work progress: node_modules io=[1-9]\d*MiB/);
+        expect(result.stderr).toContain('INCREMENTAL schema=1');
+        expect(readFileSync(join(root, 'build/tree/node_modules/payload'), 'utf8'))
+          .toBe(readFileSync(join(root, 'src/payload'), 'utf8'));
+      } else {
+        expect(result.stdout, result.stderr).toContain('RC=1');
+        expect(existsSync(join(root, 'build/tree/node_modules'))).toBe(false);
+        expect(result.stderr).not.toContain('INCREMENTAL schema=1');
+        if (activity === 'stalled') expect(result.stderr).toContain('COPY_STALLED');
+        else expect(result.stderr).not.toContain('COPY_STALLED');
+      }
+    }, NATIVE_SHELL_TIMEOUT_MS,
+  );
+
   const incrementalEnv = (racyWindowSec: string): NodeJS.ProcessEnv => ({
     DEPENDENCY_GENERATION_WALK_JOBS: '1',
     DEPENDENCY_GENERATION_RACY_WINDOW_SEC: racyWindowSec,

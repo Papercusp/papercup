@@ -3425,6 +3425,12 @@ dependency_generation_incremental_verify_impl() {
   LC_ALL=C comm -12 "$work/live.sorted" "$work/seed.sorted" | cut -c67- > "$work/verified"
 }
 
+dependency_generation_incremental_tar() (
+  set -o pipefail
+  tar -C "$1" --format=posix --no-recursion --null --verbatim-files-from \
+    -T "$3" -cf - | tar -C "$2" -xpf -
+)
+
 # Build $dest as $src from $seed, the predecessor's copy of the same tree.
 # Exit 0: $dest is verified against $live_records. 76/77: the typed copy-lock
 # and headroom exits, which a full copy would hit too. Anything else: $dest is
@@ -3487,11 +3493,11 @@ dependency_generation_copy_incremental() {
     ( cd "$dest" && xargs -0 -r rm -rf -- < "$work/remove0" ) || rc=1
   fi
   if [ "$rc" -eq 0 ] && [ -s "$work/copy0" ]; then
-    (
-      set -o pipefail
-      tar -C "$src" --format=posix --no-recursion --null --verbatim-files-from \
-        -T "$work/copy0" -cf - | tar -C "$dest" -xpf -
-    ) || rc=1
+    # The changed-file pipeline can outlive the verifier's inactivity budget.
+    # Observe its real subtree I/O through the same fenced supervisor used for
+    # record scans and checksum work; a silent/stalled tar must still fail.
+    dependency_generation_copy_with_progress "$src" "$dest" --exec \
+      dependency_generation_incremental_tar "$src" "$dest" "$work/copy0" || rc=1
   fi
   dependency_generation_release_copy_lock
   if [ "$rc" -eq 0 ]; then
