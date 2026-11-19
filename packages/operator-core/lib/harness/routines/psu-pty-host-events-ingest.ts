@@ -26,9 +26,10 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { providerRecoveryEventKey, providerRecoveryFromObservation } from './session-interruption-recovery';
 
 /** How long an ingested row is kept in Postgres before the retention sweep drops it. */
 export const HOST_EVENT_ROW_RETENTION_DAYS_DEFAULT = 90;
@@ -101,6 +102,8 @@ export interface PsuPtyHostEventsIngestResult {
   filesEligible: number;
   /** Eligible files this run did NOT select. Persistently non-zero ⇒ the budget is too small. */
   filesUnprocessed: number;
+  /** Last filename reserved in the persisted rotation, when the file budget bound this run. */
+  fileRotationCursor?: string;
   /**
    * Files already past the GC cutoff that this run could not select. This is the directory's
    * unbounded-growth signal: it only falls when the drain outruns new arrivals.
@@ -207,6 +210,47 @@ export function defaultHostEventDir(): string {
   return papercuspPtyPath();
 }
 
+/** Keep fresh observations on a fast path without letting an unchanged
+ * directory hide a quiet file indefinitely. Reserving a batch advances a
+ * durable cursor. An interrupted reservation is revisited on the next cycle. */
+async function reserveHostEventFiles(input: {
+  sql: Sql;
+  workspaceId: string;
+  dir: string;
+  files: Array<{ filename: string; mtimeMs: number }>;
+  limit: number;
+  dryRun: boolean;
+}): Promise<{ files: string[]; cursor?: string }> {
+  const { sql, workspaceId, dir, files, limit, dryRun } = input;
+  if (files.length <= limit) return { files: files.map(f => f.filename) };
+  const key = `psu-pty-host-events-rotation:${createHash('sha256').update(JSON.stringify([workspaceId, dir])).digest('hex')}`;
+  const sorted = files.map(f => f.filename).sort();
+  const fresh = [...files].sort((a, b) => b.mtimeMs - a.mtimeMs || a.filename.localeCompare(b.filename))
+    .slice(0, Math.floor(limit / 2)).map(f => f.filename);
+  return await sql.begin(async tx => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+    const [prior] = await tx<{ value: string }[]>`
+      SELECT value FROM harness_shared.operator_settings WHERE key = ${key} AND workspace_id = ${workspaceId}
+    `;
+    const offset = sorted.findIndex(name => name > (prior?.value ?? ''));
+    const start = Math.max(0, offset);
+    const selected = new Set(fresh);
+    let cursor = '';
+    for (let n = 0; selected.size < limit; n++) {
+      cursor = sorted[(start + n) % sorted.length]!;
+      selected.add(cursor);
+    }
+    if (!dryRun) {
+      await tx`
+        INSERT INTO harness_shared.operator_settings (key, value, workspace_id, description, updated_at)
+        VALUES (${key}, ${cursor}, ${workspaceId}, 'Host event ingest rotation cursor', ${Date.now()})
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+      `;
+    }
+    return { files: [...selected], cursor };
+  });
+}
+
 export async function ingestPsuPtyHostEvents(
   opts: PsuPtyHostEventsIngestOptions = {},
 ): Promise<PsuPtyHostEventsIngestResult> {
@@ -226,7 +270,7 @@ export async function ingestPsuPtyHostEvents(
       : HOST_EVENT_FILE_RETENTION_DAYS_DEFAULT;
   const maxFilesPerRun =
     Number.isFinite(opts.maxFilesPerRun) && (opts.maxFilesPerRun as number) > 0
-      ? (opts.maxFilesPerRun as number)
+      ? Math.max(1, Math.floor(opts.maxFilesPerRun as number))
       : HOST_EVENT_MAX_FILES_PER_RUN_DEFAULT;
 
   const result: PsuPtyHostEventsIngestResult = {
@@ -278,29 +322,13 @@ export async function ingestPsuPtyHostEvents(
     }
   }
 
-  const byNewest = [...stated].sort((a, b) => b.mtimeMs - a.mtimeMs);
-  // A file may only be GC'd AFTER a successful ingest (the retained-uningested invariant
-  // below), so draining the backlog requires SELECTING those files. A newest-only window
-  // would keep telemetry fresh and still let the directory grow without bound, so the
-  // budget is split: freshest first, then the oldest GC-eligible files, then more fresh.
-  const gcDrain = stated
-    .filter((f) => f.mtimeMs < fileGcCutoff)
-    .sort((a, b) => a.mtimeMs - b.mtimeMs);
-
-  const selected = new Set<string>();
-  const take = (list: Array<{ filename: string }>, budget: number) => {
-    for (const f of list) {
-      if (selected.size >= budget) break;
-      selected.add(f.filename);
-    }
-  };
-  take(byNewest, Math.max(1, Math.ceil(maxFilesPerRun / 2)));
-  take(gcDrain, maxFilesPerRun);
-  take(byNewest, maxFilesPerRun);
-
-  const candidates = [...selected];
+  const { files: candidates, cursor } = await reserveHostEventFiles({
+    sql, workspaceId: ws, dir, files: stated, limit: maxFilesPerRun, dryRun,
+  });
+  result.fileRotationCursor = cursor;
+  const selected = new Set(candidates);
   result.filesUnprocessed = Math.max(0, stated.length - candidates.length);
-  result.gcBacklog = gcDrain.filter((f) => !selected.has(f.filename)).length;
+  result.gcBacklog = stated.filter(f => f.mtimeMs < fileGcCutoff && !selected.has(f.filename)).length;
 
   for (const filename of candidates) {
     const ownerId = ownerIdFromEventLogFilename(filename);
@@ -319,7 +347,15 @@ export async function ingestPsuPtyHostEvents(
       continue;
     }
 
-    const { rows, malformed } = parseHostEventFile(ws, ownerId, text);
+    const { rows: parsed, malformed } = parseHostEventFile(ws, ownerId, text);
+    const foreignWitnesses = new Map<string, string>();
+    const rows = parsed.filter(row => {
+      const eventWorkspace = row.payload.workspaceId;
+      const scopedWitness = row.kind === 'session-execution-observed' || row.kind === 'native-turn-start-confirmed';
+      if (!scopedWitness || typeof eventWorkspace !== 'string' || eventWorkspace === ws) return true;
+      foreignWitnesses.set(row.row_digest, eventWorkspace);
+      return false;
+    });
     result.rowsRead += rows.length;
     result.rowsMalformed += malformed;
 
@@ -366,7 +402,7 @@ export async function ingestPsuPtyHostEvents(
           // Measured 2026-09-22 by bisecting each column type; the comment above had
           // anticipated a jsonb footgun that does not actually fire here, while this one did,
           // silently, on EVERY row (2,016 read / 0 inserted, table empty for a full day).
-          const inserted = await sql`
+          const insertSource = (connection: Sql | TransactionSql) => connection`
             INSERT INTO harness_shared.psu_pty_host_events
                         (workspace_id, owner_id, ts, kind, payload, row_digest)
                  SELECT w, o, t::timestamptz, k, p, d
@@ -380,6 +416,18 @@ export async function ingestPsuPtyHostEvents(
                         ) AS u(w, o, t, k, p, d)
             ON CONFLICT (row_digest) DO NOTHING
           `;
+          const episodes = chunk.flatMap(row => {
+            if (row.kind !== 'session-execution-observed') return [];
+            const episode = providerRecoveryFromObservation({
+              ownerId: row.owner_id, workspaceId: ws, ts: row.ts, payload: row.payload,
+            });
+            return episode ? [{ key: providerRecoveryEventKey(episode), episode }] : [];
+          }).sort((a, b) => a.key.localeCompare(b.key));
+          const inserted = !episodes.length ? await insertSource(sql) : await sql.begin(async tx => {
+            const { insertProviderRecoveryDelivery } = await import('../../events/await/store');
+            for (const { episode } of episodes) await insertProviderRecoveryDelivery(tx, episode);
+            return await insertSource(tx);
+          });
           const insertedCount = inserted.count;
           if (
             !Number.isSafeInteger(insertedCount) ||
@@ -415,7 +463,18 @@ export async function ingestPsuPtyHostEvents(
     if (ingested) result.filesIngested++;
 
     if (mtimeMs < fileGcCutoff) {
-      if (!ingested) {
+      // The host WAL directory is shared by workspaces. A foreign native
+      // witness must survive until its own workspace has ingested it.
+      let foreignDurable = foreignWitnesses.size === 0;
+      if (ingested && !foreignDurable) {
+        const persisted = await sql<{ row_digest: string; workspace_id: string }[]>`
+          SELECT row_digest, workspace_id FROM harness_shared.psu_pty_host_events
+          WHERE row_digest = ANY(${[...foreignWitnesses.keys()]}::text[])
+        `;
+        foreignDurable = persisted.filter(row => foreignWitnesses.get(row.row_digest) === row.workspace_id)
+          .length === foreignWitnesses.size;
+      }
+      if (!ingested || !foreignDurable) {
         result.filesRetainedUningested++;
       } else if (!dryRun) {
         try {

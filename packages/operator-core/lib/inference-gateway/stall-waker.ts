@@ -37,7 +37,7 @@ export interface StallWakerDeps {
   capacityBack: (accountId: string, soonestResetAt: number) => Promise<boolean>;
   /** Fire the targeted coord wake. `woken:0` is a completed no-listener miss; `timedOut:true` means
    *  delivery is unknown because the bounded wake leg expired. Honors the hive pause/manual gate. */
-  wake: (ownerId: string, summary: string) => Promise<{ woken: number; timedOut: boolean }>;
+  wake: (ownerId: string, summary: string) => Promise<{ woken: number; timedOut: boolean; delegated?: boolean }>;
   /** FAST un-wedge (owner-requested 2026-06-23): ESC the owner's dead turn NOW (no wake), decoupled from the
    *  capacity gate. A turn that DIED on a gateway error is WEDGED — its CLI can't receive ANY message (not even
    *  a wake) until the dead turn is ESC'd. This re-arms it immediately so it's reachable again, WITHOUT shoving
@@ -315,6 +315,10 @@ export class StallWaker {
         // recovered on an account that was (or still could be) usage-walled misled owners into thinking
         // the gateway conflates the two meters.
         const r = await this.deps.wake(ownerId, `capacity recovered on ${info.accountId} — resume your turn`);
+        if (r.delegated) {
+          this.pending.delete(ownerId);
+          continue;
+        }
         this.lastWokeAt.set(ownerId, now);
         this.wakeCount.set(ownerId, (this.wakeCount.get(ownerId) ?? 0) + 1);
         if (r.timedOut) {

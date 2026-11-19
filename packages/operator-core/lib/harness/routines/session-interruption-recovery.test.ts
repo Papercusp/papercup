@@ -1,8 +1,45 @@
 import { describe, expect, it, vi } from 'vitest';
-import { classifySessionInterruption, recoverInterruptedSessions, sessionRecoveryKey,
+import { classifySessionInterruption, providerRecoveryEventKey, providerRecoveryFromObservation,
+  recoverInterruptedSessions, sessionRecoveryKey,
   type SessionRecoveryEvidence } from './session-interruption-recovery';
 
 const now = 20_000;
+
+describe('native provider failure episode', () => {
+  const scope = { workspaceId: 'fixture-workspace', ownerId: 'fixture-owner', ts: new Date(now).toISOString() };
+  const nativeSessionId = '12345678-1234-4234-8234-123456789abc';
+  const failure = { atMs: now - 5, retryable: true, retryAfterMs: 300_000 };
+  const execution = {
+    ownerId: scope.ownerId, hostPid: 123, nativeSessionId, receivedAtMs: now - 10,
+    observedAt: now, childGeneration: 2, phase: 'failed', pendingTools: 0, pendingGateTools: 0,
+    ownerStopRequested: false, ownerInputPending: false, failure,
+  };
+  const observation = { ...scope, payload: {
+    ...scope, advSessionId: '42', providerRecoveryVersion: 1, nativeSessionId,
+    hostPid: 123, hostStartedAt: now - 100, execution,
+  } };
+  it('honors the provider deadline and distinguishes consecutive failures before turn start', () => {
+    const first = providerRecoveryFromObservation(observation)!;
+    const second = providerRecoveryFromObservation({ ...observation, payload: { ...observation.payload,
+      execution: { ...execution, failure: { ...failure, atMs: now } },
+    } })!;
+    expect(first.notBeforeMs).toBe(failure.atMs + 300_000);
+    expect(providerRecoveryEventKey(first)).not.toBe(providerRecoveryEventKey(second));
+    expect(providerRecoveryEventKey(first)).toEqual(providerRecoveryEventKey({ ...first,
+      fence: { ...first.fence, receivedAtMs: first.fence.receivedAtMs + 1 },
+    }));
+  });
+
+  it.each([
+    { ownerStopRequested: true }, { ownerInputPending: true }, { pendingTools: 1 }, { pendingGateTools: 1 },
+    { receivedAtMs: now }, { phase: 'running' }, { failure: { ...failure, retryable: false } },
+    { ownerId: 'peer' },
+  ])('does not admit an unsafe observation %j', fields => {
+    expect(providerRecoveryFromObservation({ ...observation, payload: { ...observation.payload,
+      execution: { ...execution, ...fields },
+    } })).toBeNull();
+  });
+});
 function candidate(over: Partial<SessionRecoveryEvidence> = {}): SessionRecoveryEvidence {
   return { ownerId: 'solo', nativeSessionId: 'native', liveness: 'dead', retired: false,
     recoveryEnabled: true, deliberatelyPaused: false, launchRecipeAvailable: true, headless: false,

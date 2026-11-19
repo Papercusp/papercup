@@ -115,6 +115,9 @@ import {
 import { appendCrashResumeAdvisory } from './crash-resume-advisory';
 import { getPresence, touchHeartbeat } from '../../agent-tools/coordination/presence';
 import { resolveWakeMode } from '../../agent-tools/coordination/wake-mode';
+import { listPendingGates } from '../../attention/gate-store';
+import { fetchGatewayHeadroom, fetchGatewayOwnerExecution } from '../../inference-gateway/observability';
+import { PROVIDER_RECOVERY_CAP, providerRecoveryEventKey, readProviderRecoveryEpisode } from '../../harness/routines/session-interruption-recovery';
 import { stagePendingWake } from '../../agent-tools/coordination/pending-wakes';
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { sendMessage } from '../../agent-tools/coordination/messages';
@@ -3446,6 +3449,8 @@ export interface ExecuteWakeDeps {
   getSessionLifecycle?: (ownerId: string) => Promise<SessionBriefLifecycle | null>;
   /** Re-read the target's effective mode before consuming a queued wake. */
   resolveWakeModeFn?: typeof resolveWakeMode;
+  providerRecoveryNow?: () => number;
+  providerRecoveryCapacity?: (ownerId: string, agent: 'claude' | 'codex') => Promise<boolean>;
   /** Stage a queued delivery when manual mode became active after its emit. */
   stageManualWakeFn?: typeof stagePendingWake;
   wakeModeDeliveryLookupTimeoutMs?: number;
@@ -4487,6 +4492,89 @@ function newestDeliveryCarryNoteMeta(
 }
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
+/** The wake queue owns this retry. Only the original host may submit it, and
+ * inbox, headless resume and ordinary coalescing cannot settle it. */
+export async function executeProviderRecovery(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
+  const episode = readProviderRecoveryEpisode(d.payload);
+  if (!episode || episode.ownerId !== d.subscriberId || providerRecoveryEventKey(episode) !== d.eventKey) {
+    return { kind: 'drop', reason: 'invalid native provider recovery receipt' };
+  }
+  const { fence, ownerId, workspaceId } = episode;
+  const park = (reason: string): WakeOutcome => ({ kind: 'park', reason });
+  const { hasProviderRecoveryStartProof } = await import('./store');
+  if (await hasProviderRecoveryStartProof({ id: d.id, episode })) {
+    return { kind: 'delivered', channel: 'psu-socket-inject', turnProof: 'host-attested' };
+  }
+  if ((deps.providerRecoveryNow ?? Date.now)() < episode.notBeforeMs) {
+    return park('provider retry deadline has not elapsed');
+  }
+  const [session, lifecycle, wakeMode, loop, gates, host] = await Promise.all([
+    (deps.getLatestSessionForOwner ?? latestAdvSessionByCoordOwner)(ownerId),
+    (deps.getSessionLifecycle ?? (id => getSessionBriefLifecycle(id, { failClosed: true })))(ownerId),
+    (deps.resolveWakeModeFn ?? resolveWakeMode)(ownerId),
+    (deps.getLoopStatusFn ?? getLoopStatus)(ownerId),
+    listPendingGates({ workspaceId, sessionId: fence.nativeSessionId, limit: 1 }),
+    (deps.findPsuHost ?? findLiveHostAsync)(ownerId),
+  ]);
+  if (!session) return park('native provider recovery is waiting for the session ledger');
+  if (session.workspaceId !== workspaceId || String(session.id) !== episode.advSessionId ||
+      session.retiredAt || lifecycle?.released || lifecycle?.poisoned ||
+      (lifecycle?.shutdown && Date.parse(lifecycle.shutdown.at) >= fence.failedAtMs) ||
+      loop?.explicitlyEnded) {
+    return { kind: 'drop', reason: 'native provider recovery was stopped or superseded in the session ledger' };
+  }
+  if (wakeMode !== 'auto' || (lifecycle && Object.hasOwn(lifecycle, 'assumeCaller')) || gates.length) {
+    return park('native provider recovery is held by session controls or a human decision');
+  }
+  if (!host) return park('original managed host is unavailable; awaiting native proof or a session replacement');
+  if (host.ownerId !== ownerId || host.pid !== episode.hostPid || host.startedAt !== fence.hostStartedAt ||
+      (host.advSessionId && host.advSessionId !== episode.advSessionId)) {
+    return { kind: 'drop', reason: 'native provider recovery was superseded by a different host' };
+  }
+  if (loop?.active) {
+    const execution = host.execution;
+    if (host.childGeneration !== fence.childGeneration ||
+        (execution?.phase !== 'unknown' && Number(execution?.receivedAtMs) > fence.receivedAtMs)) {
+      return { kind: 'drop', reason: 'the existing session loop has a newer native execution boundary' };
+    }
+    return park('the existing session loop owns native recovery');
+  }
+  if (!hostSupports(host, PROVIDER_RECOVERY_CAP)) return park('managed host has no provider recovery fence');
+  if (session.agent !== 'claude' && session.agent !== 'codex') {
+    return { kind: 'drop', reason: 'native provider recovery requires a Claude or Codex session' };
+  }
+  if (host.authBlocked || host.quotaBlocked) return park('the existing native account is still blocked');
+  const capacityAvailable = deps.providerRecoveryCapacity ?? (async (id, agent) => {
+    const [inference, capacity] = await Promise.all([
+      fetchGatewayOwnerExecution(id),
+      fetchGatewayHeadroom({ provider: agent, timeoutMs: 1_000 }),
+    ]);
+    return !(inference.active && inference.active > 0) &&
+      !(capacity.reachable && (capacity.paused || capacity.rejected));
+  });
+  if (!(await capacityAvailable(ownerId, session.agent))) {
+    return park('existing inference or gateway capacity is still blocked');
+  }
+  const text = await tagWakeText(d,
+    'A retryable provider error interrupted your previous turn. Continue the unfinished request in this conversation under its existing scope. Recheck current instructions and any work already completed.',
+    deps.tagTurn ?? tagTurnForInjection);
+  const result = await (deps.injectPsuHostWithConfirmation ?? injectIntoHostWithConfirmation)(host.sock, {
+    mode: 'turn', data: text.text, provenanceIssuedAtMs: text.provenanceIssuedAtMs,
+    ownerId, deliveryId: String(d.id), requireNativeTurnStart: true,
+    expectedChildGeneration: fence.childGeneration, expectedHostStartedAt: fence.hostStartedAt,
+    providerRecovery: fence,
+  });
+  if (result.ok && (result.reason === 'delivery-already-started' || result.reason === 'delivered')) {
+    return { kind: 'delivered', channel: 'psu-socket-inject', turnProof: 'host-attested' };
+  }
+  if (result.reason === 'provider-recovery-superseded' || result.reason === 'stale-execution-generation' ||
+      result.reason === 'deferred-native-turn-start-superseded' || result.reason === 'deferred-owner-stop' ||
+      result.reason === 'cancelled-before-write') {
+    return { kind: 'drop', reason: `managed host refused native provider recovery: ${result.reason}` };
+  }
+  return park(`awaiting native provider recovery turn-start proof: ${result.reason ?? result.confirmation}`);
+}
+
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
   const observeFallback = deps.observeFallback ?? defaultObserveFallback;
   const getSession = deps.getSession ?? getAdvSession;

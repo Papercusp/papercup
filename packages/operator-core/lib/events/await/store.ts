@@ -36,6 +36,7 @@ import {
   WAKE_TURN_CHANNELS,
 } from './types';
 import { turnProofColumnsReady } from './turn-proof-schema';
+import { PROVIDER_RECOVERY_SOURCE, providerRecoveryEventKey, type ProviderRecoveryEpisode } from '../../harness/routines/session-interruption-recovery';
 import {
   type TurnProof,
   initialTurnProof,
@@ -2450,6 +2451,53 @@ export async function claimSpecificOnceAwaits(
   return rows.map(mapAwait);
 }
 
+/** Register a native failure and its one scheduled retry in the wake queue. */
+export async function insertProviderRecoveryDelivery(
+  tx: postgres.TransactionSql, episode: ProviderRecoveryEpisode,
+): Promise<void> {
+  const eventKey = providerRecoveryEventKey(episode);
+  const ws = eventsWs();
+  // A native failure already fired. Register the consumed one-shot and its
+  // scheduled delivery together, so ingest retry cannot lose the payload or
+  // create another ID after an uncertain commit.
+  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${eventKey}, 0))`;
+  await tx`
+      WITH registered AS (
+        INSERT INTO harness_shared.event_awaits
+          (workspace_id, subscriber_id, event_key, policy, once, fired_at, fired_reason)
+        SELECT ${ws}, ${episode.ownerId}, ${eventKey}, 'wake', true, now(), 'event'
+        WHERE NOT EXISTS (
+          SELECT 1 FROM harness_shared.event_wake_deliveries
+          WHERE workspace_id = ${ws} AND subscriber_id = ${episode.ownerId}
+            AND event_key = ${eventKey} AND source = ${PROVIDER_RECOVERY_SOURCE}
+        )
+        RETURNING id
+      )
+      INSERT INTO harness_shared.event_wake_deliveries
+        (workspace_id, await_id, subscriber_id, event_key, payload, source, next_attempt_at)
+      SELECT ${ws}, id, ${episode.ownerId}, ${eventKey}, ${JSON.stringify(episode)}::jsonb,
+        ${PROVIDER_RECOVERY_SOURCE}, ${new Date(episode.notBeforeMs).toISOString()}::timestamptz
+      FROM registered
+  `;
+}
+
+export async function hasProviderRecoveryStartProof(input: {
+  id: number;
+  episode: ProviderRecoveryEpisode;
+}): Promise<boolean> {
+  const { sql } = getOrgPg();
+  const { episode } = input;
+  const rows = await sql`
+    SELECT 1 FROM harness_shared.psu_pty_host_events
+    WHERE workspace_id = ${episode.workspaceId} AND owner_id = ${episode.ownerId}
+      AND kind = 'native-turn-start-confirmed'
+      AND ts >= ${new Date(episode.fence.failedAtMs).toISOString()}::timestamptz
+      AND payload->>'deliveryId' = ${String(input.id)}
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
 /** Queue wake deliveries for fired awaits (one row per recipient, D-004). Carries the
  *  per-watch floor (denormalized from each await) + the emit-time `urgent` bypass so the
  *  pump can apply the floor + coalesce without re-joining (unify-watch-primitive P-005). */
@@ -3619,6 +3667,7 @@ async function markDeliveryAcked(
            turn_proof = 'observed', turn_started_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+       AND source IS DISTINCT FROM ${PROVIDER_RECOVERY_SOURCE}
        AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
          OR (${options.delivering} AND status = 'delivering'))
        AND NOT (status IN ('pending', 'parked')
@@ -3630,6 +3679,7 @@ async function markDeliveryAcked(
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+       AND source IS DISTINCT FROM ${PROVIDER_RECOVERY_SOURCE}
        AND ((${options.pendingOrParked} AND status IN ('pending', 'parked'))
          OR (${options.delivering} AND status = 'delivering'))
        AND NOT (status IN ('pending', 'parked')

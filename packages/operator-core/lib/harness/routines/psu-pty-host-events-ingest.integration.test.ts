@@ -24,13 +24,14 @@
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/psu-pty-host-events-ingest.integration.test.ts
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { ingestPsuPtyHostEvents } from './psu-pty-host-events-ingest';
+import { PROVIDER_RECOVERY_SOURCE } from './session-interruption-recovery';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -46,6 +47,8 @@ afterAll(async () => {
 });
 afterEach(async () => {
   await sql`DELETE FROM harness_shared.psu_pty_host_events WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE source = ${PROVIDER_RECOVERY_SOURCE}`;
+  await sql`DELETE FROM harness_shared.event_awaits WHERE event_key LIKE ${PROVIDER_RECOVERY_SOURCE + ':%'}`;
   await Promise.all(dirs.map((d) => rm(d, { recursive: true, force: true })));
   dirs = [];
 });
@@ -74,6 +77,64 @@ const fixtureBaseMs = Date.now() - 60_000;
 const fixtureTs = (seconds = 0) => new Date(fixtureBaseMs + seconds * 1_000).toISOString();
 
 describe('ingestPsuPtyHostEvents against a real Postgres', () => {
+  it('keeps an expired shared WAL until the workspace that owns its native proof ingests it', async () => {
+    const ownerId = 'su-foreign-wal';
+    const dir = await seedDir({ [ownerId]: [evt(fixtureTs(), 'native-turn-start-confirmed',
+      { workspaceId: WS, deliveryId: '77' })] });
+    const path = join(dir, `${ownerId}.events.jsonl`);
+    const old = new Date(Date.now() - 20 * 86_400_000);
+    await utimes(path, old, old);
+    expect(await ingestPsuPtyHostEvents({ sql, workspaceId: 'other-ws', dir }))
+      .toMatchObject({ rowsInserted: 0, filesRetainedUningested: 1, filesDeleted: 0 });
+    expect((await stat(path)).isFile()).toBe(true);
+    expect(await ingestPsuPtyHostEvents({ sql, workspaceId: WS, dir }))
+      .toMatchObject({ rowsInserted: 1, filesRetainedUningested: 0, filesDeleted: 1 });
+  });
+  it.each([2, 3, 4, 9])('reaches every one of %i files under a three-file budget across repeated runs', async count => {
+    const names = Array.from({ length: count }, (_, n) => `su-rotation-${n}`);
+    const dir = await seedDir(Object.fromEntries(names.map((name, n) =>
+      [name, [evt(fixtureTs(n), 'turn-delivered')]])));
+    const first = await ingestPsuPtyHostEvents({ sql, workspaceId: WS, dir, maxFilesPerRun: 3 });
+    expect(first.filesUnprocessed).toBe(Math.max(0, count - 3));
+    if (count > 3) expect(first.fileRotationCursor).toEqual(expect.any(String));
+    // The files remain in place. A new call must keep traversing them despite
+    // seeing the same newest files and having no prior in-memory state.
+    for (let n = 1; n < count; n++) {
+      await ingestPsuPtyHostEvents({ sql, workspaceId: WS, dir, maxFilesPerRun: 3 });
+    }
+    const rows = await sql<{ owner_id: string }[]>`
+      SELECT owner_id FROM harness_shared.psu_pty_host_events WHERE workspace_id = ${WS} ORDER BY owner_id
+    `;
+    expect(rows.map(row => row.owner_id)).toEqual(names);
+  });
+  it.each([499, 500, 501, 1001])('replays a %i-row WAL and schedules each distinct failure once', async count => {
+    const ownerId = 'su-provider-replay';
+    const nativeSessionId = '12345678-1234-4234-8234-123456789abc';
+    const failedAtMs = fixtureBaseMs;
+    const recovery = (offset: number) => evt(fixtureTs(10), 'session-execution-observed', {
+      workspaceId: WS, ownerId, advSessionId: '77', nativeSessionId, providerRecoveryVersion: 1,
+      hostStartedAt: failedAtMs - 2000, hostPid: 321,
+      execution: { ownerId, nativeSessionId, childGeneration: 3, hostPid: 321, phase: 'failed',
+        observedAt: failedAtMs + 500, receivedAtMs: failedAtMs - 1000, pendingTools: 0,
+        pendingGateTools: 0, ownerStopRequested: false, ownerInputPending: false,
+        failure: { atMs: failedAtMs + offset, retryable: true, retryAfterMs: 120_000 } },
+    });
+    const samples = Array.from({ length: count - 2 }, (_, n) => evt(fixtureTs(), 'fixture', { sequence: n }));
+    const dir = await seedDir({ [ownerId]: [recovery(0), ...samples, recovery(10)] });
+    const input = { sql, workspaceId: WS, dir };
+    const first = await ingestPsuPtyHostEvents(input);
+    expect(first).toMatchObject({ rowsInserted: count, ingestErrors: 0 });
+    const read = () => sql<{ id: string; nextAttemptAtMs: string }[]>`
+      SELECT id::text, (extract(epoch FROM next_attempt_at) * 1000)::bigint::text AS "nextAttemptAtMs"
+      FROM harness_shared.event_wake_deliveries
+      WHERE subscriber_id = ${ownerId} AND source = ${PROVIDER_RECOVERY_SOURCE}
+      ORDER BY next_attempt_at`;
+    const queued = await read();
+    expect(queued.map(row => Number(row.nextAttemptAtMs))).toEqual([failedAtMs + 120_000, failedAtMs + 120_010]);
+    const replay = await seedDir({ [ownerId]: [recovery(10), ...[...samples].reverse(), recovery(0)] });
+    expect(await ingestPsuPtyHostEvents({ ...input, dir: replay })).toMatchObject({ rowsInserted: 0, ingestErrors: 0 });
+    expect(await read()).toEqual(queued);
+  });
   it('actually PERSISTS rows — the whole-run failure a fake sql cannot see', async () => {
     const dir = await seedDir({
       'su-aaaa': [

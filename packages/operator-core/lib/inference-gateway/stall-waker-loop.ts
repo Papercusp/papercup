@@ -15,6 +15,8 @@ import { readRegistry } from '../workspace-registry';
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { forceEndTurn } from '../agent-tools/turn/interrupt';
 import { isOwnerFocusedOnDesktop } from '../desktop-window-liveness';
+import { findLiveHostAsync, hostSupports } from '../events/await/psu-pty-discovery';
+import { PROVIDER_RECOVERY_CAP } from '../harness/routines/session-interruption-recovery';
 
 const POLL_MS = Number(process.env.PAPERCUSP_STALL_WAKER_POLL_MS) || 20_000;
 /** A bee stream-silent this long is idle/sleeping (turn ended, waiting on its wake key) — NOT actively
@@ -203,6 +205,9 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       return a ? a.available === true : true; // unknown account → trust the reset time we already waited out
     },
     unwedge: async (ownerId) => {
+      if (hostSupports(await findLiveHostAsync(ownerId), PROVIDER_RECOVERY_CAP)) {
+        return { ok: false, expected: true };
+      }
       // FAST UN-WEDGE (owner-requested 2026-06-23): ESC ONLY (no wake) — end the turn that died on a gateway
       // error so the wedged CLI re-arms its inbox-wake watch and can receive messages again immediately,
       // without waiting for the account's capacity to return.
@@ -242,6 +247,11 @@ export function createStallWakerDeps(workspaceId: string): StallWakerDeps {
       return { ok: r.ok, expected };
     },
     wake: async (ownerId, summary) => {
+      // Capable hosts publish terminal failures to the durable wake queue.
+      // A gateway shedding report by itself must never interrupt their retrying child.
+      if (hostSupports(await findLiveHostAsync(ownerId), PROVIDER_RECOVERY_CAP)) {
+        return { woken: 0, timedOut: false, delegated: true };
+      }
       // ESC-THEN-WAKE (coord-end-turn P-003): a bee whose turn DIED on a rate limit is stuck mid-errored —
       // NOT sleeping on its inbox-wake key — so a bare wake lands woken:0. Force-ESC ends the dead turn first
       // (the CLI returns to idle + re-arms its watch), settle, THEN wake → a real fresh turn resumes on the

@@ -75,6 +75,7 @@ import { getLineEnvelopeById } from '../../agent-tools/coordination/line-event-b
 import { getSettledInboxMessageIds } from '../../attention/bulk-run-store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { readColdLoopMarker } from '../../su-cold-loop';
+import { PROVIDER_RECOVERY_SOURCE } from '../../harness/routines/session-interruption-recovery';
 import {
   classifyInboxWakeMessage,
   classifyInboxWakeGroup,
@@ -1093,6 +1094,28 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: PumpWakeDep
     const cancelled = new Set(cancelledIds);
     const eligible: DeliveryWork[] = [];
     for (const delivery of claimed.filter(row => !cancelled.has(row.id))) {
+      if (delivery.source === PROVIDER_RECOVERY_SOURCE) {
+        try {
+          const { executeProviderRecovery } = await import('./wake-executor');
+          const result = await executeProviderRecovery(delivery, deps);
+          if (result.kind === 'delivered' && result.turnProof === 'host-attested') {
+            await markDeliveryDelivered(delivery.id, result.channel, 1, result.turnProof);
+            recordSettledDeliveryStats(stats, result.channel);
+          } else if (result.kind === 'drop') {
+            await markDeliveryDropped(delivery.id, result.reason);
+            stats.dropped++;
+          } else {
+            await markDeliveryParked(delivery.id, result.kind === 'park' ? result.reason :
+              'provider recovery lacks native turn-start proof', PARK_RECHECK_MS);
+            stats.parked++;
+          }
+        } catch (error) {
+          await markDeliveryParked(delivery.id,
+            `provider recovery evidence unavailable: ${error instanceof Error ? error.message : String(error)}`, PARK_RECHECK_MS);
+          stats.parked++;
+        }
+        continue;
+      }
       if (!isParkRecoveryTimer(delivery.eventKey)) { eligible.push(delivery); continue; }
       try {
         const { routeParkRecoveryDeliveryInTransaction } = await import('../../durable-park-recovery');

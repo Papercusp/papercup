@@ -5,10 +5,13 @@ import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core
 import { claimDueRoutine } from '@papercusp/operator-core/lib/harness/routines/claim';
 import { recoverExpectedLoopExecution } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
 import { executeWake, type ExecuteWakeDeps } from '@papercusp/operator-core/lib/events/await/wake-executor';
+import { pumpWakeDeliveries } from '@papercusp/operator-core/lib/events/await/engine';
+import { ingestPsuPtyHostEvents } from '@papercusp/operator-core/lib/harness/routines/psu-pty-host-events-ingest';
+import { PROVIDER_RECOVERY_SOURCE } from '@papercusp/operator-core/lib/harness/routines/session-interruption-recovery';
 import type { DeliveryWork } from '@papercusp/operator-core/lib/events/await/types';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { hostThroughPty, metaPathFor, socketPathFor, nativeLatestExecution, eventLogPathForOwner } from '../scripts/psu-pty-host.mjs';
@@ -45,21 +48,23 @@ afterAll(async () => {
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 let ownerCounter = 0;
-async function until(check: () => boolean, timeoutMs = 10_000) {
+async function until(check: () => boolean, timeoutMs = 10_000, diagnostics?: () => string) {
   const deadline = Date.now() + timeoutMs;
   while (!check() && Date.now() < deadline) await delay(20);
-  expect(check()).toBe(true);
+  expect(check(), diagnostics?.()).toBe(true);
 }
 
 /** Real PTY and socket, sanitized native event shapes, no model or live DB. */
 async function fixture(agent: string, autoStart: boolean, failInitially: boolean | 'capacity' | 'active-tool' | 'rate-limit' = false,
-  bridgeTty = false) {
+  bridgeTty = false, managed?: { workspaceId: string; advSessionId: number; park?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), 'loop-native-recovery-'));
   const config = join(root, '.papercusp', `session-${agent}`);
   const nativeDir = agent === 'omp' ? join(config, 'agent', 'sessions')
     : join(config, agent === 'claude' ? 'projects' : 'sessions');
   const nativeId = agent === 'codex' ? '12345678-1234-4234-8234-123456789abc' : undefined;
-  const transcript = join(nativeDir, nativeId ? `rollout-${nativeId}.jsonl` : 'fixture.jsonl');
+  const claudeId = managed ? '23456789-1234-4234-8234-123456789abc' : undefined;
+  const transcript = join(nativeDir, nativeId ? `rollout-${nativeId}.jsonl`
+    : claudeId ? `${claudeId}.jsonl` : 'fixture.jsonl');
   mkdirSync(nativeDir, { recursive: true });
   if (agent === 'codex') writeFileSync(join(config, 'config.toml'), '');
   const ownerId = `rx-${process.pid}-${agent[0]}-${++ownerCounter}`;
@@ -86,6 +91,7 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
     const fs = require('node:fs');
     const agent = ${JSON.stringify(agent)}, path = ${JSON.stringify(transcript)};
     let line = '', count = 0, pending = false;
+    if (${managed?.park === true} && fs.readFileSync(path, 'utf8').includes('isApiErrorMessage')) count = 1;
     function append(row) { fs.appendFileSync(path, JSON.stringify({...row, id:'fixture-'+count, uuid:'fixture-'+count,
       timestamp: new Date().toISOString()})+'\\n'); }
     function start() {
@@ -123,9 +129,12 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
       } else line += c;
     }});
     process.stdout.write('READY\\n');
+    if (${managed?.park === true}) process.stdout.write('❯\\n');
     setTimeout(()=>process.exit(0),${failInitially ? 90000 : 15000});
   `;
   const env = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: agent,
+    ...(managed ? { PAPERCUSP_WORKSPACE_ID: managed.workspaceId } : {}),
+    ...(managed?.park ? { PAPERCUSP_PSU_PARK_IDLE_MS: '750' } : {}),
     ...(agent === 'codex' ? { CODEX_HOME: config } : agent === 'claude' ? { CLAUDE_CONFIG_DIR: config } : { PI_CONFIG_DIR: config }),
     PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '10', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '100',
     PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS: '250', PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '100',
@@ -140,7 +149,8 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
   expect(nativeLatestExecution({ agent, env, nativeSessionId: nativeId }).phase,
     `${agent} fixture exact native binding preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
-    ownerId, env, io: { stdin, stdout }, bridgeTty, activityPersistMs: 25, normalizedLogPath,
+    ownerId, advSessionId: managed?.advSessionId, env, io: { stdin, stdout }, bridgeTty, activityPersistMs: 25, normalizedLogPath,
+    ...(managed?.park && claudeId ? { mintParkResumeArgs: (args: string[]) => ({ args, nativeId: claudeId }) } : {}),
     resolveRespawnNativeId: nativeId ? () => nativeId : null, onExit: () => {} });
   await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)) && existsSync(sock));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
@@ -160,6 +170,91 @@ async function fixture(agent: string, autoStart: boolean, failInitially: boolean
     rmSync(root, { recursive: true, force: true });
   } };
 }
+
+describe('durable provider retries without a session loop', () => {
+  it.each([['codex', false], ['claude', false], ['claude', true]] as const)(
+    'recovers %s on the same host after an unknown wake acknowledgment (parked=%s)', async (agent, park) => {
+    const workspaceId = 'ws-managed-provider-recovery';
+    const advSessionId = agent === 'codex' ? 7101 : 7102;
+    const f = await fixture(agent, true, 'rate-limit', false, { workspaceId, advSessionId, park });
+    const sql = org.adminSql;
+    const owner = f.message.ownerId;
+    const dir = dirname(eventLogPathForOwner(owner));
+    const ingest = () => ingestPsuPtyHostEvents({ sql, workspaceId, dir });
+    const readReceipt = async () => {
+      const rows = await sql<{ id: number; status: string; failedAtMs: string; deadline: string; proof: string | null }[]>`
+        SELECT id, status, payload #>> '{fence,failedAtMs}' AS "failedAtMs",
+          (extract(epoch FROM next_attempt_at) * 1000)::bigint::text AS deadline, turn_proof AS proof
+        FROM harness_shared.event_wake_deliveries WHERE subscriber_id = ${owner} AND source = ${PROVIDER_RECOVERY_SOURCE}
+      `;
+      expect(rows).toHaveLength(1);
+      return rows[0]!;
+    };
+    try {
+      const host = f.readHost();
+      await injectIntoHostWithConfirmation(f.sock, { ...f.message, deliveryId: `failed-${owner}`,
+        requireNativeTurnStart: false });
+      await until(() => f.events().some(row => row.kind === 'session-execution-observed' && row.providerRecoveryVersion === 1));
+      expect((await ingest()).ingestErrors).toBe(0);
+      const pending = await readReceipt();
+      expect(Number(pending.deadline)).toBe(Number(pending.failedAtMs) + 60_000);
+      expect(pending.status).toBe('pending');
+
+      const inject = vi.fn<typeof injectIntoHostWithConfirmation>(async (sock, message) => {
+        expect(message).toMatchObject({ ownerId: owner, deliveryId: String(pending.id),
+          expectedHostStartedAt: host.startedAt, expectedChildGeneration: host.childGeneration,
+          requireNativeTurnStart: true });
+        await injectIntoHostWithConfirmation(sock, message);
+        return { ok: false, confirmation: 'timeout' };
+      });
+      const setDue = () => sql`UPDATE harness_shared.event_wake_deliveries SET next_attempt_at = now() WHERE id = ${pending.id}`;
+      const deps: ExecuteWakeDeps = {
+        getLatestSessionForOwner: async () => ({ id: advSessionId, workspaceId, agent,
+          coordOwnerId: owner } as Awaited<ReturnType<NonNullable<ExecuteWakeDeps['getLatestSessionForOwner']>>>),
+        getLoopStatusFn: async () => null,
+        getSessionLifecycle: async () => null,
+        resolveWakeModeFn: async () => 'auto',
+        findPsuHost: async () => f.readHost(),
+        providerRecoveryCapacity: async () => true,
+        providerRecoveryNow: () => Number(pending.deadline) - 1,
+        injectPsuHostWithConfirmation: inject,
+        tagTurn: ({ text, origin }) => ({
+          taggedText: `⟦turn-origin:wake-pump nonce:9876543210abcdef⟧\n${text}`,
+          envelope: '', nonce: '9876543210abcdef', origin, ledgerWritten: true,
+        }),
+      };
+      await setDue();
+      expect((await pumpWakeDeliveries(workspaceId, deps)).parked).toBe(1);
+      expect(inject).not.toHaveBeenCalled();
+      deps.providerRecoveryNow = () => Number(pending.deadline);
+      if (park) await until(() => f.readHost().parked === true);
+      await setDue();
+      expect((await pumpWakeDeliveries(workspaceId, deps)).parked).toBe(1);
+      expect(inject).toHaveBeenCalledTimes(1);
+      expect((await readReceipt()).proof).toBeNull();
+      await until(() => f.events().some(row => row.kind === 'native-turn-start-confirmed' &&
+        row.deliveryId === String(pending.id)), 10_000, () => JSON.stringify({
+        execution: f.readHost().execution,
+        events: f.events().filter(row => row.deliveryId === String(pending.id) ||
+          row.kind === 'session-execution-observed').map(row => ({
+          kind: row.kind, reason: row.reason, execution: row.execution, deliveryId: row.deliveryId,
+        })),
+        hadSecondSubmit: f.output().includes('SUBMIT:2'),
+      }));
+      expect((await ingest()).ingestErrors).toBe(0);
+
+      // After a restart, only the persisted queue row and ingested host receipt are needed.
+      await setDue();
+      await pumpWakeDeliveries(workspaceId, { ...deps, findPsuHost: async () => null });
+      expect(await readReceipt()).toMatchObject({ id: pending.id, status: 'delivered', proof: 'host-attested' });
+      expect(inject).toHaveBeenCalledTimes(1);
+      expect(f.output()).toContain('SUBMIT:2');
+      expect(f.output()).not.toContain('SUBMIT:3');
+      expect(f.readHost()).toMatchObject({ pid: host.pid, startedAt: host.startedAt });
+      if (!park) expect(f.readHost().ptyPid).toBe(host.ptyPid);
+    } finally { await f.close(); }
+  }, 25_000);
+});
 
 describe('cross-client native recovery handshake', () => {
   it.each(['active-tool', 'owner-input'] as const)('protects %s after a native-start abort', async guard => {
@@ -249,7 +344,7 @@ describe('cross-client native recovery handshake', () => {
       await until(() => f.readHost().execution?.phase === 'running');
       let confirmed = false;
       for (let n = 0; n < 20 && !confirmed; n++) {
-        confirmed = (await injectIntoHostWithConfirmation(f.sock, retry)).reason === 'duplicate-delivery-id';
+        confirmed = (await injectIntoHostWithConfirmation(f.sock, retry)).reason === 'delivery-already-started';
         if (!confirmed) await delay(30);
       }
       expect(confirmed).toBe(true);
@@ -289,7 +384,7 @@ describe('cross-client native recovery handshake', () => {
       for (let n = 0; n < 20 && !confirmed; n++) {
         const result = await injectIntoHostWithConfirmation(f.sock, f.message);
         confirmations.push(result);
-        confirmed = result.reason === 'duplicate-delivery-id';
+        confirmed = result.reason === 'delivery-already-started';
         if (!confirmed) await delay(30);
       }
       expect(confirmed, JSON.stringify({ agent, confirmations, output: f.output() })).toBe(true);
@@ -307,7 +402,9 @@ describe('cross-client native recovery handshake', () => {
       expect(f.output()).not.toContain('SUBMIT:2');
       await injectIntoHostWithConfirmation(f.sock, { mode: 'raw', ownerId: f.message.ownerId, data: '\x12' });
       await until(() => f.output().includes('NATIVE_STARTED'));
-      expect(await injectIntoHostWithConfirmation(f.sock, f.message)).toMatchObject({ reason: 'duplicate-delivery-id' });
+      await until(() => f.events().some(row => row.kind === 'native-turn-start-confirmed' &&
+        row.deliveryId === f.message.deliveryId));
+      expect(await injectIntoHostWithConfirmation(f.sock, f.message)).toMatchObject({ reason: 'delivery-already-started' });
       expect(f.output().match(/SUBMIT:/g)).toHaveLength(1);
     } finally { await f.close(); }
   }, 25_000);

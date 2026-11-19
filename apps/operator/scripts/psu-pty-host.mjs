@@ -7789,6 +7789,7 @@ export function decodeControl(payload) {
         ...decodeDeliveryId(o),
         ...decodeProvenanceIssueTime(o),
         ...decodeInboxWakeCancellation(o),
+        ...(Object.hasOwn(o, 'providerRecovery') ? { providerRecovery: o.providerRecovery } : {}),
         ...(o.requireNativeTurnStart === true ? { requireNativeTurnStart: true,
           expectedChildGeneration: o.expectedChildGeneration, expectedHostStartedAt: o.expectedHostStartedAt } : {}),
       };
@@ -12132,6 +12133,7 @@ export function hostThroughPty(o) {
   // Reset on every successful spawn; a predecessor's completion cannot
   // certify a newly resumed child before that child has executed a turn.
   let lastMachineTurnSubmittedAtMs = 0;
+  let nativeTurnWriteInProgress = false;
   let ownerComposerGate;
   let ownerStopRequested = false;
   // Terminal interrupts cancel work already admitted at that boundary. They
@@ -12535,6 +12537,8 @@ export function hostThroughPty(o) {
     // resolveRespawnNativeId; a Claude host that advertised the cap refused every
     // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
     caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+      ...(advSessionId != null && (env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE) &&
+        ['claude', 'codex'].includes(env.PAPERCUSP_AGENT) ? ['native-provider-recovery-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'claude' ? ['reset-reanchor-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume', 'quota-recovery-reroute'] : [])],
@@ -12627,13 +12631,19 @@ export function hostThroughPty(o) {
   const publishRecoveryObservation = (execution) => {
     const nativeSessionId = execution.nativeSessionId;
     if (!nativeSessionId) return;
+    const providerRecovery = baseMeta.caps.includes('native-provider-recovery-v1') &&
+      execution.phase === 'failed' && execution.failure?.retryable === true &&
+      execution.pendingTools === 0 && execution.pendingGateTools === 0 &&
+      !nativeTurnWriteInProgress && !machineTurnActive && !ownerStopRequested && !execution.ownerInputPending;
     const key = JSON.stringify([nativeSessionId, childGeneration, execution.phase,
-      execution.turnStartedAt, execution.ownerInputPending, execution.ownerStopRequested]);
+      execution.turnStartedAt, execution.ownerInputPending, execution.ownerStopRequested,
+      execution.phase === 'failed' ? [execution.failure?.atMs, execution.receivedAtMs, providerRecovery] : null]);
     if (key === recoveryObservationKey) return;
     if (appendHostEvent(ownerId, 'session-execution-observed', {
       ownerId, nativeSessionId, hostPid: process.pid, hostStartedAt: baseMeta.startedAt,
       advSessionId: baseMeta.advSessionId, headless: env.PAPERCUSP_PSU_HEADLESS === '1',
       workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE,
+      ...(providerRecovery ? { providerRecoveryVersion: 1 } : {}),
       execution,
     })) recoveryObservationKey = key;
   };
@@ -14842,6 +14852,7 @@ export function hostThroughPty(o) {
     const persisted = appendHostEvent(ownerId, 'native-turn-start-confirmed', {
       deliveryId: id,
       childGeneration,
+      workspaceId: env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE,
       ...extra,
     });
     if (!persisted) return false;
@@ -15400,7 +15411,7 @@ export function hostThroughPty(o) {
   // child).
   const parkIdleMs = parkIdleMsFromEnv(env);
   const parkResumeWaitMs = positiveNumber(env.PAPERCUSP_PSU_PARK_RESUME_WAIT_MS, 60_000);
-  /** @typedef {{ fromGeneration: number, toGeneration: number }} ParkResumeTransition */
+  /** @typedef {{ fromGeneration: number, toGeneration: number, providerFailure?: ReturnType<typeof captureParkProviderFailure> }} ParkResumeTransition */
   let parked = false;
   /** @type {Promise<boolean> | null} */
   let parkPromise = null;
@@ -15542,11 +15553,18 @@ export function hostThroughPty(o) {
     baseMeta.ptyPid = null;
     writeMeta();
   };
+  const captureParkProviderFailure = () => {
+    const execution = currentNativeExecution();
+    if (execution.phase !== 'failed' || execution.failure?.retryable !== true ||
+        ownerStopRequested || execution.ownerInputPending || nativeExecutionBlocksInjection(execution) ||
+        Number(execution.pendingGateTools) > 0) return undefined;
+    return { execution, ownerInputGeneration, lastInputAt: activity.snapshot().lastInputAt };
+  };
   const parkChild = async (verdict) => {
     if (identityAssumeFence?.blocksInput()) return false;
     const minted = mintResumeForPark();
     if (!minted) return false;
-    const resume = { ...minted, parkedGeneration: childGeneration };
+    const resume = { ...minted, parkedGeneration: childGeneration, providerFailure: captureParkProviderFailure() };
     const parkedChild = child;
     const childPid = Number.isInteger(parkedChild?.pid) ? parkedChild.pid : null;
     // `recycling` makes the child-exit handler ignore THIS kill: a park is not
@@ -15775,7 +15793,8 @@ export function hostThroughPty(o) {
           return { unparked: false, reason: 'spawn-failed' };
         }
         cancelUnparkRetry();
-        const transition = { fromGeneration: resume.parkedGeneration, toGeneration: childGeneration };
+        const transition = { fromGeneration: resume.parkedGeneration, toGeneration: childGeneration,
+          providerFailure: resume.providerFailure };
         child = resumed;
         stopStartupTrace = startCodexStartupProcessTrace({
           agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
@@ -16302,8 +16321,9 @@ export function hostThroughPty(o) {
         if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
           deliveryDedup.markCompleted(msg.deliveryId);
           nativeStartPending.delete(msg.deliveryId);
-          recordNativeTurnStart(msg.deliveryId);
-          return { ok: true, reason: 'duplicate-delivery-id' };
+          const recorded = recordNativeTurnStart(msg.deliveryId);
+          return { ok: true, reason: recorded && Object.hasOwn(msg, 'providerRecovery')
+            ? 'delivery-already-started' : 'duplicate-delivery-id' };
         }
         if (duplicateState === 'cancelled') {
           appendHostEvent(ownerId, 'duplicate-cancelled-delivery-id', { deliveryId: msg.deliveryId });
@@ -16492,6 +16512,12 @@ export function hostThroughPty(o) {
       if (msg.mode === 'carry-respawn' && msg.receivedAtMs == null) {
         msg.receivedAtMs = Date.now();
       }
+      if (Object.hasOwn(msg, 'providerRecovery') &&
+          (!msg.providerRecovery || !msg.requireNativeTurnStart ||
+           msg.providerRecovery.hostStartedAt !== baseMeta.startedAt ||
+           msg.providerRecovery.childGeneration !== childGeneration)) {
+        return { ok: false, reason: 'provider-recovery-superseded' };
+      }
       // EI-18681914950138372: mark this carry-respawn in-flight NOW, before it
       // ever enters its own busy-gate wait below — this is what closes the
       // starvation gap (see beginFirstAttempt's doc comment on
@@ -16513,7 +16539,8 @@ export function hostThroughPty(o) {
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
-      const coalesceKey = msg.mode === 'turn' ? interruptScopedCoalesceKey(msg) : null;
+      const coalesceKey = msg.mode === 'turn' && !Object.hasOwn(msg, 'providerRecovery')
+        ? interruptScopedCoalesceKey(msg) : null;
         const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
       const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
       const claimCoalesced = () => {
@@ -16802,6 +16829,9 @@ export function hostThroughPty(o) {
             // and a weakened guard is a worse trade than a slightly less
             // informative reply. The duplicate case gets its own reason,
             // mirroring the existing 'carry-rearm-duplicate'.
+            if (msg.mode === 'turn' && Object.hasOwn(msg, 'providerRecovery')) {
+              return { ok: false, reason: 'deferred-busy-gate' };
+            }
             if (msg.mode === 'turn') {
               const turnVerdict = carryRearm.schedule(msg);
               appendHostEvent(ownerId, 'wake-rearm-scheduled', {
@@ -17151,7 +17181,8 @@ export function hostThroughPty(o) {
           }
           if (deliver.requireNativeTurnStart &&
             (deliver.expectedHostStartedAt !== baseMeta.startedAt || deliver.expectedChildGeneration !== childGeneration)) {
-            return { ok: false, reason: 'stale-execution-generation' };
+            return { ok: false, reason: Object.hasOwn(deliver, 'providerRecovery')
+              ? 'provider-recovery-superseded' : 'stale-execution-generation' };
           }
           if (deliver.requireNativeTurnStart && (!deliver.deliveryId || !leadingTurnOriginMarker(deliver.data)
             || !nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported)) {
@@ -17237,12 +17268,40 @@ export function hostThroughPty(o) {
           ? turnWriteContext(turnWriteStartedAt)
           : null;
         if (injectWriteContext) lastMachineTurnWriteStartedAtMs = turnWriteStartedAt;
+        if (injectWriteContext) nativeTurnWriteInProgress = true;
         try {
           for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env, {
             bracketedPaste: childBracketedPaste,
           })) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (firstInputWrite && msg.mode === 'turn') {
+              if (Object.hasOwn(deliver, 'providerRecovery')) {
+                const fence = deliver.providerRecovery;
+                const execution = currentNativeExecution();
+                const parkedFailure = unparkTransition?.providerFailure;
+                const sameParkedFailure = fence && parkedFailure &&
+                  unparkTransition.fromGeneration === fence.childGeneration &&
+                  unparkTransition.toGeneration === childGeneration &&
+                  parkedFailure.execution.nativeSessionId === fence.nativeSessionId &&
+                  parkedFailure.execution.receivedAtMs === fence.receivedAtMs &&
+                  parkedFailure.execution.failure?.atMs === fence.failedAtMs &&
+                  parkedFailure.ownerInputGeneration === ownerInputGeneration &&
+                  parkedFailure.lastInputAt === activity.snapshot().lastInputAt &&
+                  lastMachineTurnSubmittedAtMs === 0 &&
+                  execution.phase === 'unknown';
+                const sameLiveFailure = fence && fence.childGeneration === childGeneration &&
+                  fence.nativeSessionId === execution.nativeSessionId && fence.receivedAtMs === execution.receivedAtMs &&
+                  execution.phase === 'failed' && execution.failure?.retryable === true &&
+                  fence.failedAtMs === execution.failure.atMs;
+                if (!deliver.requireNativeTurnStart || !fence ||
+                    fence.hostStartedAt !== baseMeta.startedAt || (!sameLiveFailure && !sameParkedFailure) ||
+                    ownerStopRequested ||
+                    ownerStopGeneration !== ownerStopGenerationAtReceive ||
+                    execution.ownerInputPending || nativeExecutionBlocksInjection(execution) ||
+                    Number(execution.pendingGateTools) > 0) {
+                  return { ok: false, reason: 'provider-recovery-superseded' };
+                }
+              }
               const inputSurface = codexTranscriptFindInputSurface();
               if (inputSurface) {
                 const { support } = verifiedBoundaryFor(msg);
@@ -17255,6 +17314,9 @@ export function hostThroughPty(o) {
                   quietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS, OUTPUT_QUIET_MS),
                   verifier: support.reason ?? 'supported',
                 });
+                if (Object.hasOwn(deliver, 'providerRecovery')) {
+                  return { ok: false, reason: 'deferred-busy-gate', inputSurface };
+                }
                 const turnVerdict = carryRearm.schedule(msg);
                 appendHostEvent(ownerId, 'wake-rearm-scheduled', {
                   mode: msg.mode,
@@ -17314,6 +17376,7 @@ export function hostThroughPty(o) {
           }
           machineTurnSubmitted = machineTurn;
         } finally {
+          if (injectWriteContext) nativeTurnWriteInProgress = false;
           if (machineTurn) {
             machineTurnActive = false;
             const ownerInput = queuedOwnerInput;
@@ -17442,11 +17505,12 @@ export function hostThroughPty(o) {
           }
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
-            if (deliveryOutcome?.reason === 'deferred-owner-stop') {
+            if (deliveryOutcome?.reason === 'deferred-owner-stop' ||
+                deliveryOutcome?.reason === 'provider-recovery-superseded') {
               // Keep the exact refusal as a dedup tombstone. Clearing pending
               // here let every durable retry ACK acceptance, fail again off-
               // socket, and eventually claim an inbox-only delivery as success.
-              deliveryDedup.markSuperseded(deliveryId, 'deferred-owner-stop');
+              deliveryDedup.markSuperseded(deliveryId, deliveryOutcome.reason);
               continue;
             }
             const rearmOwnsDelivery =
