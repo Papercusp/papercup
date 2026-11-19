@@ -6,7 +6,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { builtinSupersedesInstalled } from '@papercusp/blueprint-distribution';
+import { supersedesInstalledFor } from '@papercusp/blueprint-distribution';
 import { builtinBlueprintPath } from '@papercusp/orchestrator/blueprint';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withBlueprintSourceMutation } from './source-lock';
@@ -127,7 +127,7 @@ describe('complete blueprint library source inventory (P-002)', () => {
       writeFileSync(installed, text);
       // OPT-IN: by default even an invalid installed copy keeps strict tier order.
       expect(availableBlueprintSources()).toEqual([{ id: 'shared', tier: 'installed', file: installed }]);
-      const opt = { supersedes: builtinSupersedesInstalled };
+      const opt = { supersedes: supersedesInstalledFor('identity') };
       const supersededInstalled = { file: installed, reason, detail: expect.any(String) };
       expect(availableBlueprintSources(opt)).toEqual([{ id: 'shared', tier: 'builtin', file: builtin, supersededInstalled }]);
       const population = readBlueprintSourcePopulation(opt);
