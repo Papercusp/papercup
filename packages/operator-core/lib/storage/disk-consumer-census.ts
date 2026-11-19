@@ -36,7 +36,6 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import type { CensusEndpointCandidate, CensusEndpointReceipt, CensusEndpointSelection, DetachedWalkOptions, DetachedUsageRun } from './disk-census-detached-walk';
 import { alarmWatchedPaths } from './disk-space-alarm';
-import { getBuildInfo } from '../build-info';
 import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from '../dbos/routine-tick-overlap-guard';
 import {
   attributeOwnFiles,
@@ -1474,6 +1473,12 @@ export async function censusOneDevice(
           durationMs: new Date(r.finished_at).getTime() - new Date(r.started_at).getTime() } };
       }
     }
+    // Expand the captured loaded-code pin, never the checkout's current HEAD.
+    // Host bundles normally expose an abbreviated SHA, while endpoint receipts
+    // require its full immutable commit identity. Resolve before the shared budget.
+    const producerBuildSha = deps.producerBuildSha === undefined
+      ? await (await import('../dbos/process-boot-identity')).processBootCommitSha()
+      : deps.producerBuildSha;
     // Devices are resolved once per pass but walked one after another (a `/` walk takes
     // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
     // Re-sample statfs around this walk and reconcile against the midpoint.
@@ -1497,7 +1502,7 @@ export async function censusOneDevice(
     const collect = async () => { endpointPopulation = await collectCensusEndpoints(du, {
       runId, host, device: resolved, filesystemKey, previousSelection, budget: followups,
       ...(previousSelection && recovered.status === 'verified' ? { previousPending: recovered.pendingConsumers } : {}),
-      producerBuildSha: deps.producerBuildSha === undefined ? getBuildInfo().sha : deps.producerBuildSha,
+      producerBuildSha,
       ...(deps.measureEndpoint ? { measure: deps.measureEndpoint } : {}), root: deps.endpointRoot,
     }); };
     // Alternate who gets first use of the same budget. A busy endpoint population
@@ -1564,7 +1569,7 @@ export async function censusOneDevice(
       complete,
       note: notes.length ? notes.join('; ') : null,
       consumers,
-      ...(deps.producerBuildSha !== undefined ? { producerBuildSha: deps.producerBuildSha } : {}),
+      producerBuildSha,
       filesystemIdentity: identityBefore && JSON.stringify(identityBefore) === JSON.stringify(identityAfter) ? identityBefore : null,
     });
     return {
@@ -1679,7 +1684,9 @@ export async function writeCensusRun(
   const unique = [...new Map(run.consumers.map((c) => [c.consumer, c])).values()];
   // Extend the existing run metadata instead of introducing a parallel ledger or
   // attributing historical rows to whatever build happens to grade them later.
-  const build = run.producerBuildSha === undefined ? getBuildInfo().sha : run.producerBuildSha;
+  const build = run.producerBuildSha === undefined
+    ? await (await import('../dbos/process-boot-identity')).processBootCommitSha()
+    : run.producerBuildSha;
   let note = build ? `census-producer:${encodeURIComponent(build)}; ${run.note ?? ''}` : run.note;
   await sql.begin(async (tx) => {
     if (run.filesystemIdentity) {

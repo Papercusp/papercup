@@ -17,6 +17,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import * as buildInfo from '../build-info';
+import * as bootIdentity from '../dbos/process-boot-identity';
 import {
   apiStoreConsumers,
   censusOneDevice,
@@ -323,6 +325,73 @@ afterAll(async () => {
 });
 
 describe('integrated producer singleton endpoints (real PG and du)', () => {
+  it('expands the default loaded producer pin without borrowing newer checkout HEAD', async () => {
+    const git = (args: string[]) => {
+      const result = spawnSync('git', args, { encoding: 'utf8' });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    const loadedCommit = git(['rev-parse', 'HEAD^']);
+    const loadedPin = git(['rev-parse', '--short', loadedCommit]);
+    expect(loadedPin.length).toBeLessThan(40);
+    const identity = bootIdentity.captureProcessBootIdentity({ loadedSha: loadedPin, readGit: async args => {
+      expect(args).toEqual(['rev-parse', '--verify', `${loadedPin}^{commit}`]);
+      return git(args);
+    } });
+    const build = vi.spyOn(buildInfo, 'getBuildInfo').mockReturnValue({ sha: loadedPin, version: 'test' });
+    const boot = vi.spyOn(bootIdentity, 'processBootCommitSha').mockImplementation(() => identity.bootCommit);
+    try {
+      const host = hostname();
+      const dev = device({ device: fixture, majorMinor: devToMajorMinor(statSync(fixture).dev) });
+      const launches: string[] = [];
+      const deps: NonNullable<Parameters<typeof censusOneDevice>[2]> = {
+        sql, statDevice: null,
+        runDu: async () => ({ summary: { rootBytes: 100, consumers: [dir(join(fixture, 'a'), 50)], ownFiles: [], records: 2 },
+          deniedCount: 0, deniedSample: [], exitCode: 1, timedOut: false,
+          diagnostics: { lines: 1, missingPaths: [join(fixture, 'churn', 'gone')], other: 0, overflow: false } }),
+        measureEndpoint: (roots, options) => {
+          launches.push(roots[0]!);
+          return runDetachedDuUsage(roots, { ...options, launch: async (cmd, args) => {
+            const child = spawn(cmd, args, { stdio: 'ignore' }); child.unref();
+            if (!child.pid) throw new Error('test worker has no pid');
+            return { pid: child.pid, taskId: null, confined: true };
+          } });
+        },
+        reconcileFailures: async () => ({ status: 'unbounded', uncertainBytesUpperBound: null,
+          vanishedPaths: 1, shards: [], reason: 'independent failed sibling remains unknown' }),
+      };
+      const pass = { host, devices: [dev], stores: [], sudo: null };
+      const result = await censusOneDevice(pass, dev, deps);
+      expect(result.failure).toBeUndefined();
+      expect(launches).toEqual([join(fixture, 'a')]);
+      const rows = await rootSql`SELECT note, complete FROM harness_shared.disk_census_runs WHERE run_id=${result.run!.runId}`;
+      expect(rows[0]).toMatchObject({ complete: false });
+      expect(rows[0]!.note).toContain(`census-producer:${loadedCommit}; `);
+      const population = await readCensusEndpointEnvelope(rows[0]!.note);
+      expect(population.status).toBe('verified');
+      if (population.status !== 'verified') throw new Error(population.reason);
+      expect(population.envelope.selection).toMatchObject({ attempted: 1, remaining: 0 });
+      const endpoint = population.rows[0]!.candidate.endpoint;
+      expect(endpoint.status, JSON.stringify(endpoint)).toBe('certified');
+      if (endpoint.status === 'certified') expect(endpoint.receipt.request.producerBuildSha).toBe(loadedCommit);
+      // An unavailable expansion cannot borrow the short display pin or HEAD.
+      boot.mockResolvedValue(null);
+      const unknown = await censusOneDevice(pass, dev, deps);
+      expect(unknown.failure).toBeUndefined();
+      expect(unknown.run?.complete).toBe(false);
+      expect(launches).toEqual([join(fixture, 'a')]);
+      const unknownRows = await rootSql`SELECT note FROM harness_shared.disk_census_runs WHERE run_id=${unknown.run!.runId}`;
+      expect(unknownRows[0]!.note).not.toContain('census-producer:');
+      const uncertified = await readCensusEndpointEnvelope(unknownRows[0]!.note);
+      expect(uncertified.status).toBe('verified');
+      if (uncertified.status !== 'verified') throw new Error(uncertified.reason);
+      expect(uncertified.rows[0]!.candidate.endpoint).toMatchObject({ status: 'unknown',
+        reason: 'producer filesystem/build identity unavailable; request a new census' });
+    } finally {
+      boot.mockRestore(); build.mockRestore();
+    }
+  }, 60_000);
+
   it('persists certified independent endpoints and resumes the durable cursor without promoting the failed root', async () => {
     // The worker independently measures its actual host. Synthetic host names
     // must remain UNKNOWN; this positive control uses that measured identity.
