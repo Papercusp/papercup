@@ -449,7 +449,7 @@ describe('unified execution > R-2 > P-003', () => {
 
 describe('unified execution > R-24 > P-003', () => {
   for (const corrupt of [false, true]) it(corrupt ? 'counterexample' : 'control', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(1000);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1000);
     const runtime = durableFixture({ terminal: true });
     const result = await runtime.dispatch({ responseWindowMs: 5000 });
     if (!result.ok) throw new Error('Original admission refused');
@@ -479,7 +479,7 @@ describe('unified execution > R-28 > P-003', () => {
 
 describe('unified execution > R-26 > P-003', () => {
   for (const title of ['control', 'D013 safe ceiling control', 'D013 loaded cap derivation control']) it(title, async () => {
-    vi.useFakeTimers(); vi.setSystemTime(1000);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1000);
     const runtime = durableFixture({ terminal: true });
     const result = await runtime.dispatch({ mode: 'sync', responseWindowMs: 55000 });
     expect(result).toMatchObject({ ok: true, result: { _meta: { toolExecution: {
@@ -489,7 +489,7 @@ describe('unified execution > R-26 > P-003', () => {
     expect(runtime.handler).toHaveBeenCalledOnce();
   });
   for (const title of ['counterexample', 'D013 above ceiling counterexample', 'D013 stale ceiling counterexample']) it(title, async () => {
-    vi.useFakeTimers(); vi.setSystemTime(1000);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1000);
     const runtime = durableFixture({ terminal: true });
     expect(await runtime.dispatch({ mode: 'sync', responseWindowMs: 55001 }))
       .toMatchObject({ ok: false, error: { code: 'execution_budget_exceeded' } });
@@ -586,7 +586,7 @@ for (const requirement of ['R-23', 'R-26']) describe('unified execution > ' + re
     await longRequest(false, false);
   });
   it('D013 strict sync supported budget control', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(1000);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1000);
     for (const requested of [119999, 120000]) {
       const runtime = durableFixture({ terminal: true });
       runtime.tool.timeoutSec = 120;
@@ -601,7 +601,7 @@ for (const requirement of ['R-23', 'R-26']) describe('unified execution > ' + re
     }
   });
   it('D013 strict sync over-budget counterexample', async () => {
-    vi.useFakeTimers(); vi.setSystemTime(1000);
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(1000);
     for (const [transportBudget, originalBudget] of [[120000, 130000], [130000, 120000]]) {
       const runtime = durableFixture({ terminal: true });
       runtime.tool.timeoutSec = 130;
