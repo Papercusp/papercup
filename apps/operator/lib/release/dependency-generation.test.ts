@@ -2000,6 +2000,42 @@ describe('immutable dependency generation', () => {
       expect(existsSync(compatibilityCheckout)).toBe(false);
     }, NATIVE_SHELL_TIMEOUT_MS);
 
+    it('WI-6554700010053896: keeps frozen selectors until canonical custody releases them', () => {
+      const integration = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const candidate = commitFixture(integration, 'frozen candidate');
+      const ensured = ensureRef(integration, candidate);
+      expect(ensured.status, ensured.stderr).toBe(0);
+      const generation = publishedPath(ensured.stdout);
+      const selector = join(generationRoot, '.inputs', publishedInputFingerprint(ensured.stdout));
+      const sync = (refs: string[]) => spawnSync('bash', [SCRIPT, '--integration', integration,
+        '--sync-frozen-refs', ...refs.flatMap((ref) => ['--frozen-ref', ref])], { encoding: 'utf8', env: process.env });
+      const retained = sync([candidate]);
+      expect(retained.status, retained.stderr).toBe(0);
+      const [pinName] = refPins(generationRoot);
+      const pin = join(generationRoot, '.pins', pinName);
+      expect(readPin(pin)).toMatchObject({ retention: 'frozen', expires: '0', ref: candidate });
+      for (let i = 0; i < 3; i += 1) {
+        writeFileSync(join(integration, 'node_modules/pkg/index.js'), `new-${i}\n`);
+        const next = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+        expect(next.status, next.stderr).toBe(0);
+        expect(existsSync(generation)).toBe(true);
+        expect(existsSync(selector)).toBe(true);
+      }
+      // A failed synchronization must not release the old queue's custody.
+      const missing = sync(['f'.repeat(40)]);
+      expect(missing.status).not.toBe(0);
+      expect(existsSync(pin)).toBe(true);
+      const released = sync([]);
+      expect(released.status, released.stderr).toBe(0);
+      const pruned = spawnSync('bash', [SCRIPT, '--integration', integration, '--prune-only'], {
+        encoding: 'utf8', env: { ...process.env, DEPENDENCY_GENERATION_RETAIN_COUNT: '1' },
+      });
+      expect(pruned.status, pruned.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(false);
+      expect(existsSync(selector)).toBe(false);
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
     it('refuses --retain-as without --ensure-ref or with a malformed label', () => {
       const integration = makeIntegration();
       const candidate = commitFixture(integration, 'candidate');

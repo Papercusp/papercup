@@ -89,6 +89,7 @@ describe('hourly dependency-generation retention discovery', () => {
   });
 
   it('retains a shared store when any consumer queue cannot be read', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const store = join(fixture, 'store');
     mkdirSync(store);
     recordStore(store);
@@ -97,6 +98,7 @@ describe('hourly dependency-generation retention discovery', () => {
     expect(report.status).toBe('partial');
     expect(pruneArguments()).toEqual([]);
     expect(report.errors[0].error).toContain('queue unavailable');
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('frozen dependency custody is unknown'));
   });
 
   it('skips an absent integration even when the environment names a live shared store', async () => {
