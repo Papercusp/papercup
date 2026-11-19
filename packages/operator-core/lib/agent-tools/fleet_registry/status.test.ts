@@ -259,7 +259,10 @@ describe('fleet:status', () => {
           progress: vi.fn(),
           emit: vi.fn(),
         } as never,
-        {},
+        {
+          batchResponseVersion: 'operation-v0',
+          reserveQuota: async () => ({ allowed: true, settle: async () => {} }),
+        },
       );
 
       expect(result.isError).toBeUndefined();
