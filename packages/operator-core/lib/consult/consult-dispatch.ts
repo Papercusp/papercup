@@ -2752,21 +2752,23 @@ async function finishAnsweringSession(
   const failed = (reason: DispatchSkipReason, detail: string): AnsweringSessionResult => ({
     record: { ...base, outcome: 'failed', reason, detail }, answeringOwnerId: null, verified: null,
   });
-  const proofTimedOut = spawn.kickoffProof?.persisted === false
-    && spawn.kickoffProof.reason === 'kickoff-proof-timeout';
+  // Keep the narrowed proof itself (not a boolean alias) so the pending branch
+  // below stores a typed KickoffProofResult.
+  const timedOutProof = spawn.kickoffProof?.persisted === false
+    && spawn.kickoffProof.reason === 'kickoff-proof-timeout' ? spawn.kickoffProof : null;
   // EI-29004252322074401: a RECOVERED timeout whose original task already ended
   // can never receive its native receipt. Re-retaining it kept the consult
   // proof-pending on a dead fork until expiry; fail the rank instead so the
   // cascade advances. A live, unknown or unledgered task keeps its custody.
-  const endedTask = recovering && proofTimedOut ? await d.readEndedTask(spawn.taskId) : null;
-  if (proofTimedOut && !endedTask) {
+  const endedTask = recovering && timedOutProof ? await d.readEndedTask(spawn.taskId) : null;
+  if (timedOutProof && !endedTask) {
     return {
       record: { ...base, outcome: 'pending',
         ...(spawn.logPath ? { launchLogPath: spawn.logPath } : {}),
         detail: 'Native kickoff proof is uncertain; retained the original answering task for authenticated receipt recovery.' },
       answeringOwnerId, verified: null,
       pendingKickoff: { answeringOwnerId, taskId: spawn.taskId ?? null, logPath: spawn.logPath ?? null,
-        kickoffProof: spawn.kickoffProof, rank, operation,
+        kickoffProof: timedOutProof, rank, operation,
         ...(opts.accountRoute ? { accountRoute: opts.accountRoute } : {}),
         ...(opts.accountRouteReason ? { accountRouteReason: opts.accountRouteReason } : {}) },
     };
