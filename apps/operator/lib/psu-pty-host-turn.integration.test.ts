@@ -547,6 +547,7 @@ it('defers an already-admitted wake before writing when carry becomes pending', 
   const sock = socketPathFor(ownerId);
   const log = eventLogPathForOwner(ownerId);
   const { io, captured } = fakeIo();
+  const normalizedOutput = () => captured().replace(/\r\n/g, '\n');
   const childCode = [
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
     "let line='';process.stdin.on('data',data=>{for(const c of data){",
@@ -575,16 +576,24 @@ it('defers an already-admitted wake before writing when carry becomes pending', 
     expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
       data: 'HOLD_INJECT', deliveryId: 'queued-carry-holder' })).toMatchObject({ ok: true, reason: 'accepted' });
-    expect(await waitForOutput(captured, 'ECHO:HOLD_INJECT')).toBe(true);
+    expect(await waitForOutput(normalizedOutput, '\nHOLD_INJECT\n'),
+      hostTestDiagnostics(ownerId, captured)).toBe(true);
+    // The host stamps untagged control text before the child receives it.
+    // Verify that full submitted payload while the submit verifier holds the mutex.
+    const holderEcho = normalizedOutput().slice(normalizedOutput().indexOf('ECHO:') + 'ECHO:'.length);
+    const holderOrigin = leadingTurnOriginMarker(holderEcho);
+    expect(holderOrigin, hostTestDiagnostics(ownerId, captured))
+      .toMatch(/^⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧$/);
+    expect(holderEcho, hostTestDiagnostics(ownerId, captured)).toBe(`${holderOrigin}\nHOLD_INJECT\n`);
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'turn', ownerId,
       data: 'QUEUED_WAKE', deliveryId: 'queued-before-carry' })).toMatchObject({ ok: true, reason: 'accepted' });
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
       data: 'fixture carry', systemPromptAddendum: 'fixture carry',
       deliveryId: 'carry-after-wake' })).toMatchObject({ ok: true, reason: 'accepted' });
     const deadline = Date.now() + 6500;
-    while (Date.now() < deadline && !captured().includes('ECHO:QUEUED_WAKE') &&
+    while (Date.now() < deadline && !captured().includes('QUEUED_WAKE') &&
       !(existsSync(log) && readFileSync(log, 'utf8').includes('"phase":"pre-write"'))) await sleep(15);
-    expect(captured()).not.toContain('ECHO:QUEUED_WAKE');
+    expect(captured(), hostTestDiagnostics(ownerId, captured)).not.toContain('QUEUED_WAKE');
     const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
     expect(events).toContainEqual(expect.objectContaining({
       kind: 'wake-turn-deferred-for-pending-respawn', phase: 'pre-write',
