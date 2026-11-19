@@ -8,6 +8,7 @@
  * outside the plan's window) must be excluded. Real Postgres via the org test fixture; the reader
  * takes its postgres-js client as an argument, so nothing is mocked.
  */
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -154,6 +155,48 @@ describe('readPlanEfficiency (real PG)', () => {
       'implementation-test': 1,
       other: 0,
     });
+  });
+
+  it('reads revision timing from the exact plan and window and keeps its unrecovered episode', async () => {
+    const subject = 'revision-window-fixture';
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, planSlug: subject, sql: db.adminSql };
+    const inputs = [
+      { seq: 1, secs: 0, ready: true }, { seq: 2, secs: 60, ready: false },
+      { seq: 3, secs: 660, ready: true }, { seq: 4, secs: 900, ready: false },
+      { seq: 5, secs: 1200, ready: true },
+    ];
+    for (const slug of [subject, 'unrelated-revision-window-fixture']) {
+      for (const { seq, secs, ready } of inputs) {
+        const content = 'revision ' + seq;
+        const hash = createHash('sha256').update(content).digest('hex');
+        const [revision] = await db.adminSql<{ id: string }[]>`
+          INSERT INTO harness_shared.plan_revisions
+            (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,author_kind,author_id,created_at)
+          VALUES (${WS},${HARNESS},${slug},${seq},${hash},${content},'agent','fixture',${Date.parse(at(secs))})
+          RETURNING id::text`;
+        const discovery = { schemaVersion: 1, requestKey: slug + '-' + seq, readiness: { ready, blockers: ready ? [] : [
+          { code: 'discovery_change_unsupported', detail: 'F-1: reconcile the affected conclusion/disposition after changes to R-1' },
+        ] } };
+        await db.adminSql`
+          INSERT INTO harness_shared.plan_audits
+            (workspace_id,harness_slug,plan_slug,audit_seq,created_by,created_at,audit_kind,
+             audited_plan_revision_id,audited_plan_revision_seq,audited_plan_content_hash,discovery)
+          VALUES (${WS},${HARNESS},${slug},${seq},'fixture',${at(secs)},'discovery',
+                  ${revision!.id},${seq},${hash},${db.adminSql.json(discovery)})`;
+      }
+    }
+    const { revisionMeasurement: m } = await readPlanEfficiency({
+      ...scope, revisionWindow: { from: at(0), until: at(1200) },
+    });
+    expect(m).toMatchObject({ revisionCount: 4, discoveryAudits: 4, unknownAuditSeqs: [], initialFailures: [],
+      delay: { episodes: 2, measuredEpisodes: 1, measuredUnavailableMs: 600_000, unavailableMs: null, soleBlockerMs: null } });
+    expect(m.episodes.map(e => [e.opened.auditSeq, e.restored?.auditSeq ?? null])).toEqual([[2, 3], [4, null]]);
+    expect(m.episodes[0]!.opened).toMatchObject({
+      revisionId: expect.stringMatching(/^\d+$/), revisionSeq: 2,
+      revisionHash: createHash('sha256').update('revision 2').digest('hex'), observedAt: '2026-09-01T10:01:00.000000Z',
+    });
+    expect((await readPlanEfficiency(scope)).revisionMeasurement.delay)
+      .toMatchObject({ episodes: 2, measuredEpisodes: 2, unavailableMs: 900_000, soleBlockerMs: null });
   });
 
   it('classes failed calls, counts effort on dropped items, and counts holder changes', async () => {

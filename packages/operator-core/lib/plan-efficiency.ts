@@ -123,12 +123,15 @@ export interface PlanEfficiencyInput {
   sql?: ReturnType<typeof getOrgPg>['sql'];
   /** How many most-contested items to name. */
   topItems?: number;
+  /** Half-open UTC observation window for the revision cohort. Other efficiency measures keep their original scope. */
+  revisionWindow?: { from: string; until: string };
 }
 
 export interface PlanEfficiency {
   planSlug: string;
   harnessSlug: string;
   workspaceId: string;
+  revisionMeasurement: Awaited<ReturnType<typeof readPlanRevisionMeasurement>>;
   population: {
     source: 'harness_shared.tool_invocations';
     callOrigin: 'agent';
@@ -315,6 +318,7 @@ export async function readPlanEfficiency(input: PlanEfficiencyInput): Promise<Pl
       note: 'Floors: native client tools (Edit/Read/Bash) write no tool_invocations row, and a call without a goal stamp is attributed to no plan. Categories are by tool name, not by intent.',
     },
     items: { total: itemRows.length, byStatus },
+    revisionMeasurement: await readPlanRevisionMeasurement(input, sql),
     calls: {
       total: folded.total,
       agents: toNumber(span?.agents),
@@ -439,6 +443,152 @@ export function unionWorkflowStepIntervals(intervals: readonly (readonly [number
     end = Math.max(end, b);
   }
   return total + end - start;
+}
+
+type RevisionInterval = readonly [startMs: number | null, endMs: number | null];
+
+/** Both interval sets describe the same plan. A null blocker history means that independent eligibility was unmeasured. */
+export function measurePlanRevisionDelay(reopenings: readonly RevisionInterval[], independentBlockers: readonly RevisionInterval[] | null) {
+  const measured = (span: RevisionInterval): span is readonly [number, number] =>
+    span[0] !== null && span[1] !== null && Number.isSafeInteger(span[0]) && Number.isSafeInteger(span[1]) && span[1] >= span[0];
+  const union = (spans: readonly (readonly [number, number])[]): number | null => {
+    if (spans.length === 0) return 0;
+    const ms = unionWorkflowStepIntervals(spans);
+    return ms !== null && Number.isSafeInteger(ms) ? ms : null;
+  };
+  const closed = reopenings.filter(measured);
+  const measuredUnavailableMs = union(closed);
+  const unavailableMs = closed.length === reopenings.length ? measuredUnavailableMs : null;
+  let soleBlockerMs: number | null = null;
+  if (unavailableMs !== null && independentBlockers !== null && independentBlockers.every(measured)) {
+    // |A minus B| = |A union B| - |B|. Independent work outside the reopening contributes zero.
+    const bothMs = union([...closed, ...independentBlockers]);
+    const independentMs = union(independentBlockers);
+    if (bothMs !== null && independentMs !== null) soleBlockerMs = bothMs - independentMs;
+  }
+  return { episodes: reopenings.length, measuredEpisodes: closed.length, measuredUnavailableMs, unavailableMs, soleBlockerMs };
+}
+
+export interface RevisionDiscoveryAudit {
+  auditSeq: number;
+  revisionId: string | null;
+  revisionSeq: number | null;
+  revisionHash: string | null;
+  observedAt: string;
+  ready: boolean | null;
+  changedInput: boolean | null;
+}
+
+interface RevisionReopening {
+  prior: RevisionDiscoveryAudit;
+  opened: RevisionDiscoveryAudit;
+  restored: RevisionDiscoveryAudit | null;
+}
+
+/** Mirrors the historical audit's islands: a ready audit, the first failure on a higher revision, then the next ready audit. */
+export function collectRevisionReopenings(observations: readonly RevisionDiscoveryAudit[]) {
+  const episodes: RevisionReopening[] = [];
+  const unknownAuditSeqs: number[] = [];
+  const initialFailures: number[] = [];
+  let prior: RevisionDiscoveryAudit | null = null;
+  let firstFailure = true;
+  let open: RevisionReopening | null = null;
+  let lastSeq: number | null = null;
+  for (const audit of [...observations].sort((a, b) => a.auditSeq - b.auditSeq)) {
+    if (!Number.isSafeInteger(audit.auditSeq) || audit.auditSeq < 1 || audit.auditSeq === lastSeq) {
+      throw new Error(`Invalid or duplicate discovery audit sequence: ${audit.auditSeq}`);
+    }
+    lastSeq = audit.auditSeq;
+    if (audit.ready === null) {
+      unknownAuditSeqs.push(audit.auditSeq);
+      // The missing verdict could split an island. Preserve an existing episode with an unknown end.
+      prior = null;
+      open = null;
+      firstFailure = true;
+      continue;
+    }
+    if (audit.ready) {
+      if (open) open.restored = audit;
+      prior = audit;
+      open = null;
+      firstFailure = true;
+      continue;
+    }
+    if (!firstFailure) continue;
+    firstFailure = false;
+    if (!prior) {
+      initialFailures.push(audit.auditSeq);
+    } else if (audit.revisionSeq === null || prior.revisionSeq === null || audit.changedInput === null) {
+      unknownAuditSeqs.push(audit.auditSeq);
+    } else if (audit.revisionSeq > prior.revisionSeq && audit.changedInput) {
+      open = { prior, opened: audit, restored: null };
+      episodes.push(open);
+    }
+  }
+  return { episodes, unknownAuditSeqs, initialFailures };
+}
+
+async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonNullable<PlanEfficiencyInput['sql']>) {
+  const { workspaceId, harnessSlug, planSlug, revisionWindow } = input;
+  const from = revisionWindow ? Date.parse(revisionWindow.from) : null;
+  const until = revisionWindow ? Date.parse(revisionWindow.until) : null;
+  if (from !== null && until !== null && (!Number.isSafeInteger(from) || !Number.isSafeInteger(until) || from >= until)) {
+    throw new Error('Revision observation window requires a valid start and a later end.');
+  }
+  // One database snapshot for the revision count and all discovery observations of this exact subject.
+  const rows = await sql<Array<{
+    revisions: string | number; audit_seq: number | null; revision_id: string | null;
+    revision_seq: number | null; revision_hash: string | null;
+    observed_at: string | null; ready: boolean | null; changed_input: boolean | null;
+  }>>`
+    WITH counts AS (
+      SELECT count(*) AS revisions FROM harness_shared.plan_revisions
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug} AND plan_slug=${planSlug}
+        AND (${from}::bigint IS NULL OR created_at >= ${from})
+        AND (${until}::bigint IS NULL OR created_at < ${until})
+    ), observations AS (
+      SELECT audit_seq, audited_plan_revision_id::text AS revision_id, audited_plan_revision_seq AS revision_seq,
+             audited_plan_content_hash AS revision_hash,
+             to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS observed_at,
+             CASE discovery#>>'{readiness,ready}' WHEN 'true' THEN true WHEN 'false' THEN false END AS ready,
+             CASE WHEN jsonb_typeof(discovery#>'{readiness,blockers}') = 'array' THEN EXISTS (
+               SELECT 1 FROM jsonb_array_elements(discovery#>'{readiness,blockers}') AS blocker
+               WHERE blocker->>'code' IN ('discovery_change_unsupported','discovery_evidence_unusable')
+                 AND blocker->>'detail' LIKE '%reconcile the affected conclusion/disposition after changes to%'
+             ) END AS changed_input
+      FROM harness_shared.plan_audits
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug} AND plan_slug=${planSlug}
+        AND audit_kind='discovery'
+        AND (${from}::bigint IS NULL OR created_at >= to_timestamp(${from}::bigint / 1000.0))
+        AND (${until}::bigint IS NULL OR created_at < to_timestamp(${until}::bigint / 1000.0))
+    )
+    SELECT counts.revisions, observations.* FROM counts LEFT JOIN observations ON true ORDER BY audit_seq`;
+  const revisionCount = Number(rows[0]?.revisions);
+  if (!Number.isSafeInteger(revisionCount) || revisionCount < 0) throw new Error('Unavailable plan revision count.');
+  const audits: RevisionDiscoveryAudit[] = [];
+  for (const row of rows) {
+    if (row.audit_seq === null) continue; // The count-only row for a plan with no discovery audit.
+    if (row.observed_at === null) throw new Error(`Missing timestamp for discovery audit ${row.audit_seq}.`);
+    audits.push({
+      auditSeq: row.audit_seq, revisionId: row.revision_id, revisionSeq: row.revision_seq,
+      revisionHash: row.revision_hash, observedAt: row.observed_at, ready: row.ready, changedInput: row.changed_input,
+    });
+  }
+  const cohort = collectRevisionReopenings(audits);
+  const intervals: RevisionInterval[] = cohort.episodes.map(({ opened, restored }) =>
+    [Date.parse(opened.observedAt), restored ? Date.parse(restored.observedAt) : null]);
+  // Discovery history can establish its own unavailability, but does not enumerate other independent gates.
+  const delay = measurePlanRevisionDelay(intervals, null);
+  return {
+    revisionCount, discoveryAudits: audits.length, window: revisionWindow ?? null,
+    ...cohort,
+    delay: {
+      ...delay,
+      unavailableMs: audits.length > 0 && cohort.unknownAuditSeqs.length === 0 ? delay.unavailableMs : null,
+      independentBlockerCoverage: 'unknown' as const,
+      reason: 'Discovery audits do not establish a complete history of independent plan blockers.',
+    },
+  };
 }
 
 /** PURE population reconciliation. Record counts and unique request counts are

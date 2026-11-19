@@ -4,10 +4,80 @@
  * grouped call rows. The SQL half is pinned against real Postgres in
  * plan-efficiency.integration.test.ts.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { PLAN_EFFICIENCY_CATEGORIES, categorizePlanToolCall, foldPlanCallGroups,
+  collectRevisionReopenings, measurePlanRevisionDelay, type RevisionDiscoveryAudit,
   summarizeWorkflowStepUsage, unionWorkflowStepIntervals, type WorkflowStepSource,
   type WorkflowStepUsageRow } from './plan-efficiency';
+
+describe('revision-induced reopening costs', () => {
+  const minute = 60_000;
+  const audit = (auditSeq: number, revisionSeq: number | null, ready: boolean | null,
+    changedInput: boolean | null = false): RevisionDiscoveryAudit => ({
+    auditSeq, revisionSeq, ready, changedInput, revisionId: null, revisionHash: null,
+    observedAt: new Date(auditSeq * minute).toISOString(),
+  });
+
+  it('reports ten minutes unavailable and six minutes solely blocked for a four minute overlap', () => {
+    const result = measurePlanRevisionDelay([[0, 10 * minute]], [[2 * minute, 6 * minute]]);
+    expect(result).toMatchObject({ episodes: 1, unavailableMs: 10 * minute, soleBlockerMs: 6 * minute });
+  });
+
+  it('attributes only sole-blocker intervals to amendment delay', () => {
+    const gates = [[0, 6 * minute], [4 * minute, 10 * minute], [17 * minute, 19 * minute]] as const;
+    const other = [[2 * minute, 5 * minute], [4 * minute, 6 * minute], [14 * minute, 18 * minute]] as const;
+    const result = measurePlanRevisionDelay(gates, other);
+    expect(result).toMatchObject({ measuredEpisodes: 3, unavailableMs: 12 * minute, soleBlockerMs: 7 * minute });
+    expect(measurePlanRevisionDelay([...gates].reverse(), [...other].reverse())).toEqual(result);
+    expect(measurePlanRevisionDelay(gates, null).soleBlockerMs).toBeNull();
+    expect(measurePlanRevisionDelay(gates, [[3 * minute, null]]).soleBlockerMs).toBeNull();
+    expect(measurePlanRevisionDelay(gates, []).soleBlockerMs).toBe(12 * minute);
+  });
+
+  it('keeps missing interval endpoints and unshipped amendments in the reported denominator', () => {
+    const source = [audit(1, 10, true), audit(2, 11, false, true), audit(3, 11, false, true),
+      audit(4, 12, true), audit(5, 13, false, true)];
+    const cohort = collectRevisionReopenings([...source].reverse());
+    expect(cohort.episodes.map(e => [e.prior.auditSeq, e.opened.auditSeq, e.restored?.auditSeq ?? null]))
+      .toEqual([[1, 2, 4], [4, 5, null]]);
+    const spans = cohort.episodes.map(e =>
+      [Date.parse(e.opened.observedAt), e.restored ? Date.parse(e.restored.observedAt) : null] as const);
+    expect(measurePlanRevisionDelay(spans, [])).toEqual({
+      episodes: 2, measuredEpisodes: 1, measuredUnavailableMs: 2 * minute, unavailableMs: null, soleBlockerMs: null,
+    });
+  });
+
+  it('uses only the first failure after a pass and separates unknown observations from proven changes', () => {
+    const rows = [audit(1, 1, false, true), audit(2, 2, true), audit(3, 3, false),
+      audit(4, 4, false, true), audit(5, 5, true), audit(6, 5, false, true), audit(7, 7, true),
+      audit(8, null, false, true), audit(9, 9, true), audit(10, 10, false, true),
+      audit(11, 11, null), audit(12, 12, true)];
+    const result = collectRevisionReopenings(rows);
+    expect(result.initialFailures).toEqual([1]);
+    expect(result.unknownAuditSeqs).toEqual([8, 11]);
+    expect(result.episodes).toEqual([{ prior: rows[8], opened: rows[9], restored: null }]);
+    expect(() => collectRevisionReopenings([rows[0]!, rows[0]!])).toThrow('duplicate discovery audit');
+  });
+
+  it('reconstructs the original November discovery episodes from the complete recorded audit population', () => {
+    type CapturedAudit = [number, string, number, string | null, string, boolean, boolean, string];
+    const fixture = JSON.parse(readFileSync(new URL('../test/fixtures/plan-revision-baseline.json', import.meta.url), 'utf8'));
+    const groups: Array<{ plan_slug: string; record_count: number; records: CapturedAudit[] }> = fixture.history.source.discovery;
+    const replay = groups.flatMap(group => {
+      expect(group.records).toHaveLength(group.record_count);
+      const audits = group.records.map(([auditSeq, revisionId, revisionSeq, , observedAt, ready, changedInput, revisionHash]) =>
+        ({ auditSeq, revisionId, revisionSeq, observedAt, ready, changedInput, revisionHash }));
+      const { episodes, unknownAuditSeqs } = collectRevisionReopenings(audits);
+      expect(unknownAuditSeqs).toEqual([]);
+      return episodes.map(e => [group.plan_slug, e.prior.auditSeq, e.opened.auditSeq, e.restored?.auditSeq ?? null]);
+    });
+    expect(replay).toEqual(fixture.history.episodes);
+    expect(groups.reduce((count, group) => count + group.record_count, 0)).toBe(2619);
+    expect(replay).toHaveLength(461);
+    expect(replay.filter(row => row[3] === null)).toHaveLength(1);
+  });
+});
 
 describe('categorizePlanToolCall', () => {
   it.each([
