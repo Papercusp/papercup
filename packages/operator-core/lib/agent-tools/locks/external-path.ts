@@ -8,7 +8,7 @@
  * repositories are the deliberate exception and resolve to their physical
  * repository domain + repo-relative path before this fallback runs.
  */
-import { realpathSync, statSync } from 'node:fs';
+import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hasValidGitEntry } from './valid-git-entry';
@@ -55,16 +55,29 @@ function relativeFile(root: string | null | undefined, absolute: string): string
   return rel;
 }
 
-/** Resolve a path through existing symlink components without requiring its leaf to exist. */
+/** Resolve existing components before appending any absent subtree. Errors and
+ * dangling links are not evidence of a new path: never replace them with a
+ * lexical identity that could bypass a physical ancestor's lock. */
 function physicalPath(input: string): string {
-  const absolute = resolve(input);
-  try {
-    return realpathSync(absolute);
-  } catch {
+  let ancestor = resolve(input);
+  const absent: string[] = [];
+  while (true) {
     try {
-      return join(realpathSync(dirname(absolute)), basename(absolute));
-    } catch {
-      return absolute;
+      return join(realpathSync(ancestor), ...absent);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      let missing = false;
+      try { lstatSync(ancestor); }
+      catch (lookupError) {
+        if ((lookupError as NodeJS.ErrnoException).code !== 'ENOENT') throw lookupError;
+        missing = true;
+      }
+      // An existing entry whose realpath failed is a dangling link, not absence.
+      if (!missing) throw error;
+      const parent = dirname(ancestor);
+      if (parent === ancestor) throw error;
+      absent.unshift(basename(ancestor));
+      ancestor = parent;
     }
   }
 }
@@ -84,14 +97,9 @@ function mirroredHomeRelative(absolute: string, homeRoot: string): string | unde
     if (!rel) continue;
     const alias = join(homeRoot, rel);
     try {
-      // realpath of at least the parent must succeed on BOTH sides. The
-      // permissive physicalPath fallback must not turn missing paths into proof.
-      const resolveExisting = (file: string) => {
-        try { return realpathSync(file); } catch {
-          return join(realpathSync(dirname(file)), basename(file));
-        }
-      };
-      if (resolveExisting(alias) === resolveExisting(absolute)) matches.add(rel);
+      // Both spellings must converge through an existing ancestor; appending
+      // absent components must not split a newly created library's lock keys.
+      if (physicalPath(alias) === physicalPath(absolute)) matches.add(rel);
     } catch {
       // No independently resolvable HOME alias: keep the outside-HOME refusal.
     }

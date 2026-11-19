@@ -131,6 +131,50 @@ describe('resolveExternalPathLockIdentity', () => {
     expect(() => resolveExternalPathLockIdentity(physical, { home, runtimeDir: null })).toThrow(/below/);
   });
 
+  it('keeps the physical repository identity through an alias with multiple absent ancestors', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-absent-alias-')));
+    cleanup.push(fixture);
+    const repo = join(fixture, 'physical');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    process.env.PAPERCUSP_CANONICAL_TREE = repo;
+    const alias = join(fixture, 'alias');
+    symlinkSync(repo, alias);
+    const rel = 'missing/library/new/source.yaml';
+    expect(managedRepositoryPathToLockIdentity(join(alias, rel))).toEqual({
+      coordinationDomain: repo, path: rel,
+    });
+    expect(managedRepositoryPathToLockIdentity(join(repo, rel))).toEqual({
+      coordinationDomain: repo, path: rel,
+    });
+  });
+
+  it('coordinates a mirrored HOME alias before its entire library subtree exists', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-absent-home-')));
+    cleanup.push(fixture);
+    const home = join(fixture, 'home', 'person');
+    const physical = join(fixture, 'offload', home.slice(1), '.papercusp');
+    mkdirSync(physical, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    symlinkSync(physical, join(home, '.papercusp'));
+    const rel = '.papercusp/missing/library/new/source.yaml';
+    expect(resolveExternalPathLockIdentity(join(fixture, 'offload', home.slice(1), rel),
+      { home, runtimeDir: null })).toEqual({ path: `@external/home/${rel}` });
+    expect(resolveExternalPathLockIdentity(join(home, rel),
+      { home, runtimeDir: null })).toEqual({ path: `@external/home/${rel}` });
+  });
+
+  it('refuses dangling links and non-directory ancestors instead of inventing lexical custody', () => {
+    const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-unknown-ancestor-')));
+    cleanup.push(fixture);
+    const dangling = join(fixture, 'dangling');
+    symlinkSync(join(fixture, 'absent'), dangling);
+    expect(() => managedRepositoryPathToLockIdentity(join(dangling, 'new', 'source.yaml'))).toThrow();
+    const file = join(fixture, 'file');
+    writeFileSync(file, 'not a directory');
+    expect(() => managedRepositoryPathToLockIdentity(join(file, 'new', 'source.yaml'))).toThrow();
+  });
+
   it('does not accept another user’s mirrored HOME tree or an unrelated external directory', () => {
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'lock-offload-other-home-')));
     cleanup.push(fixture);
