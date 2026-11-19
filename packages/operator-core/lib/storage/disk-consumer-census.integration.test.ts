@@ -7,10 +7,10 @@
  * census rows in 24h is reported (stale / missing), and a consumer at or above the
  * floor that the census does not list fails the du comparison below.
  */
-import { randomBytes, randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +33,8 @@ import {
   type CensusSql,
 } from './disk-consumer-census';
 import { devToMajorMinor, type CensusConsumer } from './usage';
+import { censusEndpointEnvelopeNote, readCensusEndpointEnvelope, runDetachedDuUsage, writeCensusEndpointEnvelope,
+  type CensusEndpointCandidate, type CensusEndpointReceipt } from './disk-census-detached-walk';
 import { detectDiskGrowthWarnings, runDiskHeadroomAlarmOnce, emitStorageGrowthToast,
   DISK_HEADROOM_OBSERVATION_ACTION, DISK_HEADROOM_EXERCISE_ACTION, diskHeadroomAlarmRuntimeIdentity,
   DISK_CENSUS_INCOMPLETE_ACTION,
@@ -55,6 +57,7 @@ let rootSql: postgres.Sql;
 let notificationSql: postgres.Sql;
 let sql: CensusSql;
 let fixture: string;
+let endpointEvidence: string;
 let censusDatabaseUri: string;
 
 beforeEach(() => { invalidation.notify.mockClear(); });
@@ -297,6 +300,10 @@ beforeAll(async () => {
   // A small tree with known shape: two listed directories, one nested, one big root file,
   // and one directory under the 1 MiB test floor.
   fixture = mkdtempSync(join(tmpdir(), 'disk-census-'));
+  endpointEvidence = mkdtempSync(join(tmpdir(), 'disk-census-endpoints-'));
+  vi.stubEnv('PAPERCUSP_HOME', endpointEvidence);
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(endpointEvidence, 'pins'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(endpointEvidence, 'mutexes'));
   mkdirSync(join(fixture, 'a'));
   mkdirSync(join(fixture, 'b', 'c'), { recursive: true });
   mkdirSync(join(fixture, 'tiny'));
@@ -309,8 +316,232 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (fixture) rmSync(fixture, { recursive: true, force: true });
+  if (endpointEvidence) rmSync(endpointEvidence, { recursive: true, force: true });
+  vi.unstubAllEnvs();
   await rootSql?.end({ timeout: 5 });
   await notificationSql?.end({ timeout: 5 });
+});
+
+describe('integrated producer singleton endpoints (real PG and du)', () => {
+  it('persists certified independent endpoints and resumes the durable cursor without promoting the failed root', async () => {
+    // The worker independently measures its actual host. Synthetic host names
+    // must remain UNKNOWN; this positive control uses that measured identity.
+    const host = hostname();
+    const dev = device({ device: fixture, majorMinor: devToMajorMinor(statSync(fixture).dev) });
+    const runDu = async () => ({ summary: { rootBytes: 100, consumers: [dir(join(fixture, 'a'), 50)], ownFiles: [], records: 2 },
+      deniedCount: 0, deniedSample: [], exitCode: 1, timedOut: false,
+      diagnostics: { lines: 1, missingPaths: [join(fixture, 'a', 'gone')], other: 0, overflow: false } });
+    const launches: string[] = [];
+    const measureEndpoint: typeof runDetachedDuUsage = (roots, options) => {
+      launches.push(roots[0]!);
+      return runDetachedDuUsage(roots, { ...options, launch: async (cmd, args) => {
+        const child = spawn(cmd, args, { stdio: 'ignore' }); child.unref();
+        if (!child.pid) throw new Error('test worker has no pid');
+        return { pid: child.pid, taskId: null, confined: true };
+      } });
+    };
+    for (let pass = 0; pass < 2; pass++) {
+      const result = await censusOneDevice({ host, devices: [dev], stores: [], sudo: null }, dev, {
+        sql, runDu, statDevice: null, producerBuildSha: 'a'.repeat(40), measureEndpoint,
+        reconcileFailures: async (_root, _du, options) => {
+          expect(options?.budget?.walksLeft).toBe(pass === 0 ? 7 : 8);
+          return { status: 'unbounded', uncertainBytesUpperBound: null, vanishedPaths: 1, shards: [], reason: 'original root remains incomplete' };
+        },
+      });
+      expect(result.failure).toBeUndefined();
+      expect(result.run?.complete).toBe(false);
+      const rows = await rootSql`SELECT note, complete FROM harness_shared.disk_census_runs WHERE run_id=${result.run!.runId}`;
+      expect(rows[0]!.complete).toBe(false);
+      const population = await readCensusEndpointEnvelope(rows[0]!.note);
+      expect(population.status).toBe('verified');
+      if (population.status !== 'verified') throw new Error(population.reason);
+      const endpoint = population.rows[0]!.candidate.endpoint;
+      expect(endpoint.status, JSON.stringify(endpoint)).toBe('certified');
+      expect(population.envelope.selection).toMatchObject({ attempted: 1, remaining: 0,
+        nextPriority: pass === 0 ? 'failure-shards' : 'endpoints', afterConsumer: join(fixture, 'a') });
+      expect(population.failurePaths).toEqual([join(fixture, 'a', 'gone')]);
+      const consumers = (await readDiskConsumerCensus(sql, { host })).devices[0]?.consumers;
+      expect(consumers).toBeDefined();
+      expect(consumers!.every(row => row.growth24hBytes === null)).toBe(true);
+    }
+    expect(launches).toEqual([join(fixture, 'a'), join(fixture, 'a')]);
+  }, 120_000);
+
+  it('reuses the durable prepare run id after a committed device step is replayed', async () => {
+    const host = `producer-replay-${randomUUID()}`, dev = device(), runId = randomUUID();
+    await writeCensusRun(sql, { runId, host, device: dev, startedAt: new Date(1000), finishedAt: new Date(2000),
+      attributedBytes: 40 * G, complete: false, note: 'saved original UNKNOWN', consumers: [dir('/test-dev/a', G)] });
+    const runDu = vi.fn();
+    const result = await censusOneDevice({ host, devices: [dev], stores: [], sudo: null, runIds: { [dev.device]: runId } }, dev, { sql, runDu });
+    expect(result.run).toMatchObject({ runId, complete: false, durationMs: 1000, consumers: 1 });
+    expect(runDu).not.toHaveBeenCalled();
+    expect((await rootSql`SELECT count(*)::int AS n FROM harness_shared.disk_census_runs WHERE run_id=${runId}`)[0]!.n).toBe(1);
+  });
+});
+
+describe('scoped endpoint comparisons through the public reader (real PG and du)', () => {
+  // The raw singleton traversals are real. Only their historical clocks are
+  // retimed in this maintained fixture; this is not operational baseline proof.
+  async function history(count = 1, reverse = false) {
+    const root = mkdtempSync(join(endpointEvidence, 'scoped-')), consumer = join(root, 'zz-decisive');
+    mkdirSync(consumer); writeFileSync(join(consumer, 'file'), randomBytes(64 * 1024));
+    const host = hostname(), dev = device({ device: root, majorMinor: devToMajorMinor(statSync(root).dev) });
+    const baselineId = randomUUID(), latestId = randomUUID();
+    async function endpoint(runId: string, older: boolean): Promise<CensusEndpointCandidate> {
+      const measured = await runDetachedDuUsage([consumer], { dir: join(root, `walk-${runId}`), pollMs: 25,
+        endpoint: { parentRunId: runId, host, device: root, majorMinor: dev.majorMinor, producerBuildSha: 'a'.repeat(40) },
+        launch: async (cmd, args) => {
+          const child = spawn(cmd, args, { stdio: 'ignore' }); child.unref();
+          if (!child.pid) throw new Error('test worker has no pid');
+          return { pid: child.pid, taskId: null, confined: true };
+        } });
+      if (measured.endpoint?.status !== 'certified') throw new Error(JSON.stringify(measured));
+      const observed = measured.endpoint;
+      const receipt: CensusEndpointReceipt = structuredClone(observed.receipt);
+      if (older) {
+        receipt.startedAt -= 24 * HOUR; receipt.finishedAt -= 24 * HOUR;
+        const terminal = JSON.parse(readFileSync(observed.source.path, 'utf8'));
+        terminal.endpoint = receipt; terminal.finishedAt = receipt.finishedAt;
+        writeFileSync(observed.source.path, JSON.stringify(terminal));
+      }
+      const sourceBytes = readFileSync(observed.source.path);
+      return { consumer, endpoint: { status: 'certified', receipt,
+        source: { path: observed.source.path, byteCount: sourceBytes.length, sha256: createHash('sha256').update(sourceBytes).digest('hex') } } };
+    }
+    const before = await endpoint(baselineId, true);
+    writeFileSync(join(consumer, 'growth'), randomBytes(128 * 1024));
+    const after = await endpoint(latestId, false);
+    const consumers = [ ...Array.from({ length: count - 1 }, (_, i) => dir(join(root, `c${String(i).padStart(4, '0')}`), G)), dir(consumer, G) ];
+    const unmeasured: CensusEndpointCandidate[] = consumers.filter(row => row.consumer !== consumer).map(row => ({ consumer: row.consumer,
+      endpoint: { status: 'unknown', reason: 'deliberately unmeasured fixture consumer ' + 'x'.repeat(2000) } }));
+    const selection = { version: 1 as const, filesystemKey: 'f'.repeat(64), afterConsumer: consumer,
+      nextPriority: 'failure-shards' as const, attempted: 1, remaining: count - 1,
+      failureScope: { status: 'known' as const, total: 1, reason: 'complete fixture classification' } };
+    const notes = new Map<string, string>();
+    for (const [runId, candidate] of [[baselineId, before], [latestId, after]] as const) {
+      const rows = [...unmeasured, candidate];
+      const envelope = await writeCensusEndpointEnvelope(reverse ? rows.reverse() : rows, { dir: join(root, `population-${runId}`), parentRunId: runId,
+        selection, failurePaths: [join(root, 'failed-sibling', 'gone')] });
+      notes.set(runId, 'du failed: churn; ' + censusEndpointEnvelopeNote(envelope));
+      const receipt = candidate.endpoint.status === 'certified' ? candidate.endpoint.receipt : null;
+      if (!receipt) throw new Error('fixture endpoint missing');
+      await writeCensusRun(sql, { runId, host, device: dev, startedAt: new Date(receipt.startedAt - 1), finishedAt: new Date(receipt.finishedAt + 1),
+        attributedBytes: 0, complete: false, note: notes.get(runId)!, consumers: reverse ? [...consumers].reverse() : consumers });
+    }
+    return { host, root, consumer, baselineId, latestId, before, after, notes };
+  }
+
+  it.each([99, 100, 101, 199, 200, 201])('drains %i mixed rows, recovers the late sealed source and preserves independent alarm truth', async count => {
+    for (const reverse of [false, true]) {
+      const h = await history(count, reverse);
+      const first = (await readDiskConsumerCensus(sql, { host: h.host, device: h.root, limit: 100 })).devices[0]!;
+      expect(first).toMatchObject({ complete: false, baselineStatus: 'latest-incomplete', baselineRunId: null,
+        scopedComparisons: { total: count, qualified: 1, unknown: count - 1, rejected: 0 }, consumersOmitted: Math.max(0, count - 100) });
+      const view = (await readCompleteDiskConsumerCensus(sql, { host: h.host, device: h.root, limit: 100 })).devices[0]!;
+      const row = view.consumers!.find(item => item.consumer === h.consumer)!;
+      expect(row.growth24hBytes).toBeNull();
+      expect(row.scopedComparison).toMatchObject({ status: 'qualified', baselineRunId: h.baselineId,
+        additive: false, snapshot: false, physicalProjection: false });
+      expect(row.scopedComparison!.deltaBytes).toBeGreaterThan(0);
+      expect(row.scopedComparison!.elapsedMs).toBeGreaterThanOrEqual(24 * HOUR);
+      expect(view.consumers).toHaveLength(count);
+      expect(view).toMatchObject({ nextConsumerCursor: null, consumersOmitted: 0 });
+      expect(detectDiskGrowthWarnings([view])).toEqual([]);
+      const emitToast = vi.fn(async (_toast: { message: string }) => {});
+      const alarm = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [view], emitToast });
+      expect(alarm.censusScopedGrowth.map(item => item.consumer)).toEqual([h.consumer]);
+      expect(alarm.diskGrowth).toEqual([]);
+      expect(alarm.diskProjectionUnknown).toEqual([h.root]);
+      expect(emitToast.mock.calls[0]?.[0]).toMatchObject({ message: `Measured consumer growth — ${h.root}` });
+      const latest = await readCensusEndpointEnvelope(h.notes.get(h.latestId)!);
+      expect(latest.status).toBe('verified');
+      if (latest.status === 'verified' && count >= 99) expect(latest.envelope.omitted).toBeGreaterThan(0);
+    }
+  }, 120_000);
+
+  it('pins recovered terminal qualification across pages and requests resync after source corruption', async () => {
+    const h = await history(101);
+    const first = (await readDiskConsumerCensus(sql, { host: h.host, device: h.root, limit: 100 })).devices[0]!;
+    if (h.before.endpoint.status !== 'certified') throw new Error('fixture endpoint missing');
+    writeFileSync(h.before.endpoint.source.path, '{}');
+    await expect(readDiskConsumerCensus(sql, { cursor: first.nextConsumerCursor! })).rejects.toMatchObject({ code: 'census_restart_required' });
+    const recovered = (await readCompleteDiskConsumerCensus(sql, { host: h.host, device: h.root })).devices[0]!;
+    expect(recovered.scopedComparisons).toMatchObject({ total: 101, qualified: 0, unknown: 101 });
+    expect(recovered.consumers!.every(row => row.growth24hBytes === null)).toBe(true);
+  }, 120_000);
+
+  it('resumes a scoped public cursor in a fresh Node process with the same qualification and population', async () => {
+    const h = await history(101);
+    const initial = (await readDiskConsumerCensus(sql, { host: h.host, device: h.root, limit: 100 })).devices[0]!;
+    const script = join(h.root, 'public-cursor-restart.mts');
+    writeFileSync(script, `import postgres from ${JSON.stringify(new URL('../../../../node_modules/postgres/src/index.js', import.meta.url).href)};
+import { readDiskConsumerCensus } from ${JSON.stringify(new URL('./disk-consumer-census.ts', import.meta.url).href)};
+const [uri, cursor] = JSON.parse(process.argv[2]);
+const client = postgres(uri, { max: 1, onnotice: () => {} });
+try { console.log(JSON.stringify(await readDiskConsumerCensus(client, { cursor, limit: 100 }))); }
+finally { await client.end({ timeout: 5 }); }`);
+    const child = spawnSync(process.execPath, ['--import', 'tsx/esm', script, JSON.stringify([censusDatabaseUri, initial.nextConsumerCursor])], { encoding: 'utf8' });
+    expect(child.status, child.stderr).toBe(0);
+    const page = (JSON.parse(child.stdout) as { devices: CensusDeviceView[] }).devices[0]!;
+    expect(page).toMatchObject({ runId: h.latestId, consumersPageStart: 100, consumersOmitted: 0,
+      nextConsumerCursor: null, scopedComparisons: initial.scopedComparisons });
+    expect(page.consumers).toHaveLength(1);
+    expect(page.consumers![0]).toMatchObject({ consumer: h.consumer, growth24hBytes: null,
+      scopedComparison: { status: 'qualified', baselineRunId: h.baselineId, physicalProjection: false } });
+  }, 120_000);
+
+  it('keeps a mixed unknown/rejected baseline population UNKNOWN in either candidate order', async () => {
+    const h = await history();
+    if (h.before.endpoint.status !== 'certified' || h.after.endpoint.status !== 'certified') throw new Error('fixture endpoint missing');
+    const baseline = h.before.endpoint;
+    baseline.receipt.request.producerBuildSha = 'b'.repeat(40);
+    const terminal = JSON.parse(readFileSync(baseline.source.path, 'utf8'));
+    terminal.endpoint = baseline.receipt;
+    writeFileSync(baseline.source.path, JSON.stringify(terminal));
+    const bytes = readFileSync(baseline.source.path);
+    baseline.source = { ...baseline.source, byteCount: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+    const prior = await readCensusEndpointEnvelope(h.notes.get(h.baselineId)!);
+    if (prior.status !== 'verified') throw new Error(prior.reason);
+    const envelope = await writeCensusEndpointEnvelope([h.before], { dir: join(h.root, 'rejected-baseline'), parentRunId: h.baselineId,
+      selection: prior.envelope.selection, failurePaths: prior.failurePaths });
+    await rootSql`UPDATE harness_shared.disk_census_runs SET note=${censusEndpointEnvelopeNote(envelope)} WHERE run_id=${h.baselineId}`;
+    const read = async () => (await readCompleteDiskConsumerCensus(sql, { host: h.host, device: h.root })).devices[0]!;
+    expect((await read()).scopedComparisons).toMatchObject({ qualified: 0, rejected: 1, unknown: 0 });
+    const unknownId = randomUUID();
+    const at = new Date(h.after.endpoint.receipt.finishedAt + 1 - 24 * HOUR);
+    await writeCensusRun(sql, { runId: unknownId, host: h.host, device: device({ device: h.root }), startedAt: at, finishedAt: at,
+      attributedBytes: 0, complete: false, note: 'legacy source missing', consumers: [] });
+    for (const first of [true, false]) {
+      if (!first) {
+        const far = new Date(h.before.endpoint.receipt.finishedAt - 1000);
+        await rootSql`UPDATE harness_shared.disk_census_runs SET started_at=${far}, finished_at=${far} WHERE run_id=${unknownId}`;
+      }
+      const view = await read(), comparison = view.consumers![0]!.scopedComparison!;
+      expect(view.scopedComparisons).toMatchObject({ total: 1, qualified: 0, rejected: 0, unknown: 1 });
+      expect(comparison.candidates.map(row => row.status)).toEqual(first ? ['unknown', 'rejected'] : ['rejected', 'unknown']);
+      expect(comparison.status).toBe('unknown');
+    }
+  }, 120_000);
+
+  it.each([99, 100, 101, 199, 200, 201])('finds the decisive last scoped baseline across %i incomplete candidates and permutations', async count => {
+    for (const reverse of [false, true]) {
+      const h = await history();
+      if (h.after.endpoint.status !== 'certified') throw new Error('fixture endpoint missing');
+      const finishedAt = new Date(h.after.endpoint.receipt.finishedAt + 1 - 24 * HOUR);
+      const ids = Array.from({ length: count - 1 }, () => randomUUID());
+      for (const runId of reverse ? ids.reverse() : ids) await writeCensusRun(sql, {
+        runId, host: h.host, device: device({ device: h.root }), startedAt: finishedAt, finishedAt,
+        attributedBytes: 0, complete: false, note: 'legacy incomplete; endpoint qualification unavailable', consumers: [],
+      });
+      const view = (await readCompleteDiskConsumerCensus(sql, { host: h.host, device: h.root })).devices[0]!;
+      const comparison = view.consumers!.find(row => row.consumer === h.consumer)!.scopedComparison!;
+      expect(comparison).toMatchObject({ status: 'qualified', baselineRunId: h.baselineId });
+      expect(comparison.candidates).toHaveLength(count);
+      expect(comparison.candidates.slice(0, -1).every(candidate => candidate.status === 'unknown')).toBe(true);
+      expect(comparison.candidates.at(-1)).toMatchObject({ runId: h.baselineId, status: 'qualified' });
+      expect(view).toMatchObject({ complete: false, baselineRunId: null, baselineAt: null, scopedComparisons: { qualified: 1 } });
+    }
+  }, 120_000);
 });
 
 describe('lossless persisted census reader (real PG)', () => {
@@ -453,7 +684,8 @@ describe('lossless persisted census reader (real PG)', () => {
       expect(result.devices[0]).toMatchObject({ consumersReturned: 2, consumersOmitted: 0,
         truncatedByLimit: false, nextConsumerCursor: null });
       expect(result.devices[0]!.consumers).toEqual(consumers.map(c => ({ ...c,
-        bytes: G + invalidations, baselineBytes: 0, growth24hBytes: G + invalidations })));
+        bytes: G + invalidations, baselineBytes: 0, growth24hBytes: G + invalidations,
+        scopedComparison: expect.objectContaining({ status: 'unknown', candidates: [], additive: false, physicalProjection: false }) })));
       const alarm = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => result.devices, emitToast: async () => {} });
       expect(alarm.diskProjectionUnknown).toEqual([]);
     }

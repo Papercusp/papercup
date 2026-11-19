@@ -64,7 +64,7 @@ import { computeStorageUsage, type StorageUsageRow } from './usage';
 import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
 import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
 import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
-import { CENSUS_RETENTION_DAYS, type CensusDeviceView, type CensusIncompleteEpisode } from './disk-consumer-census';
+import { CENSUS_RETENTION_DAYS, type CensusDeviceView, type CensusIncompleteEpisode, type CensusScopedComparison } from './disk-consumer-census';
 import { samplePgTableSizes, recordPgTableSizeSample } from './pg-table-growth';
 import {
   comparableCensusWindowDays,
@@ -1185,6 +1185,40 @@ export interface CensusIncompleteAlarmResult {
   censusIncompleteUnknown: string[];
 }
 
+export interface CensusScopedGrowthAlarmResult {
+  censusScopedGrowth: Array<{ device: string; consumer: string; comparison: CensusScopedComparison }>;
+  censusScopedUnknown: string[];
+}
+
+/** Independent singleton observations never feed whole-device forecasts. The
+ * maintained complete reader has drained every consumer page before this leg. */
+async function runCensusScopedGrowthLeg(devices: readonly CensusDeviceView[],
+  emitToast: NonNullable<GrowthAlarmDeps['emitToast']>): Promise<CensusScopedGrowthAlarmResult> {
+  const result: CensusScopedGrowthAlarmResult = { censusScopedGrowth: [], censusScopedUnknown: [] };
+  for (const device of devices) {
+    if (device.stale || !device.scopedComparisons || device.nextConsumerCursor || device.consumersOmitted) {
+      result.censusScopedUnknown.push(`${device.device}: stale, missing or undrained scoped population`); continue;
+    }
+    if (device.scopedComparisons.unknown || device.scopedComparisons.rejected)
+      result.censusScopedUnknown.push(`${device.device}: ${device.scopedComparisons.unknown} UNKNOWN, ${device.scopedComparisons.rejected} rejected of ${device.scopedComparisons.total}`);
+    const growing = (device.consumers ?? []).filter(row => row.scopedComparison?.status === 'qualified'
+      && Number.isFinite(row.scopedComparison.deltaBytes) && row.scopedComparison.deltaBytes! > 0);
+    if (!growing.length) continue;
+    try {
+      await emitToast({ level: 'warning', message: `Measured consumer growth — ${device.device}`,
+        description: growing.map(row => `${row.consumer}: +${fmtSize(row.scopedComparison!.deltaBytes!)} over ` +
+          `${row.scopedComparison!.elapsedMs! / 3600_000}h (baseline ${row.scopedComparison!.baselineRunId}).`).join('\n') +
+          '\nIndependently completed singleton usage; non-additive, no snapshot. Rename/churn between traversals remains possible. ' +
+          'This is not a physical-capacity forecast; whole-device coverage and incomplete episodes retain their own verdicts.' });
+      result.censusScopedGrowth.push(...growing.map(row => ({ device: device.device, consumer: row.consumer, comparison: row.scopedComparison! })));
+    } catch (error) {
+      result.censusScopedUnknown.push(`${device.device}: scoped-growth notification failed`);
+      console.warn(`[storage-growth-alarm] scoped census notification failed: ${String(error)}`);
+    }
+  }
+  return result;
+}
+
 /** Independent health leg: qualified consumers never reset whole-device failure.
  * One durable onset is enforced by emitStorageGrowthToast's audit transaction. */
 async function runCensusIncompleteLeg(devices: readonly CensusDeviceView[],
@@ -1218,8 +1252,9 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
   exercise?: { devices: readonly CensusDeviceView[] };
 } = {}): Promise<{
   diskHeadroom: DiskHeadroomBreach[]; diskGrowth: DiskGrowthWarning[]; diskProjectionUnknown: string[];
-} & UnenforcedClassGrowthResult & CensusIncompleteAlarmResult> {
+} & UnenforcedClassGrowthResult & CensusIncompleteAlarmResult & CensusScopedGrowthAlarmResult> {
   let incomplete: CensusIncompleteAlarmResult = { censusIncomplete: [], censusIncompleteUnknown: ['census unavailable'] };
+  let scoped: CensusScopedGrowthAlarmResult = { censusScopedGrowth: [], censusScopedUnknown: ['census unavailable'] };
   try {
     const devices = deps.exercise ? structuredClone(deps.exercise.devices) : await (deps.readDiskCensus ?? defaultReadDiskCensus)();
     if (deps.exercise && (!validExerciseDevices(devices) || !detectDiskHeadroom(devices).length ||
@@ -1230,6 +1265,8 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
     // Consumer growth and floor-notification failures cannot suppress this leg.
     incomplete = deps.exercise ? { censusIncomplete: [], censusIncompleteUnknown: [] }
       : await runCensusIncompleteLeg(devices, emitToast);
+    scoped = deps.exercise ? { censusScopedGrowth: [], censusScopedUnknown: [] }
+      : await runCensusScopedGrowthLeg(devices, emitToast);
     const diskHeadroom = detectDiskHeadroom(devices), diskGrowth = detectDiskGrowthWarnings(devices);
     const diskProjectionUnknown = devices.filter(d => diskGrowthRate(d) === null).map(d => d.device);
     if (diskHeadroom.length || diskGrowth.length) await emitToast(
@@ -1248,11 +1285,12 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
       diskHeadroom, diskGrowth, diskProjectionUnknown: devices.length ? diskProjectionUnknown : ['census unavailable'],
       ...unenforced,
       ...incomplete,
+      ...scoped,
     };
   } catch (err) {
     console.warn(`[storage-growth-alarm] disk headroom projection skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`);
     return { diskHeadroom: [], diskGrowth: [], diskProjectionUnknown: ['census read failed'],
-      unenforcedClassGrowth: [], unenforcedClassUnknown: ['census read failed'], ...incomplete };
+      unenforcedClassGrowth: [], unenforcedClassUnknown: ['census read failed'], ...incomplete, ...scoped };
   }
 }
 
@@ -1275,6 +1313,8 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   unenforcedClassUnknown: string[];
   censusIncomplete: CensusIncompleteAlarmResult['censusIncomplete'];
   censusIncompleteUnknown: string[];
+  censusScopedGrowth: CensusScopedGrowthAlarmResult['censusScopedGrowth'];
+  censusScopedUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;

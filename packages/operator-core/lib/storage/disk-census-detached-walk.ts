@@ -419,8 +419,16 @@ const endpointCandidateSchema = z.object({ consumer: exactPath, endpoint: endpoi
 export type CensusEndpointCandidate = z.infer<typeof endpointCandidateSchema>;
 const populationRowSchema = z.object({ index: clock, candidate: endpointCandidateSchema,
   disposition: z.enum(['retained', 'record-over-budget']) }).strict();
+export const censusEndpointSelectionSchema = z.object({
+  version: z.literal(1), filesystemKey: digest, afterConsumer: exactPath.nullable(),
+  nextPriority: z.enum(['endpoints', 'failure-shards']), attempted: clock.max(8), remaining: clock,
+  pending: clock.optional(),
+  failureScope: z.object({ status: z.enum(['known', 'unknown']), total: clock, reason: z.string().min(1) }).strict(),
+}).strict();
+export type CensusEndpointSelection = z.infer<typeof censusEndpointSelectionSchema>;
 const populationSchema = z.object({ version: z.literal(1), populationKey: z.string().uuid(), parentRunId: z.string().uuid(),
-  rows: z.array(populationRowSchema) }).strict();
+  rows: z.array(populationRowSchema), selection: censusEndpointSelectionSchema.optional(),
+  failurePaths: z.array(exactPath).optional(), pendingConsumers: z.array(exactPath).optional() }).strict();
 /** A bound on the new embedded representation only. Every full record is sealed
  * and pinned before the run note can acknowledge this population. */
 export const CENSUS_ENDPOINT_ENVELOPE_BYTES = 65536;
@@ -428,6 +436,7 @@ export const CENSUS_ENDPOINT_PREFIX = 'census-endpoints:';
 const endpointEnvelopeSchema = z.object({ version: z.literal(1), populationKey: z.string().uuid(), parentRunId: z.string().uuid(),
   source: endpointSourceSchema, total: clock, embedded: clock, omitted: clock, rejected: clock,
   records: z.array(populationRowSchema),
+  selection: censusEndpointSelectionSchema.optional(),
   recovery: z.object({ tool: z.literal('capability:read'), byte_offset: z.literal(0), byte_limit: z.literal(4096),
     follow: z.literal('Follow next_cursor to EOF; verify source byteCount and sha256 before using any record.') }).strict(),
 }).strict().refine(value => value.embedded === value.records.length && value.total === value.embedded + value.omitted,
@@ -437,7 +446,7 @@ export const censusEndpointEnvelopeNote = (envelope: CensusEndpointEnvelope): st
   CENSUS_ENDPOINT_PREFIX + encodeURIComponent(JSON.stringify(envelope));
 
 export async function writeCensusEndpointEnvelope(candidates: readonly CensusEndpointCandidate[], opts: {
-  dir: string; parentRunId: string; now?: number;
+  dir: string; parentRunId: string; now?: number; selection?: CensusEndpointSelection; failurePaths?: string[]; pendingConsumers?: string[];
 }): Promise<CensusEndpointEnvelope> {
   const parentRunId = z.string().uuid().parse(opts.parentRunId), populationKey = randomUUID();
   const ordered = candidates.map(value => endpointCandidateSchema.parse(value))
@@ -449,7 +458,16 @@ export async function writeCensusEndpointEnvelope(candidates: readonly CensusEnd
   const rows = ordered.map((candidate, index) => ({ index, candidate,
     disposition: Buffer.byteLength(encodeURIComponent(JSON.stringify(candidate))) > CENSUS_ENDPOINT_ENVELOPE_BYTES
       ? 'record-over-budget' as const : 'retained' as const }));
-  const population = populationSchema.parse({ version: 1, populationKey, parentRunId, rows });
+  const selection = opts.selection ? censusEndpointSelectionSchema.parse(opts.selection) : undefined;
+  const population = populationSchema.parse({ version: 1, populationKey, parentRunId, rows, ...(selection ? { selection } : {}),
+    ...(opts.failurePaths ? { failurePaths: opts.failurePaths } : {}),
+    ...(opts.pendingConsumers ? { pendingConsumers: opts.pendingConsumers } : {}) });
+  if (selection && selection.failureScope.total !== (population.failurePaths?.length ?? 0))
+    throw new Error('endpoint failure-scope population count mismatch');
+  if (selection?.pending !== undefined && (selection.pending !== population.pendingConsumers?.length
+    || new Set(population.pendingConsumers).size !== population.pendingConsumers.length
+    || population.pendingConsumers.some(path => !ordered.some(row => row.consumer === path))))
+    throw new Error('endpoint pending population mismatch');
   const files = usageAttemptFiles(opts.dir, populationKey), path = join(files.root, 'endpoint-population.json');
   const bytes = Buffer.from(JSON.stringify(population)), now = opts.now ?? Date.now();
   // Publication and retention share the existing deletion mutex. Failure to pin
@@ -466,6 +484,7 @@ export async function writeCensusEndpointEnvelope(candidates: readonly CensusEnd
       reason: 'Immutable scoped census replay evidence', expiresAt: new Date(now + 30 * 86400_000).toISOString() }, { nowMs: now });
   }, { nowMs: now });
   let envelope: CensusEndpointEnvelope = { version: 1, populationKey, parentRunId,
+    ...(selection ? { selection } : {}),
     source: { path, byteCount: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') },
     total: rows.length, embedded: 0, omitted: rows.length, rejected: rows.filter(row => row.disposition === 'record-over-budget').length,
     records: [], recovery: { tool: 'capability:read', byte_offset: 0, byte_limit: 4096,
@@ -484,7 +503,7 @@ export async function writeCensusEndpointEnvelope(candidates: readonly CensusEnd
  * records alone never qualify an observation. Missing, changed or legacy sources
  * yield one explicit resync result, without retrying a different population. */
 export async function readCensusEndpointEnvelope(note: string | null): Promise<
-  { status: 'verified'; envelope: CensusEndpointEnvelope; rows: z.infer<typeof populationRowSchema>[]; pages: number }
+  { status: 'verified'; envelope: CensusEndpointEnvelope; rows: z.infer<typeof populationRowSchema>[]; pages: number; failurePaths?: string[]; pendingConsumers?: string[] }
   | { status: 'unknown'; reason: string; resync: 'request-new-census-population' }
 > {
   try {
@@ -510,11 +529,18 @@ export async function readCensusEndpointEnvelope(note: string | null): Promise<
       throw new Error('endpoint population digest changed');
     const population = populationSchema.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
     if (population.parentRunId !== envelope.parentRunId || population.populationKey !== envelope.populationKey
+      || JSON.stringify(population.selection) !== JSON.stringify(envelope.selection)
+      || envelope.selection && envelope.selection.failureScope.total !== (population.failurePaths?.length ?? 0)
+      || envelope.selection?.pending !== undefined && (envelope.selection.pending !== population.pendingConsumers?.length
+        || new Set(population.pendingConsumers).size !== population.pendingConsumers.length
+        || population.pendingConsumers.some(path => !population.rows.some(row => row.candidate.consumer === path)))
       || population.rows.length !== envelope.total || population.rows.some((row, i) => row.index !== i)
       || population.rows.filter(row => row.disposition === 'record-over-budget').length !== envelope.rejected
       || envelope.records.some(row => JSON.stringify(row) !== JSON.stringify(population.rows[row.index])))
       throw new Error('endpoint envelope/source population mismatch');
-    return { status: 'verified', envelope, rows: population.rows, pages };
+    return { status: 'verified', envelope, rows: population.rows, pages,
+      ...(population.failurePaths ? { failurePaths: population.failurePaths } : {}),
+      ...(population.pendingConsumers ? { pendingConsumers: population.pendingConsumers } : {}) };
   } catch (error) {
     return { status: 'unknown', reason: `${error instanceof Error ? error.message : String(error)}; resync required`,
       resync: 'request-new-census-population' };
@@ -551,7 +577,7 @@ function outputFingerprint(stat: import('node:fs').BigIntStats): string[] {
  * replaying a potentially multi-GB scan inside the caller's short wait budget.
  * The SHA256 is computed over every raw byte by the worker; EOF recovery verifies
  * it independently. ctime guards same-size edits even when mtime is restored. */
-export async function readUsageOutputEvidence(dir: string, state: DetachedWalkState): Promise<UsageOutputEvidence> {
+export async function readUsageOutputEvidence(dir: string, state: Pick<DetachedWalkState, 'attemptKey'>): Promise<UsageOutputEvidence> {
   const files = state.attemptKey ? usageAttemptFiles(dir, state.attemptKey) : null;
   const output: UsageOutputEvidence = {
     status: 'unknown', attemptKey: state.attemptKey ?? null, manifestPath: files?.manifest ?? null,
@@ -807,7 +833,7 @@ export async function runDetachedDuUsage(roots: readonly string[], opts: Detache
  * malformed or changed source is UNKNOWN; calling this never starts a new walk.
  * Certification describes a non-snapshot, non-additive singleton observation;
  * the scoped comparison reader must independently qualify both failure scopes. */
-export async function readCensusEndpointReceipt(dir: string, state: DetachedWalkState, request: CensusEndpointRequest,
+export async function readCensusEndpointReceipt(dir: string, state: Pick<DetachedWalkState, 'attemptKey' | 'root' | 'launchedAt'>, request: CensusEndpointRequest,
   expected?: z.infer<typeof endpointSourceSchema>): Promise<NonNullable<DetachedUsageRun['endpoint']>> {
   try {
     const output = await readUsageOutputEvidence(dir, state);
@@ -829,6 +855,22 @@ export async function readCensusEndpointReceipt(dir: string, state: DetachedWalk
   } catch (error) {
     return { status: 'unknown', reason: `endpoint UNKNOWN: ${error instanceof Error ? error.message : String(error)}; resync required` };
   }
+}
+
+/** Recover a producer-certified observation after the replaceable slot retires.
+ * The envelope pins the receipt; the original terminal/raw-output verifier still
+ * owns validation. No new measurement or mutable state.json is needed. */
+export async function recoverCensusEndpoint(candidate: CensusEndpointCandidate): Promise<NonNullable<DetachedUsageRun['endpoint']>> {
+  if (candidate.endpoint.status !== 'certified') return candidate.endpoint;
+  const { receipt, source } = candidate.endpoint;
+  const evidenceRoot = dirname(dirname(source.path));
+  if (!evidenceRoot.endsWith('.evidence')) return { status: 'unknown', reason: 'endpoint evidence path is not a sealed attempt' };
+  const dir = evidenceRoot.replace(/\.evidence$/, '');
+  const recovered = await readCensusEndpointReceipt(dir, { attemptKey: receipt.attemptKey,
+    root: candidate.consumer, launchedAt: receipt.startedAt }, receipt.request, source);
+  if (recovered.status === 'certified' && JSON.stringify(recovered.receipt) !== JSON.stringify(receipt))
+    return { status: 'unknown', reason: 'sealed endpoint differs from its producer population; request a new census' };
+  return recovered;
 }
 
 /** Read-only wait, also used by a checkpointed retention continuation outside

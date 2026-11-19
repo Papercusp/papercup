@@ -49,6 +49,46 @@ import { formatUnenforcedClassGrowthToast } from './unenforced-class-growth';
 
 const GIB = 1024 ** 3;
 
+describe('independent scoped consumer alarms', () => {
+  const device = (): CensusDeviceView => ({ device: '/scoped-device', complete: false, stale: false,
+    sampledAt: new Date().toISOString(), baselineStatus: 'latest-incomplete', baselineAt: null,
+    consumersOmitted: 0, nextConsumerCursor: null,
+    scopedComparisons: { total: 3, qualified: 1, unknown: 1, rejected: 1, recovery: 'follow the public cursor' },
+    incompleteEpisode: { status: 'unknown', reason: 'reset source missing', recovery: 'restore source' },
+    consumers: [ { consumer: '/scoped-device/grower', kind: 'dir', depth: 1, bytes: 1, baselineBytes: null, growth24hBytes: null,
+      scopedComparison: { status: 'qualified', reason: 'fixture pair', candidates: [], baselineRunId: 'baseline', elapsedMs: 19 * 3600_000,
+        deltaBytes: GIB, additive: false, snapshot: false, physicalProjection: false, recovery: 'sources' } },
+      { consumer: '/scoped-device/unknown', kind: 'dir', depth: 1, bytes: 1, baselineBytes: null, growth24hBytes: null },
+      { consumer: '/scoped-device/rejected', kind: 'dir', depth: 1, bytes: 1, baselineBytes: null, growth24hBytes: null } ],
+  });
+  it('reports actual elapsed singleton growth while physical and episode evidence remain UNKNOWN', async () => {
+    const emitToast = vi.fn(async (_toast: { message: string; description: string }) => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [device()], emitToast });
+    expect(result.censusScopedGrowth.map(row => row.consumer)).toEqual(['/scoped-device/grower']);
+    expect(result).toMatchObject({ diskGrowth: [], diskProjectionUnknown: ['/scoped-device'],
+      censusIncomplete: [], censusIncompleteUnknown: ['/scoped-device: reset source missing'],
+      censusScopedUnknown: ['/scoped-device: 1 UNKNOWN, 1 rejected of 3'] });
+    expect(emitToast).toHaveBeenCalledOnce();
+    expect(emitToast.mock.calls[0]![0].description).toContain('over 19h');
+    expect(emitToast.mock.calls[0]![0].description).toContain('non-additive, no snapshot');
+  });
+  it.each(['stale', 'undrained', 'failed-notification'])('exposes %s without a success or physical-growth claim', async fault => {
+    const view = device();
+    if (fault === 'stale') view.stale = true;
+    if (fault === 'undrained') { view.nextConsumerCursor = 'next'; view.consumersOmitted = 1; }
+    const emitToast = vi.fn(async () => { if (fault === 'failed-notification') throw new Error('controlled delivery failure'); });
+    const warning = fault === 'failed-notification' ? vi.spyOn(console, 'warn').mockImplementation(() => {}) : undefined;
+    try {
+      const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [view], emitToast });
+      expect(result.censusScopedGrowth).toEqual([]);
+      expect(result.censusScopedUnknown.length).toBeGreaterThan(0);
+      expect(result.diskGrowth).toEqual([]);
+      if (warning) expect(warning).toHaveBeenCalledWith(expect.stringContaining('scoped census notification failed: Error: controlled delivery failure'));
+      else expect(emitToast).not.toHaveBeenCalled();
+    } finally { warning?.mockRestore(); }
+  });
+});
+
 function syntheticHeadroomDevices(): CensusDeviceView[] {
   const at = Date.now();
   return ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'].map(device => ({

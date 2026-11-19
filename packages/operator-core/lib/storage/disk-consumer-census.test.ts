@@ -6,6 +6,7 @@
  * probe (`sudo -n true`) runs for real without needing real privilege.
  */
 import { execFileSync, spawn as spawnProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from 'node:fs';
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
@@ -15,7 +16,8 @@ import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createTextCollector } from '../child-output.js';
 import { DuOutputParser, inspectRetentionTrees, measureDocker, reconcileCensusFailures, resolveCensusSudo,
-  runDuTree, type CensusSpawn, type DuRun } from './disk-consumer-census';
+  censusFollowupBudget, collectCensusEndpoints, openCensusFollowupBudget, qualifyCensusEndpointPair, runDuTree, type CensusSpawn, type DuRun } from './disk-consumer-census';
+import { readCensusEndpointEnvelope, type CensusEndpointSelection, type CensusEndpointReceipt } from './disk-census-detached-walk';
 import { DuTreeAccumulator } from './usage';
 
 vi.mock('node:http', async (importOriginal) => ({
@@ -24,6 +26,219 @@ vi.mock('node:http', async (importOriginal) => ({
 }));
 
 const isRoot = process.getuid?.() === 0;
+
+describe('qualified scoped comparison boundaries', () => {
+  const hour = 3600_000, origin = 100 * hour;
+  const endpoint = (runId: string, finish: number): CensusEndpointReceipt => ({
+    version: 1, request: { parentRunId: runId, host: 'host', device: '/disk', majorMinor: '0:1', producerBuildSha: 'a'.repeat(40) },
+    consumer: '/disk/a', attemptKey: randomUUID(), startedAt: finish - 10, finishedAt: finish, rootBytes: 42,
+    context: { host: 'host', bootId: randomUUID(), mountNamespace: 'mnt:[1]', userNamespace: 'user:[1]', mounts: [{ id: '1', record: 'mount' }],
+      uid: 1, euid: 1, gid: 1, groups: [1], node: '/node', nodeVersion: 'v1', du: '/du', duSha256: 'b'.repeat(64), argv: ['/du', '/disk/a'],
+      accounting: 'unique-inode-allocation', depth: 'all', floorBytes: 0, singleton: true,
+      ancestors: [{ path: '/disk', dev: '1', ino: '1', birthNs: '1', mountId: '1' }, { path: '/disk/a', dev: '1', ino: '2', birthNs: '2', mountId: '1' }] },
+    exitCode: 0, diagnosticsBytes: 0, classificationComplete: true, snapshot: false, additive: false,
+    stdout: { path: '/out', byteCount: 1, sha256: 'c'.repeat(64) }, stderr: { path: '/err', byteCount: 0, sha256: 'd'.repeat(64) },
+  });
+  const pair = (elapsed = 24 * hour) => {
+    const before = endpoint(randomUUID(), origin), after = endpoint(randomUUID(), origin + elapsed);
+    after.context = structuredClone(before.context);
+    const scope = { host: 'host', device: '/disk', latestRunId: after.request.parentRunId, baselineRunId: before.request.parentRunId,
+      latestStartedAt: after.startedAt, latestFinishedAt: after.finishedAt, baselineStartedAt: before.startedAt, baselineFinishedAt: before.finishedAt,
+      latestFilesystemKey: 'f'.repeat(64), baselineFilesystemKey: 'f'.repeat(64), latestFailurePaths: [] as string[], baselineFailurePaths: [] as string[] };
+    return { before, after, scope };
+  };
+  it.each([18 * hour - 1, 18 * hour, 18 * hour + 1, 30 * hour - 1, 30 * hour, 30 * hour + 1])('checks the inclusive window at %i milliseconds', elapsed => {
+    const { before, after, scope } = pair(elapsed);
+    expect(qualifyCensusEndpointPair(after, before, scope) === null).toBe(elapsed >= 18 * hour && elapsed <= 30 * hour);
+  });
+  it.each(['host', 'device', 'consumer', 'build', 'privilege', 'inode', 'accounting', 'filesystem', 'overlap', 'run-clock'])('rejects independently changed %s evidence', fault => {
+    const { before, after, scope } = pair();
+    if (fault === 'host') before.request.host = 'other';
+    if (fault === 'device') before.request.device = '/other';
+    if (fault === 'consumer') before.consumer = '/disk/a2';
+    if (fault === 'build') before.request.producerBuildSha = 'e'.repeat(40);
+    if (fault === 'privilege') before.context.euid = 0;
+    if (fault === 'inode') before.context.ancestors[1]!.ino = '999';
+    if (fault === 'accounting') before.context.argv.push('--count-links');
+    if (fault === 'filesystem') scope.baselineFilesystemKey = 'e'.repeat(64);
+    if (fault === 'overlap') scope.baselineFinishedAt = after.startedAt + 1;
+    if (fault === 'run-clock') scope.latestStartedAt = after.startedAt + 1;
+    expect(qualifyCensusEndpointPair(after, before, scope)).not.toBeNull();
+  });
+  it.each(['/disk', '/disk/a', '/disk/a/vanished'])('rejects failed ancestor/descendant %s at either endpoint', path => {
+    for (const side of ['latestFailurePaths', 'baselineFailurePaths'] as const) {
+      const { before, after, scope } = pair(); scope[side] = [path];
+      expect(qualifyCensusEndpointPair(after, before, scope)).toContain('overlaps');
+    }
+  });
+  it('keeps path-component siblings independent and never treats singleton growth as additive', () => {
+    const { before, after, scope } = pair(); scope.latestFailurePaths = ['/disk/a2/gone'];
+    after.rootBytes += 4096;
+    expect(qualifyCensusEndpointPair(after, before, scope)).toBeNull();
+    expect(after).toMatchObject({ additive: false, snapshot: false });
+  });
+});
+
+describe('producer endpoint budget and persisted fairness', () => {
+  let evidence: string;
+  beforeEach(() => {
+    evidence = mkdtempSync(join(tmpdir(), 'census-producer-'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(evidence, 'pins'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(evidence, 'mutexes'));
+  });
+  afterEach(() => { vi.unstubAllEnvs(); rmSync(evidence, { recursive: true, force: true }); });
+  const device = { device: '/disk', majorMinor: '0:1', sizeBytes: 100, usedBytes: 50, availBytes: 50 };
+  const failed = (count: number, reverse = false): DuRun => {
+    const consumers = Array.from({ length: count }, (_, i) => ({ consumer: `/disk/c${String(i).padStart(4, '0')}`,
+      kind: 'dir' as const, depth: 1, bytes: 10 }));
+    return { summary: { rootBytes: 100, consumers: reverse ? consumers.reverse() : consumers, ownFiles: [], records: count + 1 },
+      exitCode: 1, timedOut: false, deniedCount: 0, deniedSample: [],
+      diagnostics: { lines: 1, missingPaths: ['/disk/churn/gone'], other: 0, overflow: false } };
+  };
+  it.each([7, 8, 9, 201])('retains all %i candidates and reaches the last across restarted passes and permutations', async count => {
+    for (const reverse of [false, true]) {
+      let selection: CensusEndpointSelection | undefined;
+      const visited = new Set<string>();
+      for (let pass = 0; pass < Math.ceil(count / 8); pass++) {
+        const budget = censusFollowupBudget(() => 0);
+        const measured: string[] = [];
+        const result = await collectCensusEndpoints(failed(count, reverse), { runId: randomUUID(), host: 'producer-test',
+          device, filesystemKey: 'f'.repeat(64), previousSelection: selection, budget, root: evidence,
+          producerBuildSha: 'a'.repeat(40), measure: async roots => {
+            measured.push(roots[0]!); visited.add(roots[0]!); throw new Error('deliberate failed endpoint remains UNKNOWN');
+          } });
+        const recovered = await readCensusEndpointEnvelope(result.note);
+        expect(recovered.status).toBe('verified');
+        if (recovered.status !== 'verified') throw new Error(recovered.reason);
+        expect(recovered.rows).toHaveLength(count);
+        expect(recovered.rows.every(row => row.candidate.endpoint.status === 'unknown')).toBe(true);
+        expect(recovered.failurePaths).toEqual(['/disk/churn/gone']);
+        expect(recovered.envelope.selection?.failureScope).toMatchObject({ status: 'known', total: 1 });
+        expect(measured.length).toBeLessThanOrEqual(8);
+        expect(recovered.envelope.selection?.remaining).toBe(count - measured.length);
+        // Next pass takes only the immutable readback, as a new process does.
+        selection = recovered.envelope.selection;
+      }
+      expect([...visited].sort()).toEqual(failed(count).summary.consumers.map(row => row.consumer));
+    }
+  });
+
+  it('shares both the deadline and the remaining walk count with failure reconciliation', async () => {
+    let time = 0;
+    const budget = censusFollowupBudget(() => time);
+    budget.walksLeft = 2;
+    const roots: string[] = [];
+    const result = await collectCensusEndpoints(failed(9), { runId: randomUUID(), host: 'producer-test', device,
+      filesystemKey: 'f'.repeat(64), budget, root: evidence, producerBuildSha: 'a'.repeat(40), measure: async paths => {
+        roots.push(paths[0]!); time += 16000; throw new Error('injected failure');
+      } });
+    expect(roots).toHaveLength(2);
+    expect(budget.walksLeft).toBe(0);
+    expect(result.selection).toMatchObject({ attempted: 2, remaining: 7 });
+    const measureShard = vi.fn();
+    const coverage = await reconcileCensusFailures('/disk', failed(9), {
+      budget, inspectPath: async path => path.endsWith('/gone') ? null : { dev: 1, ino: 2, directory: true }, measureShard,
+    });
+    expect(coverage.status).toBe('unbounded');
+    expect(measureShard).not.toHaveBeenCalled();
+  });
+
+  it.each([7, 8, 9, 201])('retains pending order across arrivals, removals and %i original candidates', async count => {
+    for (const reverse of [false, true]) {
+      let selection: CensusEndpointSelection | undefined, pending: string[] | undefined;
+      const original = failed(count, reverse), visited = new Set<string>(), arrivals: typeof original.summary.consumers = [];
+      for (let pass = 0; pass <= Math.ceil(count / 8); pass++) {
+        if (pass) arrivals.push(...Array.from({ length: 8 }, (_, i) => ({ consumer: `/disk/c0007${'z'.repeat(pass)}-${i}`,
+          kind: 'dir' as const, depth: 1, bytes: 10 })));
+        const du = { ...original, summary: { ...original.summary, consumers: [...original.summary.consumers, ...arrivals] } };
+        // A vanished pending identity is omitted from the new observed source,
+        // without becoming a zero-byte endpoint or blocking surviving work.
+        if (pass) du.summary.consumers = du.summary.consumers.filter(row => row.consumer !== '/disk/c0001');
+        const result = await collectCensusEndpoints(du, { runId: randomUUID(), host: 'producer-test', device,
+          filesystemKey: 'f'.repeat(64), producerBuildSha: 'a'.repeat(40), previousSelection: selection, previousPending: pending,
+          budget: censusFollowupBudget(() => 0), root: evidence, measure: async roots => { visited.add(roots[0]!); throw new Error('controlled unknown'); } });
+        const source = await readCensusEndpointEnvelope(result.note);
+        if (source.status !== 'verified') throw new Error(source.reason);
+        pending = source.pendingConsumers; selection = source.envelope.selection;
+        expect(selection?.pending).toBe(pending?.length);
+        expect(new Set(pending).size).toBe(pending?.length);
+        expect(pending).not.toContain('/disk/c0001');
+        expect(source.rows).toHaveLength(count - (pass ? 1 : 0) + arrivals.length);
+      }
+      for (const row of original.summary.consumers) if (row.consumer !== '/disk/c0001') expect(visited.has(row.consumer), row.consumer).toBe(true);
+    }
+  });
+
+  it('keeps the 7/8/9 launch boundary and deadline through fresh Node processes', () => {
+    const script = join(evidence, 'budget-restart.mts'), dir = join(evidence, 'budget-restart');
+    writeFileSync(script, `import { openCensusFollowupBudget } from ${JSON.stringify(new URL('./disk-consumer-census.ts', import.meta.url).href)};
+const [dir, attempts, now] = JSON.parse(process.argv[2]);
+const budget = await openCensusFollowupBudget(dir, () => now);
+let reserved = 0; for (let i = 0; i < attempts; i++) if (await budget.reserve()) reserved++;
+console.log(JSON.stringify({ reserved, deadline: budget.deadline, remaining: budget.walksLeft }));`);
+    const run = (attempts: number, now: number) => JSON.parse(execFileSync(process.execPath,
+      ['--import', 'tsx/esm', script, JSON.stringify([dir, attempts, now])], { encoding: 'utf8' }));
+    expect(run(7, 0)).toEqual({ reserved: 7, deadline: 30000, remaining: 1 });
+    expect(run(1, 1)).toEqual({ reserved: 1, deadline: 30000, remaining: 0 });
+    expect(run(1, 2)).toEqual({ reserved: 0, deadline: 30000, remaining: 0 });
+    expect(run(1, 30000)).toEqual({ reserved: 0, deadline: 30000, remaining: 0 });
+  }, 120_000);
+
+  it('recovers pending selection in a fresh process before considering newly arrived paths', () => {
+    const script = join(evidence, 'selection-restart.mts');
+    writeFileSync(script, `import { collectCensusEndpoints, censusFollowupBudget } from ${JSON.stringify(new URL('./disk-consumer-census.ts', import.meta.url).href)};
+import { readCensusEndpointEnvelope } from ${JSON.stringify(new URL('./disk-census-detached-walk.ts', import.meta.url).href)};
+import { randomUUID } from 'node:crypto';
+const [du, device, root, note] = JSON.parse(process.argv[2]);
+const prior = await readCensusEndpointEnvelope(note), measured = [];
+const result = await collectCensusEndpoints(du, { runId: randomUUID(), host: 'producer-test', device, root,
+  filesystemKey: 'f'.repeat(64), producerBuildSha: 'a'.repeat(40), budget: censusFollowupBudget(() => 0),
+  previousSelection: prior.status === 'verified' ? prior.envelope.selection : undefined,
+  previousPending: prior.status === 'verified' ? prior.pendingConsumers : undefined,
+  measure: async paths => { measured.push(paths[0]); throw new Error('controlled unknown'); } });
+console.log(JSON.stringify({ note: result.note, measured }));`);
+    const run = (du: DuRun, note: string | null) => JSON.parse(execFileSync(process.execPath,
+      ['--import', 'tsx/esm', script, JSON.stringify([du, device, evidence, note])], { encoding: 'utf8' })) as { note: string; measured: string[] };
+    const du = failed(9), first = run(du, null);
+    expect(first.measured).toHaveLength(8);
+    du.summary.consumers.push(...Array.from({ length: 8 }, (_, i) => ({ consumer: `/disk/c0007z-${i}`, kind: 'dir' as const, depth: 1, bytes: 10 })));
+    const second = run(du, first.note);
+    expect(second.measured[0]).toBe('/disk/c0008');
+    const third = run(du, second.note);
+    const visited = new Set([...first.measured, ...second.measured, ...third.measured]);
+    for (const row of du.summary.consumers) expect(visited.has(row.consumer), row.consumer).toBe(true);
+  }, 120_000);
+
+  it.each([7, 8, 9])('reserves at most eight launches across %i independent budget reopenings', async attempts => {
+    const path = join(evidence, 'persistent-budget');
+    let reserved = 0;
+    for (let i = 0; i < attempts; i++) {
+      const reopened = await openCensusFollowupBudget(path, () => i);
+      expect(reopened.deadline).toBe(30000);
+      if (await reopened.reserve!()) reserved++;
+    }
+    expect(reserved).toBe(Math.min(attempts, 8));
+    const expired = await openCensusFollowupBudget(path, () => 30000);
+    expect(await expired.reserve!()).toBe(false);
+    expect(expired.deadline).toBe(30000);
+  });
+
+  it('stores large complete failure scopes outside the bounded embedded envelope', async () => {
+    const du = failed(0);
+    du.diagnostics!.missingPaths = Array.from({ length: 32 }, (_, i) => `/disk/${String(i).padStart(4, '0')}/${'x'.repeat(4000)}`);
+    du.diagnostics!.lines = 32;
+    const result = await collectCensusEndpoints(du, { runId: randomUUID(), host: 'producer-test', device,
+      filesystemKey: 'f'.repeat(64), budget: censusFollowupBudget(() => 0), root: evidence, producerBuildSha: 'a'.repeat(40) });
+    expect(Buffer.byteLength(result.note)).toBeLessThanOrEqual(65536);
+    const recovered = await readCensusEndpointEnvelope(result.note);
+    expect(recovered.status).toBe('verified');
+    if (recovered.status === 'verified') expect(recovered.failurePaths).toEqual([...du.diagnostics!.missingPaths].sort());
+    du.diagnostics!.overflow = true;
+    const unknown = await collectCensusEndpoints(du, { runId: randomUUID(), host: 'producer-test', device,
+      filesystemKey: 'f'.repeat(64), budget: censusFollowupBudget(() => 0), root: evidence, producerBuildSha: 'a'.repeat(40) });
+    expect(unknown.selection?.failureScope).toMatchObject({ status: 'unknown', total: 0 });
+  });
+});
 
 describe('bounded failed disk census coverage', () => {
   const failed = (): DuRun => ({ summary: { rootBytes: 100, consumers: [

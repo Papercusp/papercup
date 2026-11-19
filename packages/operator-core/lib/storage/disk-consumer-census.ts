@@ -34,6 +34,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import type { CensusEndpointCandidate, CensusEndpointReceipt, CensusEndpointSelection, DetachedWalkOptions, DetachedUsageRun } from './disk-census-detached-walk';
 import { alarmWatchedPaths } from './disk-space-alarm';
 import { getBuildInfo } from '../build-info';
 import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from '../dbos/routine-tick-overlap-guard';
@@ -415,6 +416,52 @@ export interface CensusFailureCoverage {
 }
 
 type CoveragePath = { dev: number; ino: number; directory: boolean };
+/** One follow-up budget shared by failure bounds and independent endpoints. It
+ * bounds work, never the saved candidate population or its UNKNOWN dispositions. */
+export interface CensusFollowupBudget { deadline: number; walksLeft: number; now: () => number; reserve?: () => Promise<boolean>; }
+export function censusFollowupBudget(now: () => number = Date.now): CensusFollowupBudget {
+  return { deadline: now() + 30_000, walksLeft: 8, now };
+}
+const followupStateSchema = z.object({ version: z.literal(1), deadline: z.number().int().nonnegative().safe(),
+  walksLeft: z.number().int().min(0).max(8) }).strict();
+/** Reuse the existing walk directory and filesystem mutex. Persist reservations
+ * BEFORE a launch: a crash can reduce this pass's yield, never replenish its work
+ * allowance or extend its deadline. The next scheduled census has a new run id. */
+export async function openCensusFollowupBudget(dir: string, now: () => number = Date.now): Promise<CensusFollowupBudget> {
+  const { withFsMutex } = await import('../../../../scripts/lib/fs-mutex.mjs');
+  const path = join(dir, 'followup-budget.json');
+  const mutex = `census-followups-${createHash('sha256').update(resolve(dir)).digest('hex')}`;
+  const write = async (state: z.infer<typeof followupStateSchema>) => {
+    const temporary = join(dir, `followup-budget-${randomUUID()}.tmp`);
+    const fd = await fsp.open(temporary, 'wx', 0o600);
+    try { await fd.writeFile(JSON.stringify(state)); await fd.sync(); } finally { await fd.close(); }
+    await fsp.rename(temporary, path);
+    const directory = await fsp.open(dir, 'r');
+    try { await directory.sync(); } finally { await directory.close(); }
+  };
+  const initial = await withFsMutex(mutex, async () => {
+    await fsp.mkdir(dir, { recursive: true });
+    try { return followupStateSchema.parse(JSON.parse(await fsp.readFile(path, 'utf8'))); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const fresh = { version: 1 as const, deadline: now() + 30_000, walksLeft: 8 };
+      await write(fresh); return fresh;
+    }
+  });
+  const budget: CensusFollowupBudget = { ...initial, now };
+  budget.reserve = () => withFsMutex(mutex, async () => {
+    const state = followupStateSchema.parse(JSON.parse(await fsp.readFile(path, 'utf8')));
+    budget.deadline = state.deadline; budget.walksLeft = state.walksLeft;
+    if (now() >= state.deadline || state.walksLeft === 0) return false;
+    state.walksLeft--; await write(state); budget.walksLeft = state.walksLeft; return true;
+  });
+  return budget;
+}
+async function reserveCensusFollowup(budget: CensusFollowupBudget): Promise<boolean> {
+  if (budget.reserve) return budget.reserve();
+  if (budget.walksLeft <= 0 || budget.now() >= budget.deadline) return false;
+  budget.walksLeft--; return true;
+}
 const inspectCoveragePath = async (path: string): Promise<CoveragePath | null> => {
   try {
     const stat = await fsp.lstat(path);
@@ -441,6 +488,7 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
   now?: () => number;
   inspectPath?: (path: string) => Promise<CoveragePath | null>;
   measureShard?: typeof runDuTree;
+  budget?: CensusFollowupBudget;
 } = {}): Promise<CensusFailureCoverage> {
   const shards: CensusFailureCoverage['shards'] = [];
   let vanishedPaths = 0;
@@ -463,8 +511,8 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
       ? `${diagnostics.lines} diagnostic line(s) for ${diagnostics.missingPaths.length} missing path(s)` : null,
   ].filter((gap): gap is string => gap !== null);
   if (!diagnostics || diagnosticGaps.length) return unknown(`unresolved or incomplete diagnostics: ${diagnosticGaps.join(', ')}`);
-  const now = opts.now ?? Date.now;
-  const deadline = now() + Math.min(opts.timeoutMs ?? 30_000, 30_000);
+  const now = opts.budget?.now ?? opts.now ?? Date.now;
+  const deadline = Math.min(opts.budget?.deadline ?? Infinity, now() + Math.min(opts.timeoutMs ?? 30_000, 30_000));
   const inspect = opts.inspectPath ?? inspectCoveragePath;
   const within = (path: string, parent: string) => path === parent || path.startsWith(parent === '/' ? '/' : parent + '/');
   const selected = new Set<string>();
@@ -489,11 +537,14 @@ export async function reconcileCensusFailures(root: string, du: DuRun, opts: {
     const paths = [...selected].filter(path => ![...selected].some(other => other !== path && within(path, other)));
     if (paths.length > 8) return unknown(`more than eight affected shards: ${paths.length} disjoint shards`);
     for (const path of paths) {
-      const remaining = deadline - now();
+      let remaining = deadline - now();
       if (remaining <= 0) return unknown('reconciliation deadline');
       const before = await inspect(path);
       if (!before?.directory || before.dev !== rootIdentity.dev) return unknown('parent shard disappeared or crossed a device');
       const walkStarted = now();
+      if (opts.budget && !await reserveCensusFollowup(opts.budget)) return unknown('shared eight-walk follow-up budget exhausted; retry on the next census');
+      remaining = deadline - now();
+      if (remaining <= 0) return unknown('reconciliation deadline');
       const measured = await (opts.measureShard ?? runDuTree)(path, { sudo: opts.sudo,
         timeoutMs: remaining, maxDepth: 0, floorBytes: Infinity, countLinks: true });
       const after = await inspect(path);
@@ -1275,6 +1326,11 @@ export interface CensusDeps {
   runDu?: typeof runDuTree;
   reconcileFailures?: typeof reconcileCensusFailures;
   inspectFilesystem?: typeof inspectCensusFilesystem;
+  /** Independent singleton collector; default uses the restart-recoverable worker. */
+  measureEndpoint?: (roots: readonly string[], opts: DetachedWalkOptions) => Promise<DetachedUsageRun>;
+  endpointRoot?: string;
+  followupNow?: () => number;
+  producerBuildSha?: string | null;
   measurePostgres?: (sql: CensusSql) => Promise<ApiSizedStore | null>;
   measureDocker?: () => Promise<ApiSizedStore | null>;
   /** sudo binary for a privileged walk, or null for unprivileged; probed once per pass. */
@@ -1341,6 +1397,8 @@ export interface CensusPass {
   stores: Array<ApiSizedStore | null>;
   /** sudo binary for a privileged walk, or null for unprivileged. */
   sudo: string | null;
+  /** Recorded by the existing durable prepare step, shared by its retried device steps. */
+  runIds?: Record<string, string>;
 }
 
 export type CensusDeviceOutcome =
@@ -1357,7 +1415,8 @@ export async function prepareCensusPass(deps: CensusDeps = {}): Promise<{ skippe
     (deps.measureDocker ?? measureDocker)().catch(() => null),
   ]);
   const sudo = await (deps.resolveSudo ?? resolveCensusSudo)().catch(() => null);
-  return { host: deps.host ?? hostname(), devices, stores, sudo };
+  return { host: deps.host ?? hostname(), devices, stores, sudo,
+    runIds: Object.fromEntries(devices.map(device => [device.device, randomUUID()])) };
 }
 
 /** One census pass over every watched device, then the 30-day prune. Never throws per device. */
@@ -1401,6 +1460,20 @@ export async function censusOneDevice(
   const startedAt = now();
   try {
     const sql = deps.sql ?? (await defaultSql());
+    const runId = pass.runIds?.[resolved.device] ?? randomUUID();
+    if (pass.runIds?.[resolved.device]) {
+      const saved = await sql<{ run_id: string; complete: boolean; used_bytes: string; attributed_bytes: string;
+        started_at: Date; finished_at: Date; consumers: string }>`SELECT r.run_id, r.complete, r.used_bytes, r.attributed_bytes,
+        r.started_at, r.finished_at, (SELECT count(*)::text FROM harness_shared.disk_census_consumers c WHERE c.run_id=r.run_id) AS consumers
+        FROM harness_shared.disk_census_runs r WHERE r.run_id=${runId}::uuid AND r.host=${host} AND r.device=${resolved.device}`;
+      if (saved[0]) {
+        const r = saved[0];
+        return { run: { runId, device: resolved.device, complete: r.complete, consumers: Number(r.consumers),
+          usedBytes: Number(r.used_bytes), attributedBytes: Number(r.attributed_bytes),
+          unattributedBytes: Math.max(0, Number(r.used_bytes) - Number(r.attributed_bytes)),
+          durationMs: new Date(r.finished_at).getTime() - new Date(r.started_at).getTime() } };
+      }
+    }
     // Devices are resolved once per pass but walked one after another (a `/` walk takes
     // ~40 min), so the resolved used bytes are stale by the time a later device is walked.
     // Re-sample statfs around this walk and reconcile against the midpoint.
@@ -1409,8 +1482,30 @@ export async function censusOneDevice(
     const before = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
     const walkStarted = Date.now();
     const du = await (deps.runDu ?? runDuTree)(resolved.device, { floorBytes, maxDepth, sudo });
+    const detached = await import('./disk-census-detached-walk');
+    const endpointDir = join(deps.endpointRoot ?? detached.censusWalkRoot(), runId, 'endpoints');
+    const followups = await openCensusFollowupBudget(endpointDir, deps.followupNow);
+    const previous = await sql<{ note: string | null }>`SELECT note FROM harness_shared.disk_census_runs
+      WHERE host=${host} AND device=${resolved.device} AND finished_at IS NOT NULL
+      ORDER BY finished_at DESC, run_id DESC LIMIT 1`;
+    const recovered = await detached.readCensusEndpointEnvelope(previous[0]?.note ?? null);
+    const filesystemKey = identityBefore ? createHash('sha256').update(JSON.stringify(identityBefore)).digest('hex') : null;
+    const previousSelection = recovered.status === 'verified' && recovered.envelope.selection?.filesystemKey === filesystemKey
+      ? recovered.envelope.selection : undefined;
+    const priority = previousSelection?.nextPriority ?? 'endpoints';
+    let endpointPopulation: Awaited<ReturnType<typeof collectCensusEndpoints>> | undefined;
+    const collect = async () => { endpointPopulation = await collectCensusEndpoints(du, {
+      runId, host, device: resolved, filesystemKey, previousSelection, budget: followups,
+      ...(previousSelection && recovered.status === 'verified' ? { previousPending: recovered.pendingConsumers } : {}),
+      producerBuildSha: deps.producerBuildSha === undefined ? getBuildInfo().sha : deps.producerBuildSha,
+      ...(deps.measureEndpoint ? { measure: deps.measureEndpoint } : {}), root: deps.endpointRoot,
+    }); };
+    // Alternate who gets first use of the same budget. A busy endpoint population
+    // cannot starve failure bounds, nor can eight failing shards starve endpoints.
+    if (priority === 'endpoints') await collect();
     const failureCoverage = du.exitCode === 0 ? null
-      : await (deps.reconcileFailures ?? reconcileCensusFailures)(resolved.device, du, { sudo });
+      : await (deps.reconcileFailures ?? reconcileCensusFailures)(resolved.device, du, { sudo, budget: followups });
+    if (!endpointPopulation) await collect();
     const walkMs = Date.now() - walkStarted;
     const after = statDevice ? await statDevice(resolved.device).catch(() => null) : null;
     const { device, note: usageNote } = reconcileWalkUsage(resolved, before, after);
@@ -1442,6 +1537,7 @@ export async function censusOneDevice(
       censusPhaseNote(walkMs, attributionMs, du.summary.ownFiles.length),
       du.walkNote ?? null,
       failureCoverage ? FAILURE_COVERAGE_PREFIX + encodeURIComponent(JSON.stringify(failureCoverage)) : null,
+      endpointPopulation!.note,
       ...ownFilesNotes,
       usageNote,
       stderrNote,
@@ -1458,7 +1554,6 @@ export async function censusOneDevice(
         ? `attributed exceeds used by ${((attributedBytes - device.usedBytes) / 1024 ** 3).toFixed(1)} GiB: shared (reflinked) extents are counted per file`
         : null,
     ].filter(Boolean);
-    const runId = randomUUID();
     await writeCensusRun(sql, {
       runId,
       host,
@@ -1469,6 +1564,7 @@ export async function censusOneDevice(
       complete,
       note: notes.length ? notes.join('; ') : null,
       consumers,
+      ...(deps.producerBuildSha !== undefined ? { producerBuildSha: deps.producerBuildSha } : {}),
       filesystemIdentity: identityBefore && JSON.stringify(identityBefore) === JSON.stringify(identityAfter) ? identityBefore : null,
     });
     return {
@@ -1486,6 +1582,80 @@ export async function censusOneDevice(
   } catch (err) {
     return { failure: { device: resolved.device, error: (err as Error)?.message ?? String(err) } };
   }
+}
+
+/** Record every observed directory, including deferred/failed observations. Only
+ * the singleton worker can certify an endpoint; global du bytes never do. The
+ * sealed population carries the rotating cursor across processes and restarts. */
+export async function collectCensusEndpoints(du: DuRun, opts: {
+  runId: string; host: string; device: CensusDevice; filesystemKey: string | null;
+  previousSelection?: CensusEndpointSelection; budget: CensusFollowupBudget; producerBuildSha: string | null;
+  previousPending?: readonly string[];
+  measure?: (roots: readonly string[], options: DetachedWalkOptions) => Promise<DetachedUsageRun>; root?: string;
+}): Promise<{ note: string; candidates: CensusEndpointCandidate[]; selection?: CensusEndpointSelection }> {
+  const { censusWalkRoot, runDetachedDuUsage, writeCensusEndpointEnvelope, censusEndpointEnvelopeNote } = await import('./disk-census-detached-walk');
+  const within = (path: string) => path !== opts.device.device && path.startsWith(opts.device.device === '/' ? '/' : opts.device.device + '/');
+  const paths = [...new Set(du.summary.consumers.filter(row => row.kind === 'dir').map(row => row.consumer))].sort();
+  const candidates: CensusEndpointCandidate[] = paths.map(consumer => ({ consumer,
+    endpoint: { status: 'unknown', reason: 'not measured in this pass; follow the persisted selection on the next census' } }));
+  const eligible = candidates.filter(row => resolve(row.consumer) === row.consumer && within(row.consumer));
+  const after = opts.previousSelection?.afterConsumer;
+  const rotated = [...eligible.filter(row => !after || row.consumer > after), ...eligible.filter(row => after && row.consumer <= after)];
+  const byPath = new Map(eligible.map(row => [row.consumer, row]));
+  // Existing pending identities precede arrivals. A surviving late consumer
+  // cannot be displaced forever by paths inserted ahead of the rotating cursor.
+  const pending = opts.previousPending?.filter(path => byPath.has(path)) ?? [];
+  const pendingSet = new Set(pending);
+  const ordered = [...pending.map(path => byPath.get(path)!), ...rotated.filter(row => !pendingSet.has(row.consumer))];
+  const remainingPaths = new Set(ordered.map(row => row.consumer));
+  let attempted = 0, afterConsumer = after ?? null;
+  const parent = join(opts.root ?? censusWalkRoot(), opts.runId, 'endpoints');
+  for (const candidate of ordered) {
+    let remaining = opts.budget.deadline - opts.budget.now();
+    if (opts.budget.walksLeft <= 0 || remaining <= 0) break;
+    if (!opts.filesystemKey || !opts.producerBuildSha || !/^[a-f0-9]{40}$/.test(opts.producerBuildSha)) {
+      candidate.endpoint = { status: 'unknown', reason: 'producer filesystem/build identity unavailable; request a new census' };
+      continue;
+    }
+    if (!await reserveCensusFollowup(opts.budget)) break;
+    remaining = opts.budget.deadline - opts.budget.now();
+    if (remaining <= 0) break;
+    attempted++; afterConsumer = candidate.consumer;
+    remainingPaths.delete(candidate.consumer);
+    try {
+      const measured = await (opts.measure ?? runDetachedDuUsage)([candidate.consumer], {
+        dir: join(parent, createHash('sha256').update(candidate.consumer).digest('hex')),
+        timeoutMs: remaining, pollMs: 25, graceMs: 0, maxAttempts: 1,
+        endpoint: { parentRunId: opts.runId, host: opts.host, device: opts.device.device,
+          majorMinor: opts.device.majorMinor, producerBuildSha: opts.producerBuildSha },
+      });
+      candidate.endpoint = measured.complete && measured.endpoint?.status === 'certified'
+        && measured.bytes?.get(candidate.consumer) === measured.endpoint.receipt.rootBytes
+        && opts.budget.now() <= opts.budget.deadline ? measured.endpoint
+        : { status: 'unknown', reason: measured.error ?? 'singleton endpoint did not certify within the shared budget; retry on the next census' };
+    } catch (error) {
+      candidate.endpoint = { status: 'unknown', reason: `singleton endpoint failed: ${error instanceof Error ? error.message : String(error)}; retry on the next census` };
+    }
+  }
+  const diagnostics = du.diagnostics;
+  const known = du.exitCode === 0 && !du.error && !du.timedOut && du.deniedCount === 0 && diagnostics
+    && diagnostics.lines === 0 && !diagnostics.overflow && diagnostics.other === 0
+    || du.exitCode === 1 && !du.error && !du.timedOut && du.deniedCount === 0 && diagnostics
+    && !diagnostics.overflow && diagnostics.other === 0 && diagnostics.lines > 0
+    && diagnostics.lines === diagnostics.missingPaths.length && diagnostics.missingPaths.every(path => resolve(path) === path && within(path));
+  const selection: CensusEndpointSelection | undefined = opts.filesystemKey ? {
+    version: 1, filesystemKey: opts.filesystemKey, afterConsumer,
+    nextPriority: opts.previousSelection?.nextPriority === 'failure-shards' ? 'endpoints' : 'failure-shards',
+    attempted, remaining: candidates.length - attempted,
+    pending: remainingPaths.size,
+    failureScope: { status: known ? 'known' : 'unknown', total: known ? new Set(diagnostics!.missingPaths).size : 0,
+      reason: known ? 'complete structured diagnostic classification; scoped comparisons must test path-component overlap'
+        : 'unclassified, denied, overflowed or failed whole-device diagnostics; scope remains UNKNOWN' },
+  } : undefined;
+  const envelope = await writeCensusEndpointEnvelope(candidates, { dir: parent, parentRunId: opts.runId,
+    ...(selection ? { pendingConsumers: ordered.filter(row => remainingPaths.has(row.consumer)).map(row => row.consumer) } : {}),
+    failurePaths: known ? [...new Set(diagnostics!.missingPaths)].sort() : [], ...(selection ? { selection } : {}) });
+  return { note: censusEndpointEnvelopeNote(envelope), candidates, ...(selection ? { selection } : {}) };
 }
 
 export async function writeCensusRun(
@@ -1562,6 +1732,21 @@ export type CensusCoverageIssue =
 export type CensusBaselineStatus =
   | 'comparable' | 'latest-incomplete' | 'unavailable' | 'incomplete-candidates' | 'visibility-mismatch';
 
+export type CensusScopedComparison = {
+  status: 'qualified' | 'unknown' | 'rejected'; reason: string;
+  /** Every baseline considered before qualification, including rejected sources. */
+  candidates: Array<{ runId: string; status: 'qualified' | 'unknown' | 'rejected'; reason: string }>;
+  latest?: CensusEndpointCandidate;
+  baseline?: CensusEndpointCandidate;
+  baselineRunId?: string;
+  elapsedMs?: number;
+  deltaBytes?: number;
+  /** Singleton accounting never establishes unique device allocation or a snapshot. */
+  additive: false; snapshot: false; physicalProjection: false;
+  recovery: string;
+};
+export interface CensusConsumerView extends CensusGrowthRow { scopedComparison?: CensusScopedComparison }
+
 export interface CensusDeviceView {
   /** Independent of consumer qualification and physical-capacity projections. */
   incompleteEpisode?: CensusIncompleteEpisode;
@@ -1597,7 +1782,8 @@ export interface CensusDeviceView {
   /** Same visible filesystem, from the comparable baseline run (not a sum of directories). */
   baselineAvailBytes?: number | null;
   baselineSizeBytes?: number | null;
-  consumers?: CensusGrowthRow[];
+  consumers?: CensusConsumerView[];
+  scopedComparisons?: { total: number; qualified: number; unknown: number; rejected: number; recovery: string };
   consumersTotal?: number;
   truncatedByLimit?: boolean;
   consumersReturned?: number;
@@ -1619,6 +1805,7 @@ interface RunRow {
   complete: boolean;
   note: string | null;
   finished_at_exact?: string;
+  started_at_exact?: string;
 }
 
 export interface CensusIncompleteRunRef {
@@ -1769,11 +1956,56 @@ interface BaselineRow {
   avail_bytes: string | number;
   size_bytes: string | number;
   distance: string;
+  complete: boolean;
+  started_at_exact: string;
+}
+
+async function recoverCensusEndpoints(note: string | null, runId: string) {
+  const { readCensusEndpointEnvelope, recoverCensusEndpoint } = await import('./disk-census-detached-walk');
+  const population = await readCensusEndpointEnvelope(note);
+  if (population.status !== 'verified') return { status: 'unknown' as const, reason: population.reason };
+  if (population.envelope.parentRunId !== runId) return { status: 'unknown' as const, reason: 'endpoint population belongs to another run' };
+  const candidates = new Map<string, CensusEndpointCandidate>();
+  // Read every sealed row, including records omitted from the bounded note.
+  for (const row of population.rows) candidates.set(row.candidate.consumer, {
+    consumer: row.candidate.consumer, endpoint: await recoverCensusEndpoint(row.candidate),
+  });
+  return { status: 'verified' as const, candidates, selection: population.envelope.selection,
+    failurePaths: population.failurePaths ?? [], source: population.envelope.source };
+}
+
+/** Both arguments have already passed the sealed producer/raw-source decoder.
+ * This predicate cannot turn a clean-looking global du row into an endpoint. */
+export function qualifyCensusEndpointPair(latest: CensusEndpointReceipt, baseline: CensusEndpointReceipt,
+  scope: { host: string; device: string; latestRunId: string; baselineRunId: string;
+    latestStartedAt: number; latestFinishedAt: number; baselineStartedAt: number; baselineFinishedAt: number;
+    latestFilesystemKey: string; baselineFilesystemKey: string;
+    latestFailurePaths: readonly string[]; baselineFailurePaths: readonly string[] }): string | null {
+  const a = latest, b = baseline;
+  if (a.request.parentRunId !== scope.latestRunId || b.request.parentRunId !== scope.baselineRunId
+    || a.request.host !== scope.host || b.request.host !== scope.host
+    || a.request.device !== scope.device || b.request.device !== scope.device || a.consumer !== b.consumer)
+    return 'host, device, run or canonical consumer identity mismatch';
+  if (scope.latestFilesystemKey !== scope.baselineFilesystemKey
+    || a.request.majorMinor !== b.request.majorMinor || a.request.producerBuildSha !== b.request.producerBuildSha
+    || JSON.stringify(a.context) !== JSON.stringify(b.context))
+    return 'filesystem, visibility, producer, root identity or accounting context mismatch';
+  const overlaps = (path: string) => path === a.consumer || path.startsWith(a.consumer + '/') || a.consumer.startsWith(path === '/' ? '/' : path + '/');
+  if ([...scope.latestFailurePaths, ...scope.baselineFailurePaths].some(overlaps)) return 'classified failure overlaps the consumer or an ancestor/descendant';
+  const elapsed = a.finishedAt - b.finishedAt;
+  if (!(elapsed >= 18 * 3600_000 && elapsed <= 30 * 3600_000)
+    || !(scope.latestFinishedAt - scope.baselineFinishedAt >= 18 * 3600_000
+      && scope.latestFinishedAt - scope.baselineFinishedAt <= 30 * 3600_000)
+    || !(b.finishedAt <= a.startedAt && scope.baselineFinishedAt <= a.startedAt)
+    || !(a.startedAt >= scope.latestStartedAt && a.finishedAt <= scope.latestFinishedAt)
+    || !(b.startedAt >= scope.baselineStartedAt && b.finishedAt <= scope.baselineFinishedAt))
+    return 'endpoint/run clock, overlap or inclusive 18–30h window mismatch';
+  return null;
 }
 
 /** Query work is bounded, never the set of baselines that may establish truth. */
 const BASELINE_PAGE_SIZE = 100;
-async function findCensusBaseline(sql: CensusSql, host: string, run: RunRow, complete: boolean) {
+async function findCensusBaseline(sql: CensusSql, host: string, run: RunRow, complete: boolean, consumers: CensusConsumer[]) {
   const finishedAt = new Date(run.finished_at);
   const target = new Date(finishedAt.getTime() - 24 * 3600_000);
   let afterDistance: string | null = null;
@@ -1782,12 +2014,23 @@ async function findCensusBaseline(sql: CensusSql, host: string, run: RunRow, com
   let readableCount = 0;
   let base: BaselineRow | undefined;
   const population = createHash('sha256');
+  const latestEndpoints = await recoverCensusEndpoints(run.note, run.run_id);
+  const scoped = new Map<string, CensusScopedComparison>();
+  for (const consumer of consumers) scoped.set(consumer.consumer, { status: 'unknown',
+    reason: latestEndpoints.status === 'unknown' ? latestEndpoints.reason
+      : latestEndpoints.candidates.get(consumer.consumer)?.endpoint.status !== 'certified'
+        ? 'latest consumer endpoint is missing or uncertified' : 'no qualified baseline endpoint in the retained window',
+    candidates: [], additive: false, snapshot: false, physicalProjection: false,
+    recovery: 'Follow the public census cursor to EOF; request a new census and retain both sealed endpoint sources. Rename/churn between traversals remains possible (no snapshot).',
+    ...(latestEndpoints.status === 'verified' && latestEndpoints.candidates.has(consumer.consumer)
+      ? { latest: latestEndpoints.candidates.get(consumer.consumer)! } : {}) });
   for (;;) {
     const page: BaselineRow[] = await sql<BaselineRow>`
-      SELECT run_id, finished_at, note, avail_bytes, size_bytes,
+      SELECT run_id, finished_at, started_at::text AS started_at_exact, complete, note, avail_bytes, size_bytes,
              abs(extract(epoch FROM (finished_at - ${target}::timestamptz)))::text AS distance
         FROM harness_shared.disk_census_runs
-       WHERE host = ${host} AND device = ${run.device} AND complete
+       WHERE host = ${host} AND device = ${run.device}
+         AND finished_at IS NOT NULL AND finished_at >= started_at
          AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
          AND (${afterDistance}::numeric IS NULL OR
            (abs(extract(epoch FROM (finished_at - ${target}::timestamptz))), run_id) >
@@ -1798,17 +2041,56 @@ async function findCensusBaseline(sql: CensusSql, host: string, run: RunRow, com
       // Include rejected rows too: a later insert or repair requires resync,
       // rather than changing the meaning of an already-issued continuation.
       population.update(JSON.stringify(candidate));
-      count++;
-      if (censusScanIssues(candidate.note).length) continue;
-      readableCount++;
-      if (complete && !base && censusVisibility(candidate.note) === censusVisibility(run.note)) base = candidate;
+      if (candidate.complete) {
+        count++;
+        if (!censusScanIssues(candidate.note).length) {
+          readableCount++;
+          if (complete && !base && censusVisibility(candidate.note) === censusVisibility(run.note)) base = candidate;
+        }
+      }
+      if (latestEndpoints.status !== 'verified' || ![...scoped.values()].some(row => row.status !== 'qualified' && row.latest?.endpoint.status === 'certified')) continue;
+      const before = await recoverCensusEndpoints(candidate.note, candidate.run_id);
+      for (const comparison of scoped.values()) {
+        if (comparison.status === 'qualified') continue;
+        const latest = comparison.latest;
+        if (latest?.endpoint.status !== 'certified') continue;
+        const baseline = latest && before.status === 'verified' ? before.candidates.get(latest.consumer) : undefined;
+        let reason = before.status === 'unknown' ? before.reason
+          : !baseline || baseline.endpoint.status !== 'certified'
+            ? `baseline consumer endpoint is missing or uncertified${baseline?.endpoint.status === 'unknown' ? ': ' + baseline.endpoint.reason : ''}`
+          : latestEndpoints.selection?.failureScope.status !== 'known' || before.selection?.failureScope.status !== 'known'
+            ? 'exhaustive classified failure scope unavailable at one or both endpoints' : null;
+        let status: 'unknown' | 'rejected' | 'qualified' = 'unknown';
+        if (!reason && latest?.endpoint.status === 'certified' && baseline?.endpoint.status === 'certified' && before.status === 'verified') {
+          reason = qualifyCensusEndpointPair(latest.endpoint.receipt, baseline.endpoint.receipt, {
+            host, device: run.device, latestRunId: run.run_id, baselineRunId: candidate.run_id,
+            latestStartedAt: Date.parse(run.started_at_exact ?? ''), latestFinishedAt: finishedAt.getTime(),
+            baselineStartedAt: Date.parse(candidate.started_at_exact), baselineFinishedAt: new Date(candidate.finished_at).getTime(),
+            latestFilesystemKey: latestEndpoints.selection!.filesystemKey, baselineFilesystemKey: before.selection!.filesystemKey,
+            latestFailurePaths: latestEndpoints.failurePaths, baselineFailurePaths: before.failurePaths });
+          status = reason ? 'rejected' : 'qualified';
+          if (!reason) Object.assign(comparison, { latest, baseline, baselineRunId: candidate.run_id,
+            elapsedMs: latest.endpoint.receipt.finishedAt - baseline.endpoint.receipt.finishedAt,
+            deltaBytes: latest.endpoint.receipt.rootBytes - baseline.endpoint.receipt.rootBytes });
+        }
+        comparison.reason = reason ?? 'independently completed singleton endpoints; non-additive usage observation';
+        comparison.candidates.push({ runId: candidate.run_id, status, reason: comparison.reason });
+        // A later rejection cannot resolve an earlier unreadable possibility.
+        // Qualification wins; otherwise any unknown candidate keeps the verdict
+        // UNKNOWN, independent of which rejection happened to sort last.
+        comparison.status = status === 'qualified' ? 'qualified'
+          : comparison.candidates.some(row => row.status === 'unknown') ? 'unknown' : 'rejected';
+        if (comparison.status === 'unknown' && status === 'rejected')
+          comparison.reason = 'No qualified pair; at least one retained candidate remains UNKNOWN. See complete candidate verdicts.';
+      }
     }
     if (page.length < BASELINE_PAGE_SIZE) break;
     const last = page[page.length - 1]!;
     afterDistance = last.distance;
     afterRun = last.run_id;
   }
-  return { base, count, readableCount, fingerprint: population.digest('hex') };
+  return { base, count, readableCount, scoped, fingerprint: population.update(JSON.stringify({
+    latestEndpoints, scoped: [...scoped] })).digest('hex') };
 }
 
 /** Each page observes one read-only snapshot; its cursor pins and verifies that source across calls. */
@@ -1853,14 +2135,14 @@ async function readCensusSnapshot(
     const coverageIssues = censusScanIssues(run.note);
     const complete = run.complete && coverageIssues.length === 0;
     if (!run.complete && coverageIssues.length === 0) coverageIssues.push('incomplete-run');
-    const search = await findCensusBaseline(sql, host, run, complete);
+    const consumers = await consumersOf(sql, run.run_id);
+    const search = await findCensusBaseline(sql, host, run, complete, consumers);
     const { base } = search;
     const baselineStatus: CensusBaselineStatus = !complete ? 'latest-incomplete'
       : base ? 'comparable'
       : search.count === 0 ? 'unavailable'
       : search.readableCount === 0 ? 'incomplete-candidates'
       : 'visibility-mismatch';
-    const consumers = await consumersOf(sql, run.run_id);
     const incompleteEpisode = await readCensusIncompleteEpisode(sql, host, run);
     const baselineConsumers = base ? await consumersOf(sql, base.run_id) : null;
     const fingerprint = createHash('sha256').update(JSON.stringify({ run, candidates: search.fingerprint,
@@ -1869,9 +2151,14 @@ async function readCensusSnapshot(
       throw new CensusReadRestartError('Pinned census source or baseline population changed; restart the read.');
     }
     // Stable identity tie-breaks must not depend on SQL insertion/traversal order.
-    const rows = joinCensusGrowth(consumers, baselineConsumers)
+    const rows: CensusConsumerView[] = joinCensusGrowth(consumers, baselineConsumers)
+      .map(row => ({ ...row, scopedComparison: search.scoped.get(row.consumer)! }))
       .sort((a, b) => a.consumer < b.consumer ? -1 : a.consumer > b.consumer ? 1 : 0);
-    const sorted = sortCensusRows(rows, orderBy);
+    const sorted = orderBy === 'growth' ? [...rows].sort((a, b) => {
+      const growth = (row: CensusConsumerView) => row.growth24hBytes ?? row.scopedComparison?.deltaBytes ?? null;
+      const left = growth(a), right = growth(b);
+      return left === null && right === null ? b.bytes - a.bytes : left === null ? 1 : right === null ? -1 : right - left;
+    }) : sortCensusRows(rows, orderBy) as CensusConsumerView[];
     const previous = cursor ? sorted.findIndex(row => row.consumer === cursor.after) : -1;
     if (cursor && previous < 0) throw new CensusReadRestartError('Pinned consumer identity is no longer present.');
     const start = previous + 1;
@@ -1909,6 +2196,11 @@ async function readCensusSnapshot(
       baselineAvailBytes: base ? Number(base.avail_bytes) : null,
       baselineSizeBytes: base ? Number(base.size_bytes) : null,
       consumers: page,
+      scopedComparisons: { total: rows.length,
+        qualified: rows.filter(row => row.scopedComparison?.status === 'qualified').length,
+        unknown: rows.filter(row => row.scopedComparison?.status === 'unknown').length,
+        rejected: rows.filter(row => row.scopedComparison?.status === 'rejected').length,
+        recovery: 'Counts cover the complete consumer population; follow nextConsumerCursor to recover its rows and endpoint verdicts.' },
       consumersTotal: sorted.length,
       consumersReturned: page.length,
       consumersPageStart: start,
