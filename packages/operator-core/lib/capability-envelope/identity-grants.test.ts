@@ -180,6 +180,37 @@ describe('D-009 layer contributions and restrictions', () => {
       .toMatchObject({ allowedTools: ['acme:contacts', 'acme:send'], failures: [] });
   });
 
+  it('projects bound tool grants with their own source and maximum, never action or resource grants', () => {
+    const input = stack([{ ...mail, ceiling: { tools: { allow: [] }, actions: { allow: ['*'] },
+      resources: { allow: ['*'] } } }, contacts]);
+    const result = resolveIdentityGrantEnvelope({ ...input, includeContributions: true });
+    if (!result.applied) throw new Error('expected declared grants');
+    expect(result.contributions).toEqual([
+      expect.objectContaining({ id: 'mail', revision: expect.any(String),
+        grants: { tools: { allow: ['acme:send'] } }, maximum: {
+          tools: { allow: [] }, actions: { allow: ['*'] }, resources: { allow: ['*'] },
+        } }),
+      expect.objectContaining({ id: 'contacts', grants: { tools: { allow: ['acme:contacts'] } },
+        maximum: contacts.ceiling }),
+    ]);
+    expect(result.allowedTools).toEqual(['acme:contacts']);
+    for (const contribution of result.contributions ?? []) {
+      const source = input.specification.inputs.find(entry => entry.kind === 'blueprint-layer' && entry.ref === contribution.id);
+      expect(contribution.revision).toBe(source?.kind === 'blueprint-layer' ? source.contentHash : undefined);
+    }
+    expect(resolveIdentityGrantEnvelope(input)).not.toHaveProperty('contributions');
+  });
+
+  it('does not turn an unpinned optional class or a failed binding into projected tool grants', () => {
+    const optional = fixture({ optional: [CLASS] }, []);
+    expect(resolveIdentityGrantEnvelope({ ...optional, includeContributions: true }))
+      .toMatchObject({ contributions: [{ grants: { tools: { allow: [] } } }] });
+    expect(resolveIdentityGrantEnvelope({ ...stack([mail, contacts]), bindings: [], includeContributions: true }))
+      .toMatchObject({ contributions: [], allowedTools: [], failures: [
+        { cause: 'provider-unbound', classRef: CLASS }, { cause: 'provider-unbound', classRef: CONTACTS },
+      ] });
+  });
+
   it('a layer cannot borrow another layers maximum for its own grant', () => {
     const restrictedMail = { ...mail, ceiling: { tools: { allow: [] } } };
     for (const layers of [[restrictedMail, contacts], [contacts, restrictedMail]]) {

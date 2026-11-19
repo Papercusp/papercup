@@ -102,6 +102,11 @@ describe('P-002 canonical identity permission sources', () => {
     if (result.status !== 'ok') throw new Error('sources not loaded');
     expect(result.policy).toEqual(f.policy);
     expect(result.policy).not.toBe(f.policy);
+    expect(result.permissionInputs.applied).toMatchObject({ status: 'unavailable',
+      missing: ['actions', 'resources'], declaration: 'present',
+      contributions: [{ id: 'grant-port', grants: { tools: { allow: ['mail:send'] } } }],
+    });
+    expect(result.permissionInputs.applied).not.toHaveProperty('rules');
     expect(await readIdentityPermissionSources({ ...value, expectedRevision: result.revision }, read)).toMatchObject({ status: 'ok', revision: result.revision });
   });
 
@@ -115,6 +120,30 @@ describe('P-002 canonical identity permission sources', () => {
       desired: [{ document: { grants: { optional: ['other.class@1.0.0'] } } }],
     } });
     expect(read).toHaveBeenCalledWith(expect.objectContaining({ role: 'judge', classRefs: [CLASS, 'other.class@1.0.0'] }));
+    if (result.status !== 'ok') throw new Error('sources not loaded');
+    expect(result.permissionInputs.applied.contributions[0].grants).toEqual({ tools: { allow: ['mail:send'] } });
+    expect(result.permissionInputs.desired.contributions[0].grants).toEqual({ tools: { allow: [] } });
+  });
+
+  it('keeps absent and explicitly empty declarations distinct while both lack scoped authority', async () => {
+    for (const grants of [undefined, { requires: [] }]) {
+      const f = fixture(grants);
+      // fixture() has a default grant; remove it through a genuinely grantless
+      // compiled source rather than mutating a signed/replayed artifact.
+      const artifact = grants === undefined ? compileAgentSpecification({
+        source: { id: 'no-grants', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+        prompt: { role: 'worker', text: 'No grant declaration.' },
+      }) : f.artifact;
+      const result = await readIdentityPermissionSources({ workspaceId: 'ws-a', harnessSlug: 'sales',
+        record: { ...f.record, specificationRevision: artifact.specificationRevision, specificationArtifact: artifact },
+        applied: { ...f.applied, specificationRevision: artifact.specificationRevision },
+      }, async () => f.policy);
+      if (result.status !== 'ok') throw new Error('sources not loaded');
+      expect(result.permissionInputs.applied).toMatchObject({ status: 'unavailable', missing: ['actions', 'resources'],
+        declaration: grants === undefined ? 'absent' : 'present',
+        contributions: grants === undefined ? [] : [{ grants: { tools: { allow: [] } } }],
+      });
+    }
   });
 
   it('keeps each layer maximum and stack restriction separate, including explicit empty grants', async () => {
@@ -147,6 +176,15 @@ describe('P-002 canonical identity permission sources', () => {
       expect(result.layers.applied.find(layer => layer.ref === 'own-maximum')?.document).toMatchObject(documents[0]);
       expect(result.layers.applied.find(layer => layer.ref === 'stack-restriction')?.document).toMatchObject(documents[1]);
       expect(result.layers.applied.find(layer => layer.ref === 'source-composition')?.document.grants).toBeUndefined();
+      expect(result.permissionInputs.applied).toMatchObject({ status: 'unavailable', declaration: 'present',
+        contributions: [
+          { id: 'own-maximum', grants: { tools: { allow: ['mail:send'] } }, maximum: { tools: { allow: [] } } },
+          { id: 'stack-restriction', grants: { tools: { allow: [] } } },
+        ],
+        restrictions: [{ id: 'stack-restriction', rules: documents[1].floors }],
+      });
+      expect(result.permissionInputs.applied.restrictions[0].revision).toBe(
+        result.layers.applied.find(layer => layer.ref === 'stack-restriction')?.contentHash);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

@@ -54,6 +54,7 @@ import { isHookReleasedOperationContinuationCall } from '../released-operation-c
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { identityWearerRole } from '../agent-identities/wearer-authority';
 import { narrowedLaunchSpecToAppliedPairSql } from './identity-receipt-narrowing';
+import type { IdentityAuthorityRestriction } from '../governance-policy/effective-authority';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -516,7 +517,26 @@ export async function readIdentityPermissionSources(
   })).digest('hex');
   if (expectedRevision !== undefined && revision !== expectedRevision)
     return { status: 'stale' as const, revision };
-  return { status: 'ok' as const, revision, role, applied, layers, policy };
+  const permissionInputs = (phase: 'applied' | 'desired') => {
+    const artifact = artifacts[phase];
+    const envelope = resolveIdentityGrantEnvelope({ specification: artifact,
+      appliedSpecificationRevision: artifact.specificationRevision, ...policy, includeContributions: true });
+    const restrictions: IdentityAuthorityRestriction[] = layers[phase].flatMap(layer => {
+      const document = BlueprintSourceDocumentSchema.parse(layer.document);
+      return layer.sourceKind === 'identity' && document.floors !== undefined
+        ? [{ id: layer.ref, revision: layer.contentHash, rules: document.floors }] : [];
+    });
+    // The existing binding registry grants tool reach only. Its class verbs,
+    // publisher maxima and whole-stack floors cannot authorize actual actions
+    // or resources. Keep that gap explicit even for an empty grant union.
+    return { status: 'unavailable' as const, missing: ['actions', 'resources'] as const,
+      reason: 'canonical positive scoped action/resource grants are unavailable',
+      declaration: envelope.applied ? 'present' as const : 'absent' as const,
+      contributions: envelope.applied ? envelope.contributions ?? [] : [], restrictions,
+      toolFailures: envelope.applied ? envelope.failures : [] };
+  };
+  return { status: 'ok' as const, revision, role, applied, layers, policy,
+    permissionInputs: { applied: permissionInputs('applied'), desired: permissionInputs('desired') } };
 }
 
 export interface IdentityPermissionSessionSource {

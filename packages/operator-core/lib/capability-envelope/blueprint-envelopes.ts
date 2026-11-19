@@ -23,6 +23,7 @@ import { matchesAny, PROTECTED_CAPABILITY_GLOBS, ROLE_ENVELOPES, type RoleEnvelo
 import { identityRefusalContract, type RefusalContract } from './identity-refusal-contract';
 import { GovernedRulesSchema } from '../governance-policy/category-rules';
 import { evaluateInheritedPolicy, type PolicyLayer } from '../governance-policy/inherited-policy';
+import type { IdentityAuthorityContribution } from '../governance-policy/effective-authority';
 
 interface CacheEntry {
   mtimeMs: number;
@@ -146,6 +147,9 @@ export type IdentityGrantEnvelope =
       policyRevision: string;
       allowedTools: readonly string[];
       failures: readonly IdentityGrantFailure[];
+      /** Opt-in source evidence, before maxima/floors. Tool grants only:
+       * missing action/resource grants never become wildcard authority. */
+      contributions?: readonly IdentityAuthorityContribution[];
     };
 
 /**
@@ -174,6 +178,8 @@ export function resolveIdentityGrantEnvelope(input: {
   /** Exact projected tool name -> required capabilities, read from the host. */
   tools: ReadonlyMap<string, readonly string[]>;
   protectedAdditions?: readonly string[];
+  /** Source projection for the canonical permission loader; not authorization. */
+  includeContributions?: boolean;
 }): IdentityGrantEnvelope {
   const { specification } = input;
   const layers = specification.inputs.filter(entry => entry.kind === 'blueprint-layer');
@@ -182,6 +188,7 @@ export function resolveIdentityGrantEnvelope(input: {
   }
   const failures: IdentityGrantFailure[] = [];
   const allowedTools = new Set<string>();
+  const sourceContributions: Array<{ source: IdentityAuthorityContribution; tools: Set<string> }> = [];
   const fail = (cause: IdentityGrantFailure['cause'], classRef: string | null, toolName?: string) => {
     // WI-10005197: the same lift condition the kernel verdict carries for this cause.
     failures.push({ code: 'capability_unsatisfied', cause, classRef,
@@ -194,6 +201,9 @@ export function resolveIdentityGrantEnvelope(input: {
     policyRevision: input.policyRevision,
     allowedTools: failures.length ? [] : [...allowedTools].sort(),
     failures,
+    ...(input.includeContributions ? { contributions: failures.length ? [] : sourceContributions.map(({ source, tools }) => ({
+      ...source, grants: { tools: { allow: [...tools].sort() } },
+    })) } : {}),
   });
   if (specification.specificationRevision !== input.appliedSpecificationRevision) {
     fail('stale-artifact', null);
@@ -203,7 +213,7 @@ export function resolveIdentityGrantEnvelope(input: {
     fail('policy-unavailable', null);
     return result();
   }
-  const contributions: Array<{ classes: Set<string>; maximum: PolicyLayer }> = [];
+  const contributions: Array<{ classes: Set<string>; maximum: PolicyLayer; tools: Set<string> }> = [];
   const restrictions: PolicyLayer[] = [];
   const required = new Set<string>();
   const classes = new Set<string>();
@@ -232,7 +242,10 @@ export function resolveIdentityGrantEnvelope(input: {
     const ownClasses = new Set([...(grants.requires ?? []), ...(grants.optional ?? [])]);
     for (const ref of grants.requires ?? []) required.add(ref);
     for (const ref of ownClasses) classes.add(ref);
-    contributions.push({ classes: ownClasses,
+    const tools = new Set<string>();
+    sourceContributions.push({ source: { id: layer.ref, revision: layer.contentHash,
+      grants: {}, maximum: maximum.data }, tools });
+    contributions.push({ classes: ownClasses, tools,
       maximum: { layerId: layer.ref, level: 'workspace', version: 1, rules: maximum.data } });
   }
   const pins = specification.inputs.filter((entry) => entry.kind === 'capability-provider');
@@ -266,6 +279,11 @@ export function resolveIdentityGrantEnvelope(input: {
     }
     const permitted: string[] = [];
     for (const toolName of classTools) {
+      // Preserve the binding's positive tool grant and its SAME source's
+      // maximum separately. Neither the maximum nor a sibling is a grant.
+      for (const layer of contributions) {
+        if (layer.classes.has(classRef)) layer.tools.add(toolName);
+      }
       const request = { tools: [toolName] };
       if (!contributions.some(layer => layer.classes.has(classRef) &&
           evaluateInheritedPolicy([layer.maximum], request).allow) ||
