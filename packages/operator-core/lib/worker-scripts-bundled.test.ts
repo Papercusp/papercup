@@ -34,6 +34,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { join, relative, resolve } from 'node:path';
@@ -62,8 +63,8 @@ const BUNDLERS: { label: string; path: string }[] = [
   },
 ];
 
-/** Worker entries whose source is TypeScript and whose bundlers must run an
- * esbuild pass instead of copying a sibling `.script.mjs` asset. */
+/** Worker entries whose bundlers must compile their import graph instead of
+ * copying a sibling `.script.mjs` asset. */
 const ESBUILD_WORKERS: { source: string; output: string }[] = [
   {
     source: 'packages/operator-core/lib/event-loop-sentinel.worker.ts',
@@ -100,6 +101,11 @@ const ESBUILD_WORKERS: { source: string; output: string }[] = [
     // WI-6554700010030353: the resident full-window co-change index, one child per repository.
     source: 'packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts',
     output: 'warm-cochange-index.worker.mjs',
+  },
+  {
+    // The independent census imports TS; copying its .mjs launcher is insufficient.
+    source: 'libs/test-config/src/verifier-source-worker.mjs',
+    output: 'verifier-source-worker.mjs',
   },
   {
     source: 'packages/operator-core/lib/agent-tools/testing/testing-core.worker.ts',
@@ -366,6 +372,52 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(result.status, result.stdout + result.stderr).toBe(0);
   });
 
+  it('verifies independent source through the bundled reader and its actual sibling worker', () => {
+    const sourceRoot = join(output, 'verifier-archive');
+    mkdirSync(sourceRoot);
+    const source = 'export const value = 1;\n';
+    writeFileSync(join(sourceRoot, 'source.ts'), source);
+    const file = { path: 'source.ts', kind: 'file', executable: false,
+      sha256: createHash('sha256').update(source).digest('hex') };
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'f'.repeat(40),
+      files: [file], testedInputs: [{ path: file.path, sha256: file.sha256 }] };
+    const receiptPath = join(output, 'independent-verifier-receipt.json');
+    writeFileSync(receiptPath, JSON.stringify(receipt));
+    writeFileSync(join(sourceRoot, '.verifier-source.json'), JSON.stringify(receipt));
+    const entry = join(output, 'verifier-parent.ts');
+    const parent = join(output, 'verifier-parent.mjs');
+    writeFileSync(entry, 'export { readVerifierSourceReceipt } from '
+      + JSON.stringify(join(REPO_ROOT, 'libs/test-config/src/verifier-source.ts')) + ';\n');
+    const built = budgetedBash(['-c',
+      'set -euo pipefail; source "$1"; bundle_host_esbuild "$2" "$3" --bundle --platform=node --format=esm --target=node22 --outfile="$4"',
+      'verifier-parent', recipe, REPO_ROOT, entry, parent], {
+      cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, PATH: compilerPath,
+        PAPERCUSP_FS_MUTEX_LOCK_DIR: join(output, 'package-cache-locks') },
+    });
+    expect(built.status, budgetNote(built.status) + built.stdout + built.stderr).toBe(0);
+    const script = [
+      'import {writeFileSync,renameSync} from "node:fs";',
+      'const {readVerifierSourceReceipt}=await import(process.argv[1]);',
+      'const root=process.argv[2], receiptPath=process.argv[3], worker=process.argv[4];',
+      'const receipt=await readVerifierSourceReceipt(root,receiptPath);',
+      'writeFileSync(root+"/source.ts","export const value = 2;\\n");',
+      'let tampered,missing;',
+      'try{await readVerifierSourceReceipt(root,receiptPath)}catch(error){tampered=error.message}',
+      'renameSync(worker,worker+".held");',
+      'try{await readVerifierSourceReceipt(root,receiptPath)}catch(error){missing=error.code}',
+      'finally{renameSync(worker+".held",worker)}',
+      'console.log(JSON.stringify({receipt,tampered,missing}));',
+    ].join('\n');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script,
+      parent, sourceRoot, receiptPath, join(output, 'verifier-source-worker.mjs')], {
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env,
+        VERIFY_TAURI_SOURCE_REF: receipt.sourceCommit },
+    });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ receipt,
+      tampered: expect.stringContaining('changed source.ts'), missing: 'MODULE_NOT_FOUND' });
+  }, BUILD_TEST_TIMEOUT_MS);
+
   it('control: successful compilation without the package-cache lease is detected', () => {
     const original = readFileSync(recipe, 'utf8');
     const guarded = 'bundle_host_esbuild "$repo_root" "$source"';
@@ -476,7 +528,7 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const common = readFileSync(recipe, 'utf8');
     const copied = [...common.matchAll(/\$repo_root\/([^"\s}]+\.script\.mjs)/g)]
       .map(match => join(REPO_ROOT, match[1]!));
-    const bundled = [...common.matchAll(/"\$repo_root\/([^"]+(?:\.worker|precision-bench-worker)\.ts)"/g)]
+    const bundled = [...common.matchAll(/"\$repo_root\/([^"]+(?:\.worker|-worker)\.(?:ts|mjs))"/g)]
       .map(match => join(REPO_ROOT, match[1]!));
     expect(copied.length).toBeGreaterThan(0);
     expect(bundled.length).toBeGreaterThan(0);

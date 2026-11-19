@@ -1,7 +1,7 @@
 /**
  * Runtime-worker bundle guard (WI-10004975 follow-up).
  *
- * `bundle-host-common.sh` esbuild-bundles each runtime `*.worker.ts` on EVERY bg-host start
+ * `bundle-host-common.sh` esbuild-bundles runtime workers on EVERY bg-host start
  * (the unit's ExecStartPre). If a worker's import graph reaches a heavy host module — even
  * through a lazy literal `import()`, which esbuild inlines — the bundle fails on an optional
  * require (`@opentelemetry/*` under `@dbos-inc/dbos-sdk`) and bg-host cannot start at all.
@@ -68,7 +68,7 @@ const BUNDLER_FLAGS: BuildOptions = {
 
 function bundledWorkerSources(): string[] {
   const text = readFileSync(BUNDLER, 'utf8');
-  return [...text.matchAll(/"\$repo_root\/([^"]+(?:\.worker|precision-bench-worker)\.ts)"/g)].map((m) => m[1]!);
+  return [...text.matchAll(/"\$repo_root\/([^"]+(?:\.worker|-worker)\.(?:ts|mjs))"/g)].map((m) => m[1]!);
 }
 
 const firstLines = (err: unknown, n = 6): string => String((err as Error)?.message ?? err).split('\n').slice(0, n).join('\n');
@@ -164,6 +164,7 @@ describe('bg-host runtime worker bundles stay small and buildable', () => {
     expect(workers).toContain('packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts');
     expect(workers).toContain('packages/operator-core/lib/memory/bench/precision-bench-worker.ts');
     expect(workers).toContain('packages/operator-core/lib/role-codex-home.worker.ts');
+    expect(workers).toContain('libs/test-config/src/verifier-source-worker.mjs');
     expect(workers.length).toBeGreaterThanOrEqual(2);
     expect(BUNDLER_FLAGS.external).toContain('@opentelemetry/exporter-logs-otlp-proto');
     expect(BUNDLER_FLAGS.external).toContain('@dbos-inc/dbos-sdk');
