@@ -2306,6 +2306,13 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
   });
 
   describe('scheduled checkpoint evidence wrapper', () => {
+    function installRuntimeBuildHelper(repoRoot: string) {
+      mkdirSync(join(repoRoot, 'papercusp-desktop/bin'), { recursive: true });
+      writeFileSync(join(repoRoot, 'papercusp-desktop/bin/ensure-runtime-workspace-builds.mjs'), readFileSync(
+        fileURLToPath(new URL('../../../../../papercusp-desktop/bin/ensure-runtime-workspace-builds.mjs', import.meta.url)),
+      ));
+    }
+
     it('executes the scheduled CLI from the committed host tree and preserves the subject root', () => {
       const temp = mkdtempSync(join(tmpdir(), 'papercusp-committed-tooling-'));
       const repoRoot = join(temp, 'source');
@@ -2314,6 +2321,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       const setupPath = join(repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh');
       const cliPath = join(repoRoot, 'apps/operator/lib/release/green-checkpoint.ts');
       try {
+        installRuntimeBuildHelper(repoRoot);
         mkdirSync(join(repoRoot, 'apps/operator/bin/release'), { recursive: true });
         mkdirSync(join(repoRoot, 'apps/operator/lib/release'), { recursive: true });
         writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
@@ -2402,6 +2410,130 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       }
     });
 
+    describe('WI-6554700010053337: tooling runtime entry readiness', () => {
+      function fixture() {
+        const temp = mkdtempSync(join(tmpdir(), 'papercusp-tooling-entry-'));
+        const repoRoot = join(temp, 'source');
+        const cacheRoot = join(temp, 'cache');
+        const fakeBin = join(temp, 'bin');
+        const buildLog = join(temp, 'build.log');
+        const setupLog = join(temp, 'setup.log');
+        installRuntimeBuildHelper(repoRoot);
+        for (const dir of ['apps/operator/bin/release', 'apps/operator/lib/release', 'libs/sse']) {
+          mkdirSync(join(repoRoot, dir), { recursive: true });
+        }
+        mkdirSync(fakeBin);
+        writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n**/dist/\n');
+        writeFileSync(join(repoRoot, 'libs/sse/package.json'), JSON.stringify({
+          name: '@papercusp/sse', main: 'dist/index.js',
+          exports: { '.': { require: './dist/index.js', default: './dist/index.js' } },
+          scripts: { build: 'fixture' },
+        }));
+        writeFileSync(join(repoRoot, 'apps/operator/lib/release/fixture-cli.cjs'),
+          'process.stdout.write(require("@papercusp/sse") + "\\n");\n');
+        writeFileSync(join(repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh'), [
+          '#!/usr/bin/env bash', 'set -euo pipefail', 'release_root=""', 'dependencies_only=0',
+          'printf "%s\\n" "$*" >> "$RUNTIME_OUTPUT_SETUP_LOG"',
+          'while [ "$#" -gt 0 ]; do',
+          '  case "$1" in',
+          '    --release) release_root="$2"; shift 2 ;;',
+          '    --dependencies-only) dependencies_only=1; shift ;;',
+          '    *) shift ;;',
+          '  esac', 'done',
+          'if [ "$dependencies_only" = 1 ]; then',
+          '  mkdir -p "$release_root/node_modules/.bin" "$release_root/node_modules/@papercusp"',
+          '  ln -s ../../libs/sse "$release_root/node_modules/@papercusp/sse"',
+          "  cat > \"$release_root/node_modules/.bin/tsx\" <<'TSX'",
+          '#!/usr/bin/env bash',
+          'exec node "$@"',
+          'TSX',
+          '  chmod +x "$release_root/node_modules/.bin/tsx"', 'fi',
+        ].join('\n'));
+        writeFileSync(join(fakeBin, 'npm'), [
+          '#!/usr/bin/env bash', 'set -euo pipefail',
+          '[ "$*" = "--workspace @papercusp/sse run build" ] || exit 2',
+          'printf "%s\\n" "$PWD" >> "$RUNTIME_OUTPUT_BUILD_LOG"',
+          'if [ "${RUNTIME_OUTPUT_BUILD_MODE:-write}" = missing ]; then exit 0; fi',
+          'mkdir -p libs/sse/dist',
+          'printf \'module.exports="pinned-output";\\n\' > libs/sse/dist/index.js',
+        ].join('\n'), { mode: 0o755 });
+        const git = (...args: string[]) => execFileSync('git', [
+          '-C', repoRoot, '-c', 'user.name=Test Agent', '-c', 'user.email=test@example.com', ...args,
+        ], { encoding: 'utf8' }).trim();
+        git('init', '--initial-branch=main');
+        git('add', '.');
+        git('commit', '-m', 'committed runtime entry fixture');
+        const sha = git('rev-parse', 'HEAD');
+        const runtime = join(cacheRoot, 'runtimes', sha);
+        const run = (env: Record<string, string> = {}) => spawnSync('/bin/bash', ['-c',
+          buildCommittedCheckpointToolingCommand(repoRoot, sha,
+            'apps/operator/lib/release/fixture-cli.cjs', [], 'entry_readiness', cacheRoot),
+        ], {
+          encoding: 'utf8',
+          env: { ...process.env, PATH: fakeBin + ':' + process.env.PATH,
+            RUNTIME_OUTPUT_BUILD_LOG: buildLog, RUNTIME_OUTPUT_SETUP_LOG: setupLog, ...env },
+        });
+        return { runtime, run, ready: join(cacheRoot, 'ready', sha), buildLog, setupLog,
+          cleanup: () => rmSync(temp, { recursive: true, force: true }) };
+      }
+
+      it('builds missing committed runtime entries before ready and reuses present outputs', () => {
+        const f = fixture();
+        try {
+          const first = f.run();
+          expect(first.status, first.stderr).toBe(0);
+          expect(first.stdout).toContain('pinned-output');
+          expect(existsSync(f.ready)).toBe(true);
+          expect(readFileSync(f.buildLog, 'utf8').trim()).toBe(f.runtime);
+          const setup = readFileSync(f.setupLog, 'utf8');
+          const second = f.run();
+          expect(second.status, second.stderr).toBe(0);
+          expect(second.stdout).toContain('pinned-output');
+          expect(readFileSync(f.setupLog, 'utf8')).toBe(setup);
+          expect(readFileSync(f.buildLog, 'utf8').trim()).toBe(f.runtime);
+        } finally { f.cleanup(); }
+      });
+
+      it('rechecks a ready-marked cache and repairs outputs that disappeared', () => {
+        const f = fixture();
+        try {
+          expect(f.run().status).toBe(0);
+          rmSync(join(f.runtime, 'libs/sse/dist'), { recursive: true });
+          expect(existsSync(f.ready)).toBe(true);
+          const repaired = f.run();
+          expect(repaired.status, repaired.stderr).toBe(0);
+          expect(repaired.stdout).toContain('pinned-output');
+          expect(existsSync(join(f.runtime, 'libs/sse/dist/index.js'))).toBe(true);
+          expect(readFileSync(f.buildLog, 'utf8').trim().split('\n')).toEqual([f.runtime, f.runtime]);
+        } finally { f.cleanup(); }
+      });
+
+      it('does not publish ready when a successful build leaves its declared entry missing', () => {
+        const f = fixture();
+        try {
+          const failed = f.run({ RUNTIME_OUTPUT_BUILD_MODE: 'missing' });
+          expect(failed.status).not.toBe(0);
+          expect(failed.stderr).toContain('still missing after build');
+          expect(existsSync(f.ready)).toBe(false);
+          expect(failed.stdout).not.toContain('pinned-output');
+        } finally { f.cleanup(); }
+      });
+
+      it('keeps dirty evidence when a ready-marked cache is missing runtime outputs', () => {
+        const f = fixture();
+        try {
+          expect(f.run().status).toBe(0);
+          rmSync(join(f.runtime, 'libs/sse/dist'), { recursive: true });
+          writeFileSync(join(f.runtime, 'uncommitted-evidence.txt'), 'preserve');
+          const rejected = f.run();
+          expect(rejected.status).not.toBe(0);
+          expect(rejected.stderr).toContain('refusing to replace a dirty checkpoint tooling snapshot');
+          expect(readFileSync(join(f.runtime, 'uncommitted-evidence.txt'), 'utf8')).toBe('preserve');
+          expect(readFileSync(f.buildLog, 'utf8').trim()).toBe(f.runtime);
+        } finally { f.cleanup(); }
+      });
+    });
+
     describe('WI-6554700010053216: tooling retention count and pressure', () => {
       function fixture(includeHeadroom = true) {
         const temp = mkdtempSync(join(tmpdir(), 'papercusp-tooling-policy-'));
@@ -2414,6 +2546,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
         const git = (...args: string[]) => execFileSync('git', [
           '-C', repoRoot, '-c', 'user.name=Test Agent', '-c', 'user.email=test@example.com', ...args,
         ], { encoding: 'utf8' }).trim();
+        installRuntimeBuildHelper(repoRoot);
         mkdirSync(join(repoRoot, 'apps/operator/bin/release'), { recursive: true });
         writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
         writeFileSync(join(repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh'), [
@@ -2625,6 +2758,7 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       const hoursAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000);
       const age = (target: string, hours: number) => utimesSync(target, hoursAgo(hours), hoursAgo(hours));
       try {
+        installRuntimeBuildHelper(repoRoot);
         mkdirSync(join(repoRoot, 'apps/operator/bin/release'), { recursive: true });
         writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
         // Every committed setup fails, like the Node 26 dependency-generation failures that

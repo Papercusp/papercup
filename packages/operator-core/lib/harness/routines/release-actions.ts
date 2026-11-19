@@ -814,10 +814,11 @@ export function buildCommittedCheckpointToolingCommand(
     'exec 8>"$lock_dir/$tooling_sha.setup.lock"',
     'flock -x 8',
     'exec 9>"$lock_dir/$tooling_sha.runtime.lock"',
+    'runtime_builds="$runtime_root/papercusp-desktop/bin/ensure-runtime-workspace-builds.mjs"',
     'runtime_head="$(git -C "$runtime_root" rev-parse --verify HEAD 2>/dev/null || true)"',
     'runtime_status="$(git -C "$runtime_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
     'cache_valid=0',
-    'if [ "$(cat "$ready" 2>/dev/null || true)" = "$tooling_sha" ] && [ "$runtime_head" = "$tooling_sha" ] && [ -z "$runtime_status" ] && [ -x "$runtime_root/node_modules/.bin/tsx" ]; then cache_valid=1; fi',
+    'if [ "$(cat "$ready" 2>/dev/null || true)" = "$tooling_sha" ] && [ "$runtime_head" = "$tooling_sha" ] && [ -z "$runtime_status" ] && [ -x "$runtime_root/node_modules/.bin/tsx" ] && node "$runtime_builds" "$runtime_root" --check; then cache_valid=1; fi',
     'if [ "$cache_valid" != 1 ]; then',
     '  flock -x 9',
     '  runtime_status="$(git -C "$runtime_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
@@ -833,6 +834,10 @@ export function buildCommittedCheckpointToolingCommand(
     '  setup_script="$runtime_root/apps/operator/bin/release/setup-release-checkout.sh"',
     '  bash "$setup_script" --ref "$tooling_sha" --integration "$source_root" --release "$runtime_root" --source-only --source-integrity object-sourced',
     '  bash "$setup_script" --ref "$tooling_sha" --integration "$source_root" --release "$runtime_root" --prepare-existing --dependencies-only --node-modules force --node-modules-copy copy',
+    // dependencies-only deliberately omits generated outputs. Reuse the maintained
+    // manifest-driven builder against committed runtime source before publishing ready.
+    '  node "$runtime_builds" "$runtime_root"',
+    '  node "$runtime_builds" "$runtime_root" --check || { echo "committed checkpoint tooling snapshot has missing runtime entry points" >&2; exit 1; }',
     '  runtime_head="$(git -C "$runtime_root" rev-parse --verify HEAD 2>/dev/null || true)"',
     '  runtime_status="$(git -C "$runtime_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
     '  if [ "$runtime_head" != "$tooling_sha" ] || [ -n "$runtime_status" ] || [ ! -x "$runtime_root/node_modules/.bin/tsx" ]; then echo "committed checkpoint tooling snapshot failed its post-setup integrity check" >&2; exit 1; fi',
