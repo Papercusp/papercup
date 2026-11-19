@@ -35,6 +35,14 @@ export interface IdentityAuthorityContribution {
   grants: Partial<Record<GovernedCategory, CategoryRule>>;
   maximum: Partial<Record<GovernedCategory, CategoryRule>>;
 }
+/** An independently authored floor narrows the entire identity grant union.
+ * Keep each source separate: intersecting wildcard allow lists by flattening
+ * their strings changes the policy's meaning. */
+export interface IdentityAuthorityRestriction {
+  id: string;
+  revision: string;
+  rules: Partial<Record<GovernedCategory, CategoryRule>>;
+}
 export interface AuthorityPolicy extends AuthorityRef {
   /** Opaque revision pinned by the authority's canonical writer. */
   revision: string;
@@ -48,6 +56,9 @@ export interface AuthorityPolicy extends AuthorityRef {
    * The canonical loader must pin all contributing sources in revision.
    * Omission preserves the existing single-grant contract; [] grants nothing. */
   contributions?: readonly IdentityAuthorityContribution[];
+  /** Identity only; every floor must pass. The aggregate revision pins these
+   * source revisions as well as the positive contributions. */
+  restrictions?: readonly IdentityAuthorityRestriction[];
 }
 export interface AuthoritySnapshot {
   /** Complete, host-derived policy population, including absent optional levels. */
@@ -82,6 +93,7 @@ export interface AuthorityTrace {
   outcome: PolicyTraceStep['outcome'];
   pattern?: string;
   contribution?: { id: string; revision: string; stage: 'grant' | 'maximum' };
+  restriction?: { id: string; revision: string };
 }
 export type EffectivePermissionDecision = {
   allowed: boolean;
@@ -157,6 +169,15 @@ function snapshotProblem(snapshot: AuthoritySnapshot): { code: 'authority-unavai
           contribution.grants[category as GovernedCategory]?.allow === undefined))
           return unavailable('identity contribution must explicitly grant tools, actions and resources');
       }
+    }
+    if (policy.restrictions !== undefined) {
+      if (policy.kind !== 'identity' || !Array.isArray(policy.restrictions))
+        return malformed('invalid identity restrictions');
+      if (policy.restrictions.some((restriction: IdentityAuthorityRestriction) => !restriction ||
+          !validText(restriction.id) || !validText(restriction.revision) ||
+          !isWellFormedLayer({ layerId: restriction.id, level: 'workspace', version: 1, rules: restriction.rules })) ||
+          !unique(policy.restrictions.map((restriction: IdentityAuthorityRestriction) => restriction.id)))
+        return malformed('invalid or duplicate identity restriction');
     }
     if (policy.state === 'not-applicable') {
       if (['identity', 'user', 'vault', 'platform'].includes(ref.kind)) return unavailable(`required authority cannot be absent: ${keyOf(ref)}`);
@@ -237,6 +258,18 @@ export function evaluateEffectivePermission(
         }
       }
       if (!contributionAllows && !decidingAuthority) decidingAuthority = { kind: policy.kind, id: policy.id };
+    }
+    for (const restriction of policy.restrictions ?? []) {
+      const verdict = evaluateInheritedPolicy([{
+        layerId: restriction.id, level: 'workspace', version: 1, rules: restriction.rules,
+      }], governed, now);
+      trace.push(...verdict.trace.map(step => ({
+        authority: { kind: policy.kind, id: policy.id, revision: policy.revision },
+        restriction: { id: restriction.id, revision: restriction.revision },
+        category: step.category, value: step.value, outcome: step.outcome,
+        ...(step.pattern ? { pattern: step.pattern } : {}),
+      })));
+      if (!verdict.allow && !decidingAuthority) decidingAuthority = { kind: policy.kind, id: policy.id };
     }
     const verdict = evaluateInheritedPolicy([policyLayer(policy)], governed, now);
     trace.push(...verdict.trace.map(step => ({

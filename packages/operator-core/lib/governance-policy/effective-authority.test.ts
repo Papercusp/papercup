@@ -93,6 +93,55 @@ describe('P-002 correlated identity contributions', () => {
     });
   });
 
+  it('intersects independent authored floors after the complete contribution union', () => {
+    const current = contributed();
+    const identity = current.policies[0];
+    identity.restrictions = [
+      { id: 'domain-floor', revision: 'domain:1', rules: { tools: { allow: ['capability:*'] } } },
+      { id: 'practice-floor', revision: 'practice:2', rules: { tools: { allow: ['*:bash'] } } },
+    ];
+    expect(evaluateEffectivePermission(current, request).allowed).toBe(true);
+    identity.restrictions = [...identity.restrictions, {
+      id: 'client-floor', revision: 'client:3', rules: { actions: { deny: ['net:*'] } },
+    }];
+    expect(evaluateEffectivePermission(current, request)).toMatchObject({
+      allowed: false, decidingAuthority: { kind: 'identity' },
+      trace: expect.arrayContaining([expect.objectContaining({
+        category: 'actions', outcome: 'deny-rule',
+        restriction: { id: 'client-floor', revision: 'client:3' },
+      })]),
+    });
+  });
+
+  it('a floor-only layer cannot supply a missing positive grant or lift a sibling floor', () => {
+    const current = contributed();
+    const identity = current.policies[0];
+    identity.restrictions = [
+      { id: 'narrow-floor', revision: 'narrow:1', rules: { resources: { allow: [] } } },
+      { id: 'broad-floor', revision: 'broad:1', rules: { resources: { allow: ['*'] } } },
+    ];
+    expect(evaluateEffectivePermission(current, request).allowed).toBe(false);
+    identity.restrictions = [{ id: 'broad-floor', revision: 'broad:1', rules: {
+      tools: { allow: ['*'] }, actions: { allow: ['*'] }, resources: { allow: ['*'] },
+    } }];
+    delete identity.contributions![0].grants.resources;
+    expect(evaluateEffectivePermission(current, request)).toMatchObject({ allowed: false, code: 'authority-unavailable' });
+  });
+
+  it('refuses malformed, duplicate, revisionless and nonidentity authored floors', () => {
+    for (const failure of ['collection', 'duplicate', 'missing-revision', 'rules', 'wrong-kind'] as const) {
+      const current = contributed();
+      const floor = { id: 'floor', revision: 'floor:1', rules: {} };
+      current.policies[0].restrictions = [floor];
+      if (failure === 'collection') current.policies[0].restrictions = {} as never;
+      if (failure === 'duplicate') current.policies[0].restrictions = [floor, floor];
+      if (failure === 'missing-revision') floor.revision = '';
+      if (failure === 'rules') floor.rules = { actions: { allow: 42 } };
+      if (failure === 'wrong-kind') current.policies[1].restrictions = [floor];
+      expect(evaluateEffectivePermission(current, request)).toMatchObject({ allowed: false, code: 'authority-malformed' });
+    }
+  });
+
   it('treats a known empty union as deny-all and refuses malformed or duplicate contributions', () => {
     const empty = contributed();
     empty.policies[0].contributions = [];
