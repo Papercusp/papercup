@@ -509,6 +509,7 @@ HOST_WORKER_OUTPUTS=(
   first-party-callers.worker.mjs
   role-codex-home.worker.mjs
   warm-cochange-index.worker.mjs
+  verifier-source-worker.mjs
   testing-core.worker.mjs
 )
 
@@ -711,7 +712,8 @@ bundle_host_workers() {
     "$repo_root/packages/operator-core/lib/memory/bench/precision-bench-worker.ts" \
     "$repo_root/packages/operator-core/lib/code-intelligence/first-party-callers.worker.ts" \
     "$repo_root/packages/operator-core/lib/role-codex-home.worker.ts" \
-    "$repo_root/packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts"; do
+    "$repo_root/packages/operator-core/lib/code-intelligence/warm-cochange-index.worker.ts" \
+    "$repo_root/libs/test-config/src/verifier-source-worker.mjs"; do
     output="${HOST_WORKER_OUTPUTS[$index]}"
     BUNDLE_HOST_WORKER_FAILED_SOURCE="$source"
     BUNDLE_HOST_WORKER_FAILED_OUTPUT="$output"
