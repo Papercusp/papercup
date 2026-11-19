@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { Sql, TransactionSql } from 'postgres';
 import type { HostRequestPrincipalResolver } from '../auth/require-principal';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
+import { CategoryRuleSchema } from '../governance-policy/category-rules';
 
 export interface PackageResourceAddress {
   workspaceId: string;
@@ -67,6 +68,8 @@ export interface PackageInstallationReceipt {
   owner_id: string;
   /** owner_id is a technical wearer/pot, never evidence of a human owner. */
   human_ownership: PackageInstallationHumanOwnership | null;
+  /** Explicit scopes are source evidence, not edit authority or admission. */
+  scoped_grants: PackageInstallationScopedGrants | null;
   specification_revision: string;
   state_revision: string;
   expected_resources: Record<string, string>;
@@ -99,6 +102,53 @@ export interface PackageInstallationHumanOwnerProof { readonly [humanOwnerProof]
 const humanOwnerProofs = new WeakMap<PackageInstallationHumanOwnerProof, {
   ownership: PackageInstallationHumanOwnership; resolvePrincipal: HostRequestPrincipalResolver;
 }>();
+
+const scopedPattern = z.string().min(1).max(4096).refine(value =>
+  value === value.trim() && !/[\u0000-\u001f\uD800-\uDFFF]/u.test(value));
+const scopedRule = CategoryRuleSchema.extend({ allow: z.array(scopedPattern).max(4096),
+  deny: z.array(scopedPattern).max(4096).optional() }).strict();
+/** Tool reach comes from exact provider pins, never these explicit scopes. */
+export const packageInstallationScopedGrantsSchema = z.object({
+  schemaVersion: z.literal(1),
+  layers: z.array(z.object({
+    layerRef: scopedPattern,
+    layerContentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    grants: z.object({ actions: scopedRule, resources: scopedRule }).strict(),
+  }).strict()).max(256).refine(layers => new Set(layers.map(layer => layer.layerRef)).size === layers.length,
+    'duplicate layer grant'),
+}).strict();
+export type PackageInstallationScopedGrants = z.infer<typeof packageInstallationScopedGrantsSchema>;
+declare const scopedGrantProof: unique symbol;
+export interface PackageInstallationScopedGrantProof { readonly [scopedGrantProof]: true }
+const scopedGrantProofs = new WeakMap<PackageInstallationScopedGrantProof, {
+  humanOwner: PackageInstallationHumanOwnerProof; grants: PackageInstallationScopedGrants;
+}>();
+
+/** Retain an explicit human declaration for an exact wearer/specification.
+ * This is not a permission-change approval: ordinary edit authority, other
+ * affected owners and fixed floors still require complete change admission. */
+export async function declarePackageInstallationScopedGrants(
+  humanOwner: PackageInstallationHumanOwnerProof, declaration: PackageInstallationScopedGrants,
+): Promise<PackageInstallationScopedGrantProof> {
+  const grants = packageInstallationScopedGrantsSchema.parse(declaration);
+  grants.layers.sort((a, b) => a.layerRef.localeCompare(b.layerRef));
+  const evidence = humanOwnerProofs.get(humanOwner);
+  if (!evidence) throw new Error('scoped grants require original host-local human ownership evidence');
+  const { readRetainedRequestPrincipal } = await import('../auth/require-principal');
+  const read = await readRetainedRequestPrincipal(evidence.resolvePrincipal,
+    evidence.ownership.workspaceId, evidence.ownership.principalRevision);
+  if (read.status !== 'ok' || read.principal.kind !== 'user' || read.principal.slug !== evidence.ownership.userId)
+    throw new Error('scoped grant credentials changed or were revoked');
+  const proof = Object.freeze({}) as PackageInstallationScopedGrantProof;
+  scopedGrantProofs.set(proof, { humanOwner, grants });
+  return proof;
+}
+
+function validateScopedGrants(row: PackageInstallationReceipt): void {
+  if (row.scoped_grants === null) return;
+  if (!row.human_ownership) throw new Error('package scoped grants require recorded human ownership');
+  row.scoped_grants = packageInstallationScopedGrantsSchema.parse(row.scoped_grants);
+}
 
 /** Authentication alone is NOT ownership. The human explicitly declares their
  * ownership of this wearer + specification. This grants no edit authority or
@@ -155,7 +205,7 @@ async function lock(sql: TransactionSql, workspaceId: string, key: string): Prom
 }
 
 export async function readPackageInstallation(sql: Db, workspaceId: string, dependentId: string): Promise<PackageInstallationReceipt | null> {
-  const [row] = await sql<PackageInstallationReceipt[]>`SELECT owner_id, human_ownership, specification_revision, state_revision,
+  const [row] = await sql<PackageInstallationReceipt[]>`SELECT owner_id, human_ownership, scoped_grants, specification_revision, state_revision,
       expected_resources, phase, error FROM harness_shared.blueprint_package_installations
     WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
   if (row?.human_ownership !== null && row?.human_ownership !== undefined) {
@@ -164,6 +214,7 @@ export async function readPackageInstallation(sql: Db, workspaceId: string, depe
         row.human_ownership.specificationRevision !== row.specification_revision)
       throw new Error('package installation human ownership scope mismatch');
   }
+  if (row) validateScopedGrants(row);
   return row ?? null;
 }
 
@@ -216,7 +267,7 @@ export async function readPackageResourcePopulation(sql: Db, workspaceId: string
       throw new Error('package population workspace is not visible to this connection');
     // No LIMIT or phase filter: neither a prefix nor the live-only index is a
     // census. Epoch microseconds avoid timezone-dependent revision identities.
-    const installations = await tx<InstallationPopulationRow[]>`SELECT dependent_id, owner_id, human_ownership,
+    const installations = await tx<InstallationPopulationRow[]>`SELECT dependent_id, owner_id, human_ownership, scoped_grants,
       specification_revision, state_revision, expected_resources, phase, error,
       floor(extract(epoch from updated_at) * 1000000)::text AS updated_at
       FROM harness_shared.blueprint_package_installations WHERE workspace_id = ${workspaceId} ORDER BY dependent_id`;
@@ -244,6 +295,7 @@ export async function readPackageResourcePopulation(sql: Db, workspaceId: string
           throw new Error('package population human ownership scope mismatch');
         row.human_ownership = owner;
       }
+      validateScopedGrants(row);
     }
     for (const row of resources) {
       if (!digest(row.resource_key) || !text(row.write_key) || !timestamp(row.updated_at) || !error(row.error) ||
@@ -278,6 +330,7 @@ interface PackageInstallationInput {
   workspaceId: string; dependentId: string; ownerId: string;
   specificationRevision: string; stateRevision: string; expectedResources: ReadonlyMap<string, string>;
   humanOwner?: PackageInstallationHumanOwnerProof;
+  scopedGrants?: PackageInstallationScopedGrantProof;
   /** Copy recorded provenance (including unknown) for carry/rollback. */
   ownershipFromDependentId?: string;
 }
@@ -296,13 +349,15 @@ async function beginPackageInstallationInTransaction(tx: TransactionSql, input: 
   if (Object.entries(expected).some(([key, hash]) => !/^[a-f0-9]{64}$/.test(key) || !/^[a-f0-9]{64}$/.test(hash))) {
     throw new Error('package installation requires exact resource keys and hashes');
   }
-  if (input.humanOwner !== undefined && input.ownershipFromDependentId !== undefined)
+  if ((input.humanOwner !== undefined || input.scopedGrants !== undefined) && input.ownershipFromDependentId !== undefined)
     throw new Error('human ownership cannot replace carried provenance');
   if (input.ownershipFromDependentId !== undefined && !input.ownershipFromDependentId.trim())
     throw new Error('human ownership requires an exact source installation');
   for (const id of [...new Set([input.dependentId, ...(input.ownershipFromDependentId === undefined ? [] :
     [input.ownershipFromDependentId])])].sort()) await lock(tx, input.workspaceId, 'dependent:' + id);
   let ownership: PackageInstallationHumanOwnership | null = null;
+  let scopedGrants: PackageInstallationScopedGrants | null = null;
+  let scopedGrantsSpecified = false;
   let ownershipSpecified = false;
   if (input.ownershipFromDependentId !== undefined) {
     const source = await readPackageInstallation(tx, input.workspaceId, input.ownershipFromDependentId);
@@ -311,6 +366,8 @@ async function beginPackageInstallationInTransaction(tx: TransactionSql, input: 
         Object.entries(expected).some(([key, hash]) => source.expected_resources[key] !== hash))
       throw new Error('human ownership source requires the same wearer, specification and manifest');
     ownership = source.human_ownership;
+    scopedGrants = source.scoped_grants;
+    scopedGrantsSpecified = true;
     ownershipSpecified = true;
   } else if (input.humanOwner !== undefined) {
     const evidence = humanOwnerProofs.get(input.humanOwner);
@@ -325,14 +382,25 @@ async function beginPackageInstallationInTransaction(tx: TransactionSql, input: 
       throw new Error('package installation human ownership scope mismatch');
     ownershipSpecified = true;
   }
+  if (input.scopedGrants !== undefined) {
+    const evidence = scopedGrantProofs.get(input.scopedGrants);
+    if (!evidence || evidence.humanOwner !== input.humanOwner)
+      throw new Error('scoped grants require the same original human ownership proof');
+    // The human branch rechecked credentials after every journal lock wait.
+    scopedGrants = packageInstallationScopedGrantsSchema.parse(evidence.grants);
+    scopedGrantsSpecified = true;
+  }
   await tx`INSERT INTO harness_shared.blueprint_package_installations
-    (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources, human_ownership)
+    (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources, human_ownership, scoped_grants)
     VALUES (${input.workspaceId}, ${input.dependentId}, ${input.ownerId}, ${input.specificationRevision},
-      ${input.stateRevision}, ${tx.json(expected)}, ${ownership === null ? null : tx.json({ ...ownership })})
+      ${input.stateRevision}, ${tx.json(expected)}, ${ownership === null ? null : tx.json({ ...ownership })},
+      ${scopedGrants === null ? null : tx.json(scopedGrants)})
     ON CONFLICT (workspace_id, dependent_id) DO NOTHING`;
   const row = (await readPackageInstallation(tx, input.workspaceId, input.dependentId))!;
   if (ownershipSpecified && JSON.stringify(row.human_ownership) !== JSON.stringify(ownership))
     throw new Error('package installation human ownership is immutable per attempt');
+  if (scopedGrantsSpecified && canonicalJson(row.scoped_grants) !== canonicalJson(scopedGrants))
+    throw new Error('package installation scoped grants are immutable per attempt');
   if (row.owner_id !== input.ownerId || row.specification_revision !== input.specificationRevision ||
       row.state_revision !== input.stateRevision || Object.keys(row.expected_resources).length !== Object.keys(expected).length ||
       Object.entries(expected).some(([key, hash]) => row.expected_resources[key] !== hash)) {

@@ -9,6 +9,8 @@ import {
   beginPackageInstallation, readPackageInstallation, beginPackageInstallationRelease, finishPackageInstallationRelease,
   carryAppliedPackageInstallation,
   declarePackageInstallationHumanOwner, type PackageInstallationHumanOwnerProof,
+  declarePackageInstallationScopedGrants, packageInstallationScopedGrantsSchema,
+  type PackageInstallationScopedGrantProof, type PackageInstallationScopedGrants,
   type PackageResourceAddress, type PackageResourceDriver,
 } from './package-resource-receipts';
 import { retainRequestPrincipal } from '../auth/require-principal';
@@ -33,6 +35,8 @@ beforeAll(async () => {
   if (existsSync(draft)) await db.adminSql.unsafe(readFileSync(draft, 'utf8'));
   const ownership = new URL('../../../../libs/papercusp/libs/db/sql/1645-blueprint-installation-human-ownership.sql.DRAFT', import.meta.url);
   if (existsSync(ownership)) await db.adminSql.unsafe(readFileSync(ownership, 'utf8'));
+  const scopes = new URL('../../../../libs/papercusp/libs/db/sql/1648-blueprint-installation-scoped-grants.sql', import.meta.url);
+  await db.adminSql.unsafe(readFileSync(existsSync(scopes) ? scopes : new URL(scopes.href + '.DRAFT'), 'utf8'));
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -73,6 +77,120 @@ function externalStore() {
 describe('blueprint package resource journal (real Postgres)', () => {
   const emptyInstall = (name: string) => ({ workspaceId: 'human-ownership', ownerId: 'wearer-' + name,
     dependentId: name, specificationRevision: hash(name), stateRevision: hash('state'), expectedResources: new Map<string, string>() });
+
+  const scopedDeclaration = (): PackageInstallationScopedGrants => ({ schemaVersion: 1, layers: [{
+    layerRef: 'domain:scoped-test', layerContentHash: hash('scoped-layer'),
+    grants: { actions: { allow: ['read'] }, resources: { allow: ['store:read:workspace-one'] } },
+  }] });
+
+  it('stores explicit layer scopes, preserves unknown legacy rows, and includes the source in the census', async () => {
+    const input = emptyInstall('scoped-recorded');
+    const { proof } = await humanOwner(input);
+    const declaration = scopedDeclaration();
+    const scopedGrants = await declarePackageInstallationScopedGrants(proof, declaration);
+    declaration.layers[0].grants.resources.allow[0] = '*'; // caller cannot widen retained evidence
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof, scopedGrants });
+    const receipt = await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId);
+    expect(receipt?.scoped_grants).toEqual(scopedDeclaration());
+    await beginPackageInstallation(db.adminSql, input); // recovery does not erase evidence
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId))?.scoped_grants)
+      .toEqual(scopedDeclaration());
+    const census = await readPackageResourcePopulation(db.adminSql, input.workspaceId);
+    if (census.status !== 'ok') throw new Error('expected complete journal source');
+    expect(census.installations.find(row => row.dependent_id === input.dependentId)?.scoped_grants)
+      .toEqual(scopedDeclaration());
+    const legacy = emptyInstall('scoped-unknown');
+    await beginPackageInstallation(db.adminSql, legacy);
+    expect((await readPackageInstallation(db.adminSql, legacy.workspaceId, legacy.dependentId))?.scoped_grants).toBeNull();
+  });
+
+  it('refuses forged scope evidence, another ownership proof, and revoked credentials before persistence', async () => {
+    const input = emptyInstall('scoped-forged');
+    const { proof } = await humanOwner(input);
+    const scopedGrants = await declarePackageInstallationScopedGrants(proof, scopedDeclaration());
+    await expect(declarePackageInstallationScopedGrants({} as PackageInstallationHumanOwnerProof, scopedDeclaration()))
+      .rejects.toThrow(/original host-local/);
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof,
+      scopedGrants: {} as PackageInstallationScopedGrantProof })).rejects.toThrow(/same original/);
+    await expect(beginPackageInstallation(db.adminSql, { ...input, scopedGrants })).rejects.toThrow(/same original/);
+    const other = await humanOwner(input);
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: other.proof, scopedGrants }))
+      .rejects.toThrow(/same original/);
+    cookiePrincipal = null;
+    await expect(declarePackageInstallationScopedGrants(proof, scopedDeclaration())).rejects.toThrow(/credentials changed/);
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof, scopedGrants }))
+      .rejects.toThrow(/credentials changed/);
+    expect(await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId)).toBeNull();
+  });
+
+  it('keeps scoped grants immutable, including unknown-to-known SQL and application backfill', async () => {
+    const input = emptyInstall('scoped-immutable');
+    const { proof } = await humanOwner(input);
+    const scopedGrants = await declarePackageInstallationScopedGrants(proof, scopedDeclaration());
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof, scopedGrants });
+    await expect(db.adminSql`UPDATE harness_shared.blueprint_package_installations SET scoped_grants = NULL
+      WHERE workspace_id = ${input.workspaceId} AND dependent_id = ${input.dependentId}`)
+      .rejects.toThrow(/immutable per attempt/);
+    const changed = scopedDeclaration(); changed.layers[0].grants.actions.allow = ['*'];
+    await expect(beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof,
+      scopedGrants: await declarePackageInstallationScopedGrants(proof, changed) })).rejects.toThrow(/immutable per attempt/);
+    const unknown = { ...input, dependentId: input.dependentId + '-unknown' };
+    await beginPackageInstallation(db.adminSql, { ...unknown, humanOwner: proof });
+    await expect(beginPackageInstallation(db.adminSql, { ...unknown, humanOwner: proof, scopedGrants }))
+      .rejects.toThrow(/immutable per attempt/);
+    await expect(db.adminSql`UPDATE harness_shared.blueprint_package_installations
+      SET scoped_grants = ${db.adminSql.json(scopedDeclaration())}
+      WHERE workspace_id = ${input.workspaceId} AND dependent_id = ${unknown.dependentId}`)
+      .rejects.toThrow(/immutable per attempt/);
+  });
+
+  it('preserves exact scoped grants across applied carry, release and rollback without accepting replacement evidence', async () => {
+    const input = emptyInstall('scoped-carry');
+    const { proof } = await humanOwner(input);
+    const scopedGrants = await declarePackageInstallationScopedGrants(proof, scopedDeclaration());
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof, scopedGrants });
+    await db.adminSql.begin(tx => applyPackageResourceDependent(tx, input.workspaceId, input.dependentId, input.expectedResources));
+    const next = { ...input, dependentId: input.dependentId + '-next', stateRevision: hash('next-state'),
+      fromDependentId: input.dependentId };
+    await db.adminSql.begin(tx => carryAppliedPackageInstallation(tx, next));
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, next.dependentId))?.scoped_grants)
+      .toEqual(scopedDeclaration());
+    await beginPackageInstallationRelease(db.adminSql, input.workspaceId, input.dependentId);
+    await finishPackageInstallationRelease(db.adminSql, input.workspaceId, input.dependentId);
+    const rollback = { ...input, dependentId: input.dependentId + '-rollback', ownershipFromDependentId: input.dependentId };
+    await beginPackageInstallation(db.adminSql, rollback);
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, rollback.dependentId))?.scoped_grants)
+      .toEqual(scopedDeclaration());
+    await expect(beginPackageInstallation(db.adminSql, { ...rollback, scopedGrants })).rejects.toThrow(/carried provenance/);
+  });
+
+  it.each(['missing-actions', 'missing-allow', 'extra-category', 'extra-field', 'duplicate', 'bad-hash', 'blank-pattern'])
+  ('rejects malformed scoped grant declarations in both the authoring schema and database (%s)', async kind => {
+    const value: any = scopedDeclaration();
+    if (kind === 'missing-actions') delete value.layers[0].grants.actions;
+    if (kind === 'missing-allow') value.layers[0].grants.actions = { deny: ['write'] };
+    if (kind === 'extra-category') value.layers[0].grants.tools = { allow: ['*'] };
+    if (kind === 'extra-field') value.admin = true;
+    if (kind === 'duplicate') value.layers.push(structuredClone(value.layers[0]));
+    if (kind === 'bad-hash') value.layers[0].layerContentHash = 'latest';
+    if (kind === 'blank-pattern') value.layers[0].grants.resources.allow = [' '];
+    expect(packageInstallationScopedGrantsSchema.safeParse(value).success).toBe(false);
+    const [result] = await db.adminSql`SELECT harness_shared.blueprint_installation_scoped_grants_valid(${db.adminSql.json(value)}) AS valid`;
+    expect(result.valid).toBe(false);
+  });
+
+  it('retains an explicit empty grant and denies a stored grant without human ownership', async () => {
+    const input = emptyInstall('scoped-empty');
+    const { proof } = await humanOwner(input);
+    const empty = scopedDeclaration(); empty.layers[0].grants.actions.allow = []; empty.layers[0].grants.resources.allow = [];
+    await beginPackageInstallation(db.adminSql, { ...input, humanOwner: proof,
+      scopedGrants: await declarePackageInstallationScopedGrants(proof, empty) });
+    expect((await readPackageInstallation(db.adminSql, input.workspaceId, input.dependentId))?.scoped_grants).toEqual(empty);
+    await expect(db.adminSql`INSERT INTO harness_shared.blueprint_package_installations
+      (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources, scoped_grants)
+      VALUES (${input.workspaceId}, 'scoped-no-human', ${input.ownerId}, ${input.specificationRevision}, ${input.stateRevision}, '{}',
+        ${db.adminSql.json(empty)})`).rejects.toThrow(/scoped_grants_shape/);
+  });
 
   const populationFixture = async (name: string) => {
     const resource = { ...address(name), workspaceId: 'population-' + name };
