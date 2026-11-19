@@ -5109,7 +5109,7 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('RC=0');
-    expect(result.stderr).toMatch(/checksum read progress: .* read=[1-9]\d*MiB/);
+    expect(result.stderr).toMatch(/checksum read progress: .* copy=\d+:\d+ read=[1-9]\d*MiB/);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it.each(['records', 'checksums'] as const)('reports measured progress during incremental %s work', phase => {
@@ -5145,7 +5145,7 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
         ORIGINAL_PATH: process.env.PATH, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1' } });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('RC=0');
-    expect(result.stderr).toMatch(/work progress: .* io=[1-9]\d*MiB/);
+    expect(result.stderr).toMatch(/work progress: .* copy=\d+:\d+ io=[1-9]\d*MiB/);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it.each(['writes', 'checksum-reads', 'work-reads', 'stalled', 'unmeasured', 'work-stalled'] as const)
@@ -5836,9 +5836,9 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
         // supervisor observes them. No elapsed-time-only heartbeat is accepted.
         '      advancing) local i; for i in $(seq 1 100); do',
         '        printf "%1048576s" "" >> "$ROOT/tar-sink"',
-        '        grep -qE "work progress: node_modules io=[1-9]" "$ROOT/log" 2>/dev/null && break',
+        '        grep -qE "work progress: node_modules .* io=[1-9]" "$ROOT/log" 2>/dev/null && break',
         '        command sleep 0.1',
-        '      done; grep -qE "work progress: node_modules io=[1-9]" "$ROOT/log" || return 25 ;;',
+        '      done; grep -qE "work progress: node_modules .* io=[1-9]" "$ROOT/log" || return 25 ;;',
         '    esac',
         '  fi',
         '  command tar "$@"',
@@ -5862,7 +5862,7 @@ describe('P-012: incremental copy of a changed dependency tree', () => {
       expect(result.stdout).not.toContain('SURVIVING_TAR');
       if (activity === 'advancing') {
         expect(result.stdout, result.stderr).toContain('RC=0');
-        expect(result.stderr).toMatch(/work progress: node_modules io=[1-9]\d*MiB/);
+        expect(result.stderr).toMatch(/work progress: node_modules copy=\d+:\d+ io=[1-9]\d*MiB/);
         expect(result.stderr).toContain('INCREMENTAL schema=1');
         expect(readFileSync(join(root, 'build/tree/node_modules/payload'), 'utf8'))
           .toBe(readFileSync(join(root, 'src/payload'), 'utf8'));
