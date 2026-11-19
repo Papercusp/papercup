@@ -294,6 +294,23 @@ describe('recordAccountPenalty + window rolling', () => {
     expect(r.pausedUntil).toBe(T0 + 10 * MIN);
   });
 
+  it.each([0.4, 1])('retires only an explicitly absent short window, preserving weekly usage %s', (weekly) => {
+    const reset = T0 + 7 * 24 * 60 * MIN;
+    const initial = recordAccountWindow(poolOf('a'), 'a', {
+      utilization: 1, windowResetAt: reset, utilization7d: weekly, windowResetAt7d: reset,
+    }, T0);
+    const missing = getAccount(recordAccountWindow(initial, 'a', { utilization7d: weekly }, T0 + MIN), 'a')!;
+    expect(missing.rate.utilization).toBe(1);
+    const retired = getAccount(recordAccountWindow(initial, 'a', {
+      shortWindowAbsent: true, utilization7d: weekly, windowResetAt7d: reset,
+    }, T0 + MIN), 'a')!;
+    expect(retired.rate.utilization).toBeUndefined();
+    expect(retired.rate.windowResetAt).toBeUndefined();
+    expect(retired.rate.utilization7d).toBe(weekly);
+    expect(retired.rate.windowResetAt7d).toBe(reset);
+    expect(isSpawnEligible(retired, T0 + MIN)).toBe(weekly < 0.97);
+  });
+
   it('recordAccountReset clears pause+penalty but PRESERVES the observed budget reading', () => {
     let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.91, utilization7d: 0.55 }, T0);
     p = recordAccountPenalty(p, 'a', T0 + MIN, { pausedUntil: T0 + 10 * MIN });

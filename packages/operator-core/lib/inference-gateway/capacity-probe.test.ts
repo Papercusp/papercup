@@ -48,6 +48,29 @@ const okDeps = (headers: Record<string, string>, status = 200) => ({
 afterEach(() => vi.useRealTimers());
 
 describe('parseCapacityHeaders', () => {
+  it('retires the short window when the provider explicitly reports only seven_day', () => {
+    const windows = parseCapacityHeaders({
+      'anthropic-ratelimit-unified-status': 'allowed',
+      'anthropic-ratelimit-unified-representative-claim': 'seven_day',
+      'anthropic-ratelimit-unified-reset': '1795528800',
+      'anthropic-ratelimit-unified-7d-reset': '1795528800',
+      'anthropic-ratelimit-unified-7d-utilization': '0.4',
+    });
+    expect(windows).toEqual({ shortWindowAbsent: true, utilization7d: 0.4, windowResetAt7d: 1795528800000 });
+    expect(provesUnwall({ utilization: 1, utilization7d: 0.4 }, windows, FULL)).toBe(true);
+    expect(provesUnwall({ utilization: 1, utilization7d: 1 }, { ...windows, utilization7d: 1 }, FULL)).toBe(false);
+  });
+
+  it('keeps an explicitly reported short window even when seven_day is representative', () => {
+    expect(parseCapacityHeaders({
+      'anthropic-ratelimit-unified-representative-claim': 'seven_day',
+      'anthropic-ratelimit-unified-reset': '1795528800',
+      'anthropic-ratelimit-unified-7d-utilization': '0.4',
+      'anthropic-ratelimit-unified-5h-utilization': '1',
+      'anthropic-ratelimit-unified-5h-reset': '1795100000',
+    })).toEqual({ utilization: 1, windowResetAt: 1795100000000, utilization7d: 0.4 });
+  });
+
   it('maps the unified 5h + 7d headers into the projection shape', () => {
     expect(
       parseCapacityHeaders({

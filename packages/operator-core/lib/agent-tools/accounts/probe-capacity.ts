@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { DRAIN_FULL_UTIL, effectiveDrainUtil, type AccountProvider, type ClaudeAccount } from '../../deployment/account-pool';
+import { DRAIN_FULL_UTIL, effectiveDrainUtil, recordAccountWindow, type AccountProvider, type ClaudeAccount } from '../../deployment/account-pool';
 import { probeCapacityForAccounts, type CapacityProbeResult } from '../../inference-gateway/capacity-probe';
 import { trackDetached } from '../../detached-imports';
 
@@ -138,6 +138,7 @@ function reportRow(r: CapacityProbeResult) {
     before: { utilization: r.before.utilization, utilization7d: r.before.utilization7d },
     upstream: {
       utilization: r.windows.utilization,
+      ...(r.windows.shortWindowAbsent ? { shortWindowAbsent: true } : {}),
       utilization7d: r.windows.utilization7d,
       usageCreditsAvailable: r.windows.usageCreditsAvailable,
       creditBalance: r.windows.creditBalance,
@@ -179,20 +180,9 @@ export interface CapacityProbeArgs {
  * effective-fullness rules so reset expiry and freshness retain the same semantics as routing.
  */
 function hasPremiumHeadroom(account: ClaudeAccount, result: CapacityProbeResult, observedAt: number): boolean {
-  const windows = result.windows;
-  const hasFreshWindow = windows.utilization !== undefined || windows.utilization7d !== undefined;
-  const candidate: ClaudeAccount = {
-    ...account,
-    rate: {
-      ...account.rate,
-      ...(windows.utilization !== undefined ? { utilization: windows.utilization } : {}),
-      ...(windows.windowResetAt !== undefined ? { windowResetAt: windows.windowResetAt } : {}),
-      ...(windows.utilization7d !== undefined ? { utilization7d: windows.utilization7d } : {}),
-      ...(windows.windowResetAt7d !== undefined ? { windowResetAt7d: windows.windowResetAt7d } : {}),
-      ...(windows.usageCreditsAvailable !== undefined ? { usageCreditsAvailable: windows.usageCreditsAvailable } : {}),
-      ...(hasFreshWindow ? { utilizationAt: observedAt } : {}),
-    },
-  };
+  // Use the same merge as persistence; a second hand-written merge retained retired
+  // windows and refused recovery even after a successful upstream response.
+  const candidate = recordAccountWindow({ accounts: [account] }, account.id, result.windows, observedAt).accounts[0]!;
   return effectiveDrainUtil(candidate, observedAt) < DRAIN_FULL_UTIL;
 }
 
@@ -260,6 +250,7 @@ export async function runCapacityProbe(args: CapacityProbeArgs) {
         {
           utilization: w.utilization,
           windowResetAt: w.windowResetAt,
+          shortWindowAbsent: w.shortWindowAbsent,
           utilization7d: w.utilization7d,
           windowResetAt7d: w.windowResetAt7d,
           usageCreditsAvailable: w.usageCreditsAvailable,

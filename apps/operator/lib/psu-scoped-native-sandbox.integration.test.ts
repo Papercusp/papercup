@@ -166,7 +166,8 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
     { name: 'work_items_complete', args: { ...own, state: 'done', assumptions: 'none',
       changeKinds: ['no-code-change'], changeKindReason: 'sandbox fixture close; no code is changed', completion: {
       summary: completionMarker, testsRun: 'manual read of restored frozen fixture', testResult: 'pass',
-      verifiedHow: 'manual', filesChanged: [] } } },
+      verifiedHow: 'manual', filesChanged: [],
+      verification: { workOutcome: 'other-no-new-change' } } } },
   ];
   const snapshotRoot = join(fixtureRoot, 'protocol'); mkdirSync(snapshotRoot);
   const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: frozenMarker }] });
@@ -206,7 +207,8 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
           work_items_complete: { ...identity, state: z.literal('done'), assumptions: z.literal('none'),
             changeKinds: z.array(z.string()), changeKindReason: z.string(),
             completion: z.object({ summary: z.string(), testsRun: z.string(), testResult: z.string(),
-              verifiedHow: z.literal('manual'), filesChanged: z.array(z.string()) }) },
+              verifiedHow: z.literal('manual'), filesChanged: z.array(z.string()),
+              verification: z.object({ workOutcome: z.literal('other-no-new-change') }) }) },
         };
         for (const name of Object.keys(inputs) as Array<keyof typeof inputs>) {
           host.registerTool(name, { inputSchema: inputs[name] }, async (args: Record<string, unknown>): Promise<CallToolResult> => {
@@ -462,7 +464,9 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
     })) });
     expect(rows.find(row => row.feature_id === own.id), terminalDiagnostics).toMatchObject({
       status: 'done', terminal_owner: owner, terminal_completion_ref: null,
-      completion_evidence: { summary: completionMarker, testResult: 'pass', verifiedHow: 'manual' },
+      completion_evidence: {
+        summary: completionMarker, testResult: 'pass', verifiedHow: 'manual', workOutcome: 'other-no-new-change',
+      },
     });
     expect(rows.find(row => row.feature_id === neighbor), terminalDiagnostics).toMatchObject({
       status: 'wip', terminal_completion_ref: null, completion_evidence: null,

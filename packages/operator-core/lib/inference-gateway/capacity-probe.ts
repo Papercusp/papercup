@@ -71,6 +71,8 @@ export const CAPACITY_PROBE_REFUSAL_TIMEOUT_MS = 1000;
 export interface CapacityWindows {
   utilization?: number;
   windowResetAt?: number;
+  /** Explicit weekly-only Anthropic observation, distinct from a missing/failed reading. */
+  shortWindowAbsent?: true;
   utilization7d?: number;
   windowResetAt7d?: number;
   usageCreditsAvailable?: boolean;
@@ -173,7 +175,9 @@ export function provesUnwall(before: CapacityWindows, now: CapacityWindows, full
   const u5 = now.utilization;
   const freed7 = u7 !== undefined && u7 < (before.utilization7d ?? 1) - UNWALL_EPSILON;
   const freed5 = u5 !== undefined && u5 < (before.utilization ?? 1) - UNWALL_EPSILON;
-  return freed7 || freed5;
+  const retiredShortWall = now.shortWindowAbsent === true && (before.utilization ?? 0) >= fullUtil &&
+    u7 !== undefined && u7 < fullUtil;
+  return freed7 || freed5 || retiredShortWall;
 }
 
 /** The egress this account starts on — see `resolveAccountEgress`, the canonical selector in

@@ -318,8 +318,8 @@ function makeWindowProjector(
     const modelKey = model.trim().toLowerCase() || 'unknown';
     const projectionKey = `${accountId}:${bucket}:${modelKey}`;
     const prev = last.get(projectionKey);
-    const util = w.utilization ?? prev?.util ?? 0;
-    const resetAt = w.windowResetAt ?? prev?.resetAt ?? 0;
+    const util = w.shortWindowAbsent ? 0 : w.utilization ?? prev?.util ?? 0;
+    const resetAt = w.shortWindowAbsent ? 0 : w.windowResetAt ?? prev?.resetAt ?? 0;
     const util7d = w7.utilization7d ?? prev?.util7d ?? 0;
     const resetAt7d = w7.windowResetAt7d ?? prev?.resetAt7d ?? 0;
     const creditChanged = usageCreditsAvailable !== undefined && usageCreditsAvailable !== prev?.usageCreditsAvailable;
@@ -349,6 +349,7 @@ function makeWindowProjector(
           {
             utilization: w.utilization,
             windowResetAt: w.windowResetAt,
+            shortWindowAbsent: w.shortWindowAbsent,
             utilization7d: w7.utilization7d,
             windowResetAt7d: w7.windowResetAt7d,
             usageCreditsAvailable,

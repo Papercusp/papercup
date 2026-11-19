@@ -2299,14 +2299,30 @@ export function classifyProxyHandlerError(
 export function parseUnifiedWindow(h: Record<string, string | undefined>): {
   utilization?: number;
   windowResetAt?: number;
+  shortWindowAbsent?: true;
 } {
-  const out: { utilization?: number; windowResetAt?: number } = {};
-  const u = h['anthropic-ratelimit-unified-5h-utilization'] ?? h['anthropic-ratelimit-unified-utilization'];
+  const out: { utilization?: number; windowResetAt?: number; shortWindowAbsent?: true } = {};
+  const weeklyClaim = h['anthropic-ratelimit-unified-representative-claim'] === 'seven_day';
+  const weeklyUtil = h['anthropic-ratelimit-unified-7d-utilization'];
+  // The generic reset describes the representative claim. It is not a 5h reset when
+  // Anthropic reports only seven_day (accounts whose short limit was removed).
+  // Carry an explicit observation so writers can retire an old short-window wall;
+  // an empty/partial response must continue to preserve unobserved windows.
+  if (weeklyClaim && weeklyUtil !== undefined && Number.isFinite(Number(weeklyUtil)) && Number(weeklyUtil) >= 0 &&
+      h['anthropic-ratelimit-unified-5h-status'] === undefined &&
+      h['anthropic-ratelimit-unified-5h-utilization'] === undefined &&
+      h['anthropic-ratelimit-unified-5h-reset'] === undefined &&
+      h['anthropic-ratelimit-unified-utilization'] === undefined) {
+    return { shortWindowAbsent: true };
+  }
+  const u = h['anthropic-ratelimit-unified-5h-utilization'] ??
+    (weeklyClaim ? undefined : h['anthropic-ratelimit-unified-utilization']);
   if (u !== undefined) {
     const n = Number(u);
     if (Number.isFinite(n) && n >= 0) out.utilization = n;
   }
-  const r = h['anthropic-ratelimit-unified-5h-reset'] ?? h['anthropic-ratelimit-unified-reset'];
+  const r = h['anthropic-ratelimit-unified-5h-reset'] ??
+    (weeklyClaim ? undefined : h['anthropic-ratelimit-unified-reset']);
   if (r && /^\d+$/.test(r)) out.windowResetAt = Number(r) * 1000;
   return out;
 }

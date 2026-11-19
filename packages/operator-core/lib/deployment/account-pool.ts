@@ -658,7 +658,7 @@ export function setAccountModelRefusal(
 export function recordAccountWindow(
   pool: AccountPool,
   id: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
+  w: { utilization?: number; windowResetAt?: number; shortWindowAbsent?: true; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
   now: number,
 ): AccountPool {
   return {
@@ -666,12 +666,12 @@ export function recordAccountWindow(
       if (a.id !== id) return a;
       const rate: AccountRateState = {
         ...a.rate,
-        utilization: w.utilization ?? a.rate.utilization,
-        windowResetAt: w.windowResetAt ?? a.rate.windowResetAt,
+        utilization: w.shortWindowAbsent ? undefined : w.utilization ?? a.rate.utilization,
+        windowResetAt: w.shortWindowAbsent ? undefined : w.windowResetAt ?? a.rate.windowResetAt,
         utilization7d: w.utilization7d ?? a.rate.utilization7d,
         windowResetAt7d: w.windowResetAt7d ?? a.rate.windowResetAt7d,
         utilizationAt:
-          w.utilization !== undefined || w.windowResetAt !== undefined ||
+          w.shortWindowAbsent || w.utilization !== undefined || w.windowResetAt !== undefined ||
           w.utilization7d !== undefined || w.windowResetAt7d !== undefined
             ? now : a.rate.utilizationAt,
         ...(accountProvider(a) === 'codex' && w.usageCreditsAvailable !== undefined

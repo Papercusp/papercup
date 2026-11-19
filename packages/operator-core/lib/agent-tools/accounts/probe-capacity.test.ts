@@ -58,6 +58,25 @@ afterEach(() => {
 });
 
 describe('accounts:probe-capacity — failure persistence', () => {
+  it.each([0.4, 1])('converges a weekly-only Claude observation without discarding weekly usage %s', async (weekly) => {
+    const now = Date.now();
+    const reset = now + 7 * 86_400_000;
+    pool = recordAccountWindow(pool, 'a', {
+      utilization: 1, windowResetAt: reset, utilization7d: weekly, windowResetAt7d: reset,
+    }, now);
+    probeM.mockResolvedValue([{ accountId: 'a', ok: true, status: weekly < 1 ? 200 : 429,
+      windows: { shortWindowAbsent: true, utilization7d: weekly, windowResetAt7d: reset },
+      before: { utilization: 1, utilization7d: weekly }, unwalls: weekly < 1 }]);
+    const out = body(await tool.handler({ apply: true } as never, {} as never) as Out);
+    expect(getAccount(pool, 'a')!.rate.utilization).toBeUndefined();
+    expect(getAccount(pool, 'a')!.rate.windowResetAt).toBeUndefined();
+    expect(getAccount(pool, 'a')!.rate.utilization7d).toBe(weekly);
+    expect(getAccount(pool, 'a')!.rate.windowResetAt7d).toBe(reset);
+    expect(out.serving).toEqual(weekly < 1 ? ['a'] : []);
+    expect(out.gatewayReadmitted).toEqual(weekly < 1 ? ['a'] : []);
+    expect(gatewayFetchM).toHaveBeenCalledTimes(weekly < 1 ? 1 : 0);
+  });
+
   it('applied successful inference clears stale sustained penalties before fresh consult selection', async () => {
     const recent = Date.now() - 1000;
     pool = recordAccountWindow(pool, 'a', { utilization: 0.2, utilization7d: 0.73 }, recent);

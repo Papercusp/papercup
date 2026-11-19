@@ -161,7 +161,7 @@ export function renderBurnAggregateBody(agg: BurnAggregate): string {
  */
 export async function recordAccountWindowWithBurnAlert(
   accountId: string,
-  w: { utilization?: number; windowResetAt?: number; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
+  w: { utilization?: number; windowResetAt?: number; shortWindowAbsent?: true; utilization7d?: number; windowResetAt7d?: number; usageCreditsAvailable?: boolean; creditBalance?: AccountCreditBalance; planType?: string },
   now: number,
   ws?: string,
 ): Promise<{ pool: AccountPool; transition: BurnTransition | null; planTransition: PlanTransition | null }> {
