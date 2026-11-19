@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
+import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   FANOUT_CLAIM_LEASE_MS, FANOUT_MAX_ATTEMPTS, FANOUT_RETRY_BASE_MS,
@@ -175,8 +176,19 @@ describe('R-27 permanent finding reservation and independent recovery (real PG)'
       registerCloseHook: () => {},
     } as unknown as Parameters<typeof startOutboxDrain>[0];
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    // Preserve real PG I/O timers while enabling the managed interval registry.
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    // Real PG I/O needs real timers, so nothing is faked. The drain's poll is a
+    // managed interval, which stays inert in a Vitest worker unless a
+    // deterministic seam is injected: capture its tick and fire it by hand.
+    const pollTicks: Array<() => void> = [];
+    const pollHandle: TimerHandle = { unref: () => undefined };
+    resetScheduledRegistry();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        if (ms === 25) pollTicks.push(cb);
+        return pollHandle;
+      },
+      clearIntervalImpl: () => undefined,
+    });
     const drain = startOutboxDrain(handle, pg, {
       pollMs: 25, _passTimeoutMs: 0, _backlogStallMs: 0, _orphanCheckIntervalMs: -1,
       diagnosticsEnabled: false, fanout: async () => {},
@@ -187,17 +199,18 @@ describe('R-27 permanent finding reservation and independent recovery (real PG)'
       },
     });
     try {
-      await vi.waitFor(() => expect(passes).toBeGreaterThan(0));
+      await vi.waitFor(() => expect(passes).toBeGreaterThan(0), { timeout: 10_000 });
+      expect(pollTicks).toHaveLength(1);
       expect((await row(1)).finding_ref).toBeNull();
       now += FANOUT_RETRY_BASE_MS;
-      await vi.advanceTimersByTimeAsync(25);
-      await vi.waitFor(async () => expect((await row(1)).finding_ref).not.toBeNull());
+      pollTicks[0]?.();
+      await vi.waitFor(async () => expect((await row(1)).finding_ref).not.toBeNull(), { timeout: 10_000 });
       expect(fileFinding).toHaveBeenCalledTimes(2);
       expect(await db.sql`SELECT id FROM harness_shared.test_fanout_findings`).toHaveLength(1);
       expect((await row(1)).state).toBe('written');
     } finally {
       await drain.stop();
-      vi.useRealTimers();
+      resetScheduledRegistry();
     }
   });
 
