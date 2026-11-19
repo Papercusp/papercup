@@ -397,8 +397,8 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     expect(built.status, budgetNote(built.status) + built.stdout + built.stderr).toBe(0);
     const script = [
       'import {writeFileSync,renameSync} from "node:fs";',
-      'const {readVerifierSourceReceipt}=await import(process.argv[1]);',
-      'const root=process.argv[2], receiptPath=process.argv[3], worker=process.argv[4];',
+      'const {readVerifierSourceReceipt}=await import(process.argv[2]);',
+      'const root=process.argv[3], receiptPath=process.argv[4], worker=process.argv[5];',
       'const receipt=await readVerifierSourceReceipt(root,receiptPath);',
       'writeFileSync(root+"/source.ts","export const value = 2;\\n");',
       'let tampered,missing;',
@@ -408,7 +408,11 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
       'finally{renameSync(worker+".held",worker)}',
       'console.log(JSON.stringify({receipt,tampered,missing}));',
     ].join('\n');
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script,
+    // File workers inherit execArgv; launch a plain ESM file so --input-type
+    // cannot leak from an eval parent into the actual sibling worker.
+    const runner = join(output, 'verifier-runner.mjs');
+    writeFileSync(runner, script);
+    const result = spawnSync(process.execPath, [runner,
       parent, sourceRoot, receiptPath, join(output, 'verifier-source-worker.mjs')], {
       encoding: 'utf8', timeout: 20_000, env: { ...process.env,
         VERIFY_TAURI_SOURCE_REF: receipt.sourceCommit },
