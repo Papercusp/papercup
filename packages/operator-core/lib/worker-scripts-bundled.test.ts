@@ -384,6 +384,8 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const receiptPath = join(output, 'independent-verifier-receipt.json');
     writeFileSync(receiptPath, JSON.stringify(receipt));
     writeFileSync(join(sourceRoot, '.verifier-source.json'), JSON.stringify(receipt));
+    const worker = join(output, 'verifier-source-worker.mjs');
+    expect(existsSync(worker), 'shared recipe must produce the actual sibling before the runtime probe').toBe(true);
     const entry = join(output, 'verifier-parent.ts');
     const parent = join(output, 'verifier-parent.mjs');
     writeFileSync(entry, 'export { readVerifierSourceReceipt } from '
@@ -413,13 +415,15 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     const runner = join(output, 'verifier-runner.mjs');
     writeFileSync(runner, script);
     const result = spawnSync(process.execPath, [runner,
-      parent, sourceRoot, receiptPath, join(output, 'verifier-source-worker.mjs')], {
+      parent, sourceRoot, receiptPath, worker], {
       encoding: 'utf8', timeout: 20_000, env: { ...process.env,
         VERIFY_TAURI_SOURCE_REF: receipt.sourceCommit },
     });
     expect(result.status, result.stdout + result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ receipt,
-      tampered: expect.stringContaining('changed source.ts'), missing: 'MODULE_NOT_FOUND' });
+    const observed = JSON.parse(result.stdout);
+    expect(observed.receipt, 'bundled worker must accept the unchanged source').toEqual(receipt);
+    expect(observed.tampered, 'bundled worker must reject changed source').toContain('changed source.ts');
+    expect(observed.missing, 'removing the sibling must fail at the ESM loader').toBe('ERR_MODULE_NOT_FOUND');
   }, BUILD_TEST_TIMEOUT_MS);
 
   it('control: successful compilation without the package-cache lease is detected', () => {
