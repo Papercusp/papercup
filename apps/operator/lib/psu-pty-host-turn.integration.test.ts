@@ -720,13 +720,21 @@ it('re-armed wake uses its verified native boundary without a second busy-gate w
   const log = eventLogPathForOwner(ownerId);
   const { io, captured } = fakeIo();
   const childCode = [
+    "const fs=require('node:fs');",
     "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
     "process.stdout.write('READY\\n');setInterval(()=>process.stdout.write('REPAINT\\n'),10);",
     "let line='';process.stdin.on('data',data=>{for(const c of data){",
     "if(c==='\\u0004'){process.exit(0);return;}",
-    "if(c==='\\r'){if(line){process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
+    // The real submit verifier requires the submitted prompt and native start;
+    // repainting or echoing the payload alone cannot acknowledge a Codex turn.
+    "if(c==='\\r'){if(line){const timestamp=new Date().toISOString(),turn_id='rearm-proof';",
+    "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}},",
+    "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id}}];",
+    "fs.appendFileSync(process.env.TEST_TRANSCRIPT,rows.map(row=>JSON.stringify(row)+'\\n').join(''));",
+    "process.stdout.write('ECHO:'+line+'\\n');line='';}}else{line+=c;}}});",
     'setTimeout(()=>process.exit(0),10000);',
   ].join('');
+  new Script(childCode);
   const done = hostThroughPty({
     command: execPath,
     args: ['-e', childCode],
@@ -735,6 +743,7 @@ it('re-armed wake uses its verified native boundary without a second busy-gate w
       PAPERCUSP_SID: ownerId,
       PAPERCUSP_AGENT: 'codex',
       CODEX_HOME: root,
+      TEST_TRANSCRIPT: transcript,
       PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '150',
       PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1200',
       PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
@@ -767,7 +776,17 @@ it('re-armed wake uses its verified native boundary without a second busy-gate w
       type: 'event_msg',
       payload: { type: 'task_complete', turn_id: 'settled-before-rearm' },
     }) + '\n');
-    expect(await waitForOutput(captured, 'ECHO:REARM_PROOF', 4000)).toBe(true);
+    const normalizedOutput = () => captured().replace(/\r\n/g, '\n');
+    expect(await waitForOutput(normalizedOutput, '\nREARM_PROOF\n', 4000),
+      hostTestDiagnostics(ownerId, captured)).toBe(true);
+    const nativeRows = readFileSync(transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const submitted = nativeRows.find(row => row.type === 'response_item')?.payload.content[0].text;
+    const origin = leadingTurnOriginMarker(submitted ?? '');
+    expect(origin).toMatch(/^⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧$/);
+    expect(submitted).toBe(`${origin}\nREARM_PROOF`);
+    expect(normalizedOutput()).toContain(`ECHO:${submitted}\n`);
+    expect(nativeRows.filter(row => row.payload?.turn_id === 'rearm-proof').map(row => row.payload.type))
+      .toEqual(['task_started', 'task_complete']);
     const terminalDeadline = Date.now() + 2000;
     let events = '';
     while (Date.now() < terminalDeadline) {
@@ -781,6 +800,7 @@ it('re-armed wake uses its verified native boundary without a second busy-gate w
     await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
     await done;
     rmSync(root, { recursive: true, force: true });
+    rmSync(log, { force: true });
   }
 }, 15_000);
 
@@ -1466,17 +1486,29 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
     const ownerId = uniqueOwner('UNBINDABLE-WAKE');
     const sock = socketPathFor(ownerId);
     const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const sessions = join(root, 'sessions');
+    mkdirSync(sessions);
+    const transcript = join(sessions, `rollout-${nativeId}.jsonl`);
     const { captured, io } = fakeIo();
     let resolvedNativeId: string | null = null;
     const childCode = [
       "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
-      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);process.stdout.write('INPUT:'+data+'\\n');});",
+      "const fs=require('node:fs');let line='';",
+      "process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      // A bound Codex child acknowledges the full prompt and native lifecycle.
+      "if(c==='\\r'){if(line){const timestamp=new Date().toISOString(),turn_id='unbindable-wake';",
+      "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}},",
+      "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id}}];",
+      "fs.appendFileSync(process.env.TEST_TRANSCRIPT,rows.map(row=>JSON.stringify(row)+'\\n').join(''));",
+      "process.stdout.write('INPUT:'+line+'\\n');line='';}}else{line+=c;}}});",
       'setTimeout(()=>process.exit(0),15000);',
     ].join('');
+    new Script(childCode);
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root,
       env: hermeticEnv({
-        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+        PAPERCUSP_AGENT: 'codex', CODEX_HOME: root, TEST_TRANSCRIPT: transcript,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
         PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
         PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '200',
@@ -1509,12 +1541,34 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       expect(await injectIntoHostWithConfirmation(sock, wake))
         .toMatchObject({ ok: false, reason: 'deferred-successor-unbindable' });
       expect(readEvents(ownerId).filter((event) => event.kind === 'successor-unbindable-refused')).toHaveLength(1);
-      expect(captured()).not.toContain('INPUT:later wake');
+      expect(captured()).not.toContain(wake.data);
       // The id appears (e.g. an owner dismissed the menu): the next wake binds and lands.
       resolvedNativeId = nativeId;
       expect(await injectIntoHostWithConfirmation(sock, { ...wake, deliveryId: 'unbindable-wake-2' }))
         .toMatchObject({ ok: true, reason: 'accepted' });
-      expect(await waitForOutput(captured, 'INPUT:later wake')).toBe(true);
+      expect(await waitForOutput(captured, wake.data), hostTestDiagnostics(ownerId, captured)).toBe(true);
+      const output = captured().replace(/\r\n/g, '\n');
+      expect(output).toMatch(/INPUT:⟦turn-origin:host-control nonce:[0-9a-f]+⟧\nlater wake\n/);
+      const deliveredWake = { ...wake, deliveryId: 'unbindable-wake-2' };
+      const completedBy = Date.now() + 3000;
+      let retry = await injectIntoHostWithConfirmation(sock, deliveredWake);
+      while (retry.reason === 'pending-delivery-id' && Date.now() < completedBy) {
+        await sleep(20);
+        retry = await injectIntoHostWithConfirmation(sock, deliveredWake);
+      }
+      expect(retry, hostTestDiagnostics(ownerId, captured))
+        .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
+      const nativeRows = readFileSync(transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(nativeRows).toHaveLength(3);
+      expect(nativeRows[0]).toMatchObject({
+        type: 'response_item', payload: { type: 'message', role: 'user', content: [
+          { type: 'input_text', text: expect.stringMatching(/^⟦turn-origin:host-control nonce:[0-9a-f]+⟧\nlater wake$/) },
+        ] },
+      });
+      expect(nativeRows.slice(1).map((row) => row.payload.type)).toEqual(['task_started', 'task_complete']);
+      expect(readEvents(ownerId)).not.toContainEqual(expect.objectContaining({
+        kind: 'gated-delivery-refused', deliveryId: deliveredWake.deliveryId,
+      }));
       expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
         kind: 'respawn-binding-confirmed', nativeId,
       }));
@@ -1541,18 +1595,23 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
     let resolvedNativeId: string | null = null;
     // Native work, rather than repaint timer punctuality, holds the busy gate.
     // \u0001 starts work, \u0002 settles it, \u0003 models a repaint gap, and
-    // \u0004 exits; anything else is echoed as INPUT:<bytes>.
+    // \u0004 exits; complete prompts acknowledge their native lifecycle on CR.
     const childCode = [
-      "const fs=require('node:fs');const native=(type)=>fs.writeFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type,turn_id:'pending-fixture'}})+'\\n');",
+      "const fs=require('node:fs');const native=(type)=>fs.appendFileSync(process.env.TEST_TRANSCRIPT,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type,turn_id:'pending-fixture'}})+'\\n');",
       "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
-      'let repaint=null;',
-      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);",
-      "if(data.includes('\\u0001')){native('task_started');if(!repaint)repaint=setInterval(()=>process.stdout.write('.'),20);process.stdout.write('NATIVE_RUNNING\\n');return;}",
-      "if(data.includes('\\u0002')){clearInterval(repaint);repaint=null;native('task_complete');return;}",
-      "if(data.includes('\\u0003')){clearInterval(repaint);repaint=null;setTimeout(()=>{repaint=setInterval(()=>process.stdout.write('.'),20);},180);return;}",
-      "process.stdout.write('INPUT:'+data+'\\n');});",
+      "let repaint=null,line='';",
+      "process.stdin.on('data',data=>{for(const c of data){if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\u0001'){native('task_started');if(!repaint)repaint=setInterval(()=>process.stdout.write('.'),20);process.stdout.write('NATIVE_RUNNING\\n');continue;}",
+      "if(c==='\\u0002'){clearInterval(repaint);repaint=null;native('task_complete');continue;}",
+      "if(c==='\\u0003'){clearInterval(repaint);repaint=null;setTimeout(()=>{repaint=setInterval(()=>process.stdout.write('.'),20);},180);continue;}",
+      "if(c==='\\r'){if(line){const timestamp=new Date().toISOString(),turn_id='pending-wake';",
+      "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}},",
+      "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id}}];",
+      "fs.appendFileSync(process.env.TEST_TRANSCRIPT,rows.map(row=>JSON.stringify(row)+'\\n').join(''));",
+      "process.stdout.write('INPUT:'+line+'\\n');line='';}}else{line+=c;}}});",
       'setTimeout(()=>process.exit(0),20000);',
     ].join('');
+    new Script(childCode);
     const hostStartedAt = Date.now();
     const done = hostThroughPty({
       command: execPath, args: ['-e', childCode], cwd: root,
@@ -1627,21 +1686,41 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       expect(refusals).toHaveLength(1);
       expect(refusals[0], JSON.stringify(readEvents(ownerId)))
         .toMatchObject({ mode: 'turn', phase: 'duplicate-pending' });
-      expect(captured()).not.toContain('INPUT:pending x');
+      expect(captured()).not.toContain(wake.data);
 
       // The refusal does not cancel the accepted copy. Once the id appears and
       // the child goes idle, the re-arm writes it exactly once, and a completed
       // retry keeps its idempotent duplicate answer.
       resolvedNativeId = nativeId;
       expect(await injectIntoHost(sock, { mode: 'raw', data: '\x02', ownerId })).toBeTruthy();
-      expect(await waitForOutput(captured, 'INPUT:pending x', 6_000),
-        JSON.stringify({ events: readEvents(ownerId).slice(-20), output: captured().slice(-1000) })).toBe(true);
+      expect(await waitForOutput(captured, wake.data, 6_000),
+        JSON.stringify({ events: readEvents(ownerId), output: captured() })).toBe(true);
+      const output = captured().replace(/\r\n/g, '\n');
+      expect(output).toMatch(/INPUT:⟦turn-origin:host-control nonce:[0-9a-f]+⟧\npending x\n/);
       expect(await waitForEvent((event) => event.kind === 'wake-rearm-delivered', 6_000),
-        JSON.stringify(readEvents(ownerId).slice(-20))).toBe(true);
-      expect(await injectIntoHostWithConfirmation(sock, wake))
+        JSON.stringify(readEvents(ownerId))).toBe(true);
+      const completedBy = Date.now() + 3000;
+      let retry = await injectIntoHostWithConfirmation(sock, wake);
+      while (retry.reason === 'pending-delivery-id' && Date.now() < completedBy) {
+        await sleep(20);
+        retry = await injectIntoHostWithConfirmation(sock, wake);
+      }
+      expect(retry, JSON.stringify(readEvents(ownerId)))
         .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
       await sleep(200);
-      expect((captured().match(/INPUT:pending x/g) ?? []).length).toBe(1);
+      expect((captured().replace(/\r\n/g, '\n').match(/INPUT:⟦turn-origin:host-control nonce:[0-9a-f]+⟧\npending x\n/g) ?? []).length).toBe(1);
+      const nativeRows = readFileSync(transcript, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(nativeRows).toHaveLength(5);
+      expect(nativeRows.slice(0, 2).map((row) => row.payload.type)).toEqual(['task_started', 'task_complete']);
+      expect(nativeRows[2]).toMatchObject({
+        type: 'response_item', payload: { type: 'message', role: 'user', content: [
+          { type: 'input_text', text: expect.stringMatching(/^⟦turn-origin:host-control nonce:[0-9a-f]+⟧\npending x$/) },
+        ] },
+      });
+      expect(nativeRows.slice(3).map((row) => row.payload.type)).toEqual(['task_started', 'task_complete']);
+      expect(readEvents(ownerId)).not.toContainEqual(expect.objectContaining({
+        kind: 'native-turn-start-unverified', deliveryId: wake.deliveryId,
+      }));
       expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
         kind: 'respawn-binding-confirmed', nativeId,
       }));
