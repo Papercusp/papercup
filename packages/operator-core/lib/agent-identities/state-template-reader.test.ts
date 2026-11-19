@@ -141,8 +141,16 @@ describe('identity template reader through canonical cell and read-only dispatch
     mocks.lookup.mockReturnValue(projected);
     let used = 0;
     const windows: string[] = [];
+    // Mirror production PROJECTED_DEPS. Bare deps negotiate the batch-v1 envelope,
+    // which the cell reader cannot read as a single-op result. A finite role quota
+    // also needs reserveQuota, or dispatch fails closed with quota_admission_unavailable.
     mocks.dispatch.mockImplementation((tool, name, args, ctx) => realDispatch(tool, name, args, ctx, {
+      batchResponseVersion: 'operation-v0',
       readQuotaState: async (_name, _ctx, window) => { windows.push(window); return { count: used }; },
+      reserveQuota: async ({ windowKey, limit }) => {
+        windows.push(windowKey);
+        return used >= limit ? { allowed: false, count: used } : { allowed: true, settle: async () => {} };
+      },
     }));
     const ctx = context();
     const make = (needs: string[]) => createIdentityTemplateCellReader({
