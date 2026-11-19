@@ -98,6 +98,18 @@ export type PlanStartConsultOutcome =
       excerpts: PlanStartExcerpt[];
     };
 
+export function buildPlanStartConsultHint(hasMinimumFill: boolean): string {
+  return (
+    'Candidates with relevant transcript history were selected for this plan — `selection.selected` labels each: via "floor" = cleared the router\'s precision floor on real evidence; via "minimum" = best-available transcript candidate below the floor, selected to satisfy the plan-step minimum of 1. ' +
+    'Each candidate\'s `liveness` is shown separately and does not control selection: ended or recorded sessions can still be consulted from their archived transcript. ' +
+    (hasMinimumFill
+      ? 'A via:"minimum" candidate should review from FIRST PRINCIPLES — their selection is best-available, not evidence-matched. '
+      : '') +
+    'Review the candidates + their evidence turns; consult via get_feedback { question } — its default minResponders:1 can consult the best-available transcript candidate even if their original session is not live. ' +
+    'Then re-call plans:start with consulted: true (+ consult_reason naming what the consult concluded), or consulted: false + consult_reason to proceed without consulting — the override always works; this is a nudge, never a gate.'
+  );
+}
+
 export interface PlanStartConsultParams {
   workspaceId: string;
   /** The starting agent — excluded from candidacy by the router. */

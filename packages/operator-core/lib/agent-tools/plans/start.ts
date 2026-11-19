@@ -467,8 +467,8 @@ export default defineTool({
         // plan-start CHECKPOINT consult runs with min:1 — a plan never
         // promotes with zero feedback merely because nobody cleared the
         // relevance floor. The ROUTING is mandatory (the plan body is the
-        // system-authored query); a wake is not. ANY selectable live/parked
-        // candidate — floor-qualified or best-available minimum fill, labeled
+        // system-authored query); a wake is not. ANY selectable candidate —
+        // floor-qualified or best-available minimum fill, labeled
         // via:'floor'|'minimum' (D-002) — nudge-refuses ONCE (override:
         // consulted:false + consult_reason — the similar_exists/force shape);
         // a floor-qualified-but-all-owner-paused set injects transcript
@@ -596,13 +596,7 @@ export default defineTool({
                 error: 'consult_available' as const,
                 candidates: outcome.candidates,
                 selection: outcome.selection,
-                hint:
-                  'Peers with relevant transcript history were selected for this plan — `selection.selected` labels each: via "floor" = cleared the router\'s precision floor on real evidence; via "minimum" = best-available LIVE peer BELOW the floor, selected because the plan-step consult carries a minimum of 1 (a plan never promotes with zero feedback merely because nobody cleared the threshold; a wrong plan assumption multiplies across every promoted item, so this is the cheapest moment to check it). ' +
-                  (hasMinimumFill
-                    ? 'A via:"minimum" candidate should review from FIRST PRINCIPLES — their selection is best-available, not evidence-matched. '
-                    : '') +
-                  'Review the candidates + their evidence turns; consult via get_feedback { question } — its default minResponders:1 reaches at least the best-available live peer. ' +
-                  'Then re-call plans:start with consulted: true (+ consult_reason naming what the consult concluded), or consulted: false + consult_reason to proceed without consulting — the override always works; this is a nudge, never a gate.',
+                hint: consult.buildPlanStartConsultHint(hasMinimumFill),
               };
             }
             if (outcome.outcome === 'proceed' && outcome.verdict === 'all_responders_paused') {

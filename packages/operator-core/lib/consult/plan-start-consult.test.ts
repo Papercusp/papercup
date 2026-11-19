@@ -18,6 +18,7 @@ import type { RouteResult, RoutingCandidate } from './relevance-router';
 import { DEFAULT_MAX_RESPONDERS, DEFAULT_MIN_RESPONDERS } from './get-feedback-core';
 import {
   buildGoalKickoffQuery,
+  buildPlanStartConsultHint,
   buildPlanStartQuery,
   goalKickoffConsult,
   PLAN_START_QUERY_MAX_CHARS,
@@ -25,6 +26,21 @@ import {
   type PlanStartConsultDeps,
   type PlanStartExcerpt,
 } from './plan-start-consult';
+
+describe('buildPlanStartConsultHint', () => {
+  it('describes minimum-fill candidates as transcript candidates with separate liveness', () => {
+    const hint = buildPlanStartConsultHint(true);
+    expect(hint).toContain('best-available transcript candidate below the floor');
+    expect(hint).toContain('`liveness` is shown separately');
+    expect(hint).toContain('ended or recorded sessions');
+    expect(hint).toContain('even if their original session is not live');
+    expect(hint).not.toContain('best-available LIVE peer');
+  });
+
+  it('omits the first-principles instruction when there is no minimum fill', () => {
+    expect(buildPlanStartConsultHint(false)).not.toContain('A via:"minimum" candidate');
+  });
+});
 
 function candidate(ownerId: string, liveness: string, score = 0.7): RoutingCandidate {
   return {
