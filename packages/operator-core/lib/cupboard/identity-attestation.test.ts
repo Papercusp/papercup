@@ -142,7 +142,13 @@ describe('stampIdentityAttestation (identities-v1 D-124)', () => {
       revision: raw.version, value: parseYaml(oldText) });
     const oldRelease = await commitBlueprintRelease({ installedDir, sourceDir: originalDir, id,
       version: raw.version, source: 'official legacy fixture', pins: [pin] });
-    expect((await getIdentitySource(id)).ok).toBe(false);
+    // IDENTITY_SOURCE_SUPERSEDES (WI-6554700010055768): the legacy copy fails the strict identity
+    // schema (top-level `visibility`), so the same-id built-in supersedes it instead of the
+    // launch failing. The installed copy must NOT be selected until the transition below
+    // makes it valid again.
+    const superseded = await getIdentitySource(id);
+    expect(superseded.ok, JSON.stringify(superseded)).toBe(true);
+    expect('sourcePath' in superseded ? superseded.sourcePath : null).toBe(builtinBlueprintPath(id));
     const before = snapshotInstalledBlueprintPackage(installedDir, id);
     const candidate = join(root, 'candidate');
     await cp(oldRelease.installedTo, candidate, { recursive: true });
