@@ -48,7 +48,7 @@ export async function runDependencyGenerationRetention(): Promise<DependencyRete
       try {
         const registry = await loadHarnessRegistry(workspace.id);
         for (const project of registry.projects) {
-          const root = resolveHarnessContentPath(registry, project.slug);
+          let root = resolveHarnessContentPath(registry, project.slug);
           if (!root) continue;
           // Environment configuration can name a live shared store even for a
           // long-retired /tmp project. The shell requires a real integration.
@@ -56,6 +56,9 @@ export async function runDependencyGenerationRetention(): Promise<DependencyRete
             report.skippedIntegrations.push({ root, reason: 'integration is absent or not a directory' });
             continue;
           }
+          // The shell records physical integration roots in pins. Merge alias
+          // consumers before syncing, so one alias cannot release another's refs.
+          root = realpathSync(root);
           // Retention follows durable queue custody, not the age of a ref pin.
           // An unreadable queue must never be interpreted as permission to prune.
           frozenRefs.set(root, frozenRefs.get(root) ?? new Set<string>());

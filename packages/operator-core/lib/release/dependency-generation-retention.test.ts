@@ -88,6 +88,25 @@ describe('hourly dependency-generation retention discovery', () => {
     ]);
   });
 
+  it.each([false, true])('unions frozen custody from integration aliases (reversed=%s)', async (reversed) => {
+    const store = join(fixture, 'store');
+    mkdirSync(store);
+    recordStore(store);
+    const alias = join(fixture, 'alias');
+    symlinkSync(integration, alias, 'dir');
+    registry.load.mockResolvedValue({ projects: (reversed ? ['alias', 'project'] : ['project', 'alias']).map((slug) => ({ slug })) });
+    registry.contentPath.mockImplementation((_registry: unknown, slug: string) => slug === 'alias' ? alias : integration);
+    registry.frozenQueue.mockImplementation(({ installSlug }: { installSlug: string }) => Promise.resolve(installSlug === 'project'
+      ? { status: 'value', queue: { candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40) } }
+      : { status: 'absent' }));
+    await runDependencyGenerationRetention();
+    expect(pruneArguments()).toEqual([
+      '--integration', integration, '--generation-root', store, '--sync-frozen-refs',
+      '--frozen-ref', 'a'.repeat(40), '--frozen-ref', 'b'.repeat(40),
+      '--integration', integration, '--generation-root', store, '--prune-only', '--no-recorded-store-cascade',
+    ]);
+  });
+
   it('retains a shared store when any consumer queue cannot be read', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const store = join(fixture, 'store');
