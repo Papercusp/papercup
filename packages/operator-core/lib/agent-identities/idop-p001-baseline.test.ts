@@ -1930,6 +1930,10 @@ describe('IDOP D-043 applied stack source population', () => {
   const populationComparison = async () => {
     const sources = await comparisonInputs();
     return { inventory: joinIdopP001ComparisonPopulation(sources), sources,
+      readSources: async () => {
+        const { builtin, library } = await comparisonInputs();
+        return { builtin, library };
+      },
       applied: { dependencies: {
         anchors: async () => [anchor, { ownerId: 'refused-owner', applied: revision }],
         record: async (owner: string) => owner === ownerId ? structuredClone(record) : null,
@@ -1986,7 +1990,9 @@ describe('IDOP D-043 applied stack source population', () => {
       if (defect === 'added') options.applied.dependencies.anchors = async () => [anchor,
         { ownerId: 'refused-owner', applied: revision }, { ownerId: 'new-owner', applied: revision }];
       if (defect === 'record-changed') options.applied.dependencies.record = async () => ({ ...record, changed: true });
-      if (defect === 'source-changed') options.sources.builtin.roles.push('new-source-role');
+      if (defect === 'source-changed') options.inventory = joinIdopP001ComparisonPopulation({
+        ...options.sources, builtin: { ...options.sources.builtin, roles: ['other-role'] },
+      });
       if (defect === 'late-read-failed') options.applied.dependencies.record = async owner => {
         if (owner !== ownerId) throw new Error('late original read failed');
         return record;
@@ -2003,6 +2009,21 @@ describe('IDOP D-043 applied stack source population', () => {
     await expect(runIdopP001PopulationPermissionComparison({ ...options, capture }))
       .rejects.toThrow(/inventory digest mismatch/);
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it.each(['builtin', 'library', 'coverage'] as const)('refuses %s source drift during capture', async source => {
+    const options = await populationComparison();
+    const current = await options.readSources();
+    const capture = options.capture;
+    await expect(runIdopP001PopulationPermissionComparison({ ...options,
+      readSources: async () => current,
+      capture: async () => {
+        if (source === 'builtin') current.builtin.sources[0].sha256 = 'c'.repeat(64);
+        if (source === 'library') current.library.unreadable[0].error = 'changed refusal';
+        if (source === 'coverage') current.builtin.directoriesWithoutBlueprint.push('/new-directory');
+        return capture();
+      },
+    })).rejects.toThrow('IDOP comparison source registries changed during original-input capture');
   });
 
   it('still reports an unauthorized same-input permission delta from the complete case adapter', async () => {

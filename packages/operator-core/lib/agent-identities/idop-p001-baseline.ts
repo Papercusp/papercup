@@ -1850,6 +1850,23 @@ export async function readIdopP001AppliedStackPopulation(
   });
 }
 
+type AppliedStackPopulation = Awaited<ReturnType<typeof readIdopP001AppliedStackPopulation>>;
+
+function idopAppliedComparisonSource(row: AppliedStackPopulation['stacks'][number] | AppliedStackPopulation['refused'][number]) {
+  const common = { applied: row.applied, recordSha256: row.recordSha256 };
+  if ('resolution' in row) {
+    return { status: 'refused' as const, data: {
+      ...common,
+      // Project the pinned VM resolver's scalar contract before encoding it.
+      resolution: { kind: row.resolution.kind, reason: row.resolution.reason },
+    } };
+  }
+  return { status: 'readable' as const, data: {
+    ...common, role: row.role, artifactSha256: row.artifactSha256,
+    explicitStack: row.explicitStack, layers: row.layers,
+  } };
+}
+
 /** Join independently read source domains BEFORE enumerating executable cases.
  * A selected-library refusal cannot be hidden by a builtin with the same id;
  * persisted anchors retain readable/refused partitions and inactive wearers.
@@ -1909,17 +1926,10 @@ export function joinIdopP001ComparisonPopulation(options: {
     add('identity', identity.id, 'library', refused ? 'refused' : 'readable', { identity, source });
   }
   if (selected.size !== candidates.size) throw new Error('IDOP comparison library omitted an identity');
-  for (const row of applied.stacks) add('stack', row.ownerId, 'applied', 'readable', {
-    applied: row.applied, role: row.role, recordSha256: row.recordSha256, artifactSha256: row.artifactSha256,
-    explicitStack: row.explicitStack, layers: row.layers,
-  });
-  for (const row of applied.refused) add('stack', row.ownerId, 'applied', 'refused', {
-    applied: row.applied, recordSha256: row.recordSha256,
-    // The canonical resolver executes in its pinned VM realm. Project its
-    // fixed scalar contract; do not admit arbitrary foreign prototypes into
-    // the general authority codec or serialize away unsupported values.
-    resolution: { kind: row.resolution.kind, reason: row.resolution.reason },
-  });
+  for (const row of [...applied.stacks, ...applied.refused]) {
+    const { status, data } = idopAppliedComparisonSource(row);
+    add('stack', row.ownerId, 'applied', status, data);
+  }
   const rows = [...members.values()].sort((a, b) => a.id.localeCompare(b.id));
   const inventory = { scope: 'independent-source-and-persisted-anchor-comparison-domain' as const,
     workspaceId: applied.workspaceId, harnessSlug: library.harnessSlug, livenessMeasured: false as const,
@@ -2078,16 +2088,20 @@ type IdopPermissionArms = {
   manifest: readonly IdopPermissionDifference[];
 };
 
+type IdopComparisonSources = Pick<Parameters<typeof joinIdopP001ComparisonPopulation>[0], 'builtin' | 'library'>;
+
 /** Bind the independently joined census to executable original-input cases.
  * Source-only members and canonical receipt refusals are cases too. Authority
  * capture must use the caller's explicit original read ports, never dispatch or
  * authenticate as a wearer. Raw payloads survive only for one awaited case;
  * the final independently joined metadata must match before any success receipt
- * is returned. This adapter does not supply or certify the capture's host ports.
+ * is returned. readSources must enumerate the source registries again instead
+ * of returning their initial snapshot. The caller supplies the capture's host ports.
  */
 export async function runIdopP001PopulationPermissionComparison(options: IdopPermissionArms & {
   inventory: ReturnType<typeof joinIdopP001ComparisonPopulation>;
-  sources: Pick<Parameters<typeof joinIdopP001ComparisonPopulation>[0], 'builtin' | 'library'>;
+  sources: IdopComparisonSources;
+  readSources: () => Promise<IdopComparisonSources>;
   applied?: { dependencies?: AppliedStackDependencies; sql?: import('postgres').Sql };
   capture: (member: ReturnType<typeof joinIdopP001ComparisonPopulation>['members'][number],
     applied: AppliedStackCapture | null) => Promise<ComparisonJson>;
@@ -2105,6 +2119,14 @@ export async function runIdopP001PopulationPermissionComparison(options: IdopPer
       const capture = async (id: string, original: AppliedStackCapture | null) => {
         const member = members.get(id);
         if (!member) throw new Error('IDOP comparison population acquired an unenumerated member');
+        if (original) {
+          const expected = member.sources.find(source => source.origin === 'applied');
+          const { status, data } = idopAppliedComparisonSource(original);
+          const digest = sha256(comparisonJson(idopAuthorityData(data)));
+          if (!expected || expected.status !== status || expected.sha256 !== digest) {
+            throw new Error('IDOP comparison population changed before applied authority capture');
+          }
+        }
         const applied = original === null ? null : clone(original) as unknown as ComparisonJson;
         const authority = await options.capture(clone(member), original === null ? null : clone(original));
         // Preserve the complete original receipt as well as the separately
@@ -2117,7 +2139,11 @@ export async function runIdopP001PopulationPermissionComparison(options: IdopPer
         payloads: 'digests-only', sql: options.applied?.sql,
         visit: member => capture(`stack:${member.ownerId}`, member),
       });
-      if (comparisonJson(joinIdopP001ComparisonPopulation({ ...sources, applied }) as unknown as ComparisonJson) !==
+      const currentSources = await options.readSources();
+      if (comparisonJson(idopAuthorityData(currentSources)) !== comparisonJson(idopAuthorityData(sources))) {
+        throw new Error('IDOP comparison source registries changed during original-input capture');
+      }
+      if (comparisonJson(joinIdopP001ComparisonPopulation({ ...currentSources, applied }) as unknown as ComparisonJson) !==
           comparisonJson(inventory as unknown as ComparisonJson)) {
         throw new Error('IDOP comparison population changed between inventory and original-input capture');
       }
