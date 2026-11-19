@@ -62,6 +62,7 @@ import { decideLegacyAdoption, reserveLegacyAdoption, retainLegacyAdoptionHuman,
 import type { GovernedRequest, PolicyException } from '../../../governance-policy/inherited-policy';
 import { enrollHostAuthorityBinding, HostAuthorityEnrollmentError } from '../../../governance-policy/host-authority-bindings';
 import { PrincipalCheckError } from '../../../auth/require-principal';
+import type { RefusalContract } from '../../../capability-envelope/refusal-contract-types';
 
 export const GOVERNANCE_POLICY_WRITE_STATUS: Record<GovernancePolicyWriteCode, number> = {
   invalid: 400,
@@ -286,7 +287,16 @@ const enrollAuthority = defineTool({
         return Response.json({ ok: false, op: 'enroll-authority', code: error.code, error: error.message },
           { status: { invalid: 400, forbidden: 403, conflict: 409 }[error.code] });
       if (error instanceof PrincipalCheckError)
-        return Response.json({ ok: false, op: 'enroll-authority', code: 'forbidden', error: error.message }, { status: error.status });
+        return Response.json({
+          ok: false, op: 'enroll-authority', code: 'forbidden', error: error.message,
+          refusal: {
+            observed: { status: String(error.status), reason: error.reason },
+            liftsWhen: 'the enrollment is re-sent by a verified human principal on the root-bound admission ' +
+              'transport (a signed-in browser session for this workspace), not a legacy bootstrap Authorization ' +
+              'credential or an agent token. Re-sending the same credentials cannot pass',
+            whoCanMakeItTrue: ['owner'],
+          } satisfies RefusalContract,
+        }, { status: error.status });
       throw error;
     }
   },
