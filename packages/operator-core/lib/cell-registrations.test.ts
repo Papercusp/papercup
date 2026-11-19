@@ -224,6 +224,9 @@ describe('P-007: the four verdict cells', () => {
       // the same mapped checkpointRunInFlight leg as `retriage`, so also pipeline-family.
       'gate.greenCheckpoint.run',
       'gate.greenCheckpoint.verdict',
+      // Declared in release/harness-checkpoint-cell.ts and registered by registerBuiltinCells();
+      // this pin had not been updated for it (gate leg lint:plane-guards, WI-6554700010048803).
+      'gate.harnessCheckpoint',
       'git.mainBehindStaging',
       'git.pipelinePosition',
       'goal.portfolioThroughput',
