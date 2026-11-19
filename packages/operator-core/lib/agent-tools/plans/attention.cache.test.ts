@@ -89,7 +89,13 @@ vi.mock("../coordination/messages", async () => {
 // Exercise the real HTTP dispatcher without importing the unrelated catalog or
 // production telemetry hooks. attention above registers the actual reader.
 vi.mock('../index', () => ({}));
-vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
+// Keep production's response negotiation: PROJECTED_DEPS sets
+// batchResponseVersion:'operation-v0' (projected-tool-deps.ts). Bare `{}` deps
+// get the universal-batch batch-v1 envelope, so callPlansReadRaw's `.groups`
+// would be undefined (WI-6554700010056589).
+vi.mock('../../projected-tool-deps', () => ({
+  PROJECTED_DEPS: { batchResponseVersion: 'operation-v0' },
+}));
 vi.mock("../coordination/identity", () => ({ ADMIN_COORD_UI_OWNER: "admin" }));
 vi.mock("@papercusp/db-org", async (orig) => {
   const actual = await orig<typeof import("@papercusp/db-org")>();
