@@ -481,7 +481,8 @@ export default defineTool({
         }
         return jsonResult(value);
       } catch (err) {
-        return jsonResult({ ok: false, reason: isWorkspaceContended(err) ? 'workspace_contended' :
+        if (isWorkspaceContended(err)) return workspaceContended(err, operation.id);
+        return jsonResult({ ok: false, reason:
           (err as { reason?: string }).reason ?? 'operation_authority_unknown', busy: [], operation_id: operation.id });
       }
     }
@@ -540,7 +541,7 @@ export default defineTool({
       // name/pgCode (or expose the original postgres `code`). Use the shared
       // structural classifier so a final raw 57014/55P03 is never leaked as
       // handler_error merely because `instanceof` crossed a module boundary.
-      if (isWorkspaceContended(err)) return workspaceContended();
+      if (isWorkspaceContended(err)) return workspaceContended(err);
       // Defensive fallback: a fault in the authority-routing layer must never break the
       // live per-edit lock path — degrade to the raw local acquire (pre-cutover behavior),
       // itself contention-retried for the same reason as the primary path above.
@@ -549,7 +550,7 @@ export default defineTool({
       try {
         first = await acquireWithContentionRetry(localAcquire);
       } catch (err2) {
-        if (isWorkspaceContended(err2)) return workspaceContended();
+        if (isWorkspaceContended(err2)) return workspaceContended(err2);
         throw err2;
       }
     }
@@ -1183,14 +1184,27 @@ function errorResult(error: string) {
 /** EI-9478: the advisory-lock wait timed out before the service could identify
  * a holder. Distinct `reason` plus an explicit unknown holder keeps readers
  * from rendering the timeout as either a foreign hold or proof of no hold. */
-function workspaceContended() {
+function workspaceContended(error: unknown, operationId?: string) {
+  const observed = z.object({
+    observedAtMs: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    unavailable: z.object({ code: z.string().max(80), message: z.string().max(200) }).optional(),
+    holders: z.array(z.object({ owner: z.string().min(1).max(120), backendPid: z.number().int().positive(),
+      startedAtMs: z.number().int().positive(), phase: z.literal('preservation'), ownerComplete: z.boolean() })).max(8),
+  }).safeParse((error as { preservation?: unknown } | null)?.preservation);
+  const preservation = observed.success && (observed.data.holders.length || observed.data.unavailable)
+    ? observed.data : undefined;
   return jsonResult({
     ok: false,
     reason: 'workspace_contended',
     transient: true,
     holder: 'unknown',
     busy: [],
-    advice:
+    ...(operationId ? { operation_id: operationId } : {}),
+    ...(preservation ? { preservation } : {}),
+    advice: preservation?.holders.length
+      ? 'A preservation reservation was observed after the timeout. Coordinate with its complete owner identity; backendPid and startedAtMs identify the observed operation. Recheck by retrying locks:acquire after coordination. The file holder remains unconfirmed. Do NOT queue wake_on_grant because no waiter ticket was returned.'
+      :
       'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested files are unheld. Do NOT queue wake_on_grant for this timeout because no waiter ticket was returned; retry the operation with backoff or inspect the lock-service state.',
   });
 }

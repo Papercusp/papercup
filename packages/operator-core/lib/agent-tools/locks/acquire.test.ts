@@ -113,6 +113,22 @@ describe('hook operation acquire API', () => {
     expect(insertM).not.toHaveBeenCalled();
   });
 
+  it('retains the operation identity alongside an observed preservation owner on timeout', async () => {
+    const preservation = { observedAtMs: 2000, truncated: false,
+      holders: [{ owner: 'su-preserver', backendPid: 1234, startedAtMs: 1000,
+        phase: 'preservation', ownerComplete: true }] };
+    routeM.mockRejectedValue(Object.assign(new WorkspaceContendedError('ws', '55P03', new Error('timeout')),
+      { name: 'WorkspaceContendedError', pgCode: '55P03', preservation }));
+    vi.useFakeTimers();
+    try {
+      const pending = call(request);
+      await vi.runAllTimersAsync();
+      expect(body(await pending)).toMatchObject({ reason: 'workspace_contended', operation_id: operation.id,
+        preservation, holder: 'unknown', busy: [] });
+      expect(insertM).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
   it('preserves operation expiry and terminal refusal instead of creating a legacy waiter', async () => {
     routeM.mockResolvedValue({ value: { ok: false, reason: 'operation_finished', operation_id: operation.id }, via: 'remote-authority' });
     expect(body(await call({ ...request, wait: { max_sec: 30 } }))).toMatchObject({ ok: false, reason: 'operation_finished' });
@@ -515,6 +531,32 @@ describe('locks:acquire — outcome branches', () => {
       // i.e. 4 attempts) before degrading to workspace_contended — not surfaced on
       // the very first timeout.
       expect(routeM.mock.calls.length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns observed preservation reservations without inventing a file holder or waiter ticket', async () => {
+    const preservation = {
+      observedAtMs: 1_795_052_000_100,
+      truncated: false,
+      holders: [{ owner: 'su-preserver', backendPid: 1234, startedAtMs: 1_795_052_000_000,
+        phase: 'preservation', ownerComplete: true }],
+    };
+    routeM.mockRejectedValue(Object.assign(
+      new WorkspaceContendedError('ws', '55P03', new Error('advisory timeout')),
+      { name: 'WorkspaceContendedError', pgCode: '55P03', preservation },
+    ));
+    vi.useFakeTimers();
+    try {
+      const pending = call({});
+      await vi.runAllTimersAsync();
+      const result = body(await pending);
+      expect(result).toMatchObject({ reason: 'workspace_contended', holder: 'unknown', busy: [], preservation });
+      expect(result.ticket_id).toBeUndefined();
+      expect(String(result.advice)).toMatch(/coordinate.*owner/i);
+      expect(String(result.advice)).toMatch(/after the timeout/i);
+      expect(String(result.advice)).toMatch(/do NOT queue wake_on_grant/i);
     } finally {
       vi.useRealTimers();
     }
