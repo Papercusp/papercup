@@ -11,6 +11,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import SecretStream from '@hyperswarm/secret-stream';
 import { WebSocketServer } from 'ws';
 import { describe, expect, it, vi } from 'vitest';
+import { createTextCollector } from '../child-output';
 import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 
@@ -61,8 +62,7 @@ describe('installed computer production browser transport', () => {
       execArgv: ['--import', 'tsx'], stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
     const messages: Record<string, unknown>[] = [];
-    let hostErrors = '';
-    host.stderr?.on('data', data => { hostErrors = (hostErrors + String(data)).slice(-4000); });
+    const hostErrors = createTextCollector(host.stderr);
     host.on('message', message => messages.push(message as Record<string, unknown>));
     let browser: Browser | undefined;
     let page: Page | undefined;
@@ -74,7 +74,7 @@ describe('installed computer production browser transport', () => {
       page = await context.newPage();
       page.on('pageerror', error => pageErrors.push(error.message));
       host.send({ type: 'start', url: socketUrl + '?peer=host', count: 193, permute: true });
-      await vi.waitFor(() => expect(messages.some(message => message.type === 'bound'), hostErrors).toBe(true), { timeout: 15_000 });
+      await vi.waitFor(() => expect(messages.some(message => message.type === 'bound'), hostErrors.peek()).toBe(true), { timeout: 15_000 });
       expect(host.pid).not.toBe(process.pid);
       await page.goto(origin);
       await page.waitForFunction('!!globalThis.installedComputerTest');
@@ -224,7 +224,7 @@ describe('installed computer production browser transport', () => {
         try { const frame = JSON.parse(packet); return { type: frame.type, contentType: frame.contentType, bytes: frame.packet?.length }; }
         catch { return { type: 'invalid-json' }; }
       });
-      throw new Error(`${phase}: ${error instanceof Error ? error.message : String(error)}; browser=${state}; pageErrors=${JSON.stringify(pageErrors)}; host=${hostErrors}; peerEvents=${JSON.stringify(messages)}; wire=${JSON.stringify(wire)}`, { cause: error });
+      throw new Error(`${phase}: ${error instanceof Error ? error.message : String(error)}; browser=${state}; pageErrors=${JSON.stringify(pageErrors)}; host=${hostErrors.peek()}; peerEvents=${JSON.stringify(messages)}; wire=${JSON.stringify(wire)}`, { cause: error });
     } finally {
       await browser?.close(); broker.dispose();
       for (const socket of sockets.clients) socket.terminate();

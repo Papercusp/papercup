@@ -38,6 +38,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
+import { createTextCollector } from '../../../packages/operator-core/lib/child-output';
 import * as realLauncher from './psu-launcher.mjs';
 
 const hostHome = vi.hoisted(() => ({ path: '' }));
@@ -524,7 +525,7 @@ describe('Codex managed child preserves its recorded role authority', () => {
     ({ role, mode, fork }) => {
       const owner = 'su-role-resume';
       const session = { agent: 'codex', role, coordOwnerId: owner, id: 7 };
-      const env = {
+      const env: NodeJS.ProcessEnv = {
         ...launcher.buildResumeEnv(session, {
           fork, ownerId: owner,
           accountEnv: { mode, id: mode === 'pin' ? 'fixture-account' : null, env: {} },
@@ -880,10 +881,9 @@ describe('Codex managed turn enrollment', () => {
           v: 1, mode: 'carry-respawn', ownerId: owner, deliveryId: 'compatibility-carry',
           data: carry, systemPromptAddendum: 'Saved task checkpoint',
         })));
-        let response = '';
-        connection.on('data', data => { response += data.toString(); });
+        const response = createTextCollector(connection);
         connection.on('error', reject);
-        connection.on('close', () => { try { resolveAck(JSON.parse(response)); } catch (error) { reject(error); } });
+        connection.on('close', () => { try { resolveAck(JSON.parse(response.text())); } catch (error) { reject(error); } });
       });
       expect(ack).toMatchObject({ ok: true, reason: 'accepted' });
       await vi.waitFor(() => {

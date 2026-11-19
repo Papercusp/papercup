@@ -16,6 +16,7 @@ import * as dbOrg from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { createOrgTestDb } from '../../test/_org-test-db';
 import { drainDetached } from '../detached-imports';
+import { createTextCollector } from '../child-output';
 import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 import { linkedWorkspaceIdentity, PostgresHostedCliStore } from '../endpoint-route/routes/hosted-cli/store';
@@ -111,34 +112,34 @@ describe('persisted installed Portal connection', () => {
     const opts = { sql: db.adminSql, encryptionKey: 'private-integration-encryption-key' };
     const browser = SecretStream.keyPair(Buffer.alloc(32, 82));
     let host: ChildProcess | undefined;
-    let hostErrors = '', sequence = 0;
+    let hostErrors = createTextCollector(), sequence = 0;
     const messages: Array<Record<string, any>> = [];
     const connections: Array<{ socket: WebSocket; noise: ByocSealedChannel }> = [];
     const request = async (type: string, extra: Record<string, unknown> = {}) => {
       const requestId = `request-${sequence++}`;
       host!.send({ type, requestId, ...extra });
       await vi.waitFor(() => {
-        expect(host!.exitCode, hostErrors).toBeNull();
-        expect(messages.some(value => value.requestId === requestId), `${type}:${requestId} pid=${host!.pid} ${hostErrors}`).toBe(true);
+        expect(host!.exitCode, hostErrors.peek()).toBeNull();
+        expect(messages.some(value => value.requestId === requestId), `${type}:${requestId} pid=${host!.pid} ${hostErrors.peek()}`).toBe(true);
       }, { timeout: 20_000 });
       const result = messages.find(value => value.requestId === requestId)!;
       if (result.type === 'error') throw Object.assign(new Error(result.message), { code: result.code });
       return result;
     };
     const boot = async () => {
-      hostErrors = '';
+      hostErrors = createTextCollector();
       host = fork(fileURLToPath(new URL('./fixtures/installed-portal-host.ts', import.meta.url)), [], {
         execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn,
           DATABASE_URL: db.adminDsn, PAPERCUSP_DB_ENCRYPTION_KEY: opts.encryptionKey, STATE_DIRECTORY: root,
           PAPERCUSP_INSTALLED_INTEGRATION_ROOT: root },
       });
-      host.stderr!.on('data', data => { hostErrors = (hostErrors + String(data)).slice(-4000); });
-      host.stdout!.on('data', data => { hostErrors = (hostErrors + String(data)).slice(-4000); });
+      hostErrors.attach(host.stderr);
+      hostErrors.attach(host.stdout);
       host.on('message', value => messages.push(value as Record<string, any>));
       await vi.waitFor(() => {
         const startup = JSON.stringify({ pid: host!.pid, exitCode: host!.exitCode,
-          signalCode: host!.signalCode, connected: host!.connected, messages, output: hostErrors });
+          signalCode: host!.signalCode, connected: host!.connected, messages, output: hostErrors.peek() });
         expect(host!.exitCode, startup).toBeNull();
         expect(host!.signalCode, startup).toBeNull();
         expect(messages.some(value => value.type === 'ready' && value.pid === host!.pid), startup).toBe(true);

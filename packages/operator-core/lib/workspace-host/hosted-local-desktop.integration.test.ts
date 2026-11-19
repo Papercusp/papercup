@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocket, WebSocketServer } from 'ws';
 import SecretStream from '@hyperswarm/secret-stream';
 import { describe, expect, it, vi } from 'vitest';
+import { createTextCollector } from '../child-output';
 import { HostedWorkspaceSessionBroker } from '../endpoint-route/hosted-workspace-session';
 import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../endpoint-route/hosted-workspace-connector';
 import { ByocSealedChannel, isByocSealedPacket } from './byoc-sealed-channel';
@@ -38,13 +39,13 @@ describe('linked desktop connector across process/socket boundaries', () => {
       )}`], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
     const messages: Array<Record<string, unknown>> = [];
-    let childErrors = '';
-    child.stdout?.resume(); child.stderr?.on('data', data => { childErrors = (childErrors + String(data)).slice(-4000); });
+    const childErrors = createTextCollector(child.stderr);
+    child.stdout?.resume();
     child.on('message', message => messages.push(message as Record<string, unknown>));
     child.on('spawn', () => startup.push({ event: 'spawn', elapsedMs: performance.now() - startedAt }));
     const diagnostic = () => JSON.stringify({ pid: child.pid, elapsedMs: performance.now() - startedAt,
       exitCode: child.exitCode, signalCode: child.signalCode, connected: child.connected,
-      startup, messages: messages.slice(-12), stderr: childErrors });
+      startup, messages: messages.slice(-12), stderr: childErrors.peek() });
     const stoppedBeforeBound = new Promise<never>((_, reject) => {
       child.once('error', error => reject(new Error(`Linked host spawn failed: ${error.message}; ${diagnostic()}`)));
       child.once('exit', (code, signal) => reject(new Error(`Linked host exited before binding: ${code}/${signal}; ${diagnostic()}`)));

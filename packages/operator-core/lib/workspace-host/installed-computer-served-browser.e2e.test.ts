@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
+import { createTextCollector } from '../child-output';
 import { assertInstalledPortalCaseEvidence, assertInstalledPortalExecutor, assertInstalledRuntimeLoader, assertInstalledRuntimeSource, installedDesktopBinaries, installedPortalRelease, installedPortalSource, installedRuntimeNodeArgs } from './installed-computer-served-browser.fixture';
 
 describe('served Portal installed-computer consent', () => {
@@ -43,15 +44,16 @@ describe('served Portal installed-computer consent', () => {
         PAPERCUSP_TEST_RUN_WORKSPACE: workspaceId!,
         PAPERCUSP_TEST_RUNS_DB_URL: resolveTestRunsPgUrl(process.env) }, stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let output = '';
-    const retain = (data: Buffer) => { log.write(data); output = (output + data.toString()).slice(-12000); };
+    const output = createTextCollector(child.stdout);
+    output.attach(child.stderr);
+    const retain = (data: Buffer) => { log.write(data); };
     child.stdout.on('data', retain); child.stderr.on('data', retain);
     const deadline = setTimeout(() => child.kill('SIGTERM'), 16 * 60_000);
     try {
       const exit = await new Promise<number | null>((resolve, reject) => {
         child.once('error', reject); child.once('close', resolve);
       });
-      expect(exit, `Served runtime failed; artifacts ${artifacts}\n${output}`).toBe(0);
+      expect(exit, `Served runtime failed; artifacts ${artifacts}\n${output.text()}`).toBe(0);
       const receipt = JSON.parse(await readFile(`${evidence}.json`, 'utf8'));
       expect(receipt.status).toBe('passed');
       expect(receipt.installedBrowser).toMatchObject({ status: 'passed', portalEngine: 'Next/Playwright',
