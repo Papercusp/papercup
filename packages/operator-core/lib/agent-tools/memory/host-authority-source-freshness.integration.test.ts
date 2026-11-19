@@ -48,8 +48,15 @@ vi.mock('../../memory/feedback-rerank', async original => ({
 vi.mock('../../memory/surfaced-outcomes', async original => ({
   ...await original<typeof import('../../memory/surfaced-outcomes')>(), loadOutcomeCounts: async () => new Map(),
 }));
+// Bare deps are not neutral: dispatch would return the universal-batch batch-v1
+// envelope and fail closed with quota_admission_unavailable, so negotiate the
+// single-operation shape and admit every quota reservation (WI-6554700010056589).
 vi.mock('../../projected-tool-deps', async original => ({
-  ...await original<typeof import('../../projected-tool-deps')>(), PROJECTED_DEPS: {},
+  ...await original<typeof import('../../projected-tool-deps')>(),
+  PROJECTED_DEPS: {
+    batchResponseVersion: 'operation-v0',
+    reserveQuota: async () => ({ allowed: true, settle: async () => {} }),
+  },
 }));
 vi.mock('../../connected-apps/alerts', async original => ({
   ...await original<typeof import('../../connected-apps/alerts')>(), onAppKeyUsed: async () => {},
