@@ -851,7 +851,7 @@ describe('sync-staging-checkout.sh failure streak, alarm and buildable-ancestor 
       mkdirSync(join(root, 'state/papercusp'), { recursive: true });
       writeFileSync(stateFile('staging-sync-failure-streak'), `count=${count}\n`);
       writeFileSync(stateFile('staging-sync-failed-targets'), failed.map((s) => `${s}\n`).join(''));
-      const r = runFn(STREAK_FNS, `select_staging_fallback_target ${commits[8]} ${served}`, { env: env() });
+      const r = runFn(STREAK_FNS, `select_staging_fallback_target ${commits.at(-1)} ${served}`, { env: env() });
       expect(r.status).toBe(0);
       return r.stdout;
     }
@@ -875,6 +875,50 @@ describe('sync-staging-checkout.sh failure streak, alarm and buildable-ancestor 
     it('never falls back from a served build that is not an ancestor of the tip', () => {
       expect(select(3, [commits[8]], 'f'.repeat(40))).toBe('');
     });
+
+    function seedHistory(rangeLength: number) {
+      // Exercise real ancestry without thousands of git subprocesses. The first
+      // commit is the serving build; every later commit belongs to the range.
+      const input = Array.from({ length: rangeLength + 1 }, (_, i) =>
+        `commit refs/heads/fallback-fixture\nmark :${i + 1}\ncommitter t <t@t> ${i + 1} +0000\ndata ${`c${i}`.length}\nc${i}\n` +
+        (i ? `from :${i}\n` : 'deleteall\n') + '\n').join('');
+      execFileSync('git', ['-C', integration, 'fast-import', '--quiet'], { input });
+      commits = execFileSync('git', ['-C', integration, 'rev-list', '--reverse', 'fallback-fixture'], { encoding: 'utf8' })
+        .trim().split('\n');
+      expect(commits).toHaveLength(rangeLength + 1);
+    }
+
+    it.each([4095, 4096, 4097])('retains the only candidate across the former ancestry boundary (%i commits)', (rangeLength) => {
+      seedHistory(rangeLength);
+      const tip = commits.at(-1)!;
+      // c1 is the only untried candidate below failed c2, even when it lies
+      // beyond the old newest-4096 prefix. Each select starts a fresh shell.
+      expect(select(3, [tip, commits[2]])).toBe(commits[1]);
+      expect(select(4, [tip, commits[2]])).toBe(''); // tip gets its alternating turn
+      expect(select(5, [commits[2], tip, commits[2]])).toBe(commits[1]);
+    });
+
+    it('makes progress beyond the former prefix over repeated restarted fallback passes', () => {
+      seedHistory(4097);
+      const failed = [commits.at(-1)!];
+      const tried = new Set<string>();
+      for (let count = 3; count < 35; count += 2) {
+        const next = select(count, failed);
+        expect(next).not.toBe('');
+        expect(tried.has(next)).toBe(false);
+        if (next === commits[1]) return; // sole buildable candidate
+        tried.add(next);
+        failed.push(next); // next invocation reconstructs state in a new shell
+      }
+      throw new Error('fallback never reached the sole buildable ancestor');
+    });
+  });
+
+  it.each([63, 64, 65])('retains failed-target knowledge across restarted runs at the former 64-entry boundary (%i targets)', (targetCount) => {
+    const oldest = sha('a');
+    const targets = [oldest, ...Array.from({ length: targetCount - 1 }, (_, i) => i.toString(16).padStart(40, '0'))];
+    for (const target of targets) tick({ tip: target, attempt: target });
+    expect(readFileSync(stateFile('staging-sync-failed-targets'), 'utf8').trim().split('\n')).toEqual(targets);
   });
 
   it('is wired into the run: tip recorded before the fallback swap, attempt marked after the live-client gate', () => {
