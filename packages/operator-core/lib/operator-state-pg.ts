@@ -287,8 +287,8 @@ function opStateCacheTtlMs(): number {
 }
 
 interface OpStateCacheEntry {
-  value: unknown;
-  at: number;
+  cached?: { value: unknown; at: number };
+  pending?: Promise<unknown>;
 }
 // globalThis-backed (WI-7032), NOT a plain module-level `Map` — this module is
 // dependency-of-everything (loaded by both the HTTP route tree and the DBOS
@@ -431,7 +431,6 @@ export async function readOperatorState<T>(
   wsOverride?: string,
   opts?: { fresh?: boolean },
 ): Promise<T | null> {
-  const { sql } = getOrgPg();
   const ws = wsOverride ?? activeWorkspaceId();
 
   // P-004: serve hot read-mostly tables (the allowlist — harness_registry) from a
@@ -463,11 +462,34 @@ export async function readOperatorState<T>(
   // remote_hive/hive_slug (join-hive awaits the mutateRegistry commit before the rekey
   // RPC). The hot loadHarnessRegistry path does NOT pass fresh, so its cache win stands.
   const ttl = CACHEABLE_STATE_TABLES.has(table) ? opStateCacheTtlMs() : 0;
-  if (ttl > 0 && !opts?.fresh) {
-    const hit = opStateCacheMap().get(opStateCacheKey(table, ws));
-    if (hit && Date.now() - hit.at < ttl) return hit.value as T | null;
+  if (ttl === 0) return readOperatorStateRow<T>(table, ws);
+
+  const cache = opStateCacheMap();
+  const key = opStateCacheKey(table, ws);
+  const entry = cache.get(key);
+  if (!opts?.fresh) {
+    if (entry?.cached && Date.now() - entry.cached.at < ttl) {
+      return entry.cached.value as T | null;
+    }
+    if (entry?.pending) return entry.pending as Promise<T | null>;
   }
 
+  const pending = readOperatorStateRow<T>(table, ws);
+  const loading: OpStateCacheEntry = { cached: entry?.cached, pending };
+  cache.set(key, loading);
+  try {
+    const value = await pending;
+    // An invalidation or a newer fresh read can detach this entry while we wait.
+    loading.cached = { value, at: Date.now() };
+    return value;
+  } finally {
+    loading.pending = undefined;
+    if (!loading.cached && cache.get(key) === loading) cache.delete(key);
+  }
+}
+
+async function readOperatorStateRow<T>(table: StateTable, ws: string): Promise<T | null> {
+  const { sql } = getOrgPg();
   let result: T | null;
   if (ENCRYPTED_TABLES.has(table)) {
     const key = getDbEncryptionKey();
@@ -499,7 +521,6 @@ export async function readOperatorState<T>(
     result = rows.length > 0 ? rows[0].payload : null;
   }
 
-  if (ttl > 0) opStateCacheMap().set(opStateCacheKey(table, ws), { value: result, at: Date.now() });
   return result;
 }
 

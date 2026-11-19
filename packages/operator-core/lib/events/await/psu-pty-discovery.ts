@@ -37,6 +37,7 @@ import { mapWithConcurrency } from '../../gym/concurrency';
 import { recordMcpRequestTraceOperation } from '../../mcp-request-trace';
 import { papercuspRootForWorkspace } from '../../papercusp-root';
 import { activeWorkspaceId } from '../../workspace-registry';
+import type { ProviderRecoveryFence } from '../../harness/routines/session-interruption-recovery';
 
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 // Keep discovery aligned with the host writer, while allowing integration tests
@@ -1512,6 +1513,7 @@ export async function injectIntoHostWithConfirmation(
     force?: boolean;
     expectedStartedAt?: number;
     requireNativeTurnStart?: boolean;
+    providerRecovery?: ProviderRecoveryFence;
     expectedChildGeneration?: number;
     expectedHostStartedAt?: number;
     observationVersion?: number;
@@ -1637,6 +1639,7 @@ export async function injectIntoHostWithConfirmation(
     force?: boolean;
     expectedStartedAt?: number;
     requireNativeTurnStart?: boolean;
+    providerRecovery?: ProviderRecoveryFence;
     expectedChildGeneration?: number;
     expectedHostStartedAt?: number;
     observationVersion?: number;
@@ -1676,6 +1679,7 @@ export async function injectIntoHostWithConfirmation(
   if (msg.force !== undefined) envelope.force = msg.force;
   if (msg.expectedStartedAt !== undefined) envelope.expectedStartedAt = msg.expectedStartedAt;
   if (msg.requireNativeTurnStart !== undefined) envelope.requireNativeTurnStart = msg.requireNativeTurnStart;
+  if (msg.providerRecovery !== undefined) envelope.providerRecovery = msg.providerRecovery;
   if (msg.expectedChildGeneration !== undefined) envelope.expectedChildGeneration = msg.expectedChildGeneration;
   if (msg.expectedHostStartedAt !== undefined) envelope.expectedHostStartedAt = msg.expectedHostStartedAt;
   if (msg.observationVersion !== undefined) envelope.observationVersion = msg.observationVersion;

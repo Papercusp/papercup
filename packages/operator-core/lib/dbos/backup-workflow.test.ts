@@ -49,6 +49,7 @@ vi.mock('@papercusp/backup', () => ({
 }));
 
 import {
+  backupSnapshotWorkflow,
   backupSnapshotWorkflowId,
   wireBackupStepRunner,
   startBackupSnapshotWorkflow,
@@ -140,7 +141,16 @@ describe('startBackupSnapshotWorkflow', () => {
     await startBackupSnapshotWorkflow({
       workspaceId: 'ws-1', reason: 'pre_destructive', resumeSnapshotId: 99,
     }, 'resume-99');
-    expect(dbosCalls.snapshots).toEqual([['pre_destructive', undefined, { resumeSnapshotId: 99 }]]);
+    expect(dbosCalls.snapshots).toEqual([['pre_destructive', undefined, {
+      resumeSnapshotId: 99, durableResumeHookIdentity: true,
+    }]]);
+  });
+
+  it('selects the legacy step sequence when DBOS replays a pre-fix input', async () => {
+    await backupSnapshotWorkflow({ workspaceId: 'ws-1', reason: 'pre_destructive', resumeSnapshotId: 99 });
+    expect(dbosCalls.snapshots).toEqual([['pre_destructive', undefined, {
+      resumeSnapshotId: 99, durableResumeHookIdentity: false,
+    }]]);
   });
 });
 

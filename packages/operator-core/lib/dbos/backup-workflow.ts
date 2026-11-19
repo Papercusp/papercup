@@ -46,6 +46,10 @@ export interface BackupSnapshotWorkflowInput {
   resumeSnapshotId?: number;
 }
 
+type PersistedBackupSnapshotWorkflowInput = BackupSnapshotWorkflowInput & {
+  durableResumeHookIdentity?: true;
+};
+
 /**
  * Per-request workflow id. Pure (unit-tested): a per-request `nonce` makes each
  * manual snapshot its OWN resumable workflow (DBOS recovery resumes exactly this
@@ -96,18 +100,22 @@ async function execute(
   workspaceId: string,
   reason: SnapshotTriggerReason,
   context: Record<string, unknown> | undefined,
-  resumeSnapshotId?: number,
+  resumeSnapshotId: number | undefined,
+  durableResumeHookIdentity: boolean,
 ): Promise<SnapshotResult> {
   if (_executor) return _executor(workspaceId, reason, context, resumeSnapshotId);
   return workspaceBackupFor(workspaceId).snapshot(reason, context,
-    resumeSnapshotId === undefined ? undefined : { resumeSnapshotId });
+    resumeSnapshotId === undefined ? undefined : { resumeSnapshotId, durableResumeHookIdentity });
 }
 
-async function backupSnapshotImpl(input: BackupSnapshotWorkflowInput): Promise<SnapshotResult> {
+async function backupSnapshotImpl(input: PersistedBackupSnapshotWorkflowInput): Promise<SnapshotResult> {
   // The durability comes from snapshot()'s INTERNAL runStep boundaries (via the
   // injected runner), not from wrapping the whole op as one step — so a resume
   // re-enters here and the completed inner steps replay their cached results.
-  return execute(input.workspaceId, input.reason, input.context, input.resumeSnapshotId);
+  // Older workflow inputs must retain their recorded step order. DBOS uses a
+  // pinned app version, so the persisted input selects the step sequence.
+  return execute(input.workspaceId, input.reason, input.context, input.resumeSnapshotId,
+    input.durableResumeHookIdentity === true);
 }
 
 export const backupSnapshotWorkflow = idempotentRegisterWorkflow('backupSnapshot', () =>
@@ -125,9 +133,12 @@ export async function startBackupSnapshotWorkflow(
   input: BackupSnapshotWorkflowInput,
   nonce: string,
 ): Promise<SnapshotResult> {
+  const workflowInput: PersistedBackupSnapshotWorkflowInput = input.resumeSnapshotId === undefined
+    ? input
+    : { ...input, durableResumeHookIdentity: true };
   const handle = await DBOS.startWorkflow(backupSnapshotWorkflow, {
     workflowID: backupSnapshotWorkflowId(input, nonce),
-  })(input);
+  })(workflowInput);
   return handle.getResult();
 }
 

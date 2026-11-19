@@ -338,6 +338,8 @@ export class WorkspaceBackup {
       onStarted?: (snapshotId: number) => void;
       /** Re-drive this exact receipt after producer loss; never INSERT a sibling. */
       resumeSnapshotId?: number;
+      /** False only when replaying a workflow whose history predates the identity step. */
+      durableResumeHookIdentity?: boolean;
       /** Report a blocking migration-rendezvous wait while a deploy remains healthy. */
       onMigrationLockWaiting?: BackupMigrationLockWaitReporter;
       /** A scheduler-admitted lock already held on a dedicated session. */
@@ -393,6 +395,7 @@ export class WorkspaceBackup {
       onMigrationLockWaiting: opts?.onMigrationLockWaiting,
       migrationLock: opts?.migrationLock,
       resumeSnapshotId: opts?.resumeSnapshotId,
+      durableResumeHookIdentity: opts?.durableResumeHookIdentity,
     });
     entry.promise = run.then(
       (result) => {
@@ -428,6 +431,7 @@ export class WorkspaceBackup {
        */
       onStarted?: (snapshotId: number) => void;
       resumeSnapshotId?: number;
+      durableResumeHookIdentity?: boolean;
       /** Report a blocking migration-rendezvous wait while a deploy remains healthy. */
       onMigrationLockWaiting?: BackupMigrationLockWaitReporter;
       /** A scheduler-admitted lock to hold through the complete snapshot. */
@@ -613,7 +617,7 @@ export class WorkspaceBackup {
         // a crash after its receipt CAS. Persist the selected event in this
         // workflow's history: the dump itself writes a newer hook event, so a
         // live latest-event read would change the next step name on replay.
-        const eventId = await steps.runStep('backup-resume-hook-identity', async () => {
+        const selectHookEventId = async () => {
           const [priorHook] = await sql<{ id: string | number }[]>`
             SELECT id FROM harness_shared.backup_events
              WHERE workspace_id = ${this.workspaceId} AND snapshot_id = ${snapshotRowId!}
@@ -623,7 +627,10 @@ export class WorkspaceBackup {
           const id = Number(priorHook.id);
           if (!Number.isSafeInteger(id) || id <= 0) throw new Error('snapshot retry hook event has an invalid identity');
           return id;
-        });
+        };
+        const eventId = opts.durableResumeHookIdentity === false
+          ? await selectHookEventId()
+          : await steps.runStep('backup-resume-hook-identity', selectHookEventId);
         if (eventId !== null) {
           dumpStepName += `:resume:${snapshotRowId}:${eventId}`;
         }

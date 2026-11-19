@@ -13,6 +13,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const store = new Map<string, unknown>();
 const counters = { selects: 0 };
 const readFailures = { remaining: 0, error: null as Error | null };
+let nextReadGate: Promise<void> | undefined;
+
+function pauseNextRead(): () => void {
+  let resume!: () => void;
+  nextReadGate = new Promise<void>((resolve) => { resume = resolve; });
+  return resume;
+}
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 vi.mock('./db-encryption', () => ({ ENCRYPTED_TABLES: new Set<string>(), getDbEncryptionKey: () => 'unused' }));
@@ -29,7 +36,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
         return Promise.reject(readFailures.error ?? new Error('unexpected test read failure'));
       }
       const row = store.get(key);
-      return Promise.resolve(row !== undefined ? [{ payload: row }] : []);
+      const rows = row !== undefined ? [{ payload: row }] : [];
+      const gate = nextReadGate;
+      nextReadGate = undefined;
+      return gate ? gate.then(() => rows) : Promise.resolve(rows);
     }
     if (/INSERT INTO/.test(sqlText)) {
       const raw = values[2];
@@ -93,6 +103,7 @@ beforeEach(() => {
   counters.selects = 0;
   readFailures.remaining = 0;
   readFailures.error = null;
+  nextReadGate = undefined;
   delete process.env.PAPERCUSP_OPSTATE_CACHE_MS;
   // Start each test with a clean cache for the keys it uses.
   invalidateOperatorStateCache('harness_registry' as never, 'ws');
@@ -123,6 +134,59 @@ describe('readOperatorState cache (P-004)', () => {
     expect(first).toEqual({ projects: [{ slug: 'a' }] });
     expect(second).toEqual(first);
     expect(counters.selects).toBe(1); // 2nd served from cache
+  });
+
+  it('shares one SELECT across overlapping reads on a cold cache', async () => {
+    const payload = { projects: [{ slug: 'shared' }] };
+    store.set('harness_registry:ws', payload);
+    const resume = pauseNextRead();
+    const first = readOperatorState('harness_registry');
+    const second = readOperatorState('harness_registry');
+    resume();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([payload, payload]);
+    expect(counters.selects).toBe(1);
+  });
+
+  it('discards an in-flight read from the cache after a write', async () => {
+    const oldPayload = { projects: [{ slug: 'old' }] };
+    const newPayload = { projects: [{ slug: 'new' }] };
+    store.set('harness_registry:ws', oldPayload);
+    const resume = pauseNextRead();
+    const oldRead = readOperatorState('harness_registry');
+
+    try {
+      await writeOperatorState('harness_registry', newPayload);
+      const newRead = readOperatorState('harness_registry');
+      expect(counters.selects).toBe(2);
+      await expect(newRead).resolves.toEqual(newPayload);
+    } finally {
+      resume();
+    }
+
+    await expect(oldRead).resolves.toEqual(oldPayload);
+    await expect(readOperatorState('harness_registry')).resolves.toEqual(newPayload);
+    expect(counters.selects).toBe(2);
+  });
+
+  it('a fresh read SELECTs independently and keeps its result when an older read finishes later', async () => {
+    store.set('harness_registry:ws', { projects: [{ slug: 'old' }] });
+    const resume = pauseNextRead();
+    const oldRead = readOperatorState('harness_registry');
+    const newPayload = { projects: [{ slug: 'fresh' }] };
+    store.set('harness_registry:ws', newPayload);
+
+    try {
+      const freshRead = readOperatorState('harness_registry', 'ws', { fresh: true });
+      expect(counters.selects).toBe(2);
+      await expect(freshRead).resolves.toEqual(newPayload);
+    } finally {
+      resume();
+    }
+
+    await oldRead;
+    await expect(readOperatorState('harness_registry')).resolves.toEqual(newPayload);
+    expect(counters.selects).toBe(2);
   });
 
   it('a write invalidates: the next read re-SELECTs and sees the new value (read-after-write)', async () => {
@@ -386,6 +450,21 @@ describe('WI-10004071: cache coherence across cluster workers', () => {
 
     deliver('accounts.pool');
     expect(await readOperatorState('operator_account_pool')).toEqual({ gen: 2 });
+  });
+
+  it('a coherence event drops a pending read even when the table has no cached value', async () => {
+    await startOperatorStateCacheCoherence();
+    store.set('harness_registry:ws', { projects: [{ slug: 'old' }] });
+    const resume = pauseNextRead();
+    const oldRead = slug();
+
+    store.set('harness_registry:ws', { projects: [{ slug: 'new' }] });
+    deliver('harnessProjects.lite');
+    resume();
+
+    await expect(oldRead).resolves.toBe('old');
+    await expect(slug()).resolves.toBe('new');
+    expect(counters.selects).toBe(2);
   });
 
   it('a (re)LISTEN drops every cacheable table (catch-up for NOTIFYs missed while disconnected)', async () => {

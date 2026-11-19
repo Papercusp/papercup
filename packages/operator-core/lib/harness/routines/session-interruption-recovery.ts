@@ -1,7 +1,82 @@
 /** Recovery eligibility for an unexpectedly lost session host. This extends
  * the existing session/launch ledger and wake/resume machinery; it grants no
  * new task, autonomy mode, or native conversation. */
+import { createHash } from 'node:crypto';
 import type { PsuPtyHost } from '../../events/await/psu-pty-discovery';
+
+export const PROVIDER_RECOVERY_SOURCE = 'native-provider-recovery';
+export const PROVIDER_RECOVERY_CAP = 'native-provider-recovery-v1';
+export const PROVIDER_RECOVERY_MIN_DELAY_MS = 60_000;
+
+export interface ProviderRecoveryFence {
+  nativeSessionId: string;
+  hostStartedAt: number;
+  childGeneration: number;
+  failedAtMs: number;
+  receivedAtMs: number;
+}
+
+export interface ProviderRecoveryEpisode {
+  workspaceId: string;
+  ownerId: string;
+  advSessionId: string;
+  hostPid: number;
+  fence: ProviderRecoveryFence;
+  notBeforeMs: number;
+}
+
+const isClock = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value != null && typeof value === 'object' && !Array.isArray(value);
+
+export function readProviderRecoveryEpisode(value: unknown): ProviderRecoveryEpisode | null {
+  if (!isRecord(value) || !isRecord(value.fence)) return null;
+  const { workspaceId, ownerId, advSessionId, hostPid, notBeforeMs } = value;
+  const { nativeSessionId, hostStartedAt, childGeneration, failedAtMs, receivedAtMs } = value.fence;
+  if (typeof workspaceId !== 'string' || !workspaceId || typeof ownerId !== 'string' || !ownerId ||
+      typeof advSessionId !== 'string' || !/^[1-9][0-9]*$/.test(advSessionId) || !isClock(hostPid) ||
+      typeof nativeSessionId !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(nativeSessionId) ||
+      !isClock(hostStartedAt) || !isClock(childGeneration) || !isClock(receivedAtMs) ||
+      !isClock(failedAtMs) || failedAtMs < Math.max(receivedAtMs, hostStartedAt) ||
+      !isClock(notBeforeMs) || notBeforeMs < failedAtMs + PROVIDER_RECOVERY_MIN_DELAY_MS ||
+      !Number.isFinite(new Date(notBeforeMs).getTime())) return null;
+  return { workspaceId, ownerId, advSessionId, hostPid, notBeforeMs,
+    fence: { nativeSessionId, hostStartedAt, childGeneration, failedAtMs, receivedAtMs } };
+}
+
+/** A successful start and a failed-before-start can have the same turnStartedAt.
+ * A distinct native failure must always get its own episode. */
+export function providerRecoveryEventKey(episode: ProviderRecoveryEpisode): string {
+  const { workspaceId, ownerId, advSessionId, hostPid, fence } = episode;
+  const identity = JSON.stringify([workspaceId, ownerId, advSessionId, hostPid,
+    fence.nativeSessionId, fence.hostStartedAt, fence.childGeneration, fence.failedAtMs]);
+  return `${PROVIDER_RECOVERY_SOURCE}:${createHash('sha256').update(identity).digest('hex')}`;
+}
+
+export function providerRecoveryFromObservation(input: {
+  workspaceId: string;
+  ownerId: string;
+  ts: string;
+  payload: Record<string, unknown>;
+}): ProviderRecoveryEpisode | null {
+  const { payload, workspaceId, ownerId, ts } = input;
+  const x = payload.execution;
+  if (payload.providerRecoveryVersion !== 1 || payload.workspaceId !== workspaceId ||
+      payload.ownerId !== ownerId || !isRecord(x) || x.ownerId !== ownerId ||
+      x.hostPid !== payload.hostPid || x.nativeSessionId !== payload.nativeSessionId ||
+      x.phase !== 'failed' || x.pendingTools !== 0 || x.pendingGateTools !== 0 ||
+      x.ownerStopRequested !== false || x.ownerInputPending !== false ||
+      !isRecord(x.failure) || x.failure.retryable !== true || !isClock(x.failure.atMs) ||
+      !isClock(x.observedAt) || x.failure.atMs > x.observedAt || !(x.observedAt <= Date.parse(ts))) return null;
+  const retryAfterMs = x.failure.retryAfterMs;
+  return readProviderRecoveryEpisode({
+    workspaceId, ownerId, advSessionId: String(payload.advSessionId ?? ''), hostPid: payload.hostPid,
+    notBeforeMs: x.failure.atMs + Math.max(PROVIDER_RECOVERY_MIN_DELAY_MS, isClock(retryAfterMs) ? retryAfterMs : 0),
+    fence: { nativeSessionId: payload.nativeSessionId, hostStartedAt: payload.hostStartedAt,
+      childGeneration: x.childGeneration, failedAtMs: x.failure.atMs, receivedAtMs: x.receivedAtMs },
+  });
+}
 
 export interface SessionInterruption {
   v: 1;
