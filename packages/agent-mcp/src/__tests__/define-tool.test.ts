@@ -110,7 +110,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(result.ok).toBe(true);
     expect(result.result?.content[0]).toEqual({ type: 'text', text: 'ok 7 role=operator' });
@@ -143,7 +143,7 @@ describe('defineTool', () => {
         runId: 'run_T',
         chunkId: 'ck_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe('role_not_allowed');
@@ -203,7 +203,7 @@ describe('defineTool', () => {
         workspaceId: 'default',
         role: 'operator',
         runId: 'run_T',
-      }, {});
+      }, { batchResponseVersion: 'operation-v0' });
     };
 
     it('names the accepted keys of the PARENT object when a nested leaf fails', async () => {
@@ -291,7 +291,7 @@ describe('defineTool', () => {
           role: 'operator',
           runId: 'run_T',
         },
-        {},
+        { batchResponseVersion: 'operation-v0' },
       );
 
       expect(result.ok).toBe(false);
@@ -335,7 +335,7 @@ describe('defineTool', () => {
           role: 'operator',
           runId: 'run_T',
         },
-        {},
+        { batchResponseVersion: 'operation-v0' },
       );
 
       expect(result.ok).toBe(false);
@@ -373,7 +373,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(result.ok).toBe(false);
     expect(result.error?.message).toContain('invalid_args:');
@@ -415,7 +415,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
 
     expect(result.ok).toBe(false);
@@ -434,10 +434,13 @@ describe('defineTool', () => {
       capability: 'operator:scan',
       requirePrincipal: false,
       agentRoles: ['operator'],
-      args: z.union([
-        z.object({ left: z.string() }),
-        z.object({ right: z.number() }),
-      ]),
+      // A refine on the root object fails with an EMPTY issue path. A
+      // non-object input (the old `42`) no longer reaches schema validation:
+      // the universal batch envelope rejects it first (tooldef batch.ts
+      // normalizeBatchRequest: "Tool input must be an operation object…").
+      args: z
+        .object({ left: z.string().optional(), right: z.number().optional() })
+        .refine((v) => v.left !== undefined || v.right !== undefined, 'need left or right'),
       async handler() {
         return { content: [{ type: 'text', text: 'should not run' }] };
       },
@@ -446,7 +449,7 @@ describe('defineTool', () => {
     const result = await dispatchProjectedTool(
       tool,
       'operator:pathless_hint_probe',
-      42,
+      {},
       {
         log: () => {},
         signal: new AbortController().signal,
@@ -456,7 +459,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
 
     expect(result.ok).toBe(false);
@@ -503,7 +506,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(result.ok).toBe(false);
     // Actionable in ONE retry: the actual length, the overage, and the target.
@@ -538,7 +541,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_T',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(result.ok).toBe(false);
     expect(result.error?.message).toContain('`label` accepts');
@@ -607,7 +610,7 @@ describe('defineTool', () => {
         role: 'operator',
         runId: 'run_state_probe',
       },
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
     expect(result.ok).toBe(true);
     expect(result.result?.content[0]).toEqual({ type: 'text', text: 'ok' });
@@ -669,7 +672,12 @@ describe('JSON schema flattening for OpenAI compat', () => {
     const props = s.properties as Record<string, unknown>;
     expect(props.op).toBeTruthy();
     expect(props.data).toBeTruthy();
-    expect((s.required as string[]).includes('op')).toBe(true);
+    // Universal batch projection (tooldef projectBatchInputSchema): the root
+    // also accepts the { _batch, items } envelope, so it publishes a property
+    // superset with NO required operation field; per-call validation against
+    // def.args stays authoritative for the discriminator.
+    expect(props._batch).toBeTruthy();
+    expect((s.required as string[] | undefined)?.includes('op') ?? false).toBe(false);
     expect((s.required as string[] | undefined)?.includes('data') ?? false).toBe(false);
   });
 
