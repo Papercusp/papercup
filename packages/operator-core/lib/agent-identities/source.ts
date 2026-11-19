@@ -41,6 +41,23 @@ import {
   INSTALLED_BLUEPRINTS_DIR,
   operatorResolveExtends,
 } from '../blueprint/installed-blueprints';
+import { supersedesInstalledFor } from '@papercusp/blueprint-distribution';
+
+/**
+ * Identity sources load IDENTITY documents, so a bundled built-in identity
+ * replaces an installed copy of the same id that the identity schema rejects
+ * (WI-6554700010055768; the stale `papercusp-engineer` install carrying
+ * `visibility:` broke every headless/judge boot, WI-6554700010054458). The
+ * policy is kind-aware: a built-in of another kind (the workspace blueprint
+ * `base`) never replaces an installed identity. Resolution AND inventory use
+ * this same policy, so both pick the same file.
+ */
+export const IDENTITY_SOURCE_SUPERSEDES = supersedesInstalledFor('identity');
+
+/** The composed local → installed → built-in resolver for identity sources. */
+export function identityResolveExtends(opts: { localDirs?: string[] } = {}) {
+  return operatorResolveExtends({ ...opts, supersedes: IDENTITY_SOURCE_SUPERSEDES });
+}
 
 export interface IdentitySourceOptions {
   repoDir?: string;
@@ -137,7 +154,7 @@ export async function resolveNamedIdentityCompositionSelection(id: string, repoD
   }
   const raw = parseBlueprintSource(await readFile(selected.sourcePath, 'utf8'));
   const resolved = resolveBlueprintSource(raw, { sourcePath: selected.sourcePath,
-    resolve: operatorResolveExtends({ localDirs: localDirs(repoDir) }) });
+    resolve: identityResolveExtends({ localDirs: localDirs(repoDir) }) });
   const effective = BlueprintSourceDocumentSchema.parse(resolved.merged);
   const stack = bindingRefs(stackBindingFromRefs(resolved.layers.flatMap((layer) =>
     layer.slots.map((slot) => `${slot}:${layer.id}`))));
@@ -256,7 +273,7 @@ function inspectIdentitySourceWithApproval(
         message: 'The source document must declare its own slots; inherited slots do not make its root an identity.',
       };
     }
-    const resolver = operatorResolveExtends({ localDirs: localDirs(opts.repoDir) });
+    const resolver = identityResolveExtends({ localDirs: localDirs(opts.repoDir) });
     const result = resolveBlueprintSource(raw, {
       resolve: resolver,
       sourcePath: opts.sourcePath,
@@ -326,7 +343,7 @@ async function verifiedInstalledModePolicy(
   if (!active || !approval) return { policyRef: null, stale: false };
   if (approval.artifactContentHash !== active.artifactContentHash) return { policyRef: null, stale: true };
   try {
-    const resolver = operatorResolveExtends();
+    const resolver = identityResolveExtends();
     const source = resolveBlueprintSource(raw, {
       resolve: resolver,
       sourcePath: file,
@@ -368,7 +385,7 @@ async function readBuiltinModeSource(id: string): Promise<string | null> {
  * baseline; each installed replacement must carry an exact prior revision and
  * an installer-owned approval for its full current package closure. */
 export async function getSelectedModeCatalog() {
-  const available = availableBlueprintSources();
+  const available = availableBlueprintSources({ supersedes: IDENTITY_SOURCE_SUPERSEDES });
   const fingerprint = await selectedModeFingerprint(available);
   if (selectedModeCatalogCache?.fingerprint === fingerprint) return selectedModeCatalogCache.value;
   const missingBuiltins = new Set<string>();
@@ -411,7 +428,7 @@ export async function getSelectedModeCatalog() {
   const installed = [];
   const approvedPolicyRefs = new Set<string>();
   const approvedInstalledSourceHashes = new Map<string, string>();
-  const resolver = operatorResolveExtends();
+  const resolver = identityResolveExtends();
   for (const entry of available.filter((source) => source.tier === 'installed')) {
     const raw = parseBlueprintSource(await readFile(entry.file, 'utf8'));
     if (!raw.mode) continue;
@@ -575,7 +592,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   }
   if (!sourcePath) throw new Error(`selected identity ${input.identityId} is unavailable`);
   const resolver = input.sourceTier === 'builtin' ? resolveBuiltinExtends
-    : operatorResolveExtends({ localDirs: localDirs(input.repoDir) });
+    : identityResolveExtends({ localDirs: localDirs(input.repoDir) });
   const raw = parseBlueprintSource(await readFile(sourcePath, 'utf8'));
   const source = resolveBlueprintSource(raw, { sourcePath, resolve: resolver });
   if (!source.validation.ok) throw new Error(`selected identity ${input.identityId} is invalid`);
@@ -814,7 +831,7 @@ export async function bindSelectedIdentitySetting(input: {
 /** Id lookup uses the blueprint resolver, never a separate identity store. */
 export async function getIdentitySource(id: string, opts: IdentitySourceOptions = {}) {
   try {
-    const resolver = operatorResolveExtends({ localDirs: localDirs(opts.repoDir) });
+    const resolver = identityResolveExtends({ localDirs: localDirs(opts.repoDir) });
     const file = resolver(id);
     if (!file) return { ok: false as const, error: 'identity-not-found', id };
     const raw = parseBlueprintSource(await readFile(file, 'utf8'));
@@ -841,7 +858,7 @@ export async function compileSelectedIdentityResources(input: {
     throw new Error(`selected identity ${input.identityId} is unavailable for resource resolution`);
   }
   const raw = parseBlueprintSource(await readFile(selected.sourcePath, 'utf8'));
-  const resolve = operatorResolveExtends({ localDirs: localDirs(input.repoDir) });
+  const resolve = identityResolveExtends({ localDirs: localDirs(input.repoDir) });
   const source = resolveBlueprintSource(raw, { sourcePath: selected.sourcePath, resolve });
   if (!source.validation.ok || source.layers.at(-1)?.contentHash !== selected.contentHash) {
     throw new Error(`selected identity ${input.identityId} source revision changed before resource resolution`);
@@ -866,7 +883,7 @@ export async function compileSelectedIdentityResources(input: {
  * lower-precedence installed/built-in identity.
  */
 export async function listIdentitySources(opts: { repoDir?: string; after?: string; limit?: number } = {}) {
-  const sources = availableBlueprintSources({ localDirs: localDirs(opts.repoDir) });
+  const sources = availableBlueprintSources({ localDirs: localDirs(opts.repoDir), supersedes: IDENTITY_SOURCE_SUPERSEDES });
   const remaining = sources.filter((entry) => !opts.after || entry.id.localeCompare(opts.after) > 0);
   const page = remaining.slice(0, Math.min(100, Math.max(1, opts.limit ?? 30)));
   const entries = await Promise.all(
@@ -890,7 +907,7 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
           } };
         }
         const effectiveSource = resolveBlueprintSource(raw, { sourcePath: entry.file,
-          resolve: operatorResolveExtends({ localDirs: localDirs(opts.repoDir) }) });
+          resolve: identityResolveExtends({ localDirs: localDirs(opts.repoDir) }) });
         const effective = BlueprintSourceDocumentSchema.parse(effectiveSource.merged);
         let launchCompatibility = identityLaunchCompatibility(effective, doc.slots,
           doc.slots.length ? undefined : effectiveSource.layers.flatMap((layer) =>

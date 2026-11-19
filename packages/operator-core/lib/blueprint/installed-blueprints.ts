@@ -38,11 +38,19 @@ export function INSTALLED_BLUEPRINTS_DIR(): string {
  * (e.g. a target repo's `.papercusp/blueprints`) → installed
  * (`~/.papercusp/blueprints`) → built-in. Drop-in for the loader's `resolve`
  * arg and for "does blueprint id X exist?" probes.
+ *
+ * `supersedes` is the OPT-IN installed-vs-built-in policy
+ * (`supersedesInstalledFor(kind)`, WI-6554700010055768). Omitted keeps strict
+ * tier order. A consumer that opts in must pass the SAME policy to
+ * `availableBlueprintSources`, so inventory and resolution pick the same file.
  */
-export function operatorResolveExtends(opts: { localDirs?: string[] } = {}): ResolveExtendsPath {
+export function operatorResolveExtends(opts: {
+  localDirs?: string[]; supersedes?: BlueprintSupersedesPolicy;
+} = {}): ResolveExtendsPath {
   return makeComposedResolveExtends({
     localDirs: opts.localDirs ?? [],
     installedDir: INSTALLED_BLUEPRINTS_DIR(),
+    supersedes: opts.supersedes ?? null,
   });
 }
 

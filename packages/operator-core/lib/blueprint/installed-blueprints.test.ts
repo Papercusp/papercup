@@ -276,6 +276,8 @@ describe('operatorResolveExtends', () => {
     expect(composeMock.fn).toHaveBeenCalledWith({
       localDirs: [],
       installedDir: '/home/u/.papercusp/blueprints',
+      // Supersession is OPT-IN: the default keeps strict tier order (WI-6554700010055768).
+      supersedes: null,
     });
   });
 
@@ -284,6 +286,17 @@ describe('operatorResolveExtends', () => {
     expect(composeMock.fn).toHaveBeenCalledWith({
       localDirs: ['/repo/.papercusp/blueprints'],
       installedDir: '/home/u/.papercusp/blueprints',
+      supersedes: null,
+    });
+  });
+
+  it('threads an opted-in supersession policy through unchanged', () => {
+    const policy = () => null;
+    operatorResolveExtends({ supersedes: policy });
+    expect(composeMock.fn).toHaveBeenCalledWith({
+      localDirs: [],
+      installedDir: '/home/u/.papercusp/blueprints',
+      supersedes: policy,
     });
   });
 });

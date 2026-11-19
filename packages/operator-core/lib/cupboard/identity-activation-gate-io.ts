@@ -207,7 +207,7 @@ export async function resolveInstalledIdentityReleaseLayers(
   repoDir: string | undefined,
 ): Promise<InstalledIdentityReleaseLayer[]> {
   if (stack.length === 0) return [];
-  const [{ stackBindingFromRefs, resolveLayers }, { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends }, { localDirs }, { readBlueprintLifecycle }, { parse: parseYaml }, { readFile }] =
+  const [{ stackBindingFromRefs, resolveLayers }, { INSTALLED_BLUEPRINTS_DIR }, { localDirs, identityResolveExtends }, { readBlueprintLifecycle }, { parse: parseYaml }, { readFile }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('../blueprint/installed-blueprints'),
@@ -217,7 +217,8 @@ export async function resolveInstalledIdentityReleaseLayers(
       import('node:fs/promises'),
     ]);
   const installedDir = INSTALLED_BLUEPRINTS_DIR();
-  const resolve = operatorResolveExtends({ localDirs: localDirs(repoDir) });
+  // Same identity supersession policy as launch-time resolution (WI-6554700010055768).
+  const resolve = identityResolveExtends({ localDirs: localDirs(repoDir) });
   const activeRelease = new Map<string, Promise<{ id: string; version: string } | null>>();
   const releaseOf = (id: string) => {
     let pending = activeRelease.get(id);
