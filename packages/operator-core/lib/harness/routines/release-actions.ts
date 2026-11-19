@@ -756,7 +756,7 @@ function scheduledCheckpointLogDir(): string {
 export const CHECKPOINT_TOOLING_READY_RETENTION_MINUTES = 360;
 /**
  * A runtime with no ready marker is a failed or interrupted setup: no run can ever use it
- * (the next run of that SHA replaces it), and each one is a ~4.7 GB worktree. It is kept only
+ * (the next run of that SHA replaces it). It is kept only
  * briefly so a just-failed setup can still be inspected. WI-6554700010050773.
  */
 export const CHECKPOINT_TOOLING_FAILED_RETENTION_MINUTES = 30;
@@ -858,8 +858,11 @@ export function buildCommittedCheckpointToolingCommand(
  * Per runtime, under that SHA's exclusive setup + runtime locks (taken non-blocking, so a
  * runtime mid-setup or in use by any run is skipped):
  *  - age = the `used/` marker's mtime when present, else the runtime directory's mtime;
- *  - ready-marked: removed after CHECKPOINT_TOOLING_READY_RETENTION_MINUTES, and only when
- *    clean (a dirty ready snapshot is kept as evidence);
+ *  - ready-marked: retain the most recently used superseded runtime; older ones
+ *    are count-expired, and the remaining one still has the age expiry;
+ *  - pressure: reuse the committed dependency-generation headroom check to retire
+ *    eligible superseded runtimes before setup, including the count-retained one;
+ *  - ready snapshots are removed only when clean (dirty state is kept as evidence);
  *  - not ready-marked (failed/interrupted setup): removed after
  *    CHECKPOINT_TOOLING_FAILED_RETENTION_MINUTES regardless of tree state, since a failed
  *    setup's tree is routinely dirty and no run can use it.
@@ -868,7 +871,20 @@ export function buildCommittedCheckpointToolingCommand(
 function checkpointToolingRetentionLines(): string[] {
   return [
     'reap_checkpoint_tooling_runtimes() {',
-    '  local old_root old_sha old_marker',
+    '  local old_root old_sha old_marker old_ready old_minutes old_age_ref old_status old_rule old_time',
+    '  local newer_root newer_sha newer_ref newer_time retention_pressure=0 headroom_measurement',
+    '  if headroom_measurement="$(',
+    '    dependency_library="$(git -C "$source_root" show "$tooling_sha":apps/operator/bin/release/dependency-generation.sh 2>/dev/null)" || exit 1',
+    '    source /dev/stdin <<< "$dependency_library" || exit 1',
+    '    dependency_generation_record_reserve_fs "$source_root"',
+    '    DEPENDENCY_GENERATION_HEADROOM_CHECK_ONLY=1 dependency_generation_check_headroom "" "$cache_root/.checkpoint-tooling-headroom" 2>&1',
+    '  )"; then',
+    '    retention_pressure=0',
+    '  elif [[ "$headroom_measurement" == *"DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT "* ]]; then',
+    '    retention_pressure=1',
+    '  else',
+    '    echo "checkpoint tooling retention: headroom unavailable; applying age/count rules" >&2',
+    '  fi',
     '  for old_root in "$cache_root/runtimes"/*; do',
     '    [ -d "$old_root" ] && [ ! -L "$old_root" ] || continue',
     '    old_sha="$(basename -- "$old_root")"',
@@ -884,9 +900,35 @@ function checkpointToolingRetentionLines(): string[] {
     '      fi',
     '      old_age_ref="$used_dir/$old_sha"',
     '      [ -f "$old_age_ref" ] || old_age_ref="$old_root"',
-    '      [ -n "$(find "$old_age_ref" -maxdepth 0 -mmin "+$old_minutes" -print -quit 2>/dev/null)" ] || exit 0',
+    '      old_rule=""',
+    '      if [ "$retention_pressure" = 1 ]; then',
+    '        old_rule=pressure',
+    '      elif [ "$old_ready" = 1 ]; then',
+    '        old_time="$(stat -c %Y "$old_age_ref" 2>/dev/null || true)"',
+    '        if [[ "$old_time" =~ ^-?[0-9]+$ ]]; then',
+    '          for newer_root in "$cache_root/runtimes"/*; do',
+    '            [ -d "$newer_root" ] && [ ! -L "$newer_root" ] || continue',
+    '            newer_sha="$(basename -- "$newer_root")"',
+    '            [[ "$newer_sha" =~ ^[0-9a-f]{40}$ ]] || continue',
+    '            [ "$newer_sha" != "$tooling_sha" ] && [ "$newer_sha" != "$old_sha" ] || continue',
+    '            [ "$(cat "$ready_dir/$newer_sha" 2>/dev/null || true)" = "$newer_sha" ] || continue',
+    '            newer_ref="$used_dir/$newer_sha"',
+    '            [ -f "$newer_ref" ] || newer_ref="$newer_root"',
+    '            newer_time="$(stat -c %Y "$newer_ref" 2>/dev/null || true)"',
+    '            [[ "$newer_time" =~ ^-?[0-9]+$ ]] || continue',
+    '            if [ "$newer_time" -gt "$old_time" ] || { [ "$newer_time" -eq "$old_time" ] && [[ "$newer_sha" > "$old_sha" ]]; }; then',
+    '              old_rule=count',
+    '              break',
+    '            fi',
+    '          done',
+    '        else',
+    '          echo "checkpoint tooling retention: last-use unavailable for $old_sha; skipping count rule" >&2',
+    '        fi',
+    '      fi',
+    '      if [ -z "$old_rule" ] && [ -n "$(find "$old_age_ref" -maxdepth 0 -mmin "+$old_minutes" -print -quit 2>/dev/null)" ]; then old_rule=age; fi',
+    '      [ -n "$old_rule" ] || exit 0',
     '      if [ "$old_ready" = 1 ]; then',
-    '        old_status="$(git -C "$old_root" status --porcelain --untracked-files=normal 2>/dev/null || true)"',
+    '        old_status="$(git -C "$old_root" status --porcelain --untracked-files=normal 2>/dev/null)" || { echo "checkpoint tooling retention: keeping unreadable ready runtime $old_sha" >&2; exit 0; }',
     '        [ -z "$old_status" ] || { echo "checkpoint tooling retention: keeping dirty ready runtime $old_sha" >&2; exit 0; }',
     '      fi',
     '      if [ -e "$old_root/.git" ]; then',
@@ -896,7 +938,7 @@ function checkpointToolingRetentionLines(): string[] {
     '      fi',
     '      [ ! -e "$old_root" ] || { echo "checkpoint tooling retention: could not remove runtime $old_sha" >&2; exit 0; }',
     '      rm -f -- "$ready_dir/$old_sha" "$used_dir/$old_sha"',
-    '      echo "checkpoint tooling retention: removed runtime $old_sha (ready=$old_ready)" >&2',
+    '      echo "checkpoint tooling retention: removed runtime $old_sha (ready=$old_ready) rule=$old_rule" >&2',
     '    ) 8>"$lock_dir/$old_sha.setup.lock" 9>"$lock_dir/$old_sha.runtime.lock" || true',
     '  done',
     '  for old_marker in "$used_dir"/* "$ready_dir"/*; do',

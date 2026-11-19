@@ -2402,6 +2402,213 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       }
     });
 
+    describe('WI-6554700010053216: tooling retention count and pressure', () => {
+      function fixture(includeHeadroom = true) {
+        const temp = mkdtempSync(join(tmpdir(), 'papercusp-tooling-policy-'));
+        const repoRoot = join(temp, 'source');
+        const cacheRoot = join(temp, 'cache');
+        const runtimes = join(cacheRoot, 'runtimes');
+        const readyDir = join(cacheRoot, 'ready');
+        const usedDir = join(cacheRoot, 'used');
+        const lockDir = join(cacheRoot, 'locks');
+        const git = (...args: string[]) => execFileSync('git', [
+          '-C', repoRoot, '-c', 'user.name=Test Agent', '-c', 'user.email=test@example.com', ...args,
+        ], { encoding: 'utf8' }).trim();
+        mkdirSync(join(repoRoot, 'apps/operator/bin/release'), { recursive: true });
+        writeFileSync(join(repoRoot, '.gitignore'), 'node_modules/\n');
+        writeFileSync(join(repoRoot, 'apps/operator/bin/release/setup-release-checkout.sh'), [
+          '#!/usr/bin/env bash',
+          'set -eu',
+          'release=""',
+          'while [ "$#" -gt 0 ]; do',
+          '  case "$1" in --release) release="$2"; shift 2 ;; *) shift ;; esac',
+          'done',
+          'mkdir -p "$release/node_modules/.bin"',
+          'printf "#!/usr/bin/env bash\\necho retention-fixture-cli\\n" > "$release/node_modules/.bin/tsx"',
+          'chmod +x "$release/node_modules/.bin/tsx"',
+        ].join('\n'));
+        if (includeHeadroom) {
+          writeFileSync(join(repoRoot, 'apps/operator/bin/release/dependency-generation.sh'), readFileSync(
+            fileURLToPath(new URL('../../../../../apps/operator/bin/release/dependency-generation.sh', import.meta.url)),
+          ));
+        }
+        execFileSync('git', ['-C', repoRoot, 'init', '--initial-branch=main'], { encoding: 'utf8' });
+        const shas: string[] = [];
+        for (let i = 0; i < 7; i += 1) {
+          writeFileSync(join(repoRoot, 'revision.txt'), String(i));
+          git('add', '.');
+          git('commit', '-m', 'retention fixture ' + i);
+          shas.push(git('rev-parse', 'HEAD'));
+        }
+        const buildSha = shas[6]!;
+        for (const dir of [runtimes, readyDir, usedDir, lockDir]) mkdirSync(dir, { recursive: true });
+        const addRuntime = (sha: string, minutesAgo: number, ready = true) => {
+          const root = join(runtimes, sha);
+          git('worktree', 'add', '--quiet', '--detach', root, sha);
+          const at = new Date(Date.now() - minutesAgo * 60_000);
+          if (ready) {
+            writeFileSync(join(readyDir, sha), sha + '\n');
+            writeFileSync(join(usedDir, sha), '');
+            utimesSync(join(usedDir, sha), at, at);
+          } else {
+            utimesSync(root, at, at);
+          }
+          return root;
+        };
+        const current = addRuntime(buildSha, 0);
+        const run = (env: Record<string, string> = {}, heldLock?: string) => {
+          const script = buildCommittedCheckpointToolingCommand(
+            repoRoot, buildSha, 'apps/operator/lib/release/green-checkpoint.ts', [], 'retention_policy', cacheRoot,
+          );
+          return spawnSync('/bin/bash', ['-c', heldLock
+            ? 'exec 7>"$HELD_LOCK"; flock -s 7; exec /bin/bash -c "$TOOLING_SCRIPT"'
+            : script], {
+            encoding: 'utf8',
+            env: {
+              ...process.env,
+              // Existing dependency-generation seams: protected reserve 100 plus margin 20.
+              DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '1000',
+              DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '10',
+              DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '20',
+              DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '500',
+              DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '1',
+              ...env,
+              ...(heldLock ? { HELD_LOCK: heldLock, TOOLING_SCRIPT: script } : {}),
+            },
+          });
+        };
+        return {
+          shas, buildSha, current, runtimes, readyDir, usedDir, lockDir, addRuntime, run, git,
+          cleanup: () => rmSync(temp, { recursive: true, force: true }),
+        };
+      }
+
+      it.each([0, 1, 2])('count boundary: %i superseded ready runtimes', (count) => {
+        const f = fixture();
+        try {
+          const roots = Array.from({ length: count }, (_, i) => f.addRuntime(f.shas[i]!, i + 1));
+          const result = f.run();
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stdout).toContain('retention-fixture-cli');
+          for (const [i, root] of roots.entries()) expect(existsSync(root)).toBe(i === 0);
+          if (count === 2) expect(result.stderr).toContain('rule=count');
+          expect(existsSync(f.current)).toBe(true);
+        } finally { f.cleanup(); }
+      });
+
+      it.each([[0, 1, 2], [2, 0, 1]])('keeps the newest across creation order %j', (...order) => {
+        const f = fixture();
+        try {
+          for (const i of order) f.addRuntime(f.shas[i]!, i + 1);
+          expect(f.run().status).toBe(0);
+          for (const i of order) expect(existsSync(join(f.runtimes, f.shas[i]!))).toBe(i === 0);
+        } finally { f.cleanup(); }
+      });
+
+      it('makes progress across fresh shell passes as more runtimes arrive', () => {
+        const f = fixture();
+        try {
+          for (let batch = 0; batch < 5; batch += 1) {
+            f.addRuntime(f.shas[batch]!, 10 - batch);
+            const result = f.run();
+            expect(result.status, result.stderr).toBe(0);
+            for (let i = 0; i <= batch; i += 1) {
+              expect(existsSync(join(f.runtimes, f.shas[i]!))).toBe(i === batch);
+            }
+          }
+        } finally { f.cleanup(); }
+      });
+
+      it.each(['setup', 'runtime'])('never reaps a %s-lock-held runtime under count, age or pressure', (lock) => {
+        const f = fixture();
+        try {
+          const locked = f.addRuntime(f.shas[0]!, 420);
+          f.addRuntime(f.shas[1]!, 1);
+          for (const available of ['500', '119']) {
+            const result = f.run(
+              { DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: available },
+              join(f.lockDir, f.shas[0] + '.' + lock + '.lock'),
+            );
+            expect(result.status, result.stderr).toBe(0);
+            expect(existsSync(locked)).toBe(true);
+            expect(existsSync(f.current)).toBe(true);
+          }
+        } finally { f.cleanup(); }
+      });
+
+      it('keeps dirty ready evidence under count and pressure', () => {
+        const f = fixture();
+        try {
+          const dirty = f.addRuntime(f.shas[0]!, 2);
+          writeFileSync(join(dirty, 'uncommitted-evidence.txt'), 'keep this\n');
+          f.addRuntime(f.shas[1]!, 1);
+          for (const available of ['500', '119']) {
+            const result = f.run({ DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: available });
+            expect(result.status, result.stderr).toBe(0);
+            expect(existsSync(dirty)).toBe(true);
+            expect(result.stderr).toContain('keeping dirty ready runtime ' + f.shas[0]);
+          }
+        } finally { f.cleanup(); }
+      });
+
+      it.each([119, 120, 121])('pressure boundary: %i available bytes', (available) => {
+        const f = fixture();
+        try {
+          const old = f.addRuntime(f.shas[0]!, 1);
+          const result = f.run({ DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(available) });
+          expect(result.status, result.stderr).toBe(0);
+          expect(existsSync(old)).toBe(available >= 120);
+          expect(existsSync(f.current)).toBe(true);
+          if (available < 120) expect(result.stderr).toContain('rule=pressure');
+        } finally { f.cleanup(); }
+      });
+
+      it('reuses the preflight other-filesystem reserve cap', () => {
+        const f = fixture();
+        try {
+          const old = f.addRuntime(f.shas[0]!, 1);
+          const result = f.run({
+            DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '80',
+            DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+            DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: '15',
+          });
+          expect(result.status, result.stderr).toBe(0);
+          expect(existsSync(old)).toBe(true);
+        } finally { f.cleanup(); }
+      });
+
+      it('pressure also retires young interrupted setups while age remains in force without pressure', () => {
+        const f = fixture();
+        try {
+          const young = f.addRuntime(f.shas[0]!, 5, false);
+          const aged = f.addRuntime(f.shas[1]!, 40, false);
+          const normal = f.run();
+          expect(normal.status, normal.stderr).toBe(0);
+          expect(existsSync(young)).toBe(true);
+          expect(existsSync(aged)).toBe(false);
+          expect(normal.stderr).toContain('rule=age');
+          const pressured = f.run({ DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '119' });
+          expect(pressured.status, pressured.stderr).toBe(0);
+          expect(existsSync(young)).toBe(false);
+          expect(pressured.stderr).toContain('rule=pressure');
+        } finally { f.cleanup(); }
+      });
+
+      it('does not invent pressure when the committed headroom helper is unavailable', () => {
+        const f = fixture(false);
+        try {
+          const newest = f.addRuntime(f.shas[0]!, 1);
+          const older = f.addRuntime(f.shas[1]!, 2);
+          const result = f.run({ DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '0' });
+          expect(result.status, result.stderr).toBe(0);
+          expect(existsSync(newest)).toBe(true);
+          expect(existsSync(older)).toBe(false);
+          expect(result.stderr).toContain('headroom unavailable');
+          expect(result.stderr).toContain('rule=count');
+        } finally { f.cleanup(); }
+      });
+    });
+
     it('WI-6554700010050773: reaps failed and stale tooling runtimes BEFORE setup, even when that setup fails', () => {
       const temp = mkdtempSync(join(tmpdir(), 'papercusp-tooling-retention-'));
       const repoRoot = join(temp, 'source');
