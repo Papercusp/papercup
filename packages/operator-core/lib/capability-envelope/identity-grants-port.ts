@@ -451,10 +451,14 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
  * returns equal bytes or the expectedRevision matches. */
 export async function readIdentityPermissionSources(
   input: { workspaceId: string; harnessSlug: string; record: unknown;
-    applied: KernelExecutionRevision | null | undefined; expectedRevision?: string; pinForEffect?: boolean },
+    applied: KernelExecutionRevision | null | undefined; expectedRevision?: string; pinForEffect?: boolean;
+    /** Host-local transaction and stored session owner, never serialized args.
+     * Without this journal join, action/resource authority stays unavailable. */
+    installation?: { tx: TransactionSql; ownerId: string } },
   readPolicy: PolicyReader = readIdentityGrantPolicy,
 ) {
   const { workspaceId, harnessSlug, expectedRevision } = input;
+  const installation = input.installation ? { ...input.installation } : undefined;
   const unavailable = (reason: string) => ({ status: 'unavailable' as const, reason });
   if (input.pinForEffect === true) return unavailable(HOST_POLICY_EFFECT_PROTECTION_UNAVAILABLE);
   const valid = (value: unknown): value is string => typeof value === 'string' &&
@@ -510,10 +514,26 @@ export async function readIdentityPermissionSources(
   if (!valid(policy.policyRevision) || !valid(policy.potSlug) || !policy.ceilings?.length ||
       !Array.isArray(policy.bindings) || !(policy.tools instanceof Map) || !Array.isArray(policy.protectedAdditions))
     return unavailable('current identity grant policy is incomplete');
+  let installations: { applied: Awaited<ReturnType<typeof import('../blueprint/session-package-resources').readSessionPackageOwnership>>;
+    desired: Awaited<ReturnType<typeof import('../blueprint/session-package-resources').readSessionPackageOwnership>> } | undefined;
+  if (installation) {
+    if (!valid(installation.ownerId)) return unavailable('installation session owner is unavailable');
+    try {
+      const { readSessionPackageOwnership } = await import('../blueprint/session-package-resources');
+      installations = {
+        applied: await readSessionPackageOwnership(installation.tx, { workspaceId, ownerId: installation.ownerId,
+          revision: applied, phase: 'applied' }),
+        desired: await readSessionPackageOwnership(installation.tx, { workspaceId, ownerId: installation.ownerId,
+          revision: { specificationRevision: record.specificationRevision as string,
+            stateRevision: record.stateRevision as string }, phase: 'desired' }),
+      };
+    } catch { return unavailable('canonical installation scoped grants are unavailable'); }
+  }
   const revision = createHash('sha256').update(canonicalJson({
     workspaceId, harnessSlug, role, applied,
     desired: { specificationRevision: record.specificationRevision, stateRevision: record.stateRevision },
     layers, policy: { ...policy, tools: [...policy.tools].sort(([a], [b]) => a.localeCompare(b)) },
+    ...(installations ? { installations } : {}),
   })).digest('hex');
   if (expectedRevision !== undefined && revision !== expectedRevision)
     return { status: 'stale' as const, revision };
@@ -526,16 +546,31 @@ export async function readIdentityPermissionSources(
       return layer.sourceKind === 'identity' && document.floors !== undefined
         ? [{ id: layer.ref, revision: layer.contentHash, rules: document.floors }] : [];
     });
-    // The existing binding registry grants tool reach only. Its class verbs,
-    // publisher maxima and whole-stack floors cannot authorize actual actions
-    // or resources. Keep that gap explicit even for an empty grant union.
-    return { status: 'unavailable' as const, missing: ['actions', 'resources'] as const,
-      reason: 'canonical positive scoped action/resource grants are unavailable',
+    const base = {
       declaration: envelope.applied ? 'present' as const : 'absent' as const,
       contributions: envelope.applied ? envelope.contributions ?? [] : [], restrictions,
       toolFailures: envelope.applied ? envelope.failures : [] };
+    const missing = (reason: string) => ({ ...base, status: 'unavailable' as const,
+      missing: ['actions', 'resources'] as const, reason });
+    const selected = installations?.[phase];
+    const scopes = selected && 'scopedGrants' in selected ? selected.scopedGrants : null;
+    if (!selected || selected.status !== 'known' || !scopes || !envelope.applied || envelope.failures.length)
+      return missing('canonical positive scoped action/resource grants are unavailable');
+    // Join explicit human scopes to the SAME layer's exact content and
+    // provider-derived tool contribution. Maxima/floors supply no positive
+    // grants. Extra/missing layers fail closed, including an empty tool union.
+    if (scopes.layers.length !== base.contributions.length || scopes.layers.some(scope =>
+      !base.contributions.some(source => source.id === scope.layerRef && source.revision === scope.layerContentHash)))
+      return missing('installation scoped grant layers do not match the exact identity contributions');
+    const contributions = base.contributions.map(source => {
+      const scope = scopes.layers.find(scope => scope.layerRef === source.id)!;
+      return { ...source, revision: createHash('sha256').update(canonicalJson({
+        layer: source.revision, installation: selected.attemptRevision, scope,
+      })).digest('hex'), grants: { ...source.grants, ...scope.grants } };
+    });
+    return { ...base, status: 'ok' as const, contributions };
   };
-  return { status: 'ok' as const, revision, role, applied, layers, policy,
+  return { status: 'ok' as const, revision, role, applied, layers, policy, ...(installations ? { installations } : {}),
     permissionInputs: { applied: permissionInputs('applied'), desired: permissionInputs('desired') } };
 }
 
@@ -667,7 +702,9 @@ export async function readIdentityPermissionPopulation(sql: Sql, workspaceId: st
       const applied = object(object(object(session.controlState)?.activation)?.applied);
       return readIdentityPermissionSources({ workspaceId,
         harnessSlug: typeof record?.harnessSlug === 'string' ? record.harnessSlug : '',
-        record, applied: applied as KernelExecutionRevision | null });
+        record, applied: applied as KernelExecutionRevision | null,
+        ...(options.includePackageResources ? { installation: {
+          tx: tx as unknown as TransactionSql, ownerId: session.ownerId } } : {}) });
     };
     const identityRef = (session: IdentityPermissionSessionSource,
       source: IdentityPermissionSourceRead): IdentityPermissionSourceRef => ({

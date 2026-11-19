@@ -98,6 +98,9 @@ export async function readSessionPackageOwnership(tx: TransactionSql, input: {
   const humanOwnerId = exact ? installation.human_ownership?.userId ?? null : null;
   return { status: humanOwnerId === null ? 'unknown' as const : 'known' as const,
     revision: input.revision, dependentId, attemptRevision, humanOwnerId,
+    // Never substitute scopes from an older, released or differently authored
+    // installation of the same specification.
+    scopedGrants: humanOwnerId === null ? null : installation!.scoped_grants,
     ...(humanOwnerId === null ? { reason: exact ? 'human-owner-not-recorded' : 'selected-installation-not-current' } : {}) };
 }
 

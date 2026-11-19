@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { readIdentityPermissionPopulation, readIdentityPermissionSources, type IdentityPermissionSessionSource } from './identity-grants-port';
+import { readIdentityPermissionPopulation, readIdentityPermissionSources, type IdentityGrantPolicy, type IdentityPermissionSessionSource } from './identity-grants-port';
 import { narrowIdentityHistory } from './identity-receipt-narrowing';
 import { packageResourceKey } from '../blueprint/package-resource-receipts';
 import { sessionPackageDependentId } from '../blueprint/session-package-resources';
@@ -63,6 +63,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.population_effects (target text NOT NULL)`);
   for (const migration of ['1230-blueprint-package-resource-receipts.sql',
     '1232-blueprint-package-installations.sql', '1645-blueprint-installation-human-ownership.sql',
+    '1648-blueprint-installation-scoped-grants.sql',
     '1646-governance-host-authority-bindings.sql', '1647-governance-inherited-human-ownership.sql',
     '1497-governance-policy-layers.sql',
     '1644-governance-scoped-authority-levels.sql']) {
@@ -120,16 +121,17 @@ describe('joined session identity policy sources', () => {
     // before the source adapter turns policy-load errors into an unavailable read.
     expect(loadBlueprintFromFile(potFile).validation.ok).toBe(true);
   }
-  function receipt(id: string) {
+  function receipt(id: string, declaresGrants = false) {
     const specificationArtifact = compileAgentSpecification({
-      source: { id, workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+      source: { id, workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
+        ...(declaresGrants ? { grants: { requires: [] } } : {}) },
       prompt: { role: 'worker', text: id },
     });
     return { specificationArtifact, specificationRevision: specificationArtifact.specificationRevision,
       stateRevision: `state-${id}` };
   }
-  async function seedIdentity() {
-    const applied = receipt('prior-identity'), desired = receipt('next-identity');
+  async function seedIdentity(declaresGrants = false) {
+    const applied = receipt('prior-identity', declaresGrants), desired = receipt('next-identity', declaresGrants);
     const record = { workspaceId: 'ws', harnessSlug: 'fixture', role: 'su',
       ...desired, identityHistory: [applied] };
     const pair = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
@@ -141,6 +143,31 @@ describe('joined session identity policy sources', () => {
       applied: { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision },
     } })})`;
     return { applied, desired };
+  }
+  async function scopedInstallation(value: ReturnType<typeof receipt>, options: {
+    attemptId?: string; phase?: string; scope?: 'exact' | 'hash' | 'ref' | 'missing' | 'extra' | 'unknown';
+    action?: string; workspaceId?: string;
+  } = {}) {
+    const workspaceId = options.workspaceId ?? 'ws';
+    const dependentId = sessionPackageDependentId('wearer', value, options.attemptId);
+    const ownership = { schemaVersion: 1, declaration: 'self', authMethod: 'cookie-session',
+      workspaceId, ownerId: 'wearer', userId: 'explicit-human',
+      specificationRevision: value.specificationRevision, principalRevision: 'e'.repeat(64) };
+    const layers = value.specificationArtifact.inputs.filter(entry => entry.kind === 'blueprint-layer')
+      .filter(entry => entry.document?.grants !== undefined)
+      .map(entry => ({ layerRef: options.scope === 'ref' ? 'other-layer' : entry.ref,
+        layerContentHash: options.scope === 'hash' ? '0'.repeat(64) : entry.contentHash,
+        grants: { actions: { allow: [options.action ?? 'read'] }, resources: { allow: ['store:read:mailbox'] } } }));
+    if (options.scope === 'missing') layers.pop();
+    if (options.scope === 'extra') layers.push({ layerRef: 'unworn', layerContentHash: '0'.repeat(64),
+      grants: { actions: { allow: ['*'] }, resources: { allow: ['*'] } } });
+    await sql`INSERT INTO harness_shared.blueprint_package_installations
+      (workspace_id, dependent_id, owner_id, specification_revision, state_revision,
+       expected_resources, phase, human_ownership, scoped_grants)
+      VALUES (${workspaceId}, ${dependentId}, 'wearer', ${value.specificationRevision}, ${value.stateRevision}, '{}',
+        ${options.phase ?? 'applied'}, ${sql.json(ownership)},
+        ${options.scope === 'unknown' ? null : sql.json({ schemaVersion: 1, layers })})`;
+    return dependentId;
   }
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'identity-population-host-'));
@@ -193,6 +220,97 @@ describe('joined session identity policy sources', () => {
     const after = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true });
     expect(after.status).toBe('ok');
     expect(after.revision).not.toBe(before.revision);
+  });
+
+  it('joins scopes from each exact selected installation without granting tools from scope strings', async () => {
+    const { applied, desired } = await seedIdentity(true);
+    await scopedInstallation(applied);
+    await scopedInstallation(desired, { phase: 'preparing', action: 'write' });
+    const visited: unknown[] = [];
+    const result = await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
+      includePackageResources: true, visit: session => { visited.push(session.identitySources); } });
+    expect(result.status).toBe('ok');
+    expect(visited).toMatchObject([{ status: 'ok', permissionInputs: {
+      applied: { status: 'ok', contributions: [{ id: 'prior-identity', grants: {
+        tools: { allow: [] }, actions: { allow: ['read'] }, resources: { allow: ['store:read:mailbox'] },
+      } }] },
+      desired: { status: 'ok', contributions: [{ id: 'next-identity', grants: { actions: { allow: ['write'] } } }] },
+    } }]);
+    const unjoined: unknown[] = [];
+    await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true,
+      visit: session => { unjoined.push(session.identitySources); } });
+    expect(unjoined).toMatchObject([{ permissionInputs: { applied: { status: 'unavailable' } } }]);
+    expect(result).not.toHaveProperty('completeAuthoritySnapshot');
+  });
+
+  it.each(['hash', 'ref', 'missing', 'extra', 'unknown'] as const)('refuses %s scoped layer evidence', async scope => {
+    const { applied, desired } = await seedIdentity(true);
+    await scopedInstallation(applied, { scope });
+    await scopedInstallation(desired, { phase: 'preparing' });
+    const visited: unknown[] = [];
+    await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true, includePackageResources: true,
+      visit: session => { visited.push(session.identitySources); } });
+    expect(visited).toMatchObject([{ permissionInputs: {
+      applied: { status: 'unavailable', missing: ['actions', 'resources'] }, desired: { status: 'ok' },
+    } }]);
+  });
+
+  it('does not revive released scopes or use a preparing attempt as applied authority', async () => {
+    const { applied } = await seedIdentity(true);
+    await scopedInstallation(applied, { phase: 'released', action: '*' });
+    await scopedInstallation(applied, { attemptId: 'attempt:1', phase: 'preparing', action: 'read' });
+    const visited: unknown[] = [];
+    await readIdentityPermissionPopulation(sql, 'ws', { includeIdentitySources: true, includePackageResources: true,
+      visit: session => { visited.push(session.identitySources); } });
+    expect(visited).toMatchObject([{ installations: { applied: {
+      status: 'unknown', humanOwnerId: null, scopedGrants: null,
+    } }, permissionInputs: { applied: { status: 'unavailable' } } }]);
+  });
+
+  it('pins scopes in the source revision and preserves the journal snapshot during visits', async () => {
+    const { applied, desired } = await seedIdentity(true);
+    const selected = await scopedInstallation(applied);
+    await scopedInstallation(desired, { phase: 'preparing' });
+    const options = { includeIdentitySources: true, includePackageResources: true };
+    const before = await readIdentityPermissionPopulation(sql, 'ws', options);
+    const during = await readIdentityPermissionPopulation(sql, 'ws', { ...options, visit: async () => {
+      await sql`UPDATE harness_shared.blueprint_package_installations SET phase = 'released' WHERE dependent_id = ${selected}`;
+      await scopedInstallation(applied, { attemptId: 'attempt:1', action: 'write' });
+    } });
+    expect(during).toEqual(before);
+    const after = await readIdentityPermissionPopulation(sql, 'ws', options);
+    expect(after.revision).not.toBe(before.revision);
+    if (before.status !== 'ok' || after.status !== 'ok') throw new Error('source unavailable');
+    expect(after.identitySources?.sessions[0]).not.toEqual(before.identitySources?.sessions[0]);
+  });
+
+  it('keeps the provider tool grant, same-layer maximum and stack floor separate from explicit scopes', async () => {
+    const classRef = 'crm.email@1.0.0';
+    const pin = { kind: 'capability-provider' as const, ref: classRef, providerPackage: 'mail-provider',
+      providerVersion: '1.0.0', conformanceRunId: 'run-a', registryRevision: 'registry-a', verbBindings: { send: 'mail:send' } };
+    const layer = { id: 'scoped-layer', slots: [{ slot: 'domain' }], grants: { requires: [classRef] },
+      ceiling: { actions: { allow: ['read'] } }, floors: { resources: { deny: ['store:read:private'] } } };
+    const path = join(root, 'scoped-layer.yaml');
+    writeFileSync(path, JSON.stringify(layer));
+    const artifact = compileAgentSpecification({ source: { id: 'scope-stack', slots: [], extends: ['scoped-layer'] },
+      resolve: () => path, inputClosure: [pin] });
+    const value = { specificationArtifact: artifact, specificationRevision: artifact.specificationRevision, stateRevision: 'state-scoped' };
+    await scopedInstallation(value);
+    const policy: IdentityGrantPolicy = { policyRevision: 'policy-a', potSlug: 'fixture',
+      ceilings: [{ allowCapabilities: ['mail:send'] }], protectedAdditions: [], tools: new Map([['mail:send', ['mail:send']]]),
+      bindings: [{ classRef, providerPackage: pin.providerPackage, providerVersion: pin.providerVersion,
+        conformanceRunId: pin.conformanceRunId, registryRevision: pin.registryRevision, verbBindings: pin.verbBindings,
+        status: 'active', conformanceStatus: 'passed', behavioralStatus: 'not-required', behavioralRunRef: null,
+        potSlug: 'fixture', boundBy: 'admin', boundAt: '2026-09-13', updatedAt: '2026-09-13' }] };
+    const source = await sql.begin('isolation level repeatable read read only', tx => readIdentityPermissionSources({
+      workspaceId: 'ws', harnessSlug: 'fixture', record: { workspaceId: 'ws', harnessSlug: 'fixture', ...value },
+      applied: value, installation: { tx, ownerId: 'wearer' },
+    }, async () => policy));
+    expect(source).toMatchObject({ status: 'ok', permissionInputs: { applied: {
+      status: 'ok', contributions: [{ id: 'scoped-layer', grants: { tools: { allow: ['mail:send'] },
+        actions: { allow: ['read'] }, resources: { allow: ['store:read:mailbox'] } }, maximum: layer.ceiling }],
+      restrictions: [{ id: 'scoped-layer', rules: layer.floors }],
+    } } });
   });
 
   it.each(['change', 'unavailable'])('detects host policy %s during traversal', async kind => {
