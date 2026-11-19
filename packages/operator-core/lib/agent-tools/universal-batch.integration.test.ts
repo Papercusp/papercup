@@ -280,56 +280,8 @@ describe('universal batching in the operator', () => {
     expect(settlements).toEqual([[reservations[0], 'commit'], [reservations[1], 'commit']]);
   });
 
-  it('caps active child deadlines at the parent deadline and leaves expired siblings unstarted', async () => {
-    vi.useFakeTimers();
-    try {
-      const deadlineAtMs = Date.now() + 30;
-      const entered: string[] = [];
-      const signals: AbortSignal[] = [];
-      defineTool({ name, requirePrincipal: false, capability: 'test:read', effect: 'read', args: operation,
-        timeoutSec: 60, handler: async (value, ctx) => {
-          entered.push(value.key);
-          signals.push(ctx.signal);
-          expect(ctx.deadlineAtMs).toBe(deadlineAtMs);
-          return new Promise((_resolve, reject) => ctx.signal.addEventListener('abort',
-            () => reject(new Error('parent deadline reached')), { once: true }));
-        } });
-      const pending = call({ _batch: 1, items: [item('active', 'active'), item('later', 'later')] }, {
-        ctx: { deadlineAtMs },
-      });
-      await vi.advanceTimersByTimeAsync(30);
-      const result = data(await pending);
-      expect(entered).toEqual(['active']);
-      expect(signals.map(signal => signal.aborted)).toEqual([true]);
-      expect(result.results).toMatchObject([
-        { itemId: 'active', ok: false, error: { code: 'timeout' } },
-        { itemId: 'later', ok: false, status: 'not-started' },
-      ]);
-    } finally { vi.useRealTimers(); }
-  });
-
-  it('enforces the declared single-child concurrency ceiling across awaited effects', async () => {
-    vi.useFakeTimers();
-    try {
-      let active = 0;
-      let peak = 0;
-      const started: string[] = [];
-      defineTool({ name, requirePrincipal: false, capability: 'test:write', effect: 'write', args: operation,
-        batch: { maxConcurrency: 1 }, handler: async value => {
-          peak = Math.max(peak, ++active);
-          started.push(value.key);
-          await new Promise(resolve => setTimeout(resolve, 5));
-          active--;
-          return { data: value };
-        } });
-      const pending = call({ _batch: 1, items: ['a', 'b', 'c'].map(key => item(key, key)) });
-      await vi.advanceTimersByTimeAsync(20);
-      expect(data(await pending).counts).toEqual({ ok: 3, failed: 0 });
-      expect(peak).toBe(1);
-      expect(active).toBe(0);
-      expect(started).toEqual(['a', 'b', 'c']);
-    } finally { vi.useRealTimers(); }
-  });
+  // The parent-deadline cap and the single-child concurrency ceiling fake setTimeout, so they
+  // live in universal-batch-deadlines.test.ts (unit layer) — fake timers are banned here.
 
   it('preserves an incomplete business page and its continuation inside each child output', async () => {
     const page = { rows: [{ id: 'first' }], total: 17, complete: false, hasMore: true,
