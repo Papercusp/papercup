@@ -77,7 +77,19 @@ const h = vi.hoisted(() => {
     liveHost: null as null | { ownerId: string; pid: number; sock: string },
     hostLookups: [] as string[],
     injected: [] as Array<{ sock: string; msg: unknown }>,
+    protectedLibraryFixture: true,
   };
+});
+
+// This file isolates the real session/control transaction. Its success cases
+// assume protected library input, without claiming full permission admission.
+// The explicit refusal regression uses the real reader instead of that fixture.
+vi.mock('./blueprint/installed-blueprints', async original => {
+  const actual = await original<typeof import('./blueprint/installed-blueprints')>();
+  return { ...actual, readBlueprintSourcePopulation: (options: Parameters<typeof actual.readBlueprintSourcePopulation>[0]) =>
+    h.protectedLibraryFixture
+      ? { status: 'ok', revision: 'c'.repeat(64), roots: [], sources: [] }
+      : actual.readBlueprintSourcePopulation(options) };
 });
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -249,6 +261,7 @@ beforeAll(async () => {
 afterAll(async () => db?.cleanup(), 300_000);
 
 beforeEach(() => {
+  h.protectedLibraryFixture = true;
   h.duringRebuild = null;
   h.goalAuthorityFailure = null;
   h.tagFailure = null;
@@ -320,7 +333,7 @@ async function activationEvents(owner: string) {
      ORDER BY id`;
 }
 
-const mutate = async (owner: string, action: 'switch' | 'rollback', identityId?: string) =>
+const mutate = async (owner: string, action: 'switch' | 'rollback' | 'detach' | 'preview', identityId?: string) =>
   mutateIdentityStack({
     workspaceId: WS,
     ownerId: owner,
@@ -332,6 +345,38 @@ const mutate = async (owner: string, action: 'switch' | 'rollback', identityId?:
   }, { workspaceId: WS, resolvePrincipal: await retainRequestPrincipal(new Headers(), WS) });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
+  it.each(['switch', 'detach'] as const)('refuses an unprotected library on %s before persisting a stack or publishing a desired activation', async action => {
+    const owner = 'su-identity-library-refused-' + action;
+    await seedSession(owner, ENGINEER);
+    const before = await launchSpec(owner);
+    const beforeBrief = await brief(owner);
+    const beforeEvents = await activationEvents(owner);
+    h.protectedLibraryFixture = false;
+    await expect(mutate(owner, action, action === 'detach' ? 'papercusp-engineer' : 'writer'))
+      .rejects.toThrow('blueprint source effect protection is unavailable');
+    expect(await launchSpec(owner)).toEqual(before);
+    expect(await activationEvents(owner)).toEqual(beforeEvents);
+    expect(await brief(owner)).toEqual(beforeBrief);
+    expect(h.hostLookups).toEqual([]);
+    expect(h.injected).toEqual([]);
+  });
+
+  it.each(['preview', 'switch'] as const)('leaves an unprotected library effect-free for %s of an unchanged or previewed stack', async action => {
+    const owner = 'su-identity-library-readonly-' + action;
+    await seedSession(owner, ENGINEER);
+    const before = await launchSpec(owner);
+    const beforeBrief = await brief(owner);
+    const beforeEvents = await activationEvents(owner);
+    h.protectedLibraryFixture = false;
+    await expect(mutate(owner, action, action === 'preview' ? 'writer' : 'papercusp-engineer'))
+      .resolves.toMatchObject({ ok: true, changed: action === 'preview' });
+    expect(await launchSpec(owner)).toEqual(before);
+    expect(await activationEvents(owner)).toEqual(beforeEvents);
+    expect(await brief(owner)).toEqual(beforeBrief);
+    expect(h.hostLookups).toEqual([]);
+    expect(h.injected).toEqual([]);
+  });
+
   async function superseded(owner: string, ended: boolean, stack: readonly string[]) {
     const old = await seedSession(owner, ENGINEER);
     const original = await launchSpec(owner);

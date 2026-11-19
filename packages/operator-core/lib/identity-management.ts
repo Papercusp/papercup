@@ -18,7 +18,8 @@ import {
 } from '@papercusp/orchestrator/blueprint';
 import { listIdentitySources, getIdentitySource, inspectIdentitySource,
   identityLaunchCompatibility } from './agent-identities/source';
-import { availableBlueprintSources, operatorResolveExtends } from './blueprint/installed-blueprints';
+import { availableBlueprintSources, operatorResolveExtends,
+  readBlueprintSourcePopulation } from './blueprint/installed-blueprints';
 import { withBlueprintSourceMutation } from './blueprint/source-lock';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { provisionLaunchIdentityResources } from './role-launch-spec';
@@ -57,6 +58,19 @@ async function readIdentityEditor(workspaceId: string, request?: IdentityEditReq
     read.status === 'stale' ? 'identity editor authority changed; review the edit again'
       : 'identity editor credentials are unavailable or revoked');
   return read;
+}
+
+/** A cooperative source mutex and a matching scan cannot exclude native edits
+ * or root replacement. Refuse at each actual writer until the source reader
+ * can supply effect protection. This is a prerequisite, never edit authority. */
+function requireProtectedIdentityLibrary(repoDir: string | null) {
+  const population = readBlueprintSourcePopulation({
+    localDirs: repoDir ? [join(repoDir, '.papercusp', 'blueprints')] : [],
+    pinForEffect: true,
+  });
+  if (population.status !== 'ok') throw new PrincipalCheckError(403,
+    `Identity sources cannot be held stable; this edit was refused: ${
+      population.status === 'unavailable' ? population.reason : 'blueprint source population changed'}`);
 }
 
 interface SessionRow {
@@ -310,6 +324,7 @@ export async function saveNamedIdentityComposition(input: Parameters<typeof prev
   return withBlueprintSourceMutation([parent], async () => {
   const prepared = await previewNamedIdentityComposition(input);
   await readIdentityEditor(request!.workspaceId, request, editor.revision);
+  requireProtectedIdentityLibrary(root);
   await mkdir(parent, { recursive: true });
   const actualParent = await realpath(parent);
   const within = relative(root, actualParent);
@@ -624,6 +639,10 @@ export async function mutateIdentityStack(input: IdentityMutationInput,
     // Re-resolve only after the row-lock wait and all asynchronous compilation.
     // The target session is never evidence of the editor's identity.
     const currentEditor = await readIdentityEditor(input.workspaceId, request, editor!.revision);
+    // The session lease does not fence filesystem sources. In particular a
+    // rollback or detach can expose an older/broader grant; neither bypasses
+    // library protection merely because it removes a selected layer.
+    requireProtectedIdentityLibrary(repoDir);
     // Funding admission may refresh a persistent pricing cache. It is already
     // an effect, so it belongs inside the source fence, before provisioning.
     // D-011: removing a layer alone needs no funding admission.

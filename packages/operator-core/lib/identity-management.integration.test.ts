@@ -12,7 +12,19 @@ const mutationHost = vi.hoisted(() => ({
   funded: vi.fn(async () => {}),
   editorRevoked: false,
   editorCapabilities: ['*'],
+  protectedLibraryFixture: true,
 }));
+
+// These tests isolate the real PostgreSQL SESSION fence, not full permission
+// admission. Successful effect cases explicitly supply hypothetical library
+// protection. The refusal case below calls the real source reader unchanged.
+vi.mock('./blueprint/installed-blueprints', async original => {
+  const actual = await original<typeof import('./blueprint/installed-blueprints')>();
+  return { ...actual, readBlueprintSourcePopulation: (options: Parameters<typeof actual.readBlueprintSourcePopulation>[0]) =>
+    mutationHost.protectedLibraryFixture
+      ? { status: 'ok', revision: 'c'.repeat(64), roots: [], sources: [] }
+      : actual.readBlueprintSourcePopulation(options) };
+});
 
 vi.mock('./auth/principal/from-cookie', () => ({ principalFromCookie: async () => mutationHost.editorRevoked ? null : ({
   kind: 'user', slug: 'authenticated-editor', workspaceId: 'identity-management-schema-test',
@@ -182,6 +194,7 @@ describe('identity mutation before-image fence', () => {
     unknown as Awaited<ReturnType<typeof import('./su-persona-render').rebuildSuLaunchArtifact>>;
 
   beforeEach(async () => {
+    mutationHost.protectedLibraryFixture = true;
     mutationHost.editorRevoked = false;
     mutationHost.editorCapabilities = ['*'];
     editor = { workspaceId: WORKSPACE, resolvePrincipal: await retainRequestPrincipal(new Headers(), WORKSPACE) };
@@ -204,6 +217,21 @@ describe('identity mutation before-image fence', () => {
       launch_spec = ${JSON.stringify(original)}::jsonb AS string_matches
       FROM harness_shared.adv_sessions WHERE id = 100`;
     expect(row).toEqual({ object_matches: true, string_matches: false });
+  });
+
+  it('refuses an unprotected real library before funding, preparation or activation and releases its session lease', async () => {
+    mutationHost.protectedLibraryFixture = false;
+    await expect(mutateIdentityStack(input, editor)).rejects.toThrow('blueprint source effect protection is unavailable');
+    expect(mutationHost.funded).not.toHaveBeenCalled();
+    expect(mutationHost.provision).not.toHaveBeenCalled();
+    expect(mutationHost.activate).not.toHaveBeenCalled();
+    expect(await db.sql`SELECT * FROM harness_shared.identity_mutation_effects`).toEqual([]);
+    const [row] = await db.sql`SELECT launch_spec FROM harness_shared.adv_sessions WHERE id = 100`;
+    expect(row!.launch_spec).toEqual(original);
+    await db.sql.begin(async tx => {
+      await tx`SET LOCAL lock_timeout = '150ms'`;
+      await tx`LOCK TABLE harness_shared.adv_sessions, harness_shared.session_briefs IN ACCESS EXCLUSIVE MODE`;
+    });
   });
 
   it('refuses a stale compiled edit before provisioning or publishing activation', async () => {

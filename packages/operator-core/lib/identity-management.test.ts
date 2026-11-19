@@ -108,7 +108,7 @@ describe('identity management service', () => {
     }
   });
 
-  it('previews and atomically saves a named composition in the existing local blueprint library', async () => {
+  it('previews a named composition but refuses an unprotected library save before creating its directory', async () => {
     const root = await mkdtemp(join(tmpdir(), 'named-identity-composition-'));
     const domainId = 'zz-compose-domain';
     const practiceId = 'zz-compose-practice';
@@ -136,13 +136,19 @@ describe('identity management service', () => {
         entered(); await new Promise<void>(resolve => { release = resolve; });
       });
       await ready;
-      const pending = saveNamedIdentityComposition(input, await editorRequest());
+      const pending = expect(saveNamedIdentityComposition(input, await editorRequest()))
+        .rejects.toThrow('blueprint source effect protection is unavailable');
       try {
         await new Promise(resolve => setTimeout(resolve, 80));
         await expect(readFile(join(library, input.id, 'blueprint.yaml'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
       } finally { release(); await held; }
-      const saved = await pending;
-      expect(saved.ok).toBe(true);
+      await pending;
+      await expect(readFile(join(library, input.id, 'blueprint.yaml'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(join(library, input.id), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      // Seed an explicit read-only selection fixture; this is not a saved or
+      // admitted composition. The remaining assertions cover preview/catalog.
+      await mkdir(join(library, id));
+      await writeFile(join(library, id, 'blueprint.yaml'), preview.yaml);
       const yaml = await readFile(join(root, '.papercusp', 'blueprints', id, 'blueprint.yaml'), 'utf8');
       expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [] });
       expect(parseYaml(yaml)).not.toHaveProperty('roles');
