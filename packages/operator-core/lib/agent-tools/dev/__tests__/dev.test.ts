@@ -120,12 +120,16 @@ describe('dev:build_status', () => {
     const projected = lookupByMcpName('dev:build_status');
     expect(projected).toBeDefined();
 
+    // Production MCP dispatch answers a single call in the legacy operation shape
+    // (PROJECTED_DEPS.batchResponseVersion = 'operation-v0' in projected-tool-deps.ts);
+    // bare `{}` deps select the tooldef default, the batch-v1 envelope, which is not
+    // the path this case pins.
     const result = await dispatchProjectedTool(
       projected!,
       'dev:build_status',
       { harness: 'papercusp' },
       MAKE_CTX({ emit: vi.fn() }),
-      {},
+      { batchResponseVersion: 'operation-v0' },
     );
 
     expect(result.ok).toBe(true);
