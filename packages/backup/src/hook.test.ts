@@ -15,6 +15,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+// Keep the stream-error regressions exercising the existing non-Linux
+// transport. The real Linux inherited-descriptor path has process/file tests
+// in hook-pipeline.integration.test.ts, including a blocked operator thread.
+vi.mock('./dump-pipe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./dump-pipe')>();
+  return {
+    ...actual,
+    createDumpPipe: (source: import('node:stream').Readable, destination: string, args: string[]) => ({
+      ...actual.createDumpPipe(source, destination, args, 'win32'),
+      direct: h.directPipe,
+      sampleProgress: async () => h.rawProgress,
+    }),
+  };
+});
 import {
   HOST_BACKUP_APPLICATION_NAME,
   WORKSPACE_BACKUP_APPLICATION_NAME,
@@ -61,6 +75,8 @@ const h = vi.hoisted(() => ({
   pendingGuardAck: null as EventEmitter | null,
   holdOutputOpen: false,
   pendingOutputStream: null as EventEmitter | null,
+  directPipe: false,
+  rawProgress: 0 as number | null,
 }));
 
 // Fake child: EventEmitter-backed stdout/stderr/stdin (so the real code's
@@ -278,6 +294,8 @@ beforeEach(() => {
   h.pendingGuardAck = null;
   h.holdOutputOpen = false;
   h.pendingOutputStream = null;
+  h.directPipe = false;
+  h.rawProgress = 0;
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -1066,6 +1084,37 @@ describe('safety-dump watchdog: stall detection, not a fixed budget (EI-25164396
 
     exitGuard(guard, 0);
     await expect(pending).resolves.toMatchObject({ ok: true });
+  });
+
+  it('uses compressor input counters to distinguish native-pipe progress from a real stall', async () => {
+    h.directPipe = true;
+    const { pending, guard } = await startHeldDump('pre_destructive');
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS - 5_000);
+    h.rawProgress = 65_537;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(guard.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS - 1);
+    expect(guard.kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(guard.kill).toHaveBeenCalledWith('SIGKILL');
+    exitGuard(guard, null);
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('65537 bytes dumped'),
+    });
+  });
+
+  it('keeps unknown native progress explicit and retains the absolute deadline', async () => {
+    h.directPipe = true;
+    h.rawProgress = null;
+    const { pending, guard } = await startHeldDump('pre_destructive');
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_STALL_TIMEOUT_MS + 5_000);
+    expect(guard.kill).not.toHaveBeenCalled();
+    expect(h.logLines.filter((line) => line.includes('progress counters unavailable'))).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(SAFETY_DUMP_CEILING_MS - SAFETY_DUMP_STALL_TIMEOUT_MS - 5_000);
+    expect(guard.kill).toHaveBeenCalledWith('SIGKILL');
+    exitGuard(guard, null);
+    await expect(pending).resolves.toMatchObject({ ok: false, error: expect.stringContaining('timed out') });
   });
 
   it('still kills a progressing safety dump at the absolute ceiling', async () => {

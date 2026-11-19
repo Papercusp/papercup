@@ -28,11 +28,12 @@
 import { spawn, spawnSync, type ChildProcess, type ChildProcessByStdio } from 'node:child_process';
 import { mkdir, readdir, stat, statfs, unlink } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { createWriteStream, type Dirent } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import type { Readable } from 'node:stream';
 import { appendFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { createDumpPipe } from './dump-pipe';
 
 interface HookContext {
   workspaceId: string;
@@ -765,21 +766,27 @@ async function dumpPg(opts: {
       // isolated group, ChildProcess.kill() reaches only the guard shell.
       detached: dumpDetached,
     }) as ChildProcessByStdio<null, Readable, Readable>;
-    const gz = spawn('gzip', gzipArgs(), { stdio: ['pipe', 'pipe', 'pipe'] });
-    const out = createWriteStream(tmp);
+    // Guard/control messages stay on this process; bulk data must not wait
+    // for its event loop between the database, compressor and output file.
+    let pipe: ReturnType<typeof createDumpPipe>;
+    try {
+      pipe = createDumpPipe(dump.stdout, tmp, gzipArgs());
+    } catch (error) {
+      // Even synchronous output-open/stdio failures must reap the already
+      // spawned guard tree and keep the previous installed dump intact.
+      dump.on('error', () => {});
+      terminateSpawnTree(dump, dumpDetached);
+      void unlink(tmp).catch(() => {});
+      resolve({ ok: false, error: `dump pipeline setup failed: ${String(error)}` });
+      return;
+    }
+    const gz = pipe.compressor;
+    const out = pipe.stream;
     // Child `close` stops the producers, but the file writer may still have
     // buffered gzip bytes to flush. Keep the temp path unaccepted until the
     // writer itself closes, so stat/rename/unlink cannot race a trailing write.
-    const outputClosed = new Promise<void>((resolve) => {
-      if (out.closed) resolve();
-      else out.once('close', () => resolve());
-    });
-    let outputFinished = false;
-    let outputError: string | undefined;
-    out.once('finish', () => { outputFinished = true; });
-
-    dump.stdout.pipe(gz.stdin);
-    gz.stdout.pipe(out);
+    const outputClosed = pipe.closed;
+    const output = pipe.output;
     let stderr = '';
     dump.stderr.on('data', (d) => { stderr += d.toString(); });
     if (guard) dump.stderr.on('data', createGuardLogForwarder());
@@ -800,10 +807,12 @@ async function dumpPg(opts: {
     // buffering would hide steady progress behind long silent stretches.
     let dumpedBytes = 0;
     let lastProgressAt = Date.now();
-    dump.stdout.on('data', (d: Buffer | string) => {
-      dumpedBytes += typeof d === 'string' ? Buffer.byteLength(d) : d.length;
-      lastProgressAt = Date.now();
-    });
+    if (!pipe.direct) {
+      dump.stdout.on('data', (d: Buffer | string) => {
+        dumpedBytes += typeof d === 'string' ? Buffer.byteLength(d) : d.length;
+        lastProgressAt = Date.now();
+      });
+    }
     const abortDump = (reason: string) => {
       if (settled) return;
       stderr += `${reason}\n`;
@@ -813,17 +822,34 @@ async function dumpPg(opts: {
     // Re-armed one-shot timer rather than an interval. Each check either fires
     // the kill or sleeps exactly until the current stall window would end.
     const armStallWatchdog = (stallMs: number) => {
-      const check = () => {
+      let progressUnavailable = false;
+      const check = async () => {
         stallWatchdog = undefined;
         if (settled) return;
+        if (pipe.direct) {
+          const bytes = await pipe.sampleProgress();
+          if (settled) return;
+          if (bytes === null) {
+            // Missing procfs counters are unknown, never evidence of a dead
+            // dump. The absolute deadline remains armed in this case.
+            if (!progressUnavailable) {
+              void opts.log('pg dump progress counters unavailable; stall verdict withheld, absolute deadline retained');
+              progressUnavailable = true;
+            }
+            lastProgressAt = Date.now();
+          } else if (bytes > dumpedBytes) {
+            dumpedBytes = bytes;
+            lastProgressAt = Date.now();
+          }
+        }
         const idleMs = Date.now() - lastProgressAt;
         if (idleMs >= stallMs) {
           abortDump(`pg dump stalled: no output for ${stallMs}ms (${dumpedBytes} bytes dumped)`);
           return;
         }
-        stallWatchdog = setTimeout(check, stallMs - idleMs);
+        stallWatchdog = setTimeout(check, pipe.direct ? Math.min(5_000, stallMs - idleMs) : stallMs - idleMs);
       };
-      stallWatchdog = setTimeout(check, stallMs);
+      stallWatchdog = setTimeout(check, pipe.direct ? Math.min(5_000, stallMs) : stallMs);
     };
     const armDumpWatchdog = () => {
       if (settled || dumpWatchdog) return;
@@ -851,15 +877,15 @@ async function dumpPg(opts: {
       // any late lock through WorkspaceBackup's finally path instead of
       // resolving while the acquisition is still in flight.
       if (guardReadyTask) await guardReadyTask.catch(() => {});
-      if (!out.destroyed && !out.writableEnded) out.end();
+      if (out && !out.destroyed && !out.writableEnded) out.end();
       await outputClosed;
-      if (!outputFinished && !outputError) {
-        outputError = 'output stream closed before finish';
-        stderr += `${outputError}\n`;
+      if (!output.finished && !output.error) {
+        output.error = 'output stream closed before finish';
+        stderr += `${output.error}\n`;
       }
-      const outputOk = ok && outputFinished && !outputError;
+      const outputOk = ok && output.finished && !output.error;
       let result: PreSnapshotHookResult;
-      if (!outputOk && guard && !guardDumpAuthorized && dumpedBytes === 0 && !outputError
+      if (!outputOk && guard && !guardDumpAuthorized && dumpedBytes === 0 && !output.error
         && (dumpCode === 75 || guardAdmissionTimedOut)) {
         // The maintained wait-mode guard exits 75 when flock admission times
         // out. Before PROCEED, no dump has run: preserve this as queueing, not
@@ -923,9 +949,9 @@ async function dumpPg(opts: {
     // disk full (ENOSPC), bad path (EISDIR/EACCES). An unhandled
     // stream 'error' crashes the operator just like an unhandled child
     // spawn error, so route it through finalize(false) too.
-    out.on('error', (e) => {
-      outputError ??= `output stream failed: ${e.message}`;
-      stderr += `${outputError}\n`;
+    out?.on('error', (e) => {
+      output.error ??= `output stream failed: ${e.message}`;
+      stderr += `${output.error}\n`;
       killDumpTree();
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
       void finalize(false);
@@ -943,7 +969,7 @@ async function dumpPg(opts: {
     // not the stdin/stdout stream sockets, so add explicit handlers here that
     // degrade exactly like every other dump failure: abandon the dump, let the
     // snapshot proceed.
-    gz.stdin.on('error', (e) => {
+    gz.stdin?.on('error', (e) => {
       stderr += `gzip stdin pipe failed: ${e.message}\n`;
       killDumpTree();
       try { gz.kill('SIGKILL'); } catch { /* already gone */ }
@@ -1036,7 +1062,12 @@ async function dumpPg(opts: {
     gz.on('close', (code: number | null) => {
       gzipClosed = true;
       gzipCode = code;
-      if (code !== 0) stderr += `gzip exited ${code ?? 'null'}\n`;
+      if (code !== 0) {
+        stderr += `gzip exited ${code ?? 'null'}\n`;
+        // An inherited input has no parent-side EPIPE listener. Reap even
+        // a guard still waiting for ACK when its compressor has gone away.
+        killDumpTree();
+      }
       maybeFinalize();
     });
   });
