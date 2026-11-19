@@ -128,7 +128,7 @@ async function capture(mode: Mode, phase: string, token: string, expected: strin
       workspaceId: resolved!.workspaceId, principal: resolved!, tx: db.sql,
       transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
     };
-    const result = await dispatchProjectedTool(projected!, 'memory:search', request, ctx, {});
+    const result = await dispatchProjectedTool(projected!, 'memory:search', request, ctx, { batchResponseVersion: 'operation-v0' });
     expect(result.ok, JSON.stringify(result.error)).toBe(true);
     wire = result.result!.structuredContent as Wire;
   } else {
@@ -295,7 +295,7 @@ describe('P001 actual memory dispatch/auth/scope capture', () => {
         log: () => {}, progress: () => {}, emit: () => {}, signal: new AbortController().signal,
         role: 'judge', runId: 'p001-memory-dispatch', harnessSlug: 'p001-child', workspaceId: WS_A,
         principal: resolved!, tx: db.sql, transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
-      }, {});
+      }, { batchResponseVersion: 'operation-v0' });
     expect(result.result?.structuredContent).toMatchObject({ ok: false, reason: 'judge_harness_scope_mismatch', results: [] });
     receipts.push({ phase: 'judge-foreign-harness-refused', result });
     executed.add('projected-hive-and-judge');

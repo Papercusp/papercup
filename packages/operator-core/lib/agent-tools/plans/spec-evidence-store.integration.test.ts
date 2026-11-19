@@ -438,7 +438,7 @@ describe('canonical binding consumer custody', () => {
             metadata: vi.fn(), role: 'su', runId: `custody-${loss}-${stage}`,
             gateBypass: { role: true, capability: true, quota: true },
             transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
-          } as never, {});
+          } as never, { batchResponseVersion: 'operation-v0' });
           trace('mcp-dispatch', { stage, request: ordinaryInput, dispatched });
           expect(dispatched.ok).toBe(true);
           expect(ordinaryInput).toEqual(originalInput);
@@ -1607,7 +1607,7 @@ describe('exact spec evidence bindings', () => {
           emit: vi.fn(), runId: 'frozen-oracle-common-reader', role: 'su',
           gateBypass: { role: true, capability: true, quota: true },
           transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
-        } as never, {});
+        } as never, { batchResponseVersion: 'operation-v0' });
         expect(dispatched.ok).toBe(true);
         expect(input).toEqual(originalInput);
         const data = dispatched.result?.structuredContent as {

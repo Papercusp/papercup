@@ -418,6 +418,56 @@ describe('lossless persisted census reader (real PG)', () => {
     expect(alarm.diskProjectionUnknown).toEqual([]);
   });
 
+  it.each([0, 1, 2, 3])('bounds complete-reader resync with %i source invalidations, without mixing pages', async invalidations => {
+    const host = `consumer-bounded-resync-${invalidations}-${randomUUID()}`;
+    const latest = randomUUID();
+    const consumers = [dir('/a', G), dir('/z', G)];
+    await write(host, randomUUID(), new Date(at.getTime() - 24 * HOUR), consumers.map(c => ({ ...c, bytes: 0 })));
+    await write(host, latest, at, consumers);
+    let transactions = 0, mutations = 0;
+    const changingSql = new Proxy(sql, {
+      get(target, key, receiver) {
+        if (key !== 'begin') return Reflect.get(target, key, receiver);
+        return async (fn: Parameters<CensusSql['begin']>[0]) => {
+          const transaction = ++transactions;
+          const result = await target.begin(fn);
+          // The cursor's snapshot has committed before another real PG client
+          // changes its source. Each new attempt must discard its earlier page.
+          if ((transaction === 1 || transaction === 3) && mutations < invalidations) {
+            await rootSql`UPDATE harness_shared.disk_census_consumers SET bytes = bytes + 1 WHERE run_id = ${latest}`;
+            mutations++;
+          }
+          return result;
+        };
+      },
+    });
+    const read = () => readCompleteDiskConsumerCensus(changingSql, { host, limit: 1, now: at });
+    if (invalidations >= 2) {
+      await expect(read()).rejects.toMatchObject({ code: 'census_restart_required',
+        resync: { status: 'exhausted', attempts: 2 }, recovery: expect.stringContaining('without cursor') });
+      expect(transactions).toBe(4);
+      expect(mutations).toBe(2);
+    } else {
+      const result = await read();
+      expect(transactions).toBe(invalidations === 0 ? 2 : 4);
+      expect(result.devices[0]).toMatchObject({ consumersReturned: 2, consumersOmitted: 0,
+        truncatedByLimit: false, nextConsumerCursor: null });
+      expect(result.devices[0]!.consumers).toEqual(consumers.map(c => ({ ...c,
+        bytes: G + invalidations, baselineBytes: 0, growth24hBytes: G + invalidations })));
+      const alarm = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => result.devices, emitToast: async () => {} });
+      expect(alarm.diskProjectionUnknown).toEqual([]);
+    }
+  });
+
+  it('does not resync a database failure as if its population changed', async () => {
+    const failure = new Error('database read unavailable');
+    const begin = vi.fn(async () => { throw failure; });
+    const unavailableSql = new Proxy(sql, { get: (target, key, receiver) =>
+      key === 'begin' ? begin : Reflect.get(target, key, receiver) });
+    await expect(readCompleteDiskConsumerCensus(unavailableSql)).rejects.toBe(failure);
+    expect(begin).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps the pinned run when a newer run arrives, and requires resync for late baselines, source mutation and pruning', async () => {
     const host = `consumer-resync-${randomUUID()}`;
     const latest = randomUUID();

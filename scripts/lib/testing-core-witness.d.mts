@@ -49,6 +49,18 @@ export function captureTestingCoreInputUniverse(root: any, outputDir: any): {
  * census. These pins grant no module-input or compiler-toolchain authority. */
 export function retainTestingCoreResolverMetadata(universe: any): any;
 export function qualifyTestingCoreConfigurationClosure(universe: any, consumed: any, retain: any, sourceRecords: any): void;
+/** Await the real qualifier without blocking the builder's event loop. The
+ * enclosing build owns its process/deadline budget; a separate wall-clock kill
+ * here can discard valid bytes while the build itself is still progressing.
+ * Inherit diagnostics rather than buffering or truncating a child's output.
+ * @returns {Promise<void>}
+ */
+export function qualifyTestingCoreFinalBytes({ script, outfile, nodePath, env }: {
+    script: any;
+    outfile: any;
+    nodePath?: string | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+}): Promise<void>;
 /** The shell calls this THROUGH bundle_host_esbuild under its existing cache
  * lease. The pinned API is evaluated from its retained buffer, with builtins
  * only; its single native service must name the pinned 0.25 binary. */

@@ -64,7 +64,7 @@ describe('improvements:agent-review public door', () => {
         principal: { slug: 'system:superuser', workspaceId: 'workspace-test', capabilities: new Set(['work_items:write']) },
         requestedStructured: structured, requestedFormat: 'json', contextTier: 'full',
         log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(), tx: {},
-      }, {});
+      }, { batchResponseVersion: 'operation-v0' });
     expect(dispatched.ok, JSON.stringify(dispatched.error)).toBe(true);
     const result = dispatched.result!;
     const first = result.content?.[0];

@@ -45,7 +45,7 @@ describe('consult verb abort-completion receipts', () => {
       progress: vi.fn(),
       emit: vi.fn(),
       gateBypass: { role: true, capability: true },
-    }, {});
+    }, { batchResponseVersion: 'operation-v0' });
     expect(dispatched.ok).toBe(true);
     expect(dispatched.result?._meta?.format).toBe(transport === 'mcp' ? 'toon' : 'json');
     expect(dispatched.result?._meta?.abortCompletionReceipt).toMatchObject({

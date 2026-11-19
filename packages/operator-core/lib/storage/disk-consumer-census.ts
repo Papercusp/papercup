@@ -1738,6 +1738,12 @@ interface CensusConsumerCursor {
 export class CensusReadRestartError extends Error {
   readonly code = 'census_restart_required';
   readonly recovery = 'Restart storage:census without cursor; the previous population is unavailable or changed.';
+  readonly resync?: { status: 'exhausted'; attempts: number };
+
+  constructor(message: string, exhausted?: { attempts: number; cause: unknown }) {
+    super(message, exhausted ? { cause: exhausted.cause } : undefined);
+    if (exhausted) this.resync = { status: 'exhausted', attempts: exhausted.attempts };
+  }
 }
 
 function decodeConsumerCursor(encoded: string): CensusConsumerCursor {
@@ -1918,20 +1924,32 @@ async function readCensusSnapshot(
   return { host, devices };
 }
 
-/** Decision consumers drain the same public continuation; display limits cannot hide evidence. */
+/** Decision consumers drain the public continuation. One source invalidation
+ * restarts the ENTIRE read, discarding every partial device/page. Repeated churn
+ * returns an explicit exhausted error; it never certifies a partial population. */
 export async function readCompleteDiskConsumerCensus(sql: CensusSql, opts: Omit<CensusReadOptions, 'cursor'> = {}) {
-  const result = await readDiskConsumerCensus(sql, opts);
-  for (const device of result.devices) {
-    while (device.nextConsumerCursor) {
-      const page = await readDiskConsumerCensus(sql, { ...opts, host: result.host, device: device.device,
-        cursor: device.nextConsumerCursor });
-      const next = page.devices[0]!;
-      device.consumers!.push(...next.consumers!);
-      device.nextConsumerCursor = next.nextConsumerCursor;
-      device.consumersOmitted = next.consumersOmitted;
-      device.truncatedByLimit = next.truncatedByLimit;
-      device.consumersReturned = device.consumers!.length;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const result = await readDiskConsumerCensus(sql, opts);
+      for (const device of result.devices) {
+        while (device.nextConsumerCursor) {
+          const page = await readDiskConsumerCensus(sql, { ...opts, host: result.host, device: device.device,
+            cursor: device.nextConsumerCursor });
+          const next = page.devices[0]!;
+          device.consumers!.push(...next.consumers!);
+          device.nextConsumerCursor = next.nextConsumerCursor;
+          device.consumersOmitted = next.consumersOmitted;
+          device.truncatedByLimit = next.truncatedByLimit;
+          device.consumersReturned = device.consumers!.length;
+        }
+      }
+      return result;
+    } catch (error) {
+      if (!(error instanceof CensusReadRestartError)) throw error;
+      if (attempt === 2) throw new CensusReadRestartError(
+        'Census resync exhausted after two complete read attempts; no partial population returned.',
+        { attempts: attempt, cause: error },
+      );
     }
   }
-  return result;
 }

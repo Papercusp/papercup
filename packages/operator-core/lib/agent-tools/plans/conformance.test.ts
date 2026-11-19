@@ -370,7 +370,7 @@ describe("plans:conformance op:'run'", () => {
       signal: parent.signal, workspaceId: 'ws', harnessSlug: 'h',
       log: vi.fn(), progress: vi.fn(), emit: vi.fn(),
       gateBypass: { role: true, capability: true },
-    }, {});
+    }, { batchResponseVersion: 'operation-v0' });
     expect(writeWatermark).toHaveBeenCalledExactlyOnceWith(row);
     expect(dispatched.ok).toBe(true);
     expect(dispatched.result?._meta?.format).toBe(transport === 'mcp' ? 'toon' : 'json');
@@ -394,7 +394,7 @@ describe("plans:conformance op:'run'", () => {
       signal: parent.signal, workspaceId: 'ws', harnessSlug: 'h',
       log: vi.fn(), progress: vi.fn(), emit: vi.fn(),
       gateBypass: { role: true, capability: true },
-    }, {});
+    }, { batchResponseVersion: 'operation-v0' });
     expect(dispatched.ok).toBe(false);
     expect(dispatched.error).toMatchObject({
       code: 'aborted',

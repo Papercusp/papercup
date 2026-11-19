@@ -309,7 +309,7 @@ function ctx(principal = AUTHOR): never {
 async function call(tool: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const projected = lookupByMcpName(tool);
   expect(projected, `${tool} must be registered in the projection registry`).toBeTruthy();
-  const d = await runWithWorkspace(WS_B, () => dispatchProjectedTool(projected!, tool, { harness: HARNESS, ...args }, ctx(), {}));
+  const d = await runWithWorkspace(WS_B, () => dispatchProjectedTool(projected!, tool, { harness: HARNESS, ...args }, ctx(), { batchResponseVersion: 'operation-v0' }));
   const structured = (d.result as { structuredContent?: unknown } | undefined)?.structuredContent;
   let res: Record<string, unknown>;
   if (structured && typeof structured === 'object') res = structured as Record<string, unknown>;
@@ -633,7 +633,8 @@ describe('R-21/R-22: a plan ships in pot B with an item type installed from pot 
     const qualityFailures = Object.entries((quality.ratings ?? {}) as Record<string, { rating?: string; evidence?: string }>)
       .filter(([, r]) => r.rating === 'fail' || r.rating === 'unknown')
       .map(([key, r]) => `${key}=${String(r.rating)}: ${String(r.evidence ?? '').slice(0, 400)}`);
-    expect(quality.verdict, qualityFailures.join('\n')).toBe('pass');
+    // A prerequisite refusal (`ok:false`) carries no ratings, so name the whole result too.
+    expect(quality.verdict, [brief(quality), ...qualityFailures].join('\n')).toBe('pass');
     // The audit stamp records the meta rubric's identity at emit time. The meta rubric is a
     // pot's own authored configuration (there is no first-party seed), so pot B holds a minimal
     // one before the card exists, as emit-lapsed-lease.integration.test.ts does.

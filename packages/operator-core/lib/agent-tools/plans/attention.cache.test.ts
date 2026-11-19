@@ -380,7 +380,7 @@ describe("plans:attention — cache wiring", () => {
     };
     const result = await dispatchProjectedTool(projected!, 'plans:attention', {
       limit: 100, offset: 0, payloadTier: 'full',
-    }, deviceContext, {});
+    }, deviceContext, { batchResponseVersion: 'operation-v0' });
     expect(result.ok, JSON.stringify(result.error)).toBe(true);
     expect(result.result?.isError).not.toBe(true);
     const text = result.result?.content.find((entry) => entry.type === 'text');
