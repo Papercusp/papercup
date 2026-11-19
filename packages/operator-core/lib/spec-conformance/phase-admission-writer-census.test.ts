@@ -1401,15 +1401,16 @@ describe('phase binding writer census', () => {
   it('retains enumerated submodule directory identities while guarding every descendant and missing module', async () => {
     for (const count of [0, 1, 2, 3]) {
       const root = mkdtempSync(join(tmpdir(), 'phase-submodule-roots-'));
-      const modules = Array.from({ length: count }, (_, index) => `libs/component-${index}`);
-      const missing = 'libs/missing';
+      const modules = Array.from({ length: count }, (_, index) => `libs/component ${index}`);
+      const missing = 'libs/missing component';
       const link = 'libs/linked-writer.ts';
       const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
       try {
         git(root, ['init', '-q']);
         mkdirSync(join(root, 'libs'), { recursive: true });
-        writeFileSync(join(root, '.gitmodules'), [...modules, missing].map(path =>
-          `[submodule "${path}"]\n\tpath = ${path}\n\turl = ./fixture\n`).join(''));
+        writeFileSync(join(root, '.gitmodules'), '[metadata]\n\tpath = libs/unrelated\n' +
+          [...modules, missing].map(path =>
+            `[submodule "${path}"]\n\tpath = "${path}"\n\turl = ./fixture\n`).join(''));
         for (const path of modules) {
           mkdirSync(join(root, path));
           git(join(root, path), ['init', '-q']);
@@ -1457,6 +1458,71 @@ describe('phase binding writer census', () => {
             .toContain(late.sites.find(site => site.path === added && site.kind === 'sql')!.id);
         }
       } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  });
+
+  it('retains nested Git writers and reports missing and archive-extracted submodules', () => {
+    for (const depth of [1, 2, 3, 6]) {
+      const root = mkdtempSync(join(tmpdir(), 'phase-nested-submodules-'));
+      const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+      const declare = (repo: string, paths: string[]) => {
+        writeFileSync(join(repo, '.gitmodules'), paths.map(path =>
+          `[submodule "${path}"]\n\tpath = "${path}"\n\turl = ./fixture\n`).join(''));
+        for (const path of paths) {
+          git(repo, ['update-index', '--add', '--cacheinfo', `160000,${'1'.repeat(40)},${path}`]);
+        }
+      };
+      try {
+        git(root, ['init', '-q']);
+        const modules: string[] = [];
+        let parent = root;
+        for (let level = 0; level < depth; level++) {
+          const relative = level === 0 ? 'libs/top component' : `children/component ${level}`;
+          const dir = join(parent, relative);
+          declare(parent, [relative]);
+          mkdirSync(dir, { recursive: true });
+          git(dir, ['init', '-q']);
+          writeFileSync(join(dir, 'writer.ts'), write);
+          modules.push(modules.length ? `${modules.at(-1)}/${relative}` : relative);
+          parent = dir;
+        }
+        const leaf = modules.at(-1)!;
+        const archive = `${leaf}/archived module`;
+        const missing = `${leaf}/missing module`;
+        declare(parent, ['archived module', 'missing module']);
+        mkdirSync(join(root, archive));
+        writeFileSync(join(root, archive, 'writer.ts'), write);
+
+        const before = inventoryPhaseWriterTree(root);
+        expect(before.enumeration).toEqual({ scanned: modules, unscanned: [archive, missing] });
+        expect(before.gaps).toEqual([
+          { id: `source:${archive}`, reason: 'non-regular-source' },
+          ...[archive, missing].map(path => ({ id: `submodule:${path}`, reason: 'declared-submodule-not-enumerated' })),
+        ]);
+        const deepestWriter = before.sites.find(site => site.path === `${leaf}/writer.ts` && site.kind === 'sql');
+        expect(deepestWriter).toBeDefined();
+        const reviews = before.sites.filter(site => site.id !== deepestWriter!.id).map(site => review(site));
+        expect(() => assertPhaseWriterTreeCensus(root, reviews)).toThrow('phase_writer_tree_census_incomplete');
+        expect(reconcilePhaseWriterCensus(before, reviews).coverage.residue).toEqual(expect.arrayContaining([
+          deepestWriter!.id, `gap:submodule:${archive}`, `gap:submodule:${missing}`,
+        ]));
+
+        for (const path of [archive, missing]) {
+          mkdirSync(join(root, path), { recursive: true });
+          git(join(root, path), ['init', '-q']);
+          writeFileSync(join(root, path, 'writer.ts'), write);
+        }
+        const after = inventoryPhaseWriterTree(root);
+        expect(after.enumeration).toEqual({ scanned: [...modules, archive, missing], unscanned: [] });
+        expect(after.gaps).toEqual([]);
+        expect(verifyPhaseWriterTreeSnapshot(before).differences.map(row => row.id)).toContain(`source:${missing}/writer.ts`);
+        expect(assertPhaseWriterTreeCensus(root, after.sites.map(site => review(site))).ready).toBe(true);
+
+        writeFileSync(join(parent, '.gitmodules'), '[submodule "unterminated\n');
+        expect(() => inventoryPhaseWriterTree(root)).toThrow(/\.gitmodules/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     }
   });
 
