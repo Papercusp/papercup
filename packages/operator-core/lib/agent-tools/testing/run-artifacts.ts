@@ -207,10 +207,11 @@ export class TestRunArtifactPacket {
     this.paths = { directory, manifest: join(directory, 'manifest.json'), phases: join(directory, 'phases.jsonl'),
       reports: join(directory, 'reports'), ownedDatabases: join(directory, 'owned-databases'),
       runtimeInputs: join(directory, 'executed-inputs'), nativeProof: join(directory, 'native-proof') };
+    const paths = this.paths;
     this.directoryReady = (async () => {
       await mkdir(base, { recursive: true, mode: 0o700 });
       await mkdir(directory, { mode: 0o700 });
-      await Promise.all([this.paths.reports, this.paths.ownedDatabases, this.paths.runtimeInputs]
+      await Promise.all([paths.reports, paths.ownedDatabases, paths.runtimeInputs]
         .map(dir => mkdir(dir, { mode: 0o700 })));
     })();
     this.write('manifest.json', { schemaVersion: 1, runId, root, deadline, state: 'running', paths: this.paths });

@@ -396,7 +396,9 @@ describe('packet writes stay off the operator host thread (WI-6554700010048955)'
       expect(() => mkdirSync(join(root, 'probe-dir'))).toThrow(/sync fs call mkdirSync/);
       expect(() => mkdtempSync(join(root, 'probe-'))).toThrow(/sync fs call mkdtempSync/);
       fsTripwire.calls.length = 0;
-      packet = new TestRunArtifactPacket('async-writes', root, testRunDeadline(60_000), join(root, 'retained'));
+      expect(() => {
+        packet = new TestRunArtifactPacket('async-writes', root, testRunDeadline(60_000), join(root, 'retained'));
+      }).not.toThrow();
       packet.captureSelectedSources(['subject.test.ts'], { commit: 'fixture' });
       packet.stage('a');
       packet.write('configuration.json', config);
@@ -404,7 +406,7 @@ describe('packet writes stay off the operator host thread (WI-6554700010048955)'
       packet.stage('b');
       packet.write('router.json', { n: 1 });
       packet.write('router.json', { n: 2 });
-      await packet.flush();
+      await expect(packet.flush()).resolves.toBeUndefined();
     } finally {
       fsTripwire.armed = false;
     }
