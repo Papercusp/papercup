@@ -104,7 +104,8 @@ describe('exact semantic judge provenance', () => {
   });
   it('builds a bounded query-independent behavioral summary and rejects unavailable or malformed summaries', async () => {
     const summary = await summarizeSemanticFunction(pair[0], { model: 'replay', harness: 'test', call: async request => {
-      expect(JSON.parse(request.messages[0].content)).toEqual(pair[0]);
+      const { path, name, summary, normalizedBody } = pair[0];
+      expect(JSON.parse(request.messages[0].content)).toEqual({ path, name, summary, normalizedBody });
       return { text: JSON.stringify({ summary: 'Returns the numeric sum, with zero for an empty input.' }),
         raw: {}, inputTokens: 1, outputTokens: 1, costUsd: 0 };
     } });

@@ -5,7 +5,7 @@ import { isAbsolute, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { cloneBlobSha, extractCloneFile, type CloneIndex } from './clone-index';
 import { extractSemanticFunctions, SemanticCodeIndex, semanticRepositoryId, type SemanticCodeEmbedder } from './semantic-code';
-import { judgeSemanticPair, summarizeSemanticFunction, SEMANTIC_SUMMARY_VERSION, type SemanticJudgment, type SemanticPair, type SemanticJudgeCall } from './semantic-code-judge';
+import { judgeSemanticPair, semanticSummaryInput, summarizeSemanticInput, SEMANTIC_SUMMARY_VERSION, type SemanticJudgment, type SemanticPair, type SemanticJudgeCall } from './semantic-code-judge';
 import type { ReuseBriefProvider, ReuseProviderContext } from './reuse-brief-providers';
 import type { Sql } from 'postgres';
 import { CODEX_LLM_DEFAULT_MODEL } from '../llm-testing/codex-model-pricing';
@@ -38,8 +38,31 @@ export async function openSemanticCodeIndex(root: string, workspaceId: string, s
   ]);
   if (document.mode === 'disabled' || !query || document.profile.profileId !== query.profile.profileId
     || document.dims !== query.dims) throw new Error('Semantic document/query embedding profile unavailable or incompatible');
+  const harness = process.env.PAPERCUSP_HARNESS_SLUG ?? workspaceId;
+  const retained = options.retainedSummaries?.map(row => ({ ...row }));
+  let summaryRecipe: NonNullable<SemanticCodeEmbedder['summaryRecipe']>;
+  if (retained) {
+    summaryRecipe = {
+      version: 'retained:' + createHash('sha256').update(JSON.stringify(retained)).digest('hex'),
+      input(fn) {
+        const cached = retained.filter(row => row.path === fn.path && row.blobSha === fn.blobSha);
+        if (cached.length !== 1) throw new Error('Exact retained semantic summary unavailable or ambiguous');
+        return cached[0]!.summary;
+      },
+      run: async input => input,
+    };
+  } else {
+    const model = options.summaryModel ?? await (await import('../agent-config')).readAgentConfig().then(config =>
+      config.models['semantic-code-summary'] ?? config.models['llm-testing-judge'] ?? CODEX_LLM_DEFAULT_MODEL);
+    if (!model?.trim()) throw new Error('Semantic summary model unavailable');
+    summaryRecipe = {
+      version: JSON.stringify([SEMANTIC_SUMMARY_VERSION, model, harness]),
+      input: semanticSummaryInput,
+      run: (input, signal) => summarizeSemanticInput(input, { model, harness, signal }),
+    };
+  }
   const embedder: SemanticCodeEmbedder = { profile: document.profile.profileId, dimensions: document.dims,
-    document: document.embed, query: query.embed, summaryVersion: SEMANTIC_SUMMARY_VERSION,
+    document: document.embed, query: query.embed, summaryRecipe,
     relevance: { id: SEMANTIC_HYBRID_MODEL.id, async score(text, candidates, signal) {
       signal?.throwIfAborted();
       if (document.profile.profileId !== SEMANTIC_HYBRID_MODEL.profile || document.dims !== SEMANTIC_HYBRID_MODEL.dimensions) {
@@ -67,18 +90,7 @@ export async function openSemanticCodeIndex(root: string, workspaceId: string, s
       const features = hybridFeatures(result.scored.map(row => row.cosineSimilarity), result.scored.map(row => row.relevanceScore));
       return result.scored.map((row, i) => ({ crossEncoderRelevance: row.relevanceScore,
         relevanceScore: hybridRelevance(SEMANTIC_HYBRID_MODEL.weights, features[i]!) }));
-    } },
-    summarize: async (fn, signal) => {
-      if (options.retainedSummaries) {
-        const cached = options.retainedSummaries.filter(row => row.path === fn.path && row.blobSha === fn.blobSha);
-        if (cached.length !== 1) throw new Error('Exact retained semantic summary unavailable or ambiguous');
-        return cached[0]!.summary;
-      }
-      const model = options.summaryModel ?? (await import('../agent-config')).readAgentConfig().then(config =>
-        config.models['semantic-code-summary'] ?? config.models['llm-testing-judge'] ?? CODEX_LLM_DEFAULT_MODEL);
-      return summarizeSemanticFunction(fn, { model: await model,
-        harness: process.env.PAPERCUSP_HARNESS_SLUG ?? workspaceId, signal });
-    } };
+    } } };
   return new SemanticCodeIndex(sql,
     { workspaceId, repositoryId: await semanticRepositoryId(root), profile: embedder.profile, dimensions: embedder.dimensions }, embedder);
 }

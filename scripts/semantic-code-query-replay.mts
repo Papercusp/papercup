@@ -38,8 +38,10 @@ try {
     'packages/operator-core/lib/code-intelligence/semantic-code-relevance.ts',
     'packages/operator-core/lib/code-intelligence/semantic-code-calibration.ts'].map(async path => ({ path, sha256: digest(await readFile(path)) })));
   db = await createFreshPgDb('semantic-hybrid-query-replay');
-  const migration = resolve('libs/papercusp/libs/db/sql/1568-semantic-code-index.sql');
-  await applyMigrationForTest(db.sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
+  for (const name of ['1568-semantic-code-index.sql', '1651-semantic-code-function-input.sql']) {
+    const migration = resolve('libs/papercusp/libs/db/sql', name);
+    await applyMigrationForTest(db.sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
+  }
   root = await mkdtemp(join(tmpdir(), 'semantic-hybrid-query-')); await mkdir(join(root, 'src'));
   for (const sample of manifest.samples) await writeFile(join(root, sample.relevant[0]), sample.source);
   const store = await openSemanticCodeIndex(root, workspaceId, db.sql, { background: true,

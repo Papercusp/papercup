@@ -1,5 +1,5 @@
 /** P012: incremental, off-hook pgvector function index. No scheduler or second query tool. */
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import type { Sql } from 'postgres';
@@ -25,6 +25,13 @@ export interface SemanticCodeEmbedder {
   query(text: string, signal?: AbortSignal): Promise<number[]>;
   summarize?(fn: SemanticCodeFunction, signal?: AbortSignal): Promise<string>;
   summaryVersion?: string;
+  /** A versioned pure renderer names every input consumed by this summarizer.
+   * The runner receives precisely the bytes compared for reuse. */
+  summaryRecipe?: {
+    version: string;
+    input(fn: SemanticCodeFunction, file: CloneSource): string;
+    run(input: string, signal?: AbortSignal): Promise<string>;
+  };
   relevance?: { id: string; score(query: string, candidates: readonly SemanticCodeMatch[], signal?: AbortSignal):
     Promise<readonly { relevanceScore: number; crossEncoderRelevance: number }[]> };
 }
@@ -94,7 +101,12 @@ export class SemanticCodeIndex {
       throw new Error('Semantic index requires one exact workspace/repository/embedding profile');
     }
     this.space = Object.freeze({ ...space });
-    this.normalizationVersion = `${SEMANTIC_CODE_VERSION}:${embedder.summaryVersion ?? 'controlled-signature-fixture'}`;
+    if (embedder.summaryRecipe && (embedder.summarize || !embedder.summaryRecipe.version.trim())) {
+      throw new Error('A semantic summary recipe requires one versioned renderer');
+    }
+    const summaryKind = embedder.summaryRecipe ? 'recipe' : embedder.summarize ? 'opaque' : 'signature';
+    this.normalizationVersion = JSON.stringify([SEMANTIC_CODE_VERSION, summaryKind,
+      embedder.summaryRecipe?.version ?? embedder.summaryVersion ?? null]);
   }
   private async source(rootPath: string, path: string, signal?: AbortSignal): Promise<CloneSource> {
     checkedRelativePath(path);
@@ -110,72 +122,133 @@ export class SemanticCodeIndex {
   private async assertRoot(root: string) {
     if (await semanticRepositoryId(root) !== this.space.repositoryId) throw new Error('Semantic repository identity mismatch');
   }
-  /** Invalidate old vectors BEFORE inference. An outage cannot leave stale rows
-   * looking current. A failed parse/vector/source recheck leaves a failed marker. */
+  /** The pending marker hides the previous manifest while its complete rows
+   * remain available for reuse. Only the worker holding this refresh ID may
+   * publish or discard them, even when the file returns to the same blob. */
   async updateFile(root: string, path: string, signal?: AbortSignal) {
     await this.assertRoot(root);
     checkedRelativePath(path);
     const s = this.space;
-    let input: CloneSource;
-    try { input = await this.source(root, path, signal); }
-    catch (error) {
-      await this.removeFile(path);
-      throw error;
-    }
-    const [old] = await this.sql`SELECT blob_sha, state, normalization_version, dimensions
-      FROM harness_shared.semantic_code_files WHERE workspace_id=${s.workspaceId}
-      AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path}`;
-    if (old?.blob_sha === input.blobSha && old.state === 'ready'
-      && old.normalization_version === this.normalizationVersion && old.dimensions === s.dimensions) {
-      return { changed: false, blobSha: input.blobSha, status: 'ready' as const };
-    }
-    // Per-file lock also serializes replacement against a concurrent refresh.
     const lock = `${s.workspaceId}:${s.repositoryId}:${s.profile}:${path}`;
-    await this.sql.begin(async tx => {
+    const refreshId = randomUUID();
+    const recipe = this.embedder.summaryRecipe;
+    const opaqueSummary = !recipe && this.embedder.summarize !== undefined;
+    const fingerprint = (summaryInput: string, body: string) => hash(JSON.stringify([
+      this.normalizationVersion, s.profile, s.dimensions, summaryInput, body,
+    ]));
+    const claim = await this.sql.begin(async tx => {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lock}, 0))`;
-      await tx`DELETE FROM harness_shared.semantic_code_files WHERE workspace_id=${s.workspaceId}
+      let input: CloneSource;
+      try {
+        input = await this.source(root, path, signal);
+      } catch (error) {
+        signal?.throwIfAborted();
+        await tx`DELETE FROM harness_shared.semantic_code_files WHERE workspace_id=${s.workspaceId}
+          AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path}`;
+        return { kind: 'unavailable' as const, error };
+      }
+      const [old] = await tx`SELECT blob_sha, state, normalization_version, dimensions
+        FROM harness_shared.semantic_code_files WHERE workspace_id=${s.workspaceId}
         AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path}`;
+      const sameFile = old?.state === 'ready' && old.blob_sha === input.blobSha
+        && old.normalization_version === this.normalizationVersion && old.dimensions === s.dimensions;
+      if (sameFile && !recipe && !opaqueSummary) {
+        return { kind: 'unchanged' as const, input };
+      }
+      // A recipe may incorporate surrounding context. Matching file bytes
+      // alone cannot certify the previously rendered model request.
+      let renderingFailure: { error: unknown } | undefined;
+      if (sameFile && recipe) {
+        const identities = await tx<{ function_id: string; input_sha256: string | null }[]>`
+          SELECT function_id, input_sha256 FROM harness_shared.semantic_code_functions
+          WHERE workspace_id=${s.workspaceId} AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile}
+            AND path=${path} AND blob_sha=${input.blobSha!} AND vector_dims(embedding)=${s.dimensions}`;
+        try {
+          const functions = extractSemanticFunctions(input);
+          const keys = new Map(identities.map(row => [row.function_id, row.input_sha256]));
+          if (functions.length === identities.length && functions.every(fn =>
+            keys.get(fn.id) === fingerprint(recipe.input(fn, input), fn.normalizedBody))) {
+            return { kind: 'unchanged' as const, input };
+          }
+        } catch (error) { renderingFailure = { error }; }
+      }
+      const previous = opaqueSummary || renderingFailure ? [] : await tx<{ input_sha256: string; summary: string; embedding: string }[]>`
+        SELECT input_sha256, summary, embedding::text AS embedding FROM harness_shared.semantic_code_functions
+        WHERE workspace_id=${s.workspaceId} AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile}
+          AND path=${path} AND input_sha256 IS NOT NULL AND vector_dims(embedding)=${s.dimensions}
+        ORDER BY function_id`;
       await tx`INSERT INTO harness_shared.semantic_code_files
-        (workspace_id,repository_id,embedding_profile,path,blob_sha,normalization_version,dimensions,state)
-        VALUES (${s.workspaceId},${s.repositoryId},${s.profile},${path},${input.blobSha!},${this.normalizationVersion},${s.dimensions},'pending')`;
+        (workspace_id,repository_id,embedding_profile,path,blob_sha,normalization_version,dimensions,state,refresh_id)
+        VALUES (${s.workspaceId},${s.repositoryId},${s.profile},${path},${input.blobSha!},${this.normalizationVersion},${s.dimensions},'pending',${refreshId})
+        ON CONFLICT (workspace_id,repository_id,embedding_profile,path) DO UPDATE SET
+          blob_sha=excluded.blob_sha, normalization_version=excluded.normalization_version,
+          dimensions=excluded.dimensions, state='pending', refresh_id=excluded.refresh_id`;
+      return { kind: 'pending' as const, input, previous, renderingFailure };
     });
+    if (claim.kind === 'unavailable') throw claim.error;
+    const { input } = claim;
+    if (claim.kind === 'unchanged') return { changed: false, blobSha: input.blobSha, status: 'ready' as const };
     try {
+      if (claim.renderingFailure) throw claim.renderingFailure.error;
       const functions = extractSemanticFunctions(input);
       if (functions.length > 500) throw new Error('Semantic function population exceeds 500-file-body budget');
-      const rows: { fn: SemanticCodeFunction; embedding: string }[] = [];
-      // Bounded parallel inference, using the injected shared sidecar adapters.
+      type DocumentVector = { summary: string; embedding: string };
+      const byInput = new Map<string, Promise<DocumentVector>>();
+      for (const row of claim.previous) byInput.set(row.input_sha256, Promise.resolve(row));
+      const rows: { fn: SemanticCodeFunction; inputHash: string | null; embedding: string }[] = [];
+      const measure = async (fn: SemanticCodeFunction) => {
+        const summaryInput = recipe ? recipe.input(fn, input) : fn.summary;
+        const inputHash = opaqueSummary ? null : fingerprint(summaryInput, fn.normalizedBody);
+        let document = inputHash === null ? undefined : byInput.get(inputHash);
+        if (!document) {
+          document = (async () => {
+            const summary = recipe ? await recipe.run(summaryInput, signal)
+              : this.embedder.summarize ? await this.embedder.summarize(fn, signal) : fn.summary;
+            if (!summary.trim() || summary.length > 2000 || /[\r\n]/.test(summary)) throw new Error('Invalid semantic document summary');
+            const embedding = vector(await this.embedder.document(`${summary}\n${fn.normalizedBody}`, signal), s.dimensions);
+            return { summary, embedding };
+          })();
+          if (inputHash !== null) byInput.set(inputHash, document);
+        }
+        const { summary, embedding } = await document;
+        return { fn: { ...fn, summary }, inputHash, embedding };
+      };
       for (let i = 0; i < functions.length; i += 4) {
         signal?.throwIfAborted();
-        rows.push(...await Promise.all(functions.slice(i, i + 4).map(async source => {
-          const fn = { ...source, summary: this.embedder.summarize ? await this.embedder.summarize(source, signal) : source.summary };
-          if (!fn.summary.trim() || fn.summary.length > 2000 || /[\r\n]/.test(fn.summary)) throw new Error('Invalid semantic document summary');
-          return { fn, embedding: vector(await this.embedder.document(`${fn.summary}\n${fn.normalizedBody}`, signal), s.dimensions) };
-        })));
+        rows.push(...await Promise.all(functions.slice(i, i + 4).map(measure)));
       }
       await this.sql.begin(async tx => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lock}, 0))`;
-        const [marker] = await tx`SELECT blob_sha FROM harness_shared.semantic_code_files
+        const [marker] = await tx`SELECT refresh_id FROM harness_shared.semantic_code_files
           WHERE workspace_id=${s.workspaceId} AND repository_id=${s.repositoryId}
           AND embedding_profile=${s.profile} AND path=${path} FOR UPDATE`;
-        if (marker?.blob_sha !== input.blobSha || (await this.source(root, path, signal)).blobSha !== input.blobSha) {
+        if (marker?.refresh_id !== refreshId || (await this.source(root, path, signal)).blobSha !== input.blobSha) {
           throw new Error('Semantic source changed during embedding');
         }
-        for (const { fn, embedding } of rows) {
-          await tx`INSERT INTO harness_shared.semantic_code_functions
-            (workspace_id,repository_id,embedding_profile,path,function_id,blob_sha,name,line,column_number,summary,normalized_body,embedding)
-            VALUES (${s.workspaceId},${s.repositoryId},${s.profile},${path},${fn.id},${fn.blobSha},${fn.name},${fn.line},${fn.column},
-              ${fn.summary},${fn.normalizedBody},${embedding}::vector)
-            ON CONFLICT (workspace_id,repository_id,embedding_profile,path,function_id) DO NOTHING`;
+        if (recipe && rows.some(({ fn, inputHash }, i) =>
+          fingerprint(recipe.input(functions[i]!, input), fn.normalizedBody) !== inputHash)) {
+          throw new Error('Semantic summary context changed during embedding');
         }
-        await tx`UPDATE harness_shared.semantic_code_files SET state='ready' WHERE workspace_id=${s.workspaceId}
+        await tx`DELETE FROM harness_shared.semantic_code_functions WHERE workspace_id=${s.workspaceId}
           AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path}`;
+        for (const { fn, embedding, inputHash } of rows) {
+          await tx`INSERT INTO harness_shared.semantic_code_functions
+            (workspace_id,repository_id,embedding_profile,path,function_id,blob_sha,name,line,column_number,summary,normalized_body,embedding,input_sha256)
+            VALUES (${s.workspaceId},${s.repositoryId},${s.profile},${path},${fn.id},${fn.blobSha},${fn.name},${fn.line},${fn.column},
+              ${fn.summary},${fn.normalizedBody},${embedding}::vector,${inputHash})`;
+        }
+        await tx`UPDATE harness_shared.semantic_code_files SET state='ready', refresh_id=NULL
+          WHERE workspace_id=${s.workspaceId} AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path}`;
       });
       return { changed: true, blobSha: input.blobSha, status: 'ready' as const, functions: rows.length };
     } catch (error) {
       await this.sql.begin(async tx => {
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lock}, 0))`;
-        await tx`UPDATE harness_shared.semantic_code_files SET state='failed' WHERE workspace_id=${s.workspaceId}
-          AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path} AND blob_sha=${input.blobSha!}`;
+        const failed = await tx`UPDATE harness_shared.semantic_code_files SET state='failed', refresh_id=NULL
+          WHERE workspace_id=${s.workspaceId} AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile}
+          AND path=${path} AND refresh_id=${refreshId} RETURNING path`;
+        if (failed.length) await tx`DELETE FROM harness_shared.semantic_code_functions WHERE workspace_id=${s.workspaceId}
+          AND repository_id=${s.repositoryId} AND embedding_profile=${s.profile} AND path=${path}`;
       });
       throw error;
     }

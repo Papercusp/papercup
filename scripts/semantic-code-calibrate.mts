@@ -49,8 +49,10 @@ try {
   report.judgments = [firstJudge];
   if (firstJudge.judgment.status === 'unknown') throw new Error(`Provider preflight failed: ${firstJudge.judgment.reason}`);
   db = await createFreshPgDb('semantic-calibration');
-  const migration = resolve('libs/papercusp/libs/db/sql/1568-semantic-code-index.sql');
-  await applyMigrationForTest(db.sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
+  for (const name of ['1568-semantic-code-index.sql', '1651-semantic-code-function-input.sql']) {
+    const migration = resolve('libs/papercusp/libs/db/sql', name);
+    await applyMigrationForTest(db.sql, existsSync(migration) ? migration : `${migration}.DRAFT`);
+  }
   root = await mkdtemp(join(tmpdir(), 'semantic-calibration-'));
   await mkdir(join(root, 'src'));
   for (const sample of manifest.samples) await writeFile(join(root, sample.relevant[0]), sample.source);

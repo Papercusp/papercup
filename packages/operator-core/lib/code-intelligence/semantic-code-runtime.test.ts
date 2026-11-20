@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Sql } from 'postgres';
-const h = vi.hoisted(() => ({ mismatched: false }));
+const h = vi.hoisted(() => ({ mismatched: false, model: 'controlled-summary-A' }));
+vi.mock('../agent-config', () => ({ readAgentConfig: async () => ({ models: { 'semantic-code-summary': h.model } }) }));
 vi.mock('../search/embed-backfill', () => ({ resolveBackfillEmbedder: async () => ({
   mode: 'gemma', dims: 4, profile: { profileId: 'controlled@v1' }, embed: async () => [1,0,0,0] }) }));
 vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedderResolved: async (options?: { acquireBudgetMs: number }) => {
@@ -15,7 +16,11 @@ vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedderResolved: a
 import { openSemanticCodeIndex, semanticHybridEnvironmentMatches } from './semantic-code-runtime';
 import { SEMANTIC_HYBRID_MODEL } from './semantic-code-calibration';
 const roots: string[] = [];
-afterEach(() => { roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true })); h.mismatched = false; });
+afterEach(() => {
+  roots.splice(0).forEach(root => rmSync(root, { recursive: true, force: true }));
+  h.mismatched = false;
+  h.model = 'controlled-summary-A';
+});
 it('refuses calibration across unmeasured, changed or incompatible runtime/profile/dtype boundaries', () => {
   const model = SEMANTIC_HYBRID_MODEL;
   const health = { runtime: model.runtime, rerankExecution: { device: model.device, dtype: model.dtype } };
@@ -32,6 +37,9 @@ it('allows ordinary cold acquisition off-hook while keeping interactive fail-clo
   await expect(openSemanticCodeIndex(root, 'ws', {} as Sql)).rejects.toThrow('profile unavailable');
   const background = await openSemanticCodeIndex(root, 'ws', {} as Sql, { background: true });
   expect(background.space).toMatchObject({ workspaceId: 'ws', profile: 'controlled@v1', dimensions: 4 });
+  h.model = 'controlled-summary-B';
+  const changed = await openSemanticCodeIndex(root, 'ws', {} as Sql, { background: true });
+  expect(changed.normalizationVersion).not.toBe(background.normalizationVersion);
   h.mismatched = true;
   await expect(openSemanticCodeIndex(root, 'ws', {} as Sql, { background: true })).rejects.toThrow('incompatible');
 });

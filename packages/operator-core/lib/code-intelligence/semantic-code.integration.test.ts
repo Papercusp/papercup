@@ -39,9 +39,10 @@ const index = (workspaceId = 'semantic-test', profile = fixture.profile) => new 
 
 beforeAll(async () => {
   db = await createFreshPgDb('semantic-code');
-  const file = resolve(dirname(fileURLToPath(import.meta.url)),
-    '../../../../libs/papercusp/libs/db/sql/1568-semantic-code-index.sql');
-  await applyMigrationForTest(db.sql, existsSync(file) ? file : `${file}.DRAFT`);
+  for (const name of ['1568-semantic-code-index.sql', '1651-semantic-code-function-input.sql']) {
+    const file = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../libs/papercusp/libs/db/sql', name);
+    await applyMigrationForTest(db.sql, existsSync(file) ? file : `${file}.DRAFT`);
+  }
 }, 120_000);
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.semantic_code_files CASCADE`;
@@ -55,6 +56,133 @@ afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 afterAll(async () => { await db?.cleanup(); });
 
 describe('P012 semantic code index in real pgvector', () => {
+  const declaration = (name: string, delta: number) =>
+    `export function ${name}(value: number) { const next = value + ${delta}; return next; }`;
+  const manifest = () => db.sql<{ name: string; line: number; blob_sha: string }[]>`
+    SELECT name, line, blob_sha FROM harness_shared.semantic_code_functions
+    WHERE workspace_id='semantic-test' AND repository_id=${repositoryId}
+      AND embedding_profile=${fixture.profile} AND path='pay.ts' ORDER BY line`;
+
+  it('reuses matching function inputs at the new file generation', async () => {
+    const store = index();
+    const source = ['one', 'two', 'three', 'four', 'five'].map((name, i) => declaration(name, i));
+    writeFileSync(join(root, 'pay.ts'), source.join('\n'));
+    await store.updateFile(root, 'pay.ts');
+    expect(documentCalls).toBe(5);
+    writeFileSync(join(root, 'pay.ts'), [source[4], source[1], declaration('three', 30), source[3], source[0]].join('\n'));
+    const changed = await store.updateFile(root, 'pay.ts');
+    expect(documentCalls).toBe(6);
+    expect(await manifest()).toEqual(['five', 'two', 'three', 'four', 'one'].map((name, i) =>
+      ({ name, line: i + 1, blob_sha: changed.blobSha })));
+    expect(await store.updateFile(root, 'pay.ts')).toMatchObject({ changed: false });
+    expect(documentCalls).toBe(6);
+    // A legacy row has no input proof. Refresh that function when the file changes.
+    await db.sql`UPDATE harness_shared.semantic_code_functions SET input_sha256=NULL WHERE name='five'`;
+    writeFileSync(join(root, 'pay.ts'), '\n' + [source[4], source[1], declaration('three', 30), source[3], source[0]].join('\n'));
+    await store.updateFile(root, 'pay.ts');
+    expect(documentCalls).toBe(7);
+  });
+
+  it('removes deleted functions and prevents a stale worker from publishing over a newer file', async () => {
+    let notifyStarted!: () => void, allowFinish!: () => void;
+    const started = new Promise<void>(resolve => { notifyStarted = resolve; });
+    const finish = new Promise<void>(resolve => { allowFinish = resolve; });
+    const store = index();
+    const slow = new SemanticCodeIndex(db.sql, store.space, { ...fixture, document: async (text, signal) => {
+      if (text.includes('removed')) { notifyStarted(); await finish; }
+      return fixture.document(text, signal);
+    } });
+    writeFileSync(join(root, 'pay.ts'), [pay, declaration('removed', 2)].join('\n'));
+    const stale = slow.updateFile(root, 'pay.ts');
+    try {
+      await started;
+      writeFileSync(join(root, 'pay.ts'), '\n' + pay);
+      await store.updateFile(root, 'pay.ts');
+    } finally { allowFinish(); }
+    await expect(stale).rejects.toThrow('changed during embedding');
+    expect((await manifest()).map(row => [row.name, row.line])).toEqual([['settle', 2]]);
+    expect((await store.search(root, 'invoice', { paths: ['pay.ts'] })).matches.map(fn => fn.name)).toEqual(['settle']);
+  });
+
+  it('recomputes function vectors for changed summarizer inputs or embedding profiles', async () => {
+    const summaries: string[] = [], documents: string[] = [];
+    let neighbor = 'original scope';
+    function open(model: string, profile: string, dimensions: number, workspaceId = 'semantic-test', repo = repositoryId) {
+      return new SemanticCodeIndex(db.sql, { workspaceId, repositoryId: repo, profile, dimensions }, {
+        profile, dimensions, query: fixture.query,
+        summaryRecipe: { version: model, input: (fn, file) => JSON.stringify([fn.summary, file.source.split('\n', 1)[0], neighbor]),
+          run: async input => { summaries.push(input); return 'stable behavior'; } },
+        document: async input => { documents.push(input); return Array(dimensions).fill(1); },
+      });
+    }
+    const update = async (store: SemanticCodeIndex, context: string, where = root) => {
+      writeFileSync(join(where, 'pay.ts'), context + '\n' + pay);
+      await store.updateFile(where, 'pay.ts');
+    };
+    const base = open('model-A/normalizer-1', 'profile-A', 4);
+    await update(base, '// invoice helper uses cents');
+    await update(base, '// invoice helper uses cents');
+    expect([summaries.length, documents.length]).toEqual([1, 1]);
+    await update(base, '// invoice helper uses dollars');
+    expect(summaries[0]).not.toBe(summaries[1]);
+    expect(documents[0]).toBe(documents[1]); // same output does not certify the changed summary input
+    neighbor = 'amended scope';
+    await update(base, '// invoice helper uses dollars');
+    expect(summaries[2]).not.toBe(summaries[1]);
+    for (const [model, profile, width, workspace] of [
+      ['model-B/normalizer-1', 'profile-A', 4, 'semantic-test'],
+      ['model-B/normalizer-2', 'profile-A', 4, 'semantic-test'],
+      ['model-B/normalizer-2', 'profile-B', 4, 'semantic-test'],
+      ['model-B/normalizer-2', 'profile-B', 8, 'semantic-test'],
+      ['model-B/normalizer-2', 'profile-B', 8, 'other-workspace'],
+    ] as const) await update(open(model, profile, width, workspace), '// invoice helper uses dollars');
+    const other = mkdtempSync(join(tmpdir(), 'semantic-other-'));
+    try {
+      await update(open('model-B/normalizer-2', 'profile-B', 8, 'other-workspace', await semanticRepositoryId(other)),
+        '// invoice helper uses dollars', other);
+    } finally { rmSync(other, { recursive: true, force: true }); }
+    expect([summaries.length, documents.length]).toEqual([9, 9]);
+  });
+
+  it('keeps a ready equal-blob generation when an earlier worker fails', async () => {
+    const winner = index();
+    let announce!: () => void, resume!: () => void;
+    const started = new Promise<void>(resolve => { announce = resolve; });
+    const released = new Promise<void>(resolve => { resume = resolve; });
+    const earlier = new SemanticCodeIndex(db.sql, winner.space, { ...fixture, document: async () => {
+      announce(); await released; throw new Error('old worker failed');
+    } });
+    const stale = earlier.updateFile(root, 'pay.ts');
+    try {
+      await started;
+      await winner.updateFile(root, 'pay.ts');
+    } finally { resume(); }
+    await expect(stale).rejects.toThrow('old worker failed');
+    expect(await winner.updateFile(root, 'pay.ts')).toMatchObject({ changed: false });
+    expect((await winner.search(root, 'invoice')).matches.map(fn => fn.name)).toEqual(['settle']);
+  });
+
+  it('resumes a partial function refresh against the current file generation', async () => {
+    const store = index();
+    const old = ['one', 'two', 'three', 'four', 'last'].map((name, i) => declaration(name, i));
+    const partial: string[] = [];
+    const interrupted = new SemanticCodeIndex(db.sql, store.space, { ...fixture, document: async input => {
+      partial.push(input);
+      if (input.startsWith('last:')) throw new Error('controlled interruption');
+      return fixture.document(input);
+    } });
+    writeFileSync(join(root, 'pay.ts'), old.join('\n'));
+    await expect(interrupted.updateFile(root, 'pay.ts')).rejects.toThrow('controlled interruption');
+    expect(partial).toHaveLength(5);
+    expect(await manifest()).toEqual([]);
+    expect((await store.search(root, 'invoice', { paths: ['pay.ts'] })).matches).toEqual([]);
+    const next = [declaration('current', 17), old[0], old[1]].join('\n');
+    writeFileSync(join(root, 'pay.ts'), next);
+    const resumed = await index().updateFile(root, 'pay.ts');
+    expect(await manifest()).toEqual(['current', 'one', 'two'].map((name, i) =>
+      ({ name, line: i + 1, blob_sha: resumed.blobSha })));
+    expect(documentCalls).toBe(7); // four completed before interruption, three in the current generation
+  });
   it('uses identified hybrid relevance independently of cosine and exposes each score in its own units', async () => {
     const base = index();
     const store = new SemanticCodeIndex(db.sql, base.space, { ...fixture, query: async () => [.6, .8, 0, 0],
