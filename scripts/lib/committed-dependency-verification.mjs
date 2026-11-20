@@ -730,6 +730,16 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         progress.phase = 'complete';
         return { status: 'complete', sourceRoot: donor, paths: scan.trees.map(tree => tree.path), scope, progress };
       } catch (error) {
+        const metadata = error.dependencyMetadata;
+        if (error.code === 'DEPENDENCY_METADATA_CHANGED' && metadata?.side === 'donor' &&
+            Object.keys(metadata.differences).length === 1 && metadata.differences.ctimeNs) {
+          // Another install reader can create a hardlink without changing the
+          // donor's bytes. The interrupted check proves neither equality nor
+          // corruption: retain its exact invalidation and require a new census
+          // and byte check on resume. The failing batch has no saved proof.
+          progress.invalidated = { reason: 'donor-ctime-changed', ...metadata };
+          return incomplete();
+        }
         if (error instanceof Incomplete) {
           if (error.commandEvidence) progress.interruptedCommand = error.commandEvidence;
           return incomplete();
