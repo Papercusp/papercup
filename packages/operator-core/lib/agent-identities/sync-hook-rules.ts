@@ -136,6 +136,8 @@ export interface PendingToolCall {
   readonly tool: string;
   readonly input: unknown;
   readonly client: string;
+  /** Effective directory supplied by the native adapter; never the operator cwd. */
+  readonly cwd?: string;
   /** The adapter cut `input` at {@link SYNC_HOOK_GUARD_INPUT_MAX_BYTES}. */
   readonly inputTruncated?: boolean;
 }
