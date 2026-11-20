@@ -170,6 +170,28 @@ export function selectCanonicalLinkedWorkItem(linked: readonly LinkedWorkItem[])
   const nonTerminal = linked.filter((wi) => !isSettledWorkItemState(wi.state));
   const planNode = linked.find((wi) => wi.viaPlanLineNode);
   if (planNode) {
+    // Migration 1601 created deliberately parked feature nodes as structural
+    // parents before execution moved onto those nodes. Until plans:start lifts
+    // that exact park, an older issue/task child remains the executable row.
+    // Treating the parked shadow as a competing implementation makes
+    // coord:declare-intent refuse an otherwise singular lane as ambiguous.
+    // This mirrors exact-plan admission's D-011 coverage rule: only this
+    // provenance is metadata; every other parked node remains authoritative.
+    const payload = planNode.payload as Record<string, unknown> | null;
+    const migrationShadow = isClaimHoldParked(payload) &&
+      payload?.claim_hold_by === 'migration:plan-line-work-item-nodes';
+    const executableRows = nonTerminal.filter((wi) => wi !== planNode);
+    if (migrationShadow && executableRows.length > 0) {
+      const proven = executableRows.filter((wi) => wi.viaImplementsEdge);
+      const pool = proven.length > 0 ? proven : executableRows;
+      let canonical = pool[0];
+      for (const wi of pool.slice(1)) {
+        const tCanon = Date.parse(canonical.createdAt) || 0;
+        const tNext = Date.parse(wi.createdAt) || 0;
+        if (tNext < tCanon || (tNext === tCanon && wi.id < canonical.id)) canonical = wi;
+      }
+      return { canonical, duplicates: executableRows.filter((wi) => wi !== canonical) };
+    }
     const canonical = isSettledWorkItemState(planNode.state) ? null : planNode;
     return { canonical, duplicates: nonTerminal.filter((wi) => wi !== canonical) };
   }

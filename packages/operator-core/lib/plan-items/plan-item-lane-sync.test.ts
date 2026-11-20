@@ -451,6 +451,33 @@ describe('selectCanonicalLinkedWorkItem — one mutable row per plan lane [D-046
     expect(selected.duplicates).toEqual([child]);
   });
 
+  it('ignores a migration-parked plan-line shadow beside its executable child', () => {
+    const node = {
+      ...linked({ id: 'WI-node', state: 'blocked', viaImplementsEdge: false, viaPlanLineNode: true }),
+      payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' },
+    } as LinkedWorkItem;
+    const child = linked({ id: 'WI-child', viaImplementsEdge: true });
+
+    const selected = selectCanonicalLinkedWorkItem([node, child]);
+
+    expect(selected.canonical).toBe(child);
+    expect(selected.duplicates).toEqual([]);
+  });
+
+  it('still reports real competing executions beside a migration-parked shadow', () => {
+    const node = {
+      ...linked({ id: 'WI-node', state: 'blocked', viaImplementsEdge: false, viaPlanLineNode: true }),
+      payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' },
+    } as LinkedWorkItem;
+    const first = linked({ id: 'WI-first', createdAt: '2026-08-22T00:00:00.000Z' });
+    const second = linked({ id: 'WI-second', createdAt: '2026-08-22T00:00:01.000Z' });
+
+    const selected = selectCanonicalLinkedWorkItem([node, second, first]);
+
+    expect(selected.canonical).toBe(first);
+    expect(selected.duplicates).toEqual([second]);
+  });
+
   it('does not elect an execution child after the current plan-line node becomes terminal', () => {
     const node = linked({ id: 'WI-node', state: 'resolved', viaPlanLineNode: true });
     const child = linked({ id: 'WI-child', viaImplementsEdge: true });
