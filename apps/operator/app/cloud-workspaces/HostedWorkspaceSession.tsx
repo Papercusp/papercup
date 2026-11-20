@@ -336,6 +336,7 @@ export function HostedWorkspaceSession({
       const desktopSessionId = thumbnailQueueRef.current.values().next().value!;
       thumbnailQueueRef.current.delete(desktopSessionId);
       const id = requestId("desktop-thumbnail");
+      // notify-classification: {"id":"apps/operator/app/cloud-workspaces/HostedWorkspaceSession.tsx#<module>/HostedWorkspaceSession/<callback>:75c3d878434fd0aafd7b:1","classification":"safe-to-lose","reason":"Read-only picture request: refusal reports relay_unavailable; a missing reply reports thumbnail_timeout after 15 seconds and releases the pending read. requestDesktopThumbnail can reissue it; this carries no state-changing command or terminal notice."}
       if (!send({ type: "desktop.thumbnail", requestId: id, desktopSessionId })) {
         thumbnailQueueRef.current.clear();
         callbackRefs.current.onDesktopQueryStateChange?.("error", "thumbnail", "relay_unavailable");
