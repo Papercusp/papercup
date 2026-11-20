@@ -5191,6 +5191,24 @@ export function mcpReconnectMacroWorstCaseMs(overrides?: Partial<McpReconnectMac
  *  parent's KICKOFF_PROOF_WINDOW_MS must exceed it, or the parent gives up and
  *  deletes the receipt before the host can report a refusal. */
 export function headlessRoleMcpVerifyWorstCaseMs(): number;
+/** Allocate the launch-kickoff deadline to the current MCP dialog attempt.
+ *
+ * The generic 8s paint wait is appropriate for an already-running interactive
+ * session, but a fresh headless Claude process can still be loading its MCP
+ * catalog when `/mcp` is submitted. Two fixed 8s waits used to declare the
+ * server unavailable and terminate the child even when Claude printed its
+ * successful reconnect a few seconds later (EI-28879489449911573). Spend the
+ * otherwise-idle kickoff budget on the first paint while reserving the complete
+ * non-paint worst case and the ordinary paint wait for every later attempt.
+ * Recompute on every attempt so an early first failure gives the retry the
+ * unused time; never extend the parent deadline.
+ */
+export function headlessRoleMcpPaintBudgetMs({ deadline, now, attempt, attempts, }: {
+    deadline: any;
+    now?: number | undefined;
+    attempt?: number | undefined;
+    attempts?: number | undefined;
+}): number;
 /**
  * Bound the fresh headless role kickoff long enough for its required MCP
  * reconnect and the prompt to settle afterward. The ordinary Claude startup
