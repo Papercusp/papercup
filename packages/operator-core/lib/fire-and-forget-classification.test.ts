@@ -438,6 +438,112 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.map(s => s.expression)).toEqual(expect.arrayContaining(['b . quiet ( )', 'Bus . relay ( )']));
   });
 
+  it('follows returned notification methods without treating object creation as delivery', () => {
+    const c = scan(`
+      function state(){ return { run: notifyOwner, read(){ return 1; } }; }
+      const bus = state();
+      bus.read();
+      bus.run();
+      state().run();
+    `);
+    expect(c.sites.map(s => s.expression).sort()).toEqual(['bus . run ( )', 'state ( ) . run ( )'].sort());
+    expect(validateClassifications(c, [])).toHaveLength(2);
+  });
+
+  it('binds returned callbacks to their own invocation through aliases and closures', () => {
+    const c = scan(`
+      function readOnly(){ return 1; }
+      function choose(callback){ return callback; }
+      function wrap(callback){ return () => callback(); }
+      const read = choose(readOnly);
+      const tell = choose(notifyOwner);
+      const quietRead = wrap(readOnly);
+      const quietTell = wrap(sendOwner);
+      read(); tell(); quietRead(); quietTell();
+    `);
+    expect(c.sites.some(s => ['read ( )', 'quietRead ( )'].includes(s.expression))).toBe(false);
+    expect(c.sites.find(s => s.expression === 'tell ( )')?.roots).toEqual(['notifyOwner']);
+    expect(c.sites.find(s => s.expression === 'quietTell ( )')?.roots).toEqual(['sendOwner']);
+  });
+
+  it('retains factory effects separately from effects of a returned callback', () => {
+    const c = scan(`
+      function make(){ notifyAttention(); return sendOwner; }
+      const tell = make();
+      tell();
+    `);
+    expect(c.sites.find(s => s.expression === 'make ( )')?.roots).toEqual(['notifyAttention']);
+    expect(c.sites.find(s => s.expression === 'tell ( )')?.roots).toEqual(['sendOwner']);
+  });
+
+  it('follows returned object methods through imports and recursive return alternatives', () => {
+    for (const reverse of [false, true]) {
+      const returns = ['if (again) return state();', 'return { run: notifyOwner };'];
+      const c = censusSources({
+        'src/bus.ts': `export function state(){ ${reverse ? [...returns].reverse().join(' ') : returns.join(' ')} }`,
+        'src/app.ts': 'import { state as open } from "./bus"; const bus = open(); bus.run();',
+      });
+      expect(c.sites.find(s => s.path === 'src/app.ts' && s.expression === 'bus . run ( )')?.roots)
+        .toEqual(['<unresolved-recursive-return>', 'notifyOwner']);
+    }
+  });
+
+  it('retains returned default callbacks for omitted and unresolved arguments', () => {
+    const c = scan(`
+      function choose(callback = notifyOwner){ return callback; }
+      const omitted = choose();
+      const explicit = choose(undefined);
+      const unknown = choose(runtimeCallback);
+      omitted(); explicit(); unknown();
+    `);
+    for (const name of ['omitted', 'explicit', 'unknown']) {
+      expect(c.sites.find(s => s.expression === `${name} ( )`)?.roots).toEqual(['notifyOwner']);
+    }
+  });
+
+  it('terminates recursive factory defaults while retaining factory-owned notices', () => {
+    const c = scan('function choose(callback = choose()){ notifyOwner(); return callback; } const bus = choose(); bus.run();');
+    expect(c.sites.find(s => s.expression === 'notifyOwner ( )')?.roots).toEqual(['notifyOwner']);
+    expect(validateClassifications(c, []).length).toBeGreaterThan(0);
+  });
+
+  it('resolves shared return diamonds without expanding every path', () => {
+    const scanner = new URL('../../../scripts/check-fire-and-forget-classification.mjs', import.meta.url).href;
+    const factories = Array.from({ length: 22 }, (_, i) =>
+      `function state${i + 1}(){ if (again) return state${i}(); return state${i}(); }`,
+    );
+    const source = `function state0(){ return { run: notifyOwner }; }
+      ${factories.join('\n')} const bus = state22(); bus.run();`;
+    // Keep a pathological traversal bounded without abandoning a hung Vitest worker.
+    // The subprocess invokes the real scanner, and its full result must retain delivery.
+    const output = execFileSync(process.execPath, ['--input-type=module', '--eval', `
+      import { censusSources } from ${JSON.stringify(scanner)};
+      const census = censusSources({ 'src/app.ts': ${JSON.stringify(source)} });
+      console.log(JSON.stringify({ sites: census.sites.map(s => [s.expression, s.roots]), gaps: census.gaps }));
+    `], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] });
+    expect(JSON.parse(output)).toEqual({ sites: [['bus . run ( )', ['notifyOwner']]], gaps: [] });
+  }, 15_000);
+
+  it('preserves computed bind aliases when following call results', () => {
+    const c = scan(`const key = 'bind';
+      const first = notifyOwner['bind'](null);
+      const second = sendOwner[key](null);
+      first(); second();`);
+    expect(c.sites.find(s => s.expression === 'first ( )')?.roots).toEqual(['notifyOwner']);
+    expect(c.sites.find(s => s.expression === 'second ( )')?.roots).toEqual(['sendOwner']);
+  });
+
+  it.each([255, 256, 257, 513].flatMap(count => [false, true].map(reverse => ({ count, reverse }))))(
+    'keeps a returned owner callback after many pure factory calls (count=$count reverse=$reverse)',
+    ({ count, reverse }) => {
+      const clean = Array.from({ length: count }, (_, i) => `const read${i} = choose(readOnly); read${i}();`);
+      const notice = 'const tell = choose(notifyOwner); tell();';
+      const c = scan(`function readOnly(){ return 1; } function choose(callback){ return callback; }
+        ${reverse ? [notice, ...clean].join('\n') : [...clean, notice].join('\n')}`);
+      expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['tell ( )', ['notifyOwner']]]);
+    },
+  );
+
   it('resolves a wrapper assigned inside another block', () => {
     const c = scan('let quiet; {quiet=notifyOwner;} quiet();');
     expect(c.sites.some(s => s.expression === 'quiet ( )')).toBe(true);

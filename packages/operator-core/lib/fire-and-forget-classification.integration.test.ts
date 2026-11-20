@@ -70,6 +70,8 @@ describe('notification classification over real tracked repositories', () => {
     ['direct', 'void notifyOwner();'],
     ['alias', 'const quiet = notifyOwner; void quiet();'],
     ['wrapper', 'async function quiet(){ await notifyOwner(); } void quiet();'],
+    ['returned object', 'function state(){ return { run: notifyOwner }; } const bus = state(); void bus.run();'],
+    ['returned callback', 'function wrap(callback){ return () => callback(); } const quiet = wrap(notifyOwner); void quiet();'],
   ])('rejects a new %s site before accepting complete classifications', (_name, source) => {
     const root = repo();
     put(root, 'src/app.ts', 'export const ready = true;');

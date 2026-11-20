@@ -82,6 +82,7 @@ export function censusSources(sources) {
   const modules = new Map();
   const calls = [];
   const gaps = [];
+  const resolvingReturns = new Set();
   const manifests = new Map();
   const configs = new Map();
   for (const [path, source] of Object.entries(sources)) if (/(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(path)) {
@@ -171,7 +172,10 @@ export function censusSources(sources) {
       if (ts.isNewExpression(n)) return ref(n.expression, scope);
       if (ts.isCallExpression(n)) {
         if ((n.expression.kind === ts.SyntaxKind.ImportKeyword || n.expression.getText(sf) === 'require') && ts.isStringLiteralLike(n.arguments[0])) return imported(n.arguments[0].text, '*');
-        return ref(n.expression, scope);
+        // A call's value is not its callee. Keep bind's callable alias, but
+        // resolve other factories through their returned values and arguments.
+        if (ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'bind') return ref(n.expression, scope);
+        return { result: ref(n.expression, scope), args: n.arguments.map(a => ref(a, scope)), site: `${path}:${n.getStart(sf)}` };
       }
       return null;
     }
@@ -218,6 +222,7 @@ export function censusSources(sources) {
         const child = { parent: scope, names: new Map(), owner: s, label: `${scope.label}/${localName}` };
         s.params = n.parameters.map(p => binding(p.name, null, child));
         s.calls = [];
+        s.returns = [];
         s.hasRest = n.parameters.some(p => p.dotDotDotToken);
         if (n.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword)) exports.set(n.modifiers.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) ? 'default' : localName, { id: s.id });
         for (const p of n.parameters) if (p.initializer) visit(p.initializer, child);
@@ -232,6 +237,7 @@ export function censusSources(sources) {
           }
         });
         visit(n.body, child);
+        if (!ts.isBlock(n.body)) s.returns.push(ref(n.body, child));
         return;
       }
       if (ts.isBlock(n) || ts.isCatchClause(n)) {
@@ -260,6 +266,7 @@ export function censusSources(sources) {
         binding(n.left, ref(n.right, scope), targetScope);
       }
       if (ts.isExportAssignment(n)) exports.set('default', ref(n.expression, scope));
+      if (ts.isReturnStatement(n) && n.expression && scope.owner) scope.owner.returns.push(ref(n.expression, scope));
       if (ts.isCallExpression(n)) {
         const callee = ref(n.expression, scope);
         const args = n.arguments.map(a => ref(a, scope));
@@ -281,32 +288,92 @@ export function censusSources(sources) {
   // makes deep member/import aliases allocate cubic numbers of Set entries.
   // Roll back only additions made by this branch; sibling and cycle semantics
   // remain identical to resolving against a copy of the incoming set.
+  let targetDepth = 0;
+  let targetMemo = null;
+  let targetCycles = 0;
   function branchTargets(r, seen, context, trail) {
     const checkpoint = trail.length;
     try { return targets(r, seen, context, trail); }
     finally { while (trail.length > checkpoint) seen.delete(trail.pop()); }
   }
   function targets(r, seen = new Set(), context = null, trail = []) {
-    if (!r || seen.has(r)) return [];
+    const outermost = targetDepth++ === 0;
+    if (outermost) { targetMemo = new WeakMap(); targetCycles = 0; }
+    try {
+      if (!r) return [];
+      // One resolution observes a stable graph. Reuse complete context-free
+      // subgraphs across return diamonds, but never cache a cycle-dependent cut
+      // or a mutable invocation binding. Injection mutates aliases between
+      // resolutions, so no memo survives the outermost call.
+      if (context === null && targetMemo.has(r)) return targetMemo.get(r);
+      const cyclesBefore = targetCycles;
+      const result = [...new Set(resolveTargets(r, seen, context, trail))];
+      if (context === null && cyclesBefore === targetCycles) targetMemo.set(r, result);
+      return result;
+    } finally {
+      if (--targetDepth === 0) targetMemo = null;
+    }
+  }
+  function resolveTargets(r, seen, context, trail) {
+    if (!r) return [];
+    if (seen.has(r)) { targetCycles++; return r.result ? [{ roots: new Set(['<unresolved-recursive-return>']), unresolvedReturn: true }] : []; }
     seen.add(r); trail.push(r);
     // Primitive defaults are supported values, but never callback targets.
     // Keep computed keys conservative rather than guessing a property name.
     if (r.nonCallable) return [];
+    if (r.choices) return r.choices.flatMap(choice => branchTargets(choice.ref, seen, choice.context, trail));
     if (r.literal !== undefined) return [{ literal: r.literal }];
+    if (r.result) {
+      const boundAlias = r.result.member === 'bind' || (r.result.memberRef
+        && branchTargets(r.result.memberRef, seen, context, trail).some(t => t.literal === 'bind'));
+      if (boundAlias) return branchTargets(r.result, seen, context, trail);
+      return branchTargets(r.result, seen, context, trail).flatMap(t => {
+      if (t.unresolvedReturn) return [t];
+      if (!t.returns) return [];
+      // Argument/default resolution can start with a fresh visited set. Keep
+      // the active return invocation separately so cycles across those seams
+      // terminate conservatively instead of overflowing or claiming clean.
+      const invocation = `${r.site}:${t.id}`;
+      if (resolvingReturns.has(invocation)) { targetCycles++; return [{ roots: new Set(['<unresolved-recursive-return>']), unresolvedReturn: true }]; }
+      resolvingReturns.add(invocation);
+      try {
+      // Unsupported parameter shapes retain the global return alternatives.
+      // Supported factories bind their own arguments, including closure captures.
+      const bound = t.params.length ? new Map(t.boundContext ?? context) : t.boundContext ?? context;
+      if (!t.hasRest && t.params.every(Boolean)) t.params.forEach((p, i) => {
+        const value = r.args[i];
+        const fallback = t.defaults[i];
+        const choices = [];
+        if (value) choices.push({ ref: value, context });
+        // An unresolved supplied value may be undefined and select the default.
+        if (fallback?.present && (!value || (!value.nonCallable
+          && !targets(value, new Set(), context).some(v => v.calls || v.roots?.size || v.literal !== undefined)))) {
+          choices.push({ ref: fallback.ref, context: bound });
+        }
+        bound.set(p.id, { ref: { choices }, context: bound });
+      });
+      return t.returns.flatMap(value => branchTargets(value, seen, bound, trail));
+      } catch (error) {
+        if (error instanceof RangeError && !error.message.includes('return-site=')) error.message += ` (return-site=${r.site}, function=${t.name})`;
+        throw error;
+      } finally { resolvingReturns.delete(invocation); }
+      });
+    }
     if (r.id) {
       if (context?.has(r.id)) {
         const bound = context.get(r.id);
         return targets(bound.ref, seen, bound.context, trail);
       }
       const s = symbols.get(r.id);
-      if (!s || seen.has(`id:${r.id}`)) return [];
+      if (!s) return [];
+      if (seen.has(`id:${r.id}`)) { targetCycles++; return []; }
       seen.add(`id:${r.id}`); trail.push(`id:${r.id}`);
       return [context ? { ...s, boundContext: context } : s, ...s.aliases.flatMap(a => targets(a, seen, context, trail))];
     }
     if (r.root) return [{ roots: new Set([r.root]) }];
     if (r.module !== undefined) {
       const key = `module:${r.module}:${r.name}`;
-      if (seen.has(key)) return [];
+      if (seen.has(key)) { targetCycles++; return []; }
       seen.add(key); trail.push(key);
       const m = modules.get(r.module);
       if (r.name === '*') return [{ module: m }];
@@ -320,7 +387,7 @@ export function censusSources(sources) {
     if (r.member) {
       const bases = targets(r.base, seen, context, trail);
       if (/^(call|apply|bind)$/.test(r.member)) return bases;
-      return [...bases.flatMap(b => b.module ? [...branchTargets(b.module.exports.get(r.member), seen, context, trail), ...b.module.stars.flatMap(s => branchTargets({ ...s, name: r.member }, seen, context, trail))] : b.members?.has(r.member) ? branchTargets({ id: b.members.get(r.member).id }, seen, b.boundContext ?? context, trail) : []), ...(notificationName(r.member) ? targets(root(r.member), seen, context, trail) : [])];
+      return [...bases.flatMap(b => b.unresolvedReturn ? [b] : b.module ? [...branchTargets(b.module.exports.get(r.member), seen, context, trail), ...b.module.stars.flatMap(s => branchTargets({ ...s, name: r.member }, seen, context, trail))] : b.members?.has(r.member) ? branchTargets({ id: b.members.get(r.member).id }, seen, b.boundContext ?? context, trail) : []), ...(notificationName(r.member) ? targets(root(r.member), seen, context, trail) : [])];
     }
     let scope = r.scope;
     while (scope && !scope.names.has(r.name)) scope = scope.parent;
