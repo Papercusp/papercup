@@ -36,6 +36,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFact } from '../../agent-facts/store';
 
 const listFactsSpy = vi.hoisted(() => vi.fn<() => Promise<AgentFact[]>>());
+const factVersionsSpy = vi.hoisted(() => vi.fn<() => Promise<AgentFact[]>>());
 const countLiveFactsSpy = vi.hoisted(() => vi.fn<() => Promise<number>>());
 const listFactsPageSpy = vi.hoisted(() => vi.fn());
 
@@ -43,7 +44,7 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent-facts/store')>();
   // Spread the real module: the tool also imports FACT_SCOPES / isPermanentFactExpiry
   // from here, and the shaping under test should run against the real helpers.
-  return { ...actual, listFactsPage: listFactsPageSpy, countLiveFacts: countLiveFactsSpy };
+  return { ...actual, listFactsPage: listFactsPageSpy, factVersions: factVersionsSpy, countLiveFacts: countLiveFactsSpy };
 });
 // EI-10947 annotator: pure pass-through here so the shaping is what is measured.
 vi.mock('./stale-source', () => ({ markStaleSourceFacts: async (f: AgentFact[]) => f }));
@@ -84,6 +85,7 @@ async function listWorkspace(args: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   listFactsSpy.mockReset();
+  factVersionsSpy.mockReset();
   listFactsPageSpy.mockReset();
   listFactsPageSpy.mockImplementation(async (...args: unknown[]) => ({
     facts: await (listFactsSpy as (...args: unknown[]) => Promise<AgentFact[]>)(...args), nextCursor: null,
@@ -92,6 +94,27 @@ beforeEach(() => {
 });
 
 describe('facts:list distinguishes the page from the census (WI-38910)', () => {
+  it.each([false, true])('returns declared enforcement on page, key and history reads (full=%s)', async (full) => {
+    const enforcement = { tier: 'gate', floor: 0.9, reviewBy: '2026-11-27' } as const;
+    const untiered: AgentFact = { ...fact('team-policy'), kind: 'convention', expiresAt: 'infinity' };
+    const current = { ...untiered, key: 'review-policy', enforcement };
+    listFactsSpy.mockResolvedValue([current, untiered]);
+    countLiveFactsSpy.mockResolvedValue(2);
+    factVersionsSpy.mockResolvedValue([current, { ...current, enforcement: null, supersededAt: current.updatedAt }]);
+
+    const pageResult = await listWorkspace({ full });
+    expect(pageResult).toHaveProperty('facts.0.enforcement', enforcement);
+    expect(pageResult).not.toHaveProperty('facts.1.enforcement');
+
+    const keyResult = await listWorkspace({ key: current.key, full });
+    expect(keyResult).toHaveProperty('facts.0.enforcement', enforcement);
+
+    const historyResult = await listWorkspace({ key: current.key, versions: true, full });
+    expect(historyResult.versions).toHaveLength(2);
+    expect(historyResult).toHaveProperty('versions.0.enforcement', enforcement);
+    expect(historyResult).not.toHaveProperty('versions.1.enforcement');
+  });
+
   it('refuses a ref-bearing scope when context cannot resolve its scopeRef', async () => {
     await expect(factsListTool.handler({ scope: 'harness' } as never, ctx)).rejects.toThrow(
       "facts:list — scope 'harness' requires scope_ref",

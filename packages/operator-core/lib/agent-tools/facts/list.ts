@@ -169,6 +169,7 @@ export function projectFact(
     // 'conclusion' — see FACT_KINDS on why it is never backfilled.
     ...(f.kind ? { kind: f.kind } : {}),
     ...(f.claim ? { claim: f.claim } : {}),
+    ...(f.kind === 'convention' && f.enforcement ? { enforcement: f.enforcement } : {}),
     // The staleness flags are NEVER excerpted away — they are the reason to read
     // the list. `stale` = the source WORK-ITEM closed (EI-10947, a hint);
     // `dependsStale` = a DECLARED cell dependency actually changed (P-008 b, a
