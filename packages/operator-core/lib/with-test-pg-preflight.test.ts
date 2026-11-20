@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import type {} from '../test/admission-http-fixture';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -12,6 +13,7 @@ import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle,
   parsePrivateHttpScenario } from '../test/private-http-workspace-preflight';
 import { isolatedRuntimeEvidenceKeys, isolatedRuntimeInheritedEnvironment, privatePgSeedEnvironment, privatePgCommandEnvironment } from '../../../scripts/lib/with-test-pg-env.mjs';
 import { executedSourceMapArmed } from '@papercusp/test-config/vitest-config';
+import type { LoadedConfigSources, LoadedMainProcessSources } from '../../../libs/test-config/src/executed-config-load-capture';
 
 const root = resolve(import.meta.dirname, '../../..');
 
@@ -62,6 +64,8 @@ describe('private runtime inherited environment', () => {
       PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/operator-core',
       PC_EXECUTED_SOURCE_MAP_OUT: '/owned-proof/executed-source-map.json',
       PC_EXECUTED_SOURCE_MAP_RESULT: '/owned-proof/source-map-results.jsonl',
+      PC_EXECUTED_SOURCE_MAP_PRELOAD: '1',
+      PC_EXECUTED_SOURCE_MAP_ROOT: root,
       PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://reporter.invalid/evidence',
       PAPERCUSP_TEST_ARTIFACT_DIR: '/owned-proof/recorder-tapes',
       PAPERCUSP_TEST_ARTIFACT_DIR_COPY: '/live/mutable-destination',
@@ -69,6 +73,8 @@ describe('private runtime inherited environment', () => {
       PAPERCUSP_OPERATOR_URL: 'https://live.invalid',
       PAPERCUSP_SID: 'live-owner', EXPERIMENTAL_PROVIDER_TOKEN: 'credential-value',
       PC_EXECUTED_SOURCE_MAP_OUT_COPY: '/live/mutable-destination',
+      PC_EXECUTED_SOURCE_MAP_PRELOAD_COPY: '1',
+      PC_EXECUTED_SOURCE_MAP_ROOT_COPY: '/live/mutable-root',
     };
     const result = isolatedRuntimeInheritedEnvironment(input,
       isolatedRuntimeEvidenceKeys('PAPERCUSP_TEST_OWNED_DB_DIR'));
@@ -81,12 +87,78 @@ describe('private runtime inherited environment', () => {
       PC_EXECUTED_SOURCE_MAP_WORKSPACE: input.PC_EXECUTED_SOURCE_MAP_WORKSPACE,
       PC_EXECUTED_SOURCE_MAP_OUT: input.PC_EXECUTED_SOURCE_MAP_OUT,
       PC_EXECUTED_SOURCE_MAP_RESULT: input.PC_EXECUTED_SOURCE_MAP_RESULT,
+      PC_EXECUTED_SOURCE_MAP_PRELOAD: input.PC_EXECUTED_SOURCE_MAP_PRELOAD,
+      PC_EXECUTED_SOURCE_MAP_ROOT: input.PC_EXECUTED_SOURCE_MAP_ROOT,
       PAPERCUSP_TEST_RUNS_DB_URL: input.PAPERCUSP_TEST_RUNS_DB_URL,
       PAPERCUSP_TEST_ARTIFACT_DIR: input.PAPERCUSP_TEST_ARTIFACT_DIR,
     });
     expect(result.discardedKeys).toEqual(Object.keys(input).filter(key => !(key in result.environment)).sort());
     expect(JSON.stringify(result)).not.toContain('credential-value');
   });
+
+  it.each(['armed control', 'isolated child', 'omitted controls'] as const)(
+    'observes early CONFIG and MAIN inputs before PG allocation (%s)', mode => {
+      const directory = mkdtempSync(join(tmpdir(), 'private-pg-early-capture-'));
+      const capture = pathToFileURL(join(root, 'libs/test-config/src/executed-config-load-capture.ts')).href;
+      const configPath = join(root, 'scripts/lib/with-test-pg-env.mjs');
+      const mainPath = join(root, 'scripts/lib/terminal-counter-fields.mjs');
+      const input = {
+        NODE_OPTIONS: `--import=${capture}`,
+        PC_EXECUTED_SOURCE_MAP_PRELOAD: '1',
+        PC_EXECUTED_SOURCE_MAP_ROOT: root,
+        PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/operator-core',
+        PC_EXECUTED_SOURCE_MAP_OUT: join(directory, 'source-map.json'),
+      };
+      try {
+        const evidenceKeys = isolatedRuntimeEvidenceKeys('PAPERCUSP_TEST_OWNED_DB_DIR');
+        if (mode === 'omitted controls') {
+          evidenceKeys.delete('PC_EXECUTED_SOURCE_MAP_PRELOAD');
+          evidenceKeys.delete('PC_EXECUTED_SOURCE_MAP_ROOT');
+        }
+        const environment = mode === 'armed control' ? input :
+          isolatedRuntimeInheritedEnvironment(input, evidenceKeys).environment;
+        const script = `
+          await import(${JSON.stringify(pathToFileURL(configPath).href)});
+          await import(${JSON.stringify(pathToFileURL(mainPath).href)});
+          const { qualifyLoadedConfigSources, qualifyLoadedMainProcessSources } = await import(${JSON.stringify(capture)});
+          const root = process.env.PC_EXECUTED_SOURCE_MAP_ROOT ?? ${JSON.stringify(directory)};
+          console.log(JSON.stringify({ root: process.env.PC_EXECUTED_SOURCE_MAP_ROOT ?? null,
+            config: qualifyLoadedConfigSources([${JSON.stringify(configPath)}], root),
+            main: qualifyLoadedMainProcessSources([${JSON.stringify(configPath)}], root) }));`;
+        const startedAt = performance.now();
+        const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+          cwd: root, env: environment, encoding: 'utf8', timeout: 30_000,
+        });
+        const diagnostic = childDiagnostic(result, startedAt);
+        expect(result.status, diagnostic).toBe(0);
+        expect(result.signal, diagnostic).toBeNull();
+        const observed = JSON.parse(result.stdout.trim()) as {
+          root: string | null; config: LoadedConfigSources; main: LoadedMainProcessSources;
+        };
+        expect(observed.root, diagnostic).toBe(mode === 'omitted controls' ? null : root);
+        for (const [evidence, path, prefix] of [
+          [observed.config, configPath, 'config'],
+          [observed.main, mainPath, 'main-process'],
+        ] as const) {
+          if (mode === 'omitted controls') {
+            expect(evidence.status, diagnostic).toBe('unknown');
+            expect(evidence.observedSources, diagnostic).toEqual([]);
+            expect(evidence.reasons, diagnostic).toContain(`${prefix}-node-load-capture-unavailable`);
+          } else {
+            expect(evidence.observedSources, diagnostic).toContainEqual({
+              path: path.slice(root.length + 1).replaceAll('\\', '/'),
+              observedSha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+            });
+            expect(evidence.reasons, diagnostic).not.toContain(`${prefix}-node-load-capture-unavailable`);
+          }
+          // These positive hook observations do not close the loader chain.
+          expect(evidence.loaderChain, diagnostic).toMatchObject({ status: 'unknown',
+            unresolved: expect.arrayContaining(['node-loader-chain-not-closed']) });
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }, 60_000);
 
   it('keeps tooling and exact admitted evidence without inheriting unknown mutable destinations', () => {
     const input = {

@@ -32,11 +32,12 @@ export function isolatedRuntimeEvidenceKeys(ownedTestDbDirectoryKey) {
     'PAPERCUSP_TEST_RUN_WORK_ITEM', 'PAPERCUSP_TEST_RUN_OWNER_ID',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
     ownedTestDbDirectoryKey,
-    // The source-map reporter arms from its workspace and writes to these
-    // explicit durable destinations. Dropping them can leave a passing worker
-    // without the immutable source proof required by its enclosing verifier.
+    // The worker reporter and early CONFIG/MAIN capture arm separately. Keep
+    // the explicit preload/root controls with the durable destinations so
+    // isolation cannot silently drop the enclosing verifier's requested capture.
     'PC_EXECUTED_SOURCE_MAP_WORKSPACE', 'PC_EXECUTED_SOURCE_MAP_OUT',
-    'PC_EXECUTED_SOURCE_MAP_RESULT',
+    'PC_EXECUTED_SOURCE_MAP_RESULT', 'PC_EXECUTED_SOURCE_MAP_PRELOAD',
+    'PC_EXECUTED_SOURCE_MAP_ROOT',
     'PAPERCUSP_TEST_RUN_COMMIT', 'PAPERCUSP_TEST_RUN_CASE_TITLE_PATTERN',
     'PAPERCUSP_TEST_RUN_LOOP_LAG_P95_MS',
     // Mutation evidence retains the original checkout and selected descriptor reader.
