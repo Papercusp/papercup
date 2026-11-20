@@ -1748,7 +1748,8 @@ describe('phase binding writer census', () => {
       const reason = 'generated-wrangler-local-state:apps/operator-public/package.json#scripts.dev';
       const generatedPaths = generated.map(([path]) => path).sort();
       expect(inventory.excluded).toEqual(generatedPaths.map(path => ({ path, reason })));
-      expect(inventory.gaps).toEqual([{ id: 'source:' + invalidHeader, reason: 'source-not-utf8' }]);
+      expect(inventory.gaps).toEqual([{ id: 'source:' + invalidHeader, reason: 'source-not-utf8',
+        sha256: createHash('sha256').update(Buffer.from([0xff, 0xff, 0xff, 0xff])).digest('hex') }]);
       expect(inventory.sources.map(source => source.path)).toEqual(
         [shortDb, shortWal, differentObject, differentApp, authored].sort());
       expect(inventory.sites.filter(site => site.kind === 'sql').map(site => site.path)).toEqual([authored]);
@@ -1803,6 +1804,10 @@ describe('phase binding writer census', () => {
       ]);
       expect(snapshot.gaps.filter(gap => gap.reason === 'source-not-utf8').map(gap => gap.id)).toEqual(
         invalidPaths.map(([path]) => 'source:' + path).sort());
+      expect(Object.fromEntries(snapshot.gaps.map(gap => [gap.id, gap.sha256]))).toEqual(
+        Object.fromEntries(invalidPaths.map(([path, bytes]) => [
+          'source:' + path, createHash('sha256').update(bytes).digest('hex'),
+        ])));
       expect(snapshot.sources.map(source => source.path)).toEqual([authored, configPath]);
       expect(snapshot.sites.filter(site => site.kind === 'sql').map(site => site.path)).toEqual([authored]);
       const rows: string[] = [];
@@ -1810,6 +1815,8 @@ describe('phase binding writer census', () => {
       expect(await readPhaseWriterCensus(rows)).toEqual(footer);
       expect(rows.map(row => JSON.parse(row)).filter(row => row.kind === 'excluded').map(row => row.value))
         .toEqual(snapshot.excluded);
+      expect(rows.map(row => JSON.parse(row)).filter(row => row.kind === 'gap').map(row => row.value))
+        .toEqual(snapshot.gaps);
 
       writeFileSync(join(root, configPath), config.replace("'./lostpixel-current'", "'./different-current'"));
       const comparison = verifyPhaseWriterTreeSnapshot(snapshot);
@@ -1956,22 +1963,35 @@ describe('phase binding writer census', () => {
     }
   });
 
-  it('retains unreadable runtime bytes as gaps regardless of filename extension', () => {
+  it('retains and compares unresolved runtime bytes regardless of filename extension', () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-unknown-runtime-bytes-'));
     try {
       mkdirSync(join(root, 'apps'));
       const path = 'apps/runtime.unknown';
-      writeFileSync(join(root, path), Buffer.from([0xff, 0xfe]));
+      const before = Buffer.from([0xff, 0xfe]);
+      const after = Buffer.from([0xff, 0xfd]);
+      const expectedSha256 = createHash('sha256').update(before).digest('hex');
+      const actualSha256 = createHash('sha256').update(after).digest('hex');
+      const id = `gap:source:${path}`;
+      writeFileSync(join(root, path), before);
       const inventory = inventoryPhaseWriterTree(root);
       expect(inventory.sources).toEqual([]);
       expect(inventory.excluded).toEqual([]);
-      expect(inventory.gaps).toEqual([{ id: `source:${path}`, reason: 'source-not-utf8' }]);
+      expect(inventory.gaps).toEqual([{ id: `source:${path}`, reason: 'source-not-utf8', sha256: expectedSha256 }]);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual([]);
+      writeFileSync(join(root, path), after);
+      const comparison = verifyPhaseWriterTreeSnapshot(inventory);
+      expect(comparison.ready).toBe(false);
+      expect(comparison.coverage.residue).toEqual([id]);
+      expect(comparison.differences).toEqual([{ id, reason: 'changed',
+        expected: JSON.stringify(['source-not-utf8', expectedSha256]),
+        actual: JSON.stringify(['source-not-utf8', actualSha256]) }]);
       let report: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
       try { assertPhaseWriterTreeCensus(root, []); }
       catch (error) { report = (error as Error & { report: NonNullable<typeof report> }).report; }
       expect(report?.ready).toBe(false);
-      expect(report?.census.coverage.residue).toEqual([`gap:source:${path}`]);
-      expect(report?.freshness.coverage.residue).toEqual([`gap:source:${path}`]);
+      expect(report?.census.coverage.residue).toEqual([id]);
+      expect(report?.freshness.coverage.residue).toEqual([id]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

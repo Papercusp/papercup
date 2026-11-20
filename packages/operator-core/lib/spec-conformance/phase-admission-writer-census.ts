@@ -39,7 +39,7 @@ export const PHASE_WRITER_RELATIONS = new Set([
   'plan_item_claims', 'work_items', 'engineer_issues', 'harness_features',
   'harness_features_consolidated', 'harness_plans', 'feature_claims',
 ]);
-const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+const digest = (content: string | Buffer) => createHash('sha256').update(content).digest('hex');
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 const mutationText = /\b(?:insert\s+into|update|delete\s+from|merge\s+into|create\s+(?:or\s+replace\s+)?(?:function|trigger))\b/i;
 const sqlMethod = /(?:^|\.)(?:unsafe|query|execute|exec)$/;
@@ -769,7 +769,7 @@ function looseGitObjectGap(path: string, bytes: Buffer): PhaseWriterInventory['g
     reason = 'loose-git-object-inflate-limit';
   }
 
-  return { id: `source:${path}`, reason, sha256: createHash('sha256').update(bytes).digest('hex') };
+  return { id: `source:${path}`, reason, sha256: digest(bytes) };
 }
 
 function lostPixelOutputCandidate(path: string, bytes: Buffer) {
@@ -777,7 +777,7 @@ function lostPixelOutputCandidate(path: string, bytes: Buffer) {
   const match = lostPixelPngPath.exec(path);
   if (!match || !lostPixelProjects.has(match[1]!) || !readPngDimensionsSafe(bytes).ok) return null;
   const directory = match[2] as keyof typeof lostPixelOutputFields;
-  return { path, directory, configPath: `${match[1]}/lostpixel.config.ts` };
+  return { path, directory, configPath: `${match[1]}/lostpixel.config.ts`, sha256: digest(bytes) };
 }
 
 function lostPixelConfiguredOutputs(source: PhaseWriterSource): Set<string> {
@@ -866,7 +866,7 @@ function readPhaseWriterTree(root: string) {
       if (!Buffer.from(content).equals(bytes)) {
         const output = lostPixelOutputCandidate(path, bytes);
         if (output) lostPixelPngs.push(output);
-        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' });
+        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256: digest(bytes) });
         continue;
       }
       input.push({ path, content });
@@ -878,11 +878,11 @@ function readPhaseWriterTree(root: string) {
     const configPaths = new Set(lostPixelPngs.map(output => output.configPath));
     const configured = new Map(input.filter(source => configPaths.has(source.path))
       .map(source => [source.path, lostPixelConfiguredOutputs(source)]));
-    for (const { path, directory, configPath } of lostPixelPngs) {
+    for (const { path, directory, configPath, sha256 } of lostPixelPngs) {
       if (configured.get(configPath)?.has(directory)) {
         excluded.push({ path, reason: `generated-lost-pixel-output:${configPath}#${lostPixelOutputFields[directory]}` });
       } else {
-        gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' });
+        gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256 });
       }
     }
   }
