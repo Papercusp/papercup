@@ -248,6 +248,120 @@ afterEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log RESTART IDENTITY`;
 });
 
+describe('P-002 frozen failure publisher — native work-item store', () => {
+  const population = (n: number) => {
+    const entries = [...Array.from({ length: n - 2 }, (_, i) => `packages/ws-${i % 3}/case-${i}.test.ts`),
+      'lint:condition-rail', 'typecheck:operator'];
+    const signature = entries.map((id, i) => ({
+      id, kind: id.includes('/') ? 'test-file' as const : 'lint-leg' as const,
+      recipe: `verify ${id}`, workspace: `ws-${i % 3}`, admittedRound: 1,
+      measuredHead: 'head-' + n,
+      ...(id.includes('/') ? { cases: [`case "${i}" → decisive`, 'long case ' + 'x'.repeat(1601)] } :
+        { errors: [`${id}|TS1234`] }),
+    }));
+    return { entries, signature, queue: { candidate: 'candidate-' + n, repairHead: 'head-' + n,
+      failingTests: entries, signature },
+      tails: new Map(entries.map((id) => [id, 'BEGIN ' + id + '\n' + 'e'.repeat(1801) + '\nEND ' + id])) };
+  };
+  const dependencies = async () => {
+    const { productionFrozenRepairLegRoutingDeps } = await import('../release/frozen-repair-leg-routing');
+    return { ...productionFrozenRepairLegRoutingDeps(),
+      readFailureTails: async () => new Map<string, string>(),
+      readPassedAtRepairHead: async () => new Set<string>(),
+      broadcastSummary: vi.fn(async () => true) };
+  };
+  const stored = async () => {
+    const rows = await db.sql<{ failure: unknown; condition_key: string }[]>`
+      SELECT payload -> 'frozenRepairFailure' AS failure, condition_key
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS}
+         AND payload -> 'frozenRepairFailure' IS NOT NULL
+         AND NOT (COALESCE(status, '') = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}))
+       ORDER BY condition_key`;
+    return rows.map((r) => ({ ...r,
+      failure: (typeof r.failure === 'string' ? JSON.parse(r.failure) : r.failure) as {
+        entry: string; pipeline: string; candidate: string; repairHead: string; signature: unknown; output: string;
+      } }));
+  };
+  it.each([11, 12, 13, 101, 137])('preserves the exact %i-record population and evidence across native replay', async (n) => {
+    const { routeFrozenRepairLegs } = await import('../release/frozen-repair-leg-routing');
+    const input = population(n);
+    const deps = await dependencies();
+    const first = await routeFrozenRepairLegs({ pipeline: H, queue: input.queue, failureTails: input.tails }, deps);
+    expect(first.failed).toEqual([]);
+    const rows = await stored();
+    // An absent identity offset by a duplicate fails this assertion even when totals match.
+    expect(rows.map((r) => r.failure.entry).sort()).toEqual([...input.entries].sort());
+    for (const { failure } of rows) expect(failure).toEqual({
+      pipeline: H, candidate: input.queue.candidate, repairHead: input.queue.repairHead,
+      entry: failure.entry, signature: input.signature.find((s) => s.id === failure.entry),
+      output: input.tails.get(failure.entry),
+    });
+    expect(deps.broadcastSummary).toHaveBeenCalledTimes(1);
+    const restarted = await dependencies(); // no process-local cursor or item cache
+    const replay = await routeFrozenRepairLegs({ pipeline: H,
+      queue: { ...input.queue, failingTests: [...input.entries].reverse().concat(input.entries[0]!) },
+      failureTails: input.tails }, restarted);
+    expect(replay.opened).toEqual([]);
+    expect(restarted.broadcastSummary).not.toHaveBeenCalled();
+    expect(await stored()).toEqual(rows);
+  }, 120_000);
+
+  it('retains one notification identity through delivery failure, restart and lost acknowledgement', async () => {
+    const { routeFrozenRepairLegs, productionFrozenRepairLegRoutingDeps } = await import('../release/frozen-repair-leg-routing');
+    const rail = await import('../severe-event-broadcast');
+    const sender = vi.spyOn(rail, 'broadcastSevereEvent').mockResolvedValueOnce(false).mockResolvedValue(true);
+    try {
+      const input = population(13);
+      const makeDeps = async () => ({ ...await dependencies(),
+        broadcastSummary: productionFrozenRepairLegRoutingDeps().broadcastSummary! });
+      const request = { pipeline: H, queue: input.queue, failureTails: input.tails };
+      const first = await routeFrozenRepairLegs(request, await makeDeps());
+      expect(first.summaryPublished).toBe(false);
+      expect(sender).toHaveBeenCalledTimes(1); // thirteen items, one audience attempt
+      expect((await stored()).map((r) => r.failure.entry).sort()).toEqual([...input.entries].sort());
+      const lostAck = { ...await makeDeps(),
+        acknowledgeSummary: async () => { throw new Error('after-send acknowledgement interruption'); } };
+      await expect(routeFrozenRepairLegs(request, lostAck)).rejects.toThrow('after-send acknowledgement interruption');
+      const recovered = await routeFrozenRepairLegs(request, await makeDeps());
+      expect(recovered.opened).toEqual([]);
+      expect(recovered.summaryPublished).toBe(true);
+      expect(sender).toHaveBeenCalledTimes(3);
+      const replayKeys = sender.mock.calls.map(([message]) => message.msgId);
+      expect(new Set(replayKeys).size).toBe(1); // coord's durable msgId deduplicates these attempts
+      expect(replayKeys[0]).toMatch(/^frozen-repair-publication-[a-f0-9]{64}$/);
+      await routeFrozenRepairLegs(request, await makeDeps());
+      expect(sender).toHaveBeenCalledTimes(3);
+      await routeFrozenRepairLegs({ pipeline: H, queue: null }, await makeDeps());
+      expect(sender).toHaveBeenCalledTimes(4);
+      expect(sender.mock.calls[3]![0].msgId).not.toBe(replayKeys[0]); // resolution is another change
+    } finally { sender.mockRestore(); }
+  }, 120_000);
+
+  it('resumes interrupted publication through every batch without starving the decisive last check', async () => {
+    const { routeFrozenRepairLegs } = await import('../release/frozen-repair-leg-routing');
+    const input = population(137);
+    const deps = await dependencies();
+    const nativePublish = deps.broadcastOpen;
+    deps.broadcastOpen = async (event) => input.entries.indexOf(event.failure.entry) < 12
+      ? nativePublish(event) : false;
+    const first = await routeFrozenRepairLegs({ pipeline: H, queue: input.queue, failureTails: input.tails }, deps);
+    expect(first.failed.map((r) => r.conditionKey)).toHaveLength(125);
+    expect((await stored()).map((r) => r.failure.entry).sort()).toEqual(input.entries.slice(0, 12).sort());
+    const restarted = await dependencies();
+    const nativeResume = restarted.broadcastOpen;
+    // A repeated failure at the front must not stop all the later batches.
+    restarted.broadcastOpen = async (event) => event.failure.entry === input.entries[12] ? false : nativeResume(event);
+    const second = await routeFrozenRepairLegs({ pipeline: H,
+      queue: { ...input.queue, failingTests: [...input.entries].reverse() }, failureTails: input.tails }, restarted);
+    expect(second.failed).toHaveLength(1);
+    expect((await stored()).map((r) => r.failure.entry).sort())
+      .toEqual(input.entries.filter((e) => e !== input.entries[12]).sort());
+    await routeFrozenRepairLegs({ pipeline: H, queue: input.queue, failureTails: input.tails }, await dependencies());
+    expect((await stored()).map((r) => r.failure.entry).sort()).toEqual([...input.entries].sort());
+  }, 120_000);
+});
+
 describe('P-002 partial unique index — the singleton, under real concurrency', () => {
   it('reuses an existing disk cleanup item for concurrent alarm passes without minting another incident', async () => {
     const key = 'alarm:disk-space';

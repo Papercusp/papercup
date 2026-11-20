@@ -57,6 +57,13 @@ beforeEach(() => {
 });
 
 describe('broadcastSevereEvent', () => {
+  it('forwards a durable producer replay key to the existing atomic message writer', async () => {
+    for (const msgId of ['publication-A', 'publication-A', 'publication-B']) {
+      await broadcastSevereEvent({ summary: 'batch changed', msgId });
+    }
+    expect(M.sendMessage.mock.calls.map(([, options]) => (options as Record<string, unknown>).msgId))
+      .toEqual(['publication-A', 'publication-A', 'publication-B']);
+  });
   it('loads condition delivery without loading the optional wake engine', () => {
     expect(wakeModuleLoadsOnImport).toBe(0);
   });

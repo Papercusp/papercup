@@ -48,6 +48,8 @@ export interface SevereEventRoute {
 }
 
 export interface SevereEventBroadcast {
+  /** Existing coord message replay key, for a durable producer retrying one notification. */
+  msgId?: string;
   /** One-line inbox summary — what's wrong + that it's claimable. */
   summary: string;
   /** Optional fuller body (evidence + the recommended first step). */
@@ -306,6 +308,7 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
       to: ['@topic:severe-events'],
       summary: ev.summary,
       body,
+      ...(ev.msgId ? { msgId: ev.msgId } : {}),
       category: ev.category ?? 'severe-event',
       extra: {
         emitter,

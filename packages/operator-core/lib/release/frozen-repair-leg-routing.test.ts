@@ -11,9 +11,42 @@ import { routeFrozenRepairLegs, type FrozenRepairLegRoutingDeps } from './frozen
 const CAND = 'c'.repeat(40);
 const HEAD = 'h'.repeat(40);
 const queue = (failingTests: string[]) => ({ candidate: CAND, repairHead: HEAD, failingTests });
-const key = (entry: string, pipeline = 'papercusp') => frozenRepairLegConditionKey(pipeline, entry);
+const key = (entry: string, pipeline = 'papercusp') => frozenRepairLegConditionKey(pipeline, entry, CAND, HEAD);
 
 describe('planFrozenRepairLegRouting (P-013 / D-029)', () => {
+  it('preserves full path, case and evidence bytes while keeping distinct complete identities', () => {
+    const entry = ' packages/a long/quoted:case.test.ts ';
+    const record = { id: entry, kind: 'test-file' as const, recipe: 'native test', admittedRound: 1,
+      measuredHead: HEAD, cases: ['decisive → ' + 'x'.repeat(1601)] };
+    const output = ' \nfull recorded output\n ';
+    const plan = planFrozenRepairLegRouting({ pipeline: 'papercusp',
+      queue: { ...queue([entry, entry.trim()]), signature: [record] }, openLegKeys: [],
+      failureTails: new Map([[entry, output]]) });
+    expect(plan.routed).toEqual([entry, entry.trim()]);
+    expect(new Set(plan.open.map((o) => o.conditionKey)).size).toBe(2);
+    expect(plan.open[0]!.failure).toEqual({ pipeline: 'papercusp', candidate: CAND, repairHead: HEAD,
+      entry, signature: record, output });
+    const changedCase = planFrozenRepairLegRouting({ pipeline: 'papercusp',
+      queue: { ...queue([entry]), signature: [{ ...record, cases: ['another case'] }] }, openLegKeys: [] });
+    expect(changedCase.open[0]!.conditionKey).not.toBe(plan.open[0]!.conditionKey);
+    const changedHead = planFrozenRepairLegRouting({ pipeline: 'papercusp',
+      queue: { ...queue([entry]), repairHead: 'new head', signature: [record] }, openLegKeys: [] });
+    expect(changedHead.open[0]!.conditionKey).not.toBe(plan.open[0]!.conditionKey);
+    const changedCandidate = planFrozenRepairLegRouting({ pipeline: 'papercusp',
+      queue: { ...queue([entry]), candidate: 'another candidate', signature: [record] }, openLegKeys: [] });
+    expect(changedCandidate.open[0]!.conditionKey).not.toBe(plan.open[0]!.conditionKey);
+  });
+
+  it('rejects invalid or conflicting semantic records intact', () => {
+    expect(() => planFrozenRepairLegRouting({ pipeline: 'papercusp', queue: queue(['']), openLegKeys: [] }))
+      .toThrow('Invalid frozen failure identity');
+    const record = { id: 'a/b.test.ts', kind: 'test-file' as const, recipe: 'test', admittedRound: 1,
+      measuredHead: HEAD, cases: ['first'] };
+    expect(() => planFrozenRepairLegRouting({ pipeline: 'papercusp',
+      queue: { ...queue([record.id]), signature: [record, { ...record, cases: ['second'] }] },
+      openLegKeys: [] })).toThrow('Conflicting frozen failure records');
+  });
+
   it('opens one claimable item per failing leg, keyed so the bridge files it under the pipeline', () => {
     const plan = planFrozenRepairLegRouting({
       pipeline: 'papercusp',
@@ -78,21 +111,22 @@ describe('planFrozenRepairLegRouting (P-013 / D-029)', () => {
     expect(plan.open).toEqual([]);
   });
 
-  it(`routes at most ${MAX_ROUTED_LEGS} legs, de-duplicated, and the next one when a routed leg clears`, () => {
-    const entries = Array.from({ length: MAX_ROUTED_LEGS + 3 }, (_, i) => `pkg/t${i}.test.ts`);
+  it.each([MAX_ROUTED_LEGS - 1, MAX_ROUTED_LEGS, MAX_ROUTED_LEGS + 1, 101, 137])('routes all %i failures without a window', (n) => {
+    const entries = Array.from({ length: n }, (_, i) => `pkg/t${i}.test.ts`);
     const first = planFrozenRepairLegRouting({
       pipeline: 'papercusp',
       queue: queue([...entries, entries[0]!]),
       openLegKeys: [],
     });
-    expect(first.open).toHaveLength(MAX_ROUTED_LEGS);
+    expect(first.open.map((o) => o.entry)).toEqual(entries);
+    expect(first.routed).toEqual(entries);
     const second = planFrozenRepairLegRouting({
       pipeline: 'papercusp',
       queue: queue(entries.slice(1)),
       openLegKeys: first.open.map((o) => o.conditionKey),
     });
     expect(second.resolve).toEqual([key(entries[0]!)]);
-    expect(second.open.map((o) => o.entry)).toEqual([entries[MAX_ROUTED_LEGS]]);
+    expect(second.open).toEqual([]);
   });
 
   it('the body carries the leg, both shas, the failure tail and a path-exact admit call', () => {
@@ -261,6 +295,14 @@ describe('routeFrozenRepairLegs', () => {
     );
     expect(deps.readFailureTails).not.toHaveBeenCalled();
     expect(vi.mocked(deps.broadcastOpen).mock.calls[0]![0].body).toContain('TS2322');
+  });
+
+  it('retains blank recorded bytes when the ledger has no replacement evidence', async () => {
+    const deps = fakeDeps([]);
+    await routeFrozenRepairLegs({ pipeline: 'papercusp', queue: queue(['lint:tsc']),
+      failureTails: new Map([['lint:tsc', '   ']]) }, deps);
+    expect(vi.mocked(deps.broadcastOpen).mock.calls[0]![0].failure.output).toBe('   ');
+    expect(deps.readFailureTails).toHaveBeenCalled();
   });
 
   it('a blank caller-held tail falls back to the ledger', async () => {

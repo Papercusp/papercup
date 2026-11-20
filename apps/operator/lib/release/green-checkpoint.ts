@@ -1591,7 +1591,7 @@ export interface CheckpointDeps {
    */
   routeFrozenRepairLegsToAgents?(input: {
     pipeline: string;
-    queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+    queue: { candidate: string; repairHead: string; failingTests: readonly string[]; signature?: readonly RepairSignatureEntry[] } | null;
     /** WI-6554700010018714: per-leg failure output this tick measured at repairHead. */
     failureTails?: ReadonlyMap<string, string>;
   }): Promise<void>;
@@ -19058,6 +19058,7 @@ export async function runGreenCheckpoint(
             candidate: q.candidate,
             repairHead: q.repairHead,
             failingTests: failingRepairLegsForRouting(q, finalResult.repairTickLegs),
+            signature: q.signature,
           }
         : null;
     const failureTailMeasurements = repairFailureTailMeasurements(finalResult);
@@ -23394,7 +23395,7 @@ export function realCheckpointDeps(
           async resolveKnownGoodRecutTarget() {
             const { readSyncDeltaKnownGood } =
               await import("@papercusp/operator-core/lib/release/sync-batch-delta-check-deps");
-            return readSyncDeltaKnownGood(repairTarget.installSlug);
+            return readSyncDeltaKnownGood(repairTarget.workspaceId, repairTarget.installSlug);
           },
           async readFrozenRepairPendingCarry() {
             const { readFrozenRepairPendingCarry } =

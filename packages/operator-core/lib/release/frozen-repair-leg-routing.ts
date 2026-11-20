@@ -13,7 +13,11 @@
  * Best-effort by contract: callers swallow, because routing must never fail a gate tick.
  */
 
+import { createHash } from 'node:crypto';
 import {
+  MAX_ROUTED_LEGS,
+  type FrozenRepairFailure,
+  type FrozenRepairRoutingQueue,
   frozenRepairLegKeyPrefix,
   planFrozenRepairLegRouting,
   type FrozenRepairLegRoutingPlan,
@@ -34,14 +38,18 @@ export interface FrozenRepairLegRoutingDeps {
    * Optional + best-effort: absent or throwing = no evidence, route as before.
    */
   readPassedAtRepairHead?(input: { repairHead: string; entries: readonly string[] }): Promise<Set<string>>;
-  broadcastOpen(ev: { conditionKey: string; summary: string; body: string }): Promise<boolean>;
+  /** Persist an item through the native bridge, without a per-item audience message. */
+  broadcastOpen(ev: { conditionKey: string; summary: string; body: string; failure: FrozenRepairFailure }): Promise<boolean>;
+  readPendingSummaryKeys?(pipeline: string): Promise<string[]>;
+  acknowledgeSummary?(pipeline: string, keys: readonly string[]): Promise<void>;
+  broadcastSummary?(input: { pipeline: string; queue: FrozenRepairRoutingQueue | null; opened: number; resolved: number; failed: number; pendingKeys: readonly string[] }): Promise<boolean>;
   broadcastResolved(res: { conditionKeys: string[]; summary: string; body?: string }): Promise<boolean>;
 }
 
 export interface FrozenRepairLegRoutingRequest {
   pipeline: string;
   /** See FrozenRepairLegRoutingInput.queue: null resolves every open leg of the pipeline. */
-  queue: { candidate: string; repairHead: string; failingTests: readonly string[] } | null;
+  queue: FrozenRepairRoutingQueue | null;
   /**
    * WI-6554700010018714: failure output the CALLER already holds, keyed by failing entry —
    * the non-test legs (`lint:condition-rail`, …) the gate measured at repairHead this tick.
@@ -57,6 +65,9 @@ export interface FrozenRepairLegRoutingOutcome {
   plan: FrozenRepairLegRoutingPlan;
   opened: string[];
   resolved: string[];
+  /** Misses stay in the complete queue; the next pass retries their exact identities. */
+  failed: { conditionKey: string; error: string }[];
+  summaryPublished?: boolean;
 }
 
 export async function routeFrozenRepairLegs(
@@ -72,9 +83,9 @@ export async function routeFrozenRepairLegs(
     const tails = new Map<string, string>();
     for (const o of firstPass.open) {
       const known = req.failureTails?.get(o.entry);
-      if (typeof known === 'string' && known.trim()) tails.set(o.entry, known);
+      if (typeof known === 'string') tails.set(o.entry, known);
     }
-    const fromLedger = firstPass.open.map((o) => o.entry).filter((e) => !tails.has(e));
+    const fromLedger = firstPass.open.map((o) => o.entry).filter((e) => !tails.get(e)?.trim());
     if (fromLedger.length > 0) {
       try {
         const read = await deps.readFailureTails({
@@ -82,7 +93,7 @@ export async function routeFrozenRepairLegs(
           repairHead: req.queue.repairHead,
           entries: fromLedger,
         });
-        for (const [entry, tail] of read) if (!tails.has(entry)) tails.set(entry, tail);
+        for (const [entry, tail] of read) if (!tails.get(entry)?.trim()) tails.set(entry, tail);
       } catch {
         // Best-effort: an item without its tail still names the leg and the admit call.
       }
@@ -107,9 +118,16 @@ export async function routeFrozenRepairLegs(
     });
   }
   const opened: string[] = [];
-  for (const o of plan.open) {
-    if (await deps.broadcastOpen({ conditionKey: o.conditionKey, summary: o.summary, body: o.body })) {
-      opened.push(o.conditionKey);
+  const failed: FrozenRepairLegRoutingOutcome['failed'] = [];
+  // Drain every bounded batch. Durable keys let a restart skip completed batches;
+  // one refused early item cannot starve a later check.
+  for (let offset = 0; offset < plan.open.length; offset += MAX_ROUTED_LEGS) {
+    const batch = plan.open.slice(offset, offset + MAX_ROUTED_LEGS);
+    const results = await Promise.allSettled(batch.map((o) => deps.broadcastOpen(o)));
+    for (const [i, result] of results.entries()) {
+      const conditionKey = batch[i]!.conditionKey;
+      if (result.status === 'fulfilled' && result.value) opened.push(conditionKey);
+      else failed.push({ conditionKey, error: result.status === 'rejected' ? String(result.reason) : 'publication refused' });
     }
   }
   const resolved: string[] = [];
@@ -123,19 +141,32 @@ export async function routeFrozenRepairLegs(
     });
     if (ok) resolved.push(...plan.resolve);
   }
-  return { plan, opened, resolved };
+  let summaryPublished: boolean | undefined;
+  const pendingKeys = await deps.readPendingSummaryKeys?.(req.pipeline) ?? [];
+  if (deps.broadcastSummary && (opened.length || resolved.length || failed.length || pendingKeys.length)) {
+    summaryPublished = await deps.broadcastSummary({ pipeline: req.pipeline, queue: req.queue,
+      opened: opened.length, resolved: resolved.length, failed: failed.length, pendingKeys });
+    if (summaryPublished && pendingKeys.length) await deps.acknowledgeSummary?.(req.pipeline, pendingKeys);
+  }
+  return { plan, opened, resolved, failed, ...(summaryPublished === undefined ? {} : { summaryPublished }) };
 }
 
 /** Production wiring: the condition fold, the CI test ledger, and the severe-event rail. */
 export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDeps {
   return {
     async readOpenConditionKeys(prefix) {
-      const { computeConditionStates, readConditionEnvelopes } = await import(
-        '../agent-tools/coordination/tools/conditions'
-      );
-      return computeConditionStates(await readConditionEnvelopes())
-        .filter((s) => s.open && s.condition_key.startsWith(prefix))
-        .map((s) => s.condition_key);
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+      const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
+      const workspaceId = coordScopeWorkspace();
+      if (!workspaceId) throw new Error('Frozen failure publication requires a workspace');
+      const rows = await getOrgPg().sql<{ condition_key: string }[]>`
+        SELECT condition_key FROM harness_shared.work_items
+         WHERE workspace_id = ${workspaceId}
+           AND starts_with(condition_key, ${prefix})
+           AND NOT (COALESCE(status, '') = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}))
+         ORDER BY condition_key`;
+      return rows.map((r) => r.condition_key);
     },
     async readFailureTails({ candidate, repairHead, entries }) {
       const out = new Map<string, string>();
@@ -155,7 +186,7 @@ export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDe
            AND output_tail IS NOT NULL
          ORDER BY file_path, finished_at DESC
       `;
-      for (const r of rows) if (r.output_tail) out.set(r.file_path, r.output_tail);
+      for (const r of rows) if (r.output_tail !== null) out.set(r.file_path, r.output_tail);
       return out;
     },
     async readPassedAtRepairHead({ repairHead, entries }) {
@@ -179,15 +210,75 @@ export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDe
       return out;
     },
     async broadcastOpen(ev) {
-      const { broadcastSevereEvent } = await import('../severe-event-broadcast');
-      // oneShot: this emitter is change-only (D-029), so its silence carries no information
-      // and the staleness sweep must not read it as recovery. It closes by the explicit
-      // resolve below, which the next tick re-sends if this one was lost.
-      return broadcastSevereEvent({ ...ev, category: 'severe-event', oneShot: true });
+      const { acquireConditionOwner } = await import('../coord/condition-bridge');
+      const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+      const workspaceId = coordScopeWorkspace();
+      if (!workspaceId) throw new Error('Frozen failure publication requires a workspace');
+      const result = await acquireConditionOwner(ev.conditionKey, {
+        title: ev.summary,
+        summary: ev.body + '\n\nComplete recorded identity and output: work_items:get → payload.frozenRepairFailure.',
+        harness: ev.failure.pipeline, workspaceId, severity: 'major',
+        payload: { frozenRepairFailure: ev.failure, _frozenRepairAnnouncementPending: true },
+      });
+      return !!result.workItem && !result.skipped && !result.duplicateLeftOpen;
     },
     async broadcastResolved(res) {
-      const { broadcastSevereEventResolvedMany } = await import('../severe-event-broadcast');
-      return broadcastSevereEventResolvedMany(res);
+      const { releaseConditionOwner } = await import('../coord/condition-bridge');
+      const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+      const workspaceId = coordScopeWorkspace();
+      if (!workspaceId) throw new Error('Frozen failure publication requires a workspace');
+      const { getOrgPg } = await import('@papercusp/db-org');
+      for (const conditionKey of res.conditionKeys) {
+        // Persist notification intent before the lifecycle transition can clear its key.
+        await getOrgPg().sql`
+          UPDATE harness_shared.work_items
+             SET payload = jsonb_set(payload, '{_frozenRepairAnnouncementPending}', 'true'::jsonb)
+           WHERE workspace_id = ${workspaceId} AND condition_key = ${conditionKey}
+             AND payload -> 'frozenRepairFailure' IS NOT NULL`;
+        const result = await releaseConditionOwner(conditionKey, { workspaceId, settle: true, reason: res.summary });
+        if (result.released && !result.settled) return false;
+      }
+      return true;
+    },
+    async readPendingSummaryKeys(pipeline) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+      const rows = await getOrgPg().sql<{ token: string }[]>`
+        SELECT feature_id || ':' || CASE WHEN condition_key IS NULL THEN 'resolved' ELSE 'published' END AS token
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${coordScopeWorkspace()}
+           AND payload -> 'frozenRepairFailure' ->> 'pipeline' = ${pipeline}
+           AND payload ->> '_frozenRepairAnnouncementPending' = 'true'
+         ORDER BY feature_id`;
+      return rows.map((r) => r.token);
+    },
+    async acknowledgeSummary(pipeline, keys) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
+      // A concurrent resolve has a new phase token and must retain its own notification.
+      await getOrgPg().sql`
+        UPDATE harness_shared.work_items
+           SET payload = payload - '_frozenRepairAnnouncementPending'
+         WHERE workspace_id = ${coordScopeWorkspace()}
+           AND payload -> 'frozenRepairFailure' ->> 'pipeline' = ${pipeline}
+           AND (feature_id || ':' || CASE WHEN condition_key IS NULL THEN 'resolved' ELSE 'published' END) = ANY(${[...keys]})`;
+    },
+    async broadcastSummary(input) {
+      const { broadcastSevereEvent } = await import('../severe-event-broadcast');
+      const replayIdentity = input.pendingKeys.length ? [...input.pendingKeys].sort() :
+        [input.opened, input.resolved, input.failed, input.queue?.failingTests];
+      const msgId = 'frozen-repair-publication-' + createHash('sha256')
+        .update(JSON.stringify([input.pipeline, input.queue?.candidate, input.queue?.repairHead, replayIdentity])).digest('hex');
+      const published = input.pendingKeys.length ? input.pendingKeys.filter((k) => k.endsWith(':published')).length : input.opened;
+      const resolved = input.pendingKeys.length ? input.pendingKeys.filter((k) => k.endsWith(':resolved')).length : input.resolved;
+      return broadcastSevereEvent({
+        msgId,
+        summary: `[${input.pipeline}] frozen failures: ${published} publication notices, ${resolved} resolution notices, ${input.failed} awaiting publication.`,
+        body: `Candidate: ${input.queue?.candidate ?? 'none'}\nRepair head: ${input.queue?.repairHead ?? 'none'}\n` +
+          `${input.pendingKeys.length} retained publication/resolution notice(s) in this message. ` +
+          'Read native item payload.frozenRepairFailure for complete recorded identity and evidence. ' +
+          'Pending publications remain in the complete queue and are retried on the next routing pass.',
+      });
     },
   };
 }

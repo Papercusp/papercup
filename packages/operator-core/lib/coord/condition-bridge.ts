@@ -107,6 +107,8 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 export interface ConditionOwnerSpec {
+  /** Typed evidence retained independently of the item's display preview. */
+  payload?: Record<string, unknown>;
   /** Work-item title (usually the condition's own alarm summary). */
   title: string;
   /** Body text — what opened, the evidence, what to do. */
@@ -647,7 +649,7 @@ export async function acquireConditionOwner(
     // Stamp the mint so `releaseConditionOwner` can tell an INCIDENT item (safe to
     // auto-settle) from a hand-filed ROOT-CAUSE item that merely holds the same key.
     // See BRIDGE_MINT_MARKER.
-    payload: { [BRIDGE_MINT_MARKER]: { conditionKey: key, mintedAt: new Date().toISOString() } },
+    payload: { ...spec.payload, [BRIDGE_MINT_MARKER]: { conditionKey: key, mintedAt: new Date().toISOString() } },
   } as Parameters<typeof createWorkItem>[0]);
 
   const won = await claimConditionKey(item.id, key, spec.workspaceId);
