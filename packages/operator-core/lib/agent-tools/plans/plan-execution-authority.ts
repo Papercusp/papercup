@@ -139,6 +139,18 @@ export { preservePlanExecutionProgress } from './plan-execution-progress';
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
 export type ExecutionPlanRow = Record<string, unknown> & { content: string; content_hash: string };
 const feasibilityHistoryMarker = 'plans:audit scoped-feasibility:';
+// Validate calendar spelling while retaining PostgreSQL's microsecond precision.
+// Application time never decides whether authority is currently valid.
+function feasibilityMicroseconds(value: string): bigint | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$/.test(value)) return null;
+  const milliseconds = value.slice(0, 23) + 'Z', parsed = Date.parse(milliseconds);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== milliseconds) return null;
+  return BigInt(parsed) * 1000n + BigInt(value.slice(23, 26));
+}
+const orderedFeasibilityExperiment = (experiment: ScopedFeasibilityExperiment): ScopedFeasibilityExperiment => {
+  const order = (paths: string[]) => [...paths].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return { ...experiment, testPaths: order(experiment.testPaths), fixturePaths: order(experiment.fixturePaths) };
+};
 const feasibilityEventSchema = z.object({
   schema: z.literal('scoped-feasibility-v1'), action: z.enum(['grant', 'revoke']),
   scope: z.object({ workspaceId: z.string().min(1), harnessSlug: z.string().min(1), planSlug: z.string().min(1) }).strict(),
@@ -151,6 +163,28 @@ const feasibilityEventSchema = z.object({
 }).strict().superRefine((event, ctx) => {
   if ((event.action === 'grant') !== (event.revokedReceiptId === null))
     ctx.addIssue({ code: 'custom', path: ['revokedReceiptId'], message: 'must identify exactly a revoked grant' });
+  if (event.action === 'revoke' && event.replacedReceiptId !== null)
+    ctx.addIssue({ code: 'custom', path: ['replacedReceiptId'], message: 'a revoke cannot replace authority' });
+  const issued = feasibilityMicroseconds(event.issuedAt), expires = feasibilityMicroseconds(event.expiresAt),
+    claimed = feasibilityMicroseconds(event.claimTakenAt);
+  if (issued === null || expires === null || claimed === null || claimed > issued
+    || expires - issued !== BigInt(event.experiment.lifetimeSec) * 1000000n)
+    ctx.addIssue({ code: 'custom', path: ['issuedAt'], message: 'invalid exact database lifetime or custody time' });
+  const snapshot = event.planSnapshot;
+  if (snapshot.workspace_id !== event.scope.workspaceId || snapshot.harness_slug !== event.scope.harnessSlug
+    || snapshot.plan_slug !== event.scope.planSlug || snapshot.version !== event.planRevision
+    || snapshot.content_hash !== event.planContentHash || snapshot.status !== 'draft'
+    || typeof snapshot.content !== 'string' || typeof snapshot.rendered_content !== 'string'
+    || parsePlan(snapshot.rendered_content).frontmatter.status !== 'draft') {
+    ctx.addIssue({ code: 'custom', path: ['planSnapshot'], message: 'inconsistent immutable plan binding' });
+  } else {
+    try {
+      const authored = orderedFeasibilityExperiment(readScopedFeasibilityQuestion(snapshot.rendered_content, event.questionId));
+      if (!isDeepStrictEqual(event.experiment, authored)) throw new Error('selection mismatch');
+    } catch {
+      ctx.addIssue({ code: 'custom', path: ['experiment'], message: 'must match the unresolved immutable authored selection' });
+    }
+  }
 });
 type FeasibilityEvent = z.infer<typeof feasibilityEventSchema>;
 export interface ScopedFeasibilityHistoryRow {
@@ -185,6 +219,7 @@ export function readScopedFeasibilityHistory(rows: ScopedFeasibilityHistoryRow[]
       throw new Error('feasibility_history_scope_or_author_mismatch');
     const key = JSON.stringify([event.workItemId, event.questionId]);
     const prior = latest.get(key);
+    if (prior && event.issuedAt < prior.event.issuedAt) throw new Error('feasibility_history_time_reversed');
     if (event.action === 'grant' && prior?.event.action === 'grant'
       && prior.event.actorId === event.actorId && prior.event.claimTakenAt === event.claimTakenAt
       && event.replacedReceiptId !== prior.receiptId)
@@ -346,6 +381,7 @@ export async function recordScopedFeasibilityAudit(scope: ExecutionStartScope, i
       claimTakenAt, planRevision: request.expectedPlanRevision, planContentHash: row.content_hash,
       planSnapshot: row, repositoryRoot: selection.repositoryRoot, experiment,
       issuedAt: clock.issued_at, expiresAt: clock.expires_at, replacedReceiptId, revokedReceiptId });
+    if (latest && event.issuedAt < latest.event.issuedAt) throw new Error('feasibility_database_clock_reversed');
     const recorded = await recordPlanRevisionInTransaction(tx, { ...scope, identity,
       content: JSON.stringify(event), contentHash: row.content_hash,
       rationale: feasibilityHistoryMarker + request.action });
@@ -353,6 +389,44 @@ export async function recordScopedFeasibilityAudit(scope: ExecutionStartScope, i
     return { ...bindings, usable: request.action === 'grant', receiptId, eventRef: receiptId,
       issuedAt: event.issuedAt, expiresAt: event.expiresAt, replacedReceiptId,
       ...(request.action === 'revoke' ? { revokedReceiptId } : {}) };
+  });
+}
+
+/** Re-read one server-selected held question on every invocation. No cached
+ * positive result or caller receipt overrides the complete immutable history.
+ * Locks end before the tool executes: this is the documented check/use interval. */
+export async function readScopedFeasibilityAuthority(scope: ExecutionStartScope, identity: AgentIdentity,
+  selection: { workItemId: string; questionId: string }, repositoryRoot: string) {
+  const selected = z.object({ workItemId: feasibilityRequestFields.workItemId,
+    questionId: feasibilityRequestFields.questionId }).strict().parse(selection);
+  if (!identity.ownerId || identity.workspaceId !== scope.workspaceId)
+    throw new Error('feasibility_actor_scope_mismatch');
+  return withWorkspace(scope.workspaceId, async tx => {
+    await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(scope.workspaceId, scope.harnessSlug, scope.planSlug));
+    await acquirePlanRevisionAdvisoryLock(tx, scope.workspaceId, scope.harnessSlug, scope.planSlug);
+    const row = await readExecutionSnapshot(tx, scope, true);
+    const claimTakenAt = await readScopedFeasibilityClaim(tx, scope, identity, selected.workItemId, true);
+    const latest = (await readScopedFeasibilityEvents(tx, scope)).get(JSON.stringify([selected.workItemId, selected.questionId]));
+    if (!latest || latest.event.action !== 'grant') throw new Error('feasibility_current_grant_required');
+    const event = latest.event;
+    if (event.actorId !== identity.ownerId || event.claimTakenAt !== claimTakenAt)
+      throw new Error('feasibility_grant_custody_changed');
+    if (!row || !isDeepStrictEqual(row, event.planSnapshot)) throw new Error('feasibility_grant_plan_changed');
+    if (event.repositoryRoot !== repositoryRoot) throw new Error('feasibility_grant_repository_changed');
+    const current = prepareScopedFeasibilityPlan(row, { action: 'grant', ...selected,
+      expectedPlanRevision: event.planRevision }, repositoryRoot);
+    if (!isDeepStrictEqual(event.experiment, {
+      testPaths: current.testPaths, fixturePaths: current.fixturePaths, lifetimeSec: current.lifetimeSec }))
+      throw new Error('feasibility_grant_selection_changed');
+    // Sample after all authority reads, using database rather than JS or
+    // transaction-start time. The expiration endpoint is exclusive.
+    const [clock] = await tx<{ valid: boolean }[]>`
+      WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS instant)
+      SELECT ${event.issuedAt}::timestamptz <= instant AND instant < ${event.expiresAt}::timestamptz AS valid FROM clock`;
+    if (clock?.valid !== true) throw new Error('feasibility_grant_not_current_in_database_time');
+    return { ...current, ...scope, actorId: identity.ownerId, ...selected,
+      receiptId: latest.receiptId, eventRef: latest.receiptId, planRevision: event.planRevision,
+      planContentHash: event.planContentHash, issuedAt: event.issuedAt, expiresAt: event.expiresAt };
   });
 }
 

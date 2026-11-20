@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
@@ -116,7 +118,8 @@ vi.mock('./plan-start-owner-review', async original => {
 });
 
 import { preservePlanExecutionProgress, readExecutionPlanRow, readPlanExecutionStart,
-  recordPlanExecutionStart } from './plan-execution-authority';
+  recordPlanExecutionStart, recordScopedFeasibilityAudit, readScopedFeasibilityAuthority } from './plan-execution-authority';
+import * as executionGuard from './plan-execution-guard';
 import {
   checkExecutionPlan,
   checkPlanExecutionGuard,
@@ -187,7 +190,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (taken_by text,workspace_id text,harness_slug text,source_plan_slug text,status text,
       feature_id text,item_kind text,plan_slug text,plan_line_id text,plan_line_text text,plan_importance text,
       plan_phase text,plan_decision_refs text[],plan_deliverable text,plan_owner_gate_marker text,plan_seq integer,
-      title text,summary text,closed_ts bigint,updated_ts bigint,origin text);
+      title text,summary text,closed_ts bigint,updated_ts bigint,origin text,taken_at timestamptz);
     CREATE TABLE harness_shared.work_item_deps (workspace_id text,dep_type text,blocked_kind text,blocked_ref text,blocker_kind text,blocker_ref text);
     ALTER TABLE harness_shared.plan_audits ADD COLUMN created_by text;
     ALTER TABLE harness_shared.adv_sessions ADD COLUMN launch_parent_owner text;
@@ -247,6 +250,245 @@ beforeEach(async () => {
   await db.sql.unsafe('TRUNCATE harness_shared.owner_directives,harness_shared.report_library,harness_shared.plan_spec_clauses,harness_shared.plan_spec_clause_revisions,harness_shared.plan_items');
   await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id,harness_slug,plan_slug,content,content_hash,status)
     VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},${body},${hashPlanContent(body)},'ready')`;
+});
+
+describe('scoped feasibility issuance (real PG)', () => {
+  const repositoryRoot = realpathSync(fileURLToPath(new URL('../../../../../', import.meta.url)));
+  const selected = 'packages/operator-core/lib/agent-tools/plans/plan-execution-guard.test.ts';
+  const absent = 'packages/operator-core/lib/agent-tools/plans/__fixtures__/scoped-feas-prepared.test.ts';
+  const experiment = { testPaths: [selected, absent],
+    fixturePaths: ['packages/operator-core/lib/agent-tools/plans/__fixtures__/scoped-feas-data.json'], lifetimeSec: 60 };
+  const declaration = () => ({ questions: [{ id: 'Q-6', kind: 'feasibility',
+    question: 'Can the selected transaction preserve ordering?', stopCondition: 'Run exact selected tests once',
+    outcome: 'unresolved', experiment }], findings: [], notApplicable: null });
+  const content = () => body.replace('status: ready', 'status: draft')
+    + '\n## Discovery\n\n```discovery\n' + JSON.stringify(declaration()) + '\n```\n';
+  const request = () => ({ action: 'grant', questionId: 'Q-6', workItemId: 'WI-feas-held', expectedPlanRevision: 7 });
+  const operate = (input: unknown = request(), dryRun = false, actor = identity) =>
+    recordScopedFeasibilityAudit(scope, actor, input, repositoryRoot, dryRun);
+  const grant = async () => {
+    const receipt = await operate();
+    if (!('receiptId' in receipt)) throw new Error('expected persisted grant');
+    return receipt;
+  };
+  const events = () => db.sql<{ seq: number; content_snapshot: string }[]>`
+    SELECT seq,content_snapshot FROM harness_shared.plan_revisions ORDER BY seq`;
+
+  beforeEach(async () => {
+    const draft = content();
+    await db.sql`UPDATE harness_shared.harness_plans SET content=${draft},content_hash=${hashPlanContent(draft)},
+      status='draft',version=7 WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug}
+      AND plan_slug=${scope.planSlug}`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,source_plan_slug,taken_by,taken_at,status)
+      VALUES (${scope.workspaceId},${scope.harnessSlug},'WI-feas-held',${scope.planSlug},${identity.ownerId},
+        '2026-11-20T00:00:00.000001+00:00'::timestamptz,'wip')`;
+  });
+
+
+  const consume = (actor = identity, root = repositoryRoot) => readScopedFeasibilityAuthority(scope, actor,
+    { workItemId: 'WI-feas-held', questionId: 'Q-6' }, root);
+
+  it('consumes the current exact grant with a wrong application clock and no plan/history writes', async () => {
+    const receipt = await grant(), before = await readExecutionPlanRow(scope), stored = await events();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(0);
+    try { await expect(consume()).resolves.toMatchObject({ receiptId: receipt.receiptId, actorId: identity.ownerId,
+      ...scope, planRevision: 7, testPaths: receipt.testPaths, fixturePaths: receipt.fixturePaths }); }
+    finally { clock.mockRestore(); }
+    expect(await readExecutionPlanRow(scope)).toEqual(before);
+    expect(await events()).toEqual(stored);
+  });
+
+  it('reads replacement and revocation afresh on each use without changing an already admitted result', async () => {
+    const first = await grant(), admitted = await consume(), second = await grant();
+    expect(admitted.receiptId).toBe(first.receiptId);
+    expect((await consume()).receiptId).toBe(second.receiptId);
+    await operate({ ...request(), action: 'revoke', receiptId: second.receiptId });
+    await expect(consume()).rejects.toThrow('current_grant_required');
+    expect(admitted.receiptId).toBe(first.receiptId); // check/use gap, never atomic revoke/write fencing
+    const fresh = await grant();
+    expect((await consume()).receiptId).toBe(fresh.receiptId);
+  });
+
+  it('invalidates a grant after same-actor release/reacquisition at the next microsecond', async () => {
+    await grant();
+    await db.sql`UPDATE harness_shared.work_items SET taken_at=taken_at + interval '1 microsecond'`;
+    await expect(consume()).rejects.toThrow('grant_custody_changed');
+    const fresh = await grant();
+    expect((await consume()).receiptId).toBe(fresh.receiptId);
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=NULL`;
+    await expect(consume()).rejects.toThrow('current_linked_custody_required');
+  });
+
+  it('requires fresh issuance after custody moves to another actor', async () => {
+    await grant();
+    const successor = { ...identity, ownerId: 'su-feas-successor' };
+    await expect(consume(successor)).rejects.toThrow('current_linked_custody_required');
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=${successor.ownerId},taken_at=clock_timestamp()`;
+    await expect(consume(successor)).rejects.toThrow('grant_custody_changed');
+    const fresh = await operate(request(), false, successor);
+    if (!('receiptId' in fresh)) throw new Error('expected successor grant');
+    expect((await consume(successor)).receiptId).toBe(fresh.receiptId);
+    await expect(consume()).rejects.toThrow('current_linked_custody_required');
+  });
+
+  it.each(['status', 'version', 'content', 'template', 'timestamp', 'question'])(
+    'rechecks the complete plan snapshot after %s changes', async defect => {
+      await grant();
+      if (defect === 'status') await db.sql`UPDATE harness_shared.harness_plans SET status='ready'`;
+      if (defect === 'version') await db.sql`UPDATE harness_shared.harness_plans SET version=version+1`;
+      if (defect === 'content') await db.sql`UPDATE harness_shared.harness_plans SET content=content || E'\\nUnrelated finding'`;
+      if (defect === 'template') await db.sql`UPDATE harness_shared.harness_plans SET template_data='{"new":true}'::jsonb`;
+      if (defect === 'timestamp') await db.sql`UPDATE harness_shared.harness_plans SET created_at=created_at + interval '1 microsecond'`;
+      if (defect === 'question') await db.sql`UPDATE harness_shared.harness_plans
+        SET content=replace(content,'"outcome":"unresolved"','"outcome":"answered"')`;
+      await expect(consume()).rejects.toThrow('grant_plan_changed');
+    });
+
+  it('rejects a different physical root and a wrong selected question or actor scope', async () => {
+    await grant();
+    await expect(consume(identity, repositoryRoot + '/.')).rejects.toThrow('grant_repository_changed');
+    await expect(readScopedFeasibilityAuthority(scope, identity,
+      { workItemId: 'WI-feas-held', questionId: 'Q-other' }, repositoryRoot)).rejects.toThrow('current_grant_required');
+    await expect(consume({ ...identity, workspaceId: 'other' })).rejects.toThrow('actor_scope_mismatch');
+  });
+
+  it.each(['expired', 'future'])('uses current database time to deny a semantically valid %s grant', async defect => {
+    await grant();
+    const seconds = defect === 'expired' ? -61 : 60;
+    await db.sql`WITH clock AS MATERIALIZED (SELECT clock_timestamp() + ${seconds} * interval '1 second' AS issued)
+      UPDATE harness_shared.plan_revisions SET content_snapshot=
+        (content_snapshot::jsonb || jsonb_build_object(
+          'issuedAt',to_char(issued AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00',
+          'expiresAt',to_char((issued + interval '60 seconds') AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00'))::text
+      FROM clock`;
+    await expect(consume()).rejects.toThrow('not_current_in_database_time');
+  });
+
+  it.each(['malformed', 'unknown-schema', 'invalid-schema'])('never falls back across newer %s authority', async defect => {
+    await grant();
+    const snapshot = defect === 'malformed' ? '{' : JSON.stringify({
+      schema: defect === 'unknown-schema' ? 'scoped-feasibility-v2' : 'scoped-feasibility-v1' });
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,rationale,author_kind,author_id,created_at)
+      VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},2,${hashPlanContent(content())},${snapshot},
+        'plans:audit scoped-feasibility:grant','agent',${identity.ownerId},0)`;
+    await expect(consume()).rejects.toThrow('feasibility_history_');
+  });
+
+  it('issues an immutable server-derived grant without changing or finalizing the unresolved draft', async () => {
+    const before = await readExecutionPlanRow(scope), receipt = await grant();
+    expect(receipt).toMatchObject({ action: 'grant', usable: true, planRevision: 7,
+      actorId: identity.ownerId, ...scope, repositoryRoot, replacedReceiptId: null,
+      testPaths: [...experiment.testPaths].sort(), fixturePaths: experiment.fixturePaths });
+    expect(receipt.eventRef).toBe(receipt.receiptId);
+    const stored = await events();
+    expect(stored).toHaveLength(1);
+    expect(JSON.parse(stored[0]!.content_snapshot)).toMatchObject({ schema: 'scoped-feasibility-v1',
+      claimTakenAt: '2026-11-20T00:00:00.000001+00:00', planSnapshot: before,
+      issuedAt: receipt.issuedAt, expiresAt: receipt.expiresAt });
+    expect(await readExecutionPlanRow(scope)).toEqual(before);
+    expect(await db.sql`SELECT * FROM harness_shared.plan_audits`).toHaveLength(0);
+  });
+
+  it('derives issuance and exact lifetime from database time despite a wrong application clock', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(0);
+    let receipt: Awaited<ReturnType<typeof grant>>;
+    try { receipt = await grant(); } finally { clock.mockRestore(); }
+    const [observed] = await db.sql<{ current: boolean; lifetime: number }[]>`
+      SELECT ${receipt.issuedAt}::timestamptz <= clock_timestamp()
+        AND ${receipt.issuedAt}::timestamptz > clock_timestamp() - interval '1 minute' AS current,
+        EXTRACT(epoch FROM (${receipt.expiresAt}::timestamptz - ${receipt.issuedAt}::timestamptz))::int AS lifetime`;
+    expect(observed).toEqual({ current: true, lifetime: experiment.lifetimeSec });
+  });
+
+  it('keeps dry-run grant replacement and revoke out of immutable authority history', async () => {
+    const preview = await operate(request(), true);
+    expect(preview).toMatchObject({ usable: false, dryRun: true });
+    expect(preview).not.toHaveProperty('receiptId');
+    expect(await events()).toHaveLength(0);
+    const receipt = await grant(), before = await events();
+    await expect(operate(request(), true)).resolves.toMatchObject({ usable: false, dryRun: true });
+    const revoke = await operate({ ...request(), action: 'revoke', receiptId: receipt.receiptId }, true);
+    expect(revoke).not.toHaveProperty('receiptId');
+    expect(await events()).toEqual(before);
+  });
+
+  it('appends exact replacement and revoke identities without reviving a superseded grant', async () => {
+    const first = await grant(), second = await grant();
+    expect(second.replacedReceiptId).toBe(first.receiptId);
+    expect(second.receiptId).not.toBe(first.receiptId);
+    await expect(operate({ ...request(), action: 'revoke', receiptId: first.receiptId }))
+      .rejects.toThrow('revoke_current_receipt_required');
+    const revoked = await operate({ ...request(), action: 'revoke', receiptId: second.receiptId });
+    expect(revoked).toMatchObject({ action: 'revoke', usable: false, revokedReceiptId: second.receiptId });
+    await expect(operate({ ...request(), action: 'revoke', receiptId: second.receiptId }))
+      .rejects.toThrow('revoke_current_receipt_required');
+    expect(await events()).toHaveLength(3);
+    expect((await grant()).replacedReceiptId).toBeNull();
+  });
+
+  it('requires fresh custody for another actor and cannot revoke the previous generation', async () => {
+    const first = await grant(), successor = { ...identity, ownerId: 'su-feas-successor' };
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=${successor.ownerId},taken_at=clock_timestamp()`;
+    await expect(operate({ ...request(), action: 'revoke', receiptId: first.receiptId }, false, successor))
+      .rejects.toThrow('revoke_current_receipt_required');
+    await expect(operate(request(), false, successor)).resolves.toMatchObject({
+      usable: true, actorId: successor.ownerId, replacedReceiptId: null });
+    await expect(operate()).rejects.toThrow('current_linked_custody_required');
+  });
+
+  it('fences the full plan snapshot after route preparation even without a version or body change', async () => {
+    connection.beforeFinalPlanLock = async () => {
+      await db.sql`UPDATE harness_shared.harness_plans SET template_data='{"changed":true}'::jsonb`;
+    };
+    await expect(operate()).rejects.toThrow('plan_changed_before_issuance');
+    expect(await events()).toHaveLength(0);
+  });
+
+  it('fences same-actor release and reacquisition by the exact microsecond claim generation', async () => {
+    connection.beforeFinalPlanLock = async () => {
+      await db.sql`UPDATE harness_shared.work_items SET taken_at=taken_at + interval '1 microsecond'`;
+    };
+    await expect(operate()).rejects.toThrow('claim_changed_before_issuance');
+    expect(await events()).toHaveLength(0);
+  });
+
+  it('finishes slow route preparation outside the write transaction', async () => {
+    connection.idleTimeout = '100ms';
+    const actual = executionGuard.readScopedFeasibilityTestRoutes;
+    const routes = vi.spyOn(executionGuard, 'readScopedFeasibilityTestRoutes').mockImplementation(async (...args) => {
+      await db.sql`SELECT pg_sleep(0.2)`;
+      return actual(...args);
+    });
+    try { await expect(operate()).resolves.toMatchObject({ usable: true }); }
+    finally { routes.mockRestore(); }
+    expect(await events()).toHaveLength(1);
+  });
+
+  it.each(['ready', 'resolved', 'revision', 'custody', 'scope'])('denies %s before appending authority', async defect => {
+    if (defect === 'ready') await db.sql`UPDATE harness_shared.harness_plans SET status='ready'`;
+    if (defect === 'resolved') {
+      const resolved = content().replace('"outcome":"unresolved"', '"outcome":"answered"');
+      await db.sql`UPDATE harness_shared.harness_plans SET content=${resolved},content_hash=${hashPlanContent(resolved)}`;
+    }
+    if (defect === 'custody') await db.sql`UPDATE harness_shared.work_items SET taken_by=NULL,taken_at=NULL`;
+    const input = { ...request(), ...(defect === 'revision' ? { expectedPlanRevision: 8 } : {}) };
+    await expect(operate(input, false, defect === 'scope' ? { ...identity, workspaceId: 'foreign' } : identity)).rejects.toThrow();
+    expect(await events()).toHaveLength(0);
+  });
+
+  it.each(['malformed', 'unknown-schema', 'invalid-schema'])('denies newer %s history rather than using an old grant', async defect => {
+    await grant();
+    const snapshot = defect === 'malformed' ? '{' : JSON.stringify({
+      schema: defect === 'unknown-schema' ? 'scoped-feasibility-v2' : 'scoped-feasibility-v1' });
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,rationale,author_kind,author_id,created_at)
+      VALUES (${scope.workspaceId},${scope.harnessSlug},${scope.planSlug},2,${hashPlanContent(content())},${snapshot},
+        'plans:audit scoped-feasibility:grant','agent',${identity.ownerId},0)`;
+    await expect(operate()).rejects.toThrow('feasibility_history_');
+    expect(await events()).toHaveLength(2);
+  });
 });
 
 describe('canonical successful-start revision authority (real PG)', () => {

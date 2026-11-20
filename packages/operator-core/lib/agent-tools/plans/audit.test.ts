@@ -58,6 +58,10 @@ vi.mock('../../plan-audits', async (orig) => {
 vi.mock('./activation-audit-repair', () => ({
   ensureActivationAuditRepairFiling: vi.fn(),
 }));
+vi.mock('./plan-execution-authority', async (original) => ({
+  ...(await original<typeof import('./plan-execution-authority')>()),
+  recordScopedFeasibilityAudit: vi.fn(),
+}));
 // These writer fixtures use the conventional verification profile, without a live pin store.
 vi.mock('../../plan-types/pins', async (orig) => ({
   ...(await orig<typeof import('../../plan-types/pins')>()),
@@ -148,6 +152,7 @@ import { listScorecards } from '../../scorecards';
 import { SPEC_QUALITY_RUBRIC_REF, specQualitySubjectRef } from './spec-quality';
 import type { PlanClassRubricRef } from './spec-test-adequacy';
 import tool, { auditAbortCompletionReceipt } from './audit';
+import { recordScopedFeasibilityAudit } from './plan-execution-authority';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
 const mockResolveHome = vi.mocked(resolvePlanItemHomeHarness);
@@ -169,13 +174,17 @@ const mockEmitPlanEvent = vi.mocked(emitPlanEventForCaller);
 const mockReuseResolvers = vi.mocked(defaultReuseReferenceResolvers);
 const mockAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const mockListScorecards = vi.mocked(listScorecards);
+const mockRecordFeasibility = vi.mocked(recordScopedFeasibilityAudit);
 
 function projectedAuditOperation() {
   // The strict-client inputSchema merges singleton and universal batch fields.
   // The registry also exposes the exact business operation without that envelope.
   const schema = lookupByMcpName('plans:audit')?.operationInputSchema;
   expect(schema).toBeDefined();
-  return schema;
+  // Ordinary audit is now one arm of the strict feasibility/ordinary union.
+  // Keep these assertions on that arm instead of losing its nested contracts.
+  const union = schema as { anyOf?: Array<{ properties?: { items?: unknown } }> };
+  return union.anyOf?.find(branch => branch.properties?.items) ?? schema;
 }
 
 function priorActivationAudit(activation: NonNullable<PlanAudit['activation']>): PlanAudit {
@@ -455,6 +464,130 @@ describe('plans:audit abort completion receipts', () => {
       .toMatchObject({ status: 'recovery-incomplete' });
     expect(auditAbortCompletionReceipt(completionArgs, result(completion), { ...attempt, toolName: 'other:tool' }))
       .toMatchObject({ status: 'recovery-incomplete' });
+  });
+});
+
+describe('plans:audit scoped feasibility door', () => {
+  const grant = { slug: 'draft', harness: 'papercusp', phase: 'discovery' as const,
+    feasibility: { action: 'grant' as const, questionId: 'Q-6', workItemId: 'WI-held', expectedPlanRevision: 9 } };
+  const receiptId = 'scoped-feasibility-v1:' + JSON.stringify(['test-workspace', 'papercusp', 'draft', 12]);
+  const bindings = { workspaceId: 'test-workspace', harnessSlug: 'papercusp', planSlug: 'draft',
+    actorId: 'su-auditor', workItemId: 'WI-held', questionId: 'Q-6', planRevision: 9,
+    planContentHash: 'b'.repeat(64), repositoryRoot: '/registered/repo',
+    testPaths: ['lib/example.test.ts'], fixturePaths: [], issuedAt: '2026-11-20T00:00:00.000000+00:00',
+    expiresAt: '2026-11-20T00:01:00.000000+00:00', replacedReceiptId: null };
+  const stored = { ...bindings, action: 'grant' as const, usable: true, receiptId, eventRef: receiptId };
+  const payload = (feasibility: unknown, extra: Record<string, unknown> = {}) =>
+    ({ ok: true, slug: 'draft', harness: 'papercusp', phase: 'discovery', feasibility, ...extra });
+  const recover = (input: unknown, output: unknown) => auditAbortCompletionReceipt(input,
+    { content: [{ type: 'text', text: JSON.stringify(output) }] }, { callId: 'feas-attempt', toolName: 'plans:audit' });
+
+  beforeEach(() => {
+    mockContext.mockResolvedValue({ repoRoot: '/registered/repo', rootSource: 'registry', deps: {} as never });
+    mockRecordFeasibility.mockResolvedValue(stored);
+  });
+
+  it.each(['grant', 'revoke', 'preview'] as const)('routes %s through the registered root without Discovery finalization', async action => {
+    const input = action === 'revoke' ? { ...grant, feasibility: { ...grant.feasibility, action, receiptId } }
+      : { ...grant, ...(action === 'preview' ? { dryRun: true } : {}) };
+    const expected = action === 'preview' ? { ...bindings, action: 'grant', usable: false, dryRun: true }
+      : action === 'revoke' ? { ...stored, action, usable: false, revokedReceiptId: receiptId } : stored;
+    mockRecordFeasibility.mockResolvedValueOnce(expected as never);
+    const parsed = tool.args.parse(input);
+    const output = await tool.handler(parsed, ctx);
+    expect(output).toMatchObject({ data: payload(expected, action === 'preview' ? { dryRun: true, preview: true } : {}) });
+    expect(mockContext).toHaveBeenCalledWith('papercusp');
+    expect(mockRecordFeasibility).toHaveBeenCalledExactlyOnceWith(
+      { workspaceId: 'test-workspace', harnessSlug: 'papercusp', planSlug: 'draft' },
+      { ownerId: 'su-auditor' }, input.feasibility, '/registered/repo', action === 'preview');
+    for (const effect of [mockRecordDiscovery, mockRecordActivation, mockRecord, mockSetSpecClause, mockEmitPlanEvent])
+      expect(effect).not.toHaveBeenCalled();
+    expect(recover(input, 'data' in output ? output.data : output)).toMatchObject({ status: action === 'preview' ? 'not-recorded' : 'recorded' });
+  });
+
+  it.each([null, { kind: 'citation_unresolvable', citations: [] },
+    { repoRoot: '/release', rootSource: 'canonical-repo', deps: {} },
+    { repoRoot: '/sibling', rootSource: 'hive-checkout', deps: {} }])('refuses an unavailable or fallback root (%j)', async root => {
+    mockContext.mockResolvedValueOnce(root as never);
+    const output = await tool.handler(tool.args.parse(grant), Object.assign({}, ctx, { projectDir: '/caller/root' }) as never);
+    expect(output).toMatchObject({ data: { ok: false, error: 'feasibility_harness_root_unavailable' } });
+    expect(mockRecordFeasibility).not.toHaveBeenCalled();
+    expect(mockRecordDiscovery).not.toHaveBeenCalled();
+  });
+
+  it('does not guess a root when its server resolver fails', async () => {
+    mockContext.mockRejectedValueOnce(new Error('registry offline'));
+    await expect(tool.handler(tool.args.parse(grant), ctx)).rejects.toThrow('registry offline');
+    expect(mockRecordFeasibility).not.toHaveBeenCalled();
+    expect(mockRecordDiscovery).not.toHaveBeenCalled();
+  });
+
+  it('propagates the writer refusal without finalizing ordinary Discovery', async () => {
+    mockRecordFeasibility.mockRejectedValueOnce(new Error('feasibility_current_linked_custody_required'));
+    await expect(tool.handler(tool.args.parse(grant), ctx)).rejects.toThrow('feasibility_current_linked_custody_required');
+    expect(mockRecordDiscovery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { phase: undefined }, { phase: 'activation' }, { phase: 'completion', items: [{ itemId: 'P-001', verdict: 'partial' }] },
+    { phase: 'shaping' }, { summary: 'finalize instead' }, { items: [] }, { findings: [] }, { sourceRanges: [] },
+    { mappings: [] }, { itemProvenance: [] }, { classRef: 'plan-class-bugfix' }, { proposeCitations: true },
+    { auditedSha: '1234567' }, { surprise: true }, { dryRun: 'true' }, { confirm: true },
+    { feasibility: null }, { feasibility: {} }, { feasibility: { ...grant.feasibility, action: 'unknown' } },
+    { feasibility: { ...grant.feasibility, receiptId } },
+    { feasibility: { ...grant.feasibility, action: 'revoke' } },
+    { feasibility: { ...grant.feasibility, expectedPlanRevision: 1.5 } },
+    { feasibility: { ...grant.feasibility, repositoryRoot: '/caller' } },
+    { feasibility: { ...grant.feasibility, testPaths: ['elsewhere.test.ts'] } },
+    { feasibility: { ...grant.feasibility, issuedAt: 'caller clock' } },
+  ])('rejects the complete invalid request without ordinary-schema fallthrough (%j)', change => {
+    expect(tool.args.safeParse({ ...grant, ...change }).success).toBe(false);
+  });
+
+  it('publishes both audit operations with a required strict feasibility discriminant', () => {
+    const schema = lookupByMcpName('plans:audit')?.operationInputSchema as { anyOf?: Array<{
+      properties?: { feasibility?: unknown; phase?: { const?: string } }; required?: string[]; additionalProperties?: boolean;
+    }> };
+    expect(schema.anyOf).toEqual(expect.arrayContaining([expect.objectContaining({
+      properties: expect.objectContaining({ phase: expect.objectContaining({ const: 'discovery' }) }),
+      required: expect.arrayContaining(['feasibility', 'phase']), additionalProperties: false,
+    })]));
+    expect(tool.args.safeParse({ slug: 'draft', phase: 'discovery' }).success).toBe(true);
+  });
+
+  it('recovers exact persisted feasibility identity without an ordinary auditSeq', () => {
+    expect(recover(grant, payload(stored))).toMatchObject({ status: 'recorded',
+      effectRef: `plan-feasibility:feas-attempt:${receiptId}`,
+      diagnostics: { action: 'grant', receiptId, eventRef: receiptId } });
+    expect(auditAbortCompletionReceipt(grant, { content: [{ type: 'text', text: JSON.stringify(payload(stored)) }] },
+      { callId: 'feas-attempt', toolName: 'plans:audit' }))
+      .toMatchObject({ status: 'recorded' });
+  });
+
+  it.each([
+    { receiptId: undefined }, { eventRef: 'other' }, { receiptId: 'scoped-feasibility-v2:unknown', eventRef: 'scoped-feasibility-v2:unknown' },
+    { receiptId: 'scoped-feasibility-v1:broken', eventRef: 'scoped-feasibility-v1:broken' },
+    { receiptId: 'scoped-feasibility-v1:["test-workspace","papercusp","draft",0]', eventRef: 'scoped-feasibility-v1:["test-workspace","papercusp","draft",0]' },
+    { workspaceId: 'elsewhere' }, { harnessSlug: 'sibling' }, { planSlug: 'other' },
+    { action: 'revoke' }, { usable: false }, { questionId: 'Q-7' }, { workItemId: 'WI-other' },
+    { planRevision: 10 }, { dryRun: true },
+  ])('preserves uncertainty for incomplete or mismatched feasibility events (%j)', change => {
+    expect(recover(grant, payload({ ...stored, ...change }))).toMatchObject({ status: 'recovery-incomplete' });
+  });
+
+  it('requires the exact revoked receipt and proves previews contain no persisted identity', () => {
+    const revoke = { ...grant, feasibility: { ...grant.feasibility, action: 'revoke', receiptId: 'prior-receipt' } };
+    const revoked = { ...stored, action: 'revoke', usable: false, revokedReceiptId: 'prior-receipt' };
+    expect(recover(revoke, payload(revoked))).toMatchObject({ status: 'recorded' });
+    expect(recover(revoke, payload({ ...revoked, revokedReceiptId: 'other-receipt' }))).toMatchObject({ status: 'recovery-incomplete' });
+    const preview = { ...bindings, action: 'grant', usable: false, dryRun: true };
+    expect(recover({ ...grant, dryRun: true }, payload(preview, { dryRun: true, preview: true })))
+      .toMatchObject({ status: 'not-recorded' });
+    for (const change of [{ receiptId }, { eventRef: receiptId }, { usable: true }, { dryRun: false }])
+      expect(recover({ ...grant, dryRun: true }, payload({ ...preview, ...change }, { dryRun: true, preview: true })))
+        .toMatchObject({ status: 'recovery-incomplete' });
+    for (const change of [{ auditSeq: 1 }, { slug: 'other' }, { phase: 'completion' }, { ok: false }, { preview: true }])
+      expect(recover(grant, payload(stored, change))).toMatchObject({ status: 'recovery-incomplete' });
   });
 });
 

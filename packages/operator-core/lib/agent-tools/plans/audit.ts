@@ -103,6 +103,7 @@ import { resolveActivationClassRef } from './activation-class-ref';
 import { readPlanActivationReadiness, unavailableActivationReadiness } from './get-activation-readiness';
 import type { AutoStartOutcome } from './auto-start-after-audit';
 import { discoveryWorkflow, previewProductShaping } from './product-shaping';
+import { recordScopedFeasibilityAudit, scopedFeasibilityAuditSchema } from './plan-execution-authority';
 import {
   checkLibraryDeclarations,
   evaluateActivationDeclarations,
@@ -244,9 +245,12 @@ const itemProvenanceSchema = z.discriminatedUnion('kind', [
 });
 
 // RSR-P-008-A: the activation rules are reported alongside any shape defect.
-const argsSchema = refineEvenWithShapeIssues(z.object({
+const ordinaryAuditArgsSchema = refineEvenWithShapeIssues(z.object({
   slug: z.string().min(1).describe('The plan being audited.'),
   harness: harnessArg,
+  // Never let a malformed feasibility request fall through an object schema
+  // which otherwise strips unknown keys before ordinary Discovery finalization.
+  feasibility: z.never().optional(),
   phase: z.enum(['completion', 'activation', 'shaping', 'discovery']).default('completion').describe(
     '`shaping` previews the brief. `discovery` derives and finalizes its findings without activation; only slug and phase are required. `completion` audits code; `activation` records source coverage.',
   ),
@@ -308,9 +312,10 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
       }
     }
   }
-}).meta({
+});
+const argsSchema = z.union([scopedFeasibilityAuditSchema, ordinaryAuditArgsSchema]).meta({
   'x-papercusp-call-constraint':
-    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef derived if omitted; items, findings, auditedSha, proposeCitations forbidden. phase=completion (including omitted phase) => items required unless proposeCitations=true (read-only); classRef ignored; sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
+    'feasibility => explicit discovery phase and strict grant/revoke envelope; no ordinary audit fields or caller authority overrides. Without feasibility: phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef derived if omitted; items, findings, auditedSha, proposeCitations forbidden. phase=completion (including omitted phase) => items required unless proposeCitations=true (read-only); classRef ignored; sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
 });
 
 interface Problem {
@@ -384,6 +389,42 @@ export function auditAbortCompletionReceipt(
   const input = asRecord(args);
   const payload = completedResultPayload(result);
   if (!input || !payload || payload.ok !== true) return incomplete();
+
+  if (input.feasibility !== undefined) {
+    const parsed = scopedFeasibilityAuditSchema.safeParse(input);
+    const operation = asRecord(payload.feasibility);
+    if (!parsed.success || !operation || payload.slug !== parsed.data.slug || payload.phase !== 'discovery'
+      || typeof payload.harness !== 'string' || !payload.harness.trim()
+      || (parsed.data.harness !== undefined && parsed.data.harness !== payload.harness)
+      || operation.harnessSlug !== payload.harness || operation.planSlug !== payload.slug
+      || typeof operation.workspaceId !== 'string' || !operation.workspaceId.trim()
+      || operation.action !== parsed.data.feasibility.action
+      || operation.questionId !== parsed.data.feasibility.questionId
+      || operation.workItemId !== parsed.data.feasibility.workItemId
+      || operation.planRevision !== parsed.data.feasibility.expectedPlanRevision
+      || payload.auditSeq != null) return incomplete();
+    if (parsed.data.dryRun) {
+      return payload.dryRun === true && payload.preview === true && operation.dryRun === true
+        && operation.usable === false && operation.receiptId === undefined && operation.eventRef === undefined
+        ? { status: 'not-recorded', reason: 'plans:audit validated feasibility without appending an authority event' }
+        : incomplete();
+    }
+    if (payload.dryRun === true || payload.preview === true || operation.dryRun === true
+      || operation.usable !== (operation.action === 'grant')
+      || typeof operation.receiptId !== 'string' || operation.eventRef !== operation.receiptId
+      || !operation.receiptId.startsWith('scoped-feasibility-v1:')
+      || (parsed.data.feasibility.action === 'revoke'
+        && operation.revokedReceiptId !== parsed.data.feasibility.receiptId)) return incomplete();
+    let identity: unknown;
+    try { identity = JSON.parse(operation.receiptId.slice('scoped-feasibility-v1:'.length)); } catch { return incomplete(); }
+    if (!Array.isArray(identity) || identity.length !== 4 || identity[0] !== operation.workspaceId
+      || identity[1] !== payload.harness || identity[2] !== payload.slug
+      || !Number.isSafeInteger(identity[3]) || identity[3] < 1
+      || operation.receiptId !== 'scoped-feasibility-v1:' + JSON.stringify(identity)) return incomplete();
+    return { status: 'recorded', effectRef: `plan-feasibility:${context.callId}:${operation.receiptId}`,
+      diagnostics: { harness: payload.harness, slug: payload.slug, phase: 'discovery',
+        action: operation.action, receiptId: operation.receiptId, eventRef: operation.eventRef } };
+  }
 
   // Only successful, explicitly read-only previews prove that no audit was appended.
   // A failed envelope can follow an audit write, so never infer no-write from failure.
@@ -462,6 +503,7 @@ export default defineTool({
       ok: z.boolean().optional(),
       phase: z.enum(['activation', 'completion', 'shaping', 'discovery']).optional(),
       discovery: z.unknown().optional(),
+      feasibility: z.unknown().optional(),
       readiness: z.unknown().optional(),
       reused: z.boolean().optional(),
       productShaping: z.unknown().optional(),
@@ -534,6 +576,21 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const dryRun = args.dryRun === true;
     const attempt = async () => {
+
+    if (args.feasibility !== undefined) {
+      // Select only the registered harness tree. Neither a caller's cwd nor the
+      // operator's release/process directory is a feasibility authority source.
+      if (!harnessSlug) return { data: { ok: false, error: 'feasibility_harness_root_required',
+        slug: args.slug, harness: harnessSlug, phase: 'discovery' as const } };
+      const root = await repoCitationContextForHarness(harnessSlug);
+      if (!root || isCitationContextFailure(root) || root.rootSource !== 'registry')
+        return { data: { ok: false, error: 'feasibility_harness_root_unavailable',
+          slug: args.slug, harness: harnessSlug, phase: 'discovery' as const } };
+      const feasibility = await recordScopedFeasibilityAudit({ workspaceId: sctx.workspaceId ?? activeWorkspaceId(),
+        harnessSlug, planSlug: args.slug }, resolveAgentIdentity(sctx), args.feasibility, root.repoRoot, dryRun);
+      return { data: { ok: true, slug: args.slug, harness: harnessSlug, phase: 'discovery' as const, feasibility,
+        ...(dryRun ? { dryRun: true, preview: true } : {}) } };
+    }
 
     if (args.phase === 'discovery') {
       const identity = resolveAgentIdentity(sctx);

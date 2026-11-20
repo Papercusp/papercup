@@ -13,14 +13,18 @@ import { readScopedFeasibilityHistory, type ScopedFeasibilityHistoryRow } from '
 describe('scoped feasibility immutable history', () => {
   const scope = { workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'draft' };
   const key = JSON.stringify(['WI-held', 'Q-6']);
-  const grant = (changes: Record<string, unknown> = {}) => ({
-    schema: 'scoped-feasibility-v1', action: 'grant', scope, actorId: 'actor', workItemId: 'WI-held',
-    questionId: 'Q-6', claimTakenAt: '2026-11-20T00:00:00.000001+00:00', planRevision: 7,
-    planContentHash: 'hash', planSnapshot: { content: 'draft', content_hash: 'hash', version: 7 },
-    repositoryRoot: '/private/repository', experiment: feasibilitySelection(),
-    issuedAt: '2026-11-20T00:00:00.000002+00:00', expiresAt: '2026-11-20T00:01:00.000002+00:00',
-    replacedReceiptId: null, revokedReceiptId: null, ...changes,
-  });
+  const grant = (changes: Record<string, unknown> = {}) => {
+    const content = '---\nstatus: draft\n---\n' + feasibilityContent(feasibilityDiscovery());
+    return {
+      schema: 'scoped-feasibility-v1', action: 'grant', scope, actorId: 'actor', workItemId: 'WI-held',
+      questionId: 'Q-6', claimTakenAt: '2026-11-20T00:00:00.000001+00:00', planRevision: 7,
+      planContentHash: 'hash', planSnapshot: { content, rendered_content: content, content_hash: 'hash', version: 7,
+        workspace_id: scope.workspaceId, harness_slug: scope.harnessSlug, plan_slug: scope.planSlug, status: 'draft' },
+      repositoryRoot: '/private/repository', experiment: feasibilitySelection(),
+      issuedAt: '2026-11-20T00:00:00.000002+00:00', expiresAt: '2026-11-20T00:01:00.000002+00:00',
+      replacedReceiptId: null, revokedReceiptId: null, ...changes,
+    };
+  };
   const row = (seq: number, value = grant(), changes: Partial<ScopedFeasibilityHistoryRow> = {}): ScopedFeasibilityHistoryRow => ({
     seq, content_snapshot: JSON.stringify(value), content_hash: 'hash',
     rationale: 'plans:audit scoped-feasibility:' + value.action, author_id: value.actorId, ...changes,
@@ -52,7 +56,8 @@ describe('scoped feasibility immutable history', () => {
   });
   it('keeps fresh claim custody separate from a previous custodian', () => {
     const first = row(1), firstId = latest([first]).receiptId;
-    const fresh = row(2, grant({ actorId: 'successor', claimTakenAt: '2026-11-20T00:02:00.000001+00:00' }));
+    const fresh = row(2, grant({ actorId: 'successor', claimTakenAt: '2026-11-20T00:02:00.000001+00:00',
+      issuedAt: '2026-11-20T00:02:00.000002+00:00', expiresAt: '2026-11-20T00:03:00.000002+00:00' }));
     expect(latest([first, fresh]).event.actorId).toBe('successor');
     expect(() => latest([first, row(2, grant({ action: 'revoke', actorId: 'successor', revokedReceiptId: firstId }))]))
       .toThrow('revoke_mismatch');
@@ -74,11 +79,40 @@ describe('scoped feasibility immutable history', () => {
     ['author', {}, { author_id: 'foreign' }],
     ['hash', {}, { content_hash: 'foreign' }],
   ])('denies mismatched immutable %s', (_label, changes, rowChanges) => {
-    expect(() => latest([row(1, grant(changes), rowChanges)])).toThrow('scope_or_author_mismatch');
+    const event = grant(changes);
+    if (_label === 'scope') event.planSnapshot.workspace_id = 'foreign';
+    expect(() => latest([row(1, event, rowChanges)])).toThrow('scope_or_author_mismatch');
   });
   it.each([[1, 1], [2, 1], [1, Number.NaN]])('denies ambiguous history ordering %j', (...seqs) => {
     expect(() => latest(seqs.map(seq => row(seq)))).toThrow('ambiguous_order');
   });
+
+  it.each([
+    { issuedAt: 'invalid' }, { expiresAt: '2026-11-20T00:01:00.000003+00:00' },
+    { issuedAt: '2026-11-20T00:00:00.000+00:00' }, { claimTakenAt: '2026-11-20T00:00:00.000003+00:00' },
+    { issuedAt: '2026-02-30T00:00:00.000002+00:00' }, { expiresAt: '2026-11-20T00:00:00.000002+00:00' },
+    { expiresAt: '2026-11-19T23:59:59.999999+00:00' },
+  ])('rejects noncanonical or inconsistent exact receipt time %j', change => {
+    expect(() => latest([row(1, grant(change))])).toThrow('invalid_event');
+  });
+  it.each(['scope', 'revision', 'hash', 'status', 'question', 'selection'])(
+    'rejects internally inconsistent immutable %s bindings', defect => {
+      const event = grant();
+      if (defect === 'scope') event.planSnapshot.workspace_id = 'foreign';
+      if (defect === 'revision') event.planSnapshot.version++;
+      if (defect === 'hash') event.planSnapshot.content_hash = 'foreign';
+      if (defect === 'status') event.planSnapshot.status = 'ready';
+      if (defect === 'question') event.questionId = 'Q-other';
+      if (defect === 'selection') event.experiment = { ...event.experiment, fixturePaths: [] };
+      expect(() => latest([row(1, event)])).toThrow('invalid_event');
+    });
+  it('rejects backwards event time despite a valid exact replacement chain', () => {
+    const first = row(1, grant({ issuedAt: '2026-11-20T00:00:00.000003+00:00',
+      expiresAt: '2026-11-20T00:01:00.000003+00:00' }));
+    expect(() => latest([first, row(2, grant({ replacedReceiptId: latest([first]).receiptId }))]))
+      .toThrow('history_time_reversed');
+  });
+
   it('checks a decisive revoke after a large complete ordinary-history population', () => {
     const first = row(1), firstId = latest([first]).receiptId;
     const ordinary = Array.from({ length: 1000 }, (_, i) =>
