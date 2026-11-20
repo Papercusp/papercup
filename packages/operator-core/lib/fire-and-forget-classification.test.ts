@@ -662,11 +662,11 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
       'function readOnly() { return 1; }',
     ];
     const c = scan(`${(reverse ? declarations.reverse() : declarations).join('\n')}\nrun();`);
-    const roots = ['<unresolved-recursive-return>', ...(seed === 'notifyOwner' ? ['notifyOwner'] : [])];
+    const roots = ['<unresolved-recursive-return>', 'notifyOwner'];
     expect(c.gaps).toEqual([]);
-    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual(seed === 'notifyOwner' ? [
       ['run ( )', roots], ['composed . value ( )', roots],
-    ]);
+    ] : []);
   });
 
   it.each(['false', 'null', '0'])('preserves a known non-callable factory argument through rest forwarding: %s', value => {
@@ -768,6 +768,29 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['bus . run ( )', ['notifyOwner']]]);
   });
 
+  it.each([16, 17, 18].flatMap(depth => [false, true].map(reverse => [depth, reverse] as const)))(
+    'joins shared spread alternatives without losing a late notice (depth=%s, reverse=%s)', (depth, reverse) => {
+      // Seventeen small layers used to expand duplicate targets past V8's
+      // function-argument limit. The notice is after the quiet alternative.
+      const alternatives = ['if (condition) return { run: readOnly };', 'return { run: notifyOwner };'];
+      const layers = Array.from({ length: depth }, (_, i) => `
+        function make${i}() { if (condition) return { ...layer${i} }; return { ...layer${i} }; }
+        const layer${i + 1} = make${i}();
+      `).join('\n');
+      const c = scan(`
+        function readOnly() {}
+        function start() { ${(reverse ? alternatives.reverse() : alternatives).join(' ')} }
+        const layer0 = start();
+        ${layers}
+        layer${depth}.run();
+      `);
+      expect(c.gaps).toEqual([]);
+      expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+        [`layer${depth} . run ( )`, ['notifyOwner']],
+      ]);
+    },
+  );
+
   it('does not treat an object spread of a function as a callable alias', () => {
     const c = scan(`const value = { ...notifyOwner }; value();`);
     expect(c.sites).toEqual([]);
@@ -834,6 +857,63 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     `);
     expect(c.gaps).toEqual([]);
     expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['loud . run ( )', ['notifyOwner']]]);
+  });
+
+  it.each(['object', 'callback'].flatMap(shape => [false, true].map(reverse => ({ shape, reverse }))))(
+    'does not invent a notification from a recursive quiet return ($shape, reverse=$reverse)', ({ shape, reverse }) => {
+      const declarations = [
+        'function readOnly() { return 1; }',
+        `function state(value) { if (again) return state(value); return ${shape === 'object' ? '{ run: value }' : 'value'}; }`,
+      ];
+      const c = scan(`${(reverse ? declarations.reverse() : declarations).join('\n')}
+        const read = state(readOnly); read${shape === 'object' ? '.run' : ''}();`);
+      expect(c.gaps).toEqual([]);
+      expect(c.sites).toEqual([]);
+    },
+  );
+
+  it.each(['object', 'callback'])(
+    'keeps a real notification beside recursive quiet returns (%s)', shape => {
+      const suffix = shape === 'object' ? '.run' : '';
+      const c = scan(`
+        function readOnly() { return 1; }
+        function state(value) { if (again) return state(value); return ${shape === 'object' ? '{ run: value }' : 'value'}; }
+        const read = state(readOnly); read${suffix}();
+        const tell = state(notifyOwner); tell${suffix}();
+      `);
+      expect(c.gaps).toEqual([]);
+      expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+        [`tell ${suffix ? '. run ' : ''}( )`, ['<unresolved-recursive-return>', 'notifyOwner']],
+      ]);
+    },
+  );
+
+  it.each(['readOnly', 'notifyOwner'].flatMap(seed => [false, true].map(reverse => ({ seed, reverse }))))(
+    'qualifies recursive returned members through imports and spreads ($seed, reverse=$reverse)', ({ seed, reverse }) => {
+      const returns = reverse
+        ? 'if (!again) return { run: value }; return state(value);'
+        : 'if (again) return state(value); return { run: value };';
+      const c = censusSources({
+        'src/factory.ts': `export function state(value) { ${returns} }`,
+        'src/app.ts': `import { state as open } from './factory';
+          function readOnly() { return 1; }
+          const value = open(${seed}); const bus = { ...value }; bus.run();`,
+      });
+      expect(c.gaps).toEqual([]);
+      expect(c.sites.map(s => [s.expression, s.roots])).toEqual(seed === 'notifyOwner'
+        ? [['bus . run ( )', ['<unresolved-recursive-return>', 'notifyOwner']]] : []);
+    },
+  );
+
+  it('keeps the concrete callback inside a detached recursive wrapper', () => {
+    const c = scan(`
+      function recursive(callback) { if (again) return recursive(callback); callback(); }
+      function wrapper(callback) { return recursive(callback); }
+      void wrapper(sendOwner);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'wrapper ( sendOwner )')?.roots).toContain('sendOwner');
+    expect(c.sites.find(s => s.expression === 'callback ( )')?.roots).toContain('sendOwner');
   });
 
   it('follows returned object methods through imports and recursive return alternatives', () => {

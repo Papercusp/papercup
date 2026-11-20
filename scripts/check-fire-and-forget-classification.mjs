@@ -332,13 +332,42 @@ export function censusSources(sources) {
   // remain identical to resolving against a copy of the incoming set.
   let targetDepth = 0;
   let targetMemo = null;
+  let memberTargetMemo = null;
+  let returnedObjectMemo = null;
   let targetCycles = 0;
   // Atomics.notify wakes shared-memory waiters; its standard intrinsic is not
   // a delivery endpoint. Keep that identity through aliases, but never erase
   // another possible callable, a shadowed binding, or an unresolved return.
   const onlyIntrinsic = (values, name) => values.some(v => v.intrinsic === name)
     && values.every(v => v.intrinsic === name || (v.id && !v.calls && !v.members && !v.roots?.size));
+  function returnedObject(value, invocation) {
+    const invocations = returnedObjectMemo.get(value.id) ?? new Map();
+    const contexts = invocations.get(invocation) ?? new Map();
+    const bound = value.boundContext ?? null;
+    if (!contexts.has(bound)) contexts.set(bound, { ...value, returnInvocation: invocation });
+    invocations.set(invocation, contexts);
+    returnedObjectMemo.set(value.id, invocations);
+    return contexts.get(bound);
+  }
   function memberTargets(base, member, seen, context, trail) {
+    const bound = base.boundContext ?? context;
+    const members = memberTargetMemo.get(base);
+    const contexts = members?.get(member);
+    if (contexts?.has(bound)) return contexts.get(bound);
+    const cyclesBefore = targetCycles;
+    const result = resolveMemberTargets(base, member, seen, context, trail);
+    // Shared spread diamonds revisit the same member in the same context.
+    // Reuse only cycle-independent joins, within this one graph resolution.
+    if (cyclesBefore === targetCycles) {
+      const storedMembers = members ?? new Map();
+      const storedContexts = contexts ?? new Map();
+      storedContexts.set(bound, result);
+      storedMembers.set(member, storedContexts);
+      if (!members) memberTargetMemo.set(base, storedMembers);
+    }
+    return result;
+  }
+  function resolveMemberTargets(base, member, seen, context, trail) {
     if (base.unresolvedReturn) return { values: [base], present: false };
     if (base.objectEntries) {
       const invocation = `${base.id}:${member}`;
@@ -352,25 +381,27 @@ export function censusSources(sources) {
       }
       contexts.add(bound); resolvingMembers.set(invocation, contexts);
       try {
-      const values = [];
+      const values = new Set();
       // A spread copies properties, not callable identity. A later definite
       // property shadows earlier copies; an optional/unknown spread cannot.
       for (let i = base.objectEntries.length - 1; i >= 0; i--) {
         const entry = base.objectEntries[i];
         if (entry.value) {
-          if (entry.member === member || entry.member == null) values.push(...branchTargets(entry.value, seen, base.boundContext ?? context, trail));
-          if (entry.member === member) return { values, present: true };
+          if (entry.member === member || entry.member == null) {
+            for (const value of branchTargets(entry.value, seen, base.boundContext ?? context, trail)) values.add(value);
+          }
+          if (entry.member === member) return { values: [...values], present: true };
         } else {
           const bases = branchTargets(entry.spread, seen, base.boundContext ?? context, trail)
             // Alias containers accompany their values; they are not additional
             // possible objects. No resolved value still means unknown coverage.
             .filter(b => !(b.id && b.aliases?.length && !b.calls && !b.members));
           const copies = bases.map(b => memberTargets(b, member, seen, base.boundContext ?? context, trail));
-          values.push(...copies.flatMap(copy => copy.values));
-          if (copies.length && copies.every(copy => copy.present)) return { values, present: true };
+          for (const copy of copies) for (const value of copy.values) values.add(value);
+          if (copies.length && copies.every(copy => copy.present)) return { values: [...values], present: true };
         }
       }
-      return { values, present: false };
+      return { values: [...values], present: false };
       } finally {
         contexts.delete(bound);
         if (!contexts.size) resolvingMembers.delete(invocation);
@@ -393,7 +424,9 @@ export function censusSources(sources) {
   }
   function targets(r, seen = new Set(), context = null, trail = []) {
     const outermost = targetDepth++ === 0;
-    if (outermost) { targetMemo = new WeakMap(); targetCycles = 0; }
+    if (outermost) {
+      targetMemo = new WeakMap(); memberTargetMemo = new WeakMap(); returnedObjectMemo = new Map(); targetCycles = 0;
+    }
     try {
       if (!r) return [];
       // One resolution observes a stable graph and completed invocation bindings.
@@ -411,7 +444,7 @@ export function censusSources(sources) {
       }
       return result;
     } finally {
-      if (--targetDepth === 0) targetMemo = null;
+      if (--targetDepth === 0) { targetMemo = null; memberTargetMemo = null; returnedObjectMemo = null; }
     }
   }
   function resolveTargets(r, seen, context, trail) {
@@ -489,7 +522,7 @@ export function censusSources(sources) {
         args,
       })) : t.returns;
       return values.flatMap(value => branchTargets(value, seen, bound, trail))
-        .map(value => value.objectEntries ? { ...value, returnInvocation: invocation } : value);
+        .map(value => value.objectEntries ? returnedObject(value, invocation) : value);
       } catch (error) {
         if (error instanceof RangeError && !error.message.includes('return-site=')) error.message += ` (return-site=${r.site}, function=${t.name})`;
         throw error;
@@ -647,6 +680,13 @@ export function censusSources(sources) {
   }
   const occurrences = new Map();
   const sites = [];
+  function hasNotificationRoot(roots) {
+    // A cycle cut describes uncertainty, not an outward endpoint. Retain it
+    // inside traversal and beside genuine roots, but never seed a notice with
+    // that marker alone. Computed-dispatch fallback keeps its existing policy.
+    for (const root of roots ?? []) if (root !== '<unresolved-recursive-return>') return true;
+    return false;
+  }
   let refined = 0;
   for (const c of calls) {
     // This pass refines existing candidates; the global graph remains the
@@ -655,7 +695,7 @@ export function censusSources(sources) {
     if (!c.targets.some(t => t.roots?.size) || (!c.discarded && !detached.has(c.owner?.id))) continue;
     if (process.env.NOTIFY_CENSUS_PROGRESS && refined++ % 10000 === 0) console.error(`NOTIFY_CENSUS_PROGRESS refined=${refined - 1} at=${Date.now()}`);
     const roots = callRoots(c).sort();
-    if (!roots.length || (!c.discarded && !detached.has(c.owner?.id))) continue;
+    if (!hasNotificationRoot(roots) || (!c.discarded && !detached.has(c.owner?.id))) continue;
     const key = `${c.path}#${c.context}:${digest(c.expression).slice(0, 20)}`;
     const ordinal = (occurrences.get(key) ?? 0) + 1; occurrences.set(key, ordinal);
     const id = `${key}:${ordinal}`;
