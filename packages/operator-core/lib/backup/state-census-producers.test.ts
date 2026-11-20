@@ -2459,6 +2459,7 @@ describe('secret census producer adapters', () => {
       bases.push(defaultTestRunArtifactBase(environment, home));
       const packets = bases.map((base, index) => new TestRunArtifactPacket(`fixture-${index}`, home, testRunDeadline(1000), base));
       for (const packet of packets) packet.write('proof.json', { opaque: 'retained fixture' });
+      await Promise.all(packets.map(packet => packet.flush()));
       const before = await Promise.all(packets.map(packet => readFile(join(packet.paths.directory, 'proof.json'), 'utf8')));
       await writeFile(join(ordinary, 'test-artifacts', 'foreign.txt'), 'unproven sibling');
       await mkdir(join(ordinary, 'test-artifacts-copy'));

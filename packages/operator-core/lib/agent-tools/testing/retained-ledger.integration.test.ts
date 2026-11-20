@@ -44,6 +44,7 @@ it('recovers a sealed Vitest packet to one numeric ledger row and reuses that ro
   packet.write('router.json', { code: 0, childState: 'closed', signal: null, timedOut: false, aborted: false });
   packet.write('configuration.json', captureConfigurationSnapshot({ NODE_ENV: 'test' }));
   const now = Date.now();
+  await packet.flush();
   writeFileSync(join(packet.paths.reports, 'report.json'), JSON.stringify({ success: true, startTime: now - 100,
     numPassedTests: 1, numFailedTests: 0, numPendingTests: 0, numTodoTests: 0, numTotalTests: 1,
     testResults: [{ name: join(source, 'subject.test.ts'), status: 'passed', startTime: now - 50, endTime: now,

@@ -42,6 +42,7 @@ async function fixture(options: { childState?: 'closed' | 'pending'; passed?: nu
     numTodoTests: 0, numTotalTests: 1, startTime: Date.now() - 100, testResults: [{ name: join(source, 'subject.test.ts'),
     status: 'passed', startTime: Date.now() - 50, endTime: Date.now(),
     assertionResults: [{ status: 'passed', fullName: 'original assertion', title: 'original assertion' }] }] };
+  await packet.flush();
   writeFileSync(join(packet.paths.reports, 'report.json'), JSON.stringify(report));
   packet.childState = options.childState ?? 'closed';
   await packet.finish({ result: { ok: true, runId, root: source, passed: options.passed ?? 1,
