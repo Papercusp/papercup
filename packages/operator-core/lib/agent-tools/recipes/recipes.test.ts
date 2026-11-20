@@ -1170,7 +1170,79 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     return { release: () => { held = false; } };
   }
   const publicationBindings = { values: { harness: 'alpha', plan: 'draft-plan', expectedSpecSetHash: 'a'.repeat(64) } };
-  const publicationResult = (r: unknown) => JSON.parse((r as { content: { text: string }[] }).content[0].text).results[0];
+  const recipePayload = (r: unknown) => JSON.parse((r as { content: { text: string }[] }).content[0].text);
+  const publicationResult = (r: unknown) => recipePayload(r).results[0];
+
+  it('separates a metadata revision from executable and caller authority', async () => {
+    const recipe = {
+      id: 'read-held-item', title: 'Read item', description: 'Read the current item',
+      script: 'return await tools.workItems.get({ id: "WI-bound", harness: "alpha" });',
+      toolsUsed: ['work_items:get'], status: 'active',
+      bindingSchema: null, capabilityManifest: deriveLegacyForegroundManifest(['work_items:get']),
+      updatedAt: '2026-11-19T01:00:00.000Z',
+    };
+    getRecipeMock.mockResolvedValue(recipe);
+    const inspect = async () => publicationResult(await findTool('recipes:get').fn({ id: recipe.id }, mkCtx('worker'))).recipe;
+    const before = await inspect();
+    const rename = {
+      id: recipe.id, script: recipe.script, expectedRevision: before.authority.revision,
+      title: 'Read the held item', reason: 'Clarify the recipe title.',
+    };
+    const renamed = { ...recipe, title: rename.title, updatedAt: '2026-11-19T02:00:00.000Z' };
+    reviseRecipeSourceMock.mockResolvedValue({ status: 'updated', row: renamed });
+    const edit = async () => recipePayload(await findTool('recipes:revise').fn(rename, mkCtx('operator')));
+    const saved = await edit();
+    expect(saved).toMatchObject({ ok: true, executed: false, oldRevision: before.authority.revision });
+    getRecipeMock.mockResolvedValue(renamed);
+    const after = await inspect();
+    expect(after.authority.revision).toBe(saved.newRevision);
+    expect(saved.newRevision).not.toBe(saved.oldRevision);
+    expect(await edit()).toMatchObject({ ok: false, error: 'stale_revision' });
+
+    const replay = async () => publicationResult(await findTool('recipes:run').fn({
+      id: recipe.id, authority: before.authority,
+    }, mkCtx('worker')));
+    expect(await replay()).toMatchObject({ ok: true });
+    expect(before.authority.execution.revision).toMatch(/^[0-9a-f]{64}$/);
+    expect(after.authority.execution.revision).toBe(before.authority.execution.revision);
+    expect(saved.executionRevision).toBe(before.authority.execution.revision);
+    for (const changed of [
+      { script: recipe.script + '\nreturn null;' },
+      { capabilityManifest: { ...recipe.capabilityManifest, content: { emits: ['text', 'reference'] } } },
+      { bindingSchema: { version: 1, properties: {}, additionalProperties: false } },
+      { status: 'retired' },
+    ]) {
+      getRecipeMock.mockResolvedValue({ ...renamed, ...changed });
+      expect(await replay()).toMatchObject({ ok: false, executed: false, error: 'authority_stale_revision' });
+    }
+    expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks changed bindings and current grants at recipe execution', async () => {
+    const recipe = {
+      id: 'read-selected-item', title: 'Read selected item', description: 'Read an item in the caller’s lane',
+      script: 'return await tools.workItems.get({ id: inputs.item, harness: "alpha" });',
+      toolsUsed: ['work_items:get'], status: 'active', updatedAt: '2026-11-19T01:00:00.000Z',
+      bindingSchema: { version: 1, additionalProperties: false, properties: {
+        item: { type: 'string', required: true, lifetime: { kind: 'invocation-ephemeral' } },
+      } },
+      capabilityManifest: deriveLegacyForegroundManifest(['work_items:get']),
+    };
+    const bindings = { values: { item: 'WI-bound' } };
+    getRecipeMock.mockResolvedValue(recipe);
+    const inspected = publicationResult(await findTool('recipes:get').fn({ id: recipe.id, bindings }, mkCtx('worker')));
+    const authority = inspected.recipe.authority;
+    const replay = async (item: string) => publicationResult(await findTool('recipes:run').fn({
+      id: recipe.id, authority, bindings: { values: { item } },
+    }, mkCtx('worker')));
+    expect(authority.runnable).toBe(true);
+    expect(await replay('WI-bound')).toMatchObject({ ok: true });
+    expect(await replay('WI-other')).toMatchObject({ ok: false, executed: false, error: 'authority_entity_mismatch' });
+    orgSqlMock.mockReset().mockResolvedValue([]);
+    expect(await replay('WI-bound')).toMatchObject({ ok: false, executed: false, error: 'authority_entity_mismatch' });
+    expect(orgSqlMock.mock.calls.some(([sql]) => sql.join(' ').includes('harness_shared.work_items'))).toBe(true);
+    expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
 
   it('runs the maintained pre-start publication without implementation claims and remeasures getter/run custody', async () => {
     const custody = mockStartupPublication();

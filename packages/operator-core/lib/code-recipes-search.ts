@@ -364,6 +364,9 @@ export async function searchSimilarRecipes(
     const overlap = jaccard(input.toolsUsed, meta.tools_used ?? []);
     const similarity = (normalizedFused + overlap) / 2;
     const authority = await buildRecipeAuthorityRecommendation({
+      id: meta.id,
+      status: 'active',
+      toolsUsed: meta.tools_used ?? [],
       script: meta.script,
       updatedAt: typeof meta.updated_at === 'string' ? meta.updated_at : meta.updated_at.toISOString(),
       bindingSchema: meta.binding_schema,

@@ -20,7 +20,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe } from '../../code-recipes-store';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { deriveStoredRecipeAuthority, recipeRevisionDiagnostics, toRecipeAuthorityMetadata,
+import { deriveStoredRecipeAuthority, recipeExecutionPin, recipeRevisionDiagnostics, toRecipeAuthorityMetadata,
   resolveLiveBoundRefs, recipeAuthorityMatchesCurrentRefs, recipeAuthorityMatchesLiveContext,
   type RecipeAuthorityRefs } from '../../recipe-authority';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
@@ -161,6 +161,7 @@ export default defineTool({
               authority,
               authorityDiagnostics.computedRevision,
               liveAuthorityAllowed,
+              recipeExecutionPin({ ...recipe, updatedAt }),
             ),
             ...(authorityLiveError ? { authorityLiveError } : {}),
             authorityDiagnostics,

@@ -101,15 +101,22 @@ const authorityContextSchema = z.object({
   resources: z.array(z.string().min(1)).max(100).optional(),
 }).strict();
 
+const executionPinSchema = z.object({
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+  updatedAt: z.string().min(1),
+}).strict();
+
 const authorityProofSchema = z.object({
   version: z.literal(1),
   revision: z.string().regex(/^[0-9a-f]{64}$/),
+  execution: executionPinSchema.optional(),
   context: authorityContextSchema,
 }).strict();
 
 const authorityMetadataSchema = z.object({
   version: z.literal(1),
   revision: z.string().regex(/^[0-9a-f]{64}$/),
+  execution: executionPinSchema.optional(),
   refs: z.object({
     workspaces: z.array(z.string().min(1)),
     fleets: z.array(z.string().min(1)),
@@ -387,6 +394,9 @@ export default defineTool({
           return refused({ ok: false, id: it.id, error: 'authority_source_unavailable' });
         }
         const authority = await validateRecipeAuthorityProof({
+          id: recipe.id,
+          status: recipe.status,
+          toolsUsed: recipe.toolsUsed,
           script: recipe.script,
           validatedInputs: contract.value.bindings.inputs,
           updatedAt: recipe.updatedAt,
@@ -397,6 +407,7 @@ export default defineTool({
               ? {
                   version: it.authority.version,
                   revision: it.authority.revision,
+                  execution: it.authority.execution,
                   context: recipeAuthorityContextFromRefs(it.authority.refs),
                 }
               : it.authority

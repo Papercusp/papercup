@@ -105,9 +105,15 @@ export async function resolveLiveBoundRefs(
   };
 }
 
-export interface RecipeAuthorityProof {
-  version: 1;
+export interface RecipeRevisionPin {
+  /** Exact edition used for edit concurrency and by older proof readers. */
   revision: string;
+  /** Original observation time and the identity of the executable it covered. */
+  execution?: { revision: string; updatedAt: string };
+}
+
+export interface RecipeAuthorityProof extends RecipeRevisionPin {
+  version: 1;
   context: RecipeAuthorityContext;
 }
 
@@ -117,9 +123,8 @@ export interface RecipeAuthorityProof {
  * shape as a compatibility input, but must derive the proof context from these
  * refs and still validate it against the reuser's live lane.
  */
-export interface RecipeAuthorityMetadata {
+export interface RecipeAuthorityMetadata extends RecipeRevisionPin {
   version: 1;
-  revision: string;
   refs: RecipeAuthorityRefs;
   requiresContext: boolean;
   runnable: boolean;
@@ -181,10 +186,12 @@ export function toRecipeAuthorityMetadata(
   descriptor: RecipeAuthorityDescriptor,
   revision: string,
   liveAuthorityAllowed = true,
+  execution?: RecipeRevisionPin['execution'],
 ): RecipeAuthorityMetadata {
   return {
     version: 1,
     revision,
+    ...(execution ? { execution } : {}),
     refs: descriptor.refs,
     requiresContext: descriptor.bound,
     runnable: !descriptor.unresolved && liveAuthorityAllowed,
@@ -403,6 +410,14 @@ export interface RecipeRevisionContract {
   capabilityManifest?: unknown | null;
 }
 
+interface RecipeRevisionInputs extends RecipeRevisionContract {
+  script: string;
+  updatedAt: string;
+  id?: string;
+  status?: string;
+  toolsUsed?: readonly string[];
+}
+
 function canonicalContractJson(value: unknown): string {
   const normalize = (candidate: unknown): unknown => {
     if (Array.isArray(candidate)) return candidate.map((item) => normalize(item === undefined ? null : item));
@@ -420,7 +435,7 @@ function canonicalContractJson(value: unknown): string {
 }
 
 /**
- * Exact executable-revision hash. Legacy rows retain their historical
+ * Exact edit-revision hash. Legacy rows retain their historical
  * updatedAt+script digest; once a versioned contract exists, both declarations
  * join the material so a binding/requirement change invalidates old proofs even
  * when the source text is unchanged.
@@ -439,6 +454,30 @@ export function recipeRevision(
       .update(canonicalContractJson(contract.capabilityManifest ?? null));
   }
   return hash.digest('hex');
+}
+
+export function recipeExecutionPin(recipe: RecipeRevisionInputs): RecipeRevisionPin['execution'] {
+  if (!recipe.id || !recipe.status || !recipe.updatedAt || !Array.isArray(recipe.toolsUsed)) return undefined;
+  // The runner combines the declared tools with the ones derived from source.
+  // An array frame keeps arbitrary script bytes distinct from contract fields.
+  const material = canonicalContractJson([
+    'recipe-execution-v1', recipe.id, recipe.status, recipe.script,
+    [...new Set(recipe.toolsUsed)].sort(), recipe.bindingSchema ?? null, recipe.capabilityManifest ?? null,
+  ]);
+  return { revision: sha256Fingerprint(material), updatedAt: recipe.updatedAt };
+}
+
+export function recipeRevisionPinMatches(
+  supplied: RecipeRevisionPin, current: RecipeRevisionPin, script: unknown, contract: RecipeRevisionContract,
+): boolean {
+  if (supplied.execution === undefined) return supplied.revision === current.revision;
+  const issued = supplied.execution;
+  if (!issued || !current.execution || issued.revision !== current.execution.revision ||
+      typeof issued.updatedAt !== 'string' || !issued.updatedAt || typeof script !== 'string') return false;
+  // Check both pins. The original edit hash must cover these exact bytes at
+  // the observed time, even if a later display edit advanced the row clock.
+  if (issued.updatedAt === current.execution.updatedAt) return supplied.revision === current.revision;
+  return supplied.revision === recipeRevision(script, issued.updatedAt, contract);
 }
 
 export interface RecipeAuthorityRevisionDiagnostics {
@@ -500,21 +539,19 @@ export async function deriveStoredRecipeAuthority(input: {
     fleets: [], plans: [], items: [], resources: [] }, unresolved: false, unresolvedCause: null, bound: true };
 }
 
-export async function buildRecipeAuthorityRecommendation(input: {
-  script: string;
-  updatedAt: string;
-  bindingSchema?: unknown | null;
-  capabilityManifest?: unknown | null;
+export async function buildRecipeAuthorityRecommendation(input: RecipeRevisionInputs & {
   context?: RecipeAuthorityContext;
 }): Promise<RecipeAuthorityRecommendation | null> {
   const descriptor = await deriveStoredRecipeAuthority(input);
   if (!descriptor) return null;
   // Server-derived: this context is built from the live session, not caller input.
   if (!recipeAuthorityMatches(descriptor, input.context, { operatorScope: true })) return null;
+  const execution = recipeExecutionPin(input);
   return {
     proof: {
       version: 1,
       revision: recipeRevision(input.script, input.updatedAt, input),
+      ...(execution ? { execution } : {}),
       // EI-21163571260786543: the proof's context states what the RECIPE itself is bound
       // to (descriptor.refs) — NEVER an unfiltered echo of the caller's live context.
       // `input.context` only had to be a SUPERSET of the descriptor's refs to pass the
@@ -680,19 +717,14 @@ const AUTHORITY_ERROR_REASONS: Record<string, string> = {
     '`authority`), or call recipes:run { id, authority } directly with a context matching your live session.',
   authority_version_unsupported: 'the supplied `authority.version` is not 1 — obtain a fresh proof rather than hand-building one.',
   authority_stale_revision:
-    'the recipe\'s script/updatedAt changed since the `authority` proof was issued (its revision hash no longer ' +
-    'matches) — the recipe was edited; re-derive the proof (recipes:search again) before running.',
+    'The supplied proof does not match the stored recipe revision. Inspect the current recipe or obtain a new recommendation.',
   authority_entity_mismatch:
     'the `authority` proof\'s bound entities do not match either the recipe\'s own script OR your CURRENT live ' +
     'session context (workspace/fleet/harness/plan/items/resources) — a proof only authorizes the exact lane it ' +
     'was issued for.',
 };
 
-export async function validateRecipeAuthorityProof(input: {
-  script: string;
-  updatedAt: string;
-  bindingSchema?: unknown | null;
-  capabilityManifest?: unknown | null;
+export async function validateRecipeAuthorityProof(input: RecipeRevisionInputs & {
   proof?: RecipeAuthorityProof | null;
   liveContext?: RecipeAuthorityContext;
   /** Supplied only after the current recipe binding contract validates. */
@@ -719,7 +751,11 @@ export async function validateRecipeAuthorityProof(input: {
     return descriptor.bound ? fail('authority_required') : { ok: true, descriptor };
   }
   if (input.proof.version !== 1) return fail('authority_version_unsupported');
-  if (input.proof.revision !== recipeRevision(input.script, input.updatedAt, input)) {
+  const current = {
+    revision: recipeRevision(input.script, input.updatedAt, input),
+    execution: input.proof.execution ? recipeExecutionPin(input) : undefined,
+  };
+  if (!recipeRevisionPinMatches(input.proof, current, input.script, input)) {
     return fail('authority_stale_revision');
   }
   if (!recipeAuthorityMatches(descriptor, input.proof.context)) {

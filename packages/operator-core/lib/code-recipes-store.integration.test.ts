@@ -28,6 +28,7 @@ import {
   sweepRecipes,
 } from './code-recipes-store';
 import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
+import { buildRecipeAuthorityRecommendation, validateRecipeAuthorityProof } from './recipe-authority';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { blueprintPackageProvisioners } from './blueprint/compile-packages';
 import { resolveProseProfileSelection } from './search/prose-vector-dims';
@@ -80,6 +81,31 @@ describe('code_recipes store (real PG)', () => {
     expect((await getRecipe(db.adminSql, input.id))?.script).toBe('return 1');
     await upsertRecipe(db.adminSql, { ...input, createOnly: false, script: 'return 3' });
     expect((await getRecipe(db.adminSql, input.id))?.script).toBe('return 3');
+  });
+
+  it('serializes concurrent display edits while a discovered executable remains eligible', async () => {
+    const original = await upsertRecipe(db.adminSql, {
+      id: 'p014-display-edit', title: 'Original', description: 'Concurrent display edits',
+      script: 'return 14;', toolsUsed: [], potSlug: null,
+    });
+    const discovery = await buildRecipeAuthorityRecommendation(original);
+    expect(discovery?.proof.execution).toBeDefined();
+    if (!discovery) throw new Error('Missing original recipe proof');
+    const edit = (title: string) => reviseRecipeSource(db.adminSql, {
+      id: original.id, script: original.script, toolsUsed: [], expectedUpdatedAt: original.updatedAt, title,
+    });
+    const results = await Promise.all([edit('First'), edit('Second')]);
+    expect(results.map(result => result.status).sort()).toEqual(['conflict', 'updated']);
+    const current = await getRecipe(db.adminSql, original.id);
+    if (!current) throw new Error('Missing edited recipe');
+    expect(current.updatedAt).not.toBe(original.updatedAt);
+    const proof = discovery.proof;
+    expect(await validateRecipeAuthorityProof({ ...current, proof })).toMatchObject({ ok: true });
+    const legacy = { version: proof.version, revision: proof.revision, context: proof.context };
+    expect(await validateRecipeAuthorityProof({ ...original, proof: legacy })).toMatchObject({ ok: true });
+    expect(await validateRecipeAuthorityProof({ ...current, proof: legacy })).toMatchObject({ error: 'authority_stale_revision' });
+    expect(await validateRecipeAuthorityProof({ ...current, id: 'other-recipe', proof })).toMatchObject({ error: 'authority_stale_revision' });
+    expect(await validateRecipeAuthorityProof({ ...current, toolsUsed: ['plans:list'], proof })).toMatchObject({ error: 'authority_stale_revision' });
   });
 
   it('P-026 registers a pinned recipe bundle through the existing store and never clobbers it', async () => {

@@ -9,7 +9,8 @@
  * saved recipe carries source metadata but never its author's privilege.
  */
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import type { RecipeAuthorityContext, RecipeAuthorityMetadata, RecipeAuthorityProof } from '../../recipe-authority';
+import { recipeRevisionPinMatches, type RecipeAuthorityContext, type RecipeAuthorityMetadata,
+  type RecipeAuthorityProof } from '../../recipe-authority';
 import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 
 export type SavedRecipeAuthority = RecipeAuthorityProof | RecipeAuthorityMetadata;
@@ -139,21 +140,23 @@ export function createSavedRecipeAdapter(call: InnerCall): SavedRecipeAdapter {
     if (!recipe) {
       throw new Error(`saved-recipe adapter: recipes:get returned no recipe for ${selector.id}`);
     }
-    const storedAuthority = recipe.authority;
-    const currentRevision = authorityRevision(storedAuthority);
-    if (!currentRevision) {
+    const storedAuthority = recipe.authority as SavedRecipeAuthority | undefined;
+    const editRevision = authorityRevision(storedAuthority);
+    if (!storedAuthority || !editRevision) {
       throw new Error(`saved-recipe adapter: recipes:get returned no revision for ${selector.id}`);
     }
 
-    if (selector.revision && selector.revision !== currentRevision) {
+    const currentRevision = storedAuthority.execution?.revision ?? editRevision;
+    if (selector.revision && selector.revision !== currentRevision && selector.revision !== editRevision) {
       return preflightFailure(
         'recipe_authority_stale',
         `saved recipe ${selector.id} revision changed; inspect/search again before running`,
         'recipe.revision',
       );
     }
-    const suppliedAuthorityRevision = authorityRevision(selector.authority);
-    if (selector.authority && suppliedAuthorityRevision !== currentRevision) {
+    if (selector.authority && !recipeRevisionPinMatches(selector.authority, storedAuthority, recipe.script, {
+      bindingSchema: recipe.bindingSchema, capabilityManifest: recipe.capabilityManifest,
+    })) {
       return preflightFailure(
         'recipe_authority_stale',
         `saved recipe ${selector.id} authority proof is stale; inspect/search again before running`,
@@ -164,7 +167,7 @@ export function createSavedRecipeAdapter(call: InnerCall): SavedRecipeAdapter {
     // Keep the caller's search proof byte-for-byte/object-for-object when supplied.
     // Otherwise the current recipes:get metadata is itself an accepted recipes:run
     // continuation, and recipes:run still revalidates it against the live caller.
-    const authority = selector.authority ?? (storedAuthority as SavedRecipeAuthority);
+    const authority = selector.authority ?? storedAuthority;
     return {
       ok: true,
       recipe,

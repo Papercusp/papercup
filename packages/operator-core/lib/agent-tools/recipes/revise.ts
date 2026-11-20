@@ -11,7 +11,7 @@ import { defineTool, listAllProjectedTools, SU_ROLES } from '@papercusp/agent-mc
 import { ensureParseCheckReady } from '@papercusp/tooldef';
 import { getOrgPg } from '@papercusp/db-org';
 import { getRecipe, reviseRecipeSource } from '../../code-recipes-store';
-import { recipeRevision } from '../../recipe-authority';
+import { recipeExecutionPin, recipeRevision } from '../../recipe-authority';
 import { capabilityManifestV1Schema, recipeBindingSchemaV1Schema } from '../../recipe-contract';
 import { extractToolsUsed, notifyRecipesChanged } from '../code/capture-recipe';
 
@@ -172,6 +172,7 @@ export default defineTool({
             reason: args.reason,
             oldRevision,
             newRevision,
+            executionRevision: recipeExecutionPin(row)?.revision,
             toolsUsed: row.toolsUsed,
             runCount: row.runCount,
             successCount: row.successCount,

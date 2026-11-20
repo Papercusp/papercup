@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { InnerCall } from '../_compound-dispatch';
 import { createSavedRecipeAdapter, type SavedRecipeAuthority } from './saved-recipe-adapter';
+import { recipeExecutionPin, recipeRevision } from '../../recipe-authority';
 
 const metadata: SavedRecipeAuthority = {
   version: 1,
@@ -194,6 +195,22 @@ describe('saved-recipe adapter', () => {
     });
     const runArgs = call.mock.calls[1]?.[1] as { authority: unknown };
     expect(runArgs.authority).toBe(proof);
+  });
+
+  it('preserves an executable continuation across a title edit and checks both supplied pins', async () => {
+    const original = { ...recipe, toolsUsed: [], status: 'active', updatedAt: '2026-11-19T01:00:00Z' };
+    const renamed = { ...original, title: 'Renamed', updatedAt: '2026-11-19T02:00:00Z' };
+    const first = { ...proof, revision: recipeRevision(original.script, original.updatedAt), execution: recipeExecutionPin(original)! };
+    const current = { ...metadata, revision: recipeRevision(renamed.script, renamed.updatedAt), execution: recipeExecutionPin(renamed)! };
+    const call = vi.fn<InnerCall>().mockImplementation(async name => name === 'recipes:get'
+      ? { results: [{ id: recipe.id, ok: true, recipe: { ...renamed, authority: current } }] }
+      : { ok: true });
+    const adapter = createSavedRecipeAdapter(call);
+    const selector = { id: recipe.id, revision: first.execution.revision, authority: first };
+    expect(await adapter.run({ recipe: selector })).toEqual({ ok: true });
+    expect(call).toHaveBeenCalledWith('recipes:run', { id: recipe.id, authority: first });
+    expect(await adapter.inspect({ ...selector, revision: first.revision })).toMatchObject({ ok: false });
+    expect(await adapter.inspect({ ...selector, authority: { ...first, revision: '0'.repeat(64) } })).toMatchObject({ ok: false });
   });
 
   it('uses current recipes:get metadata when no search proof was supplied', async () => {

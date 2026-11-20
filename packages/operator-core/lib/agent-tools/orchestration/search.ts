@@ -41,7 +41,8 @@ function searchMatches(raw: unknown): Record<string, unknown>[] {
     const recipe = asRecord(value);
     const runArgs = asRecord(recipe?.runArgs);
     const authority = asRecord(runArgs?.authority) as SavedRecipeAuthority | null;
-    const revision = typeof authority?.revision === 'string' ? authority.revision : undefined;
+    const pin = authority?.execution?.revision ?? authority?.revision;
+    const revision = typeof pin === 'string' ? pin : undefined;
     const capabilityManifest = asRecord(recipe?.capabilityManifest);
     const declared = Array.isArray(capabilityManifest?.requirements)
       ? capabilityManifest.requirements

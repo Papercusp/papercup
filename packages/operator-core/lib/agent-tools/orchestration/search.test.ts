@@ -90,4 +90,17 @@ describe('orchestrate:search', () => {
       searchOrchestrations({ query: 'anything' }, {} as UnifiedToolContext, adapter),
     ).rejects.toThrow('recipes:search returned an invalid envelope');
   });
+
+  it('pins a new runnable continuation to its executable revision', async () => {
+    const authority = { version: 1, revision: 'a'.repeat(64), context: {},
+      execution: { revision: 'b'.repeat(64), updatedAt: '2026-11-19T02:00:00Z' } };
+    const search = vi.fn().mockResolvedValue({ ok: true, recipes: [{
+      id: 'read-item', runArgs: { id: 'read-item', authority },
+    }] });
+    const result = await searchOrchestrations({ query: 'read item' }, {} as UnifiedToolContext,
+      { search } as unknown as SavedRecipeAdapter);
+    expect(payload(result)).toMatchObject({ matches: [{
+      run: { recipe: { id: 'read-item', revision: authority.execution.revision, authority } },
+    }] });
+  });
 });
