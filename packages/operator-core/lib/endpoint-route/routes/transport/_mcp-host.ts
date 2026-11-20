@@ -3838,6 +3838,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     let listChangedSent = false;
     const notifyListChanged = async () => {
       if (!sessionKey || !sendNotification || listChangedSent) return;
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>/notifyListChanged:76cae8645d84aed07261:1","classification":"safe-to-lose","reason":"Only invalidates this MCP connection's tool catalog. tools/list reconstructs the current catalog and records its generation; a missed hint cannot advance the baseline or bypass stale_tool_contract refusal before dispatch."}
       await sendNotification({ method: 'notifications/tools/list_changed', params: {} });
       listChangedSent = true;
     };
@@ -3902,6 +3903,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     const staleDeclaration = declaredGeneration !== null && declaredGeneration !== before.revision;
     if (staleBaseline || staleDeclaration) {
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>:465e0b64c5a12cf04f54:1","classification":"safe-to-lose","reason":"Catalog refresh hint before an unconditional stale_tool_contract refusal. Even if notification delivery fails, the request fails before dispatch and its error directs tools/list; that real list response is the recovery and baseline update."}
         await notifyListChanged();
       } catch (err) {
         console.warn(`[mcp-host] stale serving-generation notification failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3940,6 +3942,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     if (sessionKey) {
       const after = await readGeneration();
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>:465e0b64c5a12cf04f54:2","classification":"safe-to-lose","reason":"Catalog invalidation after the current handler result has settled. A missed generation-change hint leaves the old baseline intact, so the next call is refused with tools/list recovery instructions; it carries no tool-result or effect receipt."}
         if (after.state !== 'known' || after.revision !== before.revision) await notifyListChanged();
       } catch (err) {
         console.warn(`[mcp-host] serving-generation recheck failed: ${err instanceof Error ? err.message : String(err)}`);
