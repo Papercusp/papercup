@@ -297,7 +297,7 @@ type ScopedFeasibilityRequest = z.infer<typeof scopedFeasibilityRequestSchema>;
 type ScopedFeasibilitySelection = ReturnType<typeof inspectScopedFeasibilitySelection>;
 
 async function readScopedFeasibilityClaim(sql: PlanRevisionSql, scope: ExecutionStartScope,
-  identity: AgentIdentity, workItemId: string, lock = false): Promise<string> {
+  identity: Pick<AgentIdentity, 'ownerId' | 'workspaceId'>, workItemId: string, lock = false): Promise<string> {
   const rows = await sql<{ claim_taken_at: string | null }[]>`
     SELECT to_char(w.taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00' AS claim_taken_at
       FROM harness_shared.work_items w
@@ -395,7 +395,7 @@ export async function recordScopedFeasibilityAudit(scope: ExecutionStartScope, i
 /** Re-read one server-selected held question on every invocation. No cached
  * positive result or caller receipt overrides the complete immutable history.
  * Locks end before the tool executes: this is the documented check/use interval. */
-export async function readScopedFeasibilityAuthority(scope: ExecutionStartScope, identity: AgentIdentity,
+export async function readScopedFeasibilityAuthority(scope: ExecutionStartScope, identity: Pick<AgentIdentity, 'ownerId' | 'workspaceId'>,
   selection: { workItemId: string; questionId: string }, repositoryRoot: string) {
   const selected = z.object({ workItemId: feasibilityRequestFields.workItemId,
     questionId: feasibilityRequestFields.questionId }).strict().parse(selection);
