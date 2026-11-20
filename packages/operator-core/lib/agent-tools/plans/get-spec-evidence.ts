@@ -72,6 +72,9 @@ function summaryEvidenceRow(row: EvidenceRow) {
     evidenceKind: row.evidenceKind,
     evidenceRef: row.evidenceRef,
     testRunId: row.testRunId ?? null,
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+    observedAt: row.observedAt,
     currentness: {
       overall: row.currentness.overall,
       staleReasons: row.currentness.staleReasons,

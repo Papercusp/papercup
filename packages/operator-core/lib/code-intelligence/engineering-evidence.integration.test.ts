@@ -20,7 +20,16 @@ describe('native engineering evidence canonical PG adapters', () => {
     expect(graph.gaps.filter(g => g.code === 'authority-unavailable')).toEqual([]);
     expect(graph.nodes.find(n => n.kind === 'item')?.data).toMatchObject({ plan, item: 'P-001',
       anchor: { kind: 'path', fingerprintKind: 'file', fingerprint: digest, state: 'current' } });
-    expect(graph.nodes.find(n => n.kind === 'proof')?.data).toMatchObject({ id: bindingId, revision: 1, runId });
+    const [binding] = await state.db`SELECT created_by, created_at, observed_at FROM harness_shared.spec_evidence_bindings
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harness} AND id = ${bindingId}`;
+    const [run] = await state.db`SELECT source, started_at, finished_at FROM harness_shared.test_runs
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harness} AND id = ${runId}`;
+    expect(graph.nodes.find(n => n.kind === 'proof')?.data).toMatchObject({ id: bindingId, revision: 1, runId,
+      workItem: 'WI-ee-proof', createdBy: binding.created_by, createdAt: new Date(binding.created_at).toISOString(),
+      observedAt: new Date(binding.observed_at).toISOString() });
+    expect(graph.nodes.find(n => n.kind === 'test-run')?.data).toMatchObject({ id: runId, source: run.source,
+      startedAt: run.started_at == null ? null : new Date(run.started_at).toISOString(),
+      finishedAt: run.finished_at == null ? null : new Date(run.finished_at).toISOString() });
     expect(graph.nodes.find(n => n.kind === 'test-case')?.data).toMatchObject({ runId, key: 'ee.intent-exact', occurrence: 1, status: 'pass' });
     expect(graph.edges.length).toBeGreaterThan(0);
     for (const edge of graph.edges) {

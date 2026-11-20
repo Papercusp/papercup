@@ -36,11 +36,15 @@ export interface EngineeringDecision {
 }
 export interface EngineeringProof {
   id: number; plan: string; spec: string; revision: number; workItem: string;
+  createdBy?: string; createdAt?: string; observedAt?: string;
   evidenceRef: string; kind: string; state: EngineeringState; withdrawn: boolean;
   fingerprints: Record<string, string | null>; runId: number | null;
   reasons: string[];
 }
-export interface EngineeringRun { id: number; file: string; status: string; commit: string | null }
+export interface EngineeringRun {
+  id: number; file: string; status: string; commit: string | null;
+  source?: string | null; startedAt?: string | null; finishedAt?: string | null;
+}
 export interface EngineeringCase { runId: number; key: string; occurrence: number; status: string }
 export interface EngineeringEvidenceDeps {
   /** Must validate the registered repository before any content adapter runs. */

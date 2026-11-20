@@ -8,6 +8,7 @@ import { corroboratePushSources, peekPushSnapshot } from './push-snapshot';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import { readEngineeringExecution } from '../observability/engineering-execution';
+import { pgTimestampToIso } from '../pg-timestamp';
 import type { CodeIntelAnswer } from './contracts';
 import type { EngineeringEvidenceDeps, EngineeringScope, EngineeringSpec, EngineeringSymbol } from './engineering-evidence';
 import type { SpecClauseRevision } from '../agent-tools/plans/spec-clauses-store';
@@ -141,6 +142,7 @@ export function engineeringEvidenceStore(options: StoreOptions = {}): Engineerin
       return (await listSpecEvidence({ workspaceId: scope.workspaceId, harnessSlug: scope.harness,
         planSlugs: [spec.plan], specIds: [spec.id], includeRetracted: true, limit })).map(p => ({
         id: p.id, plan: p.planSlug, spec: p.specId, revision: p.specRevision, workItem: p.workItemId,
+        createdBy: p.createdBy, createdAt: p.createdAt, observedAt: p.observedAt,
         evidenceRef: p.evidenceRef, kind: p.evidenceKind, state: p.currentness.overall,
         withdrawn: Boolean(p.withdrawal), fingerprints: p.fingerprints, runId: p.testRunId,
         reasons: [...p.currentness.staleReasons, ...p.currentness.unknownReasons],
@@ -149,10 +151,13 @@ export function engineeringEvidenceStore(options: StoreOptions = {}): Engineerin
     async execution(scope, runId) { return readEngineeringExecution(scope, runId, await sql()); },
     async run(scope, runId) {
       const db = await sql();
-      const [run] = await db<Array<{ id: string; file: string; status: string; commit: string | null }>>`
-        SELECT id::text,file_path AS file,status,commit_sha AS commit FROM harness_shared.test_runs
+      const [run] = await db<Array<{ id: string; file: string; status: string; commit: string | null;
+        source: string | null; startedAt: Date | string | null; finishedAt: Date | string | null }>>`
+        SELECT id::text, file_path AS file, status, commit_sha AS commit, source,
+          started_at AS "startedAt", finished_at AS "finishedAt" FROM harness_shared.test_runs
          WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harness} AND id=${runId} LIMIT 1`;
-      return run ? { ...run, id: Number(run.id) } : null;
+      return run ? { ...run, id: Number(run.id), startedAt: run.startedAt == null ? null : pgTimestampToIso(run.startedAt),
+        finishedAt: run.finishedAt == null ? null : pgTimestampToIso(run.finishedAt) } : null;
     },
     async cases(scope, runId, limit) {
       const db = await sql();

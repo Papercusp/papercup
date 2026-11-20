@@ -3358,8 +3358,13 @@ export function projectSpecCriterionApplicability(clause: SpecClauseRevision,
     if (missingLiveIdentity) reasons.push('applicable-live-target-or-window-unmeasured');
     if (state === 'unavailable') reasons.push('measurement-instrument-unavailable');
     return {
-      bindingId: row.id, evidenceRef: row.evidenceRef, evidenceKind: row.evidenceKind,
+      bindingId: row.id, workItemId: row.workItemId, evidenceRef: row.evidenceRef, evidenceKind: row.evidenceKind,
+      createdBy: row.createdBy, createdAt: row.createdAt,
       testRunId: row.testRunId, observedAt: row.observedAt, state, reasons,
+      recordedRun: row.testRunId == null ? null : {
+        id: row.testRunId, source: row.testRunProvenance?.source ?? null,
+        startedAt: row.testRunProvenance?.startedAt ?? null, finishedAt: row.testRunProvenance?.finishedAt ?? null,
+      },
       target: subject ?? null, window,
       evidencePlane: plane ?? null, fingerprints: row.fingerprints,
       currentness: row.currentness, freshnessBasis: row.serverMeasurement ?? null,
@@ -5885,6 +5890,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             filePath: row.test_run_file_path,
             framework: row.test_run_framework ?? null,
             source: row.test_run_source ?? null,
+            ...(row.test_run_started_at == null ? {} : { startedAt: pgTimestampToIso(row.test_run_started_at) }),
+            ...(row.test_run_finished_at == null ? {} : { finishedAt: pgTimestampToIso(row.test_run_finished_at) }),
             mutationPhase: parsedTestRunExecution?.mutationPhase ?? null,
             ...(parsedTestRunExecution?.mutation ? {
               mutation: parsedTestRunExecution.mutation,
