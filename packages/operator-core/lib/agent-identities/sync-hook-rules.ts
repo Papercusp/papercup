@@ -27,7 +27,7 @@
  * proceeds.
  */
 import { randomUUID } from 'node:crypto';
-import { getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { HookContextSink, ResolvedAgentSpecification } from '@papercusp/orchestrator/blueprint';
@@ -470,24 +470,15 @@ function assertIdentityReadCurrent(budget?: IdentityRuleReadBudget): void {
 }
 
 /**
- * A queued reservation can arrive after its caller has gone away. Release it
- * without executing SQL in that case. Canceling a pipelined query directly can
- * instead cancel a different request on the shared connection (postgres.js).
+ * These reads need one current result, not exclusive connection ownership.
+ * Reserving for every SELECT serializes otherwise pipelined authority reads
+ * behind the priority pool's exclusive queue. Keep the shared query executor
+ * and reject results outside the caller's lifetime. Do not cancel a shared
+ * connection: that can cancel a different request on its pipeline.
  */
 export async function identityRuleQuery<T>(read: (sql: Sql) => Promise<T>, budget?: IdentityRuleReadBudget): Promise<T> {
   assertIdentityReadCurrent(budget);
-  const org = getOrgPg();
-  if (!budget) return read(org.sql);
-  const result = await withAcquisitionDeadline(async ({ disarm, expired }) => {
-    const reserved = await org.sql.reserve();
-    try {
-      if (expired()) throw new Error('identity rule read acquisition expired');
-      assertIdentityReadCurrent(budget);
-      disarm();
-      return await read(reserved);
-    } finally { reserved.release(); }
-  }, { label: 'native-identity-rule-read', pool: org.poolLabel, signal: budget.signal,
-    ms: Math.max(1, Math.ceil(budget.deadlineAtMs - performance.now())) });
+  const result = await read(getOrgPg().sql);
   assertIdentityReadCurrent(budget);
   return result;
 }

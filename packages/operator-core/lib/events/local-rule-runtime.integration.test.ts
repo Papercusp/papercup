@@ -5,10 +5,24 @@ import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-const h = vi.hoisted(() => ({ sql: null as unknown, appUnavailable: false, appReads: 0 }));
+const h = vi.hoisted(() => ({
+  sql: null as unknown, appUnavailable: false, appReads: 0,
+  exclusiveUnavailable: false, exclusiveAttempts: 0,
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: h.sql, poolLabel: 'org-admin' }),
+  getOrgPg: () => ({
+    sql: h.exclusiveUnavailable ? new Proxy(h.sql as postgres.Sql, {
+      get(target, key, receiver) {
+        if (key === 'reserve') return async () => {
+          h.exclusiveAttempts++;
+          throw new Error('exclusive reservation unavailable');
+        };
+        return Reflect.get(target, key, receiver);
+      },
+    }) : h.sql,
+    poolLabel: 'org-admin',
+  }),
   withPriorityOrgPg: async (run: () => unknown) => run(),
   withWorkspace: async (_ws: string, fn: (tx: unknown) => unknown) => {
     h.appReads++;
@@ -127,7 +141,7 @@ describe('enabled local runtime', () => {
     expect(await restarted.matchLocalRules(event())).toEqual([]);
     expect(listReactionRules().some(r => r.id === localRuleRegistrationId(enabled))).toBe(false);
   });
-  it('serves fresh native guard verdicts over HTTP while the app pool is unavailable', async () => {
+  it('serves fresh native HTTP guard verdicts without app transactions or exclusive reservations', async () => {
     const owner = 'native-http-author';
     const id = 'native-http-local-rule';
     await db.adminSql`INSERT INTO harness_shared.session_briefs (owner_id, workspace_id, control_state)
@@ -175,14 +189,18 @@ describe('enabled local runtime', () => {
     };
     h.appReads = 0;
     h.appUnavailable = true;
+    h.exclusiveAttempts = 0;
+    h.exclusiveUnavailable = true;
     try {
       expect(await post()).toEqual({ ok: true,
         text: expect.stringContaining(`rule ${id}:`) });
       await setLocalRuleEnabled(scope, id, false, db.adminSql);
       expect(await post()).toEqual({ ok: true, text: '' });
       expect(h.appReads).toBe(0);
+      expect(h.exclusiveAttempts).toBe(0);
     } finally {
       h.appUnavailable = false;
+      h.exclusiveUnavailable = false;
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   });

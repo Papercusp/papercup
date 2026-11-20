@@ -10,10 +10,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { appliedRows, readGateSelectedLaunchSpecMock, appliedIdentityArtifactMock } = vi.hoisted(() => ({
+const { appliedRows, readGateSelectedLaunchSpecMock, appliedIdentityArtifactMock, exclusiveReservation } = vi.hoisted(() => ({
   appliedRows: new Map<string, { applied: unknown; harness: string | null }>(),
   readGateSelectedLaunchSpecMock: vi.fn(),
   appliedIdentityArtifactMock: vi.fn(),
+  exclusiveReservation: vi.fn(),
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -26,7 +27,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
       // Transaction-capable like the production org client (WI-40234); unused on this path.
       { begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(undefined) },
     );
-    return { sql: Object.assign(sql, { reserve: async () => Object.assign(sql, { release: vi.fn() }) }) };
+    return { sql: Object.assign(sql, { reserve: async () => {
+      await exclusiveReservation();
+      return Object.assign(sql, { release: vi.fn() });
+    } }) };
   },
 }));
 vi.mock('../agent-tools/coordination/control-anchor', () => ({
@@ -54,6 +58,7 @@ beforeEach(() => {
   appliedRows.clear();
   readGateSelectedLaunchSpecMock.mockReset().mockResolvedValue({ launch: true });
   appliedIdentityArtifactMock.mockReset().mockReturnValue(ruleArtifact);
+  exclusiveReservation.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => {
   setLocalSyncRulesReader(null);
@@ -61,6 +66,20 @@ afterEach(() => {
 });
 
 describe('authoritative identity read timing', () => {
+  it('evaluates current guards through available queries when exclusive reservation is unavailable', async () => {
+    const owner = 'owner-native-query-without-reservation';
+    applied(owner);
+    exclusiveReservation.mockRejectedValue(new Error('exclusive reservation unavailable'));
+    const budget = { signal: new AbortController().signal, deadlineAtMs: performance.now() + 1_000 };
+    const call = { tool: 'Bash', input: { command: 'rm -rf build' }, client: 'codex' };
+    await expect(evaluateToolGuard(call, () => readAppliedWornRules(owner, 'ws', undefined, budget)))
+      .resolves.toMatchObject({ decision: 'deny', ruleId: 'no-rm' });
+
+    // Mutable activation is still read on the next call, including removal.
+    appliedRows.delete(owner);
+    await expect(readAppliedWornRules(owner, 'ws', undefined, budget)).resolves.toBeNull();
+  });
+
   it('passes the current applied harness to each fresh local-rules read', async () => {
     const owner = 'owner-local-harness-scope';
     applied(owner, 's1', 'ops');

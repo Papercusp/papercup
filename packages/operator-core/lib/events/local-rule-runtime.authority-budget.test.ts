@@ -44,16 +44,17 @@ afterEach(() => vi.restoreAllMocks());
 describe('local sync rules share the native authority lifetime', () => {
   it('reads current rules when the app transaction pool is unavailable', async () => {
     h.withWorkspace.mockRejectedValue(new Error('app transaction pool unavailable'));
+    h.reserve.mockRejectedValue(new Error('exclusive reservation unavailable'));
     await expect(readLocalSyncRules('owner', 'ws', 'harness', {
       signal: new AbortController().signal, deadlineAtMs: 100,
     })).resolves.toEqual({ rules: [], unreadable: [] });
     expect(h.withWorkspace).not.toHaveBeenCalled();
-    expect(h.reserve).toHaveBeenCalledOnce();
-    expect(h.release).toHaveBeenCalledOnce();
+    expect(h.reserve).not.toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
     expect(h.listLocal).toHaveBeenCalledWith(
       { workspaceId: 'ws', potSlug: 'pot' },
       { includeWorkspace: true, enabledOnly: true },
-      expect.objectContaining({ release: h.release }),
+      expect.objectContaining({ reserve: h.reserve }),
     );
   });
 
@@ -90,26 +91,19 @@ describe('local sync rules share the native authority lifetime', () => {
     expect(h.listLocal).not.toHaveBeenCalled();
   });
 
-  it('releases a late SQL reservation without reading rules', async () => {
-    const acquired = deferred<void>();
-    const queued = deferred<void>();
-    h.reserve.mockImplementation(async () => {
-      queued.resolve();
-      await acquired.promise;
-      return { release: h.release };
-    });
-    const controller = new AbortController();
-    const reason = new Error('native call ended while acquiring');
+  it('rejects query results completed at the absolute deadline', async () => {
+    const reading = deferred<void>();
+    const rows = deferred<never[]>();
+    h.listLocal.mockImplementation(() => { reading.resolve(); return rows.promise; });
     const pending = readLocalSyncRules('owner', 'ws', 'harness', {
-      signal: controller.signal, deadlineAtMs: 100,
+      signal: new AbortController().signal, deadlineAtMs: 100,
     });
-    const rejected = expect(pending).rejects.toBe(reason);
-    await queued.promise;
-    controller.abort(reason);
-    acquired.resolve();
+    const rejected = expect(pending).rejects.toThrow('identity rule read budget expired');
+    await reading.promise;
+    now = 100;
+    rows.resolve([]);
     await rejected;
-    expect(h.listLocal).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(h.release).toHaveBeenCalledOnce());
+    expect(h.reserve).not.toHaveBeenCalled();
   });
 
   it('does not return rules completed after cancellation', async () => {
@@ -135,7 +129,8 @@ describe('local sync rules share the native authority lifetime', () => {
     });
     if (elapsed < 100) {
       await expect(pending).resolves.toEqual({ rules: [], unreadable: [] });
-      expect(h.reserve).toHaveBeenCalledOnce();
+      expect(h.listLocal).toHaveBeenCalledOnce();
+      expect(h.reserve).not.toHaveBeenCalled();
       expect(h.withWorkspace).not.toHaveBeenCalled();
     } else {
       await expect(pending).rejects.toThrow('identity rule read budget expired');
