@@ -241,6 +241,41 @@ describe('P001 authentic proof producer and intended child baseline', () => {
       expect(initialProofs, initial.stderr).toHaveLength(2);
       expect(initialProofs.every(row => row.runner_identity === defaultRunnerIdentity(root, env)),
         initialRuntimeDiagnostics).toBe(true);
+      // The native suite already recorded fresh proofs at baselineSha. Preserve
+      // the producer's no-op contract before exercising its older-proof tier.
+      const alreadyProven = await runPureLaneProofCapture({ root, env,
+        runGroupId: 'p001-native-already-proven', logFile: join(directory, 'already-proven.log') });
+      expect(alreadyProven.state, alreadyProven.lines.join('\n')).toBe('done');
+      expect(alreadyProven.stoppedBy).toBe('nothing-to-capture');
+      expect(alreadyProven.files).toBe(0);
+      expect(alreadyProven.evidence.proofs).toBeNull();
+      const noOpRows = await org.adminSql`
+        SELECT id FROM harness_shared.test_runs WHERE run_group_id = 'p001-native-already-proven'`;
+      expect(noOpRows).toEqual([]);
+      // An actual commit outside the recorded inputs makes both real proofs
+      // eligible for refresh, without removing or fabricating source evidence.
+      mkdirSync(join(root, 'lint'), { recursive: true });
+      writeFileSync(join(root, 'lint/prepare.mjs'), 'export const prepared = true;\n');
+      const captureSha = commit('unrelated change makes native proofs eligible for refresh');
+      // Capture follows CI outcomes at this exact sha. An ordinary suite can
+      // record those outcomes without opting into the executed-source map.
+      const suiteEnv: NodeJS.ProcessEnv = { ...env, PAPERCUSP_TEST_RUN_GROUP: 'p001-native-current-suite' };
+      delete suiteEnv.PC_EXECUTED_SOURCE_MAP_WORKSPACE;
+      delete suiteEnv.PC_EXECUTED_SOURCE_MAP_OUT;
+      const currentSuite = run(suiteEnv);
+      expect(currentSuite.status, currentSuite.stderr).toBe(0);
+      expect(currentSuite.report.numPassedTests).toBe(2);
+      const currentOutcomes = await org.adminSql`
+        SELECT file_path, status, commit_sha, source, worktree_dirty
+        FROM harness_shared.test_runs WHERE run_group_id = 'p001-native-current-suite'`;
+      expect(currentOutcomes, currentSuite.stderr).toHaveLength(2);
+      expect(currentOutcomes, currentSuite.stderr).toEqual(expect.arrayContaining(['a', 'b'].map(name =>
+        expect.objectContaining({ file_path: `packages/operator-core/lib/${name}.test.ts`,
+          status: 'pass', commit_sha: captureSha, source: 'ci', worktree_dirty: false }))));
+      const olderProofs = await org.adminSql`
+        SELECT recorded_sha FROM harness_shared.test_executed_sources`;
+      expect(olderProofs, currentSuite.stderr).toHaveLength(2);
+      expect(olderProofs.every(row => row.recorded_sha === baselineSha)).toBe(true);
       const capture = await runPureLaneProofCapture({ root, env, runGroupId: 'p001-native-capture',
         logFile: join(directory, 'capture.log') });
       const diagnostics = capture.lines.join('\n') + (existsSync(join(directory, 'capture.log'))
@@ -248,13 +283,25 @@ describe('P001 authentic proof producer and intended child baseline', () => {
       expect(capture.state, diagnostics).toBe('done');
       expect(capture.evidence.clean).toBe(true);
       const recordedProofs = await org.adminSql`
-        SELECT test_file, recorded_sha, runner_identity, run_context, run_group_id
+        SELECT test_file, recorded_sha, runner_identity, run_context, run_group_id,
+          inputs_captured, opaque_reasons
         FROM harness_shared.test_executed_sources WHERE run_group_id = 'p001-native-capture'`;
       const capturedOriginals = await org.adminSql`
         SELECT file_path, status, commit_sha, source, worktree_dirty
         FROM harness_shared.test_runs WHERE run_group_id = 'p001-native-capture'`;
       const qualificationDiagnostics = JSON.stringify({ selectorRunner: defaultRunnerIdentity(root, env),
         recordedProofs, capturedOriginals }) + '\n' + diagnostics;
+      expect(recordedProofs, qualificationDiagnostics).toHaveLength(2);
+      expect(recordedProofs.every(row => row.inputs_captured === true &&
+        (row.opaque_reasons ?? []).length === 0), qualificationDiagnostics).toBe(true);
+      expect(recordedProofs, qualificationDiagnostics).toEqual(expect.arrayContaining(['a', 'b'].map(name =>
+        expect.objectContaining({ test_file: `packages/operator-core/lib/${name}.test.ts`,
+          recorded_sha: captureSha, runner_identity: defaultRunnerIdentity(root, env),
+          run_context: 'green-checkpoint', run_group_id: 'p001-native-capture' }))));
+      expect(capturedOriginals, qualificationDiagnostics).toHaveLength(2);
+      expect(capturedOriginals, qualificationDiagnostics).toEqual(expect.arrayContaining(['a', 'b'].map(name =>
+        expect.objectContaining({ file_path: `packages/operator-core/lib/${name}.test.ts`,
+          status: 'pass', commit_sha: captureSha, source: 'local', worktree_dirty: false }))));
       expect(capture.evidence.proofs, qualificationDiagnostics).toHaveLength(2);
       expect(capture.evidence.proofs!.map((proof: { file: string }) => proof.file).sort())
         .toEqual(['packages/operator-core/lib/a.test.ts', 'packages/operator-core/lib/b.test.ts']);
@@ -285,8 +332,8 @@ describe('P001 authentic proof producer and intended child baseline', () => {
         expect(child.report.numFailedTests).toBe(1);
         expect(child.report.numPassedTests).toBe(1);
       } finally { changed.finish(); }
-      console.info('P001_NATIVE_PROOF_CONSUMPTION_BASELINE', JSON.stringify({ baselineSha,
-        repairedSha, changedSha, capture: capture.evidence,
+      console.info('P001_NATIVE_PROOF_CONSUMPTION_BASELINE', JSON.stringify({ baselineSha, captureSha,
+        repairedSha, changedSha, sameShaCapture: alreadyProven.stoppedBy, capture: capture.evidence,
         lintOnlyConsumed: 2, changedInputExecuted: 'b.test.ts', unprovenExecuted: 'c.test.ts',
         plane: 'controlled-native-fixture', remaining: ['live root handoff', 'interrupted capture baseline'] }));
     } finally {
