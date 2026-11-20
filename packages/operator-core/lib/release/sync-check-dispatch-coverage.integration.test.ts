@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { COVERAGE_EXPECTED_INTERVAL_MS as I } from './sync-batch-delta-check';
 import { recordSyncCheckDispatchCoverage, writeSyncCheckState } from './sync-check-dispatch-coverage';
-import { buildSyncBatchDeltaDeps } from './sync-batch-delta-check-deps';
+import { buildSyncBatchDeltaDeps, readSyncDeltaKnownGood } from './sync-batch-delta-check-deps';
 import { buildSyncLintGuardDeps } from './sync-batch-lint-guards-deps';
 import { runSyncLintGuardTick, type SyncLintGuardDeps, type SyncLintGuardState } from './sync-batch-lint-guards';
 
@@ -83,9 +83,9 @@ describe('source-check dispatch/completion private PostgreSQL runtime', () => {
     const known = 'apps/old/known.ts';
     const paths = Array.from({ length: count }, (_, index) => `apps/new/file-${index}.ts`);
     paths[count - 1] = `apps/new/${'last'.repeat(450)}.ts`;
-    const initial: SyncLintGuardState = { sha: 'before', atMs: 1, guards: {
+    const initial = { sha: 'before', atMs: 1, guards: {
       [script]: { status: 'fail', sha: 'before', atMs: 1, offenders: [known], offendersTruncated: true },
-    } };
+    } } satisfies SyncLintGuardState;
     await sql`INSERT INTO harness_shared.routines (id, workspace_id, install_slug, name, metadata)
       VALUES ('lint', ${scope.workspaceId}, ${scope.installSlug}, ${lintScope.name},
         ${sql.json({ sibling: 'keep', sync_lint_guards: initial })})`;
@@ -128,6 +128,24 @@ describe('source-check dispatch/completion private PostgreSQL runtime', () => {
     expect(guardCalls).toBe(rounds);
     expect(filed).toHaveLength(count);
     expect(new Set(filed)).toEqual(new Set(paths.map(path => `sync-delta-guard:${script}:${path}`)));
+  });
+
+  it.each([true, false])('reads known-good commits only from the requested workspace (foreign first: %s)', async foreignFirst => {
+    await sql`TRUNCATE harness_shared.routines`;
+    const ownSha = '1'.repeat(40);
+    const foreignSha = '2'.repeat(40);
+    const workspaces = foreignFirst ? ['other-workspace', scope.workspaceId] : [scope.workspaceId, 'other-workspace'];
+    for (const workspace of workspaces) {
+      const sha = workspace === scope.workspaceId ? ownSha : foreignSha;
+      await sql`INSERT INTO harness_shared.routines (id, workspace_id, install_slug, name, metadata)
+        VALUES (${workspace}, ${workspace}, ${scope.installSlug}, ${scope.name},
+          ${sql.json({ sync_delta: { lastPassed: { sha } } })})`;
+    }
+    expect(await readSyncDeltaKnownGood(scope.workspaceId, scope.installSlug)).toBe(ownSha);
+    expect(await readSyncDeltaKnownGood('other-workspace', scope.installSlug)).toBe(foreignSha);
+    expect(await readSyncDeltaKnownGood('missing-workspace', scope.installSlug)).toBeNull();
+    await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${scope.workspaceId}`;
+    expect(await readSyncDeltaKnownGood(scope.workspaceId, scope.installSlug)).toBeNull();
   });
 
   it('persists held slots without running the action and fences workspace plus sibling metadata', async () => {

@@ -227,14 +227,14 @@ export function knownGoodShaOf(value: unknown): string | null {
 }
 
 /** P-012 (green-main-cycle-time-2026-10-08): the newest commit this check judged GREEN for
- *  `installSlug` (`metadata.sync_delta.lastPassed.sha`), or null when none is recorded. The gate's
+ *  workspace and `installSlug` (`metadata.sync_delta.lastPassed.sha`), or null when none is recorded. The gate's
  *  fresh cut reads it through `CheckpointDeps.resolveKnownGoodRecutTarget`. */
-export async function readSyncDeltaKnownGood(installSlug: string): Promise<string | null> {
+export async function readSyncDeltaKnownGood(workspaceId: string, installSlug: string): Promise<string | null> {
   const { sql } = getOrgPg();
   const rows = await sql`
     SELECT metadata->'sync_delta'->'lastPassed'->>'sha' AS sha
       FROM harness_shared.routines
-     WHERE install_slug = ${installSlug} AND name = ${SYNC_DELTA_ROUTINE_NAME}
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = ${SYNC_DELTA_ROUTINE_NAME}
      LIMIT 1`;
   return knownGoodShaOf(rows[0]?.sha);
 }
