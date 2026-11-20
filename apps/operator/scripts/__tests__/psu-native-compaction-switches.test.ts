@@ -433,8 +433,10 @@ describe('psu Claude launch native-compaction switches (R-6, D-004)', () => {
     const settingsName = autoGate.match(/return ([\w$]+)\("autoCompactEnabled"/)![1];
     const manual = source.match(/description:"Free up context by summarizing the conversation so far",isEnabled:(\(\)=>![\w$]+\(process\.env\.DISABLE_COMPACT\))/)![1];
     const idleFunctionName = idleDecision.match(/^function ([\w$]+)/)![1];
+    // The first argument selects precomputation in the installed CLI. Probe the
+    // ordinary idle path so unrelated precomputation helpers stay outside this VM.
     const program = `${truthGate};${disabledGate};${autoGate};${idleGate};${idleDecision};` +
-      `({automatic:${autoName}(),manual:(${manual})(),idle:${idleFunctionName}({mode:'on'},null,0,0,0,()=>false)})`;
+      `({automatic:${autoName}(),manual:(${manual})(),idle:${idleFunctionName}(false,null,0,0,0,()=>false)})`;
     const decide = (env: Env, idleCompaction = true) => runInNewContext(program, {
       process: { env },
       [envAlias]: env,
