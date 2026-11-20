@@ -4203,6 +4203,9 @@ export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: Test
   let cleanup: OwnedTestDbCleanupResult | undefined;
   let error: string | undefined;
   try {
+    // The packet allocates its private directories asynchronously. Settle that
+    // allocation before any runner or cleanup consumer receives those paths.
+    await packet.flush();
     result = await runTestFilesCoreInternal({ ...executionOpts, runId, taskDeadlineAtMs: deadline.taskDeadlineAtMs,
       cleanupReserveMs: deadline.cleanupReserveMs,
       ...(callerBound ? { deadline } : {}),

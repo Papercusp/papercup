@@ -12,9 +12,17 @@ import { retainNativeProofPacketAsync, verifyNativeProofPacket } from '../../../
  * unchanged, so the rest of this file sees the real module.
  */
 const fsTripwire = vi.hoisted(() => ({ armed: false, calls: [] as string[] }));
+const packetDirectoryIO = vi.hoisted(() => ({ beforeMkdir: null as (() => Promise<void>) | null }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, mkdir: (async (...args: Parameters<typeof actual.mkdir>) => {
+    await packetDirectoryIO.beforeMkdir?.();
+    return actual.mkdir(...args);
+  }) as typeof actual.mkdir };
+});
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  const trap = <K extends 'appendFileSync' | 'writeFileSync' | 'readFileSync' | 'readdirSync' | 'lstatSync'>(name: K) =>
+  const trap = <K extends 'appendFileSync' | 'writeFileSync' | 'readFileSync' | 'readdirSync' | 'lstatSync' | 'mkdirSync' | 'mkdtempSync'>(name: K) =>
     ((...args: unknown[]) => {
       if (fsTripwire.armed) {
         fsTripwire.calls.push(name);
@@ -23,7 +31,8 @@ vi.mock('node:fs', async (importOriginal) => {
       return (actual[name] as (...forwarded: unknown[]) => unknown)(...args);
     }) as (typeof actual)[K];
   return { ...actual, default: actual, appendFileSync: trap('appendFileSync'), writeFileSync: trap('writeFileSync'),
-    readFileSync: trap('readFileSync'), readdirSync: trap('readdirSync'), lstatSync: trap('lstatSync') };
+    readFileSync: trap('readFileSync'), readdirSync: trap('readdirSync'), lstatSync: trap('lstatSync'),
+    mkdirSync: trap('mkdirSync'), mkdtempSync: trap('mkdtempSync') };
 });
 
 const roots: string[] = [];
@@ -54,21 +63,23 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(readFileSync(report.reportPath, 'utf8')).toBe('{"passed":1}');
     expect(JSON.parse(readFileSync(report.manifestPath, 'utf8')).report.sha256).toBe(report.sha256);
   });
-  it('keeps the ordinary home layout when no retained evidence base is pinned', () => {
+  it('keeps the ordinary home layout when no retained evidence base is pinned', async () => {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-home-')); roots.push(root);
     vi.stubEnv('PAPERCUSP_HOME', root);
     vi.stubEnv('VH_EVIDENCE_ROOT_BASE', '  ');
     const packet = new TestRunArtifactPacket('ordinary-home', root, testRunDeadline(1000));
+    await packet.flush();
     expect(dirname(packet.paths.directory)).toBe(join(root, 'test-artifacts', 'testing-run'));
   });
-  it('honors an explicit packet directory while a launcher evidence base is pinned', () => {
+  it('honors an explicit packet directory while a launcher evidence base is pinned', async () => {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-explicit-')); roots.push(root);
     vi.stubEnv('VH_EVIDENCE_ROOT_BASE', join(root, 'retained'));
     const explicit = join(root, 'explicit');
     const packet = new TestRunArtifactPacket('explicit-root', root, testRunDeadline(1000), explicit);
+    await packet.flush();
     expect(dirname(packet.paths.directory)).toBe(explicit);
   });
-  function nativePacket() {
+  async function nativePacket() {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-custody-')); roots.push(root);
     const source = join(root, 'producer'); mkdirSync(source);
     writeFileSync(join(source, 'subject.test.ts'), 'export {};');
@@ -78,10 +89,11 @@ describe('maintained run deadlines and retained artifacts', () => {
     for (const name of ['configuration.json', 'router.json', 'ledger.json']) packet.write(name, { fixture: true });
     const log = join(source, 'stdout.log'); writeFileSync(log, Buffer.from([0, 255, 10]));
     packet.captureOutputLogs([log]);
+    await packet.flush();
     return { root, source, packet };
   }
   it('preserves private bytes after producer removal without upgrading pending execution or cleanup', async () => {
-    const { source, packet } = nativePacket();
+    const { source, packet } = await nativePacket();
     packet.childState = 'pending';
     await packet.finish({ cleanup: { complete: false } });
     const manifest = JSON.parse(readFileSync(packet.paths.manifest, 'utf8'));
@@ -100,7 +112,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(readFileSync(join(packet.paths.nativeProof, 'objects', log.ref))).toEqual(Buffer.from([0, 255, 10]));
   });
   it('links late-close settlement without changing a sealed pending edition', async () => {
-    const { packet } = nativePacket();
+    const { packet } = await nativePacket();
     packet.childState = 'pending'; await packet.finish({ cleanup: { complete: false } });
     const first = JSON.parse(readFileSync(packet.paths.manifest, 'utf8')).nativeCustody.locator;
     const original = readFileSync(join(packet.paths.nativeProof, 'objects', first.manifest.ref));
@@ -112,14 +124,14 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(readFileSync(join(packet.paths.nativeProof, 'objects', first.manifest.ref))).toEqual(original);
   });
   it('retains actual cleanup outcome when custody refuses a redirected root', async () => {
-    const { source, packet } = nativePacket();
+    const { source, packet } = await nativePacket();
     symlinkSync(source, packet.paths.nativeProof);
     packet.childState = 'closed'; await packet.finish({ cleanup: { complete: true } });
     expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ cleanup: { complete: true },
       nativeCustody: { byteCustody: 'unavailable', nativeProof: 'unqualified', acceptance: 'unmeasured' } });
   });
   it('keeps native-proof fsync waits off the request event loop', async () => {
-    const { packet, root } = nativePacket();
+    const { packet, root } = await nativePacket();
     const probe = await openAsync(join(root, 'sync-probe'), 'w');
     const fileHandlePrototype = Object.getPrototypeOf(probe);
     const realSync = fileHandlePrototype.sync;
@@ -168,7 +180,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(locator.identity.runId).toBe('expired-custody');
   });
   async function interruptedRouter() {
-    const { source, packet } = nativePacket();
+    const { source, packet } = await nativePacket();
     await packet.flush();
     const directory = join(packet.paths.directory, 'native-router-interrupted');
     mkdirSync(directory, { mode: 0o700 });
@@ -253,7 +265,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     return { directory, identity, expected, locator: retained.locator };
   }
   it.each(['aaa-child', 'zzz-child'])('retains nested isolated router identity without counting its files as parent selections: %s', async name => {
-    const { packet, source } = nativePacket();
+    const { packet, source } = await nativePacket();
     writeFileSync(join(source, 'second.test.ts'), 'export {};');
     const selected = [join(source, 'subject.test.ts'), join(source, 'second.test.ts')];
     packet.captureSelectedSources(['subject.test.ts', 'second.test.ts'], { commit: 'fixture' });
@@ -275,7 +287,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(outer.manifest.groups[0].auxiliary.some(row => row.role === `native-router-${name}/expected.json`)).toBe(true);
   });
   it.each([0, 1, 2, 12])('preserves the parent population with %s nested routers', async childCount => {
-    const { packet, source } = nativePacket(); await packet.flush();
+    const { packet, source } = await nativePacket(); await packet.flush();
     const selected = join(source, 'subject.test.ts');
     const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
     await sealedRouter(packet, 'parent', identity, [selected]);
@@ -288,7 +300,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     expect(manifest.nativeCustody.routerCustody).toHaveLength(childCount + 1);
   });
   it('seals a nested interrupted router under its own identity without recapturing producers', async () => {
-    const { packet, source } = nativePacket(); await packet.flush();
+    const { packet, source } = await nativePacket(); await packet.flush();
     const selected = join(source, 'subject.test.ts');
     const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
     await sealedRouter(packet, 'parent', identity, [selected]);
@@ -305,7 +317,7 @@ describe('maintained run deadlines and retained artifacts', () => {
   });
   it.each(['missing-parent', 'wrong-parent', 'duplicate-parent', 'foreign-run', 'foreign-harness',
     'tampered-identity', 'tampered-population'] as const)('refuses nested router custody with %s', async fault => {
-    const { packet, source } = nativePacket(); await packet.flush();
+    const { packet, source } = await nativePacket(); await packet.flush();
     const selected = join(source, 'subject.test.ts');
     const identity = { workspace: 'custody-workspace', harness: 'papercusp', runId: 'run-custody' };
     if (fault !== 'missing-parent') await sealedRouter(packet, 'parent', identity,
@@ -354,6 +366,7 @@ describe('maintained run deadlines and retained artifacts', () => {
     const packet = new TestRunArtifactPacket('run-1', root, testRunDeadline(1000), join(root, 'retained'));
     packet.captureSelectedSources(['subject.test.ts'], { commit: 'abc', porcelain: '' });
     packet.childState = childState;
+    await packet.flush();
     writeFileSync(join(packet.paths.reports, 'report.json'), '{"complete":true}');
     writeFileSync(join(packet.paths.directory, 'stdout.log'), 'first byte\nlast byte\n');
     writeFileSync(join(packet.paths.directory, 'stderr.log'), 'separate error\n');
@@ -369,10 +382,10 @@ describe('maintained run deadlines and retained artifacts', () => {
 });
 
 describe('packet writes stay off the operator host thread (WI-6554700010048955)', () => {
-  it('stage/write/captureSelectedSources make no sync fs call, and land in call order on flush', async () => {
+  it('construction/stage/write/captureSelectedSources make no sync fs call, and land in call order on flush', async () => {
     const root = mkdtempSync(join(tmpdir(), 'run-artifacts-async-')); roots.push(root);
     writeFileSync(join(root, 'subject.test.ts'), 'export const pinned = 1;\n');
-    const packet = new TestRunArtifactPacket('async-writes', root, testRunDeadline(60_000), join(root, 'retained'));
+    let packet!: TestRunArtifactPacket;
     const config = { attempt: 1 };
     fsTripwire.armed = true;
     try {
@@ -380,7 +393,10 @@ describe('packet writes stay off the operator host thread (WI-6554700010048955)'
       // this module graph, so the pre-fix appendFileSync/writeFileSync/readFileSync would trip it.
       expect(() => writeFileSync(join(root, 'probe.txt'), 'x')).toThrow(/sync fs call writeFileSync/);
       expect(fsTripwire.calls).toEqual(['writeFileSync']);
+      expect(() => mkdirSync(join(root, 'probe-dir'))).toThrow(/sync fs call mkdirSync/);
+      expect(() => mkdtempSync(join(root, 'probe-'))).toThrow(/sync fs call mkdtempSync/);
       fsTripwire.calls.length = 0;
+      packet = new TestRunArtifactPacket('async-writes', root, testRunDeadline(60_000), join(root, 'retained'));
       packet.captureSelectedSources(['subject.test.ts'], { commit: 'fixture' });
       packet.stage('a');
       packet.write('configuration.json', config);
@@ -403,6 +419,40 @@ describe('packet writes stay off the operator host thread (WI-6554700010048955)'
         expect.objectContaining({ path: 'subject.test.ts', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }),
       ]),
     });
+  });
+
+  it('keeps the event loop available while packet allocation waits for filesystem I/O', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-allocation-')); roots.push(root);
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    packetDirectoryIO.beforeMkdir = async () => { entered(); await blocked; };
+    const packet = new TestRunArtifactPacket('async-allocation', root, testRunDeadline(60_000), join(root, 'retained'));
+    let settled = false;
+    const flushing = packet.flush().then(() => { settled = true; });
+    try {
+      await started;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(() => readFileSync(packet.paths.manifest)).toThrow(/ENOENT/);
+    } finally {
+      packetDirectoryIO.beforeMkdir = null;
+      release();
+      await flushing;
+    }
+    expect(JSON.parse(readFileSync(packet.paths.manifest, 'utf8'))).toMatchObject({ runId: 'async-allocation' });
+  });
+
+  it('refuses every queued writer when its private directory cannot be allocated', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'run-artifacts-allocation-fail-')); roots.push(root);
+    const base = join(root, 'retained');
+    writeFileSync(base, 'existing file');
+    const packet = new TestRunArtifactPacket('failed-allocation', root, testRunDeadline(60_000), base);
+    packet.write('later.json', { mustNotWrite: true });
+    await expect(packet.flush()).rejects.toThrow();
+    expect(readFileSync(base, 'utf8')).toBe('existing file');
+    expect(() => readFileSync(join(packet.paths.directory, 'later.json'))).toThrow(/ENOTDIR/);
   });
 
   it('surfaces a failed queued write once at flush and keeps later writes flowing', async () => {

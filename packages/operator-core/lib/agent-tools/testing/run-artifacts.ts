@@ -1,5 +1,4 @@
 /** Retained evidence for the existing testing:run route; this module launches nothing. */
-import { mkdirSync, mkdtempSync } from 'node:fs';
 import { appendFile, mkdir, lstat, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -199,16 +198,21 @@ export class TestRunArtifactPacket {
   private outputLogs: string[] = [];
   private custodyIdentity?: NativeCustodyIdentity;
   private nativeLocator?: NativeCustodyLocator;
+  private readonly directoryReady: Promise<void>;
   constructor(readonly runId: string, readonly root: string, readonly deadline: TestRunDeadline,
     base = defaultTestRunArtifactBase()) {
-    mkdirSync(base, { recursive: true, mode: 0o700 });
-    const directory = mkdtempSync(join(base, 'run-'));
+    // Allocate the name without filesystem work on the operator thread. The
+    // non-recursive mkdir below claims it exclusively, including on collision.
+    const directory = join(base, 'run-' + randomUUID());
     this.paths = { directory, manifest: join(directory, 'manifest.json'), phases: join(directory, 'phases.jsonl'),
       reports: join(directory, 'reports'), ownedDatabases: join(directory, 'owned-databases'),
       runtimeInputs: join(directory, 'executed-inputs'), nativeProof: join(directory, 'native-proof') };
-    for (const dir of [this.paths.reports, this.paths.ownedDatabases, this.paths.runtimeInputs]) {
-      mkdirSync(dir, { mode: 0o700 });
-    }
+    this.directoryReady = (async () => {
+      await mkdir(base, { recursive: true, mode: 0o700 });
+      await mkdir(directory, { mode: 0o700 });
+      await Promise.all([this.paths.reports, this.paths.ownedDatabases, this.paths.runtimeInputs]
+        .map(dir => mkdir(dir, { mode: 0o700 })));
+    })();
     this.write('manifest.json', { schemaVersion: 1, runId, root, deadline, state: 'running', paths: this.paths });
     this.stage('start');
   }
@@ -225,7 +229,12 @@ export class TestRunArtifactPacket {
   private writeChain: Promise<void> = Promise.resolve();
   private writeFailure: { error: unknown } | null = null;
   private enqueueWrite(task: () => Promise<unknown>): void {
-    this.writeChain = this.writeChain.then(task).then(() => undefined, (error: unknown) => {
+    this.writeChain = this.writeChain.then(async () => {
+      // Every writer waits independently: a failed allocation must never let a
+      // later queued write use an unclaimed or incomplete packet directory.
+      await this.directoryReady;
+      return task();
+    }).then(() => undefined, (error: unknown) => {
       this.writeFailure ??= { error };
     });
   }
