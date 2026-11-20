@@ -565,6 +565,82 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.find(s => s.expression === 'quietTell ( )')?.roots).toEqual(['sendOwner']);
   });
 
+  it.each([false, true])('resolves nested factory arguments before entering the callee return path (reverse=%s)', reverse => {
+    const applications = [
+      'const tell = choose(choose(notifyOwner)); tell();',
+      'const read = choose(choose(readOnly)); read();',
+    ];
+    const c = scan(`
+      function choose(callback) { return callback; }
+      function readOnly() { return 1; }
+      ${reverse ? applications.reverse().join('\n') : applications.join('\n')}
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['tell ( )', ['notifyOwner']]]);
+  });
+
+  it.each([2, 3, 12])('separates finite nested wrapper applications from recursive returns (depth=%s)', depth => {
+    const nested = (callback: string) => `${'wrap('.repeat(depth)}${callback}${')'.repeat(depth)}`;
+    const c = censusSources({
+      'src/factory.ts': `
+        function choose(callback) { return callback; }
+        export function wrap(callback) { return choose(callback); }
+      `,
+      'src/app.ts': `
+        import { wrap } from './factory';
+        function readOnly() { return 1; }
+        const tell = ${nested('notifyOwner')};
+        const read = ${nested('readOnly')};
+        tell(); read();
+      `,
+    });
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['tell ( )', ['notifyOwner']]]);
+  });
+
+  it.each(['false', 'null', '0'])('preserves a known non-callable factory argument through rest forwarding: %s', value => {
+    const c = scan(`
+      function choose(callback = notifyOwner) { return callback; }
+      function forward(...args) { return choose(...args); }
+      const known = forward(${value});
+      const omitted = forward();
+      const unknown = forward(undefined);
+      known(); omitted(); unknown();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+      ['omitted ( )', ['notifyOwner']], ['unknown ( )', ['notifyOwner']],
+    ]);
+  });
+
+  it('does not expand unused factory argument diamonds', () => {
+    const NativeSet = globalThis.Set;
+    let allocations = 0;
+    class TrackedSet<T> extends NativeSet<T> {
+      constructor(values?: Iterable<T> | null) {
+        super(values);
+        allocations++;
+      }
+    }
+    const depth = 9;
+    const factories = Array.from({ length: depth }, (_, i) =>
+      `function state${i + 1}(value) { return choose(state${i}(state${i}(value))); }`,
+    ).join('\n');
+    vi.stubGlobal('Set', TrackedSet);
+    let census: NotifyCensus;
+    try {
+      census = scan(`function choose(unused) { return notifyOwner; }
+        function state0(value) { return value; }
+        ${factories} const tell = state${depth}(readOnly); tell();`);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(census.sites.map(s => [s.expression, s.roots])).toEqual([['tell ( )', ['notifyOwner']]]);
+    // Measure work, not wall time. Eagerly resolving ignored arguments allocated
+    // over 580,000 sets for this small source graph; caller-bound values stay lazy.
+    expect(allocations).toBeLessThan(200 * depth * depth);
+  });
+
   it('retains factory effects separately from effects of a returned callback', () => {
     const c = scan(`
       function make(){ notifyAttention(); return sendOwner; }

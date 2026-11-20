@@ -82,7 +82,8 @@ export function censusSources(sources) {
   const modules = new Map();
   const calls = [];
   const gaps = [];
-  const resolvingReturns = new Set();
+  let resolvingReturns = new Set();
+  const resolvingArguments = new Map();
   const manifests = new Map();
   const configs = new Map();
   for (const [path, source] of Object.entries(sources)) if (/(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(path)) {
@@ -356,6 +357,27 @@ export function censusSources(sources) {
     // Primitive defaults are supported values, but never callback targets.
     // Keep computed keys conservative rather than guessing a property name.
     if (r.nonCallable) return [];
+    if (r.callerArgument) {
+      const caller = r.callerArgument;
+      const contexts = resolvingArguments.get(caller.ref) ?? new Set();
+      // Restoring a caller path must not erase an argument evaluation already
+      // active on that same path. Exact ref/context pairs distinguish a cycle
+      // from finite applications of the same wrapper with different bindings.
+      if (contexts.has(caller.context)) {
+        targetCycles++;
+        return [{ roots: new Set(['<unresolved-recursive-return>']), unresolvedReturn: true }];
+      }
+      contexts.add(caller.context);
+      resolvingArguments.set(caller.ref, contexts);
+      const activeReturns = resolvingReturns;
+      resolvingReturns = new Set(caller.returns);
+      try { return targets(caller.ref, new Set(caller.seen), caller.context); }
+      finally {
+        resolvingReturns = activeReturns;
+        contexts.delete(caller.context);
+        if (!contexts.size) resolvingArguments.delete(caller.ref);
+      }
+    }
     if (r.choices) return r.choices.flatMap(choice => branchTargets(choice.ref, seen, choice.context, trail));
     if (r.literal !== undefined) return [{ literal: r.literal }];
     if (r.result) {
@@ -370,6 +392,18 @@ export function censusSources(sources) {
       // terminate conservatively instead of overflowing or claiming clean.
       const invocation = `${r.site}:${t.id}`;
       if (resolvingReturns.has(invocation)) { targetCycles++; return [{ roots: new Set(['<unresolved-recursive-return>']), unresolvedReturn: true }]; }
+      // Supplied values belong to the caller's traversal and return path. Keep
+      // that path before entering the callee, but resolve only arguments its
+      // returned value uses. Eager resolution expands unused argument diamonds;
+      // resolving in the callee instead conflates finite nested applications.
+      let args = r.args;
+      if (args.length && ((!t.hasRest && t.params.length && t.params.every(Boolean)) || t.restForwardCall)) {
+        const callerSeen = new Set(seen);
+        const callerReturns = new Set(resolvingReturns);
+        args = args.map(ref => ({ callerArgument: { ref, context, seen: callerSeen, returns: callerReturns },
+          ...(ref?.nonCallable ? { nonCallable: true } : {}),
+        }));
+      }
       resolvingReturns.add(invocation);
       try {
       // Unsupported parameter shapes retain the global return alternatives.
@@ -379,16 +413,16 @@ export function censusSources(sources) {
         const value = r.args[i];
         const fallback = t.defaults[i];
         const choices = [];
-        if (value) choices.push({ ref: value, context });
+        if (value) choices.push({ ref: args[i], context });
         // An unresolved supplied value may be undefined and select the default.
         if (fallback?.present && (!value || (!value.nonCallable
-          && !targets(value, new Set(), context).some(v => v.calls || v.roots?.size || v.literal !== undefined)))) {
+          && !targets(args[i], new Set(), context).some(v => v.calls || v.roots?.size || v.literal !== undefined)))) {
           choices.push({ ref: fallback.ref, context: bound });
         }
         bound.set(p.id, { ref: { choices }, context: bound });
       });
       const values = t.restForwardCall ? t.returns.map(value => ({ ...value,
-        args: r.args.map(ref => ({ choices: [{ ref, context }] })),
+        args,
       })) : t.returns;
       return values.flatMap(value => branchTargets(value, seen, bound, trail));
       } catch (error) {
