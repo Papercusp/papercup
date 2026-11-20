@@ -42,12 +42,13 @@ const enforced = (items: Record<string, string>) => ({
 
 describe('evaluateConversationActivationGate — item provenance (R-4)', () => {
   it('passes when every current item was resolved by the enforced audit', async () => {
-    const { tx } = txFor({
+    const { tx, calls } = txFor({
       activation: enforced({ 'P-001': 'owner', 'P-002': 'derived' }),
       content: plan(['- **P-001** `todo` A.', '- **P-002** `wip` B.']),
     });
 
     await expect(evaluateConversationActivationGate(tx as never, SCOPE)).resolves.toEqual({ satisfied: true, auditSeq: 2 });
+    expect(calls.filter(query => query.includes('harness_shared.harness_plans'))).toHaveLength(1);
   });
 
   it('refuses item_provenance_unresolved naming an item added after the enforced audit', async () => {

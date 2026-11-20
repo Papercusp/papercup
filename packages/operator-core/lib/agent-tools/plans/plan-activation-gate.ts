@@ -148,21 +148,16 @@ export async function evaluateConversationActivationGate(
      LIMIT 1`;
   const row = rows[0];
   if (row) {
+    // Judge item provenance, declarations and types from the same stored plan body.
+    const storedContent = await readStoredPlanContent(tx, scope);
     // plan-item-provenance-2026-09-29 P-003: an ENFORCED audit resolved a specific
     // item set. An item added (or un-dropped) after it has no recorded provenance, so
     // the lifecycle doors refuse it until a re-audit resolves it. Unenforced (legacy)
     // audits keep passing — they were recorded with the gap as a warning.
     const check = itemProvenanceCheckOf(row.activation);
     if (check?.enforced) {
-      const planRows = await tx<Array<{ content: string }>>`
-        SELECT content
-          FROM harness_shared.harness_plans
-         WHERE workspace_id = ${scope.workspaceId}
-           AND harness_slug = ${scope.harnessSlug}
-           AND plan_slug = ${scope.planSlug}
-         LIMIT 1`;
-      const unresolved = planRows[0]?.content
-        ? parsePlan(planRows[0].content, { filePath: `${scope.planSlug}.md` }).items
+      const unresolved = storedContent
+        ? parsePlan(storedContent, { filePath: `${scope.planSlug}.md` }).items
             .filter((item) => item.storedStatus !== 'dropped')
             .map((item) => item.id)
             .filter((id) => !check.items[id] || check.items[id] === 'unresolved')
@@ -186,8 +181,6 @@ export async function evaluateConversationActivationGate(
     // after a gated audit refuses here, and so does a plan whose audit predates the gate
     // (D-004 #1 retrofits by plan status; only active/shipped plans are exempt).
     // EI-26528805324626265: this check used to run only for gated audit rows.
-    // One stored-content read serves both content checks below.
-    const storedContent = await readStoredPlanContent(tx, scope);
     const declarationRefusal = await declarationsRefusal(tx, scope, {
       auditSeq: Number(row.audit_seq),
       gatedAudit: declarationsCheckEnforced(row.activation),
