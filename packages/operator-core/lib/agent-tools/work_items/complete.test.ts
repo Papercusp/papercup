@@ -9168,6 +9168,58 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         key === 'papercusp-terminal-criteria-enforcement' ? value : false,
       );
 
+    // EI-29313702869256767: distinguish the advisory missing-path finding from
+    // the enforced already-passing finding on first close and terminal replay.
+    it.each(['open', 'resolved'].flatMap((state) =>
+      [false, true].flatMap((validateOnly) => [
+        { state, validateOnly, verifiedHow: 'manual', requireDurableChange: false, authority: 'committed' },
+        { state, validateOnly, verifiedHow: 'already-passing', requireDurableChange: false, authority: 'proposed' },
+        { state, validateOnly, verifiedHow: 'manual', requireDurableChange: true, authority: 'proposed' },
+      ]),
+    ))('grades PG-only verification consistently: $state / preview=$validateOnly / $verifiedHow / durable=$requireDurableChange',
+      async ({ state, validateOnly, verifiedHow, requireDurableChange, authority }) => {
+        enforcement(true);
+        const bug = { ...item, id: 'EI-pg-only', kind: 'bug', family: 'issue', state,
+          payload: requireDurableChange ? { terminalCriteria: { requireDurableChange: true } } : {} };
+        getWorkItem.mockResolvedValue(bug);
+        setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...bug, state: 'resolved' }));
+
+        const result = await one({
+          id: bug.id, state: 'resolved', validateOnly,
+          completion: {
+            summary: 'Verified the existing canonical plan conclusion length correction.',
+            verifiedHow,
+            testsRun: 'plans:get immutable original and current revision; read canonical discovery audit',
+            testResult: 'Original conclusion exceeded the schema limit; corrected conclusion fits and audit is ready.',
+            filesChanged: [], filesDeleted: [],
+            verification: { workOutcome: 'verified-existing' },
+          },
+        });
+
+        expect(result.ok).toBe(true);
+        expect(result.completionAuthority).toBe(authority);
+        expect(result.countsTowardBurnDown).toBe(authority === 'committed');
+        if (authority === 'committed') {
+          expect(result.terminalCriteriaWarning).toBeUndefined();
+        } else {
+          expect(result.terminalCriteriaWarning).toContain('durable-change');
+          if (verifiedHow === 'already-passing') {
+            expect(result.terminalCriteriaWarning).toContain('forbidden-evidence-mode');
+          } else {
+            expect(result.terminalCriteriaWarning).not.toContain('forbidden-evidence-mode');
+          }
+        }
+        if (validateOnly) {
+          expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+          expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+        } else {
+          expect(stateOpts().completionAuthority).toBe(authority);
+          expect(stateOpts().completionEvidence.filesChanged ?? []).toEqual([]);
+          expect(stateOpts().completionEvidence.workOutcome).toBe('verified-existing');
+        }
+      },
+    );
+
     // SPEC-BQL-P-009-RECEIPT: exercise the close handler and its persistence
     // boundary, including accepted/non-reviewed controls and the honest drop exit.
     it.each([
