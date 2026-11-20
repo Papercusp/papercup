@@ -57,8 +57,9 @@ interface FsPage extends DocPage {
   absolutePath: string;
 }
 
-function slugFromRelPath(rel: string): string {
+function slugFromRelPath(rel: string, stateFile = false): string {
   const noExt = rel.replace(/\.(md|mdx)$/i, '');
+  if (!stateFile) return noExt;
   // .papercusp/knowledge.md → harness-state/knowledge
   if (noExt.startsWith('.papercusp/')) {
     return 'harness-state/' + noExt.slice('.papercusp/'.length);
@@ -179,7 +180,7 @@ export function harnessFsAdapter(projectPath: string, opts: HarnessFsAdapterOpti
       (relFile, content) => {
         if (content === null) return;
         const abs = path.join(projectPath, relFile);
-        const slug = slugFromRelPath(relFile);
+        const slug = slugFromRelPath(relFile, true);
         const slugs = slug.split('/');
         cache.set(slug, {
           slug,

@@ -180,6 +180,8 @@ export async function verifyManualDoc(
   }
   const head = await repoHeadSha(paths.repoRoot);
   if (!head) return { ok: false, error: 'no_head_sha' };
-  await verifyDoc(harnessSlug, id, head, workspaceId);
+  if (!await verifyDoc(harnessSlug, id, head, workspaceId, existing)) {
+    return { ok: false, error: 'doc_review_subject_changed' };
+  }
   return { ok: true, verifiedSha: head };
 }

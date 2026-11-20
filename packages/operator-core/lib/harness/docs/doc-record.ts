@@ -163,6 +163,8 @@ export interface HarnessDocRecord {
   generatedFromSha: string | null;
   lastVerifiedSha: string | null;
   lastVerifiedAt: string | null;
+  /** Present on a stored row. Required to stamp the scope that was actually read. */
+  contentHash?: string;
   overlay: string | null;
   status: DocStatus;
   statusDetail: string | null;
@@ -188,6 +190,7 @@ interface DocRow {
   generated_from_sha: string | null;
   last_verified_sha: string | null;
   last_verified_at: Date | string | null;
+  content_hash: string;
   overlay: string | null;
   status: string;
   status_detail: string | null;
@@ -216,6 +219,7 @@ function rowToRecord(r: DocRow): HarnessDocRecord {
     generatedFromSha: r.generated_from_sha,
     lastVerifiedSha: r.last_verified_sha,
     lastVerifiedAt: toIso(r.last_verified_at),
+    contentHash: r.content_hash,
     overlay: r.overlay,
     status: (r.status as DocStatus) ?? 'untracked',
     statusDetail: r.status_detail,
@@ -470,15 +474,27 @@ export async function verifyDoc(
   docId: string,
   verifiedSha: string,
   workspaceId?: string,
-): Promise<void> {
+  reviewed?: HarnessDocRecord,
+): Promise<boolean> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const original = reviewed ?? await getDocRecord(harnessSlug, docId, workspaceId);
+  if (!original || typeof original.contentHash !== 'string' ||
+      original.workspaceId !== workspaceId || original.harnessSlug !== harnessSlug ||
+      original.docId !== docId || !original.subjectRef.length) return false;
   const { sql } = getOrgPg();
-  await sql`
+  const refs = JSON.stringify(original.subjectRef);
+  const rows = await sql`
     UPDATE harness_shared.harness_docs
        SET last_verified_sha = ${verifiedSha}, last_verified_at = now(),
            status = 'fresh', status_detail = NULL, status_checked_at = now(),
            reverify_flagged_at = NULL, reverify_attempts = 0
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}`;
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}
+       AND retired_at IS NULL AND source = ${original.source} AND content_hash = ${original.contentHash}
+       AND overlay IS NOT DISTINCT FROM ${original.overlay}
+       AND subject_ref @> ${refs}::text::jsonb AND subject_ref <@ ${refs}::text::jsonb
+       AND anchor_paths @> ${original.anchorPaths}::text[] AND anchor_paths <@ ${original.anchorPaths}::text[]
+     RETURNING doc_id`;
+  return rows.length === 1;
 }
 
 /**

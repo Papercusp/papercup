@@ -168,6 +168,33 @@ describe('overlay survives regeneration (D-003/P-005)', () => {
 });
 
 describe('verify + status + flags', () => {
+  it('only stamps the live document when it still matches the scope and prose actually reviewed', async () => {
+    const id = 'manual/review-scope.md';
+    const base = { workspaceId: WS, harnessSlug: HARNESS, docId: id, source: 'manual' as const,
+      subjectRef: [{ kind: 'path' as const, globs: ['src/a.ts', 'src/b.ts'] }],
+      anchorPaths: ['src/a.ts', 'src/b.ts'], content: 'Original instructions.' };
+    await rec.upsertDocRecord(base);
+    const original = (await rec.getDocRecord(HARNESS, id, WS))!;
+    const head = 'a'.repeat(40);
+    await rec.upsertDocRecord({ ...base, anchorPaths: [...base.anchorPaths].reverse(),
+      subjectRef: [{ kind: 'path', globs: ['src/b.ts', 'src/a.ts'] }] });
+    await expect(rec.verifyDoc(HARNESS, id, head, WS, original)).resolves.toBe(true);
+
+    const edited = { ...base, subjectRef: [{ kind: 'symbol' as const, file: 'src/c.ts', name: 'newSubject' }],
+      anchorPaths: ['src/c.ts'], status: 'review' as const };
+    await rec.upsertDocRecord(edited);
+    await expect(rec.verifyDoc(HARNESS, id, 'b'.repeat(40), WS, original)).resolves.toBe(false);
+    const reanchored = (await rec.getDocRecord(HARNESS, id, WS))!;
+    expect(reanchored).toMatchObject({ lastVerifiedSha: head, status: 'review' });
+    await rec.upsertDocRecord({ ...edited, content: 'Changed instructions.' });
+    await expect(rec.verifyDoc(HARNESS, id, 'c'.repeat(40), WS, reanchored)).resolves.toBe(false);
+    const changed = (await rec.getDocRecord(HARNESS, id, WS))!;
+    await db.adminSql`UPDATE harness_shared.harness_docs SET retired_at = now()
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND doc_id = ${id}`;
+    await expect(rec.verifyDoc(HARNESS, id, 'd'.repeat(40), WS, changed)).resolves.toBe(false);
+    expect((await rec.getDocRecord(HARNESS, id, WS))!.lastVerifiedSha).toBe(head);
+  });
+
   it('verifyDoc stamps baseline + flips to fresh', async () => {
     await rec.upsertDocRecord({
       harnessSlug: HARNESS, docId: 'm.md', workspaceId: WS, source: 'manual',
