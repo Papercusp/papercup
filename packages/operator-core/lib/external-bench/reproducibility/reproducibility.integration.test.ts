@@ -244,6 +244,42 @@ describe('emitRollout', () => {
 });
 
 describe('current frozen rollout emission', () => {
+  it('reads the saved submission and keeps one independent attempt when its grade is replayed', async () => {
+    const scope = { sql, workspaceId: WS };
+    const protocol = currentProtocolFixture('saved-submission-replay');
+    const register = (config: typeof protocol) => preregister({ runId: config.runId, config, suites: ['swe-bench-pro'], repoRoot, ...scope });
+    const { preregHash } = await register(protocol);
+    const original = input({ preregHash, runId: protocol.runId, taskId: 't1', seed: 1 });
+    original.generation.modelId = protocol.arms[0].model;
+    original.grading.family = protocol.grader.family;
+    original.grading.version = protocol.grader.version;
+    const emitted = await emitRollout(original, scope);
+    const saved = await getRollout(emitted.rolloutId, scope);
+    expect(saved).toMatchObject({ preregHash, submission: original.generation.submission, runId: protocol.runId });
+    const replay = { ...original, generation: { ...original.generation, submission: saved!.submission! },
+      grading: { ...original.grading, resolved: false, status: 'failed' as const, rawOutput: 're-evaluated' } };
+    expect(await emitRollout(replay, scope)).toEqual(emitted);
+    const list = () => listRunResults({ runId: protocol.runId, ...scope });
+    expect(await list()).toMatchObject([{ rolloutId: emitted.rolloutId, preregHash, resolved: false,
+      submissionRef: 'rollout:' + emitted.rolloutId + '#submission' }]);
+    const [report] = await getRunReports(protocol.runId, scope);
+    expect(report.sampling.independentUnits).toBe(1);
+    expect(report.arms[0].attempts).toBe(1);
+    await expect(emitRollout({ ...replay, grading: { ...replay.grading, version: 'other-evaluator' } }, scope))
+      .rejects.toThrow(/frozen current protocol/);
+    const changed = structuredClone(protocol);
+    changed.arms[0].runtime.promptHash = 'e'.repeat(64);
+    await expect(register(changed)).rejects.toThrow();
+    changed.runId = 'new-generation-replay-control';
+    const next = await register(changed);
+    const regenerated = await emitRollout({ ...original, runId: changed.runId, preregHash: next.preregHash,
+      generation: { ...original.generation, submission: 'another generated result' } }, scope);
+    expect(regenerated.rolloutId).not.toBe(emitted.rolloutId);
+    expect(await getRollout(regenerated.rolloutId, scope)).toMatchObject({ runId: changed.runId, preregHash: next.preregHash });
+    expect((await getRollout(emitted.rolloutId, scope))!.submission).toBe(saved!.submission);
+    expect(await list()).toHaveLength(1);
+  });
+
   it('round-trips HLB diagnostic and accounting through actual PG, portable JSON and the existing export', async () => {
     const scope = { sql, workspaceId: WS };
     const protocols = [hlbProtocolFixture('hlb-accounting-tb'), hlbProtocolFixture('hlb-accounting-ds', 'deep-swe')];
