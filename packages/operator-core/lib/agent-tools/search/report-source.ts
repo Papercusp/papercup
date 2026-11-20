@@ -1,6 +1,8 @@
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
+import { resolveChunkSurface } from '@papercusp/search';
 import { visibleTo, type ReportViewer } from '../../report-library';
 import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
+import { REPORTS_CHUNK_SURFACE } from '../../search/chunks/registry';
 import { reportsLibraryDisabled } from '../reports/_shared';
 import { boundedSource, completeContextUnit, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
 import { lastMarkdownHeading } from '../plans/semantic-leg';
@@ -8,6 +10,10 @@ import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
 import { contextSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
 import type { Sql } from 'postgres';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
+
+const reportWindow = REPORTS_CHUNK_SURFACE.splitter;
+const reportWindowStep = Math.max(1, reportWindow.size - reportWindow.overlap);
+const reportSplitterVersion = resolveChunkSurface(REPORTS_CHUNK_SURFACE).splitterVersion;
 
 /** Lifecycle reads retain the report library's current viewer predicate.
  * A hidden replacement never becomes a disclosed id or source body. */
@@ -135,23 +141,30 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
     },
     async embedding(p) {
       if (await reportsLibraryDisabled()) return [];
+      const ready = p.sql`c.embedding IS NOT NULL AND
+        (${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'c.embedding_profile', 'c.embedding_mode')}) IS TRUE`;
+      // splitWindows counts UTF-16 units. PostgreSQL counts a supplementary character once.
+      const inputText = p.sql.unsafe(REPORTS_CHUNK_SURFACE.textSql);
+      const inputUnits = p.sql`char_length(regexp_replace(${inputText} COLLATE "C", ${'[\u{10000}-\u{10ffff}]'}, 'xx', 'g'))`;
+      const expectedChunks = p.sql`1 + (greatest(0, ${inputUnits} - ${reportWindow.size}::int)
+        + ${reportWindowStep - 1}::int) / ${reportWindowStep}::int`;
       // Reports have only chunk vectors. Pool by the nearest visible chunk;
       // visibility applies before ranking/limit and workspace is part of every join.
       const rows = await p.sql`WITH best AS (
-        SELECT r.workspace_id, r.report_id, min(c.embedding <=> ${p.qVec}::vector) AS distance
-        FROM harness_shared.report_library r JOIN harness_shared.text_chunks c
-          ON c.surface = 'report' AND c.parent_key = ARRAY[r.workspace_id, r.report_id]
-        WHERE r.workspace_id = ${p.workspaceId} AND r.report_id IN (${latest(p)})
-          AND c.embedding IS NOT NULL
-          AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'c.embedding_profile', 'c.embedding_mode')}
-          AND (r.supersedes_report_id IS NULL OR NOT EXISTS (
-            SELECT 1 FROM harness_shared.text_chunks sibling
-            WHERE sibling.surface = 'report' AND sibling.parent_key = c.parent_key
-              AND (sibling.embedding IS NULL OR sibling.parent_sha IS DISTINCT FROM c.parent_sha
-                OR sibling.splitter_version IS DISTINCT FROM c.splitter_version
-                OR (${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'sibling.embedding_profile', 'sibling.embedding_mode')}) IS NOT TRUE)
-          ))
-        GROUP BY r.workspace_id, r.report_id ORDER BY distance, r.report_id LIMIT ${p.limit}
+        SELECT p.workspace_id, p.report_id, min(c.embedding <=> ${p.qVec}::vector) AS distance
+        FROM harness_shared.report_library p JOIN harness_shared.text_chunks c
+          ON c.surface = 'report' AND c.parent_key = ARRAY[p.workspace_id, p.report_id]
+        WHERE p.workspace_id = ${p.workspaceId} AND p.report_id IN (${latest(p)})
+          AND (p.supersedes_report_id IS NOT NULL OR (${ready}))
+        GROUP BY p.workspace_id, p.report_id
+        HAVING p.supersedes_report_id IS NULL OR (
+          bool_and(${ready}) AND bool_and(c.splitter_version = ${reportSplitterVersion})
+          AND min(c.parent_sha) = max(c.parent_sha)
+          AND count(DISTINCT (c.embedding_mode, c.embedding_profile)) = 1
+          AND min(c.chunk_idx) = 0 AND max(c.chunk_idx) = count(*) - 1
+          AND count(*) = ${expectedChunks}
+        )
+        ORDER BY distance, p.report_id LIMIT ${p.limit}
       ) SELECT r.workspace_id, r.report_id, r.title, r.summary, r.body_md, r.lineage_id, r.origin_harness_slug, r.published_at,
         1 - b.distance AS rank, c.content AS match_content, c.content AS highlight,
         left(concat_ws(E'\n',r.title,nullif(r.summary,''),r.body_md), c.chunk_idx * 1250 + 750) AS section_prefix

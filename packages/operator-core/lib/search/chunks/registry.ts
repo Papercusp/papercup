@@ -245,7 +245,7 @@ export const CONSULT_QUESTIONS_CHUNK_SURFACE: PapercuspChunkSurface = {
 };
 
 /** Reports are immutable editions; index the whole bounded body, including short reports. */
-export const REPORTS_CHUNK_SURFACE: PapercuspChunkSurface = {
+export const REPORTS_CHUNK_SURFACE = {
   surface: 'report',
   searchSource: 'report',
   parent: { table: 'harness_shared.report_library', key: ['workspace_id', 'report_id'] },
@@ -256,7 +256,7 @@ export const REPORTS_CHUNK_SURFACE: PapercuspChunkSurface = {
   minChars: 0,
   splitter: { kind: 'window', size: 1500, overlap: 250 },
   maxChunks: 512,
-};
+} satisfies PapercuspChunkSurface;
 
 export const CHUNK_SURFACES: readonly PapercuspChunkSurface[] = [
   // Session turns (P-007): the dedicated store above, not the shared table.

@@ -177,6 +177,51 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     } finally { release(); await indexing; }
   });
 
+  it('withholds a successor with a missing first, middle or last chunk until retry restores it', async () => {
+    const { workspace, edition, hits } = editionFixture();
+    const original = await edition();
+    await indexReport(db.adminSql, original, documentEmbedder);
+    const successor = await edition({ supersedes: original.reportId });
+    const { chunks } = await indexReport(db.adminSql, successor, documentEmbedder);
+    expect(chunks).toBeGreaterThan(3);
+    for (const index of [0, Math.floor(chunks / 2), chunks - 1]) {
+      await db.adminSql`DELETE FROM harness_shared.text_chunks WHERE surface = 'report'
+        AND parent_key = ${[workspace, successor.reportId]}::text[] AND chunk_idx = ${index}`;
+      expect(await hits(), `missing chunk ${index}`).toEqual([]);
+      await indexReport(db.adminSql, successor, documentEmbedder);
+      expect(await hits()).toEqual([successor.reportId]);
+    }
+  });
+
+  it.each([1499, 1500, 1501])('checks a successor covering %i UTF-16 units including supplementary characters', async units => {
+    const { workspace, edition, hits } = editionFixture();
+    const original = await edition();
+    const title = 'River';
+    const bodyLength = units - title.length - 1;
+    const bodyMd = '🌿'.repeat(Math.floor(bodyLength / 2)) + 'x'.repeat(bodyLength % 2);
+    const successor = await edition({ supersedes: original.reportId, title, bodyMd });
+    const { chunks } = await indexReport(db.adminSql, successor, documentEmbedder);
+    expect(chunks).toBe(units <= 1500 ? 1 : 2);
+    expect(await hits()).toEqual([successor.reportId]);
+    await db.adminSql`DELETE FROM harness_shared.text_chunks WHERE surface = 'report'
+      AND parent_key = ${[workspace, successor.reportId]}::text[] AND chunk_idx = ${chunks - 1}`;
+    expect(await hits()).toEqual([]);
+  });
+
+  it('withholds a mixture of embedding modes during a same-profile successor retry', async () => {
+    const { edition, hits } = editionFixture();
+    const original = await edition();
+    const successor = await edition({ supersedes: original.reportId });
+    const { chunks } = await indexReport(db.adminSql, successor, documentEmbedder);
+    expect(chunks).toBeGreaterThan(1);
+    const changed = { ...documentEmbedder, mode: 'other-model' };
+    const stopped = vi.fn(embed).mockImplementationOnce(embed).mockRejectedValueOnce(new Error('model interrupted'));
+    await expect(indexReport(db.adminSql, successor, { ...changed, embed: stopped })).rejects.toThrow('model interrupted');
+    expect(await hits()).toEqual([]);
+    await indexReport(db.adminSql, successor, documentEmbedder);
+    expect(await hits()).toEqual([successor.reportId]);
+  });
+
   it('retries an indexed report without invoking the embedder', async () => {
     const report = await publishProfileFixture('multi-chunk report '.repeat(400));
     const key = [workspaceId, report.reportId];
