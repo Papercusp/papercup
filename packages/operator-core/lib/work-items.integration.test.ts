@@ -375,6 +375,30 @@ describe('atomic blocker decision lifecycle', () => {
       expect(spy).not.toHaveBeenCalled();
     } finally { spy.mockRestore(); }
   });
+  it('binding correction remeasures terminal author on serialization retry', async () => {
+    const f = await successorCorrectionSetup();
+    const before = await bindingSnapshot(f.item.id);
+    const oracle = await import('./agent-tools/coordination/liveness-oracle');
+    type Verdicts = Awaited<ReturnType<typeof oracle.resolveSessionStates>>;
+    const liveness = vi.spyOn(oracle, 'resolveSessionStates')
+      .mockResolvedValueOnce(new Map([['agA', { sessionState: 'ended' }]]) as Verdicts)
+      .mockResolvedValue(new Map([['agA', { sessionState: 'live' }]]) as Verdicts);
+    const original = dependencyStore.withWorkItemDependencyAdmissionTransaction;
+    let attempts = 0;
+    const transaction = vi.spyOn(dependencyStore, 'withWorkItemDependencyAdmissionTransaction').mockImplementationOnce((sql, fn, retry) =>
+      original(sql, async tx => {
+        attempts += 1;
+        const result = await fn(tx);
+        if (attempts === 1) throw Object.assign(new Error('injected serialization retry'), { code: '40001' });
+        return result;
+      }, retry));
+    try {
+      await expect(correctBinding(f)).rejects.toMatchObject({ code: 'blocker_decision_evidence' });
+      expect(attempts).toBe(2);
+      expect(liveness).toHaveBeenCalledTimes(2);
+      expect(await bindingSnapshot(f.item.id)).toEqual(before);
+    } finally { transaction.mockRestore(); liveness.mockRestore(); }
+  });
   it('binding correction records consumer scope without asserting provider shipment', async () => {
     const f = await correctionSetup();
     await correctBinding(f);

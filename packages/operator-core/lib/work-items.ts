@@ -11659,7 +11659,8 @@ async function mutateAgentBlockingRelation(
         throw Object.assign(new Error('Binding correction cannot withdraw another unresolved dependency.'),
           { code: 'blocker_decision_evidence' });
       }
-      const edgeAuthor = incoming.find(edge => String(edge.id) === input.bindingCorrection?.edgeId)?.created_by;
+      const correction = fresh.record.decision.disposition === 'self_resolve' ? fresh.record.decision.bindingCorrection : undefined;
+      const edgeAuthor = incoming.find(edge => String(edge.id) === correction?.edgeId)?.created_by;
       let terminalAuthorId: string | undefined;
       if (edgeAuthor && edgeAuthor !== opts.by && opts.by === row.taken_by) {
         try {
