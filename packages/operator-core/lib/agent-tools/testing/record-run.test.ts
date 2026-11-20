@@ -17,7 +17,7 @@ import { createImplementationReadiness, sealImplementationAcceptance, agentRevie
 import { agentReviewEvidenceHandoff } from '../improvements/agent-review';
 import { applyResultProjection, parseProjection } from '../../result-projection';
 import { applyPayloadTier, serializeToolResponse } from '@papercusp/tooldef';
-import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolResultSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { applyResultDoor } from '../../result-door';
 
 vi.mock('../../context-doors-config', async () => {
@@ -78,24 +78,43 @@ const EVIDENCE: CommittedOperationalEvidence = {
 };
 
 describe('native served reviewer correction evidence', () => {
-  it.each([false, true])('keeps an oversized public claim readable through dispatch (structured=%s)', async structured => {
+  function batchResult(output: CallToolResult): CallToolResult {
+    const structuredContent = {
+      ok: true, batchId: 'fixture-batch', counts: { ok: 1, failed: 0 },
+      results: [{ itemId: 'fixture-operation', ok: true, status: 'completed', output }],
+    };
+    return { structuredContent, content: [{ type: 'text', text: JSON.stringify(structuredContent) }] };
+  }
+
+  it('negotiates the advertised batch and keeps an oversized public claim readable', async () => {
     const full = { claimed: true, ledgerIdeaId: 'idea-fixture', workItem: { summary: 'context'.repeat(2000) } };
     expect(JSON.stringify(full).length).toBeGreaterThan(9000);
     const result = await invokeReviewerCorrectionPublicTool('improvements:agent-review', { mode: 'claim', id: 'EI-fixture' },
-      async args => {
-        const projection = parseProjection(args.projection);
+      async request => {
+        expect(request._meta?.['papercusp/batchResponseVersion']).toBe('batch-v1');
+        const projection = parseProjection(request.arguments?.projection);
         if (!projection.ok) throw new Error('native projection must pass dispatch validation');
-        const projected = applyResultProjection({
+        const projected = applyResultProjection(batchResult({
           content: [{ type: 'text' as const, text: JSON.stringify(full) }],
-          ...(structured ? { structuredContent: full } : {}),
-        }, projection.spec, { toolName: 'improvements:agent-review', effect: 'write' });
-        // The optional reason is absent on success. Its warning precedes the
-        // JSON body, so reading content[0] would lose this successful receipt.
-        expect(projected.content[0].text).toContain('reason');
+          structuredContent: full,
+        }), projection.spec, { toolName: 'improvements:agent-review', effect: 'write' });
+        expect(projected.structuredContent).toMatchObject({
+          ok: true, batchId: 'fixture-batch', counts: { ok: 1, failed: 0 },
+          results: [{ itemId: 'fixture-operation', ok: true, status: 'completed' }],
+        });
         expect(JSON.stringify(projected)).not.toContain(full.workItem.summary);
         return projected;
       });
     expect(result).toEqual({ claimed: true, ledgerIdeaId: 'idea-fixture' });
+  });
+
+  it('reads a text-only identity inside the batch and refuses a legacy response', async () => {
+    const identity = { ownerId: 'fixture-owner', source: 'spawn', workspaceId: 'fixture-workspace' };
+    const output: CallToolResult = { content: [{ type: 'text', text: JSON.stringify(identity) }] };
+    await expect(invokeReviewerCorrectionPublicTool('coord:whoami', {}, async () => batchResult(output)))
+      .resolves.toEqual(identity);
+    await expect(invokeReviewerCorrectionPublicTool('coord:whoami', {}, async () => output))
+      .rejects.toThrow('one public operation required');
   });
 
   it.each([
@@ -103,7 +122,7 @@ describe('native served reviewer correction evidence', () => {
     { claimed: true, _partial: true },
   ])('refuses an unresolved or incomplete public receipt instead of inferring success: %j', async body => {
     await expect(invokeReviewerCorrectionPublicTool('improvements:agent-review', { mode: 'claim' },
-      async () => ({ content: [{ type: 'text', text: JSON.stringify(body) }] })))
+      async () => batchResult({ structuredContent: body, content: [] })))
       .rejects.toThrow(/improvements:agent-review: (unresolved|incomplete) public receipt/);
   });
 
@@ -256,7 +275,8 @@ describe('native served reviewer correction evidence', () => {
     process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
     f.deps.open = async (...input) => {
       const client = await open(...input);
-      return { close: client.close, invoke: (name, args) => invokeReviewerCorrectionPublicTool(name, args, async dispatched => {
+      return { close: client.close, invoke: (name, args) => invokeReviewerCorrectionPublicTool(name, args, async request => {
+        const dispatched = request.arguments ?? {};
         const projection = parseProjection(dispatched.projection);
         if (!projection.ok) throw new Error(projection.error);
         if (!projection.spec) throw new Error('public receipt projection required');
@@ -270,14 +290,14 @@ describe('native served reviewer correction evidence', () => {
         const serialized = CallToolResultSchema.parse(serializeToolResponse(shaped,
           { requested: 'json', defaultCompact: false, includeStructured: structured }));
         if (dispatched.payloadTier !== 'full' && serialized._meta) delete serialized._meta.explicitFullRequest;
-        return applyResultDoor(applyResultProjection(serialized, projection.spec, { toolName: name, effect: 'write' }),
+        return applyResultDoor(applyResultProjection(batchResult(serialized), projection.spec, { toolName: name, effect: 'write' }),
           { toolName: name, effect: 'write', workspaceId: f.ctx.workspaceId,
             preservePaths: projection.spec.pick });
       }) };
     };
     try {
       if (structured) expect((await measureReviewerOwnedCorrection(f.ctx, f.deps)).exitCode).toBe(0);
-      else await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow(/incomplete public receipt/);
+      else await expect(measureReviewerOwnedCorrection(f.ctx, f.deps)).rejects.toThrow(/complete public operation required|structured public receipt required/);
       expect(f.cleanup).toHaveBeenCalledOnce();
     } finally {
       if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;

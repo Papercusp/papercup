@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { access, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { createScratchClone, runLocalGit } from '../../scratch-git-clone';
 import { z } from 'zod';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolRequest, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { canonicalJson } from '@papercusp/hash-chain';
 import { getOrgPg } from '@papercusp/db-org';
@@ -1157,20 +1157,30 @@ export interface ReviewerCorrectionScenarioDeps {
 /** Keep public receipts bounded; the full item and ledger are read separately. */
 export async function invokeReviewerCorrectionPublicTool(
   name: string, args: Record<string, unknown>,
-  call: (args: Record<string, unknown>) => Promise<CallToolResult>,
+  call: (request: CallToolRequest['params']) => Promise<CallToolResult>,
 ) {
-  const pick = name === 'improvements:agent-review'
-    ? args.mode === 'claim' ? ['claimed', 'ledgerIdeaId', 'reviewHandoff', 'reason']
-      : args.mode === 'correction-base'
-        ? ['available', 'round', 'correctionRevision', 'reviewHandoff', 'reason']
-        : ['corrected', 'replayed', 'receipt', 'reason']
-    : name === 'blender:grade-idea' ? ['applied', 'reason']
-      : ['ownerId', 'source', 'workspaceId'];
-  const result = await call({ ...args, projection: { pick } });
+  const pick = ['ok', 'batchId', 'counts', 'results[].itemId', 'results[].ok', 'results[].status', 'results[].error'];
+  if (name === 'improvements:agent-review') {
+    const fields = args.mode === 'claim' ? ['claimed', 'ledgerIdeaId', 'reviewHandoff', 'reason']
+      : args.mode === 'correction-base' ? ['available', 'round', 'correctionRevision', 'reviewHandoff', 'reason']
+        : ['corrected', 'replayed', 'receipt', 'reason'];
+    pick.push(...[...fields, 'schemaVersion', '_partial'].map(field => `results[].output.structuredContent.${field}`));
+  } else {
+    pick.push('results[].output');
+  }
+  // The SDK validates the advertised batch envelope. Project inside the child
+  // payload so bounded reviewer receipts still retain that envelope.
+  const result = await call({ name, arguments: { ...args, projection: { pick } },
+    _meta: { 'papercusp/batchResponseVersion': 'batch-v1' } });
   if (result.isError) throw new Error(`${name}: ` + result.content.filter(part => part.type === 'text')
     .map(part => part.text).join('\n'));
-  const block = result.content.find(part => part.type === 'text' && part.text.trim().startsWith('{'));
-  const output = result.structuredContent ?? (block?.type === 'text' ? JSON.parse(block.text) : null);
+  const operations = result.structuredContent?.results;
+  assert.ok(Array.isArray(operations) && operations.length === 1, `${name}: one public operation required`);
+  const [operation] = operations as Array<{ ok?: boolean; status?: string; output?: Partial<CallToolResult> }>;
+  assert.ok(operation?.ok && operation.status === 'completed' && operation.output,
+    `${name}: complete public operation required`);
+  const block = operation.output.content?.find(part => part.type === 'text' && part.text.trim().startsWith('{'));
+  const output = operation.output.structuredContent ?? (block?.type === 'text' ? JSON.parse(block.text) : null);
   assert.ok(output && typeof output === 'object' && !Array.isArray(output), `${name}: structured public receipt required`);
   assert.notEqual(output.schemaVersion, 'papercusp.output-envelope/v1', `${name}: unresolved public receipt envelope`);
   assert.notEqual(output._partial, true, `${name}: incomplete public receipt`);
@@ -1259,8 +1269,8 @@ async function reviewerCorrectionScenarioDeps(ctx: RecordContext): Promise<Revie
       try { if (!invalidBearer) await client.listTools(); }
       catch (error) { await client.close(); throw error; }
       return { close: () => client.close(), async invoke(name, args) {
-        return invokeReviewerCorrectionPublicTool(name, args, async projected =>
-          await client.callTool({ name, arguments: projected }, undefined, { timeout: 30_000 }) as CallToolResult);
+        return invokeReviewerCorrectionPublicTool(name, args, async request =>
+          await client.callTool(request, undefined, { timeout: 30_000 }) as CallToolResult);
       } };
     },
     async seed(nonce, author, reviewer) {

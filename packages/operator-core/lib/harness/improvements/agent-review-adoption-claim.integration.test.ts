@@ -96,6 +96,9 @@ async function contentRevision(t: string, takenBy: string | null = null, kind: '
     body: `a retried export is written twice because the retry omits the idempotency key ${t}`,
     scope: 'harness:papercusp',
     createdBy: GONE,
+    // This bug has already entered review. Its original assignment admits it
+    // before patchReview installs the current revision and holder.
+    ...(kind === 'bug' ? { assignee: GONE } : {}),
   });
   await patchReview(issue.id, {
     status: 'revision-requested',
