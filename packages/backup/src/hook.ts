@@ -1012,6 +1012,7 @@ async function dumpPg(opts: {
         };
         const onReady = () => {
           if (guardReadyTask || settled) return;
+          // notify-classification: {"id":"packages/backup/src/hook.ts#<module>/dumpPg/<callback>/onReady:6c9ed2b54b5b09878621:1","classification":"durable","reason":"The native source census reaches sendAck at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           guardReadyTask = (async () => {
             await opts.handshake.onGuardReady?.(guardReadyAbort.signal);
             if (settled || guardReadyAbort.signal.aborted) return;
