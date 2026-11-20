@@ -908,7 +908,7 @@ export function coveragePrefixesFromGateModule(mod: Record<string, unknown>, { o
  *
  * @param {string} root Absolute repo root.
  * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
- * @returns {Promise<{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[], files?: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
  *   `scriptPath` is the repo-relative entrypoint; `tscCommand` is the gate's single-project
  *   command, or null for a multi-project GATE_COVERAGE gate that cannot act as a cross-leg consumer.
  *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
@@ -920,6 +920,7 @@ export function discoverSiblingTypecheckGates(root: string, { exclude }?: {
     gates: {
         npmScript: string;
         prefixes: string[];
+        files?: string[];
         scriptPath: string;
         tscCommand: string | null;
     }[];
@@ -936,13 +937,14 @@ export function discoverSiblingTypecheckGates(root: string, { exclude }?: {
  * `lint:tsc:orchestrator` rather than the broader `lint:tsc:papercusp-libs` fan-out that also
  * contains it — the narrower gate is the faster, more attributable answer.
  *
- * @param {{npmScript: string, prefixes: string[], loadableExtensions?: () => string[] | null}[]} gates
+ * @param {{npmScript: string, prefixes: string[], files?: string[], loadableExtensions?: () => string[] | null}[]} gates
  * @param {string} file Repo-relative path.
  * @returns {{npmScript: string, prefix: string} | null}
  */
 export function gateCoveringFile(gates: {
     npmScript: string;
     prefixes: string[];
+    files?: string[];
     loadableExtensions?: () => string[] | null;
 }[], file: string): {
     npmScript: string;
