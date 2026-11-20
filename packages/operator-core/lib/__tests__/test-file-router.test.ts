@@ -542,6 +542,7 @@ describe('installed Vitest CLI routing', () => {
 
   it('propagates profiler flags to actual project workers and writes their CPU profiles', async () => {
     const root = mkdtempSync(join(tmpdir(), 'router-project-profiler-'));
+    const fixtureRunGroup = 'router-profiler-fixture:' + root;
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
@@ -561,13 +562,16 @@ describe('installed Vitest CLI routing', () => {
           import { writeFileSync } from 'node:fs';
           it('observes the native profiler', () => {
             writeFileSync(${JSON.stringify(join(root, name + '.worker.json'))},
-              JSON.stringify({ pid: process.pid, execArgv: process.execArgv }));
+              JSON.stringify({ pid: process.pid, execArgv: process.execArgv,
+                runGroup: process.env.PAPERCUSP_TEST_RUN_GROUP }));
             expect(process.execArgv).toContain('--cpu-prof');
             expect(process.execArgv).toContain(${JSON.stringify('--cpu-prof-dir=' + root)});
           });`);
       }
       const run = async (command: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }) => {
-        const result = spawnSync(command, args, { cwd: options.cwd, env: options.env,
+        // Nested fixture files must not become part of the outer suite's coverage census.
+        const result = spawnSync(command, args, { cwd: options.cwd,
+          env: { ...options.env, PAPERCUSP_TEST_RUN_GROUP: fixtureRunGroup },
           encoding: 'utf8', timeout: 45_000 });
         expect(result.error, result.stdout + '\n' + result.stderr).toBeUndefined();
         return { ...result, timedOut: false };
@@ -585,6 +589,7 @@ describe('installed Vitest CLI routing', () => {
       for (const name of ['first', 'second']) {
         const worker = JSON.parse(readFileSync(join(root, name + '.worker.json'), 'utf8'));
         observations.push(worker);
+        expect(worker.runGroup).toBe(fixtureRunGroup);
         expect(worker.execArgv).toContain('--cpu-prof');
         const profiles = readdirSync(root).filter(file => file.includes('.' + worker.pid + '.0.') && file.endsWith('.cpuprofile'));
         expect(profiles, 'missing profile from worker ' + worker.pid).toHaveLength(1);
