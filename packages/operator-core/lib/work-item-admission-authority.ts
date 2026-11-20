@@ -120,7 +120,7 @@ export function bindAdmissionAuthority(
  * Power-user/PI and legacy requests have no renewable proof here and fail closed.
  */
 export async function admissionReplayContext(
-  sql: Sql, scope: AdmissionRecoveryScope, caller: string, value: unknown,
+  sql: Sql, scope: Pick<AdmissionRecoveryScope, 'workspaceId'>, caller: string, value: unknown,
 ): Promise<UnifiedToolContext> {
   const parsed = admissionAuthoritySchema.safeParse(value);
   if (!parsed.success) throw new AdmissionAuthorityRefused('authenticated recovery binding missing; retry this same item through its authenticated dispatch door');
@@ -200,20 +200,29 @@ export async function authorizeAdmissionReviewReplay(
   sql: Sql, scope: AdmissionRecoveryScope,
   request: { caller: string; requestId: string; purpose: 'admission-review'; authority: AdmissionRecoveryAuthority },
 ): Promise<string> {
-  const ctx = await admissionReplayContext(sql, scope, request.caller, request.authority);
-  const { PROJECTED_DEPS } = await import('./projected-tool-deps');
   await import('./agent-tools/work_items/review-admission');
-  const name = 'work_items:review-admission';
+  return renewReviewWriteAuthority(sql, scope.workspaceId, request.caller, request.authority,
+    'work_items:review-admission', {
+      id: scope.workItemId, harness: scope.harnessSlug, requestId: request.requestId, purpose: request.purpose,
+    });
+}
+
+/** Check the registered review writer with the original actor and current policy.
+ * This preflight never executes the reviewed operation. */
+export async function renewReviewWriteAuthority(
+  sql: Sql, workspaceId: string, caller: string, authority: AdmissionRecoveryAuthority,
+  name: 'work_items:review-admission' | 'harness_docs:verify' | 'harness_docs:anchor' | 'docs:author',
+  args: Record<string, unknown>,
+): Promise<string> {
+  const ctx = await admissionReplayContext(sql, { workspaceId }, caller, authority);
+  const { PROJECTED_DEPS } = await import('./projected-tool-deps');
   const tool = lookupByMcpName(name);
   if (!tool || ctx.profile === 'power' && tool.profile === 'engineer') {
     throw new AdmissionAuthorityRefused(`${name}: canonical operation unavailable for this profile`);
   }
   let revision: ReturnType<typeof appliedExecutionRevision> = null;
-  const verdict = await runWithWorkspaceIfConcrete(scope.workspaceId, () =>
-    preflightDispatchStack(tool, name, {
-      id: scope.workItemId, harness: scope.harnessSlug,
-      requestId: request.requestId, purpose: request.purpose,
-    }, ctx, {
+  const verdict = await runWithWorkspaceIfConcrete(workspaceId, () =>
+    preflightDispatchStack(tool, name, args, ctx, {
       ...PROJECTED_DEPS,
       kernelEnforcement: async input => {
         if (!PROJECTED_DEPS.kernelEnforcement) throw new AdmissionAuthorityUnavailable('review policy reader unavailable');

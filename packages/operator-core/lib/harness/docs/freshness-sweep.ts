@@ -27,6 +27,7 @@ import {
   type DocStatus,
 } from './doc-record';
 import { DEFAULT_WORKSPACE_ID } from '../../workspace-id-constant';
+import { currentDocReviewEligibility } from './review-authority';
 
 /** The baseline SHA a doc's staleness is measured from. */
 export function baselineFor(record: Pick<HarnessDocRecord, 'source' | 'generatedFromSha' | 'lastVerifiedSha'>): string {
@@ -99,15 +100,58 @@ export interface DriftDeps {
   /** Submodule roots (repo-relative). Anchors under a submodule are drift-checked
    *  inside it against its own baseline (#3); omitted → superproject-only. */
   submodulePaths?: string[];
+  checkReview?: typeof currentDocReviewEligibility;
+}
+
+/** Compare every citation in a repository against the same commit. Recheck
+ * each pinned repo (including submodules) after the permission read. */
+function pinReviewHeads(git: GitRunner) {
+  const headArgs = ['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'];
+  const heads = new Map<string, ReturnType<GitRunner>>();
+  const valid = (result: Awaited<ReturnType<GitRunner>>) =>
+    result.code === 0 && /^(?:[\da-f]{40}|[\da-f]{64})$/i.test(result.stdout.trim());
+  const runGit: GitRunner = async (args, cwd) => {
+    const readHead = args[0] === 'rev-parse' && args.at(-1) === 'HEAD^{commit}';
+    const range = args[0] === 'log' && args[1]?.endsWith('..HEAD');
+    const index = range ? 1 : args[0] === 'diff' || args[0] === 'merge-base' ? args.indexOf('HEAD') : -1;
+    if (!readHead && index < 0) return git(args, cwd);
+    const pending = heads.get(cwd) ?? git(headArgs, cwd);
+    heads.set(cwd, pending);
+    const head = await pending;
+    if (readHead) return head;
+    // A failed pin can still diagnose a known change. It cannot certify reuse.
+    if (!valid(head)) return git(args, cwd);
+    const pinned = [...args];
+    pinned[index] = (range ? args[index].slice(0, -4) : '') + head.stdout.trim();
+    return git(pinned, cwd);
+  };
+  const current = async () => {
+    for (const [cwd, pending] of heads) {
+      const original = await pending;
+      const now = await git(headArgs, cwd);
+      if (!valid(original) || !valid(now) || original.stdout.trim() !== now.stdout.trim()) return false;
+    }
+    return heads.size > 0;
+  };
+  return { runGit, current };
 }
 
 /** Forward on-demand: recompute one doc's status from git right now. */
 export async function recomputeDocStatus(
-  record: Pick<HarnessDocRecord, 'source' | 'subjectRef' | 'generatedFromSha' | 'lastVerifiedSha'>,
+  record: Pick<HarnessDocRecord, 'source' | 'subjectRef' | 'generatedFromSha' | 'lastVerifiedSha'> & Partial<HarnessDocRecord>,
   deps: DriftDeps,
 ): Promise<{ status: DocStatus; detail: string | null; drift: DriftResult }> {
-  const drift = await checkDocDrift(record.subjectRef ?? [], baselineFor(record), deps);
+  const pinned = record.source === 'manual' ? pinReviewHeads(deps.runGit) : null;
+  const drift = await checkDocDrift(record.subjectRef ?? [], baselineFor(record),
+    pinned ? { ...deps, runGit: pinned.runGit } : deps);
   const { status, detail } = classifyDrift(record, drift);
+  if (status === 'fresh' && pinned) {
+    const eligibility = await (deps.checkReview ?? currentDocReviewEligibility)(record);
+    if (eligibility !== 'eligible') return { status: 'review', drift,
+      detail: eligibility === 'changed' ? 'original review scope or reviewer permission changed'
+        : 'original review scope or reviewer permission is unknown' };
+    if (!await pinned.current()) return { status: 'unknown', detail: 'review-source-head-changed-or-unavailable', drift };
+  }
   return { status, detail, drift };
 }
 

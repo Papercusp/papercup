@@ -1,6 +1,6 @@
 /**
  * harness-docs-e2e.integration.test.ts — the whole server-side harness-docs flow
- * end-to-end against REAL Postgres (migs 172 + 386 + 781) + a REAL fixture git repo, per
+ * end-to-end against a migrated private Postgres and a fixture git repo, per
  * harness-docs-integration-2026-06-05 (P-011 server half; validates P-004/5/6/7).
  *
  * generated provenance → merged read → git-sync drift sweep (stale/review +
@@ -11,18 +11,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
-const readMigration = (f: string) =>
-  readFileSync(resolve(SQL_DIR, f), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*\\/.test(line) && !/^\s*(BEGIN|COMMIT);\s*$/.test(line))
-    .join('\n');
+import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql, repo: '',
@@ -80,7 +71,7 @@ const { ingestHarnessDocs } = await import('./migrate-fs-docs');
 const { reconcileAllDocAnchors, runDocFreshnessSweepAfterSync } = await import('./sweep-after-sync');
 const { runGit } = await import('./git-runner');
 
-let db: FreshPgDb;
+let db: OrgTestDb;
 let repo: string;
 const shas: Record<string, string> = {};
 function git(args: string[]): string {
@@ -88,26 +79,8 @@ function git(args: string[]): string {
 }
 
 beforeAll(async () => {
-  db = await createFreshPgDb('harness-docs-e2e');
-  await db.sql.unsafe(`
-    DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-    DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-  `);
-  // The real harness git runner routes through the spawner sidecar, whose managed
-  // child registration needs the task ledger even though this fixture only asserts
-  // harness-docs tables.
-  await db.sql.unsafe(readMigration('696-task-ledger.sql')).simple();
-  await db.sql.unsafe(readMigration('172-harness-docs.sql')).simple();
-  // 386 adds the doc-steward retry counters (regen_attempts/reverify_attempts) the
-  // sweep's mark/verify/setStatus helpers now write.
-  await db.sql.unsafe(readMigration('386-harness-docs-steward-retry-attempts.sql')).simple();
-  // The throwaway fixture does not run the framework bootstrap that installs pgvector,
-  // while migration 781 declares harness_docs.embedding as vector(768).
-  await db.sql`CREATE EXTENSION IF NOT EXISTS vector`;
-  // 781 adds the canonical content/frontmatter columns that upsertDocRecord now writes
-  // (the metadata-only fixture previously failed with "column content does not exist").
-  await db.sql.unsafe(readMigration('781-doc-content-canonical.sql')).simple();
-  h.sql = db.sql;
+  db = await createOrgTestDb();
+  h.sql = db.adminSql;
 
   repo = mkdtempSync(join(tmpdir(), 'docs-e2e-'));
   h.repo = repo;

@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { harnessArg, resolveBulkHarnessScopes } from '../_harness-scope';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
+import { docReviewOperation } from '../../harness/docs/review-authority';
 import { runBulk, bulkContent } from '../_bulk';
 
 const documentsArg = z
@@ -82,6 +83,8 @@ export default defineTool({
         const res = await anchorManualDoc({
           harnessSlug: scope.slug,
           docId: it.docId,
+          ...(it.verify ? { reviewOperation: docReviewOperation(ctx, scope.slug, 'harness_docs:anchor',
+            { ...it, harness: scope.slug }) } : {}),
           ...(it.documents !== undefined ? { documents: it.documents } : {}),
           ...(it.verify !== undefined ? { verify: it.verify } : {}),
           ...(it.title ? { title: it.title } : {}),

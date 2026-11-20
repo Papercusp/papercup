@@ -8,16 +8,31 @@
  * 'augmented'; verifyDoc baseline; setDocStatus; list; regen/reverify flags; delete.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { applyMigrationForTest } from '../../../test/_pg-helpers';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  renew: vi.fn(async () => 'observed-policy-revision'),
+}));
+vi.mock('../../db-encryption', async original => ({
+  ...await original<typeof import('../../db-encryption')>(), getDbEncryptionKey: () => 'disposable-doc-review-test-key',
+}));
+vi.mock('../../work-item-admission-authority', async original => ({
+  ...await original<typeof import('../../work-item-admission-authority')>(), renewReviewWriteAuthority: h.renew,
+}));
+vi.mock('./harness-repo', () => ({
+  resolveHarnessDocPaths: async () => ({ repoRoot: import.meta.dirname, docsRoot: import.meta.dirname }),
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
 const rec = await import('./doc-record');
+const { currentDocReviewEligibility, observeDocReview } = await import('./review-authority');
 const WS = 'ws-docs';
 const HARNESS = 'demo';
 let db: OrgTestDb;
@@ -28,6 +43,8 @@ beforeAll(async () => {
   // follows the current migration set instead of maintaining another stale list.
   db = await createOrgTestDb();
   h.sql = db.adminSql;
+  const migration = new URL('../../../../../libs/papercusp/libs/db/sql/1650-harness-doc-review-scope.sql', import.meta.url).pathname;
+  await applyMigrationForTest(h.sql, existsSync(migration) ? migration : migration + '.DRAFT');
 }, 60_000);
 
 afterAll(async () => {
@@ -168,6 +185,58 @@ describe('overlay survives regeneration (D-003/P-005)', () => {
 });
 
 describe('verify + status + flags', () => {
+  it('keeps the original observer and scope when a legacy writer reanchors or verifies at the same SHA', async () => {
+    const id = 'guide.md';
+    const sha = 'e'.repeat(40);
+    const input = { workspaceId: WS, harnessSlug: HARNESS, docId: id, source: 'manual' as const,
+      subjectRef: [{ kind: 'path' as const, globs: ['src/a.ts', 'src/b.ts'] }],
+      anchorPaths: ['src/a.ts', 'src/b.ts'], lastVerifiedSha: sha, content: 'The reviewed guide.' };
+    await rec.upsertDocRecord(input);
+    const read = async () => (await h.sql`
+      SELECT last_review, (last_review->'scope' @> harness_shared.harness_doc_review_scope(d)
+        AND last_review->'scope' <@ harness_shared.harness_doc_review_scope(d)) AS matches
+      FROM harness_shared.harness_docs d WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND doc_id=${id}`)[0];
+    expect(await read()).toEqual({ last_review: null, matches: null });
+    const original = (await rec.getDocRecord(HARNESS, id, WS))!;
+    const ctx = { workspaceId: WS, harnessSlug: HARNESS, profile: 'engineer' as const,
+      runId: 'run', spawnId: 'spawn', parentSpawnId: null, chunkId: null, featureId: null,
+      planRunSessionId: null, transport: 'mcp' as const };
+    const operation = { observer: 'original-reviewer', tool: 'harness_docs:verify' as const,
+      args: { harness: HARNESS, docId: id }, policyRevision: 'observed-policy-revision',
+      authority: { kind: 'superuser' as const, role: 'operator', credentialSha256: 'b'.repeat(64), context: ctx } };
+    const observed = await observeDocReview(operation, { repoRoot: import.meta.dirname, docsRoot: import.meta.dirname },
+      id, original.contentHash);
+    expect(observed).toBeDefined();
+    await expect(rec.verifyDoc(HARNESS, id, sha, WS, original, observed)).resolves.toBe(true);
+    const written = await read();
+    expect(written.last_review).toMatchObject({ version: 1, observer: 'original-reviewer',
+      scope: { workspace: WS, harness: HARNESS, doc: id, baseline: sha } });
+    expect(JSON.stringify(written.last_review)).not.toContain(operation.authority.credentialSha256);
+    const verified = (await rec.getDocRecord(HARNESS, id, WS))!;
+    await expect(currentDocReviewEligibility(verified)).resolves.toBe('eligible');
+    expect(h.renew).toHaveBeenCalledWith(h.sql, WS, operation.observer, operation.authority, operation.tool, operation.args);
+    h.renew.mockResolvedValueOnce('changed-policy-revision');
+    await expect(currentDocReviewEligibility(verified)).resolves.toBe('changed');
+    await rec.upsertDocRecord({ ...input, anchorPaths: [...input.anchorPaths].reverse(),
+      subjectRef: [{ kind: 'path', globs: [...input.anchorPaths].reverse() }] });
+    await rec.setDocStatus(HARNESS, id, 'review', 'sweep', WS);
+    expect(await read()).toEqual({ last_review: written.last_review, matches: true });
+    await rec.upsertDocRecord({ ...input, anchorPaths: ['src/c.ts'] });
+    expect(await read()).toEqual({ last_review: written.last_review, matches: false });
+    await expect(currentDocReviewEligibility(verified)).resolves.toBe('changed');
+    await rec.upsertDocRecord({ ...input, content: 'Revised instructions.' });
+    expect(await read()).toEqual({ last_review: written.last_review, matches: false });
+    await rec.upsertDocRecord(input);
+    // Copying even a genuine sealed observation cannot approve a second subject.
+    await rec.upsertDocRecord({ ...input, docId: 'other.md', lastVerifiedAt: verified.lastVerifiedAt });
+    await h.sql`UPDATE harness_shared.harness_docs d SET last_review=jsonb_set(${JSON.stringify(written.last_review)}::text::jsonb,
+      '{scope}',harness_shared.harness_doc_review_scope(d)) WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND doc_id='other.md'`;
+    await expect(currentDocReviewEligibility((await rec.getDocRecord(HARNESS, 'other.md', WS))!)).resolves.toBe('unknown');
+    await h.sql`UPDATE harness_shared.harness_docs SET last_verified_at = clock_timestamp()
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND doc_id=${id}`;
+    expect(await read()).toEqual({ last_review: written.last_review, matches: false });
+  });
+
   it('only stamps the live document when it still matches the scope and prose actually reviewed', async () => {
     const id = 'manual/review-scope.md';
     const base = { workspaceId: WS, harnessSlug: HARNESS, docId: id, source: 'manual' as const,

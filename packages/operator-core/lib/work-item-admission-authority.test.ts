@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }),
+  withPriorityOrgPg: async <T>(run: () => Promise<T>) => run(),
 }));
 vi.mock('./superuser-token', async (original) => ({
   ...await original<typeof import('./superuser-token')>(), readSuperuserToken: () => h.token,
@@ -30,6 +31,7 @@ vi.mock('@papercusp/flags/server', async (original) => ({
 import {
   AdmissionAuthorityRefused, AdmissionAuthorityUnavailable,
   admissionCredentialDigest, admissionReplayContext, authorizeAdmissionReplay, authorizeAdmissionReviewReplay, bindAdmissionAuthority,
+  renewReviewWriteAuthority,
 } from './work-item-admission-authority';
 import { installControlAnchorKernelResolver, readControlAnchorKernelState, setKernelEnforcementResolver } from './projected-tool-deps';
 import { setSessionConfinementResolver } from './capability-envelope/session-confinement-port';
@@ -118,6 +120,40 @@ afterEach(async () => {
 });
 
 describe('admission replay policy fidelity', () => {
+  it('rechecks the original documentation writer against current confinement and credential rotation', async () => {
+    await import('./agent-tools/harness_docs/verify');
+    const { docReviewOperation } = await import('./harness/docs/review-authority');
+    const args = { harness: context.harnessSlug, docId: 'guide.md' };
+    const ctx: Parameters<typeof docReviewOperation>[0] = { ...context, role: 'operator', isSuperuser: true, uiClientId: 'su-policy',
+      log: () => {}, emit: () => {}, progress: () => {}, signal: new AbortController().signal,
+      admissionRecoveryAuthority: bound(),
+      kernelEnforcement: { decision: 'allow', applied: true, revisionSource: 'applied', executionRevision: revision },
+      executionRevision: revision, appliedExecutionRevision: revision,
+    };
+    const principal = { kind: 'system' as const, slug: 'system:operator', workspaceId: context.workspaceId,
+      trust: 'trusted' as const, authMethod: 'bearer-token' as const, capabilities: new Set<string>() };
+    const original = docReviewOperation({ ...ctx, principal }, context.harnessSlug, 'harness_docs:verify', args);
+    expect(original).toMatchObject({ observer: 'su-policy', args, policyRevision: JSON.stringify(revision) });
+    expect(docReviewOperation({ ...ctx, principal: { ...principal, allowedTools: new Set(['harness_docs:list']) } },
+      context.harnessSlug, 'harness_docs:verify', args)).toBeUndefined();
+    expect(docReviewOperation({ ...ctx, principal: { ...principal, slug: 'system:another-reviewer' } },
+      context.harnessSlug, 'harness_docs:verify', args)).toBeUndefined();
+    const verify = () => renewReviewWriteAuthority(h.sql as unknown as Sql, scope.workspaceId, original!.observer,
+      original!.authority, original!.tool, original!.args);
+    await expect(verify()).resolves.toBe(JSON.stringify(revision));
+    setSessionConfinementResolver(() => ({ denyTools: ['harness_docs:verify'],
+      reason: 'document verification revoked', imposedBy: 'director' }));
+    await expect(verify()).rejects.toThrow('document verification revoked');
+    setSessionConfinementResolver(() => null);
+    const token = h.token;
+    try {
+      h.token = 'replacement-test-credential';
+      await expect(verify()).rejects.toThrow('revoked or rotated');
+    } finally {
+      h.token = token;
+    }
+  });
+
   it('renews the registered review WRITE operation with exact request, item and purpose', async () => {
     const authority = bound()!;
     const review = () => authorizeAdmissionReviewReplay(h.sql as unknown as Sql, scope, {

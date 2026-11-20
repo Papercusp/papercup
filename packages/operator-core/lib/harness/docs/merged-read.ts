@@ -13,7 +13,7 @@ import { resolveHarnessDocPaths } from './harness-repo';
 import { listDocBodies, readDocBody, chooseDefaultDoc } from './doc-fs';
 import { listDocRecords, type DocSource, type DocStatus, type HarnessDocRecord } from './doc-record';
 import { recomputeDocStatus } from './freshness-sweep';
-import { runGit } from './git-runner';
+import { listSubmodulePaths, runGit } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { stringifySubjectRefs, type SubjectRef } from './subject-ref';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
@@ -118,34 +118,40 @@ export async function buildMergedDocs(harnessSlug: string, opts: BuildMergedDocs
   const allIds = new Set<string>([...fsFiles, ...records.keys()]);
   const ids = [...allIds].sort();
 
-  const entries: MergedDocEntry[] = ids.map((docId) =>
-    entryFromRecord(docId, records.get(docId), /*bodyMissing*/ !fsSet.has(docId)),
-  );
-
   if (ids.length === 0) {
     return { ok: true, reason: 'empty', projectPath: repoRoot, docsRoot, files: [], entries: [], activePath: null, content: null, activeEntry: null };
   }
 
   const requested = opts.activePath && ids.includes(opts.activePath) ? opts.activePath : chooseDefaultDoc(ids);
   const activePath = requested ?? null;
+  const entries: MergedDocEntry[] = [];
+  let submodules: Promise<string[]> | undefined;
+  const resolveFeatureCommits = makeFeatureCommitLookup(harnessSlug, workspaceId);
+  for (const docId of ids) {
+    const rec = records.get(docId);
+    const entry = entryFromRecord(docId, rec, !fsSet.has(docId));
+    const requestedRefresh = docId === activePath && opts.recomputeActive && rec?.subjectRef.length;
+    const cachedManualReview = rec?.source === 'manual' && rec.status === 'fresh';
+    if (cachedManualReview && !requestedRefresh && !rec.reviewedBy) {
+      entry.status = 'review';
+      entry.statusDetail = 'original review scope or reviewer permission is unknown';
+    } else if (rec && (requestedRefresh || cachedManualReview)) {
+      submodules ??= listSubmodulePaths(repoRoot);
+      const { status, detail } = await recomputeDocStatus(rec, {
+        runGit, repoRoot, resolveFeatureCommits, submodulePaths: await submodules,
+      });
+      entry.status = status;
+      entry.statusDetail = detail;
+    }
+    entries.push(entry);
+  }
 
   let content: string | null = null;
   let activeEntry: (MergedDocEntry & { overlay: string | null }) | null = null;
   if (activePath) {
     content = fsSet.has(activePath) ? await readDocBody(paths.sources ? paths : docsRoot, activePath) : null;
     const rec = records.get(activePath);
-    let base = entries.find((e) => e.docId === activePath)!;
-
-    // Optionally refresh just the active doc's status from git (accurate for the
-    // doc actually being viewed) without sweeping the whole tree.
-    if (opts.recomputeActive && rec && rec.subjectRef.length > 0) {
-      const { status, detail } = await recomputeDocStatus(rec, {
-        runGit,
-        repoRoot,
-        resolveFeatureCommits: makeFeatureCommitLookup(harnessSlug, workspaceId),
-      });
-      base = { ...base, status, statusDetail: detail };
-    }
+    const base = entries.find((e) => e.docId === activePath)!;
     activeEntry = { ...base, overlay: rec?.overlay ?? null };
   }
 

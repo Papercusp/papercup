@@ -37,6 +37,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
+import { docReviewOperation } from '../../harness/docs/review-authority';
 import { applyProjectionBanner } from '../../harness/docs/authored-doc-projection';
 import { getAuthoredDocContent } from '../../harness/docs/doc-record';
 import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scope';
@@ -947,6 +948,7 @@ export default defineTool({
         docId,
         ...(documents.length ? { documents } : {}),
         verify,
+        ...(verify ? { reviewOperation: docReviewOperation(ctx, harnessSlug, 'docs:author', args) } : {}),
         title: args.title.trim(),
         content,
       });

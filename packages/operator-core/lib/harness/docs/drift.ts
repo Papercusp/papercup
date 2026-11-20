@@ -246,6 +246,14 @@ async function multiPathDrift(
 const hasCommitLine = (stdout: string): boolean => stdout.split('\n').some((l) => l.trim() !== '');
 const hasChangedName = (stdout: string): boolean => collectNameOnly(stdout).length > 0;
 
+/** An empty base..HEAD log only proves continuity on the same history. A
+ * rewind or divergent submodule pin can otherwise silently verify old prose. */
+async function cleanRangeError(runGit: GitRunner, base: string, cwd: string): Promise<string | undefined> {
+  const result = await runGit(['merge-base', '--is-ancestor', base, 'HEAD'], cwd);
+  if (result.code === 0) return undefined;
+  return result.code === 1 ? 'baseline-not-ancestor' : gitErr(result);
+}
+
 /** Is `sha` a single concrete (non-glob) path? Then `--follow` is valid. */
 function isConcretePath(p: string): boolean {
   return !/[*?[\]{}]/.test(p);
@@ -399,7 +407,9 @@ export async function checkSubjectRefDrift(
     const lRes = await runDriftRangeLog(runGit, ['log', range, '-L', `:${ref.name}:${file}`, '-s', '--format=%H'], cwd, hasCommitLine);
     if (lRes.code === 0) {
       const commits = lRes.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-      return { stale: commits.length > 0, changedPaths: commits.length ? [ref.file] : [], method: 'symbol' };
+      if (commits.length) return { stale: true, changedPaths: [ref.file], method: 'symbol' };
+      const error = await cleanRangeError(runGit, base, cwd);
+      return { stale: false, changedPaths: [], method: 'symbol', ...(error ? { error } : {}) };
     }
     // `-L` failed (file renamed/removed, or the symbol regex didn't match a
     // function in the current tree). Fall back to file-level drift with --follow.
@@ -408,15 +418,15 @@ export async function checkSubjectRefDrift(
       return { stale: false, changedPaths: [], method: 'symbol-fallback', error: gitErr(fRes) };
     }
     const changed = collectNameOnly(fRes.stdout).map((c) => (m ? `${m.sub}/${c}` : c));
-    return { stale: changed.length > 0, changedPaths: changed, method: 'symbol-fallback' };
+    if (changed.length) return { stale: true, changedPaths: changed, method: 'symbol-fallback' };
+    return { stale: false, changedPaths: [], method: 'symbol-fallback', error: 'unresolved-symbol' };
   }
 
   // path / feature both resolve to a path set. Group by repo (superproject vs each
   // submodule), then one `git log` per group against that repo's own baseline (#3).
-  // A plan item/decision ref documents a plan record, not files: nothing can drift.
-  // Not an error (contrast `no-paths` below, which means an anchor failed to resolve).
+  // Git cannot attest the stored revision of a plan item or decision.
   if (ref.kind === 'plan') {
-    return { stale: false, changedPaths: [], method: 'none' };
+    return { stale: false, changedPaths: [], method: 'none', error: 'unmeasured-plan-reference' };
   }
   const paths = await resolveAnchorPaths(ref, opts);
   if (ref.kind === 'feature' && paths.length === 0) {
@@ -443,8 +453,12 @@ export async function checkSubjectRefDrift(
       continue;
     }
     const c = collectNameOnly(res.stdout);
-    if (c.length) changedAll.push(...c.map((x) => `${g.prefix}${x}`));
-    else ranClean = true;
+    if (c.length) {
+      changedAll.push(...c.map((x) => `${g.prefix}${x}`));
+    } else {
+      firstErr ??= await cleanRangeError(runGit, g.baseline, g.cwd);
+      ranClean = true;
+    }
   }
   if (changedAll.length) return { stale: true, changedPaths: changedAll, method };
   if (ranClean && !firstErr) return { stale: false, changedPaths: [], method };

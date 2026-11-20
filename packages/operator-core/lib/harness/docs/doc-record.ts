@@ -19,9 +19,12 @@
  */
 
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
+import { getDbEncryptionKey } from '../../db-encryption';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 import { deriveFrontmatterIndex, sha256 } from './authored-doc-projection';
 import type { SubjectRef } from './subject-ref';
+import type { DocReviewObservation } from './review-authority';
 import { guideAddressProblems, type GuideAddressVocabulary } from '../../doc-projection/guide-address';
 
 export type DocSource = 'generated' | 'manual' | 'augmented';
@@ -165,6 +168,11 @@ export interface HarnessDocRecord {
   lastVerifiedAt: string | null;
   /** Present on a stored row. Required to stamp the scope that was actually read. */
   contentHash?: string;
+  /** Observer on the retained original review. Its baseline and current eligibility are checked at use. */
+  reviewedBy?: string | null;
+  contentMode?: string;
+  origin?: string;
+  authorPubkey?: string | null;
   overlay: string | null;
   status: DocStatus;
   statusDetail: string | null;
@@ -191,6 +199,10 @@ interface DocRow {
   last_verified_sha: string | null;
   last_verified_at: Date | string | null;
   content_hash: string;
+  last_review?: { observer?: string } | null;
+  content_mode: string;
+  origin: string;
+  author_pubkey: string | null;
   overlay: string | null;
   status: string;
   status_detail: string | null;
@@ -220,6 +232,10 @@ function rowToRecord(r: DocRow): HarnessDocRecord {
     lastVerifiedSha: r.last_verified_sha,
     lastVerifiedAt: toIso(r.last_verified_at),
     contentHash: r.content_hash,
+    reviewedBy: typeof r.last_review?.observer === 'string' ? r.last_review.observer : null,
+    contentMode: r.content_mode,
+    origin: r.origin,
+    authorPubkey: r.author_pubkey,
     overlay: r.overlay,
     status: (r.status as DocStatus) ?? 'untracked',
     statusDetail: r.status_detail,
@@ -232,6 +248,36 @@ function rowToRecord(r: DocRow): HarnessDocRecord {
     createdAt: toIso(r.created_at) ?? '',
     updatedAt: toIso(r.updated_at) ?? '',
   };
+}
+
+/** Bind the observation to the actual post-write row, inside the writer's
+ * transaction. Only the original observer and subject are public. Store the
+ * operation and renewable transport evidence using the existing at-rest key.
+ * A copied or altered document row cannot assign its review to another scope. */
+async function writeWithDocReview(
+  observation: DocReviewObservation | undefined,
+  write: (sql: Sql | TransactionSql) => Promise<DocRow[]>,
+): Promise<DocRow[]> {
+  const { sql } = getOrgPg();
+  if (!observation) return write(sql);
+  const stored = await sql.begin(async tx => {
+    const [row] = await write(tx);
+    if (!row) return null;
+    const key = getDbEncryptionKey();
+    const [updated] = await tx<DocRow[]>`
+      UPDATE harness_shared.harness_docs d SET last_review = jsonb_build_object(
+        'version', 1, 'observer', ${observation.observer}::text,
+        'scope', harness_shared.harness_doc_review_scope(d),
+        'sealed', encode(pgp_sym_encrypt(jsonb_build_object(
+          'purpose','harness-doc-review-v1', 'scope',harness_shared.harness_doc_review_scope(d),
+          'observation', ${JSON.stringify(observation)}::text::jsonb
+        )::text, ${key}, 'cipher-algo=aes256'), 'base64')
+      )
+      WHERE workspace_id=${row.workspace_id} AND harness_slug=${row.harness_slug} AND doc_id=${row.doc_id}
+      RETURNING *`;
+    return updated;
+  });
+  return stored ? [stored] : [];
 }
 
 /** One doc record, or null if none. */
@@ -345,6 +391,8 @@ export interface UpsertDocInput {
   generatedFromSha?: string | null;
   lastVerifiedSha?: string | null;
   lastVerifiedAt?: string | null;
+  /** Supplied only by the authenticated writer that observed this baseline. */
+  reviewObservation?: DocReviewObservation;
   /** Only set on a fresh insert; an upsert over an existing row NEVER changes the
    *  overlay (use setDocOverlay) so a regeneration preserves the human overlay. */
   overlay?: string | null;
@@ -390,8 +438,8 @@ export async function upsertDocRecord(input: UpsertDocInput): Promise<HarnessDoc
   const contentHash = content === null ? null : sha256(content);
   const frontmatter = content === null ? null : deriveFrontmatterIndex(content);
   const frontmatterJson = frontmatter === null ? null : JSON.stringify(frontmatter);
-  const { sql } = getOrgPg();
-  const rows = await sql<DocRow[]>`
+  const observation = input.lastVerifiedSha && input.lastVerifiedAt ? input.reviewObservation : undefined;
+  const rows = await writeWithDocReview(observation, sql => sql<DocRow[]>`
     INSERT INTO harness_shared.harness_docs
       (workspace_id, harness_slug, doc_id, source, subject_ref, anchor_paths,
        generated_from_sha, last_verified_sha, last_verified_at, overlay,
@@ -438,7 +486,7 @@ export async function upsertDocRecord(input: UpsertDocInput): Promise<HarnessDoc
       frontmatter = CASE WHEN harness_shared.harness_docs.content_mode = 'composed'
                      THEN harness_shared.harness_docs.frontmatter
                      ELSE COALESCE(${frontmatterJson}::jsonb, harness_shared.harness_docs.frontmatter) END
-    RETURNING *`;
+    RETURNING *`);
   return rowToRecord(rows[0]);
 }
 
@@ -475,25 +523,29 @@ export async function verifyDoc(
   verifiedSha: string,
   workspaceId?: string,
   reviewed?: HarnessDocRecord,
+  observation?: DocReviewObservation,
 ): Promise<boolean> {
   workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
   const original = reviewed ?? await getDocRecord(harnessSlug, docId, workspaceId);
   if (!original || typeof original.contentHash !== 'string' ||
       original.workspaceId !== workspaceId || original.harnessSlug !== harnessSlug ||
       original.docId !== docId || !original.subjectRef.length) return false;
-  const { sql } = getOrgPg();
   const refs = JSON.stringify(original.subjectRef);
-  const rows = await sql`
+  const contentHash = original.contentHash;
+  const rows = await writeWithDocReview(observation, sql => sql<DocRow[]>`
     UPDATE harness_shared.harness_docs
        SET last_verified_sha = ${verifiedSha}, last_verified_at = now(),
            status = 'fresh', status_detail = NULL, status_checked_at = now(),
            reverify_flagged_at = NULL, reverify_attempts = 0
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}
-       AND retired_at IS NULL AND source = ${original.source} AND content_hash = ${original.contentHash}
+       AND retired_at IS NULL AND source = ${original.source} AND content_hash = ${contentHash}
+       AND title IS NOT DISTINCT FROM ${original.title}
+       AND content_mode = ${original.contentMode ?? null} AND origin = ${original.origin ?? null}
+       AND author_pubkey IS NOT DISTINCT FROM ${original.authorPubkey ?? null}
        AND overlay IS NOT DISTINCT FROM ${original.overlay}
        AND subject_ref @> ${refs}::text::jsonb AND subject_ref <@ ${refs}::text::jsonb
        AND anchor_paths @> ${original.anchorPaths}::text[] AND anchor_paths <@ ${original.anchorPaths}::text[]
-     RETURNING doc_id`;
+     RETURNING *`);
   return rows.length === 1;
 }
 

@@ -244,6 +244,8 @@ export async function preflightBlockerDecision(
     const partialCorrectionScope = custodyScope && options.bindingCorrectionAdmission &&
       prepared.record.decision.disposition === 'defer' ? custodyScope : undefined;
     const parkedPlanLaneScope = plainReleaseScope ?? blockerRetainingLinkScope ?? partialCorrectionScope;
+    // Administrative edge corrections do not grant authority over external gates.
+    const retainedGateScope = plainReleaseScope ?? blockerRetainingLinkScope;
     const planLaneReopen = custodyScope && prepared.record.decision.disposition === 'self_resolve'
       ? explicitPlanLaneReopen(options.effect) : undefined;
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
@@ -253,13 +255,15 @@ export async function preflightBlockerDecision(
       authorityClear: custodyScope && prepared.record.decision.disposition === 'self_resolve'
         ? explicitAuthorityClear(options.effect, item, blockers) : undefined,
       retainedReservationRelease: prepared.record.decision.disposition === 'defer' ? plainReleaseScope : undefined,
-      retainedParkedPlanLaneDeferral: prepared.record.decision.disposition === 'defer' ? parkedPlanLaneScope : undefined });
+      retainedParkedPlanLaneDeferral: prepared.record.decision.disposition === 'defer' ? parkedPlanLaneScope : undefined,
+      retainedExternalGateDeferral: prepared.record.decision.disposition === 'defer' ? retainedGateScope : undefined });
     const checked = await validateBlockerDecisionEvidence(prepared.record.decision, {
       ownerId: context.ownerId, workItemId: item.id, obligationRefs, relatedConditionRefs, priorDeferral,
       allowAbsorption: options.allowAbsorption, unmeasuredRuntimeDeferral: plainReleaseScope,
       bindingCorrectionAdmission: options.bindingCorrectionAdmission,
       bindingCorrectionRequestHash: prepared.record.requestHash,
-      unmeasuredParkedPlanLaneDeferral: parkedPlanLaneScope, readEvidence,
+      unmeasuredParkedPlanLaneDeferral: parkedPlanLaneScope,
+      unmeasuredExternalGateDeferral: retainedGateScope, readEvidence,
     });
     return checked.ok ? prepared : checked;
   } catch {
@@ -288,6 +292,8 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   /** Host-only deferral for a system plan-line transition park. The writer
    * either adds a dependency or releases only assignment, retaining the park. */
   retainedParkedPlanLaneDeferral?: UnmeasuredRuntimeScope;
+  /** Host-only custody/edge addition that leaves an exact active external gate intact. */
+  retainedExternalGateDeferral?: UnmeasuredRuntimeScope;
   /** Host-derived explicit plans:set-status CAS; all canonical custody, graph,
    * owner-marker and independent-condition checks still apply. */
   planLaneReopen?: PlanLaneReopen;
@@ -844,6 +850,16 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
           const { readEventConditionReachability } = await import('./external-condition-reachability');
           const read = await readEventConditionReachability(ref.ref, { requireSpecificCondition: true });
           if (!read.authoritative || read.verdict === 'unknown') {
+            const scope = context.retainedExternalGateDeferral;
+            const gates = context.blockers.filter(blocker =>
+              blocker.kind === 'gate' && blocker.ref === ref.ref && blocker.status === 'active');
+            if (scope && gates.length === 1 && scope.workspaceId === context.workspaceId &&
+                scope.harnessSlug === context.harnessSlug && scope.workItemId === context.workItemId &&
+                scope.custodianId === context.ownerId && context.custodianId === context.ownerId &&
+                activeWorkspaceId() === context.workspaceId) {
+              return { status: 'unmeasured-external-gate', ref: ref.ref, scope,
+                detail: 'exact active external gate retained without a measured release verdict' };
+            }
             return unknown(read.evidence
               ? `event condition could not be measured: ${read.evidence}`
               : 'event condition could not be measured');

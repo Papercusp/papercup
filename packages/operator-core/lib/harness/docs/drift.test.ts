@@ -222,9 +222,30 @@ describe('checkDocDrift (multi-ref)', () => {
     const unknown = { kind: 'feature' as const, ref: 'F-404' };
     const record = { source: 'manual' as const, subjectRef: [unchangedSymbol],
       generatedFromSha: null, lastVerifiedSha: shas.c0 };
-    const deps = { ...opts(), resolveFeatureCommits: async () => [] };
+    const deps = { ...opts(), resolveFeatureCommits: async () => [], checkReview: async () => 'eligible' as const };
 
     expect(await recomputeDocStatus(record, deps)).toMatchObject({ status: 'fresh' });
+    expect(await recomputeDocStatus(record, { ...deps, checkReview: async () => 'changed' }))
+      .toMatchObject({ status: 'review', detail: 'original review scope or reviewer permission changed' });
+    expect(await recomputeDocStatus(record, { ...deps, checkReview: async () => 'unknown' }))
+      .toMatchObject({ status: 'review', detail: 'original review scope or reviewer permission is unknown' });
+    expect(await recomputeDocStatus(record, opts())).toMatchObject({ status: 'review' });
+    let moved = false;
+    const observedGit: GitRunner = (args, cwd) => moved && args.at(-1) === 'HEAD^{commit}'
+      ? Promise.resolve({ code: 0, stdout: shas.c0, stderr: '' }) : deps.runGit(args, cwd);
+    expect(await recomputeDocStatus(record, { ...deps, runGit: observedGit,
+      checkReview: async () => { moved = true; return 'eligible'; } }))
+      .toMatchObject({ status: 'unknown', detail: 'review-source-head-changed-or-unavailable' });
+    // The reviewed tree is ahead of the checkout. A base..HEAD walk can be
+    // empty even when the document now describes different source bytes.
+    const later = git(['commit-tree', git(['rev-parse', shas.c0 + '^{tree}']), '-p', 'HEAD', '-m', 'later review']);
+    expect(await recomputeDocStatus({ ...record, lastVerifiedSha: later, subjectRef: [changedSymbol] }, deps))
+      .toMatchObject({ status: 'unknown', detail: 'baseline-not-ancestor' });
+    expect(await recomputeDocStatus({ ...record, subjectRef: [{ ...unchangedSymbol, name: 'neverExisted' }],
+      lastVerifiedSha: git(['rev-parse', 'HEAD']) }, deps))
+      .toMatchObject({ status: 'unknown', detail: 'unresolved-symbol' });
+    expect(await recomputeDocStatus({ ...record, subjectRef: [unchangedSymbol, { kind: 'plan', ref: 'scope#P-001' }] }, deps))
+      .toMatchObject({ status: 'unknown', detail: 'unmeasured-plan-reference' });
     expect(await recomputeDocStatus({ ...record, subjectRef: [changedSymbol] }, deps))
       .toMatchObject({ status: 'review', drift: { changedPaths: ['src/foo.ts'] } });
     expect(await recomputeDocStatus({ ...record, subjectRef: [{ kind: 'path', globs: ['src/foo.ts'] }] }, deps))

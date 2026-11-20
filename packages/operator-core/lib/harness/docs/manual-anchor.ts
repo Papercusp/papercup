@@ -17,6 +17,8 @@ import { makeFeatureCommitLookup } from './feature-commits';
 import { parseDocumentsField, resolveAllAnchorPaths, frontmatterDocuments, type SubjectRef } from './subject-ref';
 import { upsertDocRecord, getDocRecord, verifyDoc, type HarnessDocRecord } from './doc-record';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
+import { observeDocReview, type DocReviewOperation } from './review-authority';
+import { sha256 } from './authored-doc-projection';
 
 // Re-exported for existing callers (agent-tools/docs/author, migrate-fs-docs, tests) —
 // the implementation now lives in subject-ref.ts (WI-1576), the dependency-light pure
@@ -54,6 +56,7 @@ export interface AnchorManualDocInput {
   documents?: unknown;
   /** Set the verify baseline to HEAD now (a human confirming the doc is current). */
   verify?: boolean;
+  reviewOperation?: DocReviewOperation;
   title?: string;
   workspaceId?: string;
   /**
@@ -142,6 +145,11 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
   }
 
   const status = !anchored ? 'untracked' : lastVerifiedSha ? 'fresh' : 'review';
+  let contentHash: string | undefined;
+  if (lastVerifiedSha && input.reviewOperation) {
+    contentHash = input.content === undefined
+      ? (await getDocRecord(input.harnessSlug, docId, workspaceId))?.contentHash : sha256(input.content);
+  }
   const record = await upsertDocRecord({
     harnessSlug: input.harnessSlug,
     docId,
@@ -150,6 +158,7 @@ export async function anchorManualDoc(input: AnchorManualDocInput): Promise<Anch
     subjectRef,
     anchorPaths,
     lastVerifiedSha,
+    reviewObservation: lastVerifiedSha ? await observeDocReview(input.reviewOperation, paths, docId, contentHash) : undefined,
     ...(lastVerifiedSha ? { lastVerifiedAt: new Date().toISOString() } : {}),
     status,
     statusDetail: anchored ? (lastVerifiedSha ? null : 'anchored — verify to set a baseline') : 'not drift-tracked (no subject_ref)',
@@ -166,6 +175,7 @@ export async function verifyManualDoc(
   harnessSlug: string,
   docId: string,
   workspaceId?: string,
+  reviewOperation?: DocReviewOperation,
 ): Promise<{ ok: true; verifiedSha: string } | { ok: false; error: string }> {
   const id = docId.trim().replace(/^\.?\//, '');
   // Validate the harness FIRST (returns unknown_harness), then derive its workspace — never
@@ -180,7 +190,8 @@ export async function verifyManualDoc(
   }
   const head = await repoHeadSha(paths.repoRoot);
   if (!head) return { ok: false, error: 'no_head_sha' };
-  if (!await verifyDoc(harnessSlug, id, head, workspaceId, existing)) {
+  const observation = await observeDocReview(reviewOperation, paths, id, existing.contentHash);
+  if (!await verifyDoc(harnessSlug, id, head, workspaceId, existing, observation)) {
     return { ok: false, error: 'doc_review_subject_changed' };
   }
   return { ok: true, verifiedSha: head };

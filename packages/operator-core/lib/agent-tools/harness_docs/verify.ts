@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { harnessArg, resolveBulkHarnessScopes } from '../_harness-scope';
 import { verifyManualDoc } from '../../harness/docs/manual-anchor';
+import { docReviewOperation } from '../../harness/docs/review-authority';
 import { runBulk, bulkContent } from '../_bulk';
 
 const itemSpec = z.object({
@@ -69,7 +70,8 @@ export default defineTool({
         if (scope.kind !== 'harness') {
           return { ok: false as const, docId: it.docId, error: 'harness_required' };
         }
-        const res = await verifyManualDoc(scope.slug, it.docId);
+        const operation = docReviewOperation(ctx, scope.slug, 'harness_docs:verify', { harness: scope.slug, docId: it.docId });
+        const res = await verifyManualDoc(scope.slug, it.docId, undefined, operation);
         return res.ok
           ? { ok: true as const, docId: it.docId, verifiedSha: res.verifiedSha }
           : { ok: false as const, docId: it.docId, error: res.error };
