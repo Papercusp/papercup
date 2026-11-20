@@ -173,6 +173,7 @@ const defaultDeps: GovernancePolicyControlDeps = {
   },
   notify: async (queryName) => {
     const { notifySyncInvalidate } = await import('../sync-sse');
+    // notify-classification: {"id":"packages/operator-core/lib/governance-policy/control.ts#<module>/notify:948230d71ba63dd11b0a:1","classification":"durable","reason":"The native source census reaches notify, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await notifySyncInvalidate(queryName);
   },
   now: () => new Date(),

@@ -1252,8 +1252,10 @@ async function readFleetHeadcountRepairAdmission(args: {
 
   let lane;
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/readFleetHeadcountRepairAdmission:de46febe0fe3a32c2485:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     lane = await runSweepStepWithOverrunBudget(
       `fleet-headcount:${args.fleetSlug}:repair-admission:lane-health-read`,
+      // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/readFleetHeadcountRepairAdmission/<callback>:ca2ba5f0fc8c0bae9803:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       () => readFleetLaneHealthDiagnosed({
         fleet: args.fleetSlug,
         harness: args.harness,
@@ -1547,6 +1549,7 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     });
 
     if (assessment.action === 'spawn' || assessment.action === 'prune') {
+      // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/topUpOneFleet:80251b43b0929b530a26:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const admission = await readFleetHeadcountRepairAdmission({
         fleetSlug,
         workspaceId,
@@ -1621,8 +1624,10 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       ),
       { workflowId: ctx.workflowId },
     );
+    // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/topUpOneFleet:843986edba7efba76a27:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const requestedGoalLaunch = await runSweepStepWithOverrunBudget(
       `fleet-headcount:${fleetSlug}:requested-goal-launch-read`,
+      // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/topUpOneFleet/<callback>:52520bea036b5516270b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       () => resolveGoalLaunch({
         workspaceId,
         launcherOwnerId,
@@ -1735,8 +1740,10 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
     // count-sensitive goal profile still matches the members actually opened.
     const goalLaunch = waveCount === requestedWaveCount
       ? requestedGoalLaunch
+      // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/topUpOneFleet:de76a3fab247beffc79a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       : await runSweepStepWithOverrunBudget(
           `fleet-headcount:${fleetSlug}:adjusted-goal-launch-read`,
+          // notify-classification: {"id":"packages/operator-core/lib/harness/routines/fleet-headcount-action.ts#<module>/topUpOneFleet/<callback>:0b44c3b94b1fbc0c50e7:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           () => resolveGoalLaunch({
           workspaceId,
           launcherOwnerId,

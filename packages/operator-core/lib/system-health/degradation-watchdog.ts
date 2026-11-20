@@ -982,11 +982,13 @@ async function defaultReadEndedSessionOwners(ownerIds: string[]): Promise<Set<st
 
 async function defaultBroadcast(ev: SevereEventBroadcast): Promise<boolean> {
   const { broadcastSevereEvent } = await import('../severe-event-broadcast');
+  // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/defaultBroadcast:6aca73e77e813bd3dea8:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return broadcastSevereEvent(ev);
 }
 
 async function defaultResolve(res: SevereEventResolution): Promise<boolean> {
   const { broadcastSevereEventResolved } = await import('../severe-event-broadcast');
+  // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/defaultResolve:2e24941bd4a70afcd8fe:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return broadcastSevereEventResolved(res);
 }
 
@@ -1065,6 +1067,7 @@ async function resolveEndedOwnerScopes(
           const openedAt = openedAtByKey.get(conditionKey);
           if (openedAt == null || !Number.isFinite(openedAt) || startedAt <= openedAt) continue;
           try {
+            // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/resolveEndedOwnerScopes:0b9381bde703127b2afc:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const ok = await deps.resolve({
               conditionKey,
               summary: `Superseded: ${mechanism.mechanism} (${ownerId}) condition predates the current session incarnation.`,
@@ -1097,6 +1100,7 @@ async function resolveEndedOwnerScopes(
     endedScopes.add(ownerId);
     for (const conditionKey of keys) {
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/resolveEndedOwnerScopes:aa2edae02087c2e83d5b:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const ok = await deps.resolve({
           conditionKey,
           summary: `Superseded: ${mechanism.mechanism} (${ownerId}) owner session ended; scope is no longer applicable.`,
@@ -1159,6 +1163,7 @@ export async function runDegradationSweepOnce(
   }
 
   for (const m of deps.mechanisms()) {
+    // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/runDegradationSweepOnce:457b028ad149b8d4a6ff:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const endedOwnerScopes = await resolveEndedOwnerScopes(m, openKeys, openEpisodes, deps, out);
     const t = resolveThresholds(m.thresholds);
     const windowMs = m.windowMs ?? DEGRADATION_WINDOW_MS;
@@ -1192,6 +1197,7 @@ export async function runDegradationSweepOnce(
         const openedAtMs = openedAtByKey.get(key);
         if (openedAtMs == null || !Number.isFinite(openedAtMs) || now.getTime() - openedAtMs < windowMs) continue;
         try {
+          // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/runDegradationSweepOnce:eb68a896a6292465c8b5:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const ok = await deps.resolve({
             conditionKey: key,
             summary:
@@ -1245,6 +1251,7 @@ export async function runDegradationSweepOnce(
       out.evaluated.push({ mechanism: m.mechanism, scope, verdict: verdict.kind });
       const plan = planDegradationActions(verdict, prefix, openKeys);
       for (const key of plan.resolve) {
+        // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/runDegradationSweepOnce:c4f018379f5a65d6fe37:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const ok = await deps.resolve({
           conditionKey: key,
           summary:
@@ -1265,6 +1272,7 @@ export async function runDegradationSweepOnce(
           : yieldDrop && previous
             ? renderYieldDropAlarm(m, scope, previous, window, verdict, m.yieldDrop!)
             : renderDegradationAlarm(m, scope, window, verdict, t);
+        // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/runDegradationSweepOnce:64600eec32e044ba4784:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const ok = await deps.broadcast({
           ...text,
           category: 'degradation',
@@ -1294,6 +1302,7 @@ export function startDegradationWatchdog(opts: { intervalMs?: number } = {}): vo
     () => {
       if (sweeping) return;
       sweeping = true;
+      // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/startDegradationWatchdog/<callback>:a664864f26194012c743:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       void (async () => {
         try {
           // A shared operator serves every registered workspace. Keep each
@@ -1301,6 +1310,8 @@ export function startDegradationWatchdog(opts: { intervalMs?: number } = {}): vo
           // tenant-local rows cannot bleed into another workspace's episode.
           const workspaces = [...new Set(backgroundWorkspaceIds())];
           for (const workspaceId of workspaces) {
+            // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/startDegradationWatchdog/<callback>/<callback>:a73401e2f029727439ae:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+            // notify-classification: {"id":"packages/operator-core/lib/system-health/degradation-watchdog.ts#<module>/startDegradationWatchdog/<callback>/<callback>/<callback>:0d8a808fe81a9d4dc26e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const result = await runWithWorkspace(workspaceId, () => runDegradationSweepOnce());
             if (result.errors.length > 0) {
               console.warn(

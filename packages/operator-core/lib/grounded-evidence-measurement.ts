@@ -1418,11 +1418,13 @@ export function observeGroundedStoreOperations<T extends object>(input: {
           const associated = entry?.client === this && submitted.get(this) === entry ? entry : undefined;
           if (associated && backendProcessId(this) !== associated.backendProcessId) captureFailed = true;
           if (associated) associated.serverMessages?.notices.push(original);
+          // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedStoreOperations/notice:84c79f5b61456a6612d8:1","classification":"durable","reason":"The native source census reaches notifySql at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           notifySql({ id: associated ? associated.id : `${input.attemptId}:unattributed-notice:${++unattributedNotices}`,
             pool: driver.pool, phase: 'notice', query: typeof associated?.query?.text === 'string' ? associated.query.text : null,
             backendProcessId: associated ? associated.backendProcessId : backendProcessId(this),
             serverMessageSourceRef: driver.serverMessageSourceRef, notice: original,
             association: associated ? 'executing-query' : 'unattributed' });
+          // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedStoreOperations/notice:31ceb6fc9cbf37c35c3f:1","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           notify();
         }
       } catch { captureFailed = true; }
@@ -1443,10 +1445,12 @@ export function observeGroundedStoreOperations<T extends object>(input: {
           if ((query && query !== entry.query) || transactionStatus === null
             || backendProcessId(this) !== entry.backendProcessId) captureFailed = true;
           if (entry.serverMessages) entry.serverMessages.transactionStatus = transactionStatus;
+          // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedStoreOperations/clientReady:30f0442fa7a6efa88490:1","classification":"durable","reason":"The native source census reaches notifySql at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           notifySql({ id: entry.id, pool: driver.pool, phase: 'ready',
             query: typeof entry.query?.text === 'string' ? entry.query.text : null,
             backendProcessId: entry.backendProcessId, serverMessageSourceRef: driver.serverMessageSourceRef,
             transactionStatus });
+          // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedStoreOperations/clientReady:31ceb6fc9cbf37c35c3f:1","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           notify();
         } catch { captureFailed = true; }
         submitted.delete(this);
@@ -1733,13 +1737,16 @@ export function observeGroundedDurableHost<T extends { runStep<R>(name: string, 
     const id = `${input.attemptId}:durable:${ids.length + 1}:${name}`;
     ids.push(id); pending++;
     const row: GroundedDurableAttempt = { id, source: 'unknown', disposition: 'pending' };
+    // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedDurableHost/runStep:31ceb6fc9cbf37c35c3f:1","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     admissions.push(row); outstanding.add(id); notify();
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedDurableHost/runStep/<callback>:31ceb6fc9cbf37c35c3f:1","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await input.host.runStep(name, async () => { row.source = 'live'; notify(); return fn(); });
       if (row.source === 'unknown') row.source = 'recorded';
       row.disposition = 'returned';
       return result;
     } catch (error) { row.disposition = 'error'; throw error; }
+    // notify-classification: {"id":"packages/operator-core/lib/grounded-evidence-measurement.ts#<module>/observeGroundedDurableHost/runStep:31ceb6fc9cbf37c35c3f:2","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     finally { rows.push(row); outstanding.delete(id); pending--; notify(); }
   };
   const host = new Proxy(input.host, { get(target, key) {

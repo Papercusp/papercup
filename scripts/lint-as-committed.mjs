@@ -1879,6 +1879,7 @@ async function main() {
     if (!workRoot) return false;
     const incomplete = !dependenciesPrepared && existsSync(join(workRoot, OWNER_MARKER));
     if (incomplete) console.error(`lint-as-committed: incomplete preparation retained at ${workRoot}; resume with --ref=${sha}, --resume-root and --resume-verification (not prepared proof).`);
+    // notify-classification: {"id":"scripts/lint-as-committed.mjs#<module>/main/cleanupWorkRoot:664fadc51a4a98ff8fd9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return cleanupCommittedWorkRoot(workRoot, args.keep || incomplete);
   };
   const bail = async (code) => {
@@ -2093,6 +2094,7 @@ async function main() {
     let snapshot;
     let prerequisiteError;
     try {
+      // notify-classification: {"id":"scripts/lint-as-committed.mjs#<module>/main:dcfb9ad95403597bb599:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       snapshot = await materializeIndependentDependencies(dependencyDonorRoot, workRoot, {
         // The donor may be disposable; use the persistent store already
         // resolved from the canonical source for commands and nested readers.

@@ -637,7 +637,9 @@ export async function verifyRetainedDependencies(donor, destination, options, co
       if (within(donor, destination) || within(destination, donor)) fail('dependency roots overlap');
       privateDirectory(checkpoint, [donor, destination]);
     }
+    // notify-classification: {"id":"scripts/lib/committed-dependency-verification.mjs#<module>/verifyRetainedDependencies:e3126caf8609528d03b6:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return await withFsMutex('committed-dependency-verification-' + digest(checkpoint).slice(0, 24), () =>
+    // notify-classification: {"id":"scripts/lib/committed-dependency-verification.mjs#<module>/verifyRetainedDependencies/<callback>:ec3b996fa87200e1655c:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     withFsMutexRead(installLockNameForRoot(donor), async () => {
       const scratch = mkdtempSync(join(checkpoint, '.scan-'));
       try {
