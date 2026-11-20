@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { PLAN_EFFICIENCY_CATEGORIES, categorizePlanToolCall, foldPlanCallGroups,
-  collectRevisionReopenings, measurePlanRevisionDelay, type RevisionDiscoveryAudit,
+  collectRevisionReopenings, compareActivationAudits, measurePlanRevisionDelay, type RevisionDiscoveryAudit,
   summarizeWorkflowStepUsage, unionWorkflowStepIntervals, type WorkflowStepSource,
   type WorkflowStepUsageRow } from './plan-efficiency';
 
@@ -77,6 +77,38 @@ describe('revision-induced reopening costs', () => {
     expect(groups.reduce((count, group) => count + group.record_count, 0)).toBe(2619);
     expect(replay).toHaveLength(461);
     expect(replay.filter(row => row[3] === null)).toHaveLength(1);
+  });
+
+  it('replays November activation comparisons and distinguishes matching provenance from two missing records', () => {
+    type CapturedActivation = [number, string, number, string | null, string, string | null, string | null, string | null, string];
+    const fixture = JSON.parse(readFileSync(new URL('../test/fixtures/plan-revision-baseline.json', import.meta.url), 'utf8'));
+    const groups: Array<{ records: CapturedActivation[]; record_count: number }> = fixture.history.source.activation;
+    const comparisons = groups.map(group => {
+      expect(group.records).toHaveLength(group.record_count);
+      const audits = group.records.map(([auditSeq, , revisionSeq, , , rangesHash, mappingsHash, provenanceHash]) =>
+        ({ auditSeq, revisionSeq, rangesHash, mappingsHash, provenanceHash }));
+      const observed = compareActivationAudits(audits);
+      expect(compareActivationAudits(audits.reverse())).toEqual(observed);
+      return observed;
+    });
+    expect(comparisons.reduce((n, c) => n + c.audits, 0)).toBe(1392);
+    expect(comparisons.reduce((n, c) => n + c.higherRevisionPairs, 0)).toBe(1211);
+    expect(comparisons.reduce((n, c) => n + c.coverage.matching, 0)).toBe(1027);
+    const matching = comparisons.reduce((n, c) => n + c.provenanceOnMatchingCoverage.matching, 0);
+    const missing = comparisons.reduce((n, c) => n + c.provenanceOnMatchingCoverage.neitherRecorded, 0);
+    expect(matching).toBe(958);
+    expect(missing).toBe(54);
+    // The original SQL used IS NOT DISTINCT FROM, which counts two absent fields as equal.
+    expect(matching + missing).toBe(fixture.history.expected.sameWithItemProvenance);
+  });
+
+  it('retains unknown revisions without comparing nonadjacent activation audits', () => {
+    const row = { auditSeq: 1, revisionSeq: 1, rangesHash: 'range', mappingsHash: 'mapping', provenanceHash: 'source' };
+    const unknown = { ...row, auditSeq: 2, revisionSeq: null };
+    expect(compareActivationAudits([row, unknown, { ...row, auditSeq: 3, revisionSeq: 2 }])).toMatchObject({
+      audits: 3, higherRevisionPairs: 0, unknownRevisionPairs: 2, unmeasuredAuditSeqs: [2],
+    });
+    expect(() => compareActivationAudits([row, row])).toThrow('duplicate activation audit');
   });
 
   it('replays retained invocation pages including the empty day and unresolved plan identities', () => {

@@ -199,6 +199,50 @@ describe('readPlanEfficiency (real PG)', () => {
       .toMatchObject({ episodes: 2, measuredEpisodes: 2, unavailableMs: 900_000, soleBlockerMs: null });
   });
 
+  it('measures activation input equality within the plan and window, preserving missing and changed fields', async () => {
+    const subject = 'activation-coverage-fixture';
+    const base = { sourceRanges: ['range'], mappings: ['mapping'] };
+    const recorded = { ...base, itemProvenance: [] };
+    const entries = [
+      base, base, recorded, recorded, { ...base, itemProvenance: ['derived'] },
+      { sourceRanges: ['new range'] }, { sourceRanges: ['new range'], mappings: null },
+      { sourceRanges: ['new range'] }, recorded,
+    ];
+    for (const slug of [subject, 'another-activation-coverage-fixture']) {
+      let stored: { id: string; seq: number; content_hash: string } | undefined;
+      for (const [index, activation] of entries.entries()) {
+        const seq = index + 1;
+        // Entry 8 is another audit on the same revision. The last entry is outside the window.
+        const revision = seq === 8 ? 7 : seq;
+        if (stored?.seq !== revision) {
+          const content = `activation fixture revision ${revision}`;
+          const hash = createHash('sha256').update(content).digest('hex');
+          [stored] = await db.adminSql<{ id: string; seq: number; content_hash: string }[]>`
+            INSERT INTO harness_shared.plan_revisions
+              (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,author_kind,author_id,created_at)
+            VALUES (${WS},${HARNESS},${slug},${revision},${hash},${content},'agent','fixture',${Date.parse(at(revision))})
+            RETURNING id::text, seq, content_hash`;
+        }
+        if (!stored) throw new Error('Activation fixture has no original revision');
+        await db.adminSql`
+          INSERT INTO harness_shared.plan_audits
+            (workspace_id,harness_slug,plan_slug,audit_seq,created_by,created_at,audit_kind,
+             audited_plan_revision_id,audited_plan_revision_seq,audited_plan_content_hash,activation)
+          VALUES (${WS},${HARNESS},${slug},${seq},'fixture',${at(seq)},'activation',
+                  ${stored.id},${revision},${stored.content_hash},${db.adminSql.json(activation)})`;
+      }
+    }
+    const { revisionMeasurement } = await readPlanEfficiency({ workspaceId: WS, harnessSlug: HARNESS,
+      planSlug: subject, sql: db.adminSql, revisionWindow: { from: at(1), until: at(9) } });
+    expect(revisionMeasurement.discoveryAudits).toBe(0);
+    expect(revisionMeasurement.activationComparisons).toEqual({
+      audits: 8, higherRevisionPairs: 6, nonIncreasingRevisionPairs: 1, unknownRevisionPairs: 0,
+      coverage: { matching: 4, changed: 1, unknown: 1 },
+      provenanceOnMatchingCoverage: { matching: 1, changed: 1, neitherRecorded: 1, oneRecorded: 1 },
+      unmeasuredAuditSeqs: [1, 2, 6, 7, 8],
+    });
+  });
+
   it('classes failed calls, counts effort on dropped items, and counts holder changes', async () => {
     const eff = await readPlanEfficiency({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, sql: db.adminSql });
 

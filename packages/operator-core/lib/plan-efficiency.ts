@@ -528,6 +528,61 @@ export function collectRevisionReopenings(observations: readonly RevisionDiscove
   return { episodes, unknownAuditSeqs, initialFailures };
 }
 
+interface ActivationAuditInputs {
+  auditSeq: number;
+  revisionSeq: number | null;
+  rangesHash: string | null;
+  mappingsHash: string | null;
+  provenanceHash: string | null;
+}
+
+/** Compare adjacent audits of one plan. Equal stored inputs measure repeated coverage.
+ * Only two recorded provenance arrays can establish that their contents match. */
+export function compareActivationAudits(audits: readonly ActivationAuditInputs[]) {
+  const coverage = { matching: 0, changed: 0, unknown: 0 };
+  const provenanceOnMatchingCoverage = { matching: 0, changed: 0, neitherRecorded: 0, oneRecorded: 0 };
+  const unmeasuredAuditSeqs: number[] = [];
+  let higherRevisionPairs = 0;
+  let nonIncreasingRevisionPairs = 0;
+  let unknownRevisionPairs = 0;
+  let last: ActivationAuditInputs | undefined;
+  for (const current of [...audits].sort((a, b) => a.auditSeq - b.auditSeq)) {
+    const prior = last;
+    last = current;
+    if (!Number.isSafeInteger(current.auditSeq) || current.auditSeq < 1 || current.auditSeq === prior?.auditSeq) {
+      throw new Error(`Invalid or duplicate activation audit sequence: ${current.auditSeq}`);
+    }
+    if ([current.revisionSeq, current.rangesHash, current.mappingsHash, current.provenanceHash].includes(null)) {
+      unmeasuredAuditSeqs.push(current.auditSeq);
+    }
+    if (!prior) continue;
+    if (current.revisionSeq === null || prior.revisionSeq === null) {
+      unknownRevisionPairs++;
+      continue;
+    }
+    if (current.revisionSeq <= prior.revisionSeq) {
+      nonIncreasingRevisionPairs++;
+      continue;
+    }
+    higherRevisionPairs++;
+    const rangeChanged = prior.rangesHash !== null && current.rangesHash !== null && prior.rangesHash !== current.rangesHash;
+    const mappingChanged = prior.mappingsHash !== null && current.mappingsHash !== null && prior.mappingsHash !== current.mappingsHash;
+    if (rangeChanged || mappingChanged) {
+      coverage.changed++;
+    } else if ([prior.rangesHash, current.rangesHash, prior.mappingsHash, current.mappingsHash].includes(null)) {
+      coverage.unknown++;
+    } else {
+      coverage.matching++;
+      if (prior.provenanceHash === null && current.provenanceHash === null) provenanceOnMatchingCoverage.neitherRecorded++;
+      else if (prior.provenanceHash === null || current.provenanceHash === null) provenanceOnMatchingCoverage.oneRecorded++;
+      else if (prior.provenanceHash === current.provenanceHash) provenanceOnMatchingCoverage.matching++;
+      else provenanceOnMatchingCoverage.changed++;
+    }
+  }
+  return { audits: audits.length, higherRevisionPairs, nonIncreasingRevisionPairs, unknownRevisionPairs,
+    coverage, provenanceOnMatchingCoverage, unmeasuredAuditSeqs };
+}
+
 async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonNullable<PlanEfficiencyInput['sql']>) {
   const { workspaceId, harnessSlug, planSlug, revisionWindow } = input;
   const from = revisionWindow ? Date.parse(revisionWindow.from) : null;
@@ -535,11 +590,13 @@ async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonN
   if (from !== null && until !== null && (!Number.isSafeInteger(from) || !Number.isSafeInteger(until) || from >= until)) {
     throw new Error('Revision observation window requires a valid start and a later end.');
   }
-  // One database snapshot for the revision count and all discovery observations of this exact subject.
+  // Count revisions and read both audit kinds for this subject in the same database snapshot.
   const rows = await sql<Array<{
     revisions: string | number; audit_seq: number | null; revision_id: string | null;
+    audit_kind: 'discovery' | 'activation' | null;
     revision_seq: number | null; revision_hash: string | null;
     observed_at: string | null; ready: boolean | null; changed_input: boolean | null;
+    ranges_hash: string | null; mappings_hash: string | null; provenance_hash: string | null;
   }>>`
     WITH counts AS (
       SELECT count(*) AS revisions FROM harness_shared.plan_revisions
@@ -547,9 +604,15 @@ async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonN
         AND (${from}::bigint IS NULL OR created_at >= ${from})
         AND (${until}::bigint IS NULL OR created_at < ${until})
     ), observations AS (
-      SELECT audit_seq, audited_plan_revision_id::text AS revision_id, audited_plan_revision_seq AS revision_seq,
+      SELECT audit_kind, audit_seq, audited_plan_revision_id::text AS revision_id, audited_plan_revision_seq AS revision_seq,
              audited_plan_content_hash AS revision_hash,
              to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS observed_at,
+             CASE WHEN jsonb_typeof(activation->'sourceRanges') = 'array'
+               THEN encode(sha256(convert_to((activation->'sourceRanges')::text, 'UTF8')), 'hex') END AS ranges_hash,
+             CASE WHEN jsonb_typeof(activation->'mappings') = 'array'
+               THEN encode(sha256(convert_to((activation->'mappings')::text, 'UTF8')), 'hex') END AS mappings_hash,
+             CASE WHEN jsonb_typeof(activation->'itemProvenance') = 'array'
+               THEN encode(sha256(convert_to((activation->'itemProvenance')::text, 'UTF8')), 'hex') END AS provenance_hash,
              CASE discovery#>>'{readiness,ready}' WHEN 'true' THEN true WHEN 'false' THEN false END AS ready,
              CASE WHEN jsonb_typeof(discovery#>'{readiness,blockers}') = 'array' THEN EXISTS (
                SELECT 1 FROM jsonb_array_elements(discovery#>'{readiness,blockers}') AS blocker
@@ -558,7 +621,7 @@ async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonN
              ) END AS changed_input
       FROM harness_shared.plan_audits
       WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug} AND plan_slug=${planSlug}
-        AND audit_kind='discovery'
+        AND audit_kind IN ('discovery', 'activation')
         AND (${from}::bigint IS NULL OR created_at >= to_timestamp(${from}::bigint / 1000.0))
         AND (${until}::bigint IS NULL OR created_at < to_timestamp(${until}::bigint / 1000.0))
     )
@@ -566,8 +629,14 @@ async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonN
   const revisionCount = Number(rows[0]?.revisions);
   if (!Number.isSafeInteger(revisionCount) || revisionCount < 0) throw new Error('Unavailable plan revision count.');
   const audits: RevisionDiscoveryAudit[] = [];
+  const activations: ActivationAuditInputs[] = [];
   for (const row of rows) {
-    if (row.audit_seq === null) continue; // The count-only row for a plan with no discovery audit.
+    if (row.audit_seq === null) continue; // The count-only row for a plan with no matching audits.
+    if (row.audit_kind === 'activation') {
+      activations.push({ auditSeq: row.audit_seq, revisionSeq: row.revision_seq, rangesHash: row.ranges_hash,
+        mappingsHash: row.mappings_hash, provenanceHash: row.provenance_hash });
+      continue;
+    }
     if (row.observed_at === null) throw new Error(`Missing timestamp for discovery audit ${row.audit_seq}.`);
     audits.push({
       auditSeq: row.audit_seq, revisionId: row.revision_id, revisionSeq: row.revision_seq,
@@ -580,7 +649,8 @@ async function readPlanRevisionMeasurement(input: PlanEfficiencyInput, sql: NonN
   // Discovery history can establish its own unavailability, but does not enumerate other independent gates.
   const delay = measurePlanRevisionDelay(intervals, null);
   return {
-    revisionCount, discoveryAudits: audits.length, window: revisionWindow ?? null,
+    revisionCount, discoveryAudits: audits.length, activationComparisons: compareActivationAudits(activations),
+    window: revisionWindow ?? null,
     ...cohort,
     delay: {
       ...delay,
