@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { atomHead, atomize, isShellSyntaxAtom, normalizeAtom } from './atomize';
+import { atomHead, atomize, atomizePipeline, isShellSyntaxAtom, normalizeAtom } from './atomize';
 
 /** Convenience: the command verb of every atom, which is what bucketing uses. */
 const heads = (command: string): Array<string | null> => atomize(command).map(atomHead);
@@ -88,6 +88,87 @@ describe('atomize — heredocs (the body is data, not commands)', () => {
   it('honours <<- with a tab-indented terminator', () => {
     const command = ['run <<-END', '\tconst x = 1;', '\tEND', 'echo done'].join('\n');
     expect(heads(command)).toEqual(['run', 'echo']);
+  });
+
+  it.each([
+    ['<<', ' END'],
+    ['<<', 'END '],
+    ['<<', '\tEND'],
+    ['<<', 'END\t'],
+    ['<<', ' END '],
+    ['<<', 'END\r'],
+    ['<<', '\u00a0END'],
+    ['<<-', ' END'],
+    ['<<-', 'END '],
+    ['<<-', 'END\t'],
+    ['<<-', '\t END'],
+    ['<<-', '\tEND '],
+    ['<<-', '\tEND\t'],
+    ['<<-', '\tEND\r'],
+  ])('%s keeps the padded delimiter %j and following text in the body', (operator, padded) => {
+    const command = [
+      `cat ${operator}END`,
+      padded,
+      'printf body | wc -c',
+      'END',
+      'printf after | wc -c',
+    ].join('\n');
+
+    expect(atomize(command)).toEqual([`cat ${operator}END`, 'printf after', 'wc -c']);
+  });
+
+  it.each(['<<', '<<-'])('%s absorbs the body when only padded delimiters occur', (operator) => {
+    const command = [
+      `cat ${operator}END`,
+      'END ',
+      'printf body | wc -c',
+      '\t END',
+      'printf still-body',
+    ].join('\n');
+
+    expect(atomize(command)).toEqual([`cat ${operator}END`]);
+  });
+
+  it.each(['<<END', "<<'END'", '<<"END"', '<<-END', "<<-'END'", '<<-"END"'])(
+    'accepts an exact %s delimiter at end of input',
+    (introducer) => {
+      expect(atomize([`cat ${introducer}`, 'printf body', 'END'].join('\n'))).toEqual([
+        `cat ${introducer}`,
+      ]);
+    },
+  );
+
+  it('strips multiple leading tabs for <<- while preserving the following pipeline', () => {
+    const command = [
+      "cat <<-'END'",
+      '\tEND ',
+      'printf body | wc -c',
+      '\t\tEND',
+      'printf after | wc -c',
+    ].join('\n');
+
+    expect(atomizePipeline(command).map(({ atom, pipedInto, upstream }) => ({
+      atom, pipedInto, upstream,
+    }))).toEqual([
+      { atom: "cat <<-'END'", pipedInto: false, upstream: null },
+      { atom: 'printf after', pipedInto: false, upstream: null },
+      { atom: 'wc -c', pipedInto: true, upstream: 'printf after' },
+    ]);
+  });
+
+  it('consumes queued heredocs through their true delimiters', () => {
+    const command = [
+      'cat <<FIRST <<-SECOND',
+      ' FIRST',
+      'printf first-body',
+      'FIRST',
+      '\t SECOND',
+      'printf second-body',
+      '\tSECOND',
+      'printf after',
+    ].join('\n');
+
+    expect(atomize(command)).toEqual(['cat <<FIRST <<-SECOND', 'printf after']);
   });
 
   it('does not treat a here-STRING (<<<) as a heredoc', () => {

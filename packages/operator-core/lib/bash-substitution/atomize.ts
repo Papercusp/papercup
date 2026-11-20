@@ -119,7 +119,9 @@ function consumeHeredocBodies(command: string, from: number, pending: PendingHer
       const line = command.slice(cursor, end);
       cursor = end + 1;
       const probe = heredoc.stripTabs ? line.replace(/^\t+/, '') : line;
-      if (probe.trim() === heredoc.terminator) break;
+      // Only <<- permits leading tabs. Any remaining whitespace is body data,
+      // including trailing tabs/spaces and a carriage return before the newline.
+      if (probe === heredoc.terminator) break;
     }
   }
   return Math.min(cursor, command.length);
