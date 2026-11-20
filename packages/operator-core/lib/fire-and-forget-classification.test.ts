@@ -905,6 +905,26 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     },
   );
 
+  it.each([false, true])('discovers a cache callback beyond marker-only initial roots (reverse=%s)', reverse => {
+    const calls = ['cache.getOrSet(quiet());', 'bounded(cache, notifyOwner);'];
+    const c = scan(`
+      class Cache { getOrSet(factory) { return factory(); } }
+      function quiet() { if (again) return quiet(); return () => 1; }
+      function bounded(cache, factory) { cache.getOrSet(factory); }
+      const cache = new Cache();
+      ${(reverse ? calls.reverse() : calls).join('\n')}
+    `);
+    expect(c.gaps).toEqual([]);
+    // The discovery graph initially reaches only quiet's recursion marker.
+    // Refinement binds the cache and factory to discover the actual notice;
+    // filtering the marker before refinement would erase both obligations.
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+      ['bounded ( cache , notifyOwner )', ['notifyOwner']],
+      ['cache . getOrSet ( factory )', ['notifyOwner']],
+    ]);
+    expect(validateClassifications(c, [])).toEqual(c.sites.map(s => `unclassified: ${s.id}`));
+  });
+
   it('keeps the concrete callback inside a detached recursive wrapper', () => {
     const c = scan(`
       function recursive(callback) { if (again) return recursive(callback); callback(); }
