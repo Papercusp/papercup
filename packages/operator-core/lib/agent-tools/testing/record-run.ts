@@ -1415,7 +1415,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     const invalid = await deps.open('su-' + randomUUID(), true); clients.push(invalid);
     await assert.rejects(() => invalid.invoke('coord:whoami', {}), /superuser_invalid_bearer/);
     const actors: string[] = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const client = await deps.open('su-' + randomUUID()); clients.push(client);
       const identity = await client.invoke('coord:whoami', {});
       assert.equal(identity.workspaceId, ctx.workspaceId);
@@ -1423,8 +1423,8 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
       assert.match(identity.ownerId, /^su-[a-f0-9-]{36}$/);
       actors.push(identity.ownerId);
     }
-    assert.equal(new Set(actors).size, 3, 'distinct server-qualified actors required');
-    const [, , reviewer, grader] = clients;
+    assert.equal(new Set(actors).size, 4, 'distinct server-qualified actors required');
+    const [, , reviewer, revisingReviewer, approver] = clients;
     fixture = await deps.seed(nonce, actors[0]!, actors[1]!);
     cleanup = { status: 'pending' };
     const { id, ideaId } = fixture;
@@ -1446,16 +1446,16 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
             scope: 'Only the nonce-owned fixture item and routed idea.',
             completionCheck: 'This native run verifies correction, independent grade, receipt replay and cleanup.' } } } };
     const first = await reviewer!.invoke('improvements:agent-review', request);
-    assert.equal(first.corrected, true);
+    assert.equal(first.corrected, true, 'First correction refused: ' + (first.reason ?? 'no reason returned'));
     const corrected = await deps.read(id, ideaId);
-    const typedRequest = (value: typeof request) => ({ id, harness, workspaceId: ctx.workspaceId,
-      actor: actors[1], requestKey: value.requestKey, expectedRound: value.expectedRound,
+    const typedRequest = (value: typeof request, actor: string) => ({ id, harness, workspaceId: ctx.workspaceId,
+      actor, requestKey: value.requestKey, expectedRound: value.expectedRound,
       correctionRevision: value.correctionRevision, correction: value.correction });
-    const verifyReceipt = (value: typeof request, result: any, before: CorrectionObservation, after: CorrectionObservation) => {
+    const verifyReceipt = (value: typeof request, actor: string, result: any, before: CorrectionObservation, after: CorrectionObservation) => {
       assert.deepEqual({ schemaVersion: result.schemaVersion, workspaceId: result.workspaceId,
         harness: result.harness, itemId: result.itemId, actor: result.actor, requestKey: result.requestKey },
-      { schemaVersion: 1, workspaceId: ctx.workspaceId, harness, itemId: id, actor: actors[1], requestKey: value.requestKey });
-      assert.equal(result.requestHash, createHash('sha256').update(canonicalJson(typedRequest(value))).digest('hex'));
+      { schemaVersion: 1, workspaceId: ctx.workspaceId, harness, itemId: id, actor, requestKey: value.requestKey });
+      assert.equal(result.requestHash, createHash('sha256').update(canonicalJson(typedRequest(value, actor))).digest('hex'));
       assert.equal(result.beforeRevision, observedCorrectionRevision(ctx.workspaceId!, harness, before));
       assert.equal(result.afterRevision, observedCorrectionRevision(ctx.workspaceId!, harness, after));
       const oldPayload = before.item.payload as Record<string, any>;
@@ -1479,7 +1479,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
       assert.deepEqual(newReview.correctionContext, [...(oldReview.correctionContext ?? []), ...value.correction.notes]);
       assert.deepEqual(newReview.correctionReceipts, [...(oldReview.correctionReceipts ?? []), result]);
     };
-    verifyReceipt(request, first.receipt, initial, corrected);
+    verifyReceipt(request, actors[1]!, first.receipt, initial, corrected);
     assert.equal(corrected.item.title, request.correction.changes.title);
     assert.equal(corrected.item.summary, request.correction.changes.summary);
     const correctedPayload = corrected.item.payload as Record<string, any>;
@@ -1501,43 +1501,46 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     assert.match(first.receipt.requestHash, /^[a-f0-9]{64}$/);
     const selfGrade = await reviewer!.invoke('blender:grade-idea', { ideaId, grade: 5 });
     assert.equal(selfGrade.applied, false, 'material author must remain ineligible');
-    const claimed = await grader!.invoke('improvements:agent-review', { mode: 'claim', id });
+    const claimed = await revisingReviewer!.invoke('improvements:agent-review', { mode: 'claim', id });
     assert.equal(claimed.claimed, true, 'independent public review claim must succeed'); assert.equal(claimed.ledgerIdeaId, ideaId);
     assertCorrectionHandoff(claimed.reviewHandoff, corrected);
-    const grade = await grader!.invoke('blender:grade-idea', {
+    const grade = await revisingReviewer!.invoke('blender:grade-idea', {
       ideaId, grade: 2, feedback: 'Content revision: add the missing fixture diagnosis.' });
     assert.equal(grade.applied, true);
     const graded = await deps.read(id, ideaId);
     assert.equal(graded.ledger.graded_by, actors[2]); assert.equal(graded.ledger.human_grade, 2);
     assert.equal((graded.item.payload as Record<string, any>).agentReview.status, 'revision-requested');
-    const laterBase = await reviewer!.invoke('improvements:agent-review', { mode: 'correction-base', id });
+    assert.equal(graded.item.assignee, actors[2], 'A content revision request retains the current reviewer');
+    const laterBase = await revisingReviewer!.invoke('improvements:agent-review', { mode: 'correction-base', id });
     assertCorrectionHandoff(laterBase.reviewHandoff, graded);
     assert.equal(laterBase.correctionRevision, observedCorrectionRevision(ctx.workspaceId!, harness, graded));
     const laterRequest = { ...request,
       requestKey: nonce + '-later', expectedRound: laterBase.round, correctionRevision: laterBase.correctionRevision,
       correction: { ...request.correction, changes: { ...request.correction.changes,
         summary: 'Later material correction preserves historical receipts.' } } };
-    const later = await reviewer!.invoke('improvements:agent-review', laterRequest);
-    assert.equal(later.corrected, true);
+    const later = await revisingReviewer!.invoke('improvements:agent-review', laterRequest);
+    assert.equal(later.corrected, true, 'Second correction refused: ' + (later.reason ?? 'no reason returned'));
     const beforeReplay = await deps.read(id, ideaId);
-    verifyReceipt(laterRequest, later.receipt, graded, beforeReplay);
+    verifyReceipt(laterRequest, actors[2]!, later.receipt, graded, beforeReplay);
+    assert.deepEqual((beforeReplay.item.payload as Record<string, any>).agentReview.materialAuthors, [actors[1], actors[2]]);
     const replay = await reviewer!.invoke('improvements:agent-review', request);
-    assert.equal(replay.replayed, true); assert.deepEqual(replay.receipt, first.receipt);
+    assert.equal(replay.replayed, true, 'Historical correction replay refused: ' + (replay.reason ?? 'no reason returned'));
+    assert.deepEqual(replay.receipt, first.receipt);
     const afterReplay = await deps.read(id, ideaId);
     assert.deepEqual(afterReplay, beforeReplay, 'historical replay must be read-only');
-    assert.equal((await grader!.invoke('improvements:agent-review', { mode: 'claim', id })).claimed, true);
-    const approved = await grader!.invoke('blender:grade-idea', { ideaId, grade: 5,
+    assert.equal((await approver!.invoke('improvements:agent-review', { mode: 'claim', id })).claimed, true);
+    const approved = await approver!.invoke('blender:grade-idea', { ideaId, grade: 5,
       feedback: 'The private fixture correction and proposal are complete on the measured current build.' });
     assert.equal(approved.applied, true);
     const sealed = await deps.read(id, ideaId);
-    assert.equal(sealed.ledger.human_grade, 5); assert.equal(sealed.ledger.graded_by, actors[2]);
+    assert.equal(sealed.ledger.human_grade, 5); assert.equal(sealed.ledger.graded_by, actors[3]);
     const sealedPayload = sealed.item.payload as Record<string, any>;
     assert.equal(sealedPayload.agentReview.status, 'approved');
     assert.equal(sealedPayload.implementationReadiness.status, 'ready');
     const { evaluateImplementationAcceptance } = await import('../../harness/improvements/agent-review-policy');
     const acceptance = evaluateImplementationAcceptance(sealed.item.payload, sealed.item);
     assert.equal(acceptance.state, 'qualifying', 'a bare ready flag is insufficient');
-    assert.deepEqual(acceptance.contract?.authority, { kind: 'agent-review', reviewer: actors[2],
+    assert.deepEqual(acceptance.contract?.authority, { kind: 'agent-review', reviewer: actors[3],
       submittedBy: actors[0], round: later.receipt.afterRound });
     assert.deepEqual(sealedPayload.agentReview.correctionReceipts[1], later.receipt);
     assert.deepEqual(await deps.witness(), before, 'process and loaded source must remain stable');
@@ -1557,13 +1560,13 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     assert.equal(corrections.length, 2, 'initial correction and historical replay are distinct public invocations');
     const grading = receipt(actors[2]!, 'blender:grade-idea', args => args.ideaId === ideaId && args.grade === 2);
     assert.equal(grading.length, 1);
-    const approvalRefs = receipt(actors[2]!, 'blender:grade-idea', args => args.ideaId === ideaId && args.grade === 5);
-    const laterRefs = receipt(actors[1]!, 'improvements:agent-review', args => args.mode === 'correct' && args.requestKey === nonce + '-later');
+    const approvalRefs = receipt(actors[3]!, 'blender:grade-idea', args => args.ideaId === ideaId && args.grade === 5);
+    const laterRefs = receipt(actors[2]!, 'improvements:agent-review', args => args.mode === 'correct' && args.requestKey === nonce + '-later');
     assert.equal(approvalRefs.length, 1); assert.equal(laterRefs.length, 1);
     const evidence = JSON.stringify({ schemaVersion: 1, kind: 'reviewer-correction-evidence',
       workspaceId: ctx.workspaceId, harness, nonce, runtime: before,
       snapshots: { initial, corrected, graded, beforeReplay, afterReplay, sealed },
-      requests: { first: typedRequest(request), later: typedRequest(laterRequest) },
+      requests: { first: typedRequest(request, actors[1]!), later: typedRequest(laterRequest, actors[2]!) },
       receipts: { first: first.receipt, later: later.receipt, replay: replay.receipt },
       handoffs: { original: base.reviewHandoff, corrected: claimed.reviewHandoff, graded: laterBase.reviewHandoff }, invocations });
     const saved = await deps.saveEvidence(evidence);
@@ -1577,7 +1580,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
     const summary = JSON.stringify({ schemaVersion: 1, workspaceId: ctx.workspaceId,
       harness: resolveConcreteHarnessSlug(undefined, ctx), itemRef: id, ideaRef: ideaId,
       receiptRef: `${saved.relPath}#receipts.later`,
-      requestHash: later.receipt.requestHash, correctionAuthor: actors[1], approver: actors[2],
+      requestHash: later.receipt.requestHash, correctionAuthor: actors[2], approver: actors[3],
       beforeRevision: later.receipt.beforeRevision, afterRevision: later.receipt.afterRevision,
       beforeRound: later.receipt.beforeRound, afterRound: later.receipt.afterRound,
       transport: 'served-mcp', origin: 'http://127.0.0.1:3170',
@@ -1591,7 +1594,7 @@ export async function measureReviewerOwnedCorrection(ctx: RecordContext, deps: R
       { id: 'reviewer-correction:runtime-contained', passed: true, evidence: JSON.stringify(before) },
       { id: 'reviewer-correction:round-and-revisions', passed: true, evidence: JSON.stringify(later.receipt) },
       { id: 'reviewer-correction:original-attribution', passed: true, evidence: `Original filer ${actors[0]} retained in item, review and ledger.` },
-      { id: 'reviewer-correction:correction-authorship', passed: true, evidence: `Material author ${actors[1]}; own grade refused.` },
+      { id: 'reviewer-correction:correction-authorship', passed: true, evidence: `Material authors ${actors[1]} and ${actors[2]}; the first author's grade was refused.` },
       { id: 'reviewer-correction:independent-grade-and-seal', passed: true, evidence: JSON.stringify({
         invocation: approvalRefs[0], authority: acceptance.contract?.authority, sourceRevision: acceptance.contract?.sourceRevision }) },
       { id: 'reviewer-correction:item-ledger-readback', passed: true, evidence: `Canonical item ${id} and idea ${ideaId}; final grade5 and qualifying source-bound seal.` },

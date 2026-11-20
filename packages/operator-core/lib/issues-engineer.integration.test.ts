@@ -30,6 +30,8 @@ import {
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from './../test/_work-items-schema';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
+import { checkLoopGate } from './verification-attempts/loop-gate';
+import type { WorkItemAttempt } from './verification-attempts/attempt-ledger';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 
@@ -666,6 +668,31 @@ describe('engineer issues surface (real PG)', () => {
     expect((await inboxOf('agB')).some((m) => m.notify_kind === 'issue_commented')).toBe(true);
     const detail = await issues.getIssueDetail(id);
     expect(detail?.posts.map((p) => p.body)).toContain('found the root cause');
+  });
+
+  it('retains a qualifying verification audit as later issue comments accumulate', async () => {
+    const { id } = await issues.createIssue({ title: 'Audit history', createdBy: 'agA' });
+    const attempts: WorkItemAttempt[] = ['fixture:first', 'fixture:second'].map(fingerprint => ({
+      taskId: fingerprint, taskClass: 'bash-job', title: 'fixture', startedAt: NOW, endedAt: NOW,
+      durationMs: 0, outcome: 'fail', fingerprint, label: null, source: 'log', commandFingerprint: null,
+    }));
+    const read = () => checkLoopGate({ workspaceId: PINNED_WS, workItemId: id }, { listAttempts: async () => attempts });
+    expect(await read()).toMatchObject({ allowed: false, verdict: { windowFailures: 2 } });
+    await issues.commentIssue(id, '  [attempt-audit] fixture:first and fixture:second reviewed', 'agA');
+
+    let total = 1;
+    for (const nextTotal of [199, 200, 201, 1001]) {
+      await db.sql`
+        INSERT INTO harness_shared.coord_thread_posts (workspace_id, thread_id, author_id, body, created_at)
+        SELECT workspace_id, thread_id, 'agB', 'progress ' || n, now()
+          FROM harness_shared.coord_threads
+          CROSS JOIN generate_series(${total + 1}::int, ${nextTotal}::int) AS series(n)
+         WHERE workspace_id = 'default' AND parent_kind = 'issue' AND parent_ref = ${id}
+      `;
+      total = nextTotal;
+      expect((await issues.getIssueThreadWindow(id, 1))?.total).toBe(total);
+      expect(await read()).toMatchObject({ allowed: true, notesReadable: true, verdict: { windowFailures: 0 } });
+    }
   });
 
   it('claim → assignee set + auto-subscribed; release clears it', async () => {

@@ -260,16 +260,12 @@ function logicalRunId(r: AttemptRow): string | null {
  * determine the run outcome, and a structured child failure is the most useful cause
  * when the wrapper has only a generic exit fingerprint. */
 function collapseLogicalRun(rows: readonly AttemptRow[]): WorkItemAttempt {
-  const ordered = [...rows].sort((a, b) => ms(a.started_at) - ms(b.started_at));
-  const root = rows.find((r) => r.root_task_id === r.task_id) ?? ordered[0]!;
+  // The ledger delivers every group in start time and task ID order.
+  const root = rows.find((r) => r.root_task_id === r.task_id) ?? rows[0]!;
   const base = mapAttempt(root);
-  const running = rows.some((r) => !r.ended_at);
-  const endedAtMs = rows
-    .map((r) => (r.ended_at ? ms(r.ended_at) : null))
-    .filter((value): value is number => value !== null);
-  const endedAt = !running && endedAtMs.length
-    ? new Date(Math.max(...endedAtMs)).toISOString()
-    : null;
+  const latestEnd = rows.reduce<number | null>((latest, row) =>
+    latest === null || !row.ended_at ? null : Math.max(latest, ms(row.ended_at)), -Infinity);
+  const endedAt = latestEnd === null ? null : new Date(latestEnd).toISOString();
   const failures = rows.filter((r) =>
     r.ended_at && (r.attempt?.outcome ?? attemptOutcome(r.state, r.exit_code)) === 'fail');
   const failure = failures.find((r) => r.attempt?.structured)
@@ -295,14 +291,17 @@ function collapseLogicalRun(rows: readonly AttemptRow[]): WorkItemAttempt {
 /**
  * A work item's slow verification attempts, oldest first: every historically stamped
  * row, plus marked verification rows still running past the slow threshold.
+ * The optional limit sizes each database fetch. All fetches belong to one query
+ * snapshot and feed the same logical-run groups before a result is returned.
  */
 export async function listWorkItemAttempts(
   input: { workspaceId: string; workItemId: string; limit?: number },
   inject?: Sql,
 ): Promise<WorkItemAttempt[]> {
   const sql = sqlOf(inject);
-  const limit = Math.min(Math.max(input.limit ?? 200, 1), 1000);
-  const rows = await sql<AttemptRow[]>`
+  const pageSize = Math.min(1000, Math.max(1, Math.trunc(input.limit ?? 200)));
+  if (!Number.isFinite(pageSize)) throw new RangeError('Invalid verification attempt fetch size');
+  const query = sql<AttemptRow[]>`
     SELECT task_id, root_task_id,
            detail->>'runId' AS run_id, detail->>'runGroup' AS run_group,
            class, title, state, exit_code, started_at, ended_at,
@@ -318,21 +317,22 @@ export async function listWorkItemAttempts(
            AND started_at < now() - make_interval(secs => ${SLOW_ATTEMPT_MIN_MS / 1000})
          )
        )
-     ORDER BY started_at ASC
-     LIMIT ${limit}
+     ORDER BY started_at ASC, task_id ASC
   `;
   const grouped = new Map<string, AttemptRow[]>();
   const attempts: WorkItemAttempt[] = [];
-  for (const row of rows) {
-    const runId = logicalRunId(row);
-    if (!runId) {
-      attempts.push(mapAttempt(row));
-      continue;
+  for await (const rows of query.cursor(pageSize)) {
+    for (const row of rows) {
+      const runId = logicalRunId(row);
+      if (!runId) {
+        attempts.push(mapAttempt(row));
+        continue;
+      }
+      const group = grouped.get(runId) ?? [];
+      group.push(row);
+      grouped.set(runId, group);
     }
-    const group = grouped.get(runId) ?? [];
-    group.push(row);
-    grouped.set(runId, group);
   }
-  attempts.push(...[...grouped.values()].map(collapseLogicalRun));
+  for (const group of grouped.values()) attempts.push(collapseLogicalRun(group));
   return attempts.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt) || a.taskId.localeCompare(b.taskId));
 }

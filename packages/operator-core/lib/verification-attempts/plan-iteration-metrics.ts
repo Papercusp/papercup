@@ -239,7 +239,7 @@ export async function readIterationMetrics(
       for (const itemId of link.itemIds) {
         const slot = byItem.get(itemId) ?? emptySlot();
         slot.workItemIds.push(link.workItemId);
-        slot.attempts.push(...attempts);
+        for (const attempt of attempts) slot.attempts.push(attempt);
         for (const [fp, c] of classes) slot.classes.set(fp, c);
         byItem.set(itemId, slot);
       }

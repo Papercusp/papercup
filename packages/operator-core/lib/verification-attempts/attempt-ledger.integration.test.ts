@@ -4,13 +4,14 @@
  * failure fingerprint. Drives the real closeTask seam against a fresh Postgres.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type postgres from 'postgres';
+import postgres from 'postgres';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../../test/_pg-helpers';
 import { WORK_ITEM_VERIFICATION_PURPOSE } from '../task-manager/types';
+import { checkLoopGate, nudgeOnNewLoop } from './loop-gate';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -179,6 +180,58 @@ describe('verification attempt ledger (R-1)', () => {
       label: 'phase=unit step=admission-launched reason=assertion_failed',
     });
     expect(attempts[0]!.fingerprint).toMatch(/^structured:[0-9a-f]{12}$/);
+    expect(await ledger.listWorkItemAttempts({ workspaceId: WS, workItemId: WI, limit: 1 }, db.sql))
+      .toEqual(attempts);
+  });
+
+  it.each([
+    [199, 1], [200, -1], [201, 1], [1001, -1], [1001, 1],
+  ])('counts the final failures in a history of %i rows, insertion direction %i', async (size, direction) => {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger
+        (task_id, workspace_id, root_task_id, class, title, argv, launched_by, work_item_id,
+         confined, state, exit_code, started_at, ended_at, detail)
+      SELECT 'history-' || n, ${WS}, 'history-' || n, 'bash-job', 'fixture', '[]'::jsonb,
+             'su-test', ${WI}, true, 'exited', CASE WHEN n >= ${size - 1} THEN 1 ELSE 0 END,
+             stamp, stamp + interval '100 milliseconds',
+             jsonb_build_object('verificationAttempt', CASE WHEN n >= ${size - 1}
+               THEN jsonb_build_object('outcome', 'fail', 'fingerprint', 'fixture:' || n)
+               ELSE jsonb_build_object('outcome', 'pass') END)
+        FROM generate_series(1, ${size}::int) AS series(n)
+        CROSS JOIN LATERAL (SELECT now() - interval '2 days' + n * interval '1 second') AS times(stamp)
+       ORDER BY n * ${direction}::int
+    `;
+    const input = { workspaceId: WS, workItemId: WI };
+    const deps = { sql: db.sql, readNotes: async () => [] };
+    expect(await checkLoopGate(input, deps)).toMatchObject({
+      allowed: false,
+      verdict: { windowFailures: 2, fingerprints: [`fixture:${size - 1}`, `fixture:${size}`] },
+    });
+    const send = vi.fn(async () => {});
+    expect(await nudgeOnNewLoop({ ...input, taskId: `history-${size}`, ownerId: 'su-test' }, { ...deps, send }))
+      .toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    if (size > 1000) {
+      const restarted = postgres(db.url, { max: 1 });
+      try {
+        const attempts = await ledger.listWorkItemAttempts({ ...input, limit: 17 }, restarted);
+        expect(attempts.map(a => a.taskId)).toEqual(
+          Array.from({ length: size }, (_, i) => `history-${i + 1}`),
+        );
+        await restarted`
+          UPDATE harness_shared.task_ledger
+             SET state = 'running', exit_code = NULL, ended_at = NULL, started_at = now() - interval '10 minutes',
+                 detail = jsonb_build_object('verificationPurpose', ${WORK_ITEM_VERIFICATION_PURPOSE}::text)
+           WHERE task_id = ${`history-${size}`}
+        `;
+        expect(await checkLoopGate({ ...input, budgetMs: 300_000 }, { ...deps, sql: restarted })).toMatchObject({
+          allowed: false, verdict: { triggers: ['over-budget'], windowFailures: 1 },
+        });
+      } finally {
+        await restarted.end();
+      }
+    }
   });
 
   it('records a slow pass with no fingerprint', async () => {

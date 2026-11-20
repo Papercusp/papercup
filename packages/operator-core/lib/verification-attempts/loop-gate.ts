@@ -158,7 +158,7 @@ export async function readAttemptAuditNotes(workItemId: string): Promise<Attempt
   try {
     // Lazy: issues-engineer is heavy and this module is imported on launch paths.
     const { getIssueThreadWindow } = await import('../issues-engineer');
-    const window = await getIssueThreadWindow(workItemId, 200);
+    const window = await getIssueThreadWindow(workItemId, 'all');
     if (!window) return null;
     return window.posts.map((p) => ({ postedAt: new Date(p.created_ts).toISOString(), body: String(p.body ?? '') }));
   } catch {

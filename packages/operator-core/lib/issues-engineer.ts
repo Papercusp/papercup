@@ -3048,7 +3048,7 @@ export async function getIssueInWorkspace(
  */
 export async function getIssueThreadWindow(
   id: string,
-  limit: number,
+  limit: number | 'all',
   deps: {
     /** Test seam for proving the issue row lookup shares the bounded transaction. */
     getIssue?: (id: string, tx: OrgSql) => Promise<EngineerIssue | null>;
@@ -3064,10 +3064,13 @@ export async function getIssueThreadWindow(
     const topics = await scopedTags.listTags(ref);
     // No thread row is the DEFAULT for an uncommented item (threads are created on
     // first post) — a real measured zero, not a failure.
-    const window = thread
-      ? await scopedThreads.listRecentPosts(thread.thread_id, limit)
-      : { posts: [] as ThreadPostRow[], total: 0 };
-    return { posts: window.posts, total: window.total, topics, createdAt: issue.createdAt };
+    const context = { topics, createdAt: issue.createdAt };
+    if (!thread) return { ...context, posts: [], total: 0 };
+    if (limit === 'all') {
+      const posts = await scopedThreads.listPosts(thread.thread_id);
+      return { ...context, posts, total: posts.length };
+    }
+    return { ...context, ...await scopedThreads.listRecentPosts(thread.thread_id, limit) };
   });
 }
 

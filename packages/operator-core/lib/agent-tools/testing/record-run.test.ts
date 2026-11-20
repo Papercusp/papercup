@@ -180,10 +180,14 @@ describe('native served reviewer correction evidence', () => {
             if (args.mode === 'claim') { state.item.assignee = actor; return { claimed: true,
               ledgerIdeaId: 'idea-fixture', reviewHandoff: handoff() }; }
             const review = state.item.payload.agentReview;
-            const stored = review.correctionReceipts.find((receipt: any) => receipt.requestKey === args.requestKey);
+            const stored = review.correctionReceipts.find((receipt: any) =>
+              receipt.actor === actor && receipt.requestKey === args.requestKey);
             if (stored) {
               if (mutations.alterReplay) state.item.title = 'Replay wrote source';
               return { corrected: true, replayed: true, receipt: structuredClone(stored) };
+            }
+            if (state.item.assignee && state.item.assignee !== actor) {
+              return { corrected: false, reason: 'correction-held-by-other' };
             }
             const correction = args.correction as any;
             const requestHash = agentReviewCorrectionRequestHash({
@@ -218,8 +222,8 @@ describe('native served reviewer correction evidence', () => {
             if (!mutations.omitGradeWrite) {
               Object.assign(state.ledger, { human_grade: args.grade, graded_by: actor });
               state.item.payload.agentReview.status = args.grade === 5 ? 'approved' : 'revision-requested';
-              state.item.assignee = null;
               if (args.grade === 5) {
+                state.item.assignee = null;
                 const review = state.item.payload.agentReview;
                 const sealed = sealImplementationAcceptance({
                   proposal: state.item.payload.implementationReadiness.evidence.acceptance,
@@ -330,6 +334,14 @@ describe('native served reviewer correction evidence', () => {
     expect(retained.receipts.replay).toEqual(retained.receipts.first);
     expect(retained.receipts.later).toEqual(retained.snapshots.sealed.item.payload.agentReview.correctionReceipts[1]);
     expect(retained.requests.first.actor).toBe(retained.receipts.first.actor);
+    expect(retained.requests.later.actor).toBe(retained.snapshots.graded.item.assignee);
+    expect(retained.receipts.later.actor).toBe(retained.requests.later.actor);
+    const authors = [retained.receipts.first.actor, retained.receipts.later.actor];
+    expect(new Set(authors).size).toBe(2);
+    expect(retained.snapshots.sealed.item.payload.agentReview.materialAuthors).toEqual(authors);
+    expect(authors).not.toContain(retained.snapshots.sealed.ledger.graded_by);
+    expect(JSON.parse(result.summary)).toMatchObject({ correctionAuthor: retained.receipts.later.actor,
+      approver: retained.snapshots.sealed.ledger.graded_by });
     expect(JSON.parse(result.summary).receiptRef).toMatch(/^immutable\/sha256\/[a-f0-9]{64}\.json#receipts\.later$/);
     expect(f.closes.every(close => close.mock.calls.length === 1)).toBe(true);
   });
