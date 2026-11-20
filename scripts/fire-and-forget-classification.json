@@ -71819,14 +71819,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts#<module>/listSpecEvidence:f23c753d136d24a427da:1",
-      "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches <unresolved-computed-dispatch>, createEscalation, escalateDeadLoop, escalateLifecycleDeath, escalateNoTurnWedge, notify; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts#<module>/listSpecEvidence/<callback>:09abfc891553a2b8203d:1",
       "path": "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts",
       "classification": "durable",
