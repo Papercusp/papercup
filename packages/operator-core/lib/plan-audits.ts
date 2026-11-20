@@ -63,8 +63,11 @@ import { activeWorkspaceId } from './workspace-registry';
 import { isCommittedAtHead, isGitTrackedPath } from './git-trackedness';
 import type { ItemProvenanceDeclaration, StoredItemProvenanceCheck } from './activation-item-provenance';
 import {
+  acquirePlanAdvisoryLock,
   PLAN_ADVISORY_LOCK_NAMESPACE,
+  PLAN_LOCK_TIMEOUT_CODE,
   planAdvisoryLockKey,
+  readPlanAdvisoryLockSnapshot,
 } from './agent-tools/plans/plan-lock-key';
 import { planExecutionMeaning } from './agent-tools/plans/plan-execution-meaning';
 import { splitPlanSections } from './agent-tools/plans/plan-sections';
@@ -3050,9 +3053,13 @@ async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, execu
       sql: executor as unknown as Parameters<typeof resolveDiscoveryAuditContext>[2]['sql'],
       harnessSlug: input.harnessSlug, ownerId: input.createdBy, planSlug: input.planSlug, prior, historicalTargets });
   });
-    const [lock] = await executor<Array<{ ok: boolean }>>`SELECT pg_try_advisory_xact_lock(
-      hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug)})) AS ok`;
-    if (!lock?.ok) return { ok: false as const, error: 'plan_busy', nextAction: 'Retry discovery after the current plan write.' };
+    // Join the same bounded PostgreSQL waiter queue as every plan writer. The old
+    // try-lock failed immediately, so legitimate unchanged-plan audits could lose
+    // repeatedly to overlapping short transactions without gaining FIFO position.
+    await acquirePlanAdvisoryLock(
+      executor as unknown as Parameters<typeof acquirePlanAdvisoryLock>[0],
+      planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug),
+    );
     const [plan] = await executor<Array<{ content: string; content_hash: string; version: number }>>`
       SELECT content, content_hash, version FROM harness_shared.harness_plans
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}`;
@@ -3119,6 +3126,7 @@ async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, execu
 
 export async function recordCurrentDiscoveryAudit(input: CurrentDiscoveryInput, effects?: DiscoveryEffects) {
   const { sql } = getOrgPg();
+  const lockKey = planAdvisoryLockKey(input.workspaceId, input.harnessSlug, input.planSlug);
   return sql.begin(async tx => {
     const executor = tx as unknown as AuditSql;
     const prepared = await currentDiscoveryInTransaction(input, executor, effects);
@@ -3140,6 +3148,13 @@ export async function recordCurrentDiscoveryAudit(input: CurrentDiscoveryInput, 
     const audit = await insertPlanAudit({ auditKind: 'discovery', ...input, discovery, auditedPlanRevision,
       summary: discovery.readiness.nextAction }, executor, input.workspaceId);
     return { ok: true as const, reused: false, audit, discovery, auditedPlanRevision };
+  }).catch(async (error: unknown) => {
+    if ((error as { code?: string })?.code === PLAN_LOCK_TIMEOUT_CODE) return {
+      ok: false as const, error: 'plan_busy' as const,
+      nextAction: 'Retry discovery after the current plan write.',
+      holderSnapshot: await readPlanAdvisoryLockSnapshot(lockKey),
+    };
+    throw error;
   });
 }
 
@@ -3182,7 +3197,15 @@ export async function withCurrentDiscovery<T>(input: CurrentDiscoveryInput,
     finally { entry.active = false; }
   };
   const executor = transaction ?? (held?.active ? held.executor : undefined);
-  return executor ? admit(executor) : sql.begin(tx => admit(tx as unknown as AuditSql));
+  if (executor) return admit(executor);
+  return sql.begin(tx => admit(tx as unknown as AuditSql)).catch(async (error: unknown) => {
+    if ((error as { code?: string })?.code === PLAN_LOCK_TIMEOUT_CODE) return {
+      ok: false as const, error: 'plan_busy' as const,
+      nextAction: 'Retry discovery after the current plan write.',
+      holderSnapshot: await readPlanAdvisoryLockSnapshot(lockKey),
+    };
+    throw error;
+  });
 }
 
 /**
@@ -3244,17 +3267,10 @@ async function executeCurrentActivationAudit(
   try {
     recorded = (await sql.begin(async (tx) => {
     const executor = tx as unknown as AuditSql;
-    const lock = await executor<Array<{ ok: boolean }>>`
-      SELECT pg_try_advisory_xact_lock(
-        hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}), hashtext(${lockKey})
-      ) AS ok`;
-    if (!lock[0]?.ok) {
-      return {
-        ok: false as const,
-        error: 'plan_busy' as const,
-        message: `Plan '${input.planSlug}' is being edited. Retry the activation audit after that write commits.`,
-      };
-    }
+    await acquirePlanAdvisoryLock(
+      executor as unknown as Parameters<typeof acquirePlanAdvisoryLock>[0],
+      lockKey,
+    );
 
     // Share the writer's transaction/subject lock. Direct callers and previews
     // owe the same discovery prerequisite as the MCP handler, before repair,
@@ -3573,6 +3589,11 @@ async function executeCurrentActivationAudit(
     })) as RecordCurrentActivationAuditResult | PreviewCurrentActivationAuditResult;
   } catch (error) {
     if (error instanceof AcceptanceBarSeedAbort) return error.result;
+    if ((error as { code?: string })?.code === PLAN_LOCK_TIMEOUT_CODE) return {
+      ok: false as const,
+      error: 'plan_busy' as const,
+      message: `Plan '${input.planSlug}' is being edited. Retry the activation audit after that write commits.`,
+    };
     throw error;
   }
   if (!recorded.ok) return recorded;

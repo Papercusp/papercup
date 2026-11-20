@@ -13,7 +13,7 @@ import { checkDraftItemStartGate } from './draft-item-start-gate';
 import getInputSchemaTool from './get-input-schema';
 import { discoveryDeclarationSchema, type DiscoveryDeclaration } from './plan-declarations';
 import { resolveDiscoveryAuditContext } from './plan-declaration-resolvers';
-import { recordCurrentDiscoveryAudit, withCurrentDiscovery } from '../../plan-audits';
+import { previewCurrentActivationAudit, recordCurrentDiscoveryAudit, withCurrentDiscovery } from '../../plan-audits';
 import * as discoveryAudits from '../../plan-audits';
 import * as activationGate from './plan-activation-gate';
 import { withPlanLock } from './with-plan-lock';
@@ -638,6 +638,62 @@ describe('original proof-warming discovery before review and implementation', ()
     // The admission ends with its callback; a later fresh call takes its own lock.
     expect(await withCurrentDiscovery(input(), async () => 'after', { context: resolver }))
       .toMatchObject({ ok: true, result: 'after' });
+  });
+
+  it('queues an activation audit behind an overlapping discovery reader without changing its identity', async () => {
+    const requirement = {
+      intent: { request: 'Preserve the exact discovery subject through activation.' },
+      acceptance: { condition: 'Activation retains the same subject and CAS identity.',
+        falsifier: 'Activation records a different subject or revision.', requiredTestLayers: ['integration'] },
+      verification: { method: 'Overlap the real discovery reader and activation preview transactions.',
+        check: { kind: 'tests' as const, files: ['packages/operator-core/lib/agent-tools/plans/discovery-lifecycle.integration.test.ts'] } },
+    };
+    await revision(plan(revisedFindings(), true) +
+      `\n## Requirements\n\n**R-1 — Preserve the exact discovery subject.**\n` +
+      `\`\`\`requirement\n${JSON.stringify(requirement)}\n\`\`\`\n` +
+      `\n## Design\n\n### Bar-to-work map for this plan\n\n` +
+      `| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-002 | tree |\n`);
+    const discovery = await finalized();
+    expect(discovery).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+    let markReaderReady!: () => void;
+    let releaseReader!: () => void;
+    const readerReady = new Promise<void>((resolve) => { markReaderReady = resolve; });
+    const readerRelease = new Promise<void>((resolve) => { releaseReader = resolve; });
+    const reader = withCurrentDiscovery(input(), async (_tx, subject) => {
+      markReaderReady();
+      await readerRelease;
+      return subject;
+    }, { context: resolver });
+    await readerReady;
+
+    const activation = {
+      sourceRanges: [{ sourceKind: 'codex' as const, sessionId: 'exact-source', fromTurn: 0, toTurn: 1 }],
+      mappings: [{ id: 'M-001', requirement: 'Preserve the exact P-002 execution subject.',
+        sourceRefs: ['session_turn:codex:exact-source:0'],
+        planTargets: ['P-002', 'R-1', 'section:Requirements'], disposition: 'covered' as const }],
+      repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [],
+    };
+    const activationPromise = previewCurrentActivationAudit({ ...input(), classRef: 'plan-class-bugfix', activation });
+    const early = await Promise.race([
+      activationPromise.then(() => 'settled' as const),
+      new Promise<'waiting'>((resolve) => setTimeout(() => resolve('waiting'), 100)),
+    ]);
+    expect(early).toBe('waiting');
+    releaseReader();
+    const heldSubject = await reader;
+    const result = await activationPromise;
+    if (!result.ok) throw new Error(`activation preview refused: ${JSON.stringify(result)}`);
+
+    expect(heldSubject).toMatchObject({ ok: true, result: {
+      content, contentHash: expect.any(String), discovery: { readiness: { ready: true } }, auditId: expect.any(Number),
+    } });
+    expect(result).toMatchObject({ ok: true, preview: true,
+      auditedPlanRevision: { contentHash: heldSubject.ok ? heldSubject.result.contentHash : undefined } });
+    const [{ activation_count: activationCount }] = await fx.admin<Array<{ activation_count: number }>>`
+      SELECT count(*)::int AS activation_count FROM harness_shared.plan_audits
+       WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness}
+         AND plan_slug=${slug} AND audit_kind='activation'`;
+    expect(activationCount).toBe(0);
   });
 
   it('plans:get-input-schema reports the Discovery refusal for a legacy ready plan', async () => {
