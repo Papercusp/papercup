@@ -1387,7 +1387,12 @@ const DEFAULT_DIAGNOSTIC_MAX_PER_FILE = 3;
  * @param {{maxPerFile?: number, root?: string, canonicalRoot?: string}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
  *   cannot bury the guidance underneath it (the report stays readable; the count already told you
  *   the true total).
- * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
+ * Each array entry is one complete diagnostic block (the located headline plus every indented
+ * message-chain line that follows it). Keeping a block as one entry makes `maxPerFile` a cap on
+ * diagnostics rather than physical lines, so an overload explanation is never split from its
+ * TS2769 headline and the existing omission counts remain diagnostic counts.
+ *
+ * @returns {Map<string, string[]>} file → its diagnostic blocks, in compiler order, capped.
  */
 export function diagnosticLinesForFiles(
   tscOutput,
@@ -1401,15 +1406,27 @@ export function diagnosticLinesForFiles(
   const roots = root
     ? { root: realpathOrResolve(root), canonicalRoot: realpathOrResolve(canonicalRoot ?? root) }
     : null;
+  /** @type {{file: string, lines: string[]} | null} */
+  let current = null;
+  const flush = () => {
+    if (current === null || !wanted.has(current.file)) return;
+    const acc = byFile.get(current.file) ?? [];
+    if (acc.length < maxPerFile) acc.push(current.lines.join('\n'));
+    byFile.set(current.file, acc);
+  };
   for (const line of String(tscOutput).split('\n')) {
     const m = line.match(LOCATED_DIAGNOSTIC);
-    if (m === null) continue;
-    const file = roots ? normalizeResolvedDiagnosticPath(m[1], roots) : m[1];
-    if (!wanted.has(file)) continue;
-    const acc = byFile.get(file) ?? [];
-    if (acc.length < maxPerFile) acc.push(line.trim());
-    byFile.set(file, acc);
+    if (m !== null) {
+      flush();
+      current = {
+        file: roots ? normalizeResolvedDiagnosticPath(m[1], roots) : m[1],
+        lines: [line.trim()],
+      };
+      continue;
+    }
+    if (current !== null && /^\s+\S/.test(line)) current.lines.push(line.trimEnd());
   }
+  flush();
   return byFile;
 }
 
@@ -2561,9 +2578,17 @@ export async function runCrossLegConsumer({
     warn(`❌ ${label}: ${entry.file} has ${entry.current} error(s) in this leg (baseline ${entry.baseline}); this leg reaches it by import.`);
   }
   for (const file of broken) warn(`❌ ${label}: ${file} has a hard-failing TS1xxx diagnostic in this leg.`);
-  const quoted = result.output.split('\n').filter((line) => [...failing].some((file) => line.startsWith(`${file}(`)));
-  for (const line of quoted.slice(0, 20)) warn(`   ${line}`);
-  if (quoted.length > 20) warn(`   … ${quoted.length - 20} more`);
+  // Preserve each compiler message chain intact. In particular, TS2769's useful overload
+  // explanation is rendered on indented continuation lines; filtering physical lines by the
+  // failing path kept only its headline. Cross-leg output is intentionally uncapped because this
+  // consumer has no `--all-errors` recovery route of its own.
+  const quoted = diagnosticLinesForFiles(result.output, failing, {
+    root,
+    maxPerFile: Number.POSITIVE_INFINITY,
+  });
+  for (const file of failing) {
+    for (const block of quoted.get(file) ?? []) warn(`   ${block}`);
+  }
   log(
     `${CROSS_LEG_MARKER} leg=${label} status=${failing.size > 0 ? 'regressed' : 'clean'} ` +
       `members=${result.members.length} nonMembers=${result.nonMembers.length} regressed=${failing.size}`,

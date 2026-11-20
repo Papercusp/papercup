@@ -543,7 +543,12 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles: string[]
  * @param {{maxPerFile?: number, root?: string, canonicalRoot?: string}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
  *   cannot bury the guidance underneath it (the report stays readable; the count already told you
  *   the true total).
- * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
+ * Each array entry is one complete diagnostic block (the located headline plus every indented
+ * message-chain line that follows it). Keeping a block as one entry makes `maxPerFile` a cap on
+ * diagnostics rather than physical lines, so an overload explanation is never split from its
+ * TS2769 headline and the existing omission counts remain diagnostic counts.
+ *
+ * @returns {Map<string, string[]>} file → its diagnostic blocks, in compiler order, capped.
  */
 export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<string>, { maxPerFile, root, canonicalRoot }?: {
     maxPerFile?: number;

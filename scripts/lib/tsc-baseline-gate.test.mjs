@@ -5,11 +5,74 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import {
+  diagnosticLinesForFiles,
   formatMinePeerDriftBanner,
   formatUncoveredFilesBanner,
+  runCrossLegConsumer,
   runCrossLegChecks,
   suggestTypecheckGate,
 } from './tsc-baseline-gate.mjs';
+
+test('diagnostic projection caps complete message chains rather than physical lines', () => {
+  const output = [
+    "src/target.ts(1,1): error TS2769: No overload matches this call.",
+    "  Overload 1 of 2, '(value: string): void', gave the following error.",
+    "    Argument of type 'number' is not assignable to parameter of type 'string'.",
+    "src/other.ts(2,1): error TS2322: unrelated",
+    "src/target.ts(3,1): error TS2322: second target diagnostic",
+    "  second detail",
+    "src/target.ts(4,1): error TS2345: decisive item after the boundary",
+    "  decisive detail",
+  ].join('\n');
+
+  const nMinusOne = diagnosticLinesForFiles(output, ['src/target.ts'], { maxPerFile: 1 });
+  assert.equal(nMinusOne.get('src/target.ts')?.length, 1);
+  assert.match(nMinusOne.get('src/target.ts')[0], /Overload 1 of 2/);
+  assert.match(nMinusOne.get('src/target.ts')[0], /Argument of type 'number'/);
+
+  const n = diagnosticLinesForFiles(output, ['src/target.ts'], { maxPerFile: 2 });
+  assert.equal(n.get('src/target.ts')?.length, 2);
+  assert.match(n.get('src/target.ts')[1], /second detail/);
+
+  const nPlusOne = diagnosticLinesForFiles(output, ['src/target.ts'], { maxPerFile: 3 });
+  assert.equal(nPlusOne.get('src/target.ts')?.length, 3);
+  assert.match(nPlusOne.get('src/target.ts')[2], /decisive item after the boundary/);
+  assert.match(nPlusOne.get('src/target.ts')[2], /decisive detail/);
+});
+
+test('cross-leg consumer reports the complete overload chain for a failing member', async (t) => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), 'papercusp-cross-leg-chain-'));
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+  const baselineFile = join(fixtureDir, 'baseline.json');
+  writeFileSync(baselineFile, JSON.stringify({ files: { 'src/target.ts': 0 } }));
+  const warnings = [];
+
+  const exitCode = await runCrossLegConsumer({
+    root: fixtureDir,
+    tscCommand: 'fixture-tsc-command',
+    baselineFile,
+    label: 'fixture',
+    files: ['src/target.ts'],
+    diagnose: () => ({
+      members: ['src/target.ts'],
+      nonMembers: [],
+      output: [
+        'src/target.ts(1,1): error TS2769: No overload matches this call.',
+        "  Overload 1 of 2, '(value: string): void', gave the following error.",
+        "    Argument of type 'number' is not assignable to parameter of type 'string'.",
+        'src/unrelated.ts(2,1): error TS2322: unrelated',
+      ].join('\n'),
+    }),
+    log: () => {},
+    warn: (line) => warnings.push(line),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.match(warnings.join('\n'), /No overload matches this call/);
+  assert.match(warnings.join('\n'), /Overload 1 of 2/);
+  assert.match(warnings.join('\n'), /Argument of type 'number'/);
+  assert.doesNotMatch(warnings.join('\n'), /unrelated/);
+});
 
 test('--mine output describes the current shared dirty set without attributing it to the caller', () => {
   const lines = formatMinePeerDriftBanner({ outsideCount: 2 });
