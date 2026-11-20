@@ -405,13 +405,16 @@ it.each([null, 'su-assignee'])('R4 queued bypass review completes without changi
   expect((await readPendingBatch(db.sql, WS, HARNESS, 10, [id])).map(row => row.id)).toEqual([id]);
   const result = await runWorkItemAdmissionPromoter({
     workspaceId: WS, harnessSlug: HARNESS, sql: db.sql, runId: 'bypass-review',
-    targetItemIds: [id], noModel: true, now: () => NOW,
+    targetItemIds: [id], noModel: true,
+    llmCall: vi.fn(async () => { throw new Error('bypass review must not call the model'); }),
+    now: () => NOW,
   });
   expect(result).toMatchObject({ promoted: 0, reviewed: 1, merged: 0, held: 0, guardRefusals: [] });
   const [after] = await db.sql`SELECT admission, admitted_at, admitted_by, taken_by, status, payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
   expect(after).toMatchObject({ ...before, admission: 'auto', payload: {
-    keep: 'source evidence', admissionReview: { state: 'reviewed', enteredAt, reviewedAt: new Date(NOW).toISOString() },
+    keep: 'source evidence', admissionReview: { state: 'reviewed', enteredAt, reviewedAt: expect.any(String) },
   } });
+  expect(Date.parse(after.payload.admissionReview.reviewedAt)).toBe(NOW);
   const [receipt] = await db.sql`SELECT detail FROM harness_shared.admission_runs WHERE id = 'bypass-review'`;
   expect(receipt.detail.reviewedItemIds).toEqual([id]);
   expect(await readPendingBatch(db.sql, WS, HARNESS, 10, [id])).toEqual([]);

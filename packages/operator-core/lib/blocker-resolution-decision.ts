@@ -49,17 +49,24 @@ const common = {
   attempts: z.array(investigationStepSchema).max(16).default([]),
   evidenceRefs: evidence(32),
 };
+const bindingCorrectionSchema = z.object({
+  edgeId: text(200), rationale: text(4000),
+  /** Exact historical admission condition; measured again by the paired writer. */
+  recoveryRef: blockerEvidenceRefSchema.optional(),
+}).strict().optional();
 export const blockerDecisionInputSchema = z.discriminatedUnion('disposition', [
   z.object({
     ...common,
     disposition: z.literal('self_resolve'),
     verification: z.object({ outcome: text(4000), evidenceRefs: evidence() }).strict(),
     /** Administrative withdrawal, never settlement of the provider. */
-    bindingCorrection: z.object({ edgeId: text(200), rationale: text(4000) }).strict().optional(),
+    bindingCorrection: bindingCorrectionSchema,
   }).strict(),
   z.object({
     ...common,
     disposition: z.literal('defer'),
+    /** Withdraw one obsolete binding while retaining the remaining obligations. */
+    bindingCorrection: bindingCorrectionSchema,
     deferral: z.object({
       reason: z.enum(['active-peer', 'missing-authority', 'human-action', 'external-dependency', 'technical-limit']),
       reasonEvidenceRefs: evidence(),
@@ -230,6 +237,7 @@ export type PreparedBlockerDecision = BlockerDecisionProblem | {
 export interface BindingCorrectionAdmission { readonly transaction: symbol }
 const bindingCorrections = new WeakMap<BindingCorrectionAdmission, {
   requestHash: string; ownerId: string; workItemId: string; providerRefs: string[];
+  recoveryRef?: BlockerEvidenceRef;
 }>();
 const admittedCorrections = new WeakSet<object>();
 
@@ -244,11 +252,13 @@ export function admitBindingCorrection(
     blocked: { kind: string; ref: string }; effect: unknown;
     /** Exact edge author measured ended by the paired writer's liveness oracle. */
     terminalAuthorId?: string;
+    /** Host-only: exact current plan linkage, locked and checked fail-closed. */
+    planBinding?: { planSlug: string; itemIds: readonly string[] };
     edges: readonly { id: string | number; blocked_kind: string; blocked_ref: string;
       blocker_kind: string; blocker_ref: string; satisfaction: string | null; created_by: string | null }[];
   },
 ): BindingCorrectionAdmission | BlockerDecisionProblem {
-  const refuse = () => problem('blocker_decision_evidence', ['exact custodian-owned unbound consumer binding, same-author or confirmed-ended author, and current prior deferral'],
+  const refuse = () => problem('blocker_decision_evidence', ['exact custodian-owned consumer binding, current prior deferral, and unbound or verified same-author plan admission'],
     'Read the canonical binding, complete decision history and remaining conditions; preserve custody and provider state.');
   const input = prepared.record.decision;
   const prior = readBlockerResolution({ blockerResolution: prepared.expectedState });
@@ -261,27 +271,43 @@ export function admitBindingCorrection(
   const providerRefs = [scope.provider.id, `${scope.provider.harness}#${scope.provider.id}`];
   const namesProvider = (ref: BlockerEvidenceRef) => ref.kind === 'work-item' && providerRefs.includes(ref.ref);
   const link = object(object(scope.effect).link);
-  const edge = scope.edges.find(row => input.disposition === 'self_resolve' && String(row.id) === input.bindingCorrection?.edgeId);
+  const correction = input.disposition !== 'absorb' ? input.bindingCorrection : undefined;
+  const edge = scope.edges.find(row => String(row.id) === correction?.edgeId);
+  const planned = !scope.unbound && Boolean(scope.planBinding);
+  const recoveryRef = planned ? correction?.recoveryRef : undefined;
+  const namesRecovery = (ref: BlockerEvidenceRef) => recoveryRef && evidenceKey(ref) === evidenceKey(recoveryRef);
+  // The retained history binds the recovered predicate to this consumer. Later
+  // partial corrections may retain a different pending recheck, but cannot
+  // substitute a new, unrelated successful event for the original admission.
+  const historicalRecovery = recoveryRef && prior.status === 'recorded' && prior.state.history.some(record =>
+    record.decision.disposition === 'defer' && namesRecovery(record.decision.deferral.recheckRef));
   const authors = new Set([scope.ownerId]);
-  if (edge?.created_by && scope.terminalAuthorId === edge.created_by) authors.add(edge.created_by);
+  if (!planned && edge?.created_by && scope.terminalAuthorId === edge.created_by) authors.add(edge.created_by);
   const expectedEffect = { link: { id: scope.provider.id, harness: scope.provider.harness,
     dst: scope.blocked, rel: 'blocks', remove: true, satisfaction: link.satisfaction } };
-  if (input.disposition !== 'self_resolve' || !input.bindingCorrection || prepared.replayed ||
+  if (input.disposition === 'absorb' || !correction || prepared.replayed ||
       !scope.workspaceId || scope.workspaceId !== scope.expectedWorkspaceId || !scope.harness || !scope.provider.harness ||
       scope.ownerId !== scope.custodianId || prepared.record.authorId !== scope.ownerId ||
-      prepared.record.workItemId !== scope.workItemId || !scope.unbound || !scope.noExternalConditions ||
+      prepared.record.workItemId !== scope.workItemId ||
+      (!scope.unbound && !planned) ||
+      (!scope.noExternalConditions && !(planned && input.disposition === 'defer')) ||
+      (input.disposition === 'defer' && !planned) ||
+      (planned && (!scope.planBinding?.planSlug || !scope.planBinding.itemIds.length || !historicalRecovery ||
+        !input.evidenceRefs.some(namesRecovery))) ||
       prior.status !== 'recorded' || !completeHistory || prior.current.decision.disposition !== 'defer' ||
       prior.state.history.some(record => !authors.has(record.authorId) || record.workItemId !== scope.workItemId) ||
-      input.priorRevision !== prior.current.revision || !namesProvider(prior.current.decision.deferral.recheckRef) ||
-      !input.evidenceRefs.some(namesProvider) || !input.verification.evidenceRefs.some(namesProvider) ||
-      scope.edges.length >= 25 || !edge || edge.blocked_kind !== scope.blocked.kind || edge.blocked_ref !== scope.blocked.ref ||
+      input.priorRevision !== prior.current.revision || (!planned && !namesProvider(prior.current.decision.deferral.recheckRef)) ||
+      !input.evidenceRefs.some(namesProvider) ||
+      (input.disposition === 'self_resolve' && !input.verification.evidenceRefs.some(namesProvider)) ||
+      new Set(scope.edges.map(row => String(row.id))).size !== scope.edges.length ||
+      !edge || edge.blocked_kind !== scope.blocked.kind || edge.blocked_ref !== scope.blocked.ref ||
       edge.blocker_kind !== scope.provider.kind || edge.blocker_ref !== scope.provider.ref || !edge.created_by || !authors.has(edge.created_by) ||
       !['settled', 'success'].includes(edge.satisfaction ?? '') ||
       (link.satisfaction !== null && link.satisfaction !== edge.satisfaction) ||
       JSON.stringify(canonical(scope.effect)) !== JSON.stringify(canonical(expectedEffect))) return refuse();
   const admission = { transaction: Symbol('administrative binding removal') };
   bindingCorrections.set(admission, { requestHash: prepared.record.requestHash, ownerId: scope.ownerId,
-    workItemId: scope.workItemId, providerRefs });
+    workItemId: scope.workItemId, providerRefs, ...(recoveryRef ? { recoveryRef } : {}) });
   return admission;
 }
 
@@ -289,7 +315,7 @@ export function admitBindingCorrection(
  * needs a newly established admission; other lifecycle writers cannot reuse it. */
 export function consumeBindingCorrection(prepared: Extract<PreparedBlockerDecision, { ok: true }>): boolean {
   const input = prepared.record.decision;
-  return input.disposition !== 'self_resolve' || !input.bindingCorrection || admittedCorrections.delete(input);
+  return input.disposition === 'absorb' || !input.bindingCorrection || admittedCorrections.delete(input);
 }
 
 function problem(code: BlockerDecisionProblem['code'], missing: string[], nextAction: string): BlockerDecisionProblem {
@@ -461,13 +487,20 @@ export async function validateBlockerDecisionEvidence(
   const admission = context.bindingCorrectionAdmission;
   const removal = admission && bindingCorrections.get(admission);
   if (admission) bindingCorrections.delete(admission);
-  const correcting = input.disposition === 'self_resolve' && Boolean(input.bindingCorrection);
+  const correcting = input.disposition !== 'absorb' && Boolean(input.bindingCorrection);
   if (correcting && (!removal || removal.requestHash !== context.bindingCorrectionRequestHash ||
       removal.ownerId !== context.ownerId || removal.workItemId !== context.workItemId)) {
     return refuse(['transaction-bound administrative binding removal']);
   }
   const administrativelyRemoved = (ref: BlockerEvidenceRef) => correcting && Boolean(removal) &&
     ref.kind === 'work-item' && removal!.providerRefs.includes(ref.ref);
+  if (input.disposition === 'defer' && administrativelyRemoved(input.deferral.recheckRef)) {
+    return refuse(['a retained recheck independent of the removed binding']);
+  }
+  const accept = (): { ok: true } => {
+    if (correcting) admittedCorrections.add(input);
+    return { ok: true };
+  };
   if (unique.size > 64) return refuse(['at most 64 distinct evidence references per decision']);
   const measured = new Map<string, BlockerEvidenceMeasurement>();
   const entries = [...unique.entries()];
@@ -480,7 +513,13 @@ export async function validateBlockerDecisionEvidence(
     }));
   }
   const missing: string[] = [];
-  const obligations = new Set(context.obligationRefs.map(evidenceKey));
+  if (removal?.recoveryRef) {
+    const recovery = measured.get(evidenceKey(removal.recoveryRef));
+    if (recovery?.status !== 'available' || recovery.condition !== 'satisfied') {
+      return refuse(['current measured recovery of the exact historical admission condition']);
+    }
+  }
+  const obligations = new Set(context.obligationRefs.filter(ref => !administrativelyRemoved(ref)).map(evidenceKey));
   const retainedRuntime = new Set<string>();
   const retainedParkedPlanLane = new Set<string>();
   const scope = context.unmeasuredRuntimeDeferral;
@@ -533,7 +572,7 @@ export async function validateBlockerDecisionEvidence(
         recheck.responsibleParty !== responsibleParty) {
       missing.push('separate canonical reachable pending work-item or exact commit-settlement recheck owned by the responsible custodian');
     }
-    return missing.length ? refuse(missing) : { ok: true };
+    return missing.length ? refuse(missing) : accept();
   }
   const value = (ref: BlockerEvidenceRef) => measured.get(evidenceKey(ref)) as Extract<BlockerEvidenceMeasurement, { status: 'available' }>;
   /** EI-28983003176099299: an `active-peer` deferral's recheck stops binding a
@@ -552,11 +591,12 @@ export async function validateBlockerDecisionEvidence(
     return facts.every((fact) => fact.status === 'available') &&
       !facts.some((fact) => fact.status === 'available' && fact.condition === 'pending' && Boolean(fact.liveOwnerId));
   };
-  const availableObligations = context.obligationRefs.filter(ref => !retainedParkedPlanLane.has(evidenceKey(ref)));
+  const availableObligations = context.obligationRefs.filter(ref =>
+    !administrativelyRemoved(ref) && !retainedParkedPlanLane.has(evidenceKey(ref)));
   const conditionIdentities = new Set(availableObligations.map(ref => value(ref).conditionIdentity).filter(Boolean));
   const relevant = (ref: BlockerEvidenceRef) => {
     const key = evidenceKey(ref);
-    if (retainedParkedPlanLane.has(key)) return false;
+    if (administrativelyRemoved(ref) || retainedParkedPlanLane.has(key)) return false;
     return obligations.has(key) ||
       (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||
       value(ref).subjectWorkItemId === context.workItemId;
@@ -625,6 +665,7 @@ export async function validateBlockerDecisionEvidence(
     if (!context.allowAbsorption) missing.push('absorption requires the canonical plan drop and graph transaction');
   } else {
     const { reason, reasonEvidenceRefs, responsibleParty, recheckRef } = input.deferral;
+    if (administrativelyRemoved(recheckRef)) missing.push('a retained recheck independent of the removed binding');
     const facts = reasonEvidenceRefs.filter(relevant).map(value);
     const recheck = value(recheckRef);
     if (!['work-item', 'state', 'event'].includes(recheckRef.kind) || recheck.reachable !== true || recheck.condition !== 'pending') {
@@ -660,6 +701,5 @@ export async function validateBlockerDecisionEvidence(
     }
   }
   if (missing.length) return refuse(missing);
-  if (correcting) admittedCorrections.add(input);
-  return { ok: true };
+  return accept();
 }

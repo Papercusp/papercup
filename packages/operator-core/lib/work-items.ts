@@ -8516,8 +8516,7 @@ export async function readUnresolvedDepBlockers(
        AND wi.workspace_id = ${activeWorkspaceId()}
        AND ${harness ? sql`wi.harness_slug = ${harness}` : sql`TRUE`}
        AND ${options.includeSatisfied ? sql`TRUE` : unsatisfiedBlockerSql(sql)}
-     ORDER BY d.blocker_ref
-     LIMIT 25`;
+      ORDER BY d.blocker_ref`;
   return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind, satisfaction: r.satisfaction }));
 }
 
@@ -11641,7 +11640,6 @@ async function mutateAgentBlockingRelation(
       });
       if (JSON.stringify(current) !== JSON.stringify(dependencySnapshot)) throw new BlockerDecisionMutationConflict();
       const incoming = current.filter(edge => edge.blocked_kind === blocked.kind && edge.blocked_ref === blocked.ref);
-      if (incoming.length >= 25) throw new BlockerDecisionMutationConflict();
       // Fence condition STATES as well as edge rows. A satisfied sibling can
       // reopen without changing its edge. Shared locks also fence its authority.
       for (const edge of incoming) {
@@ -11655,11 +11653,12 @@ async function mutateAgentBlockingRelation(
         if (endpoints.length !== 1) throw new BlockerDecisionMutationConflict();
       }
       const unresolved = await readUnresolvedDepBlockers(dependent.id, dependent.harness ?? undefined);
-      if (unresolved.length >= 25 || unresolved.some(edge => edge.ref !== blocker.ref || edge.kind !== blocker.kind)) {
+      const partial = fresh.record.decision.disposition === 'defer';
+      if (!partial && unresolved.some(edge => edge.ref !== blocker.ref || edge.kind !== blocker.kind)) {
         throw Object.assign(new Error('Binding correction cannot withdraw another unresolved dependency.'),
           { code: 'blocker_decision_evidence' });
       }
-      const correction = fresh.record.decision.disposition === 'self_resolve' ? fresh.record.decision.bindingCorrection : undefined;
+      const correction = fresh.record.decision.disposition !== 'absorb' ? fresh.record.decision.bindingCorrection : undefined;
       const edgeAuthor = incoming.find(edge => String(edge.id) === correction?.edgeId)?.created_by;
       let terminalAuthorId: string | undefined;
       if (edgeAuthor && edgeAuthor !== opts.by && opts.by === row.taken_by) {
@@ -11673,11 +11672,45 @@ async function mutateAgentBlockingRelation(
           // The admission guard below refuses without the terminal witness.
         }
       }
+      const unbound = row.source_plan_slug == null && !(row.source_plan_item_ids?.length) &&
+        row.plan_slug == null && row.plan_line_id == null && payload.plan_item == null && payload.planItem == null;
+      let planBinding: { planSlug: string; itemIds: string[] } | undefined;
+      if (!unbound) {
+        const currentItem = { ...dependent, payload, state: row.status, assignee: row.taken_by,
+          sourcePlanSlug: row.source_plan_slug ?? row.plan_slug,
+          sourcePlanItemIds: row.source_plan_item_ids?.length ? row.source_plan_item_ids :
+            row.plan_line_id ? [row.plan_line_id] : [] };
+        const { resolvePlanItemStamp, planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
+        const stamp = await resolvePlanItemStamp(currentItem);
+        if (!stamp || !stamp.plan_slug || !stamp.item_ids.length ||
+            new Set(stamp.item_ids).size !== stamp.item_ids.length ||
+            stamp.item_ids.some(itemId => !/^P-\d{3,}$/.test(itemId)) ||
+            (row.source_plan_slug != null && row.source_plan_slug !== stamp.plan_slug) ||
+            (row.plan_slug != null && row.plan_slug !== stamp.plan_slug) ||
+            (row.plan_line_id != null && !stamp.item_ids.includes(row.plan_line_id)) ||
+            (row.source_plan_item_ids?.length && (row.source_plan_item_ids.length !== stamp.item_ids.length ||
+              row.source_plan_item_ids.some((itemId: string) => !stamp.item_ids.includes(itemId)))) ||
+            activeExternalBlockers(payload).some(value => value.kind === 'hold' || value.kind === 'human')) {
+          throw Object.assign(new Error('Binding correction requires exact plan linkage without independent authority holds.'),
+            { code: 'blocker_decision_evidence' });
+        }
+        const { acquirePlanAdvisoryLock, planAdvisoryLockKey } = await import('./agent-tools/plans/plan-lock-key');
+        await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(activeWorkspaceId(), dependent.harness!, stamp.plan_slug));
+        const plans = await tx`SELECT plan_slug FROM harness_shared.harness_plans
+          WHERE workspace_id = ${activeWorkspaceId()} AND harness_slug = ${dependent.harness}
+            AND plan_slug = ${stamp.plan_slug} FOR SHARE`;
+        if (plans.length !== 1 || await planItemLaneBlockReason(currentItem, {
+          requireCompleteEvidence: true, workspaceId: activeWorkspaceId(),
+        })) {
+          throw Object.assign(new Error('Binding correction requires current complete plan-item admission authority.'),
+            { code: 'blocker_decision_evidence' });
+        }
+        planBinding = { planSlug: stamp.plan_slug, itemIds: stamp.item_ids };
+      }
       const admission = admitBindingCorrection(fresh, {
         workspaceId: activeWorkspaceId(), expectedWorkspaceId: opts.blockerEvidenceContext!.workspaceId,
         ownerId: opts.by ?? '', custodianId: row.taken_by, workItemId: dependent.id, harness: dependent.harness,
-        unbound: row.source_plan_slug == null && !(row.source_plan_item_ids?.length) &&
-          row.plan_slug == null && row.plan_line_id == null && payload.plan_item == null && payload.planItem == null,
+        unbound, planBinding,
         noExternalConditions: payload.externalBlockers == null || (Array.isArray(payload.externalBlockers) &&
           payload.externalBlockers.every(value => value && typeof value === 'object' && value.status === 'cleared')),
         provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming, terminalAuthorId,
@@ -11685,7 +11718,8 @@ async function mutateAgentBlockingRelation(
       if ('ok' in admission) throw Object.assign(new Error(admission.nextAction), admission);
       const checked = await preflightBlockerDecision({ ...dependent, payload, state: row.status, assignee: row.taken_by },
         input, opts.blockerEvidenceContext!, { effect, bindingCorrectionAdmission: admission });
-      if (!checked.ok || 'ordinary' in checked) throw Object.assign(new Error('Binding correction evidence refused.'), checked);
+      if (!checked.ok || 'ordinary' in checked) throw Object.assign(new Error(
+        `Binding correction evidence refused: ${checked.ok ? 'transaction-bound decision required' : checked.missing.join('; ')}`), checked);
       attempt = checked;
     }
     if ('ordinary' in prepared) {

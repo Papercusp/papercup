@@ -246,7 +246,9 @@ const readinessControlPtoolTools = new Set([
  * The body is inert data; both forms use the same narrow target allowlists.
  */
 function canonicalJsonHeredocCall(command: unknown): { name: string; args: Record<string, unknown> } | null {
-  if (typeof command !== 'string' || command.length > 32_768 || command.includes('\0')) return null;
+  // The quoted JSON body is inert data. Its size does not change the call's
+  // effect; parse it whole, including the closing delimiter and any trailing text.
+  if (typeof command !== 'string' || command.includes('\0')) return null;
   const normalized = command.replace(/\r\n/g, '\n');
   if (normalized.includes('\r')) return null;
   const lines = normalized.split('\n');

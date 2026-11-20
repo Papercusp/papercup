@@ -6163,8 +6163,9 @@ async function persistAdmissionPlanInTransaction(
       }
       const before = liveById.get(disposition.itemId);
       const review = recordValue(recordValue(post?.payload).admissionReview);
+      const reviewedAtMs = typeof review.reviewedAt === 'string' ? Date.parse(review.reviewedAt) : Number.NaN;
       if (before && isQueuedBypassReview(before) && post?.admission === 'auto' &&
-          review.state === 'reviewed' && review.reviewedAt === new Date(input.nowMs).toISOString() &&
+          review.state === 'reviewed' && reviewedAtMs === input.nowMs &&
           review.reviewedBy === actor) {
         reviewedIds.push(disposition.itemId);
         continue;

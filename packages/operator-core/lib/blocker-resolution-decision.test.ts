@@ -75,6 +75,70 @@ describe('administrative binding correction', () => {
   const context = (requestHash: string) => ({ ownerId: actor.ownerId, workItemId: 'WI-1', obligationRefs: [provider],
     bindingCorrectionRequestHash: requestHash,
     readEvidence: async (): Promise<BlockerEvidenceMeasurement> => ({ status: 'available', condition: 'pending' }) });
+  function plannedFixture() {
+    const base = fixture();
+    const recovery = { kind: 'event' as const, ref: 'admission:recovered:WI-1' };
+    const remaining = { kind: 'work-item' as const, ref: 'h#WI-remaining' };
+    const original = defer();
+    if (original.disposition !== 'defer') throw new Error('invalid deferral');
+    const prior = prepareBlockerDecision({}, { ...original, deferral: { ...original.deferral,
+      reasonEvidenceRefs: [recovery], recheckRef: recovery } }, actor, options);
+    if (!prior.ok) throw new Error('invalid prior');
+    const input: Extract<BlockerDecisionInput, { disposition: 'defer' }> = {
+      ...original, idempotencyKey: 'partial-correction', priorRevision: 1,
+      evidenceRefs: [provider, recovery, remaining],
+      bindingCorrection: { edgeId: '1', rationale: 'Admission recovered; retain the independent dependency', recoveryRef: recovery },
+      deferral: { reason: 'external-dependency', responsibleParty: 'su-b',
+        reasonEvidenceRefs: [remaining], recheckRef: remaining, nextAction: 'Consume remaining provider completion' },
+    };
+    const prepared = prepareBlockerDecision(prior.patch, input, actor, { ...options, effect });
+    if (!prepared.ok) throw new Error('invalid partial correction');
+    const scope = { ...base.scope, unbound: false, noExternalConditions: false,
+      planBinding: { planSlug: 'admission-plan', itemIds: ['P-001'] } };
+    const check = (recoveryMeasurement: BlockerEvidenceMeasurement = {
+      status: 'available', condition: 'satisfied', subjectWorkItemId: 'WI-1',
+    }) => {
+      const admission = admitBindingCorrection(prepared, scope);
+      if ('ok' in admission) return Promise.resolve(admission);
+      return validateBlockerDecisionEvidence(prepared.record.decision, {
+        ...context(prepared.record.requestHash), obligationRefs: [provider, remaining, recovery],
+        bindingCorrectionAdmission: admission,
+        readEvidence: async ref => ref.ref === recovery.ref ? recoveryMeasurement : {
+          status: 'available', condition: 'pending', reachable: true, responsibleParty: 'su-b',
+        },
+      });
+    };
+    return { prior, input, prepared, scope, recovery, remaining, check };
+  }
+  it('retains a partial deferral and history without satisfying the removed provider', async () => {
+    const f = plannedFixture();
+    expect(await f.check()).toEqual({ ok: true });
+    expect(f.prepared.record.decision.disposition).toBe('defer');
+    expect(f.prepared.state.history[0]).toEqual(f.prior.record);
+    expect(consumeBindingCorrection(f.prepared)).toBe(true);
+    expect(consumeBindingCorrection(f.prepared)).toBe(false);
+  });
+  it.each([
+    { status: 'available', condition: 'pending' }, { status: 'unknown', detail: 'reader unavailable' },
+    { status: 'absent', detail: 'no predicate' }, { status: 'available' },
+  ] satisfies BlockerEvidenceMeasurement[])('refuses unproven plan-bound recovery: %j', async measurement => {
+    const f = plannedFixture();
+    expect(await f.check(measurement)).toMatchObject({ ok: false });
+    expect(consumeBindingCorrection(f.prepared)).toBe(false);
+  });
+  it.each(['missing-recovery', 'unrelated-recovery', 'foreign-author', 'missing-plan', 'removed-recheck'])(
+    'retains the binding on an invalid partial correction: %s', async variant => {
+      const f = plannedFixture();
+      if (f.prepared.record.decision.disposition !== 'defer') throw new Error('invalid fixture');
+      const correction = f.prepared.record.decision.bindingCorrection!;
+      if (variant === 'missing-recovery') delete correction.recoveryRef;
+      if (variant === 'unrelated-recovery') correction.recoveryRef = { kind: 'event', ref: 'unrelated:green' };
+      if (variant === 'foreign-author') f.scope.edges[0].created_by = 'su-foreign';
+      if (variant === 'missing-plan') f.scope.planBinding.itemIds = [];
+      if (variant === 'removed-recheck') f.prepared.record.decision.deferral.recheckRef = provider;
+      expect(await f.check()).toMatchObject({ ok: false });
+      expect(consumeBindingCorrection(f.prepared)).toBe(false);
+    });
   it('binding correction refuses a caller-only witness and unrelated obligations', async () => {
     const { prepared, scope } = fixture();
     const check = (admission?: ReturnType<typeof admitBindingCorrection>) => validateBlockerDecisionEvidence(

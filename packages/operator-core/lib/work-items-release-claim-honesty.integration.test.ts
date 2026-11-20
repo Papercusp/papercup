@@ -25,7 +25,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 // eslint-disable-next-line import/no-relative-packages -- reuse the maintained private-database schema observer; no public export
 import { captureOwnedDatabaseSchema } from '../../../libs/test-config/src/owned-database-schema';
@@ -514,7 +514,7 @@ describe('draft 1643 — custody capture through application claim/release write
       SET details = ${sql.json({ ...target.details, databaseRole: 'r46-forged-role' })}
       WHERE workspace_id = ${WS} AND id = ${target.id}`;
     expect((await records())[0]?.details.databaseRole).toBe('r46-forged-role');
-    await sql`UPDATE harness_shared.audit_log SET details = ${sql.json(target.details)}
+    await sql`UPDATE harness_shared.audit_log SET details = ${sql.json(target.details as JSONValue)}
       WHERE workspace_id = ${WS} AND id = ${target.id}`;
     expect(await records()).toEqual(original);
 

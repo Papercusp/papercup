@@ -166,7 +166,7 @@ describe('criterion evidence applicability', () => {
     const result = await call({ slug: 'plan-a' });
     expect(result.applicability.criteria[0]).toMatchObject({ state: 'current', target: { planSlug: 'plan-a' },
       receipts: [{ bindingId: 1, workItemId: 'WI-1', createdBy: 'su-binder', createdAt: '2026-09-23T00:00:01.000Z',
-        observedAt: '2026-09-23T00:00:00.000Z', recordedRun: { id: 1001, source: null, startedAt: null, finishedAt: null },
+        observedAt: '2026-09-23T00:00:00.000Z', recordedRun: { id: 1001, source: null, attribution: null, startedAt: null, finishedAt: null },
         evidencePlane: 'tree', fingerprints: binding(1, 'SPEC-A', 'current').fingerprints,
         currentness: { dimensions: { source: 'current', test: 'current', fixture: 'not-applicable',
           rubric: 'not-applicable', environment: 'not-applicable' } }, freshnessBasis: { status: 'measured' } }] });

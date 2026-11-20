@@ -490,7 +490,7 @@ describe('P-010 actual lifecycle native proof clearance', () => {
             currentness: { overall: 'current', provenance: 'server-measured' },
             testRunExecution: { finishedAt: '2026-11-01T00:00:00Z', status: 'pass', passed: 1,
               failed: 0, skipped: 0, collectionFailed: false },
-          }] as Awaited<ReturnType<typeof evidenceModule.listSpecEvidence>>;
+          }] as unknown as Awaited<ReturnType<typeof evidenceModule.listSpecEvidence>>;
         });
         const clearanceScope = { workspaceId: 'default', harnessSlug: harness, planSlug,
           planItemIds: ['P-010'], workItemId: item.id };
@@ -2708,6 +2708,9 @@ describe('link projection — non-blocks rels', () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'src', harness: 'papercup', createdBy: 'agA' });
     const other = await wi.createWorkItem({ kind: 'bug', title: 'canonical', harness: 'papercup', createdBy: 'agA' });
     const third = await wi.createWorkItem({ kind: 'bug', title: 'another', harness: 'papercup', createdBy: 'agA' });
+    // This case isolates the duplicate verdict axis. New rows are intentionally
+    // born pending, so admit the subject before asserting only duplicate_of.
+    await db.sql`UPDATE harness_shared.work_items SET admission = 'auto' WHERE feature_id = ${bug.id}`;
     const verdict = async (id: string) =>
       (
         await db.sql<{ duplicate_of: string | null; duplicate_source: string | null; matched: string | null }[]>`
@@ -2739,6 +2742,9 @@ describe('link projection — non-blocks rels', () => {
     const canonical = await wi.createWorkItem({ kind: 'bug', title: 'canonical', harness: 'papercup', createdBy: 'agA' });
     const softTwin = await wi.createWorkItem({ kind: 'bug', title: 'soft twin', harness: 'papercup', createdBy: 'agA' });
     const filed = await wi.createWorkItem({ kind: 'bug', title: 'new filing', harness: 'papercup', createdBy: 'agA' });
+    // Duplicate stamping is orthogonal to born-pending admission. Exercise it
+    // on an otherwise admitted row so each assertion has one moving axis.
+    await db.sql`UPDATE harness_shared.work_items SET admission = 'auto' WHERE feature_id = ${filed.id}`;
     const workspaceId = (
       await db.sql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${filed.id}`
     )[0]!.workspace_id;
