@@ -215,17 +215,26 @@ describe('checkDocDrift (multi-ref)', () => {
     expect(r.error).toBe('unanchored');
   });
 
-  it('one clean + one errored ref → confident fresh (not error)', async () => {
-    const r = await checkDocDrift(
-      [
-        { kind: 'path', globs: ['README.md'] }, // fresh, no error
-        { kind: 'feature', ref: 'F-404' }, // errors (unresolved)
-      ],
-      shas.c0,
-      { ...opts(), resolveFeatureCommits: async () => [] },
-    );
-    expect(r.stale).toBe(false);
-    expect(r.error).toBeUndefined();
+  it('retains a documentation review only while its cited behavior and scope still match', async () => {
+    const { recomputeDocStatus } = await import('./freshness-sweep');
+    const unchangedSymbol = { kind: 'symbol' as const, file: 'src/foo.ts', name: 'beta' };
+    const changedSymbol = { ...unchangedSymbol, name: 'alpha' };
+    const unknown = { kind: 'feature' as const, ref: 'F-404' };
+    const record = { source: 'manual' as const, subjectRef: [unchangedSymbol],
+      generatedFromSha: null, lastVerifiedSha: shas.c0 };
+    const deps = { ...opts(), resolveFeatureCommits: async () => [] };
+
+    expect(await recomputeDocStatus(record, deps)).toMatchObject({ status: 'fresh' });
+    expect(await recomputeDocStatus({ ...record, subjectRef: [changedSymbol] }, deps))
+      .toMatchObject({ status: 'review', drift: { changedPaths: ['src/foo.ts'] } });
+    expect(await recomputeDocStatus({ ...record, subjectRef: [{ kind: 'path', globs: ['src/foo.ts'] }] }, deps))
+      .toMatchObject({ status: 'review' });
+    for (const subjectRef of [[unchangedSymbol, unknown], [unknown, unchangedSymbol]]) {
+      expect(await recomputeDocStatus({ ...record, subjectRef }, deps))
+        .toMatchObject({ status: 'unknown', detail: 'unresolved-feature' });
+    }
+    expect(await recomputeDocStatus({ ...record, subjectRef: [unknown, changedSymbol] }, deps))
+      .toMatchObject({ status: 'review' });
   });
 });
 

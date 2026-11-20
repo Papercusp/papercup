@@ -447,14 +447,13 @@ export async function checkSubjectRefDrift(
     else ranClean = true;
   }
   if (changedAll.length) return { stale: true, changedPaths: changedAll, method };
-  if (ranClean) return { stale: false, changedPaths: [], method };
+  if (ranClean && !firstErr) return { stale: false, changedPaths: [], method };
   return { stale: false, changedPaths: [], method, error: firstErr ?? 'no-paths' };
 }
 
 /**
- * Drift for a doc with possibly-many subject refs: stale if ANY ref is stale.
- * `error` only when EVERY ref errored (i.e. nothing could be checked) — a mix of
- * one clean + one errored ref still yields a confident stale:false.
+ * Any changed subject reopens the review. Carrying it forward requires a
+ * successful comparison for every subject in the document's declared scope.
  */
 export async function checkDocDrift(
   refs: SubjectRef[],
@@ -477,10 +476,7 @@ export async function checkDocDrift(
     return { ...stale, changedPaths, ...(sourceChanges.length ? { sourceChanges,
       sourceChangesTruncated: sourceChanges.length < changedPaths.length } : {}) };
   }
-  const clean = results.find((r) => !r.error);
-  if (clean) return clean;
-  // All errored — propagate the first error (e.g. no-baseline / unresolved).
-  return results[0];
+  return results.find((result) => result.error) ?? results[0];
 }
 
 function gitErr(r: { code: number; stderr: string }): string {
