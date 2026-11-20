@@ -72,6 +72,14 @@ describe('buildRevisionDiffText', () => {
     expect(diff).toMatch(/^@@/m); // at least one hunk header
   });
 
+  it('requires the immediate predecessor of a retained later edition', () => {
+    const target = newer('still retained\n');
+    for (const prior of [null, { ...older('too early\n'), seq: 1 }]) {
+      expect(() => buildRevisionDiffText({ newer: target, older: prior })).toThrow('Revision 2 of plan-x-2026-05-22 is unavailable');
+    }
+    expect(buildRevisionDiffText({ newer: target, older: older('restored\n') })).toContain('-restored');
+  });
+
   it('identical snapshots yield no hunks', () => {
     const diff = buildRevisionDiffText({
       newer: newer('same\n'),

@@ -23,7 +23,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { resolvePlanScope } from './source';
-import { getPlanRevisionPairById, type PlanRevisionPair } from './revisions';
+import { getPlanRevisionPairById, getPlanRevisionSnapshot, type PlanRevisionPair } from './revisions';
 
 const argsSchema = z.object({
   // z.coerce so the same schema accepts a numeric MCP arg AND a
@@ -34,15 +34,27 @@ const argsSchema = z.object({
     .positive()
     .describe('The plan_revisions row id (from plans:revisions.id) to diff against its predecessor.'),
   harness: harnessArg,
+  comparison: z.object({ auditSeq: z.number().int().positive(),
+    cursor: z.object({ basis: z.string().regex(/^[0-9a-f]{64}$/), after: z.string().min(1) }).strict().optional(),
+    limit: z.number().int().min(1).max(1000).optional() }).strict().optional()
+    .describe('Continue the exact activation-audit comparison returned by an ordinary plan edit.'),
 });
 
+class MissingRevisionPredecessor extends Error {
+  constructor(readonly edition: PlanRevisionPair['newer']) {
+    super(`Revision ${edition.seq - 1} of ${edition.planSlug} is unavailable. Restore that exact snapshot and retry the comparison with revision ${edition.seq}.`);
+  }
+}
+
 /**
- * Build the unified-diff string for one revision pair. Pure — split
- * out for unit testing. `pair.older === null` means seq 1; we diff
- * against an empty string so the modal still renders something
- * meaningful (every line shown as added).
+ * Build the unified-diff string for one revision pair.
+ * Only the creation revision is compared with an empty document. Retention
+ * can leave a later edition readable after its predecessor is unavailable.
  */
 export function buildRevisionDiffText(pair: PlanRevisionPair): string {
+  if (pair.newer.seq > 1 && pair.older?.seq !== pair.newer.seq - 1) {
+    throw new MissingRevisionPredecessor(pair.newer);
+  }
   const filename = `${pair.newer.planSlug}.md`;
   const olderLabel = pair.older ? `revision #${pair.older.seq}` : '(empty)';
   const newerLabel = `revision #${pair.newer.seq}`;
@@ -58,7 +70,7 @@ export function buildRevisionDiffText(pair: PlanRevisionPair): string {
 export default defineTool({
   name: 'plans:revision-diff',
   description:
-    'Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Returns a react-diff-view-parseable patch string. Seq 1 returns the file-against-empty creation diff.',
+    'Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Seq 1 returns the creation diff. A missing predecessor returns revision_predecessor_unavailable with the required sequence and exact retry.',
   guidance: {
     when: 'You have a revisionId from plans:revisions and want the patch — what exactly changed in that revision.',
     notWhen:
@@ -97,6 +109,22 @@ export default defineTool({
           isError: true,
         };
       }
+      if (args.comparison) {
+        const target = pair.newer;
+        const { compareActivationAuditTargets, getLatestActivationAudit } = await import('../../plan-audits');
+        const audit = target.harnessSlug === scope.harnessSlug
+          ? await getLatestActivationAudit(target.planSlug, { ...scope, auditSeq: args.comparison.auditSeq }) : null;
+        if (!audit?.auditedPlanRevision || !target.contentHash || audit.auditedPlanRevision.seq > target.seq) {
+          return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({ error: 'comparison_unavailable',
+            coverage: 'unknown', recovery: { tool: 'plans:revision-diff', args } }) }] };
+        }
+        const original = await getPlanRevisionSnapshot(target.planSlug, audit.auditedPlanRevision.seq, { ...scope, exactBody: true });
+        const affectedTargets = compareActivationAuditTargets({ audit, revision: { id: target.id, seq: target.seq,
+          contentHash: target.contentHash }, currentContent: target.contentSnapshot,
+          auditedContent: original?.id === audit.auditedPlanRevision.id ? original.contentSnapshot : null,
+          cursor: args.comparison.cursor, limit: args.comparison.limit });
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ slug: target.planSlug, seq: target.seq, affectedTargets }) }] };
+      }
       const diff = buildRevisionDiffText(pair);
       ctxAny.metadata?.({
         slug: pair.newer.planSlug,
@@ -118,6 +146,14 @@ export default defineTool({
         ],
       };
     } catch (e) {
+      if (e instanceof MissingRevisionPredecessor) {
+        return { isError: true, content: [{ type: 'text' as const, text: JSON.stringify({
+          error: 'revision_predecessor_unavailable', message: e.message,
+          revisionId: args.revisionId, slug: e.edition.planSlug, seq: e.edition.seq,
+          coverage: 'unknown', missingSeq: e.edition.seq - 1,
+          recovery: { tool: 'plans:revision-diff', args },
+        }) }] };
+      }
       const message = e instanceof Error ? e.message : String(e);
       return {
         content: [

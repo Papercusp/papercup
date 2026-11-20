@@ -25,6 +25,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  compareActivationAuditTargets,
+  type PlanAudit,
   __repoCitationAsyncGitReadsForTests,
   __repoCitationSyncSpawnsForTests,
   __repoCitationTrackingCacheStatsForTests,
@@ -55,6 +57,73 @@ import {
   type CitationFailureReason,
   type CitationResolution,
 } from './plan-audits';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+
+describe('the saved activation audit comparison', () => {
+  function fixture(count: number, reverse = false) {
+    const ids = Array.from({ length: count }, (_, i) => `P-${String(i + 1).padStart(3, '0')}`);
+    const rows = ids.map((id, i) => `- **${id}** \`todo\` ${i === 0 ? 'Original input' : `Follow ${id} blocked-by: ${ids[i - 1]}`}`);
+    const auditedContent = ['---', 'slug: compare', 'title: Compare', 'status: ready', '---', '', '## Work', '',
+      ...(reverse ? rows.reverse() : rows), '- **P-999** `todo` Independent item'].join('\n');
+    const currentContent = auditedContent.replace('Original input', 'Changed input');
+    const audit: PlanAudit = { planSlug: 'compare', harnessSlug: 'h', auditSeq: 8, createdBy: 'prior-reviewer',
+      createdAt: '2026-08-01T00:00:00Z', auditKind: 'activation', auditedSha: null,
+      auditedPlanRevision: { id: 10, seq: 5, contentHash: hashPlanContent(auditedContent) }, items: [], findings: [], summary: null,
+      activation: { sourceRanges: [], mappings: [{ id: 'M-001', requirement: 'Review the last dependent', disposition: 'covered',
+        sourceRefs: ['session_turn:codex:original:7'], planTargets: [ids.at(-1)!] }], repairedOmissions: [],
+        rejectedOrSuperseded: [], unresolvedBlockers: [] } };
+    return { ids, audit, auditedContent, currentContent, revision: { id: 20, seq: 9, contentHash: hashPlanContent(currentContent) } };
+  }
+
+  it('recovers the complete affected population across pages and restart', () => {
+    const input = fixture(19);
+    const seen: string[] = [];
+    let cursor: { basis: string; after: string } | undefined;
+    do {
+      const page = compareActivationAuditTargets({ ...structuredClone(input), limit: 3, cursor });
+      expect(page.status).toBe('measured');
+      seen.push(...page.targets.map(row => row.id));
+      expect(page.remaining).toBe(input.ids.length - seen.length);
+      cursor = page.next?.args.comparison.cursor;
+      if (page.next) expect(page.next.args).toMatchObject({ revisionId: input.revision.id, comparison: { auditSeq: 8 } });
+      else expect(page.targets.at(-1)).toMatchObject({ id: input.ids.at(-1), change: 'dependent',
+        sourceMappings: [{ id: 'M-001', sourceRefs: ['session_turn:codex:original:7'] }],
+        evidence: { tool: 'graph:query', args: { plan: 'compare', item: input.ids.at(-1) } } });
+      expect(page.observation).toMatchObject({ createdBy: input.audit.createdBy, createdAt: input.audit.createdAt });
+    } while (cursor);
+    expect(seen).toEqual(input.ids);
+  });
+
+  it('returns the late dependent at N minus one, N and N plus one under reversed discovery order', () => {
+    for (const count of [3, 4, 5]) for (const reverse of [false, true]) {
+      const input = fixture(count, reverse);
+      const first = compareActivationAuditTargets({ ...input, limit: 4 });
+      const last = first.next ? compareActivationAuditTargets({ ...input, ...first.next.args.comparison }) : null;
+      expect([...first.targets, ...(last?.targets ?? [])].map(row => row.id)).toEqual(input.ids);
+      expect((last ?? first).remaining).toBe(0);
+    }
+  });
+
+  it('marks missing dependency history unknown and resumes after the last complete batch', () => {
+    const input = fixture(6);
+    const first = compareActivationAuditTargets({ ...input, limit: 3 });
+    const cursor = first.next!.args.comparison;
+    const gap = compareActivationAuditTargets({ ...input, ...cursor, auditedContent: null });
+    expect(gap).toMatchObject({ status: 'unknown', targets: [], remaining: null, retry: first.next });
+    expect(compareActivationAuditTargets({ ...input, ...gap.retry!.args.comparison }).targets.map(row => row.id))
+      .toEqual(input.ids.slice(3));
+    const wrong = compareActivationAuditTargets({ ...input, ...cursor, cursor: { ...cursor.cursor!, after: 'P-999' } });
+    expect(wrong.status).toBe('unknown');
+    expect(wrong.retry?.args.comparison.cursor).toBeUndefined();
+    expect(compareActivationAuditTargets({ ...input, ...cursor, revision: { ...input.revision, id: input.revision.id + 1 } }))
+      .toMatchObject({ status: 'unknown', reasons: ['comparison-basis-changed'], targets: [] });
+    const incomplete = input.currentContent.replace('blocked-by: P-004', 'blocked-by: P-404');
+    expect(compareActivationAuditTargets({ ...input, currentContent: incomplete,
+      revision: { ...input.revision, contentHash: hashPlanContent(incomplete) } })).toMatchObject({
+      status: 'unknown', reasons: ['missing-dependency:P-404'], recovery: { tool: 'plans:get', args: { revision: input.revision.seq } },
+    });
+  });
+});
 
 // WI-6554700010015337: an older build could not parse a VALID Requirements
 // section, emptied the bar set, and reported every R-N target as "no exact

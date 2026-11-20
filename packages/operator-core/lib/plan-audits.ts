@@ -267,11 +267,11 @@ const discoveryDigest = (value: unknown) => createHash('sha256')
   .update(canonicalJson(value).replace(/\s+/g, ' ').trim()).digest('hex');
 
 /** Whitespace and lifecycle bookkeeping do not change an implementation proposal. */
-export function discoverySubjectSnapshot(content: string): Record<string, string> {
+export function discoverySubjectSnapshot(content: string, parsed = parsePlan(content),
+  declaration = previewDiscoveryDeclaration(content).data, requirements = parseRequirementBars(content)): Record<string, string> {
   const digest = (value: string) => createHash('sha256').update(value.replace(/\s+/g, ' ').trim()).digest('hex');
-  const parsed = parsePlan(content);
   const targets: Record<string, string> = {};
-  const selectedSections = new Set(previewDiscoveryDeclaration(content).data?.findings
+  const selectedSections = new Set(declaration?.findings
     .flatMap(finding => finding.dispositions.map(disposition => disposition.target)) ?? []);
   for (const item of parsed.items) targets[item.id] = digest(JSON.stringify({
     text: item.text.replace(NOTE_SUFFIX_RE, ''), blockedBy: item.blockedBy, decisionRefs: item.decisionRefs,
@@ -283,7 +283,6 @@ export function discoverySubjectSnapshot(content: string): Record<string, string
     const body = section.body.replace(/^- \*\*P-\d+\*\*.*$/gm, '').trim();
     if (body) targets[`section:${section.heading}`] = digest(body);
   }
-  const requirements = parseRequirementBars(content);
   if (requirements.ok) for (const bar of requirements.bars) targets[bar.barKey] = discoveryDigest(bar.criterion ?? bar);
   return Object.fromEntries(Object.entries(targets).sort(([a], [b]) => a.localeCompare(b)));
 }
@@ -679,6 +678,7 @@ export interface ActivationAuditEditNotice {
   };
   changedSinceAudit: boolean;
   revisionGap: number | null;
+  affectedTargets?: ReturnType<typeof compareActivationAuditTargets>;
   executionAuthority: {
     auditedSnapshotAvailable: boolean;
     strictMeaningChanged: boolean | null;
@@ -2097,7 +2097,7 @@ export async function getStoredDiscoveryAudit(
 /** Latest completed pre-activation conversation audit for a plan. */
 export async function getLatestActivationAudit(
   planSlug: string,
-  scope: PlanAuditReadScope = {},
+  scope: PlanAuditReadScope & { auditSeq?: number } = {},
 ): Promise<PlanAudit | null> {
   try {
     const { sql } = getOrgPg();
@@ -2112,15 +2112,121 @@ export async function getLatestActivationAudit(
          AND plan_slug = ${planSlug}
          AND audit_kind = 'activation'
          AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
+         AND (${scope.auditSeq ?? null}::int IS NULL OR audit_seq = ${scope.auditSeq ?? null})
        ORDER BY audit_seq DESC
        LIMIT 1`;
     const row = rows.find(
-      (candidate) => candidate.plan_slug === planSlug && (!harnessSlug || candidate.harness_slug === harnessSlug),
+      (candidate) => candidate.plan_slug === planSlug && (!harnessSlug || candidate.harness_slug === harnessSlug) &&
+        (scope.auditSeq === undefined || Number(candidate.audit_seq) === scope.auditSeq),
     );
     return row ? rowToAudit(row) : null;
   } catch {
     return null;
   }
+}
+
+function revisionTargetGraph(content: string) {
+  const parsed = parsePlan(content);
+  const declaration = previewDiscoveryDeclaration(content).data;
+  const requirements = parseRequirementBars(content);
+  const fingerprints = discoverySubjectSnapshot(content, parsed, declaration, requirements);
+  const edges: [string, string][] = [];
+  const unknown: string[] = [];
+  if (parsed.isLegacy) unknown.push('unstructured-plan');
+  for (const item of parsed.items) {
+    for (const input of [...item.blockedBy, ...item.decisionRefs]) edges.push([input, item.id]);
+  }
+  for (const decision of parsed.decisions) {
+    for (const item of decision.itemRefs) edges.push([decision.id, item]);
+  }
+  if (requirements.ok) {
+    const mapped = parseBarMappings(content, new Set(requirements.bars.map(bar => bar.barKey)));
+    if (!mapped.ok) unknown.push(...mapped.problems.map(problem => problem.detail));
+    for (const mapping of mapped.mappings) {
+      fingerprints[mapping.barKey] = hashPlanContent(canonicalJson([
+        fingerprints[mapping.barKey], [...mapping.planItemIds].sort(), mapping.evidencePlane,
+      ]));
+      for (const item of mapping.planItemIds) edges.push([mapping.barKey, item]);
+    }
+  } else {
+    unknown.push(...requirements.problems.filter(problem => problem.code !== 'bar_requirements_missing').map(problem => problem.detail));
+  }
+  for (const question of declaration?.questions ?? []) fingerprints[question.id] = hashPlanContent(canonicalJson(question));
+  for (const finding of declaration?.findings ?? []) {
+    fingerprints[finding.id] = hashPlanContent(canonicalJson(finding));
+    for (const question of finding.questions) edges.push([question, finding.id]);
+    for (const disposition of finding.dispositions) edges.push([finding.id, disposition.target]);
+  }
+  for (const [source, target] of edges) {
+    if (!Object.hasOwn(fingerprints, source)) unknown.push(`missing-dependency:${source}`);
+    if (!Object.hasOwn(fingerprints, target)) unknown.push(`missing-dependent:${target}`);
+  }
+  return { fingerprints, edges, unknown };
+}
+
+/** A page of the declared plan dependencies at two immutable editions. Proof and
+ * reviewer eligibility remain the responsibility of their existing consumers. */
+export function compareActivationAuditTargets(input: {
+  audit: PlanAudit; revision: AuditedPlanRevision; currentContent: string; auditedContent: string | null;
+  cursor?: { basis: string; after: string }; limit?: number;
+}) {
+  const { audit, revision, cursor } = input;
+  const after = cursor?.after;
+  const limit = input.limit ?? 32;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid comparison page size');
+  const basis = hashPlanContent(canonicalJson([audit.harnessSlug, audit.planSlug, audit.auditSeq, audit.auditedPlanRevision, revision]));
+  const continuation = (last?: string) => ({ tool: 'plans:revision-diff', args: { harness: audit.harnessSlug,
+    revisionId: revision.id, comparison: { auditSeq: audit.auditSeq, limit, ...(last === undefined ? {} : { cursor: { basis, after: last } }) } } });
+  const observation = { scope: 'declared-plan-targets', auditSeq: audit.auditSeq, createdBy: audit.createdBy, createdAt: audit.createdAt,
+    auditedPlanRevision: audit.auditedPlanRevision, currentPlanRevision: revision };
+  if (cursor && cursor.basis !== basis) return { observation, status: 'unknown' as const, reasons: ['comparison-basis-changed'],
+    targets: [], total: null, remaining: null, next: null, retry: continuation() };
+  if (!audit.activation || !audit.auditedPlanRevision || input.auditedContent === null ||
+    hashPlanContent(input.auditedContent) !== audit.auditedPlanRevision.contentHash ||
+    hashPlanContent(input.currentContent) !== revision.contentHash || audit.auditedPlanRevision.seq > revision.seq) {
+    return { observation, status: 'unknown' as const, reasons: ['exact-audit-or-revision-unavailable'],
+      targets: [], total: null, remaining: null, next: null, retry: continuation(after) };
+  }
+  const before = revisionTargetGraph(input.auditedContent);
+  const current = revisionTargetGraph(input.currentContent);
+  const dependents = new Map<string, Set<string>>();
+  for (const [source, target] of [...before.edges, ...current.edges]) {
+    const readers = dependents.get(source) ?? new Set<string>();
+    readers.add(target);
+    dependents.set(source, readers);
+  }
+  const affected = new Set<string>();
+  for (const id of [...Object.keys(before.fingerprints), ...Object.keys(current.fingerprints)]) {
+    if (before.fingerprints[id] !== current.fingerprints[id]) affected.add(id);
+  }
+  // Set iteration visits newly added dependents and terminates even on a cycle.
+  for (const id of affected) for (const reader of dependents.get(id) ?? []) affected.add(reader);
+  const ids = [...affected].sort();
+  const reasons = [...new Set([...before.unknown, ...current.unknown])];
+  if (!ids.length && input.auditedContent !== input.currentContent) {
+    try {
+      if (planExecutionMeaning(input.auditedContent) !== planExecutionMeaning(input.currentContent)) reasons.push('unmapped-execution-change');
+    } catch { reasons.push('execution-meaning-unavailable'); }
+  }
+  const offset = after === undefined ? 0 : ids.indexOf(after) + 1;
+  if (after !== undefined && offset === 0) {
+    return { observation, status: 'unknown' as const, reasons: ['cursor-target-unavailable'],
+      targets: [], total: ids.length, remaining: ids.length, next: null, retry: continuation() };
+  }
+  const targets = ids.slice(offset, offset + limit).map(id => {
+    const prior = before.fingerprints[id] ?? null, latest = current.fingerprints[id] ?? null;
+    const change = prior === latest ? 'dependent' : prior === null ? 'added' : latest === null ? 'removed' : 'changed';
+    const sourceMappings = audit.activation!.mappings.filter(mapping => mapping.planTargets.includes(id))
+      .map(mapping => ({ id: mapping.id, sourceRefs: mapping.sourceRefs }));
+    return { id, change, before: prior, after: latest, sourceMappings,
+      ...(id.startsWith('P-') ? { evidence: { tool: 'graph:query', args: { op: 'evidence',
+        harnesses: [audit.harnessSlug], plan: audit.planSlug, item: id } } } : {}) };
+  });
+  const remaining = ids.length - offset - targets.length;
+  return { observation, status: reasons.length ? 'unknown' as const : 'measured' as const, reasons, targets,
+    total: ids.length, remaining, next: remaining ? continuation(targets.at(-1)!.id) : null, retry: null,
+    ...(reasons.length ? { recovery: { tool: 'plans:get', args: { slug: audit.planSlug, harness: audit.harnessSlug, revision: revision.seq },
+      nextAction: 'Inspect the exact declared inputs and reconcile missing dependencies in the next ordinary plan edit.' } } : {}) };
 }
 
 /**
@@ -2182,6 +2288,8 @@ export function buildActivationAuditEditNotice(input: {
     },
     changedSinceAudit,
     revisionGap,
+    ...(current && changedSinceAudit ? { affectedTargets: compareActivationAuditTargets({ audit: input.audit,
+      revision: current, currentContent: input.currentContent, auditedContent: input.auditedContentSnapshot }) } : {}),
     executionAuthority: {
       auditedSnapshotAvailable: input.auditedContentSnapshot !== null,
       strictMeaningChanged,

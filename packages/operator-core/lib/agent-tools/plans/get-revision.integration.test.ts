@@ -4,6 +4,8 @@ import { recordPlanRevisionInTransaction } from './revisions';
 import { hashPlanContent } from './content-hash';
 import { shapePlansGet } from './get-shape';
 import tool, { narrowDecisionPayload } from './get';
+import revisionDiff from './revision-diff';
+import { getActivationAuditEditNotice } from '../../plan-audits';
 
 const HARNESS = 'zzz-get-revision';
 const SLUG = 'immutable-evidence';
@@ -60,6 +62,35 @@ beforeAll(async () => {
 afterAll(async () => { await fx?.dispose(); });
 
 describe('plans:get immutable revision reader', () => {
+  it('continues the edit notice against its original audit and saved revision after another edit', async () => {
+    const slug = 'compare-audit-pages';
+    const ids = Array.from({ length: 35 }, (_, i) => `P-${String(i + 1).padStart(3, '0')}`);
+    const before = ['---', `slug: ${slug}`, 'title: Compare pages', 'status: ready', '---', '', '## Work', '',
+      ...ids.map((id, i) => `- **${id}** \`todo\` ${i === 0 ? 'Source' : `Reader blocked-by: ${ids[i - 1]}`}`)].join('\n');
+    const after = before.replace('`todo` Source', '`todo` New source');
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, slug, before);
+    const prior = await revision(before, fx.workspaceId, HARNESS, slug);
+    await fx.admin`INSERT INTO harness_shared.plan_audits
+      (workspace_id,harness_slug,plan_slug,audit_seq,created_by,audit_kind,activation,audited_plan_revision_id,
+       audited_plan_revision_seq,audited_plan_content_hash)
+      SELECT workspace_id,harness_slug,plan_slug,1,'original-reviewer','activation',
+        ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::jsonb,
+        id,seq,content_hash FROM harness_shared.plan_revisions WHERE workspace_id=${fx.workspaceId}
+          AND harness_slug=${HARNESS} AND plan_slug=${slug} AND seq=${prior.seq} AND content_hash=${prior.contentHash}`;
+    await revision(after, fx.workspaceId, HARNESS, slug);
+    const notice = await getActivationAuditEditNotice({ workspaceId: fx.workspaceId, harnessSlug: HARNESS, planSlug: slug,
+      currentContent: after, currentContentHash: hashPlanContent(after), planVersion: 2 });
+    const first = notice!.affectedTargets!;
+    expect(first.total).toBe(35);
+    expect(first.remaining).toBe(3);
+    await revision(after.replace('New source', 'Third version'), fx.workspaceId, HARNESS, slug);
+    const command = first.next!;
+    const result = await revisionDiff.handler(revisionDiff.args.parse(command.args), context(fx.workspaceId));
+    const last = JSON.parse((result as { content: { text: string }[] }).content[0]!.text).affectedTargets;
+    expect(last).toMatchObject({ observation: first.observation, total: 35, remaining: 0, next: null });
+    expect([...first.targets, ...last.targets].map(row => row.id)).toEqual(ids);
+  });
+
   it('replays the original bytes and decision after a later plan write', async () => {
     const before = await read({ revision: 1, decisionId: 'D-001' });
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, updated);

@@ -826,6 +826,8 @@ export interface PlanRevisionPair {
   newer: {
     id: number;
     planSlug: string;
+    harnessSlug?: string;
+    contentHash?: string;
     seq: number;
     contentSnapshot: string;
     createdAt: number;
@@ -843,6 +845,8 @@ export async function getPlanRevisionPairById(
       {
         id: number | string;
         plan_slug: string;
+        harness_slug: string;
+        content_hash: string;
         seq: number;
         content_snapshot: string;
         created_at: string | number;
@@ -854,7 +858,7 @@ export async function getPlanRevisionPairById(
         FROM harness_shared.plan_revisions
         WHERE id = ${revisionId}
       )
-      SELECT r.id, r.plan_slug, r.seq, r.content_snapshot, r.created_at,
+      SELECT r.id, r.plan_slug, r.harness_slug, r.content_hash, r.seq, r.content_snapshot, r.created_at,
              (r.seq = (SELECT seq FROM target)) AS is_target
       FROM harness_shared.plan_revisions r, target t
       WHERE r.workspace_id = t.workspace_id
@@ -870,6 +874,8 @@ export async function getPlanRevisionPairById(
       newer: {
         id: Number(newerRow.id),
         planSlug: newerRow.plan_slug,
+        harnessSlug: newerRow.harness_slug,
+        contentHash: newerRow.content_hash,
         seq: Number(newerRow.seq),
         contentSnapshot: newerRow.content_snapshot,
         createdAt: Number(newerRow.created_at),
