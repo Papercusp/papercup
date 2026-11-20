@@ -97,6 +97,28 @@ describe('ledger refs and build identity', () => {
 });
 
 describe('current target build reproduction', () => {
+  it('keeps the historical failure and requires a current reproduction after dependency changes', async () => {
+    const fixedBuild = 'b'.repeat(40), regressedBuild = 'c'.repeat(40);
+    const ledger = fakeLedger({ testRuns: {
+      1: { status: 'fail', commitSha: BUILD, worktreeDirty: false },
+      2: { status: 'pass', commitSha: fixedBuild, worktreeDirty: false },
+      3: { status: 'fail', commitSha: regressedBuild, worktreeDirty: false },
+      4: { status: 'fail', commitSha: regressedBuild, worktreeDirty: null },
+    } });
+    const original = { kind: 'failing-test' as const, ref: 'test_runs:1', buildSha: BUILD };
+    const fixed = { ...original, ref: 'test_runs:2', buildSha: fixedBuild };
+    const regressed = { ...original, ref: 'test_runs:3', buildSha: regressedBuild };
+    expect((await verifyCurrentBugReproductionReceipt(original, fixedBuild, ledger)).status).toBe('refuted');
+    expect((await verifyCurrentBugReproductionReceipt(fixed, fixedBuild, ledger)).status).toBe('refuted');
+    expect((await verifyCurrentBugReproductionReceipt(original, regressedBuild, ledger)).status).toBe('refuted');
+    expect((await verifyCurrentBugReproductionReceipt(regressed, regressedBuild, ledger)).status).toBe('verified');
+    expect(await verifyBugReproductionReceipt(original, ledger)).toMatchObject({
+      status: 'verified', observed: { buildSha: BUILD, status: 'fail' },
+    });
+    const unmeasuredTree = { ...regressed, ref: 'test_runs:4' };
+    expect((await verifyCurrentBugReproductionReceipt(unmeasuredTree, regressedBuild, ledger)).status).toBe('unresolved');
+  });
+
   it('refuses unknown and stale builds even with authentic historical failures', async () => {
     const ledger = fakeLedger({ testRuns: { 1: { status: 'fail', commitSha: BUILD, worktreeDirty: false } } });
     const receipt = { kind: 'failing-test' as const, ref: 'test_runs:1', buildSha: BUILD };

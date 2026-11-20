@@ -13,6 +13,10 @@ import { describe, it, expect } from 'vitest';
 import { createHash } from 'node:crypto';
 import { PROOF_CONTEXT_COMPONENTS, captureConfigurationSnapshot, createProofContextIdentity,
   type ProofContextIdentity, type ProofContextReach } from '@papercusp/test-config/configuration-snapshot';
+import { releaseStageInputHash } from '../../../../scripts/lib/release-task-journal.mjs';
+import { probeByocPublication, publicationProbeInputFromJournal } from '../agent-tools/release/byoc-readiness';
+import { confirmMergeAdvance, decideMergeGate } from '../harness/git-sync/decide-merge-gate';
+import type { TaskReleaseJournal } from '../task-manager/store';
 import {
   composeVerdict,
   emitIdentity,
@@ -72,6 +76,78 @@ describe('emitIdentity (real TypeScript transpile)', () => {
 });
 
 describe('planComposedProof', () => {
+  it('requires a fresh verdict for an opaque or changed delivery artifact', async () => {
+    const bundleSha256 = hash('original bundle bytes');
+    const manifestSha256 = hash('original publication manifest');
+    const repackedSha = hash('repacked bytes from the same source');
+    const sourceSha = '9'.repeat(40);
+    const finalize = {
+      sequence: 0, operationId: 'publish-1', requestIdentity: 'finalize-1', stage: 'publish.finalize',
+      state: 'committed' as const, inputHash: releaseStageInputHash({ bundleSha256, manifestSha256 }),
+      evidenceRefs: ['provider:finalization:' + manifestSha256], recordedAt: '2026-11-19T12:00:00Z',
+    };
+    const journal: TaskReleaseJournal = {
+      schemaVersion: 1, operationId: finalize.operationId, cursor: 1, currentStage: finalize.stage,
+      currentState: finalize.state, spentOperationIds: [finalize.requestIdentity], receipts: [finalize],
+      source: { sha: sourceSha }, artifactIdentity: { version: '1.0', bundleSha256 },
+    };
+    const probeInput = publicationProbeInputFromJournal(journal);
+    expect(probeInput).toMatchObject({
+      bundleSha256, manifestSha256, expectedArtifactIdentity: { sourceSha, version: '1.0' },
+    });
+    if (!probeInput) throw new Error('Missing publication input from the committed stage');
+    const missing = await probeByocPublication(probeInput, async () => new Response(null, { status: 404 }));
+    expect(missing.verdict).toBe('unknown');
+    expect(missing.missing).toContain('public-manifest');
+    const changed = await probeByocPublication(probeInput, async () => new Response('{}'));
+    expect(changed.verdict).toBe('fail');
+    expect(changed.failed).toContain('manifest-archive-digest:mismatch');
+    expect(publicationProbeInputFromJournal({ ...journal, artifactIdentity: { sourceSha, version: '1.0' } })).toBeNull();
+    const repacked = { ...journal, artifactIdentity: { version: '1.0', bundleSha256: repackedSha } };
+    expect(publicationProbeInputFromJournal(repacked)).toBeNull();
+    const reissued = { ...finalize, requestIdentity: 'finalize-2',
+      inputHash: releaseStageInputHash({ bundleSha256: repackedSha, manifestSha256 }) };
+    expect(publicationProbeInputFromJournal({ ...repacked, spentOperationIds: [reissued.requestIdentity],
+      receipts: [reissued] })).toMatchObject({ bundleSha256: repackedSha, manifestSha256 });
+
+    const before = context();
+    for (const generatedAssets of [null, repackedSha]) {
+      const after = createProofContextIdentity({ ...before.components, generatedAssets });
+      expect(planComposedProof(base([], { proofContext: { before, after } })).mode).toBe('full-gate');
+    }
+  });
+
+  it('requires current candidate evidence when target tip, fixture or runtime changes', () => {
+    const prHeadSha = 'a'.repeat(40), targetTipSha = 'b'.repeat(40), mergeSha = 'c'.repeat(40);
+    const lastTest = { prHeadSha, targetTipSha, mergeSha, result: 'pass' as const };
+    const original = { prHeadSha, promotedSha: prHeadSha, targetTipSha, lastTest };
+    const decision = decideMergeGate(original);
+    expect(decision).toMatchObject({ action: 'merge', advanceTargetTo: mergeSha });
+    if (decision.action !== 'merge') throw new Error('Expected the tested merge candidate');
+    expect(confirmMergeAdvance(decision, targetTipSha)).toEqual({ ok: true });
+    const advancedTip = 'd'.repeat(40), rebasedHead = 'e'.repeat(40);
+    expect(confirmMergeAdvance(decision, advancedTip)).toMatchObject({ ok: false, reason: 'target-moved' });
+    expect(decideMergeGate({ ...original, targetTipSha: advancedTip }))
+      .toMatchObject({ action: 'build-and-test', reason: 'target-moved' });
+    expect(decideMergeGate({ ...original, prHeadSha: rebasedHead, promotedSha: rebasedHead }))
+      .toMatchObject({ action: 'build-and-test', reason: 'pr-head-moved' });
+
+    const before = context();
+    for (const component of ['fixtures', 'runtimeCapabilities'] as const) {
+      const after = createProofContextIdentity({ ...before.components, [component]: hash('new ' + component) })!;
+      expect(planComposedProof(base([], { proofContext: { before, after } })).mode).toBe('full-gate');
+      const reach: ProofContextReach = { schemaVersion: 'reach-v1', component,
+        before: before.components[component]!, after: after.components[component]!,
+        provenance: { version: 'selected-consumers-v1', before: hash('before graph'), after: hash('after graph'), complete: true },
+        tests: [SRC_TEST], legs: [] };
+      const selected = composed(planComposedProof(base([], { proofContext: { before, after, reach: [reach] } })));
+      expect(selected.rerunTests).toEqual([SRC_TEST]);
+      expect(selected.carriedTests).toEqual([FAR_TEST, OTHER_TEST]);
+      const verdict = composeVerdict(selected, { [OTHER_TEST]: 'pass' }, { [SRC_TEST]: 'pass', 'lint:tsc': 'pass' });
+      expect(verdict).toEqual({ failing: [FAR_TEST], unmeasured: [FAR_TEST] });
+    }
+  });
+
   it('requires complete context even with zero source changes and a computable radius', () => {
     for (const proofContext of [undefined, null, { before: context(), after: null },
       { before: context(), after: createProofContextIdentity({ ...context().components, fixtures: null }) }]) {

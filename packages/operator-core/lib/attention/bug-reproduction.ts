@@ -220,6 +220,14 @@ export async function verifyBugReproductionReceipt(
           observed,
         };
       }
+      if (row.worktreeDirty !== false) {
+        return {
+          status: 'unresolved',
+          detail: `test_runs:${ref.id} did not record whether the tested source matched build ${receipt.buildSha}`,
+          checkedAt,
+          observed,
+        };
+      }
       return { status: 'verified', detail: `test_runs:${ref.id} failed on ${receipt.buildSha}`, checkedAt, observed };
     }
     const row = await deps.readToolInvocation(ref.id);

@@ -56,7 +56,7 @@ const {
 const { stampFiledBugReproduction } = await import('../../attention/bug-reproduction');
 const { parseIntakeDecision } = await import('../../attention/bulk-dispositions');
 const { setWorkItemState } = await import('../../work-items');
-const { readWorkItemReadinessProjection } = await import('../../work-items-admission-promoter');
+const { readWorkItemReadinessProjection, runWorkItemAdmissionPromoter } = await import('../../work-items-admission-promoter');
 const { readIssueClaimability } = await import('../../scheduler/get-next');
 const {
   IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS,
@@ -358,8 +358,18 @@ describe('ledger encounter → independent promotion → post-cutover claim admi
     expect(accepted.payload?.intakePromotion).toMatchObject({ decidedBy: REVIEWER });
     expect(await stage(source.id)).toBe('accepted-ready');
     expect(await promotedFrom(source.id)).toEqual([]);
+    const pending = await claimability(source.id, stored.workspace_id, stored.harness_slug);
+    expect(pending.breakdown).toMatchObject({ claimable: 0, excluded: { agentReview: 0, admissionPending: 1 } });
+    // Independent acceptance resolves the reproduction. The original bug still
+    // needs the same duplicate screen as any other newly filed bug.
+    const screening = await runWorkItemAdmissionPromoter({
+      sql: db.adminSql, workspaceId: stored.workspace_id, harnessSlug: stored.harness_slug,
+      targetItemIds: [source.id], batchSize: 1, noModel: true,
+      llmCall: vi.fn(), onNewlyAdmitted: vi.fn(),
+    });
+    expect(screening).toMatchObject({ promoted: 1, merged: 0, held: 0, modelCalled: false });
     const selected = await claimability(source.id, stored.workspace_id, stored.harness_slug);
-    expect({ status: accepted.status, breakdown: selected.breakdown }).toMatchObject({
+    expect({ status: accepted.status, breakdown: selected.breakdown }, JSON.stringify(selected.breakdown)).toMatchObject({
       status: 'open', breakdown: { matchedByFilter: 1, claimable: 1, excluded: { cooldown: 0, agentReview: 0 } },
     });
     expect(selected.rows.map((r) => r.id)).toContain(source.id);

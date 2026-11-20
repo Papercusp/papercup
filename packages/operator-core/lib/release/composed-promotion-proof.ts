@@ -163,7 +163,7 @@ export function planComposedProof(input: ComposedProofInput): ComposedProofPlan 
 export interface ComposedVerdict {
   /** Failing tests and legs after composition: carried failures plus re-run failures. */
   failing: string[];
-  /** Re-run tests or legs with no result; counted as failing. */
+  /** Carried tests or re-run checks without a measured verdict. Each counts as failing. */
   unmeasured: string[];
 }
 
@@ -174,16 +174,14 @@ export function composeVerdict(
   rerunResults: Readonly<Record<string, TestVerdict>>,
 ): ComposedVerdict {
   const failing = new Set<string>();
-  const unmeasured: string[] = [];
-  for (const t of plan.carriedTests) if (round1Tests[t] === 'fail') failing.add(t);
-  for (const id of [...plan.rerunTests, ...plan.rerunLegs]) {
-    const v = rerunResults[id];
-    if (v === undefined) {
-      unmeasured.push(id);
-      failing.add(id);
-    } else if (v === 'fail') {
-      failing.add(id);
-    }
-  }
-  return { failing: [...failing].sort(), unmeasured: unmeasured.sort() };
+  const unmeasured = new Set<string>();
+  const record = (id: string, results: Readonly<Record<string, TestVerdict>>) => {
+    const verdict = Object.hasOwn(results, id) ? results[id] : undefined;
+    if (verdict === 'pass') return;
+    failing.add(id);
+    if (verdict !== 'fail') unmeasured.add(id);
+  };
+  for (const id of plan.carriedTests) record(id, round1Tests);
+  for (const id of [...plan.rerunTests, ...plan.rerunLegs]) record(id, rerunResults);
+  return { failing: [...failing].sort(), unmeasured: [...unmeasured].sort() };
 }
