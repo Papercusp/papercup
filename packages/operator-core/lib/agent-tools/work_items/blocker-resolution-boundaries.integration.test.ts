@@ -752,6 +752,106 @@ describe('public blocker resolution boundaries', () => {
     expect(await stopText()).toBe('');
   });
 
+  async function legacyExternalGate(existingDependency = false, reverseDependency = false) {
+    const id = await seed('feature', false);
+    const recheck = await seed('task', false);
+    if (existingDependency || reverseDependency) {
+      expect(await call(link, { id: reverseDependency ? id : recheck, harness: HARNESS,
+        rel: 'blocks', target_id: reverseDependency ? recheck : id, satisfaction: 'success' }))
+        .toMatchObject({ ok: true });
+    }
+    const gate = { kind: 'event' as const, ref: 'acceptance-route:legacy-full-run:P-008' };
+    const witness = { kind: 'work-item' as const, ref: HARNESS + '#' + recheck };
+    const blockers = [{ kind: 'gate' as const, ref: gate.ref, status: 'active',
+      summary: 'A qualifying FULL run has not been measured', createdBy: OWNER,
+      createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z',
+      reachability: { verdict: 'unknown', authoritative: false, basis: 'unmeasured' } }];
+    await db.sql`UPDATE harness_shared.work_items SET status='blocked',
+      payload=payload || ${db.sql.json({ externalBlockers: blockers })}
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+    const input: DeferralDecision = { schemaVersion: 1, idempotencyKey: 'legacy-gate-' + id, disposition: 'defer',
+      symptom: 'The original FULL-run gate remains unmeasured', evidenceRefs: [gate, witness],
+      investigation: [{ action: 'Read the retained gate and its repair custodian',
+        outcome: 'No FULL-run verdict was established', evidenceRefs: [gate, witness] }],
+      attempts: [],
+      deferral: { reason: 'external-dependency', responsibleParty: OWNER, reasonEvidenceRefs: [witness],
+        nextAction: 'Complete the named repair before separately measuring the original gate', recheckRef: witness } };
+    return { id, recheck, gate, witness, blockers, input };
+  }
+
+  it('retains an unknown external gate through dependency admission and ordinary custody release', async () => {
+    const { id, recheck, gate, blockers, input } = await legacyExternalGate();
+    const sourceBefore = await wi.getWorkItem(recheck, HARNESS);
+    const admitted = await call(link, { id: recheck, harness: HARNESS, rel: 'blocks',
+      target_id: id, satisfaction: 'success', blockerDecision: input });
+    expect(admitted, JSON.stringify(admitted)).toMatchObject({ ok: true });
+    const linked = await wi.getWorkItem(id, HARNESS);
+    expect(activeExternalBlockers(linked!.payload)).toEqual(blockers);
+    expect(await wi.readUnresolvedDepBlockers(id, HARNESS)).toHaveLength(1);
+    expect(readBlockerResolution(linked!.payload)).toMatchObject({ status: 'recorded',
+      current: { revision: 1, decision: { disposition: 'defer' } } });
+    const reader = createBlockerEvidenceReader({ ownerId: OWNER, sessionId: OWNER, workspaceId: 'default',
+      harnessSlug: HARNESS, role: 'su', root: null, workItemId: id, custodianId: OWNER, blockers });
+    expect(await reader(gate)).toMatchObject({ status: 'unknown' });
+
+    const releaseInput = { ...input, idempotencyKey: 'legacy-gate-release-' + id, priorRevision: 1 };
+    const args = release.args.parse({ id, harness: HARNESS, reason: 'Retain FULL-run gate and repair dependency',
+      blockerDecision: releaseInput });
+    const released = await call(release, args);
+    expect(released, JSON.stringify(released)).toMatchObject({ ok: true });
+    const item = await wi.getWorkItem(id, HARNESS);
+    expect(item).toMatchObject({ state: 'blocked', assignee: null, payload: { keep: 'original', _claimHold: true } });
+    expect(activeExternalBlockers(item!.payload)).toEqual(blockers);
+    expect(readBlockerResolution(item!.payload)).toMatchObject({ status: 'recorded',
+      current: { revision: 2, decision: { disposition: 'defer' } } });
+    expect(await wi.readUnresolvedDepBlockers(id, HARNESS)).toHaveLength(1);
+    expect(await wi.getWorkItem(recheck, HARNESS)).toEqual(sourceBefore);
+    const after = await snapshot(id);
+    expect(await call(release, args)).toMatchObject({ ok: true, replayed: true });
+    expect(await snapshot(id)).toEqual(after);
+  });
+
+  it.each(['reason', 'recheck'] as const)('does not treat an unknown external gate as measured %s evidence', async field => {
+    const { id, recheck, gate, input } = await legacyExternalGate();
+    const before = await snapshot(id);
+    const invalid = { ...input, deferral: { ...input.deferral,
+      ...(field === 'reason' ? { reasonEvidenceRefs: [gate] } : { recheckRef: gate }) } };
+    expect(await call(link, { id: recheck, harness: HARNESS, rel: 'blocks',
+      target_id: id, satisfaction: 'success', blockerDecision: invalid })).toMatchObject({ ok: false });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
+  it.each([{ force: true }, { claimHold: false }])('retained unknown external gate never authorizes release mutation %j', async mutation => {
+    const { id, input } = await legacyExternalGate(true);
+    const before = await snapshot(id);
+    expect(await call(release, release.args.parse({ id, harness: HARNESS, reason: 'Retain unknown gate',
+      blockerDecision: input, ...mutation }))).toMatchObject({ ok: false });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
+  it('retained unknown external gate does not authorize self-resolution or an unrecognized write', async () => {
+    const { id, input } = await legacyExternalGate(true);
+    const before = await snapshot(id);
+    expect(await call(release, release.args.parse({ id, harness: HARNESS,
+      blockerDecision: resolution('legacy-gate-no-clear') }))).toMatchObject({ ok: false });
+    const item = await wi.getWorkItem(id, HARNESS);
+    const context = { ownerId: OWNER, sessionId: OWNER, workspaceId: 'default',
+      harnessSlug: HARNESS, role: 'su', root: null };
+    expect(await preflightBlockerDecision(item!, input, context, { effect: { fixture: true } }))
+      .toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision(item!, input, context, { effect: { fixture: true }, requireResolution: true }))
+      .toMatchObject({ ok: false });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
+  it('retained unknown external gate cannot bypass a graph cycle', async () => {
+    const { id, recheck, input } = await legacyExternalGate(false, true);
+    const before = await snapshot(id);
+    expect(await call(link, { id: recheck, harness: HARNESS, rel: 'blocks', target_id: id,
+      satisfaction: 'success', blockerDecision: input })).toMatchObject({ ok: false });
+    expect(await snapshot(id)).toEqual(before);
+  });
+
   async function legacyRuntime() {
     const id = await seed('feature', false);
     const recheck = await seed('task', false);
