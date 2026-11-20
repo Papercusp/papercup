@@ -63,6 +63,15 @@ describe('administrative binding correction', () => {
     expect(prepareBlockerDecision(prepared.patch, input, actor, { effect: { ...effect, remove: false } }))
       .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
   });
+  it.each([24, 25, 26, 57])('admits an exact binding after a complete %i-edge census', count => {
+    const { prepared, scope } = fixture();
+    const selected = scope.edges[0];
+    scope.edges = Array.from({ length: count - 1 }, (_, index) => ({ ...selected,
+      id: index + 2, blocker_ref: `WI-sibling-${index}`, satisfaction: 'settled' }));
+    // The decisive edge is after the former reporting boundary.
+    scope.edges.push(selected);
+    expect(admitBindingCorrection(prepared, scope)).not.toHaveProperty('ok');
+  });
   const context = (requestHash: string) => ({ ownerId: actor.ownerId, workItemId: 'WI-1', obligationRefs: [provider],
     bindingCorrectionRequestHash: requestHash,
     readEvidence: async (): Promise<BlockerEvidenceMeasurement> => ({ status: 'available', condition: 'pending' }) });
