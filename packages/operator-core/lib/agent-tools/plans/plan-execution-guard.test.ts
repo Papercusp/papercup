@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { inspectScopedFeasibilitySelection, readScopedFeasibilityQuestion,
   scopedFeasibilityAuditSchema } from './plan-execution-authority';
 import { discoveryDeclarationSchema, scopedFeasibilityExperimentSchema } from './plan-declarations';
+import { readScopedFeasibilityTestRoutes } from './plan-execution-guard';
 
 const feasibilitySelection = () => ({
   testPaths: ['Z.test.ts', 'a.test.tsx'], fixturePaths: ['fixtures/data.json'], lifetimeSec: 60,
@@ -29,6 +30,73 @@ function withFeasibilityRepository(run: (root: string) => void): void {
     run(root);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
+
+describe('feasibility route client foundation', () => {
+  const root = '/canonical/repository', paths = ['a.test.ts', 'b.test.tsx'];
+  const route = (path: string) => ({ path, ok: true, route: {
+    cwd: root, config: 'vitest.config.ts', absolute: join(root, path), requested: path,
+  } });
+  const protocol = () => ({ schema: 'scoped-feasibility-routes-v1', complete: true,
+    repositoryRoot: root, results: paths.map(route) });
+  it('sends the complete exact selection on stdin and retains a later route failure', async () => {
+    const read = vi.fn(async (request: string, repositoryRoot: string) => {
+      expect(JSON.parse(request)).toEqual({ repositoryRoot: root, testPaths: paths });
+      expect(repositoryRoot).toBe(root);
+      return JSON.stringify({ ...protocol(), results: [route(paths[0]!),
+        { path: paths[1], ok: false, error: 'full unabridged route diagnostic' }] });
+    });
+    expect(await readScopedFeasibilityTestRoutes(paths, root, read)).toEqual([
+      route(paths[0]!), { path: paths[1], ok: false, error: 'full unabridged route diagnostic' },
+    ]);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+  it.each(['schema', 'incomplete', 'root', 'missing', 'extra', 'reordered', 'identity', 'absolute', 'diagnostic'])(
+    'rejects the entire %s protocol without accepting a prefix', async defect => {
+      const result = protocol() as Record<string, unknown> & { results: unknown[] };
+      if (defect === 'schema') result.schema = 'scoped-feasibility-routes-v2';
+      if (defect === 'incomplete') result.complete = false;
+      if (defect === 'root') result.repositoryRoot = '/another/root';
+      if (defect === 'missing') result.results.pop();
+      if (defect === 'extra') result.results.push(route('c.test.ts'));
+      if (defect === 'reordered') result.results.reverse();
+      if (defect === 'identity') result.results[1] = route('other.test.tsx');
+      if (defect === 'absolute') result.results[1] = { ...route(paths[1]!), route: {
+        ...route(paths[1]!).route, absolute: '/another/b.test.tsx' } };
+      if (defect === 'diagnostic') result.results[1] = { path: paths[1], ok: false, error: '' };
+      await expect(readScopedFeasibilityTestRoutes(paths, root, async () => JSON.stringify(result))).rejects.toThrow('feasibility_routes_');
+    },
+  );
+  it('rejects malformed JSON, helper failure and an empty baseline before authority is possible', async () => {
+    await expect(readScopedFeasibilityTestRoutes(paths, root, async () => '{')).rejects.toThrow();
+    await expect(readScopedFeasibilityTestRoutes(paths, root, async () => { throw new Error('child failed'); })).rejects.toThrow('child failed');
+    const read = vi.fn();
+    await expect(readScopedFeasibilityTestRoutes([], root, read)).rejects.toThrow('testPaths_required');
+    expect(read).not.toHaveBeenCalled();
+  });
+  it('reads every late identity in reordered populations without a response prefix cap', async () => {
+    const selected = Array.from({ length: 2049 }, (_, index) => 'test-' + index + '.test.ts');
+    for (const testPaths of [selected, [...selected].reverse()]) {
+      const result = await readScopedFeasibilityTestRoutes(testPaths, root, async () =>
+        JSON.stringify({ ...protocol(), results: testPaths.map(route) }));
+      expect(result.map(row => row.path)).toEqual(testPaths);
+      expect(result).toHaveLength(2049);
+    }
+  });
+  it('retains complete protocol diagnostics from a nonzero native reader exit', async () => {
+    const repositoryRoot = realpathSync(new URL('../../../../../', import.meta.url));
+    await expect(readScopedFeasibilityTestRoutes(['literal-bad.spec.ts'], repositoryRoot))
+      .rejects.toThrow('feasibility_routes_invalid_testPath:');
+    await expect(readScopedFeasibilityTestRoutes(['literal-bad.spec.ts'], repositoryRoot))
+      .rejects.toThrow('literal-bad.spec.ts');
+  });
+  it('uses the fixed plain-Node reader on the real canonical router', async () => {
+    const repositoryRoot = realpathSync(new URL('../../../../../', import.meta.url));
+    const path = 'packages/operator-core/lib/agent-tools/plans/plan-execution-guard.test.ts';
+    expect(await readScopedFeasibilityTestRoutes([path], repositoryRoot)).toMatchObject([
+      { path, ok: true, route: { absolute: join(repositoryRoot, path) } },
+    ]);
+  });
+});
 
 describe('scoped feasibility issuance', () => {
   it('rejects empty and fixture-only selections', () => {

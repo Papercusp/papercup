@@ -74,19 +74,22 @@ function scopedPatchProtocol(value: unknown): ScopedPatchParse {
 }
 
 /** Read the helper with fixed argv and stdin. Stream all output without a prefix cap. */
-async function runScopedPatchReader(request: string, root: string): Promise<string> {
+async function runScopedFeasibilityReader(kind: 'patch' | 'routes', request: string, root: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn('python3', [
-      join(root, 'apps/operator/scripts/hooks/cc/mcp_response.py'), '--parse-codex-patch',
-    ], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+    const command = kind === 'patch' ? 'python3' : process.execPath;
+    const argv = kind === 'patch'
+      ? [join(root, 'apps/operator/scripts/hooks/cc/mcp_response.py'), '--parse-codex-patch']
+      : [join(root, 'scripts/test-files.mjs'), '--scoped-feasibility-routes'];
+    const child = spawn(command, argv, { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
     const stdout: Buffer[] = [], stderr: Buffer[] = [];
     child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
     child.on('error', reject);
     child.stdin.on('error', reject);
     child.on('close', (code, signal) => {
-      if (code !== 0) return reject(new Error('patch helper failed: '
-        + (signal ?? code) + ' ' + Buffer.concat(stderr).toString('utf8')));
+      if (code !== 0) return reject(new Error('scoped ' + kind + ' helper failed: '
+        + (signal ?? code) + ' stdout=' + Buffer.concat(stdout).toString('utf8')
+        + ' stderr=' + Buffer.concat(stderr).toString('utf8')));
       try { resolve(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(stdout))); }
       catch (error) { reject(error); }
     });
@@ -96,7 +99,7 @@ async function runScopedPatchReader(request: string, root: string): Promise<stri
 
 /** A failed helper or incomplete response never yields a usable target prefix. */
 export async function readScopedFeasibilityPatch(patch: unknown, repositoryRoot: string,
-  read: (request: string, root: string) => Promise<string> = runScopedPatchReader,
+  read: (request: string, root: string) => Promise<string> = (request, root) => runScopedFeasibilityReader('patch', request, root),
 ): Promise<ScopedPatchParse> {
   if (typeof patch !== 'string') return patchFailure('patch must be a literal string');
   try {
@@ -107,6 +110,44 @@ export async function readScopedFeasibilityPatch(patch: unknown, repositoryRoot:
   }
 }
 
+
+export type ScopedFeasibilityRouteResult =
+  | { path: string; ok: true; route: { cwd: string; config: string | null; absolute: string; requested: string } }
+  | { path: string; ok: false; error: string };
+
+/** Validate the complete response and ordered identities from the maintained
+ * router. A process, protocol or individual route failure cannot become a pass. */
+export async function readScopedFeasibilityTestRoutes(testPaths: string[], repositoryRoot: string,
+  read: (request: string, root: string) => Promise<string> =
+    (request, root) => runScopedFeasibilityReader('routes', request, root),
+): Promise<ScopedFeasibilityRouteResult[]> {
+  if (!testPaths.length) throw new Error('feasibility_routes_testPaths_required');
+  const value: unknown = JSON.parse(await read(JSON.stringify({ repositoryRoot, testPaths }), repositoryRoot));
+  const object = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v);
+  const keys = (v: Record<string, unknown>, expected: string[]) =>
+    Object.keys(v).length === expected.length && expected.every(key => Object.hasOwn(v, key));
+  if (!object(value) || !keys(value, ['schema', 'complete', 'repositoryRoot', 'results'])
+    || value.schema !== 'scoped-feasibility-routes-v1' || value.complete !== true
+    || value.repositoryRoot !== repositoryRoot || !Array.isArray(value.results)
+    || value.results.length !== testPaths.length) throw new Error('feasibility_routes_incomplete_protocol');
+  return value.results.map((row, index) => {
+    if (!object(row) || row.path !== testPaths[index]) throw new Error('feasibility_routes_identity_mismatch');
+    if (row.ok === false && keys(row, ['path', 'ok', 'error'])
+      && typeof row.error === 'string' && row.error.length) {
+      return { path: testPaths[index]!, ok: false, error: row.error };
+    }
+    if (row.ok !== true || !keys(row, ['path', 'ok', 'route']) || !object(row.route)
+      || typeof row.route.cwd !== 'string' || typeof row.route.requested !== 'string'
+      || !(row.route.config === null || typeof row.route.config === 'string')
+      || row.route.absolute !== join(repositoryRoot, testPaths[index]!)) {
+      throw new Error('feasibility_routes_invalid_result');
+    }
+    return { path: testPaths[index]!, ok: true, route: {
+      cwd: row.route.cwd, config: row.route.config, absolute: row.route.absolute, requested: row.route.requested,
+    } };
+  });
+}
 
 export type ExecutionPlanBindingSource =
   | 'session-brief'
