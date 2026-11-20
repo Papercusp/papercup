@@ -2451,7 +2451,9 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
         status: 'incomplete',
         progress: { invalidated: { reason: 'donor-ctime-changed', side: 'donor', phase: 'after-hash', path } },
       });
-      expect(paused.progress.reusedBatches).toBeGreaterThan(0);
+      // The cursor reaches unfinished work before the preserved prefix. This
+      // interrupted pass has not revisited batch zero; its proof stays intact.
+      expect(paused.progress.reusedBatches).toBe(0);
       expect(readFileSync(receipt)).toEqual(priorProof);
       expect(build).not.toHaveBeenCalled();
       expectUnpreparedRetainedMarker(f);
@@ -3404,6 +3406,160 @@ fs.writeFileSync('public/runtime-ready', asset);
         }
       } finally { f.cleanup(); }
     }, 60_000);
+
+  it.each([7, 8, 9])('advances COPY verification beyond repeated donor churn across batch size %i', async batchSize => {
+    const f = retainedFixture();
+    const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+    const helper = join(f.parent, 'fair-copy.sh');
+    const firstCopy = join(f.parent, 'first-copy'), interrupted = join(f.parent, 'interrupted');
+    const calls = join(f.parent, 'comparison-calls'), churn = join(f.parent, 'churn');
+    const partialParent = join(f.workRoot, '.git/committed-dependency-partials',
+      createHash('sha256').update('node_modules').digest('hex'));
+    const names = Array.from({ length: 90 }, (_, index) => 'chunk-' + String(index).padStart(3, '0'));
+    for (const name of batchSize % 2 ? names : [...names].reverse())
+      writeFileSync(join(f.root, 'node_modules', name), 'small dependency');
+    writeFileSync(helper, [
+      'source ' + JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')),
+      'eval "$(declare -f dependency_generation_incremental_verify | sed \'1s/dependency_generation_incremental_verify/original_incremental_verify/\')"',
+      'dependency_generation_incremental_verify() {',
+      '  original_incremental_verify "$@" || return $?',
+      '  printf x >> ' + JSON.stringify(calls),
+      '  if [ -f ' + JSON.stringify(churn) + ' ] && [ "$(wc -c < ' + JSON.stringify(calls) + ')" -eq 2 ]; then',
+      '    local first; first="$(awk -F "\\t" \'$2 == "f" { print $1; exit }\' "$3/unmatched")"',
+      '    ln "$1/$first" ' + JSON.stringify(join(f.parent, 'reader-link')),
+      '    rm ' + JSON.stringify(join(f.parent, 'reader-link')),
+      '  fi',
+      '}',
+      'rsync() {',
+      '  if [ -f ' + JSON.stringify(firstCopy) + ' ] && [ ! -f ' + JSON.stringify(interrupted) + ' ]; then',
+      '    touch ' + JSON.stringify(interrupted),
+      '    return 124',
+      '  fi',
+      '  command rsync "$@" || return $?',
+      '  touch ' + JSON.stringify(firstCopy),
+      '}',
+    ].join('\n'));
+    rmSync(join(f.workRoot, 'node_modules'), { recursive: true });
+    const options = { ...f.options().resumeVerification, materializeMissing: true, batchSize };
+    const verify = () => verifyRetainedDependencies(f.root, f.workRoot, options,
+      { sourceCommit: f.head, materializer: helper, verifySource: () => {} });
+    try {
+      expect((await verify()).status).toBe('incomplete');
+      writeFileSync(churn, 'enabled');
+      const failedBatches = new Set<number>(), savedBatches = new Set<string>();
+      for (let pass = 0; pass < 3; pass++) {
+        // All earlier receipts become stale without changing any donor bytes.
+        // Restarted work must still reach batches beyond that stale prefix.
+        for (const name of ['alpha.txt', 'beta.txt', 'gamma.txt', ...names]) {
+          const sibling = join(f.parent, 'metadata-link');
+          linkSync(join(f.root, 'node_modules', name), sibling); rmSync(sibling);
+        }
+        writeFileSync(calls, '');
+        const paused = await verify();
+        expect(paused).toMatchObject({ status: 'incomplete', progress: {
+          invalidated: { reason: 'donor-ctime-changed', side: 'donor', phase: 'after-hash' },
+        } });
+        failedBatches.add(paused.progress.currentCopyComparisonBatch.index);
+        const current = readdirSync(partialParent).filter(name => /^comparison-.*-\d{8}\.json$/.test(name));
+        for (const name of savedBatches) expect(current).toContain(name);
+        current.forEach(name => savedBatches.add(name));
+        expect(savedBatches.size).toBe(pass + 1);
+        expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+        expectUnpreparedRetainedMarker(f);
+      }
+      expect(failedBatches.size).toBe(3);
+      expect(Math.max(...failedBatches)).toBeGreaterThan(1);
+      rmSync(churn);
+      const complete = await verify();
+      expect(complete.status).toBe('complete');
+      for (const name of names) {
+        expect(readFileSync(join(f.workRoot, 'node_modules', name), 'utf8')).toBe('small dependency');
+        expect(statSync(join(f.workRoot, 'node_modules', name)).ino)
+          .not.toBe(statSync(join(f.root, 'node_modules', name)).ino);
+      }
+    } finally { f.cleanup(); }
+  }, 90_000);
+
+  it.each([7, 8, 9])('fairly resumes bounded retained batches in fresh processes with batch size %i', batchSize => {
+    const f = retainedFixture();
+    const paths = Array.from({ length: 32 }, (_, index) => 'node_modules/late-' + String(index).padStart(3, '0'));
+    for (const path of batchSize % 2 ? paths : [...paths].reverse()) {
+      writeFileSync(join(f.root, path), 'late payload');
+      writeFileSync(join(f.workRoot, path), 'late payload');
+    }
+    const runner = join(f.parent, 'verify.mjs'), limit = join(f.parent, 'limit');
+    writeFileSync(limit, '1');
+    writeFileSync(runner, [
+      'import { readFileSync } from "node:fs";',
+      'import { verifyRetainedDependencies } from ' + JSON.stringify(pathToFileURL(resolve(repoRoot,
+        'scripts/lib/committed-dependency-verification.mjs')).href) + ';',
+      'const options = { ...' + JSON.stringify({ ...f.options().resumeVerification, batchSize }) +
+        ', maxBatches: Number(readFileSync(' + JSON.stringify(limit) + ', "utf8")) };',
+      'const result = await verifyRetainedDependencies(' + JSON.stringify(f.root) + ', ' + JSON.stringify(f.workRoot) + ', ' +
+        'options, ' +
+        '{ sourceCommit: ' + JSON.stringify(f.head) + ', materializer: ' +
+          JSON.stringify(resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh')) + ', verifySource() {} });',
+      'process.stdout.write(JSON.stringify(result));',
+    ].join('\n'));
+    const verify = () => spawnSync(process.execPath, [runner], {
+      encoding: 'utf8', timeout: 35_000, env: currentRunnerEnvironment(),
+    });
+    try {
+      let batchCount = 0;
+      for (let pass = 0; pass === 0 || pass < batchCount; pass++) {
+        for (const path of ['node_modules/alpha.txt', 'node_modules/beta.txt', 'node_modules/gamma.txt', ...paths]) {
+          const sibling = join(f.parent, 'reader-link');
+          linkSync(join(f.root, path), sibling); rmSync(sibling);
+        }
+        const result = verify();
+        expect(result.status, result.stderr).toBe(0);
+        const paused = JSON.parse(result.stdout);
+        expect(paused.status).toBe('incomplete');
+        batchCount = Math.ceil(paused.progress.totalEntries / batchSize);
+        const proofs = readdirSync(f.checkpointDir).filter(name => /^batch-\d{8}\.json$/.test(name));
+        expect(proofs).toHaveLength(pass + 1);
+        expectUnpreparedRetainedMarker(f);
+      }
+      // A complete set of historical receipts cannot authorize a corrupted late
+      // file, even when it has exactly the original length and mtime.
+      const decisive = join(f.workRoot, paths.at(-1)!);
+      const before = statSync(decisive);
+      writeFileSync(decisive, 'evil payload'); utimesSync(decisive, before.atime, before.mtime);
+      writeFileSync(limit, '64');
+      const refused = verify();
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr).toContain('dependency bytes differ');
+      expectUnpreparedRetainedMarker(f);
+      writeFileSync(decisive, 'late payload'); utimesSync(decisive, before.atime, before.mtime);
+      const complete = verify();
+      expect(complete.status, complete.stderr).toBe(0);
+      expect(JSON.parse(complete.stdout).status).toBe('complete');
+    } finally { f.cleanup(); }
+  }, 90_000);
+
+  it.each([15, 16, 17])('retains all %i entries around a rotated two-batch boundary', async entries => {
+    const f = retainedFixture();
+    const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
+    const context = { sourceCommit: f.head,
+      materializer: resolve(repoRoot, 'apps/operator/bin/release/dependency-generation.sh'), verifySource() {} };
+    try {
+      const baseline = await verifyRetainedDependencies(f.root, f.workRoot, f.options().resumeVerification, context);
+      expect(baseline.status).toBe('complete');
+      expect(baseline.progress.totalEntries).toBeLessThan(entries);
+      for (let index = baseline.progress.totalEntries; index < entries; index++) {
+        const path = 'node_modules/boundary-' + String(index).padStart(3, '0');
+        for (const root of [f.root, f.workRoot]) writeFileSync(join(root, path), 'boundary payload');
+      }
+      const options = { ...f.options().resumeVerification, batchSize: 8,
+        checkpointDir: join(f.parent, 'boundary-proof') };
+      const paused = await verifyRetainedDependencies(f.root, f.workRoot, { ...options, maxBatches: 1 }, context);
+      expect(paused).toMatchObject({ status: 'incomplete', progress: { totalEntries: entries, verifiedEntries: 8 } });
+      const complete = await verifyRetainedDependencies(f.root, f.workRoot, options, context);
+      expect(complete).toMatchObject({ status: 'complete', progress: {
+        totalEntries: entries, verifiedEntries: entries, verifiedBatches: Math.ceil(entries / 8),
+      } });
+    } finally { f.cleanup(); }
+  }, 60_000);
 
   it.each(['.cache', '.vite', '.verdict-data', 'runtime-file'])('uses maintained pruning for %s churn while preserving byte verification', async kind => {
     const f = retainedFixture();
