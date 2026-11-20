@@ -4533,14 +4533,17 @@ dependency_generation_prepare_exact_ref_root() {
   fi
 
   # Retention may remove a cached donor while we walk it. Revalidate its
-  # selected token under the publication lock and lease it until every file
-  # has its own scratch hardlink; the scratch then owns those bytes itself.
+  # selected token under the publication lock and lease it until every tree
+  # has an independent scratch copy; the scratch then owns those bytes itself.
   if [ -n "$DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT" ]; then
     dependency_generation_acquire_selector_lease \
       "$generation_root" "$DEPENDENCY_GENERATION_ID" "$$" "$DEPENDENCY_GENERATION_TOKEN" || return $?
   fi
 
-  # 4. Hardlink the installed trees (metadata only; ensure copies from here).
+  # 4. Copy the installed trees independently. Another install reader may be
+  # checking donor metadata while we stage: creating or removing hardlinks
+  # changes its ctime even when the bytes stay equal. Exact-ref scratch also
+  # drops live-only links below, so an immutable hardlink opt-in cannot apply.
   tree_paths="$(dependency_generation_enumerate_node_modules "$DEPENDENCY_GENERATION_EXACT_SOURCE_ROOT")" || {
     dependency_generation_release_selector_lease
     return 1
@@ -4552,10 +4555,11 @@ dependency_generation_prepare_exact_ref_root() {
       dependency_generation_release_selector_lease
       return 1
     }
-    cp -al -- "$line" "$scratch/$drop" || {
+    DEPENDENCY_GENERATION_FORCE_COPY=1 dependency_generation_materialize_tree "$line" "$scratch/$drop" || {
+      rc=$?
       dependency_generation_release_selector_lease
-      dependency_generation_log "FATAL: cannot hardlink $drop into the exact-ref scratch root (same filesystem required)"
-      return 1
+      dependency_generation_log "FATAL: cannot independently materialize $drop into the exact-ref scratch root (rc=$rc)"
+      return "$rc"
     }
     trees=$((trees + 1))
   done <<< "$tree_paths"
@@ -4574,7 +4578,7 @@ dependency_generation_prepare_exact_ref_root() {
     fi
   done <<< "$verdict"
   dependency_generation_log \
-    "exact-ref build: staged ref $ref inputs $exact_input with $trees hardlinked live trees"
+    "exact-ref build: staged ref $ref inputs $exact_input with $trees independent dependency trees"
   printf '%s\n' "$scratch"
 }
 
