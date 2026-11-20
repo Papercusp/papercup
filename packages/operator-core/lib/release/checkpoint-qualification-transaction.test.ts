@@ -77,6 +77,45 @@ function postgresJsonbOrder<T>(value: T): T {
 }
 
 describe('lossless qualification populations', () => {
+  it.each([0, 31, 32, 33])('keeps legacy completeness unknown through writes and recovers with a fresh attempt (%i runs)', count => {
+    const original = begin();
+    const legacy = { ...original, consumedPhysicalRuns: Array.from({ length: count }, (_, index) => ({
+      id: `old-${index}`, candidate: original.candidate, reservedAtMs: 100, endedAtMs: 101,
+      evidenceRefs: [`checkpoint-run:old-${index}`], outcome: { kind: 'pre-suite-no-verdict' as const,
+        reason: 'dependency-generation' as const },
+    })) };
+    delete legacy.populationEvidence;
+    const restored = parseCheckpointQualificationTransaction(postgresJsonbOrder(JSON.parse(JSON.stringify(legacy))))!;
+    expect(projectCheckpointQualificationState(restored).populationEvidence.status).toBe('unknown');
+    const reserved = reserveQualificationRunner(restored, {
+      attemptId: restored.attemptId, runnerId: 'legacy-retry', leaseDurationMs: 100, nowMs: 200,
+    }).transaction;
+    const waited = waitQualificationTransaction(reserved, {
+      attemptId: restored.attemptId, reason: 'dependency-generation', nowMs: 210,
+    }).transaction;
+    const restarted = parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(waited)))!;
+    const state = projectCheckpointQualificationState(restarted);
+    expect(state.populationEvidence.status).toBe('unknown');
+    expect(state.populationRecovery).toEqual({ action: 'begin-successor-qualification',
+      previousAttemptId: restored.attemptId, after: 'terminal-outcome' });
+    expect(restarted.consumedPhysicalRuns?.map(run => run.id)).toEqual([
+      ...legacy.consumedPhysicalRuns.map(run => run.id), 'legacy-retry',
+    ]);
+    // Recovery follows the existing single-flight transition: an active predecessor cannot be replaced.
+    const successorInput = { attemptId: 'fresh-lossless-attempt', declaredPaths: ['last.ts'], nowMs: 220 };
+    expect(beginQualificationTransaction(restarted, successorInput).status).toBe('conflict');
+    const terminal = settleQualificationTransaction(restarted, {
+      attemptId: restarted.attemptId, verdict: 'red', reason: 'fresh-measurement-required', nowMs: 230,
+    }).transaction;
+    const fresh = beginQualificationTransaction(terminal, { ...successorInput, nowMs: 240 }).transaction;
+    const freshState = projectCheckpointQualificationState(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(fresh))));
+    expect(fresh.previousAttemptId).toBe(restored.attemptId);
+    expect(freshState.populationEvidence.status).toBe('complete');
+    expect(freshState.populationRecovery).toBeNull();
+    // Fresh measurement does not rewrite the historical source into a complete record.
+    expect(projectCheckpointQualificationState(legacy).populationEvidence.status).toBe('unknown');
+  });
+
   it.each([63, 64, 65])('compares every declared path across permutations and restarts (%i paths)', count => {
     const paths = Array.from({ length: count }, (_, index) => `src/path-${index}.ts`);
     const current = beginQualificationTransaction(null, {

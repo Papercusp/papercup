@@ -9,6 +9,7 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import type { RepairLegEvidence } from './repair-leg-lifecycle';
 import { lstatSync, readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { isDeepStrictEqual, promisify } from 'node:util';
@@ -330,6 +331,9 @@ export interface CheckpointQualificationState {
     terminal: number | null;
   };
   consumedPhysicalRuns: QualificationPhysicalRun[];
+  /** Legacy prefixes cannot establish that the retained population is exhaustive. */
+  populationEvidence: RepairLegEvidence;
+  populationRecovery: { action: 'begin-successor-qualification'; previousAttemptId: string; after: 'terminal-outcome' } | null;
   eligibilitySnapshot: CheckpointEligibilitySnapshot | null;
   safeNextAction: QualificationSafeNextAction;
   unknown: { code: 'resolver-failed'; detail: string } | null;
@@ -365,6 +369,8 @@ export interface CheckpointQualificationTransaction {
   waitGeneration: number;
   currentPhysicalRunner: QualificationPhysicalRunner | null;
   consumedPhysicalRuns?: QualificationPhysicalRun[];
+  /** Only a newly begun lossless attempt attests completeness; never upgrade legacy history in place. */
+  populationEvidence?: RepairLegEvidence;
   evidenceRefs: string[];
   previousAttemptId: string | null;
   eligibilitySnapshot?: CheckpointEligibilitySnapshot | null;
@@ -1728,6 +1734,8 @@ export function projectCheckpointQualificationState(
       clocks: emptyClocks,
       agesMs: emptyAges,
       consumedPhysicalRuns: [],
+      populationEvidence: { status: 'unknown' },
+      populationRecovery: null,
       unknown: null,
       eligibilitySnapshot: null,
       safeNextAction: {
@@ -1754,6 +1762,8 @@ export function projectCheckpointQualificationState(
       clocks: emptyClocks,
       agesMs: emptyAges,
       consumedPhysicalRuns: [],
+      populationEvidence: { status: 'unknown' },
+      populationRecovery: null,
       eligibilitySnapshot: null,
       safeNextAction: {
         code: 'read-release-control',
@@ -1879,6 +1889,11 @@ export function projectCheckpointQualificationState(
       terminal: age(transaction.lastTerminalVerdictAtMs),
     },
     consumedPhysicalRuns: transaction.consumedPhysicalRuns ?? [],
+    populationEvidence: transaction.populationEvidence?.status === 'complete'
+      ? { status: 'complete' } : { status: 'unknown' },
+    populationRecovery: transaction.populationEvidence?.status === 'complete' ? null : {
+      action: 'begin-successor-qualification', previousAttemptId: transaction.attemptId, after: 'terminal-outcome',
+    },
     eligibilitySnapshot: transaction.eligibilitySnapshot ?? null,
     safeNextAction,
     unknown: null,
@@ -2161,6 +2176,7 @@ export function beginQualificationTransaction(
     waitGeneration: 0,
     currentPhysicalRunner: null,
     consumedPhysicalRuns: [],
+    populationEvidence: { status: 'complete' },
     evidenceRefs: uniqueStrings(input.evidenceRefs ?? []),
     previousAttemptId: current?.attemptId ?? null,
     eligibilitySnapshot: null,
