@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { approvalApplies, buildCounselApprovalRecord, renderTemplate, templateContentHash } from '../dao-hr/contract-templates';
+import { contractPdf } from '../dao-hr/contracts-esign';
+import { DocumensoAdapter, type SigningPerson } from '../dao-hr/documenso';
 import { contractCensus, contractProof } from './effective-authority-test-fixtures';
 import {
   AUTHORITY_KINDS, assessPermissionChange, authorityRevisionIsCurrent, comparePermissionPopulations,
@@ -160,6 +163,63 @@ describe('P-002 correlated identity contributions', () => {
 });
 
 describe('effective authority contract (P-024)', () => {
+  it('rejects a previously eligible result after authority changes', () => {
+    const snapshot = fixture();
+    const evidence = { kind: 'store', operation: 'read', target: 'workspace-a/approved-document' } as const;
+    const recipient = { kind: 'recipient', operation: 'receive', target: 'signer-a' } as const;
+    const read: PermissionRequest = { tool: 'documents:get', action: 'read', resource: evidence,
+      constraints: { resources: [resourcePermissionValue(recipient)] } };
+    const identity = snapshot.policies[0];
+    identity.rules!.resources = { allow: [resourcePermissionValue(evidence), resourcePermissionValue(recipient)] };
+    const token = evaluateEffectivePermission(snapshot, read).revisions;
+    expect(revalidateEffectivePermission(snapshot, read, token).allowed).toBe(true);
+    expect(revalidateEffectivePermission(snapshot, { ...read, resource: { ...evidence, target: 'workspace-b/approved-document' } }, token).allowed).toBe(false);
+    expect(revalidateEffectivePermission(snapshot, { ...read, constraints: {
+      resources: [resourcePermissionValue({ ...recipient, target: 'signer-b' })] } }, token).allowed).toBe(false);
+
+    const department = snapshot.policies.find(policy => policy.kind === 'department')!;
+    department.revision = 'department:2';
+    department.rules = { actions: { deny: [read.action] } };
+    expect(revalidateEffectivePermission(snapshot, read, token)).toMatchObject({ allowed: false, code: 'denied' });
+    department.exceptions = [{ category: 'actions', pattern: read.action, reason: 'time-limited document review',
+      expiresAt: '2030-01-02T00:00:00Z' }];
+    const before = new Date('2030-01-01T23:59:59Z');
+    expect(revalidateEffectivePermission(snapshot, read, token, before).code).toBe('authority-stale');
+    const renewed = evaluateEffectivePermission(snapshot, read, before);
+    expect(renewed.allowed).toBe(true);
+    expect(revalidateEffectivePermission(snapshot, read, renewed.revisions, new Date('2030-01-02T00:00:00Z')).allowed).toBe(false);
+  });
+
+  it('requires a current signer and exact approved text when authority changes before commit', async () => {
+    const template = 'Payment of {{amount}} is due.';
+    const fields = ['amount'];
+    const approved = buildCounselApprovalRecord({ templateKey: 'payment', version: 1,
+      contentHash: templateContentHash(template, fields) }, {
+      approverRef: 'fixture-counsel', approvedOn: '2026-10-01', reference: 'approval-1',
+    });
+    expect(approvalApplies(approved, templateContentHash(template, fields))).toBe(true);
+    expect(approvalApplies(approved, templateContentHash('Payment of {{amount}} is waived.', fields))).toBe(false);
+    const document = async (amount: string) => (await contractPdf([renderTemplate(template, fields, { amount })])).pdf;
+    const original = await document('100');
+    const amended = await document('125');
+    const signers: [SigningPerson, SigningPerson] = [
+      { personId: 'candidate', name: 'Candidate', email: 'candidate@example.test' },
+      { personId: 'company', name: 'Company signer', email: 'company@example.test' },
+    ];
+    const envelope = { id: 'envelope-1', externalId: 'contract-1', status: 'COMPLETED',
+      recipients: signers.map(person => ({ ...person, role: 'SIGNER', authOptions: { accessAuth: ['ACCOUNT'] } })),
+      envelopeItems: [{ id: 'original' }] };
+    const adapter = new DocumensoAdapter({ baseUrl: 'https://signing.example.test', apiKey: 'fixture',
+      webhookSecret: 'document-verification-fixture' }, async url => String(url).endsWith('version=original')
+      ? new Response(new Uint8Array(original).buffer) : Response.json(envelope));
+    const receipt = { contractId: envelope.externalId, envelopeId: envelope.id, signers, pdf: original };
+    await expect(adapter.reconcile(receipt)).resolves.toBe('COMPLETED');
+    await expect(adapter.reconcile({ ...receipt, pdf: amended })).rejects.toMatchObject({ code: 'invalid_completion' });
+    const replacement = { personId: 'replacement', name: 'New signer', email: 'replacement@example.test' };
+    await expect(adapter.reconcile({ ...receipt, signers: [signers[0], replacement] }))
+      .rejects.toMatchObject({ code: 'invalid_completion' });
+  });
+
   it('preserves a declaring authority exception until expiry without lifting another authority', () => {
     const snapshot = fixture();
     const department = snapshot.policies.find(policy => policy.kind === 'department')!;
