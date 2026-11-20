@@ -185,6 +185,12 @@ export function censusSources(sources) {
       if (ts.isArrayBindingPattern(n)) for (const e of n.elements) if (ts.isBindingElement(e)) binding(e.name, value, scope);
       return null;
     }
+    function supportedParameter(n) {
+      return ts.isIdentifier(n) || (ts.isObjectBindingPattern(n) && n.elements.every(e =>
+        !e.dotDotDotToken && !e.initializer
+        && (!e.propertyName || ts.isIdentifier(e.propertyName) || ts.isStringLiteralLike(e.propertyName) || ts.isNumericLiteral(e.propertyName))
+        && supportedParameter(e.name)));
+    }
     function visit(n, scope) {
       if (ts.isClassDeclaration(n) || ts.isClassExpression(n)) {
         const s = n.name ? bind(scope, n.name.text) : symbol('<class>', scope);
@@ -220,7 +226,15 @@ export function censusSources(sources) {
           const b = bind(scope, localName); b.edges.push({ id: s.id }); b.aliases.push({ id: s.id });
         }
         const child = { parent: scope, names: new Map(), owner: s, label: `${scope.label}/${localName}` };
-        s.params = n.parameters.map(p => binding(p.name, null, child));
+        s.params = n.parameters.map(p => {
+          if (ts.isIdentifier(p.name) || !supportedParameter(p.name)) return binding(p.name, null, child);
+          // Keep the argument's identity before projecting its named members.
+          // A missing parameter slot used to discard invocation bindings for
+          // unrelated callback slots, or lose destructured callbacks entirely.
+          const parameter = symbol('<parameter>', child);
+          binding(p.name, { id: parameter.id }, child);
+          return parameter;
+        });
         s.calls = [];
         s.returns = [];
         s.hasRest = n.parameters.some(p => p.dotDotDotToken);
@@ -238,6 +252,22 @@ export function censusSources(sources) {
         });
         visit(n.body, child);
         if (!ts.isBlock(n.body)) s.returns.push(ref(n.body, child));
+        // A sole rest argument can be forwarded exactly without modelling an
+        // arbitrary array operation. Other rest functions keep global fallback.
+        const rest = n.parameters.length === 1 && n.parameters[0].dotDotDotToken
+          && ts.isIdentifier(n.parameters[0].name) ? n.parameters[0].name.text : null;
+        let returned = ts.isBlock(n.body)
+          ? n.body.statements.length === 1 && ts.isReturnStatement(n.body.statements[0]) ? n.body.statements[0].expression : null
+          : n.body;
+        while (returned && (transparent(returned) || ts.isAwaitExpression(returned))) returned = returned.expression;
+        if (rest && returned && ts.isCallExpression(returned) && returned.arguments.length === 1
+          && ts.isSpreadElement(returned.arguments[0]) && ts.isIdentifier(returned.arguments[0].expression)
+          && returned.arguments[0].expression.text === rest) {
+          let readsRest = false;
+          const check = node => { if (ts.isIdentifier(node) && node.text === rest) readsRest = true; ts.forEachChild(node, check); };
+          check(returned.expression);
+          if (!readsRest) s.restForwardCall = s.calls.at(-1);
+        }
         return;
       }
       if (ts.isBlock(n) || ts.isCatchClause(n)) {
@@ -357,7 +387,10 @@ export function censusSources(sources) {
         }
         bound.set(p.id, { ref: { choices }, context: bound });
       });
-      return t.returns.flatMap(value => branchTargets(value, seen, bound, trail));
+      const values = t.restForwardCall ? t.returns.map(value => ({ ...value,
+        args: r.args.map(ref => ({ choices: [{ ref, context }] })),
+      })) : t.returns;
+      return values.flatMap(value => branchTargets(value, seen, bound, trail));
       } catch (error) {
         if (error instanceof RangeError && !error.message.includes('return-site=')) error.message += ` (return-site=${r.site}, function=${t.name})`;
         throw error;
@@ -400,7 +433,18 @@ export function censusSources(sources) {
   }
   // Parameter injection also reveals wrappers whose names contain no notify token.
   if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS graph symbols=${symbols.size} calls=${calls.length}`);
-  for (const c of calls) for (const target of targets(c.callee)) c.args.forEach((a, i) => { if (target.params?.[i]) { target.params[i].edges.push(a); target.params[i].aliases.push(a); } });
+  function injectArguments(callee, args, visiting = new Set()) {
+    for (const target of targets(callee)) {
+      if (!target.id || visiting.has(target.id)) continue;
+      args.forEach((a, i) => { if (target.params?.[i]) { target.params[i].edges.push(a); target.params[i].aliases.push(a); } });
+      if (target.restForwardCall) {
+        visiting.add(target.id);
+        injectArguments(target.restForwardCall.callee, args, visiting);
+        visiting.delete(target.id);
+      }
+    }
+  }
+  for (const c of calls) injectArguments(c.callee, c.args);
   if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS injected at=${Date.now()}`);
   const reverse = new Map();
   const forward = new Map();
@@ -462,7 +506,7 @@ export function censusSources(sources) {
       // entirely different callback. Only a repeated callsite/callee pair is
       // a cycle; function identity alone imports unrelated callers' roots.
       const invocation = `${c.index}:${t.id}`;
-      if (visiting.has(invocation) || t.hasRest || t.params.some(p => !p)) {
+      if (visiting.has(invocation) || (t.hasRest && !t.restForwardCall) || t.params.some(p => !p)) {
         for (const r of t.roots) roots.add(r);
         continue;
       }
@@ -486,7 +530,12 @@ export function censusSources(sources) {
       });
       if (unsupported) { for (const r of t.roots) roots.add(r); continue; }
       const nested = new Set(visiting); nested.add(invocation);
-      for (const call of t.calls) for (const r of callRoots(call, bound, nested, budget)) roots.add(r);
+      for (const call of t.calls) {
+        const invoked = call === t.restForwardCall ? { ...call,
+          args: c.args.map(ref => ({ choices: [{ ref, context }] })),
+        } : call;
+        for (const r of callRoots(invoked, bound, nested, budget)) roots.add(r);
+      }
     }
     return [...roots];
   }

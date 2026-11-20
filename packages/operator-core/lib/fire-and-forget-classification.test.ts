@@ -200,6 +200,105 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
       .toEqual(['notifyAttention', 'sendOwner']);
   });
 
+  it('keeps sibling callback roots separate when another parameter is destructured', () => {
+    const c = scan(`
+      function withScope({ workspace }, callback) { return callback(); }
+      function readOnly() { return withScope({ workspace: 'same' }, () => database.query('SELECT 1')); }
+      function write() { return withScope({ workspace: 'same' }, notifyOwner); }
+      readOnly(); write();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'readOnly ( )')).toBe(false);
+    expect(c.sites.some(s => s.expression.includes("database . query ( 'SELECT 1' )"))).toBe(false);
+    expect(c.sites.find(s => s.expression === 'write ( )')?.roots).toEqual(['notifyOwner']);
+    expect(c.sites.find(s => s.expression === 'callback ( )')?.roots).toEqual(['notifyOwner']);
+  });
+
+  it('binds nested and renamed destructured callbacks at each invocation', () => {
+    const c = scan(`
+      function dispatch({ handlers: { callback: invoke } }) { return invoke(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      dispatch({ handlers: { callback: readOnly } });
+      dispatch({ handlers: { callback: notifyOwner } });
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'dispatch ( { handlers : { callback : readOnly } } )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'dispatch ( { handlers : { callback : notifyOwner } } )')?.roots)
+      .toEqual(['notifyOwner']);
+    expect(c.sites.find(s => s.expression === 'invoke ( )')?.roots).toEqual(['notifyOwner']);
+    expect(validateClassifications(c, [])).toEqual(c.sites.map(s => `unclassified: ${s.id}`));
+  });
+
+  it('keeps destructured factory arguments bound to their returned closure', () => {
+    const c = scan(`
+      function make({ callback }) { return () => callback(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      const read = make({ callback: readOnly });
+      const write = make({ callback: notifyOwner });
+      read(); write();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'read ( )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'write ( )')?.roots).toEqual(['notifyOwner']);
+  });
+
+  it('retains conservative callback roots for unsupported rest binding patterns', () => {
+    const c = scan(`
+      function dispatch({ workspace, ...rest }, callback) { notifyAttention(); return callback(); }
+      function readOnly() { return database.query('SELECT 1'); }
+      dispatch({ workspace: 'same' }, readOnly);
+      dispatch({ workspace: 'same' }, notifyOwner);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === "dispatch ( { workspace : 'same' } , readOnly )")?.roots)
+      .toEqual(['notifyAttention', 'notifyOwner']);
+  });
+
+  it('refines transparent rest forwarders without importing sibling retry roots', () => {
+    const c = scan(`
+      function retry(callback) { return callback(); }
+      function readOnly() { return retry(() => database.query('SELECT 1')); }
+      function forward(...args) { return readOnly(...args); }
+      function relay(...args) { return retry(...args); }
+      retry(notifyOwner);
+      forward(); relay(sendOwner);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'forward ( )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'relay ( sendOwner )')?.roots).toEqual(['sendOwner']);
+    expect(c.sites.find(s => s.expression === 'retry ( notifyOwner )')?.roots).toEqual(['notifyOwner']);
+  });
+
+  it('forwards exact factory arguments through imported rest wrappers', () => {
+    const c = censusSources({
+      'src/factory.ts': `
+        function make(callback) { return () => callback(); }
+        export function forward(...args) { return make(...args); }
+      `,
+      'src/app.ts': `
+        import { forward } from './factory';
+        function readOnly() { return database.query('SELECT 1'); }
+        const read = forward(readOnly), write = forward(notifyOwner);
+        read(); write();
+      `,
+    });
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.expression === 'read ( )')).toBe(false);
+    expect(c.sites.find(s => s.expression === 'write ( )')?.roots).toEqual(['notifyOwner']);
+  });
+
+  it('retains conservative roots for rest functions with additional effects', () => {
+    const c = scan(`
+      function retry(callback) { return callback(); }
+      function relay(...args) { notifyAttention(); return retry(...args); }
+      function readOnly() { return database.query('SELECT 1'); }
+      retry(notifyOwner); relay(readOnly);
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.find(s => s.expression === 'relay ( readOnly )')?.roots)
+      .toEqual(['notifyAttention', 'notifyOwner']);
+  });
+
   it('retains unknown computed callback dispatch and recursive notification paths', () => {
     const c = scan(`
       function retry(callback) { return callback(); }
