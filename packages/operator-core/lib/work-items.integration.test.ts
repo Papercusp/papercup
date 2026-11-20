@@ -325,6 +325,56 @@ describe('atomic blocker decision lifecycle', () => {
     expect(after.row.taken_by).toBe('agA');
     expect(await wi.getWorkItem(f.blocker.id, 'papercup')).toEqual(provider);
   });
+  async function successorCorrectionSetup() {
+    const f = await correctionSetup();
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agC' WHERE feature_id = ${f.item.id}`;
+    f.opts.by = 'agC';
+    f.opts.blockerDecision.sessionId = 'authenticated-session-c';
+    f.opts.blockerEvidenceContext.ownerId = 'agC';
+    f.opts.blockerEvidenceContext.sessionId = 'authenticated-session-c';
+    return f;
+  }
+  it.each(['ended', 'live', 'parked', 'draining', 'suspect', 'recorded', null, 'missing', 'reader-error'] as const)(
+    'binding correction by successor custodian requires confirmed terminal author: %s', async state => {
+      const f = await successorCorrectionSetup();
+      const before = await bindingSnapshot(f.item.id);
+      const provider = await wi.getWorkItem(f.blocker.id, 'papercup');
+      const oracle = await import('./agent-tools/coordination/liveness-oracle');
+      const spy = vi.spyOn(oracle, 'resolveSessionStates');
+      if (state === 'reader-error') spy.mockRejectedValue(new Error('unavailable author liveness'));
+      else spy.mockResolvedValue((state === 'missing' ? new Map() : new Map([['agA', { sessionState: state }]])) as
+        Awaited<ReturnType<typeof oracle.resolveSessionStates>>);
+      try {
+        if (state === 'ended') {
+          expect(await correctBinding(f)).toMatchObject({ ok: true });
+          const after = await bindingSnapshot(f.item.id);
+          expect(after.edges).toHaveLength(0);
+          expect(after.row.taken_by).toBe('agC');
+          expect(after.row.payload.blockerResolution.history).toHaveLength(2);
+          expect(after.row.payload.blockerResolution.history[0]).toEqual(before.row.payload.blockerResolution.history[0]);
+          expect(after.row.payload.blockerResolution.history[1].authorId).toBe('agC');
+        } else {
+          await expect(correctBinding(f)).rejects.toMatchObject({ code: 'blocker_decision_evidence' });
+          expect(await bindingSnapshot(f.item.id)).toEqual(before);
+        }
+        expect(spy).toHaveBeenCalledWith([{ ownerId: 'agA' }], { hydratePerId: true });
+        expect(await wi.getWorkItem(f.blocker.id, 'papercup')).toEqual(provider);
+      } finally { spy.mockRestore(); }
+    });
+  it('binding correction cannot use a terminal author to bypass current custody', async () => {
+    const f = await successorCorrectionSetup();
+    const before = await bindingSnapshot(f.item.id);
+    f.opts.by = 'agB';
+    f.opts.blockerEvidenceContext.ownerId = 'agB';
+    const oracle = await import('./agent-tools/coordination/liveness-oracle');
+    const spy = vi.spyOn(oracle, 'resolveSessionStates').mockResolvedValue(new Map([['agA', { sessionState: 'ended' }]]) as
+      Awaited<ReturnType<typeof oracle.resolveSessionStates>>);
+    try {
+      await expect(correctBinding(f)).rejects.toBeDefined();
+      expect(await bindingSnapshot(f.item.id)).toEqual(before);
+      expect(spy).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+  });
   it('binding correction records consumer scope without asserting provider shipment', async () => {
     const f = await correctionSetup();
     await correctBinding(f);

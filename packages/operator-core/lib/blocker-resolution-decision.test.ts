@@ -104,6 +104,34 @@ describe('administrative binding correction', () => {
     })).toMatchObject({ ok: false });
     expect(consumeBindingCorrection(prepared)).toBe(false);
   });
+  it('admits the current custodian for the exact confirmed-ended edge author without rewriting history', async () => {
+    const { prepared, scope } = fixture();
+    const formerAuthor = 'su-ended';
+    const history = (prepared.expectedState as typeof prepared.state).history;
+    history[0].authorId = formerAuthor;
+    scope.edges[0].created_by = formerAuthor;
+    const prior = structuredClone(history);
+    const admission = admitBindingCorrection(prepared, { ...scope, terminalAuthorId: formerAuthor });
+    expect('ok' in admission).toBe(false);
+    if ('ok' in admission) throw new Error('confirmed-ended author refused');
+    expect(await validateBlockerDecisionEvidence(prepared.record.decision, {
+      ...context(prepared.record.requestHash), bindingCorrectionAdmission: admission,
+    })).toEqual({ ok: true });
+    expect(history).toEqual(prior);
+    expect(consumeBindingCorrection(prepared)).toBe(true);
+  });
+  it.each(['missing-terminal-proof', 'different-terminal-author', 'non-custodian', 'third-party-history'])(
+    'refuses terminal-author correction with %s', variant => {
+      const { prepared, scope } = fixture();
+      scope.edges[0].created_by = 'su-ended';
+      (prepared.expectedState as typeof prepared.state).history[0].authorId =
+        variant === 'third-party-history' ? 'su-unrelated' : 'su-ended';
+      expect(admitBindingCorrection(prepared, { ...scope,
+        custodianId: variant === 'non-custodian' ? 'su-other' : scope.custodianId,
+        terminalAuthorId: variant === 'missing-terminal-proof' ? undefined :
+          variant === 'different-terminal-author' ? 'su-other-ended' : 'su-ended',
+      })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    });
   it.each(['foreign-history', 'null-creator', 'lineage-alias', 'wrong-tenant', 'wrong-provider', 'wrong-kind',
     'wrong-harness', 'wrong-edge', 'recreated-edge', 'changed-satisfaction', 'moved-custody', 'plan-bound',
     'external-condition', 'missing-defer', 'unrelated-recheck', 'incomplete-census', 'incomplete-history',

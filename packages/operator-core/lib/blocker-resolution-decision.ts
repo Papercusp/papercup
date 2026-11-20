@@ -242,11 +242,13 @@ export function admitBindingCorrection(
     workItemId: string; harness: string | null; unbound: boolean; noExternalConditions: boolean;
     provider: { id: string; harness: string | null; kind: string; ref: string };
     blocked: { kind: string; ref: string }; effect: unknown;
+    /** Exact edge author measured ended by the paired writer's liveness oracle. */
+    terminalAuthorId?: string;
     edges: readonly { id: string | number; blocked_kind: string; blocked_ref: string;
       blocker_kind: string; blocker_ref: string; satisfaction: string | null; created_by: string | null }[];
   },
 ): BindingCorrectionAdmission | BlockerDecisionProblem {
-  const refuse = () => problem('blocker_decision_evidence', ['exact same-author unbound consumer binding and current prior deferral'],
+  const refuse = () => problem('blocker_decision_evidence', ['exact custodian-owned unbound consumer binding, same-author or confirmed-ended author, and current prior deferral'],
     'Read the canonical binding, complete decision history and remaining conditions; preserve custody and provider state.');
   const input = prepared.record.decision;
   const prior = readBlockerResolution({ blockerResolution: prepared.expectedState });
@@ -260,6 +262,8 @@ export function admitBindingCorrection(
   const namesProvider = (ref: BlockerEvidenceRef) => ref.kind === 'work-item' && providerRefs.includes(ref.ref);
   const link = object(object(scope.effect).link);
   const edge = scope.edges.find(row => input.disposition === 'self_resolve' && String(row.id) === input.bindingCorrection?.edgeId);
+  const authors = new Set([scope.ownerId]);
+  if (edge?.created_by && scope.terminalAuthorId === edge.created_by) authors.add(edge.created_by);
   const expectedEffect = { link: { id: scope.provider.id, harness: scope.provider.harness,
     dst: scope.blocked, rel: 'blocks', remove: true, satisfaction: link.satisfaction } };
   if (input.disposition !== 'self_resolve' || !input.bindingCorrection || prepared.replayed ||
@@ -267,11 +271,11 @@ export function admitBindingCorrection(
       scope.ownerId !== scope.custodianId || prepared.record.authorId !== scope.ownerId ||
       prepared.record.workItemId !== scope.workItemId || !scope.unbound || !scope.noExternalConditions ||
       prior.status !== 'recorded' || !completeHistory || prior.current.decision.disposition !== 'defer' ||
-      prior.state.history.some(record => record.authorId !== scope.ownerId || record.workItemId !== scope.workItemId) ||
+      prior.state.history.some(record => !authors.has(record.authorId) || record.workItemId !== scope.workItemId) ||
       input.priorRevision !== prior.current.revision || !namesProvider(prior.current.decision.deferral.recheckRef) ||
       !input.evidenceRefs.some(namesProvider) || !input.verification.evidenceRefs.some(namesProvider) ||
       scope.edges.length >= 25 || !edge || edge.blocked_kind !== scope.blocked.kind || edge.blocked_ref !== scope.blocked.ref ||
-      edge.blocker_kind !== scope.provider.kind || edge.blocker_ref !== scope.provider.ref || edge.created_by !== scope.ownerId ||
+      edge.blocker_kind !== scope.provider.kind || edge.blocker_ref !== scope.provider.ref || !edge.created_by || !authors.has(edge.created_by) ||
       !['settled', 'success'].includes(edge.satisfaction ?? '') ||
       (link.satisfaction !== null && link.satisfaction !== edge.satisfaction) ||
       JSON.stringify(canonical(scope.effect)) !== JSON.stringify(canonical(expectedEffect))) return refuse();

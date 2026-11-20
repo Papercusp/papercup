@@ -11659,6 +11659,19 @@ async function mutateAgentBlockingRelation(
         throw Object.assign(new Error('Binding correction cannot withdraw another unresolved dependency.'),
           { code: 'blocker_decision_evidence' });
       }
+      const edgeAuthor = incoming.find(edge => String(edge.id) === input.bindingCorrection?.edgeId)?.created_by;
+      let terminalAuthorId: string | undefined;
+      if (edgeAuthor && edgeAuthor !== opts.by && opts.by === row.taken_by) {
+        try {
+          const { resolveSessionStates } = await import('./agent-tools/coordination/liveness-oracle');
+          const states = await resolveSessionStates([{ ownerId: edgeAuthor }], { hydratePerId: true });
+          // `recorded` is alive but not wakeable. Only positive terminal evidence
+          // admits a successor; missing, unknown and failed reads stay refused.
+          if (states.get(edgeAuthor)?.sessionState === 'ended') terminalAuthorId = edgeAuthor;
+        } catch {
+          // The admission guard below refuses without the terminal witness.
+        }
+      }
       const admission = admitBindingCorrection(fresh, {
         workspaceId: activeWorkspaceId(), expectedWorkspaceId: opts.blockerEvidenceContext!.workspaceId,
         ownerId: opts.by ?? '', custodianId: row.taken_by, workItemId: dependent.id, harness: dependent.harness,
@@ -11666,7 +11679,7 @@ async function mutateAgentBlockingRelation(
           row.plan_slug == null && row.plan_line_id == null && payload.plan_item == null && payload.planItem == null,
         noExternalConditions: payload.externalBlockers == null || (Array.isArray(payload.externalBlockers) &&
           payload.externalBlockers.every(value => value && typeof value === 'object' && value.status === 'cleared')),
-        provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming,
+        provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming, terminalAuthorId,
       });
       if ('ok' in admission) throw Object.assign(new Error(admission.nextAction), admission);
       const checked = await preflightBlockerDecision({ ...dependent, payload, state: row.status, assignee: row.taken_by },
