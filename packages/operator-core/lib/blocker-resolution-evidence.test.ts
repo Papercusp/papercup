@@ -356,6 +356,9 @@ describe('canonical plan-route conditions', () => {
     }
   });
   it('allows only an accountable plain release of an unmeasured route, preserving the gate', async () => {
+    // Establish the mocked lazy reader before the route/source/recheck fan-out;
+    // a circular import must not initialize the production presence graph here.
+    expect((await import('./agent-tools/coordination/presence')).getPresence).toBe(mocks.presence);
     mocks.plan.mockResolvedValue(plan(content('No replacement route is approved.')));
     const item = subject(); const before = structuredClone(item);
     const remedy = { kind: 'source' as const, ref: 'package.json' };
@@ -370,7 +373,8 @@ describe('canonical plan-route conditions', () => {
     const boundary = { ...ctx, sessionId: ctx.ownerId };
     const effect = { release: true, claimHold: null, claimHoldRelease: null, reason: null, force: false };
     const options = { effect, releasePayload: { patch: {}, unset: [] } };
-    expect(await preflightBlockerDecision(item, input, boundary, options)).toMatchObject({ ok: true });
+    const release = await preflightBlockerDecision(item, input, boundary, options);
+    expect(release, JSON.stringify(release)).toMatchObject({ ok: true });
     expect(item).toEqual(before);
     for (const changed of [{ ...options, effect: { ...effect, claimHold: false } },
       { ...options, requireResolution: true }, { ...options, releasePayload: { patch: { changed: true }, unset: [] } },
@@ -641,6 +645,22 @@ describe('system-derived plan-lane evidence', () => {
     mocks.plan.mockResolvedValue(plan());
     mocks.deps.mockResolvedValue([]);
     mocks.event.mockReset();
+  });
+  it('retains an exact blocked-origin system park without measuring or clearing the lane', async () => {
+    const current = { ...subject(), payload: { ...subject().payload, planLaneParkedFrom: 'blocked',
+      plan_item: { plan_slug: 'recovery', item_id: 'P-002', harness_slug: ctx.harnessSlug } } };
+    mocks.item.mockResolvedValue(current);
+    mocks.hold.mockReturnValue({ parked: { by: 'migration:plan-line-work-item-nodes' }, heldOpen: null, attributed: true });
+    mocks.parked.mockReturnValue(true);
+    const scope = { workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug,
+      workItemId: current.id, custodianId: ctx.ownerId };
+    mocks.nodes.mockClear();
+    mocks.plan.mockClear();
+    const measured = await createBlockerEvidenceReader({ ...context(), retainedParkedPlanLaneDeferral: scope })(ref);
+    expect(measured).toMatchObject({ status: 'unmeasured-parked-plan-lane', ref: ref.ref, scope });
+    expect(mocks.nodes).not.toHaveBeenCalled();
+    expect(mocks.plan).not.toHaveBeenCalled();
+    expect(await read()).toMatchObject({ status: 'unknown' });
   });
   it('measures the canonical graph without manufacturing an event', async () => {
     const measured = await read();
@@ -1412,12 +1432,39 @@ describe('canonical blocker boundary preflight', () => {
       .toMatchObject({ ok: false });
   });
 
-  it('fails closed on an unreadable or potentially truncated canonical dependency census', async () => {
+  it('fails closed on an unreadable canonical dependency census', async () => {
     mocks.deps.mockRejectedValueOnce(new Error('unavailable'));
     expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false });
-    mocks.deps.mockResolvedValueOnce(Array.from({ length: 25 }, () => ({ ref: 'WI-2', kind: 'feature' })));
-    expect(await preflightBlockerDecision(item, undefined, context, { effect })).toMatchObject({ ok: false,
-      missing: [expect.stringContaining('complete dependency census')] });
+  });
+
+  it.each([24, 25, 26])('measures every condition and recovers beyond the former %i-edge reporting boundary', async count => {
+    const dependencies = Array.from({ length: count }, (_, index) => ({
+      ref: `harness-a#WI-provider-${index}`, kind: 'feature', satisfaction: 'settled' as const,
+    }));
+    const last = dependencies.at(-1)!;
+    const proof = { kind: 'work-item' as const, ref: dependencies[0].ref };
+    const input = { ...decision, evidenceRefs: [proof],
+      verification: { outcome: 'Canonical dependency recovered', evidenceRefs: [proof] } };
+    let pending = false;
+    mocks.workspace.mockReturnValue(ctx.workspaceId);
+    mocks.cell.mockResolvedValue({ status: 'value', value: { ready: true } });
+    mocks.item.mockImplementation(async (id: string) => ({ ...item, id,
+      state: pending && `harness-a#${id}` === last.ref ? 'open' : 'done', assignee: null }));
+    for (const census of [dependencies, [...dependencies].reverse()]) {
+      mocks.deps.mockResolvedValue(census);
+      mocks.item.mockClear();
+      const accepted = await preflightBlockerDecision(item, input, context, { effect });
+      expect(accepted, JSON.stringify(accepted)).toMatchObject({ ok: true });
+      expect(new Set(mocks.item.mock.calls.map(([id]) => `harness-a#${id}`)))
+        .toEqual(new Set(dependencies.map(dependency => dependency.ref)));
+      pending = true;
+      const retained = await preflightBlockerDecision(item, input, context, { effect });
+      expect(retained, JSON.stringify(retained)).toMatchObject({ ok: false,
+        missing: expect.arrayContaining([`unresolved canonical condition work-item:${last.ref}`]) });
+      pending = false;
+      const recovered = await preflightBlockerDecision(item, input, context, { effect });
+      expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true });
+    }
   });
 
   it('verifies a stored runtime binding separately, retaining every canonical obligation', async () => {
