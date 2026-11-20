@@ -33,6 +33,15 @@ describe('bodyFromSearchParams', () => {
     expect(body('limit=abc')).toEqual({}); // non-numeric → dropped (tool default kicks in)
   });
 
+  it('decodes efficiency flags and revision windows and preserves malformed input for validation', () => {
+    const efficiency = { revisionWindow: { from: '2026-11-05T00:00:00Z', until: '2026-11-19T00:00:00Z' } };
+    const query = new URLSearchParams({ efficiency: JSON.stringify(efficiency), slug: 'history' });
+    expect(bodyFromSearchParams(query)).toEqual({ efficiency, slug: 'history' });
+    expect(body('efficiency=true')).toEqual({ efficiency: true });
+    expect(body('efficiency=false')).toEqual({ efficiency: false });
+    expect(body('efficiency=%7Bbroken')).toEqual({ efficiency: '{broken' });
+  });
+
   it('does NOT coerce a free-text value that merely LOOKS boolean/numeric (load-bearing)', () => {
     // `query` is not in the allowlists — a search for the literal word "true" must stay a string,
     // or Zod's z.string().min(1) on plans:search rejects the rewritten boolean.

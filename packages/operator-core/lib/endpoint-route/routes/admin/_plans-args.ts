@@ -46,6 +46,7 @@ export const PLANS_NUMBER_KEYS: ReadonlySet<string> = new Set([
  * dispatch into a plans:* tool.
  *
  *   - repeated key            → string[]   (`?paths=a&paths=b`)
+ *   - efficiency              → JSON boolean or object, validated by plans:get
  *   - boolean-keyed 'true'    → true
  *   - boolean-keyed 'false'   → false
  *   - boolean-keyed garbage   → dropped    (caller passed nonsense)
@@ -63,7 +64,14 @@ export function bodyFromSearchParams(p: URLSearchParams): Record<string, unknown
       continue;
     }
     const v = all[0] ?? '';
-    if (PLANS_BOOLEAN_KEYS.has(key)) {
+    if (key === 'efficiency') {
+      try {
+        body[key] = JSON.parse(v);
+      } catch {
+        // Forward malformed input so plans:get can report it to the caller.
+        body[key] = v;
+      }
+    } else if (PLANS_BOOLEAN_KEYS.has(key)) {
       if (v === 'true') body[key] = true;
       else if (v === 'false') body[key] = false;
       // anything else for a boolean key: drop (caller passed garbage)
