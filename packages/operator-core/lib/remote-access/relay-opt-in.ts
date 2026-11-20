@@ -659,6 +659,7 @@ export async function approvePortalRelayDesktop(
     return { ...await portalRelayStatus(locked), machinePublicKey };
   });
   if (changed) {
+    // notify-classification: {"id":"packages/operator-core/lib/remote-access/relay-opt-in.ts#<module>/approvePortalRelayDesktop:90e07a8b9569f6b9984a:1","classification":"safe-to-lose","reason":"The desktop grant is saved before this awaited connector refresh. Its notice only invalidates remoteAccess.overview; the screen re-reads the stored row and connector status, and this notice grants no desktop authority."}
     await refreshDesktopConnector(deps);
     deps.notifyChanged();
   }
@@ -672,6 +673,7 @@ export async function revokePortalRelayDesktop(deps: PortalRelayDeps = defaultPo
     locked.connector.stop();
     state.lastConnectorStartAt = 0;
   });
+  // notify-classification: {"id":"packages/operator-core/lib/remote-access/relay-opt-in.ts#<module>/revokePortalRelayDesktop:90e07a8b9569f6b9984a:1","classification":"safe-to-lose","reason":"The desktop grant is cleared and the old connector stopped before this awaited refresh. Its notice only invalidates remoteAccess.overview; the stored grant and connector status remain authoritative when the screen re-reads them."}
   await refreshDesktopConnector(deps);
   deps.notifyChanged();
   return portalRelayStatus(deps);
@@ -885,6 +887,7 @@ export function startPortalRelayReconciler(deps?: PortalRelayDeps): void {
   // Keep one timer, but let an explicit composition update its dependencies.
   // A later default boot call must not discard that explicit composition.
   if (deps) state.reconcilerDeps = deps;
+  // notify-classification: {"id":"packages/operator-core/lib/remote-access/relay-opt-in.ts#<module>/startPortalRelayReconciler:d73c406b757794fd4689:1","classification":"safe-to-lose","reason":"This boot reconciliation owns its work and catches failure; its notification root only invalidates remoteAccess.overview. The row and connector status remain readable, and the managed reconciler repeats the pass; this hint carries no grant or consent receipt."}
   void reconcilePortalRelay(state.reconcilerDeps);
   if (state.reconcilerArmed) return;
   state.reconcilerArmed = true;
@@ -892,6 +895,7 @@ export function startPortalRelayReconciler(deps?: PortalRelayDeps): void {
     'portal-relay-reconciler',
     PORTAL_RELAY_RECONCILE_INTERVAL_MS,
     async () => {
+      // notify-classification: {"id":"packages/operator-core/lib/remote-access/relay-opt-in.ts#<module>/startPortalRelayReconciler/<callback>:d73c406b757794fd4689:1","classification":"safe-to-lose","reason":"The managed callback awaits reconciliation. Its notifyChanged root only invalidates remoteAccess.overview; losing the hint leaves the stored row and current connector status available to the next overview read and later reconciliation passes."}
       await reconcilePortalRelay(state.reconcilerDeps);
     },
     // must-sample: the portal grant poll, operator health and connector exits push nothing here.
