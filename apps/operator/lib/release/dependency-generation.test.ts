@@ -2283,6 +2283,56 @@ describe('immutable dependency generation', () => {
     );
   });
 
+  it('EI-29332933823385863: repeated exact-ref staging preserves donor metadata and independent bytes', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'independent exact-ref scratch');
+    const fingerprint = fingerprintRef(integration, candidate);
+    expect(fingerprint.status, fingerprint.stderr).toBe(0);
+    const paths = [
+      'node_modules/pkg/index.js',
+      'packages/a/node_modules/local/index.js',
+      'packages/b/node_modules/other/index.js',
+    ];
+    const metadata = (path: string) => {
+      const stat = statSync(path, { bigint: true });
+      return { ino: stat.ino, nlink: stat.nlink, ctimeNs: stat.ctimeNs, mtimeNs: stat.mtimeNs };
+    };
+    const before = paths.map(path => ({
+      metadata: metadata(join(integration, path)),
+      bytes: readFileSync(join(integration, path), 'utf8'),
+    }));
+
+    for (let pass = 0; pass < 3; pass++) {
+      const staged = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        'source "$SCRIPT"',
+        'dependency_generation_prepare_exact_ref_root "$INTEGRATION" "$CANDIDATE" "$EXACT_INPUT"',
+      ].join('\n')], {
+        encoding: 'utf8',
+        env: { ...process.env, SCRIPT, INTEGRATION: integration, CANDIDATE: candidate,
+          EXACT_INPUT: publishedInputFingerprint(fingerprint.stdout), DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1',
+          DEPENDENCY_GENERATION_FORCE_COPY: '0' },
+      });
+      expect(staged.status, String(staged.stderr)).toBe(0);
+      const scratch = staged.stdout.trim();
+      expect(scratch).not.toBe(integration);
+      for (const [index, path] of paths.entries()) {
+        const donor = join(integration, path);
+        const copied = join(scratch, path);
+        expect(metadata(donor), `donor metadata after staging pass ${pass}: ${path}`)
+          .toEqual(before[index].metadata);
+        expect(statSync(copied, { bigint: true }).ino).not.toBe(before[index].metadata.ino);
+        expect(readFileSync(copied, 'utf8')).toBe(before[index].bytes);
+        writeFileSync(copied, `scratch pass ${pass}\n`);
+        expect(readFileSync(donor, 'utf8')).toBe(before[index].bytes);
+      }
+      rmSync(scratch, { recursive: true, force: true });
+      for (const [index, path] of paths.entries())
+        expect(metadata(join(integration, path)), `donor metadata after cleanup pass ${pass}: ${path}`)
+          .toEqual(before[index].metadata);
+    }
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('uses the current install after reusing an exact-ref donor in the same shell', () => {
     const integration = makeIntegration();
     commitFixture(integration, 'initial installed inputs');
