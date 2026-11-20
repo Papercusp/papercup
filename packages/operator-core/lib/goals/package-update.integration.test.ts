@@ -9,8 +9,8 @@ import type { Sql } from 'postgres';
 vi.mock('../cupboard/goal-package-store', async (original) => {
   const actual = await original<typeof import('../cupboard/goal-package-store')>();
   const { fileURLToPath } = await import('node:url');
-  return { ...actual, resolveLocalGoalPackage: (ref: string) => actual.resolveLocalGoalPackage(ref,
-    [{ dir: fileURLToPath(new URL('../../../../goal-packages', import.meta.url)), layer: 'bundled' }]) };
+  return { ...actual, resolveLocalGoalPackage: vi.fn((ref: string) => actual.resolveLocalGoalPackage(ref,
+    [{ dir: fileURLToPath(new URL('../../../../goal-packages', import.meta.url)), layer: 'bundled' }])) };
 });
 
 let db: OrgTestDb;
@@ -23,6 +23,39 @@ beforeAll(async () => { db = await createOrgTestDb(); }, 300_000);
 afterAll(async () => { await db?.cleanup(); }, 120_000);
 
 describe('accepted package declaration update (private Postgres)', () => {
+  it('preserves live goal progress and local settings through repeated package updates', async () => {
+    const goalId = 'package-update-progress';
+    const ref = 'work-on-everything';
+    const bundled = resolveLocalGoalPackage(ref);
+    if (!bundled) throw new Error('Bundled goal package is missing');
+    const previous = { metric: 'usd_spend', label: 'Spend', threshold: 12, current: 7 };
+    const revised = { metric: 'usd_spend', label: 'Spend', threshold: 25 };
+    const added = { metric: 'red_hours', label: 'Red', threshold: 4 };
+    const settings = { model: 'test-model', effort: 'low' };
+    const metadata = { goalPackageRef: ref, packageVersion: '1.0.0', localNote: 'retained' };
+    const sql = db.adminSql;
+    await sql`INSERT INTO harness_shared.goals
+      (workspace_id, id, install_slug, title, status, standing, tripwires, budget_cents, budget_window_sec, launch_settings, metadata)
+      VALUES (${WS}, ${goalId}, 'papercusp', 'Prior goal', 'active', true, ${sql.json([previous])},
+        3700, 3600, ${sql.json(settings)}, ${sql.json(metadata)})`;
+    const read = () => sql`SELECT status, tripwires, budget_cents, budget_window_sec, launch_settings, metadata
+      FROM harness_shared.goals WHERE workspace_id = ${WS} AND id = ${goalId}`;
+    const apply = () => sql.begin(tx => applyGoalPackageUpdate(tx as unknown as Sql, { workspaceId: WS, goalId }));
+    await vi.mocked(resolveLocalGoalPackage).withImplementation(() => ({
+      ...bundled, version: '2.0.0', tripwires: [revised, added],
+    }), async () => {
+      expect(await apply()).toMatchObject({ ok: true, mode: 'live-contract' });
+      const [updated] = await read();
+      expect(updated).toMatchObject({ status: 'active',
+        tripwires: [{ ...revised, current: 7 }, { ...added, current: null }],
+        launch_settings: settings, metadata: { ...metadata, packageVersion: '2.0.0' } });
+      expect(Number(updated.budget_cents)).toBe(3700);
+      expect(Number(updated.budget_window_sec)).toBe(3600);
+      expect(await apply()).toMatchObject({ ok: false, reason: 'up-to-date' });
+      expect(await read()).toEqual([updated]);
+    });
+  });
+
   it.each(['active', 'paused', 'killed'])('preserves lifecycle and stored owner choices on a started package-update attempt (%s)', async (status) => {
     const sql = db.adminSql;
     const goalId = `package-update-${status}`;

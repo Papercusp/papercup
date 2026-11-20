@@ -656,6 +656,26 @@ describe('blueprint package resource journal (real Postgres)', () => {
     await expect(releasePackageResource(db.adminSql, v2, 'stranger', store.driver)).rejects.toThrow(/does not own/);
   });
 
+  it('preserves an existing local edit when reapplying the same package', async () => {
+    const input = address('local-edit-reapplication');
+    const dependent = 'local-editor';
+    const store = externalStore();
+    const first = await preparePackageResource(db.adminSql, input, dependent, store.driver);
+    await db.adminSql.begin(tx => applyPackageResourceDependent(tx, input.workspaceId, dependent));
+    const id = first.external_refs[0].id;
+    const external = store.rows.get(id)!;
+    external.current = hash('locally revised text');
+    await expect(preparePackageResource(db.adminSql, input, dependent, store.driver)).rejects.toThrow(/resource changed/);
+    expect(store.rows.get(id)?.current).toBe(hash('locally revised text'));
+    expect(store.driver.create).toHaveBeenCalledTimes(1);
+    expect(store.driver.removeIfUnchanged).not.toHaveBeenCalled();
+    expect(await readPackageResourceReceipt(db.adminSql, input.workspaceId, packageResourceKey(input)))
+      .toMatchObject({ write_key: first.write_key, external_refs: first.external_refs });
+    expect(await db.adminSql`SELECT dependent_id, phase FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = ${input.workspaceId} AND resource_key = ${packageResourceKey(input)}`)
+      .toEqual([{ dependent_id: dependent, phase: 'applied' }]);
+  });
+
   it('records an exact pre-existing row without taking deletion ownership', async () => {
     const fingerprint = hash('organic exact row');
     const driver: PackageResourceDriver = {

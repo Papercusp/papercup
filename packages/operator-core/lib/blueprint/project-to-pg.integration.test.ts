@@ -188,7 +188,13 @@ describe('getEffectiveBlueprint — the dispatch-policy read path of the orchest
     const original = await hash();
     const timestamp = await projectedAtOf(harnessSlug);
     const firstAttempt = readBlueprintReprojectionAttempt('default', harnessSlug);
-    writeFileSync(join(project, 'blueprints/sibling/blueprint.yaml'), LOCAL_PARENT_YAML.replace('local-parent', 'sibling'));
+    const siblingPath = join(project, 'blueprints/sibling/blueprint.yaml');
+    writeFileSync(siblingPath, LOCAL_PARENT_YAML.replace('local-parent', 'sibling'));
+    const siblingSlug = 'ancestor-refresh-sibling';
+    const siblingOptions = { workspaceId: 'default', harnessSlug: siblingSlug, blueprintPath: siblingPath };
+    expect((await getEffectiveBlueprint(db.sql as never, siblingOptions))?.id).toBe('sibling');
+    const siblingHash = await readOrProjectBlueprintHash(db.sql as never, 'default', siblingSlug);
+    const siblingTimestamp = await projectedAtOf(siblingSlug);
     expect(await hash()).toBe(original);
     expect(readBlueprintReprojectionAttempt('default', harnessSlug)).toBe(firstAttempt);
     clearBlueprintReprojectionState();
@@ -203,6 +209,9 @@ describe('getEffectiveBlueprint — the dispatch-policy read path of the orchest
     expect(currentHash).not.toBe(original);
     expect(current?.dispatch?.concurrency).toBe(8);
     expect((await readBlueprintFromPg(db.sql as never, 'default', harnessSlug))?.dispatch?.concurrency).toBe(8);
+    expect((await getEffectiveBlueprint(db.sql as never, siblingOptions))?.dispatch?.concurrency).toBe(3);
+    expect(await readOrProjectBlueprintHash(db.sql as never, 'default', siblingSlug)).toBe(siblingHash);
+    expect(await projectedAtOf(siblingSlug)).toBe(siblingTimestamp);
   });
 
   it('retains the valid child for an invalid or missing parent and recovers when it returns', async () => {

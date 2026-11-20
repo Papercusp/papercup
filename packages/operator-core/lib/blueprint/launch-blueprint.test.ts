@@ -19,9 +19,37 @@ import {
   QUEEN_INVOKE_TIMEOUT_MS,
   type LaunchFireFn,
 } from './launch-blueprint';
-import { builtinBlueprintPath, loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
+import { blueprintHash, builtinBlueprintPath, loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 
 describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
+  it('keeps the sibling revision when a newly loaded child inherits an edited parent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'blueprint-branch-'));
+    const source = (id: string, concurrency: number) => [
+      'id: ' + id, 'version: 0.1.0', 'workItem: { kind: feature, idPrefix: F }',
+      'spine: { decider: director, edges: { DONE: { to: done } } }',
+      'dispatch: { priority: plan-order, concurrency: ' + concurrency + ' }',
+    ].join('\n');
+    try {
+      const files = new Map(['root-parent', 'dependent', 'sibling'].map(id => [id, join(dir, id + '.yaml')]));
+      const fresh = () => installedAwareLaunchResolver(() => id => files.get(id) ?? builtinBlueprintPath(id));
+      writeFileSync(files.get('root-parent')!, source('root-parent', 2));
+      writeFileSync(files.get('dependent')!, 'id: dependent\nextends: root-parent\nversion: 0.1.0\n');
+      writeFileSync(files.get('sibling')!, source('sibling', 3));
+      const first = fresh();
+      const child = await first('dependent');
+      const sibling = await first('sibling');
+      expect(child.dispatch?.concurrency).toBe(2);
+      writeFileSync(files.get('root-parent')!, source('root-parent', 5));
+      const next = fresh();
+      const updated = await next('dependent');
+      expect(updated.dispatch?.concurrency).toBe(5);
+      expect(blueprintHash(updated)).not.toBe(blueprintHash(child));
+      expect(blueprintHash(await next('sibling'))).toBe(blueprintHash(sibling));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('resolves a built-in id identically to the default resolver', async () => {
     const bp = await installedAwareLaunchResolver()('coding');
     expect(bp.id).toBe('coding');

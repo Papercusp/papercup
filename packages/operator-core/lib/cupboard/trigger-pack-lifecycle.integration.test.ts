@@ -136,6 +136,37 @@ beforeEach(async () => {
 });
 
 describe('trigger-pack lifecycle (P-013)', () => {
+  it('preserves binding ownership on exact trigger pack reapplication and requires review for changed grants', async () => {
+    const source = await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
+    const options = { githubUrl: GITHUB, harness: HARNESS, acceptCapabilities: true,
+      triggerPackConfig: { inputs: { tone: 'warm' }, sourceMappings: { 'inbound-mail': source.id } } };
+    const install = (acceptCapabilities: boolean) =>
+      installPluginFromCupboardCore({ ...options, acceptCapabilities }, installDeps(packDir, WS));
+    const first = await install(true);
+    const installation = first.triggerPackInstallation!;
+    const bindings = await live();
+    expect(bindings.some(b => b.sourceId === source.id)).toBe(true);
+    const repeated = await install(true);
+    expect(repeated.triggerPackInstallation?.id).toBe(installation.id);
+    expect(await live()).toEqual(bindings);
+    const grants = () => sql`SELECT plugin_version, capability FROM harness_shared.plugin_capability_grants
+      WHERE plugin_name = ${PLUGIN} AND harness_slug = ${HARNESS} ORDER BY plugin_version, capability`;
+    expect(await grants()).toEqual([{ plugin_version: '1.0.0', capability: CAPABILITY }]);
+    const review = (await buildTriggerPackReview(sql, WS, installation.id))!;
+    expect(await armTriggerPack(sql, WS, { installationId: installation.id, fingerprint: review.fingerprint }))
+      .toMatchObject({ ok: true });
+
+    await writePackDir(packDir, portablePackManifest({ version: '1.1.0', capabilities: [CAPABILITY, 'events:catalog'] }));
+    const changed = await install(false);
+    expect(changed.granted).toEqual([]);
+    expect(changed.triggerPackInstallation).toMatchObject({ id: installation.id, armed: false });
+    expect(await grants()).toEqual([{ plugin_version: '1.0.0', capability: CAPABILITY }]);
+    expect(await live()).toEqual(bindings);
+    expect(await armTriggerPack(sql, WS, { installationId: installation.id, fingerprint: review.fingerprint }))
+      .toMatchObject({ ok: false, error: 'trigger_pack_review_stale' });
+    expect((await live()).every(b => !b.armed)).toBe(true);
+  });
+
   it('update of an armed pack returns every binding to review until it is re-armed', async () => {
     await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
     const installed = await materialize();
