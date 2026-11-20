@@ -132,21 +132,89 @@ def extract_nested_codex_apply_patches(tool_name, tool_input):
     return {'found': found, 'complete': complete and calls == len(patches), 'patches': patches}
 
 
-def codex_apply_patch_paths(patch):
-    """Return the file headers the lock and attribution hooks both recognize."""
+def parse_codex_apply_patch(patch):
+    """Consume the entire literal frame; never expose a recognized prefix.
+
+    One grammar serves native hooks and the scoped TypeScript consumer. Paths
+    remain exact identities; the authority separately validates physical roots
+    and metadata. No count cap or deduplication drops an operation.
+    """
+    def invalid(line, message):
+        return {'complete': False, 'operations': [], 'targets': [],
+                'errors': [{'line': line, 'message': message}]}
+
     if not isinstance(patch, str):
-        return []
-    text = patch.replace('\r\n', '\n').replace('\r', '\n')
-    paths = []
-    for match in re.finditer(r'^\*\*\* (?:Add|Update|Delete) File: (.+)$', text, re.MULTILINE):
-        path = match.group(1).strip()
-        if path:
-            paths.append(path)
-    for match in re.finditer(r'^\*\*\* Move to: (.+)$', text, re.MULTILINE):
-        path = match.group(1).strip()
-        if path:
-            paths.append(path)
-    return paths
+        return invalid(0, 'patch must be a string')
+    text = patch.replace('\r\n', '\n')
+    if '\r' in text or '\x00' in text:
+        return invalid(0, 'unsupported carriage return or NUL')
+    lines = text.split('\n')
+    if lines[-1] == '':
+        lines.pop()
+    if len(lines) < 3 or lines[0] != '*** Begin Patch' or lines[-1] != '*** End Patch':
+        return invalid(1, 'expected one complete patch frame with no trailing input')
+
+    operations, targets, occupied = [], [], set()
+    cursor, end = 1, len(lines) - 1
+    while cursor < end:
+        header_line = cursor + 1
+        match = re.fullmatch(r'\*\*\* (Add|Update|Delete) File: (.+)', lines[cursor])
+        if not match:
+            return invalid(header_line, 'expected Add, Update or Delete File header')
+        kind, path = match.groups()
+        cursor += 1
+        operation = {'kind': kind.lower()}
+        if kind == 'Add':
+            operation['destination'] = path
+            while cursor < end and lines[cursor].startswith('+'):
+                cursor += 1
+        elif kind == 'Delete':
+            operation['source'] = path
+        else:
+            operation['source'] = path
+            if cursor < end and lines[cursor].startswith('*** Move to: '):
+                destination = lines[cursor][len('*** Move to: '):]
+                if not destination:
+                    return invalid(cursor + 1, 'empty Move destination')
+                operation.update(kind='move', destination=destination)
+                cursor += 1
+            hunks = 0
+            while cursor < end and (lines[cursor] == '@@' or lines[cursor].startswith('@@ ')):
+                hunks += 1
+                cursor += 1
+                body_start, changed = cursor, False
+                while cursor < end:
+                    line = lines[cursor]
+                    if line.startswith(('*** ', '@@')):
+                        break
+                    if line and line[0] not in ' +-':
+                        return invalid(cursor + 1, 'malformed hunk line')
+                    changed = changed or line.startswith(('+', '-'))
+                    cursor += 1
+                if cursor == body_start or not changed:
+                    return invalid(body_start + 1, 'hunk must contain a change')
+                if cursor < end and lines[cursor] == '*** End of File':
+                    cursor += 1
+                    break
+            if not hunks:
+                return invalid(cursor + 1, 'Update or Move requires a complete hunk')
+
+        operation_targets = [operation[key] for key in ('source', 'destination') if key in operation]
+        for target in operation_targets:
+            if target in occupied:
+                return invalid(header_line, 'duplicate operation or source/destination conflict: ' + target)
+            occupied.add(target)
+        operations.append(operation)
+        targets.extend(operation_targets)
+    if not operations:
+        return invalid(2, 'patch must contain an operation')
+    return {'complete': True, 'operations': operations, 'targets': targets, 'errors': []}
+
+
+def codex_apply_patch_paths(patch):
+    """Compatibility projection of a complete result, in operation order."""
+    parsed = parse_codex_apply_patch(patch)
+    return parsed['targets'] if parsed['complete'] else []
 
 
 def nested_codex_apply_patch_results(response):
@@ -741,3 +809,32 @@ def parse_mcp_response(raw_resp):
         if inner is not None:
             return inner, None, 'ok'
     return None, None, 'no-text'
+
+
+if __name__ == '__main__':
+    # A read-only fixed-argv JSON-stdin protocol; importers keep no side effects.
+    import sys
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate protocol field: ' + key)
+            result[key] = value
+        return result
+
+    try:
+        if sys.argv[1:] != ['--parse-codex-patch']:
+            raise ValueError('expected --parse-codex-patch')
+        request = json.loads(sys.stdin.buffer.read().decode('utf-8'), object_pairs_hook=unique_object)
+        if (not isinstance(request, dict) or set(request) != {'schema', 'patch'}
+                or request['schema'] != 'codex-patch-input-v1' or not isinstance(request['patch'], str)):
+            raise ValueError('expected strict codex-patch-input-v1 request')
+        request['patch'].encode('utf-8')  # Reject lone-surrogate JSON strings intact.
+        result = parse_codex_apply_patch(request['patch'])
+    except (ValueError, UnicodeError) as error:
+        result = {'complete': False, 'operations': [], 'targets': [],
+                  'errors': [{'line': 0, 'message': str(error)}]}
+        print(json.dumps(result, ensure_ascii=False))
+        sys.exit(2)
+    print(json.dumps(result, ensure_ascii=False))

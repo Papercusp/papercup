@@ -1,4 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
+import { lstatSync, readdirSync, realpathSync } from 'node:fs';
+import { isAbsolute, join, parse, resolve } from 'node:path';
+import { z } from 'zod';
+import { physicalPath } from '../locks/external-path';
+import { hasValidGitEntry } from '../locks/valid-git-entry';
+import { previewDiscoveryDeclaration, scopedFeasibilityExperimentSchema,
+  type ScopedFeasibilityExperiment } from './plan-declarations';
+
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { AgentIdentity } from '../coordination/identity';
 import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
@@ -9,6 +17,121 @@ import { readPlanLineItems } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 import { revalidateOwnerSelectedReviewForStart } from './plan-start-owner-review';
 import { formatPlanStartProofRefusal } from './plan-start-proof-refusal';
+
+/** The strict discovery-only operation; no caller-supplied authority fields.
+ * questionId's 100-character bound comes from plan-declarations.ts discoveryId.
+ * Work-item identities and selections have no additional local processing cap. */
+const feasibilityRequestFields = {
+  questionId: z.string().min(1).max(100).refine(value => value === value.trim(), 'identity must be exact'),
+  workItemId: z.string().min(1).refine(value => value === value.trim(), 'identity must be exact'),
+  expectedPlanRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+};
+export const scopedFeasibilityRequestSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('grant'), ...feasibilityRequestFields }).strict(),
+  z.object({ action: z.literal('revoke'), ...feasibilityRequestFields, receiptId: z.string().min(1) }).strict(),
+]);
+// Separate from ordinary audit so *every* irrelevant field can be rejected.
+export const scopedFeasibilityAuditSchema = z.object({
+  slug: z.string().min(1), harness: z.string().min(1).optional(),
+  phase: z.literal('discovery'), dryRun: z.boolean().default(false),
+  feasibility: scopedFeasibilityRequestSchema,
+}).strict();
+
+/** Read complete authored data, never a diagnostic preview's bounded projection. */
+export function readScopedFeasibilityQuestion(content: string, questionId: string): ScopedFeasibilityExperiment {
+  const declaration = previewDiscoveryDeclaration(content);
+  if (declaration.status !== 'declared' || !declaration.data)
+    throw new Error('feasibility_declaration_missing_or_ambiguous_or_invalid; inspect complete section:Discovery');
+  const question = declaration.data.questions.find(question => question.id === questionId);
+  if (!question || question.outcome !== 'unresolved' || !question.experiment)
+    throw new Error('feasibility_question_not_unresolved_or_selected');
+  return question.experiment;
+}
+
+/** physicalPath alone cannot prove spelling, unique inodes or ordinary metadata.
+ * This is trusted-tool check/use validation, not hostile-filesystem containment. */
+export function inspectScopedFeasibilitySelection(input: unknown, repositoryRoot: string):
+  ScopedFeasibilityExperiment & { repositoryRoot: string; existingTestPaths: string[] } {
+  const experiment = scopedFeasibilityExperimentSchema.parse(input);
+  if (process.platform !== 'linux' || !isAbsolute(repositoryRoot) || resolve(repositoryRoot) !== repositoryRoot
+    || !/^[\x20-\x7e]+$/.test(repositoryRoot) || /[\\*?\[\]{}]/.test(repositoryRoot))
+    throw new Error('feasibility_repository_spelling_unsupported');
+  // Per-invocation metadata only. Reuse complete sibling listings within one
+  // trusted check/use interval; no persistent filesystem snapshot or TTL cache.
+  const directories = new Map<string, { exact: Set<string>; folded: Map<string, string[]> }>();
+  const checkComponent = (parent: string, segment: string): boolean => {
+    let entries = directories.get(parent);
+    if (!entries) {
+      entries = { exact: new Set(), folded: new Map() };
+      for (const bytes of readdirSync(parent, { encoding: 'buffer' })) {
+        const name = bytes.toString('latin1');
+        entries.exact.add(name);
+        if (/^[\x20-\x7e]+$/.test(name)) {
+          const fold = name.toLowerCase();
+          entries.folded.set(fold, [...(entries.folded.get(fold) ?? []), name]);
+        }
+      }
+      directories.set(parent, entries);
+    }
+    if (entries.folded.get(segment.toLowerCase())?.some(name => name !== segment))
+      throw new Error('feasibility_case_collision:' + join(parent, segment));
+    return entries.exact.has(segment);
+  };
+  let rootWalk = parse(repositoryRoot).root;
+  for (const segment of repositoryRoot.slice(rootWalk.length).split('/').filter(Boolean)) {
+    if (!checkComponent(rootWalk, segment)) throw new Error('feasibility_repository_spelling_missing');
+    rootWalk = join(rootWalk, segment);
+    const metadata = lstatSync(rootWalk);
+    if (metadata.isSymbolicLink() || !metadata.isDirectory() || realpathSync(rootWalk) !== rootWalk)
+      throw new Error('feasibility_repository_physical_mismatch');
+  }
+  if (physicalPath(repositoryRoot) !== repositoryRoot || !hasValidGitEntry(repositoryRoot))
+    throw new Error('feasibility_repository_root_invalid');
+  const inodes = new Set<string>(), physical = new Set<string>();
+  const prospective = new Map<string, string>();
+  const existingTestPaths: string[] = [];
+  const tests = new Set(experiment.testPaths), fixtures = new Set(experiment.fixturePaths);
+  const targets = [...tests, ...fixtures];
+  const leaves = new Set(targets);
+  for (const target of targets) {
+    let current = repositoryRoot, missing = false, prefix = '';
+    const segments = target.split('/');
+    for (const [index, segment] of segments.entries()) {
+      prefix = prefix ? prefix + '/' + segment : segment;
+      const folded = prefix.toLowerCase(), previous = prospective.get(folded);
+      if (previous !== undefined && previous !== prefix)
+        throw new Error('feasibility_selected_case_collision:' + target);
+      prospective.set(folded, prefix);
+      if (index < segments.length - 1 && leaves.has(prefix))
+        throw new Error('feasibility_selected_file_is_parent:' + target);
+      if (!missing && !checkComponent(current, segment)) missing = true;
+      current = join(current, segment);
+      if (missing) continue;
+      const metadata = lstatSync(current);
+      if (metadata.isSymbolicLink() || realpathSync(current) !== current)
+        throw new Error('feasibility_symlink_or_alias:' + target);
+      if (metadata.isDirectory() && hasValidGitEntry(current))
+        throw new Error('feasibility_nested_repository:' + target);
+      if (index < segments.length - 1) {
+        if (!metadata.isDirectory()) throw new Error('feasibility_parent_not_directory:' + target);
+      } else {
+        if (!metadata.isFile() || metadata.nlink !== 1) throw new Error('feasibility_not_unique_regular_file:' + target);
+        const inode = String(metadata.dev) + ':' + String(metadata.ino);
+        if (inodes.has(inode)) throw new Error('feasibility_duplicate_physical_identity:' + target);
+        inodes.add(inode);
+        if (fixtures.has(target) && (metadata.mode & 0o111) !== 0)
+          throw new Error('feasibility_executable_fixture:' + target);
+        if (tests.has(target)) existingTestPaths.push(target);
+      }
+    }
+    if (physicalPath(current) !== current || physical.has(current))
+      throw new Error('feasibility_physical_identity_collision:' + target);
+    physical.add(current);
+  }
+  const order = (paths: string[]) => [...paths].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return { ...experiment, repositoryRoot, testPaths: order(experiment.testPaths),
+    fixturePaths: order(experiment.fixturePaths), existingTestPaths: order(existingTestPaths) };
+}
 export { preservePlanExecutionProgress } from './plan-execution-progress';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }

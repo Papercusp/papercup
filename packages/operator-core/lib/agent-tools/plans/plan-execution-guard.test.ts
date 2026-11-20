@@ -1,4 +1,213 @@
 import { describe, expect, it, vi } from 'vitest';
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { inspectScopedFeasibilitySelection, readScopedFeasibilityQuestion,
+  scopedFeasibilityAuditSchema } from './plan-execution-authority';
+import { discoveryDeclarationSchema, scopedFeasibilityExperimentSchema } from './plan-declarations';
+
+const feasibilitySelection = () => ({
+  testPaths: ['Z.test.ts', 'a.test.tsx'], fixturePaths: ['fixtures/data.json'], lifetimeSec: 60,
+});
+const feasibilityDiscovery = (experiment = feasibilitySelection()) => ({
+  questions: [{ id: 'Q-6', kind: 'feasibility', question: 'Can the existing transaction preserve ordering?',
+    stopCondition: 'Run the selected native tests once', outcome: 'unresolved', experiment }],
+  findings: [], notApplicable: null,
+});
+const feasibilityContent = (declaration: unknown) =>
+  '## Discovery\n\n```discovery\n' + JSON.stringify(declaration) + '\n```\n';
+const feasibilityAudit = () => ({ slug: 'draft', harness: 'project', phase: 'discovery',
+  feasibility: { action: 'grant', questionId: 'Q-6', workItemId: 'WI-held', expectedPlanRevision: 7 } });
+function withFeasibilityRepository(run: (root: string) => void): void {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'scoped-feas-selection-')));
+  try {
+    execFileSync('git', ['init', '--quiet', root]);
+    mkdirSync(join(root, 'fixtures'));
+    writeFileSync(join(root, 'Z.test.ts'), 'export {};\n');
+    writeFileSync(join(root, 'fixtures/data.json'), '{}\n');
+    run(root);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
+describe('scoped feasibility issuance', () => {
+  it('rejects empty and fixture-only selections', () => {
+    for (const testPaths of [[], undefined]) {
+      const input = { ...feasibilitySelection(), testPaths };
+      expect(scopedFeasibilityExperimentSchema.safeParse(input).success).toBe(false);
+    }
+    expect(scopedFeasibilityExperimentSchema.parse(feasibilitySelection())).toEqual(feasibilitySelection());
+    for (const testPaths of [['config.ts'], ['test.spec.ts'], ['test.test.js']])
+      expect(scopedFeasibilityExperimentSchema.safeParse({ ...feasibilitySelection(), testPaths }).success).toBe(false);
+    for (const fixturePaths of [['other/data.json'], ['fixtures/run.sh'], ['fixtures/runner.ts'], ['__fixtures__/config.cjs']])
+      expect(scopedFeasibilityExperimentSchema.safeParse({ ...feasibilitySelection(), fixturePaths }).success).toBe(false);
+  });
+
+  it('rejects duplicate and physical-collision selections intact', () => withFeasibilityRepository(root => {
+    const selection = feasibilitySelection();
+    expect(() => inspectScopedFeasibilitySelection({ ...selection,
+      testPaths: ['Z.test.ts', 'Z.test.ts'] }, root)).toThrow('duplicate selected identity: Z.test.ts');
+    for (const testPaths of [['new/A.test.ts', 'NEW/B.test.ts'], ['one.test.ts', 'ONE.test.ts']]) {
+      for (const ordered of [testPaths, [...testPaths].reverse()]) {
+        const input = { ...selection, testPaths: ordered };
+        const before = JSON.stringify(input);
+        expect(() => inspectScopedFeasibilitySelection(input, root)).toThrow('selected_case_collision');
+        expect(JSON.stringify(input)).toBe(before);
+      }
+    }
+    linkSync(join(root, 'Z.test.ts'), join(root, 'linked.test.ts'));
+    expect(() => inspectScopedFeasibilitySelection(selection, root)).toThrow('not_unique_regular_file');
+  }));
+
+  it('orders the complete selection by UTF8 bytes', () => withFeasibilityRepository(root => {
+    const paths = ['z.test.ts', 'a b.test.ts', "a'b.test.ts", 'Z.test.ts', 'a.test.tsx'];
+    // Avoid a real case-collision: these identities deliberately differ elsewhere.
+    paths[0] = 'z-last.test.ts';
+    const expected = [...paths].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    for (const testPaths of [paths, [...paths].reverse()]) {
+      const result = inspectScopedFeasibilitySelection({ ...feasibilitySelection(), testPaths }, root);
+      expect(result.testPaths).toEqual(expected);
+      expect(result.existingTestPaths).toEqual(['Z.test.ts']);
+      expect(testPaths).toEqual(testPaths === paths ? paths : [...paths].reverse());
+    }
+    const many = Array.from({ length: 2049 }, (_, i) => 'new/t-' + i + '.test.ts');
+    const result = inspectScopedFeasibilitySelection({ ...feasibilitySelection(), testPaths: many }, root);
+    expect(new Set(result.testPaths)).toEqual(new Set(many));
+    expect(result.testPaths).toHaveLength(2049);
+    expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(),
+      testPaths: [...many, '../decisive.test.ts'] }, root)).toThrow('repository-relative');
+  }));
+
+  it('rejects unknown missing and irrelevant audit fields', () => {
+    const valid = feasibilityAudit();
+    expect(scopedFeasibilityAuditSchema.parse(valid)).toEqual({ ...valid, dryRun: false });
+    expect(scopedFeasibilityAuditSchema.safeParse({ ...valid, dryRun: true }).success).toBe(true);
+    for (const key of ['items', 'findings', 'auditedSha', 'sourceRanges', 'mappings', 'itemProvenance',
+      'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef', 'proposeCitations', 'summary', 'confirm', 'unknown']) {
+      expect(scopedFeasibilityAuditSchema.safeParse({ ...valid, [key]: [] }).success, key).toBe(false);
+    }
+    for (const phase of [undefined, 'completion', 'activation', 'shaping'])
+      expect(scopedFeasibilityAuditSchema.safeParse({ ...valid, phase }).success).toBe(false);
+    for (const key of ['questionId', 'workItemId', 'expectedPlanRevision', 'action']) {
+      const feasibility: Record<string, unknown> = { ...valid.feasibility };
+      delete feasibility[key];
+      expect(scopedFeasibilityAuditSchema.safeParse({ ...valid, feasibility }).success, key).toBe(false);
+    }
+    for (const revision of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      expect(scopedFeasibilityAuditSchema.safeParse({ ...valid,
+        feasibility: { ...valid.feasibility, expectedPlanRevision: revision } }).success).toBe(false);
+    expect(scopedFeasibilityAuditSchema.safeParse({ ...valid,
+      feasibility: { ...valid.feasibility, action: 'revoke' } }).success).toBe(false);
+    expect(scopedFeasibilityAuditSchema.safeParse({ ...valid,
+      feasibility: { ...valid.feasibility, action: 'revoke', receiptId: 'event-7' } }).success).toBe(true);
+    expect(scopedFeasibilityAuditSchema.safeParse({ ...valid,
+      feasibility: { ...valid.feasibility, receiptId: 'event-7' } }).success).toBe(false);
+  });
+
+  it('rejects caller receipt-field overrides', () => {
+    const valid = feasibilityAudit();
+    for (const key of ['actorId', 'workspaceId', 'harnessSlug', 'repositoryRoot', 'planContentHash',
+      'planRevision', 'issuedAt', 'expiresAt', 'eventRef', 'replacedReceiptId', 'usable',
+      'testPaths', 'fixturePaths', 'lifetimeSec']) {
+      for (const action of ['grant', 'revoke']) {
+        const feasibility = { ...valid.feasibility, action, ...(action === 'revoke' ? { receiptId: 'event-7' } : {}), [key]: 'injected' };
+        expect(scopedFeasibilityAuditSchema.safeParse({ ...valid, feasibility }).success, key).toBe(false);
+      }
+      expect(scopedFeasibilityAuditSchema.safeParse({ ...valid, [key]: 'injected' }).success, key).toBe(false);
+      if (!['testPaths', 'fixturePaths', 'lifetimeSec'].includes(key))
+        expect(scopedFeasibilityExperimentSchema.safeParse({ ...feasibilitySelection(), [key]: 'injected' }).success, key).toBe(false);
+    }
+  });
+
+  it('rejects Discovery identity and question bound overflow intact at N-1 N and N+1', () => {
+    // Source: plan-declarations.ts discoveryId(required(100)), questions.max(40).
+    for (const length of [99, 100, 101]) {
+      const questionId = 'Q' + 'x'.repeat(length - 1);
+      const declaration = feasibilityDiscovery();
+      declaration.questions[0]!.id = questionId;
+      const content = feasibilityContent(declaration);
+      const audit = feasibilityAudit();
+      audit.feasibility.questionId = questionId;
+      expect(scopedFeasibilityAuditSchema.safeParse(audit).success).toBe(length <= 100);
+      if (length <= 100) expect(readScopedFeasibilityQuestion(content, questionId)).toEqual(feasibilitySelection());
+      else {
+        expect(() => readScopedFeasibilityQuestion(content, questionId)).toThrow();
+        expect(JSON.parse(content.split('\n')[3]!).questions[0].id).toBe(questionId);
+      }
+    }
+    for (const count of [39, 40, 41]) {
+      const declaration = feasibilityDiscovery();
+      declaration.questions = Array.from({ length: count }, (_, i) => ({ ...declaration.questions[0]!, id: 'Q-' + i }));
+      const content = feasibilityContent(declaration), decisive = 'Q-' + (count - 1);
+      if (count <= 40) expect(readScopedFeasibilityQuestion(content, decisive)).toEqual(feasibilitySelection());
+      else expect(() => readScopedFeasibilityQuestion(content, decisive)).toThrow();
+      expect(declaration.questions).toHaveLength(count);
+    }
+  });
+});
+
+describe('scoped feasibility declaration foundation', () => {
+  it('reads the selected declaration without marking the question answered', () => {
+    // Declaration/selection foundation only: issuance will invoke this exact reader.
+    const declaration = feasibilityDiscovery(), content = feasibilityContent(declaration);
+    expect(discoveryDeclarationSchema.parse(declaration).questions[0]!.outcome).toBe('unresolved');
+    expect(readScopedFeasibilityQuestion(content, 'Q-6')).toEqual(feasibilitySelection());
+    expect(feasibilityContent(declaration)).toBe(content);
+    const resolved = { ...declaration, questions: [{ ...declaration.questions[0], outcome: 'answered' }] };
+    expect(() => readScopedFeasibilityQuestion(feasibilityContent(resolved), 'Q-6')).toThrow('question_not_unresolved');
+    expect(() => readScopedFeasibilityQuestion(content, 'Q-other')).toThrow('question_not_unresolved');
+    expect(() => readScopedFeasibilityQuestion(content + '\n' + content, 'Q-6')).toThrow('ambiguous');
+  });
+});
+
+describe('scoped feasibility lifetime declaration foundation', () => {
+  it('validates exact authored duration and path inputs', () => {
+    for (const lifetimeSec of [undefined, 0, -1, 1.5, 3601, '60'])
+      expect(scopedFeasibilityExperimentSchema.safeParse({ ...feasibilitySelection(), lifetimeSec }).success).toBe(false);
+    for (const lifetimeSec of [1, 3599, 3600])
+      expect(scopedFeasibilityExperimentSchema.parse({ ...feasibilitySelection(), lifetimeSec }).lifetimeSec).toBe(lifetimeSec);
+    // Complete author selection remains exact; scope/claim/DB expiry checks are
+    // the subsequent receipt substage, not inferred from these schema checks.
+    for (const testPaths of [['/root/t.test.ts'], ['a/../t.test.ts'], ['./t.test.ts'], ['a//t.test.ts'],
+      ['a\\t.test.ts'], ['a/*.test.ts'], ['a/\u00e9.test.ts'], ['a/e\u0301.test.ts'], ['a/\n.test.ts']])
+      expect(scopedFeasibilityExperimentSchema.safeParse({ ...feasibilitySelection(), testPaths }).success).toBe(false);
+  });
+});
+
+describe('scoped feasibility physical selection foundation', () => {
+  it('validates existing files and missing descendants without filesystem writes', () => withFeasibilityRepository(root => {
+    const result = inspectScopedFeasibilitySelection(feasibilitySelection(), root);
+    expect(result).toEqual({ ...feasibilitySelection(), repositoryRoot: root, existingTestPaths: ['Z.test.ts'] });
+    expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(),
+      testPaths: ['absent/parent/new.test.ts'] }, root)).not.toThrow();
+    expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(),
+      fixturePaths: ['fixtures/data.json/leaf.json'] }, root)).toThrow('parent_not_directory');
+  }));
+  it('denies symlink and nested repository components including missing leaves', () => withFeasibilityRepository(root => {
+    symlinkSync('fixtures', join(root, 'alias'));
+    symlinkSync('absent', join(root, 'dangling'));
+    for (const fixturePaths of [['alias/fixtures/new.json'], ['dangling/fixtures/new.json']])
+      expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(), fixturePaths }, root)).toThrow('symlink_or_alias');
+    mkdirSync(join(root, 'nested'));
+    execFileSync('git', ['init', '--quiet', join(root, 'nested')]);
+    expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(),
+      testPaths: ['nested/new.test.ts'] }, root)).toThrow('nested_repository');
+    expect(() => inspectScopedFeasibilitySelection(feasibilitySelection(), root + '/.')).toThrow('repository_spelling');
+  }));
+  it('denies case siblings directories hardlinks and executable fixture metadata', () => withFeasibilityRepository(root => {
+    for (const testPaths of [['z.test.ts'], ['Z.test.ts/leaf.test.ts']])
+      expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(), testPaths }, root)).toThrow();
+    mkdirSync(join(root, 'dir.test.ts'));
+    expect(() => inspectScopedFeasibilitySelection({ ...feasibilitySelection(),
+      testPaths: ['dir.test.ts'] }, root)).toThrow('not_unique_regular_file');
+    chmodSync(join(root, 'fixtures/data.json'), 0o755);
+    expect(() => inspectScopedFeasibilitySelection(feasibilitySelection(), root)).toThrow('executable_fixture');
+    chmodSync(join(root, 'fixtures/data.json'), 0o644);
+    linkSync(join(root, 'fixtures/data.json'), join(root, 'other.json'));
+    expect(() => inspectScopedFeasibilitySelection(feasibilitySelection(), root)).toThrow('not_unique_regular_file');
+  }));
+});
+
 import { checkPlanExecutionGuard, isPlanImplementationCall, isPlanResearchCommand, planExecutionMeaning } from './plan-execution-guard';
 import type { ExecutionPlanBinding } from './plan-execution-guard';
 import { resolveAgentGoal } from '../../agent-goal-ref';

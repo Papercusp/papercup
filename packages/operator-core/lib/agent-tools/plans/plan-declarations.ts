@@ -127,6 +127,33 @@ const discoveryTarget = required(500).refine(
   'must identify a current R-, P-, D- or section: target',
 );
 
+/** Exact identities: authority must never trim, normalize or slice a path. */
+export const scopedFeasibilityPathSchema = z.string().min(1).refine(value =>
+  /^[\x20-\x7e]+$/.test(value) && !/[\\*?\[\]{}]/.test(value)
+  && value.split('/').every(segment => segment !== '' && segment !== '.' && segment !== '..'),
+  'must be an exact printable-ASCII repository-relative POSIX file path without glob syntax',
+);
+export const scopedFeasibilityExperimentSchema = z.object({
+  testPaths: z.array(scopedFeasibilityPathSchema.refine(value => /\.test\.tsx?$/.test(value),
+    'must select an exact native .test.ts or .test.tsx file')).min(1),
+  fixturePaths: z.array(scopedFeasibilityPathSchema.refine(value =>
+    value.split('/').some(segment => segment === 'fixtures' || segment === '__fixtures__')
+      && !/\.(?:[cm]?[jt]sx?|py|sh|bash|zsh|fish|ps1|bat|cmd|exe|dll|so|wasm)$/i.test(value),
+  'must select a nonexecutable fixture file under fixtures/ or __fixtures__/')),
+  // D-001 is the provenance for this explicit lifetime contract, not a default.
+  lifetimeSec: z.number().int().min(1).max(3600),
+}).strict().superRefine((value, ctx) => {
+  const selected = new Set<string>();
+  for (const field of ['testPaths', 'fixturePaths'] as const) {
+    value[field].forEach((identity, index) => {
+      if (selected.has(identity)) ctx.addIssue({ code: z.ZodIssueCode.custom,
+        path: [field, index], message: 'duplicate selected identity: ' + identity });
+      selected.add(identity);
+    });
+  }
+});
+export type ScopedFeasibilityExperiment = z.infer<typeof scopedFeasibilityExperimentSchema>;
+
 /** Only judgments and selections are authored. No copied status, hash, time or test result. */
 export const discoveryDeclarationSchema = z.object({
   questions: z.array(z.object({
@@ -137,6 +164,7 @@ export const discoveryDeclarationSchema = z.object({
     outcome: z.enum(['unresolved', 'answered', 'excluded', 'experiment']),
     rationale: optionalText(1000),
     bounds: optionalText(1000),
+    experiment: scopedFeasibilityExperimentSchema.optional(),
   }).strict().superRefine((question, ctx) => {
     if ((question.outcome === 'excluded' || question.outcome === 'experiment') && !question.rationale) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['rationale'], message: 'explain why this uncertainty cannot invalidate the chosen scope or approach' });

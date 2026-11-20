@@ -1,5 +1,7 @@
 /** EI-27540173897381380: plan readiness also binds direct implementation writes. */
 import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
+import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -17,6 +19,94 @@ export { planExecutionMeaning } from './plan-execution-meaning';
 // The installed parser has no bundled declarations. Treat its tokens as unknown
 // and validate the small token vocabulary this read-only boundary accepts.
 const parseShell: (command: string) => unknown[] = createRequire(import.meta.url)('shell-quote').parse;
+export type ScopedPatchOperation =
+  | { kind: 'add'; destination: string }
+  | { kind: 'delete' | 'update'; source: string }
+  | { kind: 'move'; source: string; destination: string };
+export interface ScopedPatchParse {
+  complete: boolean;
+  operations: ScopedPatchOperation[];
+  targets: string[];
+  errors: { line: number; message: string }[];
+}
+const patchFailure = (message: string): ScopedPatchParse =>
+  ({ complete: false, operations: [], targets: [], errors: [{ line: 0, message }] });
+
+/** Protocol validation only: the Python helper owns the single patch grammar. */
+function scopedPatchProtocol(value: unknown): ScopedPatchParse {
+  const object = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v);
+  const keys = (v: Record<string, unknown>, expected: string[]) =>
+    Object.keys(v).length === expected.length && expected.every(key => Object.hasOwn(v, key));
+  if (!object(value) || !keys(value, ['complete', 'operations', 'targets', 'errors'])
+    || typeof value.complete !== 'boolean' || !Array.isArray(value.operations)
+    || !Array.isArray(value.targets) || !Array.isArray(value.errors))
+    throw new Error('malformed patch helper protocol');
+  const operations: ScopedPatchOperation[] = [];
+  for (const op of value.operations) {
+    if (!object(op)) throw new Error('malformed patch operation');
+    const fields = op.kind === 'add' ? ['kind', 'destination']
+      : op.kind === 'update' || op.kind === 'delete' ? ['kind', 'source']
+      : op.kind === 'move' ? ['kind', 'source', 'destination'] : null;
+    if (!fields || !keys(op, fields)
+      || fields.filter(key => key !== 'kind').some(key =>
+        typeof op[key] !== 'string' || !(op[key] as string).length))
+      throw new Error('malformed patch operation');
+    operations.push(op as unknown as ScopedPatchOperation);
+  }
+  const targets = operations.flatMap(op => [
+    ...('source' in op ? [op.source] : []), ...('destination' in op ? [op.destination] : []),
+  ]);
+  const returnedTargets = value.targets;
+  if (returnedTargets.length !== targets.length || targets.some((path, index) => returnedTargets[index] !== path)
+    || new Set(targets).size !== targets.length)
+    throw new Error('patch helper target/order mismatch');
+  const errors: ScopedPatchParse['errors'] = [];
+  for (const error of value.errors) {
+    if (!object(error) || !keys(error, ['line', 'message']) || !Number.isSafeInteger(error.line)
+      || (error.line as number) < 0 || typeof error.message !== 'string' || !error.message.length)
+      throw new Error('malformed patch helper diagnostic');
+    errors.push({ line: error.line as number, message: error.message });
+  }
+  if (value.complete ? !operations.length || errors.length > 0 : operations.length > 0 || !errors.length)
+    throw new Error('inconsistent patch helper completeness');
+  return { complete: value.complete, operations, targets, errors };
+}
+
+/** Read the helper with fixed argv and stdin. Stream all output without a prefix cap. */
+async function runScopedPatchReader(request: string, root: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('python3', [
+      join(root, 'apps/operator/scripts/hooks/cc/mcp_response.py'), '--parse-codex-patch',
+    ], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [], stderr: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    child.on('error', reject);
+    child.stdin.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (code !== 0) return reject(new Error('patch helper failed: '
+        + (signal ?? code) + ' ' + Buffer.concat(stderr).toString('utf8')));
+      try { resolve(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(stdout))); }
+      catch (error) { reject(error); }
+    });
+    child.stdin.end(request);
+  });
+}
+
+/** A failed helper or incomplete response never yields a usable target prefix. */
+export async function readScopedFeasibilityPatch(patch: unknown, repositoryRoot: string,
+  read: (request: string, root: string) => Promise<string> = runScopedPatchReader,
+): Promise<ScopedPatchParse> {
+  if (typeof patch !== 'string') return patchFailure('patch must be a literal string');
+  try {
+    return scopedPatchProtocol(JSON.parse(await read(
+      JSON.stringify({ schema: 'codex-patch-input-v1', patch }), repositoryRoot)));
+  } catch (error) {
+    return patchFailure(error instanceof Error ? error.message : String(error));
+  }
+}
+
 
 export type ExecutionPlanBindingSource =
   | 'session-brief'
@@ -658,8 +748,8 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
     // No authority is cached: their hashes and the final revision recheck still
     // fence drift. Unscoped bindings must resolve their harness before reading.
     const [scopeRead, renderedRead] = await Promise.allSettled([
-      measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content: string; content_hash: string; op_status: string | null; created_at: Date | string | null }>>`
-      SELECT harness_slug, content, content_hash, op_status, created_at FROM harness_shared.harness_plans
+      measurePlanStage('scope', observe, () => sql<Array<{ harness_slug: string; content_hash: string; created_at: Date | string | null }>>`
+      SELECT harness_slug, content_hash, created_at FROM harness_shared.harness_plans
        WHERE workspace_id=${workspaceId} AND plan_slug=${binding.planSlug}
          AND (${binding.harnessSlug}::text IS NULL OR harness_slug=${binding.harnessSlug})`),
       binding.harnessSlug ? readTimedPlanRow(binding.planSlug,

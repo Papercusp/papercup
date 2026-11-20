@@ -10,9 +10,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { capturePgDiagnosticContext, recordPgResult } from '@papercusp/db-org/acquire-registry';
 import * as acquireDiagnostics from '@papercusp/db-org/acquire-registry';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
+import type { PlanExecutionGuardInput } from '../../../agent-tools/plans/plan-execution-guard';
+import { checkContinuationReadiness } from '../../../agent-tools/plans/plan-continuation-readiness';
+import { __setCachedReadEnabledForTests } from '../../../cache/cached-read';
+import { _refreshCacheLayerForTests, resetOperatorCacheForTests } from '../../../cache/instance';
 const planExecutionGuard = vi.hoisted(() => vi.fn());
 const compactMemory = vi.hoisted(() => ({ brief: vi.fn(), reprime: vi.fn(), receipt: vi.fn() }));
 vi.mock('../../../carry-brief', async original => ({ ...await original<typeof import('../../../carry-brief')>(),
@@ -163,6 +168,64 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
       expect(await toolGuardText(input('touch private-probe'), async () => null)).toBe('');
       expect(planExecutionGuard).toHaveBeenCalledTimes(2);
     } finally { vi.useRealTimers(); }
+  });
+
+  it('rechecks fresh authority before admitting a retry of pending native plan readiness', async () => {
+    const { checkPlanExecutionGuard } = await vi.importActual<
+      typeof import('../../../agent-tools/plans/plan-execution-guard')
+    >('../../../agent-tools/plans/plan-execution-guard');
+    const binding = { planSlug: 'native-continuation-fixture', harnessSlug: 'harness-fixture' };
+    const readBindings = vi.fn(async () => [binding]);
+    const readFence = vi.fn(async () => ({
+      harnessSlug: binding.harnessSlug, contentHash: 'revision-one', startSeq: 1, inputs: 'contract-one',
+    }));
+    const preflight = vi.fn(async (): Promise<string[]> => []);
+    const recheck = vi.fn(async (): Promise<string[]> => []);
+    let finishEvaluation!: (blockers: string[]) => void;
+    const evaluate = vi.fn(async (): Promise<string[]> => ['unexpected_readiness_rebuild'])
+      .mockImplementationOnce(() => new Promise<string[]>(resolve => { finishEvaluation = resolve; }));
+    planExecutionGuard.mockImplementation((guardInput: PlanExecutionGuardInput) => checkPlanExecutionGuard(guardInput, {
+      readBindings,
+      checkPlan: (selected, workspaceId, observe, deadlineAtMs) => checkContinuationReadiness(
+        selected, workspaceId, observe, { readFence, preflight, evaluate, recheck, deadlineAtMs, budgetMs: 25 },
+      ),
+    }));
+
+    resetOperatorCacheForTests();
+    __setCachedReadEnabledForTests(true);
+    setFlagOverridesForTest({ 'papercusp-cache-layer': true });
+    try {
+      await _refreshCacheLayerForTests();
+      vi.useFakeTimers();
+      const request = input('touch private-probe');
+      const readIdentity = async () => noRmRules();
+      const first = toolGuardText(request, readIdentity);
+      // Flush the binding and fence reads before advancing the readiness deadline.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await first).toMatch(/^plan_execution_not_ready: .*readiness is still being evaluated/);
+      expect(recheck).not.toHaveBeenCalled();
+
+      finishEvaluation([]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await toolGuardText(request, readIdentity)).toBe('');
+
+      // A warm plan-wide verdict still requires current caller-specific authority.
+      recheck.mockResolvedValueOnce(['plan_execution_start_stale']);
+      expect(await toolGuardText(request, readIdentity)).toMatch(/^plan_execution_not_ready: .*plan_execution_start_stale/);
+      expect(evaluate).toHaveBeenCalledTimes(1);
+      expect(readBindings).toHaveBeenCalledTimes(3);
+      expect(preflight).toHaveBeenCalledTimes(3);
+      expect(readFence).toHaveBeenCalledTimes(3);
+      expect(recheck).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+      __setCachedReadEnabledForTests(false);
+      setFlagOverridesForTest(null);
+      await _refreshCacheLayerForTests();
+      resetOperatorCacheForTests();
+    }
   });
 
   it('fails CLOSED when a worn guard cannot see the whole input', async () => {

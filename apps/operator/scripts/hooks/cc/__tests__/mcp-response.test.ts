@@ -218,3 +218,129 @@ describe('shared CC native-session MCP URL context', () => {
     expect(source).toMatch(/native_session_id\s*=|session_id\s+or\s+os\.environ/);
   });
 });
+
+
+describe('scoped feasibility patch grammar', () => {
+  const ROOT = join(HERE, '../../../../../..');
+  const frame = (...operations: string[]) => ['*** Begin Patch', ...operations, '*** End Patch'].join('\n');
+  const add = (path: string) => `*** Add File: ${path}\n+literal content`;
+  const update = (path: string) => `*** Update File: ${path}\n@@\n-old\n+new`;
+  const move = (source: string, destination: string) =>
+    `*** Update File: ${source}\n*** Move to: ${destination}\n@@\n-old\n+new`;
+  const valid = [
+    frame(add("fixtures/new 'file.txt"), update('tests/current.test.ts'),
+      '*** Delete File: fixtures/obsolete.txt', move('fixtures/old.txt', 'fixtures/moved.txt')),
+    frame('*** Add File: fixtures/header.txt\n+*** Update File: content-is-not-an-operation'),
+    frame('*** Update File: tests/a.test.ts\n@@ first context\n same\n-old\n+new\n@@\n-a\n+b\n*** End of File'),
+    frame('*** Add File: fixtures/empty.txt'),
+    frame(add('fixtures/ trailing space ')),
+  ];
+  const invalid = [
+    '', '*** Begin Patch\n*** End Patch', frame('*** Unknown File: a\n+x'),
+    frame('*** Add File: a\nunprefixed'), frame('*** Update File: a\n@@'),
+    frame('*** Update File: a\n@@\n context only'), frame('*** Update File: a\n@@bad\n-x\n+y'),
+    frame('*** Update File: a\n@@\n-x\nraw'), frame('*** Update File: a\n*** Move to: b'),
+    frame(add('a')) + '\ntrailing', frame(add('a')) + '\n\n',
+    'prefix\n' + frame(add('a')), frame(add('a'), '*** Begin Patch'),
+    frame('*** Move to: orphan'), frame(add('a'), '*** Move to: orphan'),
+    frame(add('a'), add('a')), frame(update('a'), '*** Delete File: a'),
+    frame(move('a', 'b'), add('b')), frame(move('a', 'a')),
+    frame(add('b'), move('a', 'b')), frame('*** Delete File: a\n+unexpected'),
+    frame('*** Update File: a\n@@\n-x\n+y\n*** End of File\n@@\n-a\n+b'),
+    frame('*** Add File: '), frame(add('nul\0target')),
+  ];
+
+  function imported(patch: unknown): { parsed: import('../../../../../../packages/operator-core/lib/agent-tools/plans/plan-execution-guard').ScopedPatchParse; paths: string[] } {
+    const script = [
+      'import json, sys',
+      'sys.path.insert(0, sys.argv[1])',
+      'from mcp_response import parse_codex_apply_patch, codex_apply_patch_paths',
+      'patch = json.loads(sys.stdin.read())',
+      'print(json.dumps({"parsed": parse_codex_apply_patch(patch), "paths": codex_apply_patch_paths(patch)}))',
+    ].join('\n');
+    return JSON.parse(execFileSync('python3', ['-c', script, HOOK_DIR], {
+      input: JSON.stringify(patch), encoding: 'utf8',
+    }));
+  }
+
+  it('accepts complete ordered Add Update Delete Move operations', () => {
+    const result = imported(valid[0]);
+    expect(result.parsed).toEqual({
+      complete: true,
+      operations: [
+        { kind: 'add', destination: "fixtures/new 'file.txt" },
+        { kind: 'update', source: 'tests/current.test.ts' },
+        { kind: 'delete', source: 'fixtures/obsolete.txt' },
+        { kind: 'move', source: 'fixtures/old.txt', destination: 'fixtures/moved.txt' },
+      ],
+      targets: ["fixtures/new 'file.txt", 'tests/current.test.ts', 'fixtures/obsolete.txt',
+        'fixtures/old.txt', 'fixtures/moved.txt'],
+      errors: [],
+    });
+    expect(result.paths).toEqual(result.parsed.targets);
+    for (const patch of valid) expect(imported(patch).parsed.complete).toBe(true);
+    expect(imported(valid[0]!.replaceAll('\n', '\r\n') + '\r\n').parsed).toEqual(result.parsed);
+  });
+
+  it('rejects malformed frames hunks and unknown operations', () => {
+    for (const patch of [...invalid, null, { patch: valid[0] }]) {
+      const result = imported(patch);
+      expect(result.parsed.complete, JSON.stringify(patch)).toBe(false);
+      expect(result.parsed.operations).toEqual([]);
+      expect(result.parsed.targets).toEqual([]);
+      expect(result.paths).toEqual([]);
+      expect(result.parsed.errors.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('rejects trailing input extra headers and orphan Move', () => {
+    for (const patch of [valid[0] + '\nmore', frame(add('a'), '*** End Patch'),
+      frame('*** Move to: b'), frame(add('a'), '*** Move to: b')]) {
+      expect(imported(patch).parsed).toMatchObject({ complete: false, operations: [], targets: [] });
+    }
+  });
+
+  it('rejects duplicate operations and source destination conflicts', () => {
+    for (const patch of [frame(add('a'), add('a')), frame(update('a'), '*** Delete File: a'),
+      frame(move('a', 'b'), update('b')), frame(add('b'), move('a', 'b')), frame(move('a', 'a'))]) {
+      expect(imported(patch).parsed).toMatchObject({ complete: false, operations: [], targets: [] });
+    }
+  });
+
+  it('matches ordered Python and TypeScript consumer results', async () => {
+    const { readScopedFeasibilityPatch } = await import('../../../../../../packages/operator-core/lib/agent-tools/plans/plan-execution-guard');
+    for (const patch of [...valid, ...invalid]) {
+      expect(await readScopedFeasibilityPatch(patch, ROOT), patch).toEqual(imported(patch).parsed);
+    }
+  });
+
+  it('rejects helper failure and malformed protocol responses', async () => {
+    const { readScopedFeasibilityPatch } = await import('../../../../../../packages/operator-core/lib/agent-tools/plans/plan-execution-guard');
+    const good = imported(valid[0]).parsed;
+    const bad = [
+      'not JSON', '{}', JSON.stringify({ ...good, extra: true }),
+      JSON.stringify({ ...good, complete: false }), JSON.stringify({ ...good, targets: [...good.targets].reverse() }),
+      JSON.stringify({ ...good, operations: [{ kind: 'unknown', source: 'a' }] }),
+      JSON.stringify({ ...good, errors: [{ line: -1, message: 'bad' }] }),
+      JSON.stringify({ complete: false, operations: [], targets: ['prefix'], errors: [{ line: 0, message: 'bad' }] }),
+    ];
+    for (const response of bad) {
+      expect(await readScopedFeasibilityPatch(valid[0], ROOT, async () => response))
+        .toMatchObject({ complete: false, operations: [], targets: [] });
+    }
+    expect(await readScopedFeasibilityPatch(valid[0], ROOT, async () => { throw new Error('reader failed'); }))
+      .toMatchObject({ complete: false, operations: [], targets: [], errors: [{ message: 'reader failed' }] });
+    expect(await readScopedFeasibilityPatch(valid[0], join(ROOT, 'missing-helper-root')))
+      .toMatchObject({ complete: false, operations: [], targets: [] });
+  });
+
+  it('preserves the complete large operation population and rejects a decisive final conflict', async () => {
+    const { readScopedFeasibilityPatch } = await import('../../../../../../packages/operator-core/lib/agent-tools/plans/plan-execution-guard');
+    const operations = Array.from({ length: 2049 }, (_, i) => add(`fixtures/entry-${i}.txt`));
+    const parsed = await readScopedFeasibilityPatch(frame(...operations), ROOT);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets).toEqual(operations.map((_, i) => `fixtures/entry-${i}.txt`));
+    expect(await readScopedFeasibilityPatch(frame(...operations, update('fixtures/entry-2048.txt')), ROOT))
+      .toMatchObject({ complete: false, operations: [], targets: [] });
+  });
+});

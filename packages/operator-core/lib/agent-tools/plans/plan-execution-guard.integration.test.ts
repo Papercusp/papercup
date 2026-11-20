@@ -589,7 +589,7 @@ describe('real write-boundary bypass regression', () => {
     connection.sql = new Proxy(db.sql, {
       apply(target, thisArg, args) {
         const template = args[0];
-        if (Array.isArray(template) && template.join(' ').includes('SELECT harness_slug, content, content_hash, op_status, created_at')) {
+        if (Array.isArray(template) && template.join(' ').includes('SELECT harness_slug, content_hash, created_at')) {
           entered();
           return holdScope.then(() => Reflect.apply(target, thisArg, args));
         }
