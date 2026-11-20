@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { inflateSync } from 'node:zlib';
 import ts from 'typescript';
 import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
@@ -23,6 +24,8 @@ const wranglerLocalStateRoot = 'apps/operator-public/.wrangler/state/v3/';
 const wranglerLocalStateReason = 'generated-wrangler-local-state:apps/operator-public/package.json#scripts.dev';
 const miniflareSqlitePath = /^(?:cache\/miniflare-CacheObject|d1\/miniflare-D1DatabaseObject|kv\/miniflare-KVNamespaceObject|r2\/miniflare-R2BucketObject)\/(?:metadata|[0-9a-f]{64})\.sqlite(?:-(shm|wal))?$/;
 const sqliteHeader = Buffer.from('SQLite format 3\0');
+const looseGitObjectPath = /(?:^|\/)[^/]+\.git\/objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/;
+const looseGitObjectInflateLimit = 16 * 1024 * 1024;
 const lostPixelProjects = new Set([
   'apps/operator', 'libs/agent-chat', 'libs/generic/papergrid/grid-core',
   'libs/generic/ui-primitives', 'libs/marketplace-public-ui',
@@ -115,7 +118,7 @@ export interface PhaseWriterInventory {
   sites: PhaseWriterSite[];
   sources: Array<{ path: string; sha256: string }>;
   /** Enumeration/read/parse gaps remain identities in the coverage population. */
-  gaps: Array<{ id: string; reason: string }>;
+  gaps: Array<{ id: string; reason: string; sha256?: string }>;
 }
 export type PhaseWriterTreeManifest = Pick<PhaseWriterInventory, 'scope' | 'sources' | 'gaps'> & {
   excluded: Array<{ path: string; reason: string }>;
@@ -746,6 +749,29 @@ function isWranglerLocalSqliteState(path: string, bytes: Buffer): boolean {
   return header === 3_007_000 || bytes.readUInt32LE(0) === 3_007_000;
 }
 
+function looseGitObjectGap(path: string, bytes: Buffer): PhaseWriterInventory['gaps'][number] | undefined {
+  const match = looseGitObjectPath.exec(path);
+  if (!match) return;
+
+  let reason = 'loose-git-object-unresolved';
+  try {
+    const { buffer: object, engine } = inflateSync(bytes, {
+      info: true, maxOutputLength: looseGitObjectInflateLimit,
+    }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+    if (engine.bytesWritten !== bytes.length) return;
+    const separator = object.indexOf(0);
+    if (separator < 0) return;
+    const header = /^(?:blob|tree|commit|tag) (0|[1-9][0-9]*)$/.exec(object.toString('latin1', 0, separator));
+    if (!header || Number(header[1]) !== object.length - separator - 1) return;
+    if (createHash('sha1').update(object).digest('hex') !== match[1]! + match[2]!) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') return;
+    reason = 'loose-git-object-inflate-limit';
+  }
+
+  return { id: `source:${path}`, reason, sha256: createHash('sha256').update(bytes).digest('hex') };
+}
+
 function lostPixelOutputCandidate(path: string, bytes: Buffer) {
   if (!path.endsWith('.png')) return null;
   const match = lostPixelPngPath.exec(path);
@@ -832,6 +858,10 @@ function readPhaseWriterTree(root: string) {
       if (isWranglerLocalSqliteState(path, bytes)) {
         excluded.push({ path, reason: wranglerLocalStateReason }); continue;
       }
+      // Some compressed Git objects also round-trip as UTF-8. Keep their
+      // tracked paths and byte fingerprints as gaps pending source disposition.
+      const gitObject = looseGitObjectGap(path, bytes);
+      if (gitObject) { gaps.push(gitObject); continue; }
       const content = bytes.toString('utf8');
       if (!Buffer.from(content).equals(bytes)) {
         const output = lostPixelOutputCandidate(path, bytes);
@@ -907,7 +937,9 @@ export function verifyPhaseWriterTreeSnapshot(expected: PhaseWriterTreeManifest)
       }
       add(`source:${source.path}`, source.sha256);
     }
-    for (const gap of value.gaps) add(`gap:${gap.id}`, gap.reason);
+    for (const gap of value.gaps) {
+      add(`gap:${gap.id}`, gap.sha256 ? JSON.stringify([gap.reason, gap.sha256]) : gap.reason);
+    }
     for (const exclusion of value.excluded) add(`excluded:${exclusion.path}`, exclusion.reason);
     for (const path of value.enumeration.scanned) add(`scanned:${path}`, path);
     for (const path of value.enumeration.unscanned) add(`unscanned:${path}`, path);
