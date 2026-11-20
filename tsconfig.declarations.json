@@ -407,7 +407,8 @@
     "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
     // Imported by stop-toolless-mcp-hint.test.ts for `evaluateStop` / `scanTranscript`
     // (WI-6554700010048155, layer C of WI-6554700010048116).
-    "apps/operator/scripts/hooks/cc/stop-toolless-mcp-hint.mjs",
+    "apps/operator/scripts/hooks/inject/toolless-mcp-recovery.mjs",
+    "apps/operator/scripts/hooks/inject/index.mjs",
     // Imported by stop-failure-record.test.ts for buildStopFailureReport /
     // postStopFailureReport (client-native-features-adoption-2026-10-21 P-002).
     "apps/operator/scripts/hooks/cc/stop-failure-record.mjs",
