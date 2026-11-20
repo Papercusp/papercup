@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 let registry: { projects: Array<Record<string, unknown>> } = { projects: [] };
 const batchedQueryCalls: unknown[][] = [];
 let workItemSlugs: string[] = [];
+const specTransaction = vi.hoisted(() => vi.fn());
 
 vi.mock('../../harness-registry', async (importActual) => ({
   ...(await importActual<typeof import('../../harness-registry')>()),
@@ -31,6 +32,7 @@ vi.mock('../../harness-registry', async (importActual) => ({
 // many db-org exports; only the shared org pool is faked.
 vi.mock('@papercusp/db-org', async (importActual) => ({
   ...(await importActual<typeof import('@papercusp/db-org')>()),
+  withWorkspaceLegacy: specTransaction,
   getOrgPg: () => ({
     // tagged template: capture interpolated values, return work_items rows
     sql: Object.assign(
@@ -117,6 +119,35 @@ beforeEach(() => {
   workItemSlugs = ['alpha'];
   batchedQueryCalls.length = 0;
   resetProjectsCache();
+});
+
+it('records one spec revision for an exact PUT retry and a second for changed content', async () => {
+  const routes = (await import('../routes/projects')).default as Route[];
+  const put = routes.find(entry => entry.method === 'PUT' && entry.path === '/harness/:slug/projects/:id/spec')!;
+  const params = { slug: 'alpha', id: 'project-15' };
+  const initial = { spec: 'First version', author: 'Alice', summary: 'Initial edit' };
+  const changed = { spec: 'Second version', author: 'Bob', summary: 'Reviewed edit' };
+  const current = vi.fn().mockResolvedValueOnce({ spec: null }).mockResolvedValue({ spec: initial.spec });
+  const prior = vi.fn().mockResolvedValue({ ...initial, author_role: 'user', include_decisions: null });
+  const append = vi.fn();
+  const update = vi.fn();
+  specTransaction.mockImplementation(async (_slug, _workspace, transaction) => transaction({
+    prepare(query: string) {
+      if (query.includes('INSERT INTO harness_shared.project_spec_revisions')) return { run: append };
+      if (query.includes('UPDATE harness_shared.projects')) return { run: update };
+      if (query.includes('FROM harness_shared.project_spec_revisions')) return { get: prior };
+      if (query.includes('FROM harness_shared.projects')) return { get: current };
+      throw new Error('Unexpected project SQL: ' + query);
+    },
+  }));
+  const save = (body: typeof initial) => put.handler(new Request('http://localhost/api/harness/alpha/projects/project-15/spec', {
+    method: 'PUT', body: JSON.stringify(body),
+  }), { ...CTX, params });
+  for (const body of [initial, initial, changed]) expect((await save(body)).status).toBe(200);
+  expect(append).toHaveBeenCalledTimes(2);
+  expect(append.mock.calls[0]).toEqual(expect.arrayContaining([params.id, initial.spec, initial.author, initial.summary]));
+  expect(append.mock.calls[1]).toEqual(expect.arrayContaining([params.id, changed.spec, changed.author, changed.summary]));
+  expect(update).toHaveBeenCalledTimes(2);
 });
 
 describe('GET /harness/projects — batched hasState (P-005 / EI-64)', () => {

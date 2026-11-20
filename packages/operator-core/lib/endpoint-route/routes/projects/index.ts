@@ -128,20 +128,35 @@ const putSpec = defineTool({
     const spec = body.spec ?? '';
     const summary = body.summary ?? 'Manual edit by operator';
     const author = body.author ?? 'user';
+    const workspace = activeWorkspaceId();
     try {
-      const ok = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
-        const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
+      const ok = await withWorkspaceLegacy(slug, workspace, async (db) => {
+        // Serialize on the project, including the first edit when no history row exists.
+        const existing = await db.prepare(
+          'SELECT spec FROM harness_shared.projects WHERE id = ? AND workspace_id = ? FOR UPDATE',
+        ).get<{ spec: string | null }>(id, workspace);
         if (!existing) return false;
+        if (existing.spec === spec) {
+          const prior = await db.prepare(`
+            SELECT spec, summary, author, author_role, include_decisions
+              FROM harness_shared.project_spec_revisions
+             WHERE project_id = ? AND workspace_id = ?
+             ORDER BY id DESC LIMIT 1
+          `).get<{ spec: string; summary: string | null; author: string | null;
+            author_role: string; include_decisions: unknown }>(id, workspace);
+          if (prior?.spec === spec && prior.summary === summary && prior.author === author &&
+              prior.author_role === 'user' && prior.include_decisions === null) return true;
+        }
         await db.prepare(`
           INSERT INTO harness_shared.project_spec_revisions
-            (project_id, spec, summary, author_role, author)
-          VALUES (?, ?, ?, 'user', ?)
-        `).run(id, spec, summary, author);
+            (project_id, spec, summary, author_role, author, workspace_id, ts)
+          VALUES (?, ?, ?, 'user', ?, ?, clock_timestamp())
+        `).run(id, spec, summary, author, workspace);
         await db.prepare(`
           UPDATE harness_shared.projects
-             SET spec = ?, spec_updated_at = now(), spec_manually_edited_at = now(), updated_ts = ?
-           WHERE id = ?
-        `).run(spec, Date.now(), id);
+             SET spec = ?, spec_updated_at = statement_timestamp(), spec_manually_edited_at = statement_timestamp(), updated_ts = ?
+           WHERE id = ? AND workspace_id = ?
+        `).run(spec, Date.now(), id, workspace);
         return true;
       });
       if (!ok) return Response.json({ error: 'project not found' }, { status: 404 });

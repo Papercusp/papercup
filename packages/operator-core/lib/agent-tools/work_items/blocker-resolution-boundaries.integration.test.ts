@@ -91,6 +91,7 @@ const { registerAnnouncement, registerAwait, recordKeyFire, fireAwaitsForKey, in
 const { readEventConditionReachability } = await import('../../external-condition-reachability');
 const { readBlockerResolution, prepareBlockerDecision } = await import('../../blocker-resolution-decision');
 const { default: setBlocker } = await import('./set_blocker');
+const { default: checkpointTool } = await import('./checkpoint');
 const { default: setState } = await import('./set_state');
 const { default: release } = await import('./release');
 const { default: park } = await import('./park');
@@ -105,7 +106,7 @@ const ref = { kind: 'event' as const, ref: EVENT };
 const CTX = { isSuperuser: true, uiClientId: OWNER, workspaceId: 'default', role: 'su',
   signal: new AbortController().signal, log: () => {}, progress: () => {}, metadata: () => {} } as never;
 let claimSequence = 0;
-type Result = { ok?: boolean; code?: string; error?: string; nextAction?: string;
+type Result = { ok?: boolean; code?: string; error?: string; nextAction?: string; contentHash?: string;
   results?: Result[]; replayed?: boolean; blockerDecision?: { id: string }; slowPathTiming?: unknown };
 async function call(tool: { handler: (args: never, ctx: never) => Promise<unknown> }, args: Record<string, unknown>, ctx = CTX) {
   let invocation: { callId: string; ownerId: string; workspaceId: string } | undefined;
@@ -1062,6 +1063,50 @@ describe('public blocker resolution boundaries', () => {
     expect(await call(setState, { id, harness: HARNESS, state: 'open', blockerDecision: deferral('persist') }))
       .toMatchObject({ ok: false, code: 'blocker_decision_conflict' });
     expect(await snapshot(id)).toEqual(before);
+  });
+
+  it('preserves checkpoint custody and refuses a stale blocker amendment after replay', async () => {
+    const id = await seed();
+    const ref = checkpointRef(id);
+    const checkpoint = (args: Record<string, unknown>) => call(checkpointTool, { id, harness: HARNESS, ...args });
+    const first = await checkpoint({ checkpoint: 'First measured project revision and original custody.' });
+    expect(first, JSON.stringify(first)).toMatchObject({ ok: true, contentHash: expect.any(String) });
+    const firstJournal = await checkpoints.getWorkItemCheckpointJournal(ref);
+    expect(firstJournal[0]).toMatchObject({ note: expect.stringContaining('First measured project revision'),
+      subjectFingerprint: { sha256: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    expect(await checkpoint({ unchanged: true, contentHash: first.contentHash })).toMatchObject({ ok: true });
+    expect(await checkpoints.getWorkItemCheckpointJournal(ref)).toEqual(firstJournal);
+
+    const decide = (decision: DeferralDecision) => call(setBlocker, { id, harness: HARNESS,
+      kind: 'event', ref: EVENT, blockerDecision: decision });
+    const original = deferral('checkpoint-custody-original');
+    const initialDecision = await decide(original);
+    expect(initialDecision).toMatchObject({ ok: true });
+    expect(await decide(original)).toMatchObject({ ok: true, replayed: true, blockerDecision: initialDecision.blockerDecision });
+    const next = { ...deferral('checkpoint-custody-next'), priorRevision: 1 };
+    const rival = { ...deferral('checkpoint-custody-rival'), priorRevision: 1 };
+    const race = await Promise.all([decide(next), decide(rival)]);
+    expect(race.filter(result => result.ok)).toHaveLength(1);
+    expect(race.filter(result => !result.ok)).toHaveLength(1);
+    const latest = await checkpoint({ checkpoint: 'Second measured project revision. Original dependency remains open.' });
+    expect(latest).toMatchObject({ ok: true });
+    expect(latest.contentHash).not.toBe(first.contentHash);
+    const journal = await checkpoints.getWorkItemCheckpointJournal(ref);
+    expect(journal.slice(1)).toEqual(firstJournal);
+    expect(journal[0]).toMatchObject({ note: expect.stringContaining('Second measured project revision'),
+      subjectFingerprint: { sha256: expect.stringMatching(/^[0-9a-f]{64}$/) } });
+    const beforeStale = await snapshot(id);
+    expect(beforeStale.row.taken_by).toBe(OWNER);
+    expect(beforeStale.row.payload.blockerResolution.history).toEqual([
+      expect.objectContaining({ workItemId: id, authorId: OWNER, revision: 1, decision: original }),
+      expect.objectContaining({ workItemId: id, authorId: OWNER, revision: 2 }),
+    ]);
+    expect(await decide(original)).toMatchObject({ ok: true, replayed: true, blockerDecision: initialDecision.blockerDecision });
+    expect(await checkpoint({ unchanged: true, contentHash: first.contentHash })).toMatchObject({ ok: false });
+    expect(await decide({ ...deferral('checkpoint-custody-stale'), priorRevision: 1 }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_revision_conflict' });
+    expect(await snapshot(id)).toEqual(beforeStale);
+    expect(await checkpoints.getWorkItemCheckpointJournal(ref)).toEqual(journal);
   });
   it.each(['task', 'feature'] as const)('admits the first event blocker through the atomic lifecycle preflight for %s', async kind => {
     const id = await seed(kind, false);
