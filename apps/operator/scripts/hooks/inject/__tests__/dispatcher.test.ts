@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { Readable } from 'node:stream';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ledgerDir, openDeliveryLedger } from '../delivery-ledger.mjs';
@@ -1685,6 +1686,55 @@ describe('identity hook ports through the real CLI (P-011)', () => {
         vi.useRealTimers();
       }
     }
+  });
+
+  it('identity Stop recovers a missing MCP floor locally, then suppresses the same episode', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'identity-stop-recovery-'));
+    try {
+      const transcript = path.join(home, 'transcript.jsonl');
+      writeFileSync(transcript, [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'missing-floor', name: 'mcp__papercusp-su__tools_invoke', input: {} }] } }),
+        JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'missing-floor', content: 'No such tool available: mcp__papercusp-su__tools_invoke', is_error: true }] } }),
+      ].join('\n') + '\n');
+      const env = { PAPERCUSP_SID: 'sid-local-recovery', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9',
+        PAPERCUSP_MCP_PROXY_PORT: '9', PAPERCUSP_LOCKS_CACHE_DIR: path.join(home, 'cache') };
+      const event = { transcript_path: transcript, stop_hook_active: false };
+      const first = await runCli(['--client=claude', '--event=Stop'], JSON.stringify(event), env);
+      expect(first.code).toBe(0);
+      expect(first.stdout).not.toBe('');
+      expect(JSON.parse(first.stdout)).toEqual({ decision: 'block', reason: expect.stringContaining('node scripts/mcp-reconnect.mjs') });
+      expect((await runCli(['--client=claude', '--event=Stop'], JSON.stringify({ ...event, stop_hook_active: true }), env)).stdout).toBe('');
+
+      const op = fakeOperator({ text: '' });
+      const base = await op.start();
+      running = op;
+      const retry = await runCli(['--client=claude', '--event=Stop'], JSON.stringify(event),
+        { ...env, PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_MCP_PROXY_PORT: new URL(base).port });
+      expect(retry.code).toBe(0);
+      expect(retry.stdout).toBe('');
+      expect(op.received).toHaveLength(1);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('nested Stop and the identity kill switch cannot consume a local recovery episode', async () => {
+    const home = mkdtempSync(path.join(tmpdir(), 'identity-stop-nested-'));
+    try {
+      const transcript = path.join(home, 'transcript.jsonl');
+      writeFileSync(transcript, [
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'missing-floor', name: 'mcp__papercusp-su__tools_find', input: {} }] } }),
+        JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'missing-floor', content: 'No such tool available: mcp__papercusp-su__tools_find', is_error: true }] } }),
+      ].join('\n') + '\n');
+      const { dispatch } = await import(copiedCli);
+      const event = JSON.stringify({ transcript_path: transcript, stop_hook_active: false });
+      const env = hookEnv({ PAPERCUSP_SID: 'sid-nested-recovery', PAPERCUSP_LOCKS_CACHE_DIR: path.join(home, 'cache') });
+      const fetchImpl = vi.fn(() => { throw new Error('local recovery must not contact the operator'); });
+      const invoke = (isNested: boolean, currentEnv = env) => dispatch({ argv: ['--client=claude', '--event=Stop'],
+        stdin: Readable.from([event]), env: currentEnv, isNested: () => isNested, fetchImpl });
+      expect(await invoke(true)).toBeNull();
+      expect(await invoke(false, { ...env, PAPERCUSP_IDENTITY_HOOKS: 'off' })).toBeNull();
+      expect(JSON.parse(await invoke(false))).toMatchObject({ decision: 'block' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
   it('stop and compaction reach their endpoints and render per client', async () => {
