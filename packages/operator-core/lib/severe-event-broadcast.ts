@@ -304,6 +304,7 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
     // No `wake` option ⇒ plain inject: lands in severe-events subscribers' inboxes for their
     // next turn, without a forced re-invoke storm. The original selector remains in audience
     // history even when no subscribers resolve; coord:conditions reads the shared log.
+    // notify-classification: {"id":"packages/operator-core/lib/severe-event-broadcast.ts#<module>/broadcastSevereEvent:35139c13d022219d642c:1","classification":"durable","reason":"Severe condition notices must remain in audience history even with no current subscribers; producer shutdown must not erase the terminal notice.","durablePath":"UNVERIFIED requirement: packages/operator-core/lib/agent-tools/coordination/messages.ts#sendMessage","deliveryState":"unverified"}
     await sendMessage(SEVERE_EVENT_IDENTITY, {
       to: ['@topic:severe-events'],
       summary: ev.summary,

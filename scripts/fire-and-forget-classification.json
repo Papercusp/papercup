@@ -101603,14 +101603,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/severe-event-broadcast.ts#<module>/broadcastSevereEvent:aa611d62b1827a89a84b:1",
-      "path": "packages/operator-core/lib/severe-event-broadcast.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches send, sendMessage; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/severe-event-broadcast.ts#<module>/broadcastSevereEventResolved:6e7f237d1def4a69d2e5:1",
       "path": "packages/operator-core/lib/severe-event-broadcast.ts",
       "classification": "durable",
