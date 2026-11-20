@@ -7,6 +7,7 @@ import {
   planFrozenRepairLegRouting,
 } from './frozen-repair-agent-routing';
 import { routeFrozenRepairLegs, type FrozenRepairLegRoutingDeps } from './frozen-repair-leg-routing';
+import { nextRepairSignature } from './frozen-candidate-repair-queue';
 
 const CAND = 'c'.repeat(40);
 const HEAD = 'h'.repeat(40);
@@ -14,6 +15,36 @@ const queue = (failingTests: string[]) => ({ candidate: CAND, repairHead: HEAD, 
 const key = (entry: string, pipeline = 'papercusp') => frozenRepairLegConditionKey(pipeline, entry, CAND, HEAD);
 
 describe('planFrozenRepairLegRouting (P-013 / D-029)', () => {
+  it.each([11, 12, 13, 49, 50, 51, 137])('publishes exactly %i concrete checks without their recorded workspace aggregate', (n) => {
+    const workspace = '@papercusp/operator-core';
+    const checks = [...Array.from({ length: n - 2 }, (_, i) => `lib/case-${i}.test.ts`),
+      `${workspace} :: lint:condition-rail`, 'lint:tsc'];
+    const recorded = nextRepairSignature(undefined, {
+      head: HEAD, round: 1, failingTests: [workspace, ...checks],
+    });
+    const input = { ...queue(recorded.failingTests), signature: recorded.signature };
+    const before = structuredClone(input);
+    const plan = planFrozenRepairLegRouting({ pipeline: 'papercusp', queue: input, openLegKeys: [] });
+    expect(plan.open.map((o) => o.entry)).toEqual(checks);
+    expect(plan.workspaceAggregates).toEqual([workspace]);
+    expect(input).toEqual(before); // publication does not rewrite the durable failure record
+    for (const item of plan.open) expect(item.failure.signature)
+      .toEqual(recorded.signature.find((s) => s.id === item.entry));
+    const replay = planFrozenRepairLegRouting({ pipeline: 'papercusp',
+      queue: { ...input, failingTests: [...input.failingTests].reverse() },
+      openLegKeys: plan.open.map((o) => o.conditionKey) });
+    expect(replay.open).toEqual([]);
+    expect(replay.resolve).toEqual([]);
+    expect(replay.routed.slice().sort()).toEqual(checks.slice().sort());
+  });
+
+  it('retains workspace-only failures when no recorded file proves subsumption', () => {
+    const entries = ['@papercusp/unattributed', 'other/relative.test.ts'];
+    const plan = planFrozenRepairLegRouting({ pipeline: 'papercusp', queue: queue(entries), openLegKeys: [] });
+    expect(plan.routed).toEqual(entries);
+    expect(plan.workspaceAggregates).toEqual([]);
+  });
+
   it('preserves full path, case and evidence bytes while keeping distinct complete identities', () => {
     const entry = ' packages/a long/quoted:case.test.ts ';
     const record = { id: entry, kind: 'test-file' as const, recipe: 'native test', admittedRound: 1,

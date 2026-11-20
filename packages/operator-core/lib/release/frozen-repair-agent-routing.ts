@@ -151,6 +151,8 @@ export interface FrozenRepairLegRoutingPlan {
   resolve: string[];
   /** The complete failing population that should hold an item after this tick. */
   routed: string[];
+  /** Recorded workspace grouping rows omitted from publication; the queue stays intact. */
+  workspaceAggregates: string[];
 }
 
 /** A failing entry is admitted by path only when it IS a path; a leg name is not one. */
@@ -177,18 +179,6 @@ export function planFrozenRepairLegRouting(
 ): FrozenRepairLegRoutingPlan {
   const prefix = frozenRepairLegKeyPrefix(input.pipeline);
   const open = new Set(input.openLegKeys.filter((k) => k.startsWith(prefix)));
-  const routed: string[] = [];
-  if (input.queue) {
-    const seen = new Set<string>();
-    for (const raw of input.queue.failingTests) {
-      if (typeof raw !== 'string' || !raw.trim()) throw new Error('Invalid frozen failure identity');
-      const entry = raw;
-      if (seen.has(entry)) continue;
-      seen.add(entry);
-      if (input.passedAtRepairHead?.has(entry)) continue;
-      routed.push(entry);
-    }
-  }
   const signatures = new Map<string, RepairSignatureEntry>();
   for (const record of input.queue?.signature ?? []) {
     const prior = signatures.get(record.id);
@@ -197,17 +187,41 @@ export function planFrozenRepairLegRouting(
     }
     signatures.set(record.id, record);
   }
+  const failing = new Set(input.queue?.failingTests ?? []);
+  const fileWorkspaces = new Set([...signatures.values()]
+    .filter((record) => record.kind === 'test-file' && failing.has(record.id) && record.workspace)
+    .map((record) => record.workspace!));
+  const workspaceAggregates: string[] = [];
+  const routed: string[] = [];
+  if (input.queue) {
+    const seen = new Set<string>();
+    for (const raw of input.queue.failingTests) {
+      if (typeof raw !== 'string' || !raw.trim()) throw new Error('Invalid frozen failure identity');
+      const entry = raw;
+      if (seen.has(entry)) continue;
+      seen.add(entry);
+      const record = signatures.get(entry);
+      // A bare workspace is also emitted for its failing files. Only recorded file
+      // attribution proves that grouping; retain ambiguous/workspace-only failures.
+      if (record?.kind === 'workspace-task' && record.workspace === entry && fileWorkspaces.has(entry)) {
+        workspaceAggregates.push(entry);
+        continue;
+      }
+      if (input.passedAtRepairHead?.has(entry)) continue;
+      routed.push(entry);
+    }
+  }
   const conditionKeyFor = (entry: string) => frozenRepairLegConditionKey(
     input.pipeline, entry, input.queue?.candidate, input.queue?.repairHead, signatures.get(entry),
   );
   const wanted = new Set(routed.map(conditionKeyFor));
-  const plan: FrozenRepairLegRoutingPlan = { open: [], resolve: [], routed };
+  const plan: FrozenRepairLegRoutingPlan = { open: [], resolve: [], routed, workspaceAggregates };
   for (const key of open) if (!wanted.has(key)) plan.resolve.push(key);
   plan.resolve.sort();
   if (!input.queue) return plan;
   const total = new Set(
     input.queue.failingTests,
-  ).size;
+  ).size - workspaceAggregates.length;
   for (const entry of routed) {
     const conditionKey = conditionKeyFor(entry);
     if (open.has(conditionKey)) continue;
