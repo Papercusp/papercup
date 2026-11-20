@@ -391,6 +391,7 @@ describe('migration 938 activation-audit ledger', () => {
     });
   });
 
+
   it('rejects a mapping target absent from the locked current revision', async () => {
     await seedCurrentPlan();
 
