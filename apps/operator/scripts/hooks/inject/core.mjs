@@ -1121,7 +1121,9 @@ function stripCanonicalPtoolIdempotencyKey(header) {
  * @param {string} command
  */
 function isCanonicalPlanEditCommand(command) {
-  if (command.length > 32_768 || command.includes(String.fromCharCode(0))) return false;
+  // Match the complete typed call regardless of the inert plan text's size.
+  // guardCall owns the explicit wire-input limit; no prefix is admitted here.
+  if (command.includes(String.fromCharCode(0))) return false;
   const lines = command.split('\n').map(line => line.endsWith('\r') ? line.slice(0, -1) : line);
   if (lines.at(-1) === '') lines.pop();
   if (lines.length < 3) return false;

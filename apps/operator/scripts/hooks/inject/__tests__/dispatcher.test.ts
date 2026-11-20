@@ -480,6 +480,16 @@ describe('identity hook ports (P-011): parse / render', () => {
     expect(claude.parse('pre-tool', { tool_input: {} })).toBeNull();
   });
 
+  it.each([-1, 0, 1])('pre-tool preserves the explicit wire byte boundary (%i)', delta => {
+    const maxBytes = ports.PORTS['pre-tool'].guardInputMaxBytes;
+    const input = { cmd: 'x'.repeat(maxBytes - Buffer.byteLength(JSON.stringify({ cmd: '' })) + delta) };
+    expect(Buffer.byteLength(JSON.stringify(input))).toBe(maxBytes + delta);
+    for (const adapter of [claude, codex]) {
+      expect(adapter.parse('pre-tool', { tool_name: 'exec_command', tool_input: input }))
+        .toEqual(delta > 0 ? { tool: 'exec_command', inputTruncated: true } : { tool: 'exec_command', input });
+    }
+  });
+
   it('pre-tool renders ONLY as a deny, on both clients', () => {
     for (const adapter of [claude, codex]) {
       const out = JSON.parse(adapter.render('pre-tool', 'Refused by identity a rule b: no') as string);
@@ -1016,6 +1026,30 @@ describe('identity hook ports through the real CLI (P-011)', () => {
       }
     }
   });
+
+  it.each([32_767, 32_768, 32_769, 60_000])(
+    'pre-tool: unavailable authority preserves complete canonical draft edits at %i characters', async size => {
+      const { runInjection } = await import('../core.mjs');
+      const args = { slug: 'repair-plan', old_string: 'Original Discovery', new_string: '', expectedHash: 'a'.repeat(64) };
+      const command = () => [
+        "ptool plans:edit --url=http://127.0.0.1:3170 --json - <<'JSON'", JSON.stringify(args), 'JSON',
+      ].join('\n');
+      args.new_string = 'x'.repeat(size - command().length);
+      const cmd = command();
+      expect(cmd).toHaveLength(size);
+      for (const [adapter, nativeEvent] of [[claude, 'PreToolUse'], [codex, 'pre-tool-use']] as const) {
+        const options = { adapter, nativeEvent, env: hookEnv({ PAPERCUSP_SID: 'sid-large-plan-edit' }),
+          fetchImpl: (async () => { throw Error('authority unavailable'); }) as typeof fetch };
+        expect(await runInjection({ ...options, event: { tool_name: 'exec_command', tool_input: { cmd } } })).toBeNull();
+        for (const unsafe of [cmd + '\ntouch source.ts', cmd.replace("<<'JSON'", '<<JSON')]) {
+          const result = await runInjection({ ...options, event: { tool_name: 'exec_command', tool_input: { cmd: unsafe } } });
+          expect(JSON.parse(result!).hookSpecificOutput).toMatchObject({
+            permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('no server verdict was received'),
+          });
+        }
+      }
+    },
+  );
 
   it('pre-tool: unavailable authority admits typed pre-start plans:audit and invoke retries only', async () => {
     const { runInjection } = await import('../core.mjs');
