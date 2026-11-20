@@ -8,6 +8,87 @@ import { inspectScopedFeasibilitySelection, readScopedFeasibilityQuestion,
 import { discoveryDeclarationSchema, scopedFeasibilityExperimentSchema } from './plan-declarations';
 import { readScopedFeasibilityTestRoutes } from './plan-execution-guard';
 
+import { readScopedFeasibilityHistory, type ScopedFeasibilityHistoryRow } from './plan-execution-authority';
+
+describe('scoped feasibility immutable history', () => {
+  const scope = { workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'draft' };
+  const key = JSON.stringify(['WI-held', 'Q-6']);
+  const grant = (changes: Record<string, unknown> = {}) => ({
+    schema: 'scoped-feasibility-v1', action: 'grant', scope, actorId: 'actor', workItemId: 'WI-held',
+    questionId: 'Q-6', claimTakenAt: '2026-11-20T00:00:00.000001+00:00', planRevision: 7,
+    planContentHash: 'hash', planSnapshot: { content: 'draft', content_hash: 'hash', version: 7 },
+    repositoryRoot: '/private/repository', experiment: feasibilitySelection(),
+    issuedAt: '2026-11-20T00:00:00.000002+00:00', expiresAt: '2026-11-20T00:01:00.000002+00:00',
+    replacedReceiptId: null, revokedReceiptId: null, ...changes,
+  });
+  const row = (seq: number, value = grant(), changes: Partial<ScopedFeasibilityHistoryRow> = {}): ScopedFeasibilityHistoryRow => ({
+    seq, content_snapshot: JSON.stringify(value), content_hash: 'hash',
+    rationale: 'plans:audit scoped-feasibility:' + value.action, author_id: value.actorId, ...changes,
+  });
+  const latest = (rows: ScopedFeasibilityHistoryRow[]) => readScopedFeasibilityHistory(rows, scope).get(key)!;
+
+  it('keeps replacement and revocation ordered by immutable event identity', () => {
+    const first = row(1), firstId = latest([first]).receiptId;
+    const replacement = row(2, grant({ replacedReceiptId: firstId }));
+    const replacementId = latest([first, replacement]).receiptId;
+    expect(replacementId).not.toBe(firstId);
+    const before = JSON.stringify([first, replacement]);
+    const revoke = row(3, grant({ action: 'revoke', revokedReceiptId: replacementId }));
+    expect(latest([first, replacement, revoke]).event.action).toBe('revoke');
+    expect(JSON.stringify([first, replacement])).toBe(before);
+    expect(() => latest([first, replacement, row(3, grant({ action: 'revoke', revokedReceiptId: firstId }))]))
+      .toThrow('revoke_mismatch');
+  });
+  it('permits a fresh grant after revocation without resurrecting the revoked identity', () => {
+    const first = row(1), firstId = latest([first]).receiptId;
+    const revoke = row(2, grant({ action: 'revoke', revokedReceiptId: firstId }));
+    const fresh = latest([first, revoke, row(3)]);
+    expect(fresh.event.action).toBe('grant');
+    expect(fresh.receiptId).not.toBe(firstId);
+  });
+  it('requires a same-custody replacement to name the exact prior grant', () => {
+    expect(() => latest([row(1), row(2)])).toThrow('replacement_required');
+    expect(() => latest([row(1), row(2, grant({ replacedReceiptId: 'caller-invented' }))])).toThrow('replacement_required');
+  });
+  it('keeps fresh claim custody separate from a previous custodian', () => {
+    const first = row(1), firstId = latest([first]).receiptId;
+    const fresh = row(2, grant({ actorId: 'successor', claimTakenAt: '2026-11-20T00:02:00.000001+00:00' }));
+    expect(latest([first, fresh]).event.actorId).toBe('successor');
+    expect(() => latest([first, row(2, grant({ action: 'revoke', actorId: 'successor', revokedReceiptId: firstId }))]))
+      .toThrow('revoke_mismatch');
+  });
+  it.each([
+    ['unknown schema', { schema: 'scoped-feasibility-v2' }],
+    ['unknown field', { receiptId: 'caller-invented' }],
+    ['wrong discriminant', { action: 'replace' }],
+    ['wrong selection', { experiment: { ...feasibilitySelection(), testPaths: [] } }],
+    ['missing revoke identity', { action: 'revoke' }],
+  ])('denies newer %s instead of falling back to an old grant', (_label, changes) => {
+    expect(() => latest([row(1), row(2, grant(changes))])).toThrow('invalid_event');
+  });
+  it('denies malformed tagged history rather than recovering a prior grant', () => {
+    expect(() => latest([row(1), row(2, grant(), { content_snapshot: '{' })])).toThrow('history_malformed');
+  });
+  it.each([
+    ['scope', { scope: { ...scope, workspaceId: 'foreign' } }, {}],
+    ['author', {}, { author_id: 'foreign' }],
+    ['hash', {}, { content_hash: 'foreign' }],
+  ])('denies mismatched immutable %s', (_label, changes, rowChanges) => {
+    expect(() => latest([row(1, grant(changes), rowChanges)])).toThrow('scope_or_author_mismatch');
+  });
+  it.each([[1, 1], [2, 1], [1, Number.NaN]])('denies ambiguous history ordering %j', (...seqs) => {
+    expect(() => latest(seqs.map(seq => row(seq)))).toThrow('ambiguous_order');
+  });
+  it('checks a decisive revoke after a large complete ordinary-history population', () => {
+    const first = row(1), firstId = latest([first]).receiptId;
+    const ordinary = Array.from({ length: 1000 }, (_, i) =>
+      row(i + 2, grant(), { content_snapshot: '# ordinary plan revision', rationale: 'ordinary write' }));
+    const revoked = latest([first, ...ordinary, row(1002, grant({ action: 'revoke', revokedReceiptId: firstId }))]);
+    expect(revoked.seq).toBe(1002);
+    expect(revoked.event.action).toBe('revoke');
+  });
+});
+
 const feasibilitySelection = () => ({
   testPaths: ['Z.test.ts', 'a.test.tsx'], fixturePaths: ['fixtures/data.json'], lifetimeSec: 60,
 });

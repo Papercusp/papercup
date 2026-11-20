@@ -9,10 +9,12 @@ import { previewDiscoveryDeclaration, scopedFeasibilityExperimentSchema,
 
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import type { AgentIdentity } from '../coordination/identity';
-import { recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
+import { acquirePlanRevisionAdvisoryLock, recordPlanRevisionInTransaction, type PlanRevisionSql } from './revisions';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
 import { planExecutionMeaning } from './plan-execution-meaning';
-import { checkPlanExecutionReadiness, type ExecutionPlanBinding } from './plan-execution-guard';
+import { checkPlanExecutionReadiness, readScopedFeasibilityTestRoutes, type ExecutionPlanBinding } from './plan-execution-guard';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { parsePlan } from './parser';
 import { readPlanLineItems } from './plan-line-graph';
 import { renderPlanLines } from './plan-line-render';
 import { revalidateOwnerSelectedReviewForStart } from './plan-start-owner-review';
@@ -136,6 +138,70 @@ export { preservePlanExecutionProgress } from './plan-execution-progress';
 
 export interface ExecutionStartScope { workspaceId: string; harnessSlug: string; planSlug: string }
 export type ExecutionPlanRow = Record<string, unknown> & { content: string; content_hash: string };
+const feasibilityHistoryMarker = 'plans:audit scoped-feasibility:';
+const feasibilityEventSchema = z.object({
+  schema: z.literal('scoped-feasibility-v1'), action: z.enum(['grant', 'revoke']),
+  scope: z.object({ workspaceId: z.string().min(1), harnessSlug: z.string().min(1), planSlug: z.string().min(1) }).strict(),
+  actorId: z.string().min(1), workItemId: z.string().min(1),
+  questionId: feasibilityRequestFields.questionId, claimTakenAt: z.string().min(1),
+  planRevision: feasibilityRequestFields.expectedPlanRevision, planContentHash: z.string().min(1),
+  planSnapshot: z.record(z.string(), z.unknown()), repositoryRoot: z.string().min(1),
+  experiment: scopedFeasibilityExperimentSchema, issuedAt: z.string().min(1), expiresAt: z.string().min(1),
+  replacedReceiptId: z.string().min(1).nullable(), revokedReceiptId: z.string().min(1).nullable(),
+}).strict().superRefine((event, ctx) => {
+  if ((event.action === 'grant') !== (event.revokedReceiptId === null))
+    ctx.addIssue({ code: 'custom', path: ['revokedReceiptId'], message: 'must identify exactly a revoked grant' });
+});
+type FeasibilityEvent = z.infer<typeof feasibilityEventSchema>;
+export interface ScopedFeasibilityHistoryRow {
+  seq: number; content_snapshot: string; content_hash: string; rationale: string | null; author_id: string;
+}
+const feasibilityReceiptId = (scope: ExecutionStartScope, seq: number): string =>
+  'scoped-feasibility-v1:' + JSON.stringify([scope.workspaceId, scope.harnessSlug, scope.planSlug, seq]);
+
+/** Complete ordered history: no row/text prefix decides authority. Newer unknown
+ * or malformed events cannot expose an older usable grant. Scope stays exact. */
+export function readScopedFeasibilityHistory(rows: ScopedFeasibilityHistoryRow[], scope: ExecutionStartScope):
+  Map<string, { event: FeasibilityEvent; receiptId: string; seq: number }> {
+  const latest = new Map<string, { event: FeasibilityEvent; receiptId: string; seq: number }>();
+  let previousSeq = 0;
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.seq) || row.seq <= previousSeq)
+      throw new Error('feasibility_history_ambiguous_order');
+    previousSeq = row.seq;
+    let value: unknown;
+    try { value = JSON.parse(row.content_snapshot); } catch {
+      if (row.rationale?.startsWith(feasibilityHistoryMarker)) throw new Error('feasibility_history_malformed');
+      continue;
+    }
+    const tagged = typeof value === 'object' && value !== null && 'schema' in value
+      && typeof value.schema === 'string' && value.schema.startsWith('scoped-feasibility-');
+    if (!tagged && !row.rationale?.startsWith(feasibilityHistoryMarker)) continue;
+    const parsed = feasibilityEventSchema.safeParse(value);
+    if (!parsed.success) throw new Error('feasibility_history_invalid_event:' + parsed.error.message);
+    const event = parsed.data;
+    if (!isDeepStrictEqual(event.scope, scope) || row.author_id !== event.actorId
+      || row.content_hash !== event.planContentHash)
+      throw new Error('feasibility_history_scope_or_author_mismatch');
+    const key = JSON.stringify([event.workItemId, event.questionId]);
+    const prior = latest.get(key);
+    if (event.action === 'grant' && prior?.event.action === 'grant'
+      && prior.event.actorId === event.actorId && prior.event.claimTakenAt === event.claimTakenAt
+      && event.replacedReceiptId !== prior.receiptId)
+      throw new Error('feasibility_history_replacement_required');
+    if (event.action === 'revoke' && (!prior || prior.event.action !== 'grant'
+      || event.revokedReceiptId !== prior.receiptId || prior.event.actorId !== event.actorId
+      || prior.event.claimTakenAt !== event.claimTakenAt))
+      throw new Error('feasibility_history_revoke_mismatch');
+    if (event.replacedReceiptId !== null && (!prior || prior.event.action !== 'grant'
+      || event.replacedReceiptId !== prior.receiptId || prior.event.actorId !== event.actorId
+      || prior.event.claimTakenAt !== event.claimTakenAt))
+      throw new Error('feasibility_history_replacement_mismatch');
+    latest.set(key, { event, receiptId: feasibilityReceiptId(scope, row.seq), seq: row.seq });
+  }
+  return latest;
+}
+
 const progressFields = ['execution_start_revision_seq', 'execution_start_invalidation', 'rendered_content', 'content', 'content_hash', 'version', 'updated_at',
   'updated', 'status', 'op_status', 'op_updated_at', 'op_started_at', 'items', 'decisions', 'title',
   'now_state', 'now_next', 'now_note', 'now_note_version', 'now_note_updated_at', 'fed_ts', 'fed_hlc', 'origin'];
@@ -190,6 +256,104 @@ async function readExecutionSnapshot(sql: PlanRevisionSql, scope: ExecutionStart
   );
   const [normalized] = await normalizeExecutionTimestamps(sql, [row]);
   return { ...normalized!, rendered_content: renderPlanLines(row.content, items) };
+}
+
+type ScopedFeasibilityRequest = z.infer<typeof scopedFeasibilityRequestSchema>;
+type ScopedFeasibilitySelection = ReturnType<typeof inspectScopedFeasibilitySelection>;
+
+async function readScopedFeasibilityClaim(sql: PlanRevisionSql, scope: ExecutionStartScope,
+  identity: AgentIdentity, workItemId: string, lock = false): Promise<string> {
+  const rows = await sql<{ claim_taken_at: string | null }[]>`
+    SELECT to_char(w.taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00' AS claim_taken_at
+      FROM harness_shared.work_items w
+     WHERE w.workspace_id=${scope.workspaceId} AND w.harness_slug=${scope.harnessSlug}
+       AND w.feature_id=${workItemId} AND w.taken_by=${identity.ownerId} AND w.taken_at IS NOT NULL
+       AND (w.source_plan_slug=${scope.planSlug} OR w.plan_slug=${scope.planSlug})
+       AND NOT(w.status=ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       ${lock ? sql`FOR UPDATE` : sql``}`;
+  if (rows.length !== 1 || !rows[0]?.claim_taken_at) throw new Error('feasibility_current_linked_custody_required');
+  return rows[0].claim_taken_at;
+}
+
+async function readScopedFeasibilityEvents(sql: PlanRevisionSql, scope: ExecutionStartScope) {
+  // The complete spine is authoritative, including events after ordinary revisions.
+  // No LIMIT or diagnostic projection may expose a superseded grant.
+  const rows = await sql<ScopedFeasibilityHistoryRow[]>`
+    SELECT seq,content_snapshot,content_hash,rationale,author_id FROM harness_shared.plan_revisions
+     WHERE workspace_id=${scope.workspaceId} AND harness_slug=${scope.harnessSlug} AND plan_slug=${scope.planSlug}
+     ORDER BY seq`;
+  return readScopedFeasibilityHistory(rows, scope);
+}
+
+function prepareScopedFeasibilityPlan(row: ExecutionPlanRow | null, request: ScopedFeasibilityRequest,
+  repositoryRoot: string): ScopedFeasibilitySelection {
+  if (!row || row.status !== 'draft' || parsePlan(String(row.rendered_content)).frontmatter.status !== 'draft')
+    throw new Error('feasibility_unresolved_draft_required');
+  if (row.version !== request.expectedPlanRevision) throw new Error('feasibility_plan_revision_mismatch');
+  return inspectScopedFeasibilitySelection(
+    readScopedFeasibilityQuestion(String(row.rendered_content), request.questionId), repositoryRoot);
+}
+
+/** Existing plans:audit Discovery branch only. The root is resolved by its host,
+ * never read from the request. Slow router preparation finishes before the write
+ * transaction; its final locks fence both the complete plan and claim generation.
+ * Appending this immutable event does not update the plan body or its version. */
+export async function recordScopedFeasibilityAudit(scope: ExecutionStartScope, identity: AgentIdentity,
+  input: unknown, repositoryRoot: string, dryRun = false) {
+  const request = scopedFeasibilityRequestSchema.parse(input);
+  if (!identity.ownerId || identity.workspaceId !== scope.workspaceId)
+    throw new Error('feasibility_actor_scope_mismatch');
+  const expected = await readExecutionPlanRow(scope);
+  const prepared = prepareScopedFeasibilityPlan(expected, request, repositoryRoot);
+  const { sql } = getOrgPg();
+  const expectedClaim = await readScopedFeasibilityClaim(sql, scope, identity, request.workItemId);
+  if (request.action === 'grant') {
+    if (!prepared.existingTestPaths.length) throw new Error('feasibility_existing_routable_test_required');
+    const routes = await readScopedFeasibilityTestRoutes(prepared.existingTestPaths, prepared.repositoryRoot);
+    if (routes.some(route => !route.ok)) throw new Error('feasibility_selected_test_unroutable:' + JSON.stringify(routes));
+  }
+  return withWorkspace(scope.workspaceId, async tx => {
+    await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(scope.workspaceId, scope.harnessSlug, scope.planSlug));
+    await acquirePlanRevisionAdvisoryLock(tx, scope.workspaceId, scope.harnessSlug, scope.planSlug);
+    const row = await readExecutionSnapshot(tx, scope, true);
+    if (!row || !isDeepStrictEqual(row, expected)) throw new Error('feasibility_plan_changed_before_issuance');
+    const claimTakenAt = await readScopedFeasibilityClaim(tx, scope, identity, request.workItemId, true);
+    if (claimTakenAt !== expectedClaim) throw new Error('feasibility_claim_changed_before_issuance');
+    const selection = prepareScopedFeasibilityPlan(row, request, repositoryRoot);
+    if (!isDeepStrictEqual(selection, prepared)) throw new Error('feasibility_selection_changed_before_issuance');
+    const latest = (await readScopedFeasibilityEvents(tx, scope)).get(JSON.stringify([request.workItemId, request.questionId]));
+    const active = latest?.event.action === 'grant' ? latest : undefined;
+    const sameCustody = active?.event.actorId === identity.ownerId && active.event.claimTakenAt === claimTakenAt;
+    if (request.action === 'revoke' && (!active || !sameCustody || active.receiptId !== request.receiptId))
+      throw new Error('feasibility_revoke_current_receipt_required');
+    const replacedReceiptId = request.action === 'grant' && sameCustody ? active!.receiptId : null;
+    const revokedReceiptId = request.action === 'revoke' ? request.receiptId : null;
+    const bindings = { action: request.action, planRevision: request.expectedPlanRevision,
+      planContentHash: row.content_hash, questionId: request.questionId, workItemId: request.workItemId,
+      actorId: identity.ownerId, ...scope, repositoryRoot: selection.repositoryRoot,
+      testPaths: selection.testPaths, fixturePaths: selection.fixturePaths };
+    // A preview has no immutable event identity and cannot replace/revoke a grant.
+    if (dryRun) return { ...bindings, usable: false as const, dryRun: true as const };
+    const [clock] = await tx<{ issued_at: string; expires_at: string }[]>`
+      WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS issued)
+      SELECT to_char(issued AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00' AS issued_at,
+        to_char((issued + ${selection.lifetimeSec} * interval '1 second') AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.US') || '+00:00' AS expires_at FROM clock`;
+    if (!clock) throw new Error('feasibility_database_clock_unavailable');
+    const { existingTestPaths: _existing, repositoryRoot: _root, ...experiment } = selection;
+    const event = feasibilityEventSchema.parse({ schema: 'scoped-feasibility-v1', action: request.action,
+      scope, actorId: identity.ownerId, workItemId: request.workItemId, questionId: request.questionId,
+      claimTakenAt, planRevision: request.expectedPlanRevision, planContentHash: row.content_hash,
+      planSnapshot: row, repositoryRoot: selection.repositoryRoot, experiment,
+      issuedAt: clock.issued_at, expiresAt: clock.expires_at, replacedReceiptId, revokedReceiptId });
+    const recorded = await recordPlanRevisionInTransaction(tx, { ...scope, identity,
+      content: JSON.stringify(event), contentHash: row.content_hash,
+      rationale: feasibilityHistoryMarker + request.action });
+    const receiptId = feasibilityReceiptId(scope, recorded.seq);
+    return { ...bindings, usable: request.action === 'grant', receiptId, eventRef: receiptId,
+      issuedAt: event.issuedAt, expiresAt: event.expiresAt, replacedReceiptId,
+      ...(request.action === 'revoke' ? { revokedReceiptId } : {}) };
+  });
 }
 
 /** Canonical start calls this after its final promotion, admission and binding legs. */
