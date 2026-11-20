@@ -26,6 +26,21 @@ export async function createPublicParkTestDb(label: string) {
   const routines = baseline.match(/CREATE TABLE IF NOT EXISTS harness_shared\.routines \([\s\S]*?\n\);/);
   if (!routines) throw new Error('production routines table not found');
   await db.sql.unsafe(routines[0]);
+  // Public claims require the real dispatch ledger in this selected schema.
+  // Derive its substrate from production SQL instead of mocking corroboration.
+  const invocationDdl = [
+    /CREATE TABLE IF NOT EXISTS harness_shared\.tool_invocations \([\s\S]*?\n\);/,
+    /CREATE SEQUENCE IF NOT EXISTS harness_shared\.tool_invocations_id_seq[\s\S]*?;/,
+    /ALTER TABLE ONLY harness_shared\.tool_invocations ALTER COLUMN id SET DEFAULT[^;]+;/,
+  ].map(pattern => {
+    const statement = baseline.match(pattern)?.[0];
+    if (!statement) throw new Error(`production claim invocation substrate not found: ${pattern}`);
+    return statement;
+  });
+  await db.sql.unsafe(invocationDdl.join('\n')).simple();
+  await applyMigrationsForTest(db.sql, ['427-tool-invocations-coord-owner-id.sql',
+    '694-tool-invocations-agent-state-stamp.sql', '809-tool-invocations-call-origin.sql',
+    '1043-tool-invocations-serving-host-identity.sql', '1048-tool-invocation-goal-actor-provenance.sql'], { label });
   await applyMigrationsForTest(db.sql, ['323-loop-routines-reschedule-interval.sql',
     '408-routines-ephemeral-tier.sql', '909-routines-next-fire-ms-precision.sql',
     '1046-in-process-sweep-arm-tier.sql'], {

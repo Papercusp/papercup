@@ -1,7 +1,7 @@
 /** Public blocker contracts over real PostgreSQL. The external condition
  * producer writes the isolated event ledger; validation, identities,
  * dependencies, lifecycle, decision CAS, claims and checkpoints are production. */
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { FreshPgDb } from '../../../test/_pg-helpers';
 import { createPublicParkTestDb } from '../../../test/_public-park-pg';
@@ -89,7 +89,7 @@ const parkRecovery = await import('../../durable-park-recovery');
 const checkpoints = await import('../../work-item-checkpoint');
 const { registerAnnouncement, registerAwait, recordKeyFire, fireAwaitsForKey, inspectEventKey } = await import('../../events/await/store');
 const { readEventConditionReachability } = await import('../../external-condition-reachability');
-const { readBlockerResolution } = await import('../../blocker-resolution-decision');
+const { readBlockerResolution, prepareBlockerDecision } = await import('../../blocker-resolution-decision');
 const { default: setBlocker } = await import('./set_blocker');
 const { default: setState } = await import('./set_state');
 const { default: release } = await import('./release');
@@ -104,12 +104,37 @@ const EVENT = 'fixture:dependency-repaired';
 const ref = { kind: 'event' as const, ref: EVENT };
 const CTX = { isSuperuser: true, uiClientId: OWNER, workspaceId: 'default', role: 'su',
   signal: new AbortController().signal, log: () => {}, progress: () => {}, metadata: () => {} } as never;
+let claimSequence = 0;
 type Result = { ok?: boolean; code?: string; error?: string; nextAction?: string;
   results?: Result[]; replayed?: boolean; blockerDecision?: { id: string }; slowPathTiming?: unknown };
 async function call(tool: { handler: (args: never, ctx: never) => Promise<unknown> }, args: Record<string, unknown>, ctx = CTX) {
-  const result = await tool.handler(args as never, ctx) as { data?: Result; content?: { text?: string }[] };
+  let invocation: { callId: string; ownerId: string; workspaceId: string } | undefined;
+  let invocationCtx = ctx;
+  if (tool === claim) {
+    const identity = ctx as { uiClientId: string; workspaceId: string };
+    expect(identity.uiClientId).toBeTruthy();
+    expect(identity.workspaceId).toBeTruthy();
+    invocation = { callId: `blocker-boundaries-claim-${++claimSequence}`,
+      ownerId: identity.uiClientId, workspaceId: identity.workspaceId };
+    await h.sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
+       coord_owner_id, status, metadata_json)
+      VALUES (${invocation.workspaceId}, ${HARNESS}, 'agent-mcp', 'work_items:claim', 'su',
+        ${invocation.callId}, 'fixture', ${invocation.ownerId}, 'pending',
+        ${h.sql.json({ originalInvocation: { schemaVersion: 'original-tool-invocation-v1', ...invocation },
+          responseObservation: { state: 'pending' } })})`;
+    invocationCtx = { ...(ctx as object), dispatchCallId: invocation.callId } as never;
+  }
+  const result = await tool.handler(args as never, invocationCtx) as { data?: Result; content?: { text?: string }[] };
   const data = result.data ?? JSON.parse(result.content?.find(entry => entry.text?.startsWith('{'))?.text ?? '{}') as Result;
   const row = data.results?.[0] ?? data;
+  if (invocation && row.ok) {
+    const receipts = await h.sql`SELECT metadata_json FROM harness_shared.tool_invocations
+      WHERE metadata_json->'originalInvocation'->>'callId'=${invocation.callId}`;
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].metadata_json).toMatchObject({ originalInvocation: invocation,
+      workItemClaims: [{ itemId: args.id, holder: args.assignee ?? invocation.ownerId }] });
+  }
   if (!row.ok && args.blockerDecision) console.info('BOUNDARY_REFUSAL', JSON.stringify({ args, result: row }));
   return row;
 }
@@ -158,6 +183,9 @@ afterAll(async () => {
   finally { vi.unstubAllEnvs(); }
 });
 beforeEach(async () => {
+  // Brief publication has separate integration coverage. This suite keeps the
+  // actual claim writer and its invocation receipt, without its telemetry DB.
+  vi.spyOn(await import('../../code-intelligence/push-channel'), 'recordClaimTimeBrief').mockResolvedValue(false);
   h.parkConsult.mockReset().mockResolvedValue({ consultId: 'prospective-authority-review' });
   h.parkWake.mockReset().mockResolvedValue(undefined);
   h.parkNotify.mockReset().mockResolvedValue(undefined);
@@ -165,7 +193,7 @@ beforeEach(async () => {
     harness_shared.carry_notes, harness_shared.coord_event_log, harness_shared.blocker_boundary_transactions,
     harness_shared.event_awaits, harness_shared.event_key_fires, harness_shared.predicate_watches,
     harness_shared.coord_entity_subscriptions, harness_shared.routines,
-    harness_shared.coord_links RESTART IDENTITY CASCADE`;
+    harness_shared.coord_links, harness_shared.tool_invocations RESTART IDENTITY CASCADE`;
   await declareCondition();
 });
 async function seed(kind: 'task' | 'bug' | 'feature' = 'feature', blocked = true) {
@@ -210,6 +238,151 @@ async function snapshot(id: string) {
       routines: [...await db.sql`SELECT * FROM harness_shared.routines ORDER BY id`],
     } };
 }
+describe('plan-bound partial binding correction', () => {
+  const PLAN = 'partial-binding-admission';
+  let originalDb: FreshPgDb;
+  let orgDb: import('../../../test/_org-test-db').OrgTestDb | undefined;
+  beforeEach(async () => {
+    // Plan-source authority reads require the maintained full org fixture,
+    // including the pot registry; the ordinary park fixture is intentionally
+    // smaller. Keep every reader and snapshot on the same private database.
+    originalDb = db;
+    const { createOrgTestDb } = await import('../../../test/_org-test-db');
+    orgDb = await createOrgTestDb();
+    db = { ...originalDb, sql: orgDb.adminSql };
+    h.sql = orgDb.adminSql;
+    await declareCondition();
+  }, 90_000);
+  afterEach(async () => {
+    db = originalDb;
+    h.sql = originalDb.sql;
+    await orgDb?.cleanup();
+    orgDb = undefined;
+  });
+  async function fixture(count = 3) {
+    const id = await seed('task');
+    const { hashPlanContent } = await import('../plans/content-hash');
+    const { insertHiveIfAbsent } = await import('../../hive-store');
+    const { generateEd25519KeypairDer } = await import('../../identity/ed25519');
+    await insertHiveIfAbsent({ workspaceId: 'default', homeSlug: HARNESS,
+      pubkeyBase64: generateEd25519KeypairDer().pubkeyBase64, keychainId: 'isolated-partial-binding' }, db.sql);
+    const content = '---\ntitle: Partial binding admission\nstatus: active\n---\n\n## Phase\n' +
+      '- **P-001** `wip` Continue the original repair\n';
+    await db.sql`DELETE FROM harness_shared.harness_plans
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND plan_slug=${PLAN}`;
+    await db.sql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, title, status)
+      VALUES ('default', ${HARNESS}, ${PLAN}, ${content}, ${hashPlanContent(content)}, 'Partial binding admission', 'active')`;
+    const current = await wi.getWorkItem(id, HARNESS);
+    const prepared = prepareBlockerDecision(current!.payload, deferral('original-event-admission'), {
+      ownerId: OWNER, sessionId: OWNER, workItemId: id, custodianId: OWNER,
+    }, { effect: { fixture: 'original admission deferral' } });
+    if (!prepared.ok) throw new Error('invalid original decision');
+    await db.sql`UPDATE harness_shared.work_items SET source_plan_slug=${PLAN}, source_plan_item_ids=ARRAY['P-001'],
+      plan_slug=${PLAN}, plan_line_id='P-001', plan_seq=1,
+      payload=payload || ${JSON.stringify({ ...prepared.patch,
+        plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: HARNESS } })}::text::jsonb
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+    const dst = (await wi.resolveWorkItemRef(id, HARNESS))!;
+    const providers: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const provider = await wi.createWorkItem({ kind: 'task', title: `Independent provider ${index}`,
+        harness: HARNESS, createdBy: 'agent-repair' });
+      providers.push(provider.id);
+      await db.sql`UPDATE harness_shared.work_items SET status='wip', taken_by='agent-repair', taken_at=now()
+        WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${provider.id}`;
+      const source = (await wi.resolveWorkItemRef(provider.id, HARNESS))!;
+      await db.sql`INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+        VALUES ('default', ${dst.kind}, ${dst.ref}, ${source.kind}, ${source.ref}, 'blocks', 'success', ${OWNER})`;
+    }
+    const selected = providers[providers.length - 1];
+    const retained = { kind: 'work-item' as const, ref: `${HARNESS}#${providers[0]}` };
+    const input = async (providerId = selected, revision = 1): Promise<DeferralDecision> => {
+      const source = (await wi.resolveWorkItemRef(providerId, HARNESS))!;
+      const [edge] = await db.sql`SELECT id FROM harness_shared.work_item_deps
+        WHERE workspace_id='default' AND blocked_kind=${dst.kind} AND blocked_ref=${dst.ref}
+          AND blocker_kind=${source.kind} AND blocker_ref=${source.ref}`;
+      return { ...deferral(`partial-${providerId}`), priorRevision: revision,
+        evidenceRefs: [ref, retained, { kind: 'work-item', ref: `${HARNESS}#${providerId}` }],
+        bindingCorrection: { edgeId: String(edge.id), rationale: 'Exact admission recovered; broader provider remains pending', recoveryRef: ref },
+        deferral: { reason: 'external-dependency', responsibleParty: 'agent-repair',
+          reasonEvidenceRefs: [retained], recheckRef: retained, nextAction: 'Consume the independent retained provider result' } };
+    };
+    const correct = async (providerId = selected, revision = 1, decision?: DeferralDecision) =>
+      call(link, { id: providerId, harness: HARNESS, target_id: id, target_harness: HARNESS,
+        rel: 'blocks', remove: true, satisfaction: 'success', blockerDecision: decision ?? await input(providerId, revision) });
+    return { id, providers, selected, input, correct, dst };
+  }
+  it.each([24, 25, 26])('preserves the complete %i-edge census, pending providers and event history', async count => {
+    const f = await fixture(count);
+    await repairCondition();
+    const before = await snapshot(f.id);
+    const providers = await Promise.all(f.providers.map(id => wi.getWorkItem(id, HARNESS)));
+    const [selected] = before.edges.filter(edge => edge.blocker_ref.endsWith(f.selected));
+    const first = await f.input();
+    expect(await f.correct(f.selected, 1, first)).toMatchObject({ ok: true });
+    const after = await snapshot(f.id);
+    expect(after.edges).toEqual(before.edges.filter(edge => String(edge.id) !== String(selected.id)));
+    expect(after.row).toMatchObject({ status: before.row.status, taken_by: OWNER, taken_at: before.row.taken_at,
+      source_plan_slug: PLAN, source_plan_item_ids: ['P-001'], plan_slug: PLAN, plan_line_id: 'P-001' });
+    const { blockerResolution: previous, ...beforePayload } = before.row.payload;
+    const { blockerResolution: next, ...afterPayload } = after.row.payload;
+    expect(afterPayload).toEqual(beforePayload);
+    expect(next.history[0]).toEqual(previous.history[0]);
+    expect(next.history).toHaveLength(2);
+    expect(next.history[1].decision.disposition).toBe('defer');
+    expect(after.checkpoint).toEqual(before.checkpoint);
+    expect(await Promise.all(f.providers.map(id => wi.getWorkItem(id, HARNESS)))).toEqual(providers);
+    // Historical retries must not delete another edge or append another receipt.
+    expect(await f.correct(f.selected, 1, first)).toMatchObject({ ok: true, replayed: true });
+    expect((await snapshot(f.id)).row.payload.blockerResolution).toEqual(next);
+    // A second obsolete binding uses the same historically bound recovery,
+    // retaining the independent provider rather than resetting global custody.
+    expect(await f.correct(f.providers[count - 2], 2)).toMatchObject({ ok: true });
+    const final = await snapshot(f.id);
+    expect(final.edges).toHaveLength(count - 2);
+    expect(final.row.payload.blockerResolution.history).toHaveLength(3);
+    expect(final.row.payload.blockerResolution.history[2].decision.disposition).toBe('defer');
+  });
+  it.each(['pending-recovery', 'foreign-edge', 'unrelated-recovery', 'paused-plan', 'blocked-plan', 'conflicting-linkage', 'human-hold'])(
+    'refuses unsafe correction without changing custody or edges: %s', async variant => {
+      const f = await fixture();
+      if (variant !== 'pending-recovery') await repairCondition();
+      const decision = await f.input();
+      if (variant === 'foreign-edge') await db.sql`UPDATE harness_shared.work_item_deps SET created_by='su-foreign'
+        WHERE workspace_id='default' AND blocker_ref=${(await wi.resolveWorkItemRef(f.selected, HARNESS))!.ref}`;
+      if (variant === 'unrelated-recovery') decision.bindingCorrection!.recoveryRef = { kind: 'event', ref: 'unrelated:successful' };
+      if (variant === 'paused-plan') await db.sql`UPDATE harness_shared.harness_plans SET op_status='paused'
+        WHERE workspace_id='default' AND harness_slug=${HARNESS} AND plan_slug=${PLAN}`;
+      if (variant === 'blocked-plan') {
+        const { hashPlanContent } = await import('../plans/content-hash');
+        const content = '---\ntitle: Partial binding admission\nstatus: active\n---\n\n## Phase\n- **P-001** `blocked` Continue the original repair\n';
+        await db.sql`UPDATE harness_shared.harness_plans SET content=${content}, content_hash=${hashPlanContent(content)}
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND plan_slug=${PLAN}`;
+        // The bound work-item node owns the plan-line status. Editing only the
+        // prose leaves the canonical item in wip and does not create a block.
+        await db.sql`UPDATE harness_shared.work_items SET status='blocked'
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${f.id}`;
+        const { readPlanLineItems } = await import('../plans/plan-line-graph');
+        expect(await readPlanLineItems(db.sql, { workspaceId: 'default', harnessSlug: HARNESS, slug: PLAN }))
+          .toMatchObject([{ id: 'P-001', status: 'blocked' }]);
+      }
+      if (variant === 'conflicting-linkage') await db.sql`UPDATE harness_shared.work_items SET source_plan_slug='other-plan'
+        WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${f.id}`;
+      if (variant === 'human-hold') {
+        const current = await wi.getWorkItem(f.id, HARNESS);
+        const hold = updateExternalBlockerHistory(current!.payload, { kind: 'human', ref: 'owner:approval',
+          capability: 'product-decision', summary: 'Independent authority remains required' }, OWNER);
+        await db.sql`UPDATE harness_shared.work_items SET payload=payload || ${JSON.stringify({ externalBlockers: hold.blockers })}::text::jsonb
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${f.id}`;
+      }
+      const before = await snapshot(f.id);
+      expect(await f.correct(f.selected, 1, decision)).toMatchObject({ ok: false });
+      expect(await snapshot(f.id)).toEqual(before);
+    });
+});
+
 async function seedMonitors(id: string) {
   const event = `fixture:monitor:${id}`;
   const bound = { kind: 'work-item', ref: id };
@@ -445,6 +618,140 @@ describe('PARK-ADMISSION unchanged public call census', () => {
 });
 
 describe('public blocker resolution boundaries', () => {
+  async function stopText() {
+    const { readHeldWorkItems } = await import('../../events/await/wake-source-predicate');
+    const { turnEndHeldWorkStopText } = await import('../../events/await/turn-end-held-work-guard');
+    return turnEndHeldWorkStopText({ autonomyModes: ['auto'], loopActive: false,
+      guaranteedWake: false, held: await readHeldWorkItems(OWNER, 'default', db.sql) });
+  }
+
+  async function blockedOriginPark() {
+    const id = await seed('feature');
+    const lane = { kind: 'event' as const, ref: 'plan-lane:blocked-custody-repair#P-001' };
+    const gate = { kind: 'gate', ref: lane.ref, status: 'active', capability: 'live-dependency',
+      capabilitySource: 'explicit', createdBy: 'system:plan-item-lane-sync',
+      summary: 'Retain the original blocked lane', createdAt: '2026-11-07T00:00:00Z', updatedAt: '2026-11-07T00:00:00Z' };
+    const original = await wi.getWorkItem(id, HARNESS);
+    await db.sql`UPDATE harness_shared.work_items SET status='blocked', payload=payload || ${db.sql.json({
+      planLaneParkedFrom: 'blocked', claim_hold_by: 'migration:plan-line-work-item-nodes',
+      plan_item: { plan_slug: 'blocked-custody-repair', item_id: 'P-001', harness_slug: HARNESS },
+      externalBlockers: [...activeExternalBlockers(original?.payload), gate],
+    })} WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+    return { id, lane, input: { ...deferral(`blocked-origin-${id}`), evidenceRefs: [ref, lane] } };
+  }
+
+  it('ordinary release retains a blocked-origin system park and permits stop without clearing its conditions', async () => {
+    const { id, lane, input } = await blockedOriginPark();
+    const before = await snapshot(id);
+    expect(await stopText()).toContain('TURN-END REFUSED');
+    expect(await call(release, release.args.parse({ id, harness: HARNESS, blockerDecision: input })))
+      .toMatchObject({ ok: true });
+    const after = await snapshot(id);
+    expect(after.row).toMatchObject({ status: 'blocked', taken_by: null, payload: {
+      keep: 'original', _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+      planLaneParkedFrom: 'blocked', plan_item: before.row.payload.plan_item,
+      externalBlockers: before.row.payload.externalBlockers,
+    } });
+    expect(after.checkpoint).toEqual(before.checkpoint);
+    expect(after.edges).toEqual(before.edges);
+    expect(after.monitors).toEqual(before.monitors);
+    expect(readBlockerResolution(after.row.payload)).toMatchObject({ status: 'recorded',
+      current: { decision: { disposition: 'defer' } } });
+    expect(activeExternalBlockers(after.row.payload).map(blocker => blocker.ref)).toEqual([EVENT, lane.ref]);
+    expect(await stopText()).toBe('');
+  });
+
+  it.each(['foreign custodian', 'foreign park', 'wrong plan binding', 'malformed origin', 'clear park', 'resolve'])(
+    'blocked-origin ordinary release refuses %s without changing custody or the stop verdict', async invalid => {
+      const { id, input } = await blockedOriginPark();
+      if (invalid === 'foreign custodian') {
+        await db.sql`UPDATE harness_shared.work_items SET taken_by='su-other'
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+      } else if (invalid === 'foreign park') {
+        await db.sql`UPDATE harness_shared.work_items SET payload=payload || '{"claim_hold_by":"su-other"}'::jsonb
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+      } else if (invalid === 'wrong plan binding') {
+        await db.sql`UPDATE harness_shared.work_items SET payload=payload || ${db.sql.json({
+          plan_item: { plan_slug: 'other-plan', item_id: 'P-001', harness_slug: HARNESS },
+        })} WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+      } else if (invalid === 'malformed origin') {
+        await db.sql`UPDATE harness_shared.work_items SET payload=payload || '{"planLaneParkedFrom":"done"}'::jsonb
+          WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
+      }
+      const before = await snapshot(id);
+      const stopBefore = await stopText();
+      const decision = invalid === 'resolve' ? { ...resolution(`blocked-resolve-${id}`), evidenceRefs: input.evidenceRefs } : input;
+      const args = release.args.parse({ id, harness: HARNESS, blockerDecision: decision,
+        ...(invalid === 'clear park' ? { claimHold: false } : {}) });
+      expect(await call(release, args)).toMatchObject({ ok: false });
+      expect(await snapshot(id)).toEqual(before);
+      expect(await stopText()).toBe(stopBefore);
+    });
+
+  it('ordinary release of an orphaned dependency retains own accountability rather than inventing source custody', async () => {
+    const id = await seed('feature', false);
+    const source = await seed('task', false);
+    const witness = { kind: 'work-item' as const, ref: `${HARNESS}#${source}` };
+    await db.sql`UPDATE harness_shared.work_items SET taken_by='agent-repair'
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${source}`;
+    const external: DeferralDecision = { schemaVersion: 1, idempotencyKey: `owned-source-${id}`, disposition: 'defer',
+      symptom: 'Original source readiness remains pending', evidenceRefs: [witness],
+      investigation: [{ action: 'Read the original source obligation', outcome: 'The original custodian still owns it', evidenceRefs: [witness] }],
+      attempts: [], deferral: { reason: 'external-dependency', responsibleParty: 'agent-repair',
+        reasonEvidenceRefs: [witness], nextAction: 'Consume the original readiness receipt', recheckRef: witness } };
+    expect(await wi.getWorkItem(source, HARNESS)).toMatchObject({ state: 'wip', assignee: 'agent-repair' });
+    const initial = await call(link, { id: source, harness: HARNESS, target_id: id,
+      target_harness: HARNESS, rel: 'blocks', blockerDecision: external });
+    expect(initial, JSON.stringify(initial)).toMatchObject({ ok: true });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=NULL
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${source}`;
+    const before = await snapshot(id);
+    const sourceBefore = await wi.getWorkItem(source, HARNESS);
+    expect(await stopText()).toContain('TURN-END REFUSED');
+    expect(await call(release, release.args.parse({ id, harness: HARNESS, blockerDecision: {
+      ...external, idempotencyKey: `orphaned-source-${id}`, priorRevision: 1,
+    } }))).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(id)).toEqual(before);
+    const selfResolve: BlockerDecisionInput = { schemaVersion: 1, idempotencyKey: `orphaned-clear-${id}`,
+      priorRevision: 1, disposition: 'self_resolve', symptom: external.symptom,
+      evidenceRefs: [witness], investigation: external.investigation, attempts: [],
+      verification: { outcome: 'A missing source custodian does not settle the dependency', evidenceRefs: [witness] } };
+    expect(await call(release, release.args.parse({ id, harness: HARNESS, blockerDecision: selfResolve })))
+      .toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(await snapshot(id)).toEqual(before);
+    const input: DeferralDecision = { ...external, idempotencyKey: `retain-own-custody-${id}`, priorRevision: 1,
+      attempts: [{ action: 'Attempt ordinary release using the recorded source custodian',
+        outcome: 'Canonical evidence refused because that source has become unassigned', evidenceRefs: [witness] }],
+      deferral: { ...external.deferral, reason: 'technical-limit', responsibleParty: OWNER,
+        nextAction: 'Retain the blocked work and exact original-source recheck until source custody is restored' } };
+    expect(await call(release, release.args.parse({ id, harness: HARNESS, blockerDecision: input }))).toMatchObject({ ok: true });
+    const after = await snapshot(id);
+    // Internal dependency readiness remains on the edge; ordinary release
+    // returns the lifecycle to open while preserving accountable reservation.
+    expect(after.row).toMatchObject({ status: 'open', taken_by: null, payload: {
+      _claimHold: true, claim_hold_by: OWNER, externalBlockers: before.row.payload.externalBlockers,
+    } });
+    expect(after.checkpoint).toEqual(before.checkpoint);
+    expect(after.edges).toEqual(before.edges);
+    const autoArms = before.monitors.awaits.filter(entry =>
+      entry.bound_to?.kind === 'work-item-blocked' && entry.bound_to.ref === id && entry.subscriber_id === OWNER);
+    expect(autoArms.map(entry => entry.event_key).sort()).toEqual([
+      `work-item:done:${source}`, `work-item:unblocked:${id}`,
+    ].sort());
+    for (const arm of autoArms) expect(arm).toMatchObject({ cancelled_at: null, cancel_reason: null });
+    const retiredIds = new Set(autoArms.map(entry => entry.id));
+    expect(after.monitors).toEqual({ ...before.monitors,
+      awaits: before.monitors.awaits.map(entry => retiredIds.has(entry.id)
+        ? { ...entry, cancelled_at: expect.any(String), cancel_reason: 'lifecycle-binding-retired' }
+        : entry),
+    });
+    expect(await wi.getWorkItem(source, HARNESS)).toEqual(sourceBefore);
+    expect(await wi.readUnresolvedDepBlockers(id, HARNESS)).toHaveLength(1);
+    expect(readBlockerResolution(after.row.payload)).toMatchObject({ status: 'recorded', current: { revision: 2,
+      decision: { disposition: 'defer', deferral: { responsibleParty: OWNER } } } });
+    expect(await stopText()).toBe('');
+  });
+
   async function legacyRuntime() {
     const id = await seed('feature', false);
     const recheck = await seed('task', false);
