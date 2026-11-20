@@ -108,7 +108,7 @@ function retainedAdoptionFixture(): RetainedAdoptionFixture {
     terminalReceipt: terminal })])) as RetainedAdoptionFixture['manifests'];
   return { original: { identity, handoff }, hostObservation, manifests, terminal };
 }
-const migrationName = '1623-blind-review-continuation-custody.sql.DRAFT';
+const migrationName = '1623-blind-review-native-continuations.sql.DRAFT';
 const migrationBytes = readFileSync(new URL('../../../libs/papercusp/libs/db/sql/' + migrationName, import.meta.url));
 const migration = migrationBytes.toString('utf8');
 const migrationSha256 = createHash('sha256').update(migrationBytes).digest('hex');
@@ -1357,6 +1357,26 @@ describe('blind reviewer continuation custody, real transaction boundaries', () 
     expect(() => assertMigrationPassesPreApplyLints({ filename: migrationName, sqlText: migration,
       sqlDir: fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/', import.meta.url)) })).not.toThrow();
   });
+  it('upgrades an existing reviewer binding without changing its custody tuple', async () => {
+    const f = await fixture();
+    const before = await fx.admin`SELECT to_jsonb(b) AS binding FROM harness_shared.plan_blind_review_sessions b
+      WHERE id = ${f.input.bindingId}`;
+    const rollback = new Error('restore the isolated fixture after the upgrade probe');
+    // This fixture owns a disposable database. Reconstruct the pre-upgrade
+    // schema in a rollback-only transaction, including when the clone already
+    // contains the armed migration, without changing any shared database.
+    await expect(fx.admin.begin(async tx => {
+      await tx`DROP TABLE harness_shared.blind_review_continuation_custody`;
+      await tx`DROP FUNCTION harness_shared.reject_blind_review_continuation_mutation()`;
+      await tx.unsafe(migration);
+      expect(await tx`SELECT to_jsonb(b) AS binding FROM harness_shared.plan_blind_review_sessions b
+        WHERE id = ${f.input.bindingId}`).toEqual(before);
+      expect(await tx`SELECT id FROM harness_shared.blind_review_continuation_custody`).toHaveLength(0);
+      throw rollback;
+    })).rejects.toBe(rollback);
+    // The rolled-back probe leaves the normal continuation path usable.
+    expect((await f.reserve()).reservationId).toBeGreaterThan(0);
+  });
   it('reserves once, denies both endpoints while uncertain, then transfers without changing the original binding tuple', async () => {
     const f = await fixture(), before = await f.read();
     const { reservationId } = await f.reserve();
@@ -1457,6 +1477,25 @@ describe('blind reviewer continuation custody, real transaction boundaries', () 
       await tx`SELECT set_config('app.workspace_id', ${f.input.workspaceId}, true)`;
       await tx`UPDATE harness_shared.blind_review_continuation_custody SET evidence = '{}' WHERE id = ${r.reservationId}`;
     })).rejects.toThrow('append-only');
+  });
+  it('hides custody rows and rejects new custody from another workspace', async () => {
+    const f = await fixture(), r = await f.reserve();
+    const foreignWorkspace = 'foreign-' + randomUUID();
+    const rows = await fx.admin.begin(async tx => {
+      await tx`SET LOCAL ROLE harness_app`;
+      await tx`SELECT set_config('app.workspace_id', ${foreignWorkspace}, true)`;
+      return tx`SELECT id FROM harness_shared.blind_review_continuation_custody WHERE id = ${r.reservationId}`;
+    });
+    expect(rows).toHaveLength(0);
+    await expect(fx.admin.begin(async tx => {
+      await tx`SET LOCAL ROLE harness_app`;
+      await tx`SELECT set_config('app.workspace_id', ${foreignWorkspace}, true)`;
+      await tx`INSERT INTO harness_shared.blind_review_continuation_custody
+        (workspace_id, binding_id, event_kind, attempt_key, resume_lease_id,
+         source_adv_session_id, target_adv_session_id, snapshot, evidence)
+        VALUES (${f.input.workspaceId}, ${f.input.bindingId}, 'native-reserved', ${randomUUID()}, ${randomUUID()},
+          ${f.sourceId}, ${f.sourceId}, '{}'::jsonb, '{}'::jsonb)`;
+    })).rejects.toThrow('row-level security');
   });
   it('the database refuses custody history mutation', async () => {
     const f = await fixture(), r = await f.reserve();
