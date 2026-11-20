@@ -47,7 +47,11 @@ export default defineConfig({
     const adminReporter: ReporterDescription[] =
       process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER === '1'
         ? []
-        : [['./test/reporters/admin-test-runs-reporter-playwright.ts', {}]];
+        : [['./test/reporters/admin-test-runs-reporter-playwright.ts',
+          process.env.VERIFY_TAURI_TEST_SOURCE_RECEIPT !== undefined || process.env.VERIFY_TAURI_TEST_SOURCE_REF !== undefined
+            ? { definitionSource: { receiptPath: process.env.VERIFY_TAURI_TEST_SOURCE_RECEIPT ?? '',
+              commit: process.env.VERIFY_TAURI_TEST_SOURCE_REF ?? '' } }
+            : {}]];
     return process.env.CI
       ? [['junit', { outputFile: 'junit-e2e.xml' }], ['html', { open: 'never' }], ...adminReporter]
       : [['list'], ...adminReporter];
