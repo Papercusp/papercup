@@ -260,7 +260,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       const rows = await sql`
         SELECT metadata->'sync_delta' AS sync_delta
           FROM harness_shared.routines
-         WHERE install_slug = ${cfg.installSlug} AND name = ${SYNC_DELTA_ROUTINE_NAME}
+         WHERE workspace_id = ${cfg.workspaceId} AND install_slug = ${cfg.installSlug} AND name = ${SYNC_DELTA_ROUTINE_NAME}
          LIMIT 1`;
       const raw: unknown = rows[0]?.sync_delta;
       if (!raw || typeof raw !== 'object') return null;

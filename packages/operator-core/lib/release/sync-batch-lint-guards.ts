@@ -87,9 +87,6 @@ export type SyncLintGuardScript = (typeof SYNC_LINT_GUARD_SCRIPTS)[number];
 export const GUARD_CONCURRENCY = 3;
 /** New-violation filings per tick. The rest stay out of the baseline and file next tick. */
 export const MAX_GUARD_FILINGS_PER_TICK = 6;
-/** Offending paths kept per guard record (a guard red on hundreds of files is not a
- *  baseline anyone can diff usefully past this; the cap is reported on the record). */
-export const MAX_OFFENDERS_PER_GUARD = 400;
 /** Output kept for a finding body. */
 const EXCERPT_LINES = 12;
 
@@ -106,10 +103,12 @@ export type GuardVerdict = 'pass' | 'fail' | 'undetermined';
 /** What one guard last measured. */
 export interface GuardRecord {
   status: 'pass' | 'fail';
-  /** Repo-relative paths the guard's output named (capped at MAX_OFFENDERS_PER_GUARD). */
+  /** Complete repo-relative offender population from this measurement. */
   offenders: string[];
-  /** True when `offenders` was cut at the cap. */
+  /** Legacy records may have lost offenders. Never infer newness from their absence. */
   offendersTruncated?: boolean;
+  /** Preserve deferred filings and their attribution windows independently of the inventory. */
+  pendingViolations?: Array<{ violation: NewViolation; sinceSha: string; sinceMs: number }>;
   /** Integration-branch tip when this record was measured: the start of the next
    *  attribution window for THIS guard. */
   sha: string;
@@ -313,6 +312,8 @@ export function parseGuardOffenders(output: string, repoRoot: string, script?: S
 export interface NewViolation {
   script: SyncLintGuardScript;
   path: string | null;
+  /** A legacy truncated baseline cannot establish whether this offender is new. */
+  newness?: 'unknown';
 }
 
 /** The new violations one guard measurement shows against that guard's prior record. */
@@ -327,9 +328,9 @@ export function diffGuardViolations(
     return offenders.length === 0 ? [{ script, path: null }] : offenders.map((path) => ({ script, path }));
   }
   const before = new Set(prior.offenders);
-  // A truncated prior record cannot prove a path is new: only judge within its coverage.
-  if (prior.offendersTruncated) return [];
-  return offenders.filter((p) => !before.has(p)).map((path) => ({ script, path }));
+  return offenders.filter((p) => !before.has(p)).map((path) => ({
+    script, path, ...(prior.offendersTruncated ? { newness: 'unknown' as const } : {}),
+  }));
 }
 
 // ── the filed finding ────────────────────────────────────────────────────────
@@ -364,13 +365,17 @@ export function buildGuardFinding(input: {
   const sla = input.slaMinutes ?? SYNC_DELTA_SLA_MINUTES;
   const subject = violation.path ?? '(no file named by the guard)';
   const lines = [
-    `The repo-wide guard \`npm run ${violation.script}\` has a NEW violation on the shared \`staging\` tree.`,
+    violation.newness === 'unknown'
+      ? `The repo-wide guard \`npm run ${violation.script}\` has an observed violation on the shared \`staging\` tree.`
+      : `The repo-wide guard \`npm run ${violation.script}\` has a NEW violation on the shared \`staging\` tree.`,
     'The green-checkpoint runs this guard over the whole tree, so the next frozen candidate goes red on it',
     'unless it is fixed first.',
     '',
     `Guard:     ${violation.script}`,
     `Offender:  ${subject}`,
-    violation.path
+    violation.newness === 'unknown'
+      ? 'Newness: unknown. The previous offender inventory was truncated; absence from it cannot establish when this violation appeared.'
+      : violation.path
       ? 'New because: the guard did not name this path at its previous measurement.'
       : 'New because: the guard passed at its previous measurement and now fails without naming a file.',
     `Window:    ${input.windowCommits} commit(s) since that measurement`,
@@ -396,9 +401,7 @@ export function buildGuardFinding(input: {
     conditionKey: conditionKeyForGuardViolation(violation),
     title: `sync-batch guard red: ${violation.script} (${subject})`,
     body: lines.join('\n'),
-    paths: [...(violation.path ? [violation.path] : []), ...(batch?.paths ?? [])]
-      .filter((p, i, a) => a.indexOf(p) === i)
-      .slice(0, 40),
+    paths: [...new Set([...(violation.path ? [violation.path] : []), ...(batch?.paths ?? [])])],
     assignee: author.agent,
     authorSource: author.source,
   };
@@ -411,6 +414,7 @@ export type SyncLintGuardStatus = 'skipped' | 'bootstrapped' | 'up-to-date' | 'm
 export interface SyncLintGuardFiling {
   script: SyncLintGuardScript;
   path: string | null;
+  newness?: 'unknown';
   conditionKey: string;
   assignee: string | null;
   authorSource: AuthorSource;
@@ -578,7 +582,10 @@ async function measureSyncLintGuards(
   // A tick may advance its overall sha while a timed-out guard or deferred
   // filing retains an older per-guard record. Those records still need a
   // retry at this same head; only a completely measured batch is up to date.
-  if (prior && prior.sha === head && scripts.every((script) => prior.guards[script]?.sha === head)) {
+  if (prior && prior.sha === head && scripts.every((script) => {
+    const record = prior.guards[script];
+    return record?.sha === head && !record.offendersTruncated && !record.pendingViolations?.length;
+  })) {
     return { ...empty('up-to-date'), state: prior };
   }
 
@@ -606,7 +613,21 @@ async function measureSyncLintGuards(
   const candidates: Array<{ violation: NewViolation; output: string; sinceSha: string; sinceMs: number }> = [];
   for (const r of runs) {
     const record = prior?.guards[r.script];
+    const seen = new Set<string>();
+    if (r.verdict === 'fail') {
+      const current = new Set(r.offenders);
+      for (const pending of record?.pendingViolations ?? []) {
+        if (pending.violation.path === null ? current.size > 0 : !current.has(pending.violation.path)) continue;
+        const key = conditionKeyForGuardViolation(pending.violation);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ ...pending, output: r.run.output });
+      }
+    }
     for (const violation of diffGuardViolations(r.script, record, r.verdict, r.offenders)) {
+      const key = conditionKeyForGuardViolation(violation);
+      if (seen.has(key)) continue;
+      seen.add(key);
       candidates.push({ violation, output: r.run.output, sinceSha: record!.sha, sinceMs: record!.atMs });
     }
   }
@@ -626,11 +647,14 @@ async function measureSyncLintGuards(
 
   const filed: SyncLintGuardFiling[] = [];
   const deferred: NewViolation[] = [];
+  const retries: NewViolation[] = [];
+  let attempted = 0;
   for (const c of candidates) {
-    if (filed.filter((f) => !f.error).length >= maxFilings) {
+    if (attempted >= maxFilings) {
       deferred.push(c.violation);
       continue;
     }
+    attempted += 1;
     const batches = windows.get(c.sinceSha) ?? [];
     const path = c.violation.path;
     const batch = path ? (batches.find((b) => b.paths.includes(path)) ?? null) : batches.length === 1 ? batches[0]! : null;
@@ -660,6 +684,7 @@ async function measureSyncLintGuards(
     filed.push({
       script: c.violation.script,
       path,
+      ...(c.violation.newness ? { newness: c.violation.newness } : {}),
       conditionKey: finding.conditionKey,
       assignee: res.ok ? ('assignee' in res ? res.assignee ?? null : usedAssignee) : null,
       authorSource: author.source,
@@ -668,28 +693,30 @@ async function measureSyncLintGuards(
       ...(res.notificationError ? { notificationError: res.notificationError } : {}),
       ...(res.ok ? {} : { error: res.error ?? 'file-failed' }),
     });
-    if (!res.ok || res.notificationError) deferred.push(c.violation);
+    if (!res.ok || res.notificationError) retries.push(c.violation);
   }
+  // Rotate attempted failures behind work not yet attempted, so a failing store
+  // entry cannot starve later identities across restarts.
+  deferred.push(...retries);
 
-  // New records. A deferred offender stays OUT of its guard's baseline so the next tick
-  // still sees it as new; an undetermined guard keeps its prior record untouched.
-  const deferredKeys = new Set(deferred.map((v) => conditionKeyForGuardViolation(v)));
+  // Persist the full measured inventory separately from the remaining filing work.
+  // An undetermined guard keeps both its prior population and its pending work.
+  const candidateByKey = new Map(candidates.map(c => [conditionKeyForGuardViolation(c.violation), c]));
   const guards: SyncLintGuardState['guards'] = { ...(prior?.guards ?? {}) };
   for (const r of runs) {
     if (r.verdict === 'undetermined') continue;
     const priorRecord = prior?.guards[r.script];
-    const heldBack = r.offenders.filter((p) => deferredKeys.has(conditionKeyForGuardViolation({ script: r.script, path: p })));
-    const flipHeldBack = deferredKeys.has(conditionKeyForGuardViolation({ script: r.script, path: null }));
-    const kept = r.offenders.filter((p) => !heldBack.includes(p));
-    guards[r.script] = flipHeldBack && priorRecord
-      ? priorRecord
-      : {
-          status: r.verdict === 'pass' ? 'pass' : 'fail',
-          offenders: kept.slice(0, MAX_OFFENDERS_PER_GUARD),
-          ...(kept.length > MAX_OFFENDERS_PER_GUARD ? { offendersTruncated: true } : {}),
-          sha: heldBack.length > 0 && priorRecord ? priorRecord.sha : head,
-          atMs: heldBack.length > 0 && priorRecord ? priorRecord.atMs : now,
-        };
+    const pendingViolations = deferred.filter(violation => violation.script === r.script).map(violation => {
+      const candidate = candidateByKey.get(conditionKeyForGuardViolation(violation))!;
+      return { violation, sinceSha: candidate.sinceSha, sinceMs: candidate.sinceMs };
+    });
+    guards[r.script] = {
+      status: r.verdict === 'pass' ? 'pass' : 'fail',
+      offenders: r.offenders,
+      ...(pendingViolations.length ? { pendingViolations } : {}),
+      sha: pendingViolations.length > 0 && priorRecord ? priorRecord.sha : head,
+      atMs: pendingViolations.length > 0 && priorRecord ? priorRecord.atMs : now,
+    };
   }
   // The coverage history belongs to the routine, not to this measurement: carry it over.
   const state: SyncLintGuardState = { sha: head, atMs: now, guards, ...(prior?.coverage ? { coverage: prior.coverage } : {}) };

@@ -63,7 +63,7 @@ export function buildSyncLintGuardDeps(cfg: Omit<SyncBatchDeltaDepsConfig, 'file
       const rows = await sql`
         SELECT metadata->'sync_lint_guards' AS state
           FROM harness_shared.routines
-         WHERE install_slug = ${cfg.installSlug} AND name = ${SYNC_LINT_GUARDS_ROUTINE_NAME}
+         WHERE workspace_id = ${cfg.workspaceId} AND install_slug = ${cfg.installSlug} AND name = ${SYNC_LINT_GUARDS_ROUTINE_NAME}
          LIMIT 1`;
       const raw: unknown = rows[0]?.state;
       if (!raw || typeof raw !== 'object') return null;

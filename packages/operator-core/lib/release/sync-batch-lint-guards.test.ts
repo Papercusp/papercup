@@ -191,7 +191,7 @@ describe('diffGuardViolations', () => {
       { script: s, path: 'new/b.ts' },
     ]);
     expect(diffGuardViolations(s, rec('fail', ['old/a.ts'], { offendersTruncated: true }), 'fail', ['new/b.ts'])).toEqual(
-      [],
+      [{ script: s, path: 'new/b.ts', newness: 'unknown' }],
     );
   });
   it('pass and undetermined never file', () => {
@@ -262,6 +262,99 @@ const setIntervalRed = (paths: string[]): GuardRun => ({
 });
 
 describe('runSyncLintGuardTick', () => {
+  it.each([399, 400, 401])('retains the complete %i-offender baseline, including long identities', async count => {
+    const script = 'lint:no-raw-setinterval';
+    const paths = Array.from({ length: count }, (_, index) => `apps/source/file-${index}.ts`);
+    paths[count - 1] = `apps/source/${'last'.repeat(450)}.ts`;
+    const first = fake({ head: 'h1', runs: { [script]: setIntervalRed(paths) } });
+    await runSyncLintGuardTick(first.deps, { scripts: [script] });
+    expect(first.state.value?.guards[script]?.offenders).toEqual(paths);
+    expect(first.state.value?.guards[script]?.offendersTruncated).toBeUndefined();
+    const restored = JSON.parse(JSON.stringify(first.state.value)) as SyncLintGuardState;
+    const next = fake({ head: 'h2', prior: restored,
+      runs: { [script]: setIntervalRed([...paths].reverse().concat('apps/new/decisive.ts')) },
+      batches: [{ sha: 'b2', agent: 'su-author', paths: [...paths, 'apps/new/decisive.ts'] }] });
+    await runSyncLintGuardTick(next.deps, { scripts: [script] });
+    expect(next.filed.map(finding => finding.conditionKey)).toEqual([
+      `sync-delta-guard:${script}:apps/new/decisive.ts`,
+    ]);
+    expect(new Set(next.filed[0]?.paths)).toEqual(new Set([...paths, 'apps/new/decisive.ts']));
+  });
+
+  it.each([399, 400, 401])('recovers a legacy truncated baseline across restarts and permutations (%i unseen offenders)', async count => {
+    const script = 'lint:no-raw-setinterval';
+    const known = 'apps/old/known.ts';
+    const paths = Array.from({ length: count }, (_, index) => `apps/new/file-${index}.ts`);
+    let prior = allPass('h1');
+    prior.guards[script] = { status: 'fail', offenders: [known], offendersTruncated: true, sha: 'h1', atMs: 500_000 };
+    const filed: RedFinding[] = [];
+    const budget = 31;
+    for (let pass = 0; pass < Math.ceil(count / budget); pass += 1) {
+      const currentPaths = pass % 2 ? [...paths].reverse() : paths;
+      const f = fake({ head: 'h2', prior, runs: { [script]: setIntervalRed([known, ...currentPaths]) } });
+      const result = await runSyncLintGuardTick(f.deps, { scripts: [script], maxFilings: budget });
+      expect(result.filed).toHaveLength(Math.min(budget, count - pass * budget));
+      for (const finding of f.filed) {
+        expect(finding.body).toContain('Newness: unknown');
+        expect(finding.body).not.toContain('has a NEW violation');
+      }
+      filed.push(...f.filed);
+      expect(new Set(result.state?.guards[script]?.offenders)).toEqual(new Set([known, ...paths]));
+      expect(result.state?.guards[script]?.pendingViolations ?? []).toHaveLength(count - filed.length);
+      prior = JSON.parse(JSON.stringify(f.state.value)) as SyncLintGuardState;
+    }
+    expect(new Set(filed.map(finding => finding.conditionKey))).toEqual(
+      new Set(paths.map(path => `sync-delta-guard:${script}:${path}`)),
+    );
+    expect(filed).toHaveLength(count);
+    const complete = fake({ head: 'h2', prior, runs: { [script]: setIntervalRed([known, ...paths]) } });
+    expect((await runSyncLintGuardTick(complete.deps, { scripts: [script] })).status).toBe('up-to-date');
+    expect(complete.filed).toEqual([]);
+  });
+
+  it('bounds filing attempts and rotates failed entries behind unattempted work across restarts', async () => {
+    const script = 'lint:no-raw-setinterval';
+    const paths = Array.from({ length: 8 }, (_, index) => `apps/fair/file-${index}.ts`);
+    let prior = allPass('h1');
+    const filed: RedFinding[] = [];
+    for (let pass = 0; pass < 4; pass += 1) {
+      if (pass > 0) prior.guards[script]!.sha = 'h2';
+      const f = fake({ head: 'h2', prior,
+        runs: { [script]: setIntervalRed(pass % 2 ? [...paths].reverse() : paths) } });
+      const fileRed = f.deps.fileRed;
+      const attempted: string[] = [];
+      f.deps.fileRed = async finding => {
+        attempted.push(finding.conditionKey);
+        return finding.paths[0] === paths[0]
+          ? { ok: false, error: 'entry unavailable' }
+          : fileRed(finding);
+      };
+      const result = await runSyncLintGuardTick(f.deps, { scripts: [script], maxFilings: 2 });
+      expect(attempted).toHaveLength(2);
+      filed.push(...f.filed);
+      expect(result.state?.guards[script]?.offenders).toHaveLength(paths.length);
+      expect(result.state?.guards[script]?.pendingViolations?.every(pending => pending.sinceSha === 'h1')).toBe(true);
+      prior = JSON.parse(JSON.stringify(result.state)) as SyncLintGuardState;
+    }
+    expect(new Set(filed.map(finding => finding.paths[0]))).toEqual(new Set(paths.filter(path => path !== paths[0])));
+    expect(filed).toHaveLength(7);
+    const recovered = fake({ head: 'h2', prior, runs: { [script]: setIntervalRed(paths) } });
+    expect((await runSyncLintGuardTick(recovered.deps, { scripts: [script], maxFilings: 2 })).filed).toHaveLength(1);
+    expect(recovered.filed[0]?.paths[0]).toBe(paths[0]);
+    expect((await runSyncLintGuardTick(recovered.deps, { scripts: [script] })).status).toBe('up-to-date');
+  });
+
+  it('retires pending findings when a fresh measurement shows they were fixed', async () => {
+    const script = 'lint:no-raw-setinterval';
+    const first = fake({ head: 'h2', prior: allPass('h1'), runs: { [script]: setIntervalRed(['apps/pending/fixed.ts']) } });
+    await runSyncLintGuardTick(first.deps, { scripts: [script], maxFilings: 0 });
+    const next = fake({ head: 'h2', prior: JSON.parse(JSON.stringify(first.state.value)) as SyncLintGuardState });
+    const result = await runSyncLintGuardTick(next.deps, { scripts: [script] });
+    expect(result.filed).toEqual([]);
+    expect(result.state?.guards[script]).toMatchObject({ status: 'pass', offenders: [] });
+    expect(result.state?.guards[script]?.pendingViolations).toBeUndefined();
+  });
+
   it('bootstraps every guard and files nothing on its first run', async () => {
     const f = fake({ head: 'h1', runs: { 'lint:no-raw-setinterval': setIntervalRed(['apps/old/timer.ts']) } });
     const r = await runSyncLintGuardTick(f.deps);
