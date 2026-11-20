@@ -700,6 +700,7 @@ async function refreshDesktopConnector(deps: PortalRelayDeps): Promise<void> {
   const owner = state.reconcilerDeps ?? deps;
   if (!owner.isConnectorOwner()) return;
   if (state.reconcileInFlight) await state.reconcileInFlight;
+  // notify-classification: {"id":"packages/operator-core/lib/remote-access/relay-opt-in.ts#<module>/refreshDesktopConnector:385d15f969326d34e42d:1","classification":"durable","reason":"The native source census reaches notifyChanged at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await reconcilePortalRelay(owner);
 }
 
