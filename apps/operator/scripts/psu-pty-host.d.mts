@@ -2008,6 +2008,28 @@ export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInp
     force?: boolean | undefined;
     quietMs?: number | undefined;
 }): "not-agent-launched" | "human-attended" | "agent-busy" | null;
+/** Exact failed-child fence for reviewer retirement; evaluated by the host.
+ * @param {{nativeSessionId:string, childGeneration:number, atMs:number}} expected
+ * @param {{nativeSessionId?:string|null, childGeneration?:number, phase?:string, pendingTools?:number, ownerInputPending?:boolean, failure?:{code:string,retryable:boolean,retryAfterMs:number|null,atMs:number}}} execution
+ * @param {number} [nowMs]
+ */
+export function providerFailureShutdownMatches(expected: {
+    nativeSessionId: string;
+    childGeneration: number;
+    atMs: number;
+}, execution: {
+    nativeSessionId?: string | null;
+    childGeneration?: number;
+    phase?: string;
+    pendingTools?: number;
+    ownerInputPending?: boolean;
+    failure?: {
+        code: string;
+        retryable: boolean;
+        retryAfterMs: number | null;
+        atMs: number;
+    };
+}, nowMs?: number): boolean;
 /**
  * Agent-busy (mid-turn) inject gate (coord-wake-mid-turn-2026-06-30). The
  * OUTPUT-side sibling of makeIdleGate: makeIdleGate defers a `turn` while the
@@ -2713,6 +2735,7 @@ export function closeControlServerForRebind(server: any, afterClose: any): void;
 export function decodeControl(payload: any): {
     ownerId: any;
     gated: boolean;
+    expectedProviderFailure?: any;
     expectedStartedAt?: any;
     mode: string;
     data: string;
@@ -2729,6 +2752,7 @@ export function decodeControl(payload: any): {
 } | {
     ownerId?: undefined;
     gated: boolean;
+    expectedProviderFailure?: any;
     expectedStartedAt?: any;
     mode: string;
     data: string;
@@ -5375,7 +5399,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "pending" | "cancelled" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "pending" | "completed" | "cancelled" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;

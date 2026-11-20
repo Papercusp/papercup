@@ -5410,6 +5410,23 @@ export function shutdownRefusalReason({
   return null;
 }
 
+/** Exact failed-child fence for reviewer retirement; evaluated by the host.
+ * @param {{nativeSessionId:string, childGeneration:number, atMs:number}} expected
+ * @param {{nativeSessionId?:string|null, childGeneration?:number, phase?:string, pendingTools?:number, ownerInputPending?:boolean, failure?:{code:string,retryable:boolean,retryAfterMs:number|null,atMs:number}}} execution
+ * @param {number} [nowMs]
+ */
+export function providerFailureShutdownMatches(expected, execution, nowMs = Date.now()) {
+  const failure = execution?.failure;
+  return !!expected && typeof expected.nativeSessionId === 'string' && !!expected.nativeSessionId &&
+    Number.isSafeInteger(expected.childGeneration) && expected.childGeneration >= 0 &&
+    Number.isFinite(expected.atMs) && expected.atMs > 0 && expected.atMs <= nowMs &&
+    execution?.nativeSessionId === expected.nativeSessionId && execution.childGeneration === expected.childGeneration &&
+    execution.phase === 'failed' && execution.pendingTools === 0 && !execution.ownerInputPending &&
+    failure?.code === 'api_error_429' && failure.retryable === false && failure.atMs === expected.atMs &&
+    typeof failure.retryAfterMs === 'number' && Number.isFinite(failure.retryAfterMs) && failure.retryAfterMs > 0 &&
+    Number.isFinite(failure.atMs + failure.retryAfterMs) && failure.atMs + failure.retryAfterMs <= nowMs;
+}
+
 /**
  * Agent-busy (mid-turn) inject gate (coord-wake-mid-turn-2026-06-30). The
  * OUTPUT-side sibling of makeIdleGate: makeIdleGate defers a `turn` while the
@@ -7657,6 +7674,7 @@ export function decodeControl(payload) {
           data: String(o.data ?? ''),
           force: o.force === true,
           ...('expectedStartedAt' in o ? { expectedStartedAt: o.expectedStartedAt } : {}),
+          ...('expectedProviderFailure' in o ? { expectedProviderFailure: o.expectedProviderFailure } : {}),
           gated: false,
           ...decodeOwnerIdentity(o),
         };
@@ -12536,7 +12554,7 @@ export function hostThroughPty(o) {
     // name its native session id. The fence identity requires it, and only codex wires
     // resolveRespawnNativeId; a Claude host that advertised the cap refused every
     // nonce-bound carry-respawn (session:request-compaction) as 'stale-carry-target'.
-    caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+    caps: ['carry-respawn', 'control-socket-probe-v1', ...(resolveRespawnNativeId ? ['pending-carry-fence-v1'] : []), 'mcp-reconnect', 'mcp-reconnect-force', 'shutdown', 'shutdown-identity', 'shutdown-provider-failure-v1', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
       ...(advSessionId != null && (env.PAPERCUSP_WORKSPACE_ID || env.PAPERCUSP_WORKSPACE) &&
         ['claude', 'codex'].includes(env.PAPERCUSP_AGENT) ? ['native-provider-recovery-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'claude' ? ['reset-reanchor-v1'] : []),
@@ -16424,6 +16442,11 @@ export function hostThroughPty(o) {
         // Check its incarnation here, before any accepted shutdown side effect.
         if (msg.expectedStartedAt !== undefined && msg.expectedStartedAt !== baseMeta.startedAt) {
           return { ok: false, reason: 'shutdown-refused:stale-host' };
+        }
+        if ('expectedProviderFailure' in msg &&
+            (!Number.isFinite(msg.expectedStartedAt) ||
+             !providerFailureShutdownMatches(msg.expectedProviderFailure, currentNativeExecution()))) {
+          return { ok: false, reason: 'shutdown-refused:stale-provider-failure' };
         }
         if (shuttingDown) return { ok: true, reason: 'already-shutting-down' };
         const refusal = shutdownRefusalReason({

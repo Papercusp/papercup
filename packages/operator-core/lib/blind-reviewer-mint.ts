@@ -310,6 +310,10 @@ export interface MintBlindGapReviewerDeps {
   verifyLiveBinding?: typeof verifyBlindReviewSessionBinding;
   readLiveHost?: typeof import('./events/await/psu-pty-discovery').findLiveHostAsync;
   wakeReviewer?: typeof import('./agent-tools/coordination/inbox-wake').wakeRecipients;
+  readProviderReadiness?: (workspaceId: string, agent: string) => Promise<{
+    kind: 'clear' | 'unknown' | 'deferred'; reason: string; binding?: string;
+  } | null>;
+  shutdownReviewer?: typeof import('./events/await/psu-pty-discovery').shutdownViaPty;
   /** Registered tool names for the howToRun ceiling check; injected in tests. */
   knownTools?: () => Promise<ReadonlySet<string>>;
   /** Re-read the original launch cohort when its verifier returned no identity receipt. */
@@ -643,18 +647,56 @@ export async function resumeBlindGapReviewer(
         throw new Error(`The bound reviewer's native turn failed (${failure.code}); a queued wake is not recovery. ` +
           'Repair the provider failure and recover this same confined reviewer before retrying. No wake or process was opened.');
       }
-      const wake = await (deps.wakeReviewer ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients)(
-        [acquired.binding.reviewerOwnerId], {
-          workspaceId, source: BLIND_GAP_REVIEW_ACTOR,
-          summary: 'Continue your existing blind product review from its original brief; post the outcome through plans:blind-review.',
-        });
-      const queued = wake.queued ?? wake.woken;
-      result = queued > 0 || (wake.staged ?? 0) > 0 || (wake.deferred ?? 0) > 0
-        ? { ok: true, launch: { mode: 'wake', opened: 0, pickupConfirmed: false, wake },
-            activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
-            leaseReleased: false, bindingId: acquired.binding.id }
-        : { ok: false, code: 'reviewer_wake_unavailable',
-            message: 'The exact live reviewer has no wake delivery. No process was opened; reconcile its host before retrying.' };
+      const providerFailed = delayedRateLimit && failure?.retryable === false;
+      const readiness = providerFailed
+        ? await (deps.readProviderReadiness ?? (await import('./blind-review-continuation-custody')).blindReviewProviderReadiness)(workspaceId, acquired.backend)
+        : null;
+      if (providerFailed && (!readiness || readiness.kind === 'unknown' ||
+          readiness.kind === 'deferred' && readiness.binding === 'session-override')) {
+        result = { ok: false, code: 'reviewer_provider_readiness_required',
+          message: 'The bound native reviewer failed after its provider cooldown, but an allowed provider recovery route is not established. ' +
+            (readiness?.reason ?? 'Provider readiness is unknown.') +
+            ' Reconcile the canonical provider/account verdict under the existing routing policy before retrying this same reviewer. No wake, shutdown or continuation was opened.' };
+      } else if (readiness?.kind === 'deferred') {
+        // A measured provider pause cannot be repaired by another wake on the
+        // same backend. Ask only this exact failed native child to retire. The
+        // host rechecks the failure at the effect boundary; an ACK is not proof
+        // of exit. A later call must resolve terminal evidence before the
+        // existing native-attempt/no-open/port ladder below becomes reachable.
+        if (String(host.advSessionId) !== String(acquired.endpoint.advSessionId) ||
+            (host.execution?.nativeSessionId ?? host.nativeSessionId) !== acquired.endpoint.nativeSessionId ||
+            !Number.isSafeInteger(host.childGeneration) || host.childGeneration! < 0 ||
+            !Number.isFinite(host.startedAt) || host.startedAt <= 0) {
+          throw new Error('The provider-blocked reviewer has no exact native host incarnation. No shutdown, wake or process was opened.');
+        }
+        const shutdown = await (deps.shutdownReviewer ?? (await import('./events/await/psu-pty-discovery')).shutdownViaPty)(
+          acquired.binding.reviewerOwnerId, {
+            reason: 'Retire the measured provider-blocked blind reviewer for its existing recruiter continuation.',
+            force: false,
+            expectedHost: { startedAt: host.startedAt, advSessionId: String(acquired.endpoint.advSessionId) },
+            expectedProviderFailure: { nativeSessionId: acquired.endpoint.nativeSessionId,
+              childGeneration: host.childGeneration!, atMs: failure!.atMs },
+          });
+        result = { ok: false,
+          code: shutdown === 'sent' ? 'reviewer_recovery_pending' : 'reviewer_recovery_unavailable',
+          message: shutdown === 'sent'
+            ? 'The exact provider-blocked reviewer accepted guarded retirement. Resume this same binding only after its native endpoint is verified ended; no continuation was opened.'
+            : `The exact provider-blocked reviewer could not accept guarded retirement (${shutdown}). ` +
+              'Its host must support shutdown-provider-failure-v1 and retain the same failed native endpoint. No wake or continuation was opened.' };
+      } else {
+        const wake = await (deps.wakeReviewer ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients)(
+          [acquired.binding.reviewerOwnerId], {
+            workspaceId, source: BLIND_GAP_REVIEW_ACTOR,
+            summary: 'Continue your existing blind product review from its original brief; post the outcome through plans:blind-review.',
+          });
+        const queued = wake.queued ?? wake.woken;
+        result = queued > 0 || (wake.staged ?? 0) > 0 || (wake.deferred ?? 0) > 0
+          ? { ok: true, launch: { mode: 'wake', opened: 0, pickupConfirmed: false, wake },
+              activationAuditSeq: brief.activationAuditSeq, reviewerOwnerId: acquired.binding.reviewerOwnerId,
+              leaseReleased: false, bindingId: acquired.binding.id }
+          : { ok: false, code: 'reviewer_wake_unavailable',
+              message: 'The exact live reviewer has no wake delivery. No process was opened; reconcile its host before retrying.' };
+      }
     } else {
       const { handler, confinementKey } = await (deps.launcher ?? defaultLauncher)();
       let permit: BlindReviewResumePermit = {

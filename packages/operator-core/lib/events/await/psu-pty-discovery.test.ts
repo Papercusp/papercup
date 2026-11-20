@@ -1128,6 +1128,29 @@ describe('hostIsAgentLaunched (WI-6638 — the agent-vs-human discriminator)', (
 });
 
 describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its own tab)', () => {
+  it.each([
+    [{ ok: true, reason: 'shutdown-accepted' }, 'sent'],
+    ['none', 'send-failed'],
+    [{ ok: false, reason: 'shutdown-refused:stale-provider-failure' }, 'send-failed'],
+  ] as const)('requires the failed-child capability and a positive shutdown ACK: %j', async (ack, verdict) => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-provider-shutdown-${process.pid}-${Math.floor(performance.now())}`;
+    const { sock, received } = startAckingSocket(PSU_PTY_DIR, ownerId, ack);
+    const meta = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.json`);
+    cleanups.push(() => { for (const path of [sock, meta]) if (existsSync(path)) unlinkSync(path); });
+    const writeHost = (caps: string[]) => writeFileSync(meta, JSON.stringify({ ownerId,
+      advSessionId: '42', pid: process.pid, ptyPid: process.pid, sock, command: 'claude', startedAt: 100, caps }));
+    const expectedProviderFailure = { nativeSessionId: 'native-1', childGeneration: 3, atMs: 1000 };
+    const opts = { expectedHost: { startedAt: 100, advSessionId: '42' }, expectedProviderFailure, verifyIdentity: () => true };
+    writeHost(['shutdown', 'shutdown-identity']);
+    expect(await shutdownViaPty(ownerId, opts)).toBe('no-cap');
+    writeHost(['shutdown', 'shutdown-identity', 'shutdown-provider-failure-v1']);
+    expect(await shutdownViaPty(ownerId, { ...opts, expectedHost: { ...opts.expectedHost, startedAt: 101 } })).toBe('refused-stale-host');
+    expect(await shutdownViaPty(ownerId, opts)).toBe(verdict);
+    expect(JSON.parse(await received)).toMatchObject({ v: 1, mode: 'shutdown', ownerId, force: false,
+      expectedStartedAt: 100, expectedProviderFailure });
+  });
+
   // Reads the REAL PSU_PTY_DIR (no dir param), like mcpReconnectViaPty above.
   it("routes by capability and reports the host's REFUSAL reason distinctly from a miss", async () => {
     mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });

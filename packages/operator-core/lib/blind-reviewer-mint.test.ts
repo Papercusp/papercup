@@ -519,6 +519,9 @@ describe('mintBlindGapReviewer', () => {
       targets: [binding.reviewerOwnerId], keys: ['coord:inbox-wake:su-reviewer-1'], queued: 1, woken: 1, pickupConfirmed: false,
       pickup: [], staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [],
     }));
+    const readProviderReadiness = vi.fn<NonNullable<MintBlindGapReviewerDeps['readProviderReadiness']>>(async () =>
+      ({ kind: 'clear', reason: 'measured serviceable provider' }));
+    const shutdownReviewer = vi.fn<NonNullable<MintBlindGapReviewerDeps['shutdownReviewer']>>(async () => 'sent');
     const readConfinement = vi.fn(async (): Promise<ReturnType<typeof blindReviewerConfinement> | null> => {
       const call = handler.mock.calls.at(-1) as unknown as [unknown, Record<symbol, ReturnType<typeof blindReviewerConfinement>>];
       return call?.[1][KEY] ?? null;
@@ -526,10 +529,10 @@ describe('mintBlindGapReviewer', () => {
     const knownTools = async () => new Set(['capability:bash', 'testing:run', 'work_items:create', 'coord:send', 'events:emit']);
     return { handler, loadBrief, launcher, binding, findSessionBinding, createSessionBinding, killTask,
       acquireSessionResume, releaseSessionResume, readConfinement, reserveNativeAttempt, verifyNativeNoOpen,
-      resolveResumeTarget, verifyLiveBinding, readLiveHost, wakeReviewer,
+      resolveResumeTarget, verifyLiveBinding, readLiveHost, wakeReviewer, readProviderReadiness, shutdownReviewer,
       deps: { loadBrief, launcher, findSessionBinding, createSessionBinding, killTask,
         acquireSessionResume, releaseSessionResume, reserveNativeAttempt, verifyNativeNoOpen,
-        resolveResumeTarget, verifyLiveBinding, readLiveHost, wakeReviewer, readConfinement, knownTools } };
+        resolveResumeTarget, verifyLiveBinding, readLiveHost, wakeReviewer, readProviderReadiness, shutdownReviewer, readConfinement, knownTools } };
   }
 
   // EI-27120299877087815: review #109 was told to call tools its ceiling refuses.
@@ -1050,6 +1053,111 @@ describe('mintBlindGapReviewer', () => {
     expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
     expect(d.launcher).not.toHaveBeenCalled();
   });
+
+  it('retires a measured provider-blocked endpoint after repeated cooldowns, then uses the existing custody fallback', async () => {
+    const d = deps();
+    const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+    const host = await d.readLiveHost('su-reviewer-1');
+    if (!target.ok || !host) throw new Error('fixture target missing');
+    const atMs = Date.now() - 120_000;
+    d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+    const blockedHost = { ...host, advSessionId: '42', childGeneration: 3,
+      nativeSessionId: 'native-review-1', execution: { ...host.execution!, phase: 'failed' as const,
+        failure: { code: 'api_error_429', retryable: false, retryAfterMs: 60_000, atMs } } };
+    d.readLiveHost.mockResolvedValue(blockedHost);
+    d.readLiveHost.mockResolvedValueOnce({ ...blockedHost, execution: { ...blockedHost.execution,
+      failure: { ...blockedHost.execution.failure, atMs: atMs - 60_000 } } });
+    const readProviderReadiness = vi.fn<NonNullable<MintBlindGapReviewerDeps['readProviderReadiness']>>(async () =>
+      ({ kind: 'unknown', reason: 'zero serviceable, unknown accounts; total capacity unmeasured' }));
+    const shutdownReviewer = vi.fn(async () => 'sent' as const);
+    const recoveryDeps = { ...d.deps, readProviderReadiness, shutdownReviewer };
+    const input = { slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author', ctx: { workspaceId: 'ws-1' } };
+    // Neither an expired cooldown nor an unknown pool reading grants retirement.
+    for (let cycle = 0; cycle < 2; cycle++) expect(await resumeBlindGapReviewer(input, recoveryDeps)).toMatchObject({
+      ok: false, code: 'reviewer_provider_readiness_required' });
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(shutdownReviewer).not.toHaveBeenCalled();
+    readProviderReadiness.mockResolvedValue({ kind: 'deferred', binding: 'rate-pause',
+      reason: 'provider is paused by its current measured pool verdict' });
+    expect(await resumeBlindGapReviewer(input, recoveryDeps)).toMatchObject({ ok: false, code: 'reviewer_recovery_pending' });
+    expect(shutdownReviewer).toHaveBeenCalledWith('su-reviewer-1', expect.objectContaining({
+      force: false, expectedHost: { startedAt: host.startedAt, advSessionId: '42' },
+      expectedProviderFailure: { nativeSessionId: 'native-review-1', childGeneration: 3, atMs },
+    }));
+    expect(d.wakeReviewer).not.toHaveBeenCalled();
+    expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+    expect(d.launcher).not.toHaveBeenCalled();
+    // Only positive terminal evidence unlocks the already-maintained fallback.
+    d.resolveResumeTarget.mockResolvedValue(target);
+    d.handler.mockResolvedValueOnce({ isError: true, data: { error: 'all_accounts_walled',
+      launchFailure: { stage: 'pre-spawn', processesOpened: 0 } } });
+    expect(await resumeBlindGapReviewer(input, recoveryDeps)).toMatchObject({ ok: true, bindingId: 7,
+      reviewerOwnerId: 'su-reviewer-1', leaseReleased: true });
+    const [args, ctx] = d.handler.mock.calls[1] as unknown as [Record<string, unknown>, Record<PropertyKey, unknown>];
+    expect(args).toMatchObject({ resume: { sessionId: 'native-review-1' }, fork: false, agent: 'codex', account: 'auto' });
+    expect(ctx[INTERNAL_BLIND_REVIEW_RESUME]).toMatchObject({ bindingId: 7, leaseId: 'lease-1',
+      reviewerOwnerId: 'su-reviewer-1', recoveryBackend: { agent: 'codex' } });
+    expect(ctx[KEY]).toEqual(CONFINEMENT);
+    expect(d.createSessionBinding).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { kind: 'unknown', reason: 'capacity unmeasured' },
+    { kind: 'deferred', binding: 'session-override', reason: 'explicit account restriction' }] as const)(
+    'reports unknown or policy-restricted provider readiness without changing endpoint: %j', async readiness => {
+      const d = deps();
+      const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+      const host = await d.readLiveHost('su-reviewer-1');
+      if (!target.ok || !host) throw new Error('fixture target missing');
+      d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+      d.readLiveHost.mockResolvedValue({ ...host, execution: { ...host.execution!, phase: 'failed',
+        failure: { code: 'api_error_429', retryable: false, retryAfterMs: 60_000, atMs: Date.now() - 120_000 } } });
+      d.readProviderReadiness.mockResolvedValue(readiness);
+      expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+        ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: false, code: 'reviewer_provider_readiness_required' });
+      expect(d.shutdownReviewer).not.toHaveBeenCalled();
+      expect(d.wakeReviewer).not.toHaveBeenCalled();
+      expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+      expect(d.launcher).not.toHaveBeenCalled();
+      expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+    });
+
+  it.each(['no-cap', 'send-failed', 'refused-human-attended', 'refused-agent-busy', 'refused-stale-host'] as const)(
+    'keeps the original binding protected when failed-endpoint retirement returns %s', async outcome => {
+      const d = deps();
+      const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+      const host = await d.readLiveHost('su-reviewer-1');
+      if (!target.ok || !host) throw new Error('fixture target missing');
+      d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+      d.readLiveHost.mockResolvedValue({ ...host, advSessionId: '42', nativeSessionId: 'native-review-1', childGeneration: 3,
+        execution: { ...host.execution!, phase: 'failed', failure: { code: 'api_error_429', retryable: false,
+          retryAfterMs: 60_000, atMs: Date.now() - 120_000 } } });
+      d.readProviderReadiness.mockResolvedValue({ kind: 'deferred', binding: 'rate-pause', reason: 'measured provider pause' });
+      d.shutdownReviewer.mockResolvedValue(outcome);
+      expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+        ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: false, code: 'reviewer_recovery_unavailable' });
+      expect(d.wakeReviewer).not.toHaveBeenCalled();
+      expect(d.reserveNativeAttempt).not.toHaveBeenCalled();
+      expect(d.launcher).not.toHaveBeenCalled();
+      expect(d.releaseSessionResume).toHaveBeenCalledWith(7, 'lease-1');
+    });
+
+  it.each([{ advSessionId: '99' }, { nativeSessionId: 'other-native' }, { childGeneration: undefined }, { startedAt: 0 }])(
+    'never retires a provider-blocked host with missing or changed native custody: %j', async drift => {
+      const d = deps();
+      const target = await d.resolveResumeTarget({ sessionId: 'native-review-1' });
+      const host = await d.readLiveHost('su-reviewer-1');
+      if (!target.ok || !host) throw new Error('fixture target missing');
+      d.resolveResumeTarget.mockResolvedValue({ ...target, live: true, endedAt: null });
+      d.readLiveHost.mockResolvedValue({ ...host, advSessionId: '42', nativeSessionId: 'native-review-1', childGeneration: 3,
+        ...drift, execution: { ...host.execution!, phase: 'failed', failure: { code: 'api_error_429', retryable: false,
+          retryAfterMs: 60_000, atMs: Date.now() - 120_000 } } });
+      d.readProviderReadiness.mockResolvedValue({ kind: 'deferred', binding: 'rate-pause', reason: 'measured provider pause' });
+      expect(await resumeBlindGapReviewer({ slug: SLUG, harness: 'papercusp', recruiterOwnerId: 'su-author',
+        ctx: { workspaceId: 'ws-1' } }, d.deps)).toMatchObject({ ok: false, code: 'resume_failed' });
+      expect(d.shutdownReviewer).not.toHaveBeenCalled();
+      expect(d.wakeReviewer).not.toHaveBeenCalled();
+      expect(d.launcher).not.toHaveBeenCalled();
+    });
 
   it.each(['missing', 'foreign', 'unreadable'])('refuses an %s current host reading without wake or launch', async state => {
     const d = deps();

@@ -842,15 +842,19 @@ export async function withBlindReviewManagedReanchor<T>(tx: Sql, input: {
 
 /** The same fresh pool verdict used by account status. An owner routing fence
  * is authority, not a provider refusal; stale/missing measurements stay unknown. */
-export async function blindReviewProviderWall(workspaceId: string, agent: string) {
+export async function blindReviewProviderReadiness(workspaceId: string, agent: string) {
   const backend = agent === 'claude' ? 'claude' : agent === 'codex' ? 'codex' : null;
   if (!backend) return null;
   const [{ accountStatus }, { getAccountOverride }, { assessGoalHolderLaunchCapacity, holderLaunchTarget }] =
     await Promise.all([import('./deployment/account-pool-store'), import('./deployment/account-session-override'),
       import('./goals/holder-launch-capacity')]);
   const [rows, override] = await Promise.all([accountStatus(workspaceId), getAccountOverride(workspaceId)]);
-  const verdict = assessGoalHolderLaunchCapacity(rows, holderLaunchTarget({ agent: backend, account: 'auto' }), Date.now(), override);
-  return verdict.kind === 'deferred' && verdict.binding !== 'session-override' ? verdict : null;
+  return assessGoalHolderLaunchCapacity(rows, holderLaunchTarget({ agent: backend, account: 'auto' }), Date.now(), override);
+}
+
+export async function blindReviewProviderWall(workspaceId: string, agent: string) {
+  const verdict = await blindReviewProviderReadiness(workspaceId, agent);
+  return verdict?.kind === 'deferred' && verdict.binding !== 'session-override' ? verdict : null;
 }
 
 /** The audit sequence alone does not identify the plan the author activated.

@@ -144,6 +144,7 @@ export interface PsuPtyHost {
   /** Native execution observation from this host's isolated child transcript.
    * Absence or an expired observedAt is unknown, never proof of idle execution. */
   execution?: {
+    nativeSessionId?: string | null;
     phase: 'unknown' | 'running' | 'settled' | 'failed';
     turnStartedAt: number | null;
     lastProgressAt: number | null;
@@ -1512,6 +1513,7 @@ export async function injectIntoHostWithConfirmation(
      *  its own process state and are not caller-influenced. */
     force?: boolean;
     expectedStartedAt?: number;
+    expectedProviderFailure?: { nativeSessionId: string; childGeneration: number; atMs: number };
     requireNativeTurnStart?: boolean;
     providerRecovery?: ProviderRecoveryFence;
     expectedChildGeneration?: number;
@@ -1638,6 +1640,7 @@ export async function injectIntoHostWithConfirmation(
     request?: Record<string, unknown>;
     force?: boolean;
     expectedStartedAt?: number;
+    expectedProviderFailure?: { nativeSessionId: string; childGeneration: number; atMs: number };
     requireNativeTurnStart?: boolean;
     providerRecovery?: ProviderRecoveryFence;
     expectedChildGeneration?: number;
@@ -1678,6 +1681,7 @@ export async function injectIntoHostWithConfirmation(
   }
   if (msg.force !== undefined) envelope.force = msg.force;
   if (msg.expectedStartedAt !== undefined) envelope.expectedStartedAt = msg.expectedStartedAt;
+  if (msg.expectedProviderFailure !== undefined) envelope.expectedProviderFailure = msg.expectedProviderFailure;
   if (msg.requireNativeTurnStart !== undefined) envelope.requireNativeTurnStart = msg.requireNativeTurnStart;
   if (msg.providerRecovery !== undefined) envelope.providerRecovery = msg.providerRecovery;
   if (msg.expectedChildGeneration !== undefined) envelope.expectedChildGeneration = msg.expectedChildGeneration;
@@ -1981,11 +1985,13 @@ export async function shutdownViaPty(
     // Only ever forwarded to findLiveHostAsync, which accepts an async check.
     verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync;
     expectedHost?: { startedAt: number; advSessionId: string };
+    expectedProviderFailure?: { nativeSessionId: string; childGeneration: number; atMs: number };
   } = {},
 ): Promise<BoundShutdownViaPtyResult> {
   const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!host) return 'no-host';
   if (!hostSupports(host, 'shutdown')) return 'no-cap';
+  if (opts.expectedProviderFailure && (!opts.expectedHost || !hostSupports(host, 'shutdown-provider-failure-v1'))) return 'no-cap';
   if (opts.expectedHost) {
     if (!hostSupports(host, 'shutdown-identity')) return 'no-cap';
     if (host.startedAt !== opts.expectedHost.startedAt || host.advSessionId !== opts.expectedHost.advSessionId) return 'refused-stale-host';
@@ -1997,9 +2003,11 @@ export async function shutdownViaPty(
       force: opts.force === true,
       ownerId,
       ...(expectedStartedAt !== undefined ? { expectedStartedAt } : {}),
+      ...(opts.expectedProviderFailure ? { expectedProviderFailure: opts.expectedProviderFailure } : {}),
     });
   const classifyResult = (result: InjectHostResult): BoundShutdownViaPtyResult | null => {
-    if (result.ok) return 'sent';
+    if (result.ok) return !opts.expectedProviderFailure || result.confirmation === 'acked' &&
+      (result.reason === 'shutdown-accepted' || result.reason === 'already-shutting-down') ? 'sent' : 'send-failed';
     const reason = String(result.reason ?? '');
     if (reason.startsWith('shutdown-refused:')) {
       const which = reason.slice('shutdown-refused:'.length);
@@ -2025,6 +2033,7 @@ export async function shutdownViaPty(
   // but never carry this shutdown over to a replacement session under the same key.
   const retryHost = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!retryHost || !hostSupports(retryHost, 'shutdown')) return 'send-failed';
+  if (opts.expectedProviderFailure && !hostSupports(retryHost, 'shutdown-provider-failure-v1')) return 'no-cap';
   if (retryHost.startedAt !== host.startedAt || retryHost.advSessionId !== host.advSessionId) {
     return opts.expectedHost ? 'refused-stale-host' : 'send-failed';
   }

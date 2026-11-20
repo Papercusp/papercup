@@ -638,6 +638,7 @@ const {
   headlessRoleKickoffRequiresMcp,
   verifyHeadlessRoleMcp,
   shutdownRefusalReason,
+  providerFailureShutdownMatches,
   mcpDialogShowsServerDetail,
   headlessRoleMcpVerifyWorstCaseMs,
   headlessRoleMcpKickoffBudgetMs,
@@ -8149,6 +8150,11 @@ describe('shutdownRefusalReason (WI-6638)', () => {
 });
 
 describe('decodeControl mode:shutdown (WI-6638)', () => {
+  it('preserves the exact provider-failure fence for host-side validation', () => {
+    const expectedProviderFailure = { nativeSessionId: 'native-1', childGeneration: 3, atMs: 1000 };
+    expect(decodeControl(JSON.stringify({ v: 1, mode: 'shutdown', data: '', expectedStartedAt: 100,
+      expectedProviderFailure }))).toMatchObject({ expectedStartedAt: 100, expectedProviderFailure });
+  });
   it('decodes an UNGATED shutdown carrying its reason and force flag', () => {
     const decoded = decodeControl(
       JSON.stringify({ v: 1, mode: 'shutdown', data: 'fleet wound down', force: true }),
@@ -8169,6 +8175,31 @@ describe('decodeControl mode:shutdown (WI-6638)', () => {
     // A truthy-but-not-true value must not enable it either.
     const sneaky = decodeControl(JSON.stringify({ v: 1, mode: 'shutdown', data: '', force: 'yes' }));
     expect(sneaky).toMatchObject({ force: false });
+  });
+});
+
+describe('providerFailureShutdownMatches', () => {
+  const expected = { nativeSessionId: 'native-1', childGeneration: 3, atMs: 1000 };
+  const execution = { ...expected, phase: 'failed', pendingTools: 0, ownerInputPending: false,
+    failure: { code: 'api_error_429', retryable: false, retryAfterMs: 1000, atMs: 1000 } };
+  it('honors the provider cooldown at N-1, N and N+1', () => {
+    expect(providerFailureShutdownMatches(expected, execution, 1999)).toBe(false);
+    expect(providerFailureShutdownMatches(expected, execution, 2000)).toBe(true);
+    expect(providerFailureShutdownMatches(expected, execution, 2001)).toBe(true);
+  });
+  it.each([
+    { nativeSessionId: 'other-native' }, { childGeneration: 4 }, { phase: 'running' }, { phase: 'settled' },
+    { phase: 'unknown' }, { pendingTools: 1 }, { ownerInputPending: true },
+    { failure: { ...execution.failure, atMs: 1001 } },
+    { failure: { ...execution.failure, code: 'api_error_401' } },
+    { failure: { ...execution.failure, retryable: true } },
+    { failure: { ...execution.failure, retryAfterMs: null } },
+  ])('refuses a recovered, busy or unrelated current child: %j', drift => {
+    expect(providerFailureShutdownMatches(expected, { ...execution, ...drift }, 3000)).toBe(false);
+  });
+  it.each([null, {}, { ...expected, childGeneration: -1 }, { ...expected, atMs: Infinity },
+    { ...expected, nativeSessionId: '' }, { ...expected, atMs: 4000 }])('fails closed on an invalid fence: %j', fence => {
+    expect(providerFailureShutdownMatches(fence as typeof expected, execution, 3000)).toBe(false);
   });
 });
 
