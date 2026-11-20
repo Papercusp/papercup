@@ -14,7 +14,8 @@ const bundleScript = 'apps/operator/bin/bundle-host.sh';
 const options = isolatedWorkerOptions(360_000);
 let bundle: string;
 
-async function verifyPrivateWorker(context: TestContext, releaseContinuation = false, metadataRepair = false) {
+async function verifyPrivateWorker(context: TestContext, scenario?: 'release-continuation' | 'metadata-repair' | 'restart-barrier') {
+  const metadataRepair = scenario === 'metadata-repair';
   // MCP catalog and dispatch both require an attributable serving generation.
   // Refuse before compilation or private PG, using the real bundler resolver.
   const expectedBuildSha = privateMcpSourceSha(root);
@@ -26,6 +27,7 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
       'packages/operator-core/lib/agent-tools/git_sync/run.ts',
       'packages/operator-core/lib/harness/git-sync/git-sync-action.ts',
       'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
+      'packages/operator-core/lib/harness/git-sync/content-guard.ts',
       'scripts/npm-install-safe.mjs',
       'packages/operator-core/lib/harness/git-sync/git-sync-events.ts',
       'packages/operator-core/lib/agent-tools/locks/acquire_resource.ts',
@@ -51,8 +53,7 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
     execute: async (observe, evidenceDir) => {
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
         process.execPath, bundle, `--source-root=${root}`,
-        ...(releaseContinuation ? ['--release-continuation'] : []),
-        ...(metadataRepair ? ['--metadata-repair'] : [])], {
+        ...(scenario ? [`--${scenario}`] : [])], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1' },
       });
@@ -79,11 +80,17 @@ async function verifyPrivateWorker(context: TestContext, releaseContinuation = f
         expect(receipt.metadataRepair.commit).toBe(receipt.after);
         expect(receipt.metadataRepair.base).toBe(receipt.before);
       }
-      if (releaseContinuation) {
+      if (scenario === 'release-continuation') {
         expect(receipt.releaseContinuation).toMatchObject({
           resource: 'git-sync:friction-private-repository', staleReleaseRejected: true, actualReleaseConsumed: true,
         });
         expect(receipt.releaseContinuation.releasedAtMs).toBeGreaterThanOrEqual(receipt.releaseContinuation.acquiredAtMs);
+      }
+      if (scenario === 'restart-barrier') {
+        expect(receipt.restartBarrier).toMatchObject({
+          resource: 'git-sync', deletedCount: 12, failedMissingReads: 0, exclusiveAcquiredAfterRelease: true,
+        });
+        expect(receipt.restartBarrier.censusedCount).toBe(receipt.restartBarrier.deletedCount);
       }
       expect(existsSync(receipt.runtimeRoot)).toBe(false);
       console.info('FRICTION_WORKER_VERIFIED ' + JSON.stringify(receipt));
@@ -96,7 +103,10 @@ it('routes a real authorized git-sync mutation to the exact private worker and r
   context => verifyPrivateWorker(context), options.testTimeoutMs);
 
 it('rejects a stale release continuation, consumes the real private release and commits once with cleanup',
-  context => verifyPrivateWorker(context, true), options.testTimeoutMs);
+  context => verifyPrivateWorker(context, 'release-continuation'), options.testTimeoutMs);
 
 it('repairs metadata on the exact private worker, refuses stale input and replays without sweeping pending work or pushing',
-  context => verifyPrivateWorker(context, false, true), options.testTimeoutMs);
+  context => verifyPrivateWorker(context, 'metadata-repair'), options.testTimeoutMs);
+
+it('skips absent staged blobs and releases the shared restart barrier in a private git-sync fire',
+  context => verifyPrivateWorker(context, 'restart-barrier'), options.testTimeoutMs);

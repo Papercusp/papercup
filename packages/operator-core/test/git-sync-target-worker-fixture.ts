@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, fork, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getRequestListener } from '@hono/node-server';
@@ -30,6 +30,7 @@ const root = process.argv.find(arg => arg.startsWith('--source-root='))?.slice('
 const workerMode = process.argv.includes('--worker');
 const releaseScenario = process.argv.includes('--release-continuation');
 const metadataScenario = process.argv.includes('--metadata-repair');
+const restartBarrierScenario = process.argv.includes('--restart-barrier');
 const servers: Server[] = [];
 const phase = (stage: string) => console.log('FRICTION_WORKER_PHASE ' + JSON.stringify({ stage, workerMode, pid: process.pid }));
 const requestOptions = { timeout: 30_000, maxTotalTimeout: 30_000, resetTimeoutOnProgress: false };
@@ -87,6 +88,32 @@ export async function readMetadataRepairCatalog(client: Pick<Client, 'listTools'
   return catalog;
 }
 
+function measureMissingIndexReads(tracePath: string, deletedPaths: readonly string[]) {
+  type GitTrace = { event: string; sid: string; argv?: string[]; code?: number };
+  const events = readFileSync(tracePath, 'utf8').trim().split('\n').map(line => JSON.parse(line) as GitTrace);
+  const exits = new Map(events.filter(event => event.event === 'exit').map(event => [event.sid, event.code]));
+  const starts = events.filter(event => event.event === 'start' && event.argv);
+  const deleted = new Set(deletedPaths);
+  const censused = new Set<string>();
+  let failedMissingReads = 0;
+  for (const { argv = [], sid } of starts) {
+    const list = argv.indexOf('ls-files');
+    const separator = argv.indexOf('--', list + 1);
+    if (list >= 0 && separator > list && argv.includes('--stage') && exits.get(sid) === 0) {
+      for (const path of argv.slice(separator + 1)) if (deleted.has(path)) censused.add(path);
+    }
+    const show = argv.indexOf('show');
+    const query = argv[show + 1];
+    if (show >= 0 && query?.startsWith(':') && deleted.has(query.slice(1))) {
+      assert.equal(exits.get(sid), 128, `expected an absent index entry for ${query}`);
+      failedMissingReads++;
+    }
+  }
+  assert.deepEqual([...censused].sort(), [...deleted].sort(), 'the real staged index census must see the deletion inputs');
+  assert.equal(failedMissingReads, 0, 'zero-row index results must skip per-path Git reads');
+  return { censusedCount: censused.size, failedMissingReads };
+}
+
 export async function runGitSyncTargetWorkerFixture() {
   // A sidecar re-exec intentionally has no fixture argv. Only fixture modes
   // require the private source and isolated-runtime environment.
@@ -138,6 +165,17 @@ export async function runGitSyncTargetWorkerFixture() {
   git('init', '-b', 'staging'); git('config', 'user.name', 'Private acceptance');
   git('config', 'user.email', 'private-acceptance@example.invalid');
   writeFileSync(join(repository, 'payload.txt'), 'initial\n');
+  const deletedPaths = restartBarrierScenario
+    ? Array.from({ length: 12 }, (_, index) => `obsolete-${index}.ts`)
+    : [];
+  const gitTracePath = join(privateRoot, 'git-sync-trace.jsonl');
+  if (restartBarrierScenario) {
+    for (const path of deletedPaths) writeFileSync(join(repository, path), 'export const obsolete = true;\n');
+    // Ordinary partial deletion, below the whole-repository wipe guard's threshold.
+    for (let index = 0; index < 8; index++) {
+      writeFileSync(join(repository, `retained-${index}.txt`), 'retained file\n');
+    }
+  }
   if (metadataScenario) {
     mkdirSync(join(repository, 'packages/member'), { recursive: true });
     const manifest = { name: 'private-worker-metadata', version: '1.0.0', private: true,
@@ -157,6 +195,7 @@ export async function runGitSyncTargetWorkerFixture() {
   git('push', '--set-upstream', 'origin', 'staging');
   const before = git('rev-parse', 'HEAD');
   writeFileSync(join(repository, 'payload.txt'), 'measured private mutation\n');
+  for (const path of deletedPaths) unlinkSync(join(repository, path));
   const pendingLock = metadataScenario ? readFileSync(join(repository, 'package-lock.json')) : undefined;
   const repairMetadata = pendingLock ? { base: before,
     expectedPendingLockSha256: createHash('sha256').update(pendingLock).digest('hex'),
@@ -186,7 +225,8 @@ export async function runGitSyncTargetWorkerFixture() {
   try {
     const requestPort = await listen(createServer(getRequestListener(handler)));
     child = fork(import.meta.filename, ['--worker', `--source-root=${root}`], { cwd: root, execArgv: [],
-      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_BACKGROUND_WORKERS: '1', PAPERCUSP_SERVING_BUILD: 'staging' },
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_BACKGROUND_WORKERS: '1', PAPERCUSP_SERVING_BUILD: 'staging',
+        ...(restartBarrierScenario ? { GIT_TRACE2_EVENT: gitTracePath } : {}) },
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
     child.stdout!.on('data', data => process.stdout.write(data));
     child.stderr!.on('data', data => process.stderr.write(data));
@@ -323,6 +363,15 @@ export async function runGitSyncTargetWorkerFixture() {
       assert.deepEqual(readFileSync(join(repository, 'package-lock.json')), pendingLock);
       phase('stale-pending-refused');
     }
+    const mutationStartedAt = Date.now();
+    const restartBarrierWait = restartBarrierScenario ? await registerAwait({
+      subscriberId: 'friction-private-restart-barrier', eventKey: 'resource:released:git-sync',
+      policy: 'notify', once: true, timeoutSec: 60, timeoutBehavior: 'expire',
+      payloadFilter: { all: [
+        { resource: { equals: 'git-sync' } }, { workspaceId: { equals: workspace } },
+        { releasedAtMs: { gte: mutationStartedAt } },
+      ] },
+    }) : undefined;
     phase('mutation-start');
     const result = parse(await client.callTool({ name: 'git-sync:run', arguments: { ...mutation, target: ready.target } }, undefined,
       { timeout: 60_000, maxTotalTimeout: 60_000, resetTimeoutOnProgress: false }));
@@ -333,6 +382,38 @@ export async function runGitSyncTargetWorkerFixture() {
     assert.equal(result.status, metadataScenario ? 'committed' : 'synced', JSON.stringify(result));
     assert.notEqual(after, before, JSON.stringify(result));
     assert.equal(git('rev-list', '--count', `${before}..${after}`), '1', 'one request creates exactly one expected commit');
+    let restartBarrier: Record<string, unknown> | undefined;
+    if (restartBarrierWait) {
+      assert.deepEqual(git('diff', '--diff-filter=D', '--name-only', before, after).split('\n').sort(),
+        [...deletedPaths].sort(), 'the expected missing index entries must be committed as deletions');
+      const trace = measureMissingIndexReads(gitTracePath, deletedPaths);
+      const deadline = Date.now() + 10_000;
+      type Release = { fired_reason: string; fired_payload: { resource: string; releasedAtMs: number } };
+      let release: Release | undefined;
+      while (Date.now() < deadline) {
+        [release] = await getOrgPg().sql<Release[]>`
+          SELECT fired_reason, fired_payload FROM harness_shared.event_awaits WHERE id = ${restartBarrierWait.id}
+            AND fired_at IS NOT NULL
+        `;
+        if (release) break;
+        await delay(25);
+      }
+      assert.equal(release?.fired_reason, 'event');
+      assert.equal(release.fired_payload.resource, 'git-sync');
+      assert.ok(release.fired_payload.releasedAtMs >= mutationStartedAt);
+      const exclusive = parse(await client.callTool({ name: 'locks:acquire_resource', arguments: {
+        resource: 'git-sync', mode: 'exclusive', reason: 'observe private restart admission after git-sync',
+        ttl_sec: 60, wait: { max_drain_sec: 0 },
+      } }, undefined, requestOptions));
+      assert.equal(exclusive.ok, true, JSON.stringify(exclusive));
+      const dropped = parse(await client.callTool({ name: 'locks:release_resource', arguments: {
+        lock_id: exclusive.lock_id,
+      } }, undefined, requestOptions));
+      assert.equal(dropped.results[0]?.released, 1, JSON.stringify(dropped));
+      restartBarrier = { resource: 'git-sync', deletedCount: deletedPaths.length, ...trace,
+        releasedAtMs: release.fired_payload.releasedAtMs, exclusiveAcquiredAfterRelease: true };
+      phase('restart-barrier-release-verified');
+    }
     let metadataRepair: Record<string, unknown> | undefined;
     if (repairMetadata) {
       const proof = result.outcome.metadataRepair;
@@ -388,6 +469,7 @@ export async function runGitSyncTargetWorkerFixture() {
       remoteConfirmed: !metadataScenario, nonTargetUnchanged: true, commits: 1,
       ...(metadataRepair ? { metadataRepair, remoteUnchanged: true } : {}),
       ...(releaseContinuation ? { releaseContinuation } : {}),
+      ...(restartBarrier ? { restartBarrier } : {}),
       sourceHost: getServingHostIdentity() }));
   } catch (error) {
     scenarioFailure = error;
