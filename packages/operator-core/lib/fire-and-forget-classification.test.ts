@@ -101,6 +101,49 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.map(s => s.expression)).toEqual(expect.arrayContaining(['bus [ method ] ( )', 'quiet ( )', 'notifyOwner . call ( bus )']));
   });
 
+  it.each([
+    'Atomics.notify(cells, 0);',
+    'const atomics = Atomics; atomics.notify(cells, 0);',
+    'const { notify: wake } = Atomics; const signal = wake; signal(cells, 0);',
+    'const { notify } = Atomics; notify(cells, 0);',
+    'const wake = Atomics.notify.bind(Atomics); wake(cells, 0);',
+  ])('does not classify intrinsic shared-memory wakeups as delivery: %s', source => {
+    const c = scan(source);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites).toEqual([]);
+  });
+
+  it.each([
+    'const Atomics = { notify: notifyOwner }; Atomics.notify();',
+    'function run(Atomics) { Atomics.notify(); } run({ notify: notifyOwner });',
+    'const atomics = Atomics; const mixed = { notify: notifyOwner }; atomics = mixed; atomics.notify();',
+  ])('retains delivery roots when Atomics is shadowed or its alias has other values: %s', source => {
+    const c = scan(source);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.roots.includes('notifyOwner'))).toBe(true);
+  });
+
+  it('follows intrinsic wakeups through named and namespace barrel imports', () => {
+    const c = censusSources({
+      'src/atomic.ts': 'const { notify } = Atomics; export { notify };',
+      'src/barrel.ts': "export * from './atomic';",
+      'src/app.ts': `import { notify as wake } from './barrel';
+        import * as atomic from './barrel'; wake(cells, 0); atomic.notify(cells, 0);`,
+    });
+    expect(c.gaps).toEqual([]);
+    expect(c.sites).toEqual([]);
+  });
+
+  it.each([
+    'Atomics.notify = notifyOwner; Atomics.notify();',
+    'const atomic = Atomics; atomic.notify = notifyOwner; Atomics.notify();',
+    'Atomics[key] = notifyOwner; Atomics.notify();',
+  ])('retains the name fallback when an intrinsic method may have been replaced: %s', source => {
+    const c = scan(source);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.some(s => s.roots.includes('notify'))).toBe(true);
+  });
+
   it('includes unresolved computed dispatch conservatively instead of declaring it clean', () => {
     const c = scan('function dispatch(key){ bus[key](); } dispatch(runtimeKey);');
     expect(c.sites.some(s => s.roots.includes('<unresolved-computed-dispatch>'))).toBe(true);
@@ -598,6 +641,34 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['tell ( )', ['notifyOwner']]]);
   });
 
+  it.each([
+    ['notifyOwner', false], ['notifyOwner', true],
+    ['readOnly', false], ['readOnly', true],
+  ] as const)('terminates a caller-argument cycle through returned object alternatives (%s, reverse=%s)', (seed, reverse) => {
+    // Reduced from checkpoint-qualification-transaction.ts: a recovered object
+    // and its original value feed each other through separate return paths.
+    // Restoring the caller path must retain an in-flight argument evaluation.
+    const declarations = [
+      'function retain(value) { return value; }',
+      'function wrap(value) { return { value }; }',
+      `function compose(value) {
+        let transaction = value;
+        const recovered = wrap(transaction);
+        if (stop) return recovered;
+        transaction = retain(recovered.value);
+        return { value: transaction };
+      }`,
+      `function run() { const composed = compose(${seed}); composed.value(); }`,
+      'function readOnly() { return 1; }',
+    ];
+    const c = scan(`${(reverse ? declarations.reverse() : declarations).join('\n')}\nrun();`);
+    const roots = ['<unresolved-recursive-return>', ...(seed === 'notifyOwner' ? ['notifyOwner'] : [])];
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+      ['run ( )', roots], ['composed . value ( )', roots],
+    ]);
+  });
+
   it.each(['false', 'null', '0'])('preserves a known non-callable factory argument through rest forwarding: %s', value => {
     const c = scan(`
       function choose(callback = notifyOwner) { return callback; }
@@ -649,6 +720,120 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
     `);
     expect(c.sites.find(s => s.expression === 'make ( )')?.roots).toEqual(['notifyAttention']);
     expect(c.sites.find(s => s.expression === 'tell ( )')?.roots).toEqual(['sendOwner']);
+  });
+
+  it.each([
+    ['...notice, run: readOnly', []],
+    ['run: readOnly, ...notice', ['notifyOwner']],
+    ['...notice, ...quiet', []],
+    ['...quiet, ...notice', ['notifyOwner']],
+    ['...notice, ...other', ['notifyOwner']],
+    ['...notice, run: undefined', []],
+    ['...notice, [runtimeKey]: sendOwner', ['notifyOwner', 'sendOwner']],
+  ] as const)('resolves object spread properties in source order: %s', (properties, roots) => {
+    const c = scan(`
+      function readOnly() { return 1; }
+      const notice = { run: notifyOwner };
+      const quiet = { run: readOnly };
+      const other = { value: readOnly };
+      const bus = { ${properties} };
+      bus.run();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual(roots.length ? [['bus . run ( )', roots]] : []);
+  });
+
+  it('keeps spread property precedence through imported factories and caller bindings', () => {
+    const c = censusSources({
+      'src/factory.ts': `export function build(value, callback) { return { ...value, run: callback }; }`,
+      'src/app.ts': `
+        import { build } from './factory';
+        function readOnly() { return 1; }
+        const quiet = build({ run: notifyOwner }, readOnly);
+        const loud = build({ run: readOnly }, sendOwner);
+        quiet.run(); loud.run();
+      `,
+    });
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['loud . run ( )', ['sendOwner']]]);
+  });
+
+  it('keeps a prior spread member when a later spread can omit it', () => {
+    const c = scan(`
+      function later() { if (condition) return { other: 1 }; return { run: readOnly }; }
+      function readOnly() { return 1; }
+      const bus = { ...{ run: notifyOwner }, ...later() };
+      bus.run();
+    `);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['bus . run ( )', ['notifyOwner']]]);
+  });
+
+  it('does not treat an object spread of a function as a callable alias', () => {
+    const c = scan(`const value = { ...notifyOwner }; value();`);
+    expect(c.sites).toEqual([]);
+  });
+
+  it.each([false, true])('terminates recursive object spreads while retaining the original notification (reverse=%s)', reverse => {
+    const declarations = [
+      `function state(value) {
+        let changed = value;
+        const next = { ...changed };
+        changed = next;
+        return changed;
+      }`,
+      'const original = { run: notifyOwner };',
+    ];
+    const c = scan(`${(reverse ? declarations.reverse() : declarations).join('\n')}
+      const bus = state(original); bus.run();`);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([
+      ['bus . run ( )', ['<unresolved-recursive-return>', 'notifyOwner']],
+    ]);
+  });
+
+  it.each([2, 3, 12])('keeps finite nested spread factories distinct from recursion (depth=%s)', depth => {
+    const nested = (seed: string) => `${'build('.repeat(depth)}${seed}${')'.repeat(depth)}`;
+    const c = scan(`
+      function build(value) { return { ...value }; }
+      function readOnly() { return 1; }
+      const quiet = ${nested('{ run: readOnly }')};
+      const loud = ${nested('{ run: notifyOwner }')};
+      quiet.run(); loud.run();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['loud . run ( )', ['notifyOwner']]]);
+  });
+
+  it.each([false, true])('terminates recursive factory spreads after their return traversal ends (reverse=%s)', reverse => {
+    // Reduced from the real green-checkpoint.ts auto-refire/retry path. Fresh
+    // binding maps do not make a repeated returned-object callsite finite.
+    const declarations = [
+      'function inner(deps, opts) { return run(deps, { ...opts }); }',
+      'function retry(deps, opts) { const value = run(deps, { ...opts }); return { ...value }; }',
+      `function run(deps, opts = {}) {
+        const again = (value) => retry(deps, opts);
+        try { innerResult = inner({ ...deps }, opts); }
+        catch (error) { return again(error); }
+        const { unused, ...rest } = innerResult;
+      }`,
+    ];
+    const c = scan(`${(reverse ? declarations.reverse() : declarations).join('\n')}\nnotifyOwner();`);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['notifyOwner ( )', ['notifyOwner']]]);
+  });
+
+  it.each([2, 12])('preserves finite nested spread factories through a shared wrapper (depth=%s)', depth => {
+    const nested = (seed: string) => `${'wrap('.repeat(depth)}${seed}${')'.repeat(depth)}`;
+    const c = scan(`
+      function build(value) { return { ...value }; }
+      function wrap(value) { return build(value); }
+      function readOnly() { return 1; }
+      const quiet = ${nested('{ run: readOnly }')};
+      const loud = ${nested('{ run: notifyOwner }')};
+      quiet.run(); loud.run();
+    `);
+    expect(c.gaps).toEqual([]);
+    expect(c.sites.map(s => [s.expression, s.roots])).toEqual([['loud . run ( )', ['notifyOwner']]]);
   });
 
   it('follows returned object methods through imports and recursive return alternatives', () => {

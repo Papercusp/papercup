@@ -81,8 +81,11 @@ export function censusSources(sources) {
   const symbols = new Map();
   const modules = new Map();
   const calls = [];
+  const memberWrites = [];
+  let atomicsMayBeMutated = false;
   const gaps = [];
   let resolvingReturns = new Set();
+  const resolvingMembers = new Map();
   const resolvingArguments = new Map();
   const manifests = new Map();
   const configs = new Map();
@@ -280,12 +283,16 @@ export function censusSources(sources) {
       // Visit children first so arrow/function-valued aliases have an identity.
       ts.forEachChild(n, c => visit(c, scope));
       if (ts.isObjectLiteralExpression(n)) {
-        const s = symbol('<object>', scope); s.members = new Map(); objectIds.set(n, s);
+        const s = symbol('<object>', scope); s.members = new Map(); s.objectEntries = []; objectIds.set(n, s);
         for (const p of n.properties) {
-          if (ts.isSpreadAssignment(p)) { s.aliases.push(ref(p.expression, scope)); continue; }
-          const member = symbol(p.name?.getText(sf) ?? '<property>', scope);
+          if (ts.isSpreadAssignment(p)) { s.objectEntries.push({ spread: ref(p.expression, scope) }); continue; }
+          const name = p.name && (ts.isComputedPropertyName(p.name)
+            ? ts.isStringLiteralLike(p.name.expression) || ts.isNumericLiteral(p.name.expression) ? p.name.expression.text : null
+            : p.name.text ?? p.name.getText(sf));
+          const member = symbol(name ?? '<property>', scope);
           member.edges.push(ref(ts.isPropertyAssignment(p) ? p.initializer : ts.isShorthandPropertyAssignment(p) ? p.name : p, scope));
           member.aliases.push(...member.edges); s.members.set(member.name, member);
+          s.objectEntries.push({ member: name, value: { id: member.id } });
         }
       }
       if (ts.isVariableDeclaration(n)) {
@@ -295,6 +302,10 @@ export function censusSources(sources) {
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(n.left)) {
         let targetScope = scope; while (targetScope.parent && !targetScope.names.has(n.left.text)) targetScope = targetScope.parent;
         binding(n.left, ref(n.right, scope), targetScope);
+      }
+      if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && (ts.isPropertyAccessExpression(n.left) || ts.isElementAccessExpression(n.left))) {
+        memberWrites.push(ref(n.left, scope));
       }
       if (ts.isExportAssignment(n)) exports.set('default', ref(n.expression, scope));
       if (ts.isReturnStatement(n) && n.expression && scope.owner) scope.owner.returns.push(ref(n.expression, scope));
@@ -322,6 +333,59 @@ export function censusSources(sources) {
   let targetDepth = 0;
   let targetMemo = null;
   let targetCycles = 0;
+  // Atomics.notify wakes shared-memory waiters; its standard intrinsic is not
+  // a delivery endpoint. Keep that identity through aliases, but never erase
+  // another possible callable, a shadowed binding, or an unresolved return.
+  const onlyIntrinsic = (values, name) => values.some(v => v.intrinsic === name)
+    && values.every(v => v.intrinsic === name || (v.id && !v.calls && !v.members && !v.roots?.size));
+  function memberTargets(base, member, seen, context, trail) {
+    if (base.unresolvedReturn) return { values: [base], present: false };
+    if (base.objectEntries) {
+      const invocation = `${base.id}:${member}`;
+      // A returned object can re-enter after its factory return stack unwinds.
+      // Its callsite remains stable when the next traversal creates a new Map.
+      const bound = base.returnInvocation ?? base.boundContext ?? context;
+      const contexts = resolvingMembers.get(invocation) ?? new Set();
+      if (contexts.has(bound)) {
+        targetCycles++;
+        return { values: [{ roots: new Set(['<unresolved-recursive-return>']), unresolvedReturn: true }], present: false };
+      }
+      contexts.add(bound); resolvingMembers.set(invocation, contexts);
+      try {
+      const values = [];
+      // A spread copies properties, not callable identity. A later definite
+      // property shadows earlier copies; an optional/unknown spread cannot.
+      for (let i = base.objectEntries.length - 1; i >= 0; i--) {
+        const entry = base.objectEntries[i];
+        if (entry.value) {
+          if (entry.member === member || entry.member == null) values.push(...branchTargets(entry.value, seen, base.boundContext ?? context, trail));
+          if (entry.member === member) return { values, present: true };
+        } else {
+          const bases = branchTargets(entry.spread, seen, base.boundContext ?? context, trail)
+            // Alias containers accompany their values; they are not additional
+            // possible objects. No resolved value still means unknown coverage.
+            .filter(b => !(b.id && b.aliases?.length && !b.calls && !b.members));
+          const copies = bases.map(b => memberTargets(b, member, seen, base.boundContext ?? context, trail));
+          values.push(...copies.flatMap(copy => copy.values));
+          if (copies.length && copies.every(copy => copy.present)) return { values, present: true };
+        }
+      }
+      return { values, present: false };
+      } finally {
+        contexts.delete(bound);
+        if (!contexts.size) resolvingMembers.delete(invocation);
+      }
+    }
+    if (base.module) return {
+      values: [...branchTargets(base.module.exports.get(member), seen, context, trail),
+        ...base.module.stars.flatMap(s => branchTargets({ ...s, name: member }, seen, context, trail))],
+      present: base.module.exports.has(member),
+    };
+    return {
+      values: base.members?.has(member) ? branchTargets({ id: base.members.get(member).id }, seen, base.boundContext ?? context, trail) : [],
+      present: !!base.members?.has(member),
+    };
+  }
   function branchTargets(r, seen, context, trail) {
     const checkpoint = trail.length;
     try { return targets(r, seen, context, trail); }
@@ -424,7 +488,8 @@ export function censusSources(sources) {
       const values = t.restForwardCall ? t.returns.map(value => ({ ...value,
         args,
       })) : t.returns;
-      return values.flatMap(value => branchTargets(value, seen, bound, trail));
+      return values.flatMap(value => branchTargets(value, seen, bound, trail))
+        .map(value => value.objectEntries ? { ...value, returnInvocation: invocation } : value);
       } catch (error) {
         if (error instanceof RangeError && !error.message.includes('return-site=')) error.message += ` (return-site=${r.site}, function=${t.name})`;
         throw error;
@@ -449,7 +514,8 @@ export function censusSources(sources) {
       seen.add(key); trail.push(key);
       const m = modules.get(r.module);
       if (r.name === '*') return [{ module: m }];
-      return [...targets(m?.exports.get(r.name), seen, context, trail), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen, context, trail)), ...(notificationName(r.name) ? targets(root(r.name), seen, context, trail) : [])];
+      const values = [...targets(m?.exports.get(r.name), seen, context, trail), ...(m?.stars ?? []).flatMap(s => targets({ ...s, name: r.name }, seen, context, trail))];
+      return [...values, ...(notificationName(r.name) && !onlyIntrinsic(values, 'Atomics.notify') ? targets(root(r.name), seen, context, trail) : [])];
     }
     if (r.memberRef !== undefined) {
       const keys = branchTargets(r.memberRef, seen, context, trail).map(t => t.literal).filter(k => k !== undefined);
@@ -459,13 +525,19 @@ export function censusSources(sources) {
     if (r.member) {
       const bases = targets(r.base, seen, context, trail);
       if (/^(call|apply|bind)$/.test(r.member)) return bases;
-      return [...bases.flatMap(b => b.unresolvedReturn ? [b] : b.module ? [...branchTargets(b.module.exports.get(r.member), seen, context, trail), ...b.module.stars.flatMap(s => branchTargets({ ...s, name: r.member }, seen, context, trail))] : b.members?.has(r.member) ? branchTargets({ id: b.members.get(r.member).id }, seen, b.boundContext ?? context, trail) : []), ...(notificationName(r.member) ? targets(root(r.member), seen, context, trail) : [])];
+      if (!atomicsMayBeMutated && r.member === 'notify' && onlyIntrinsic(bases, 'Atomics')) return [{ intrinsic: 'Atomics.notify' }];
+      const values = bases.flatMap(b => memberTargets(b, r.member, seen, context, trail).values);
+      return [...values, ...(notificationName(r.member) && !onlyIntrinsic(values, 'Atomics.notify') ? targets(root(r.member), seen, context, trail) : [])];
     }
     let scope = r.scope;
     while (scope && !scope.names.has(r.name)) scope = scope.parent;
-    return [...(scope ? targets({ id: scope.names.get(r.name).id }, seen, context, trail) : []), ...(notificationName(r.name) ? targets(root(r.name), seen, context, trail) : [])];
+    if (!scope && r.name === 'Atomics') return [{ intrinsic: 'Atomics' }];
+    const values = scope ? targets({ id: scope.names.get(r.name).id }, seen, context, trail) : [];
+    return [...values, ...(notificationName(r.name) && !onlyIntrinsic(values, 'Atomics.notify') ? targets(root(r.name), seen, context, trail) : [])];
   }
   // Parameter injection also reveals wrappers whose names contain no notify token.
+  atomicsMayBeMutated = memberWrites.some(r => (r?.member === 'notify' || r?.memberRef)
+    && targets(r.base).some(t => t.intrinsic === 'Atomics'));
   if (process.env.NOTIFY_CENSUS_PROGRESS) console.error(`NOTIFY_CENSUS_PROGRESS graph symbols=${symbols.size} calls=${calls.length}`);
   function injectArguments(callee, args, visiting = new Set()) {
     for (const target of targets(callee)) {
