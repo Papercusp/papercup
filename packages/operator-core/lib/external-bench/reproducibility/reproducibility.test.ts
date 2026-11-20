@@ -5,10 +5,13 @@
  * reproducibility.integration.test.ts.
  */
 import { describe, it, expect } from 'vitest';
+import type { TaskRunResult } from '@papercusp/bench-metrics';
 import { canonicalJson } from './canonical-json';
 import { computePreregHash } from './prereg';
 import { rolloutIdFor } from './emit';
 import { fleetRunIdFor } from './fleet';
+import { classifyPreregisteredFreshness } from './freshness';
+import { buildRunReports } from './store';
 import {
   currentBenchmarkProtocolSchema, planCurrentBenchmarkConfirmation, requireCurrentBenchmarkAssignment,
   requireSameSolverComparison, type CurrentBenchmarkProtocol,
@@ -27,6 +30,62 @@ const launch = (protocol: Protocol, armId: string, topology?: string) => require
   budget: { maxUsd: 3, maxWallClockMs: 100 }, topology: topology as never,
 });
 const SAME_SOLVER_TOPOLOGIES = ['solo', 'independent', 'coordinated', 'ensemble', 'repeated-session'] as const;
+
+describe('registered trials and retained submissions', () => {
+  const protocol = currentProtocolFixture('replay-cohort');
+  const preregHash = computePreregHash(protocol);
+  const registration = { runId: protocol.runId, preregHash, suites: ['swe-bench-pro'], config: protocol,
+    filePath: 'benchmarks/preregistrations/replay-cohort.json', gitCommitted: true, createdAt: '2026-11-05T00:00:00Z' };
+  const rolloutId = rolloutIdFor(protocol.runId, 'swe-bench-pro', 't1', 'papercusp', 1);
+  const trial: TaskRunResult = { runId: protocol.runId, suite: 'swe-bench-pro', taskId: 't1', arm: 'papercusp', seed: 1,
+    modality: 'diff', modelId: protocol.arms[0].model, harnessVersion: protocol.arms[0].runtime.runtimeRevision,
+    generationStatus: 'completed', tokensIn: 10, tokensOut: 2, tokensTotal: 12, costUsd: 0.01,
+    wallClockMs: 50, turns: 1, capped: false, priceTableVersion: protocol.priceSchedule.version,
+    graderFamily: protocol.grader.family, graderVersion: protocol.grader.version, graderStatus: 'failed', resolved: false,
+    rolloutId, preregHash, submissionRef: 'rollout:' + rolloutId + '#submission', createdAt: registration.createdAt };
+
+  it('distinguishes rescoring from a new preregistered trial', () => {
+    const rescored: TaskRunResult = { ...trial, graderStatus: 'passed', resolved: true };
+    const before = buildRunReports([trial], registration)[0];
+    const after = buildRunReports([rescored], registration)[0];
+    expect(before.arms[0]).toMatchObject({ attempts: 1, passAt1: 0 });
+    expect(after.arms[0]).toMatchObject({ attempts: 1, passAt1: 1 });
+    expect(after.assignment).toEqual(before.assignment);
+    expect(after.sampling.independentUnits).toBe(1);
+    expect(after.sampling.independentUnits).toBe(before.sampling.independentUnits);
+    expect(() => buildRunReports([trial, rescored], registration)).toThrow(/duplicate/i);
+    expect(rescored.submissionRef).toBe(trial.submissionRef);
+    expect(registration.preregHash).toBe(computePreregHash(registration.config));
+  });
+
+  it('regenerates trials when generation inputs change and preserves the cohort of a grader replay', () => {
+    const newGrader = structuredClone(protocol);
+    newGrader.grader.version = 'next-evaluator';
+    expect(classifyPreregisteredFreshness(protocol, newGrader)).toMatchObject({ comparable: false, driftFields: ['grader'] });
+    const comparison = buildRunReports([trial], registration)[0];
+    expect(comparison.sampling.independentUnits).toBe(1);
+    const changes: Array<[string, (p: typeof protocol) => void]> = [
+      ['taskIds', p => { p.taskIds.push('t2'); p.sampling!.taskRepositories.t2 = 'fixture-repo'; }],
+      ['confirmation', p => { p.confirmation.minimumEffect += 0.1; }],
+      ['arms[papercusp].runtime.promptHash', p => { p.arms[0].runtime.promptHash = 'e'.repeat(64); }],
+      ['seeds', p => { p.seeds = [3]; }],
+      ['arms[papercusp].model', p => { for (const arm of p.arms) arm.model = 'new-solver';
+        p.priceSchedule.rates.push({ ...p.priceSchedule.rates[0], model: 'new-solver' }); }],
+      ['arms[papercusp].runtime.runtimeRevision', p => { p.arms[0].runtime.runtimeRevision = 'new-runtime'; }],
+    ];
+    for (const [field, change] of changes) {
+      const amended = structuredClone(protocol);
+      change(amended);
+      const freshness = classifyPreregisteredFreshness(protocol, amended);
+      expect(freshness, field).toMatchObject({ status: 'stale', comparable: false, driftFields: expect.arrayContaining([field]) });
+      const next = { ...registration, config: amended, preregHash: computePreregHash(amended) };
+      expect(next.preregHash, field).not.toBe(preregHash);
+      expect(() => buildRunReports([trial], next), field).toThrow(/preregistration|model/);
+      expect(buildRunReports([], next)[0].arms[0].attempts, field).toBe(0);
+    }
+    expect(buildRunReports([trial], registration)[0].assignment).toEqual(comparison.assignment);
+  });
+});
 
 describe('AUTO-BAR-R-4-P-004: controlled arms freeze one solver across every topology', () => {
   it('accepts the stock reference, solver topologies, an ablation and a sequential fresh-session baseline together', () => {
