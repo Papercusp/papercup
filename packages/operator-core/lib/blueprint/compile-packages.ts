@@ -588,6 +588,7 @@ export async function provisionBlueprintPackages(
   for (const pin of pins) {
     if (pin.packageKind === 'recipe') await provisioners.recipe(pin, target);
     else if (pin.packageKind === 'rubric') await provisioners.rubric(pin, target);
+    // notify-classification: {"id":"packages/operator-core/lib/blueprint/compile-packages.ts#<module>/provisionBlueprintPackages:b0d4f0d7257c91ad6680:1","classification":"safe-to-lose","reason":"The knowledge provisioner awaits the scoped memory writes and rejects failed installs. Its detached notice only invalidates learning and pack query views; those views reconstruct their state from the stored memory rows."}
     else if (pin.packageKind === 'knowledge-pack') await provisioners.knowledge(pin, target);
   }
 }
@@ -639,6 +640,7 @@ export function blueprintPackageProvisioners(sql: Sql, resourceInstall?: {
       const review = await classifyPackInstall({ potSlug: scope.harnessSlug, pack,
         memoryTarget: scope.memoryTarget, ...scope.knowledgeSelection, requireExactContent: true });
       if (review.conflicts > 0) throw new CompositionCompilerError('package-pin-conflict', 'knowledge pack conflicts with scoped memory; explicit review is required', pin.ref);
+      // notify-classification: {"id":"packages/operator-core/lib/blueprint/compile-packages.ts#<module>/blueprintPackageProvisioners/knowledge:df36a4bb4b42509a217c:1","classification":"safe-to-lose","reason":"applyPackInstall awaits each memory write and returns its resource IDs and failures before this provisioner validates the result. The detached notifyPackQueries chain only refreshes learning.hive, knowledgePacks.list and knowledgePacks.candidates; losing that refresh leaves the stored rows and install result available."}
       const result = await applyPackInstall({
         ...scope, potSlug: scope.harnessSlug, pack, review, memoryTarget: scope.memoryTarget,
         createdBy: 'blueprint-package:' + pin.contentHash,
