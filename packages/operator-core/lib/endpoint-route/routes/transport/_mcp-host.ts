@@ -615,6 +615,7 @@ async function recordFuzzyResolutionTelemetry(rec: FuzzyResolutionRecord, extra:
   const ctx = mcpAuthFailureContext(extra);
   if (!ctx) return;
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/recordFuzzyResolutionTelemetry:d8e0070a611282fbdaf4:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await PROJECTED_DEPS.recordInvocation?.({
       toolName: rec.in,
       pluginName: 'agent-mcp',
@@ -2602,6 +2603,7 @@ async function dispatchWithSynthesizedTx<T>(
     const ctx: UnifiedToolContext = {
       ...baseCtx,
       tx: adminTx,
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/dispatchWithSynthesizedTx:e141137f0626f5232bd4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       principal: await synthesizeDispatchPrincipal(adminTx, spawnCtx),
     };
     return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(ctx));
@@ -2639,6 +2641,7 @@ async function dispatchWithSynthesizedTx<T>(
     // handler, so this cannot duplicate the tool's later write. Ambiguous or
     // dead-endpoint deadlines remain non-retryable.
     const principal = await retryOnRetryableDbDeadline(() =>
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/dispatchWithSynthesizedTx/<callback>/<callback>:65ec258c7f70a08279f9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       withWorkspace(ctxWs, (tx) => synthesizeDispatchPrincipal(tx, spawnCtx)),
     );
     const ctx: UnifiedToolContext = { ...baseCtx, tx: undefined, principal };
@@ -2656,6 +2659,7 @@ async function dispatchWithSynthesizedTx<T>(
           const ctx: UnifiedToolContext = {
             ...baseCtx,
             tx,
+            // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/dispatchWithSynthesizedTx/<callback>/<callback>/<callback>:65ec258c7f70a08279f9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             principal: await synthesizeDispatchPrincipal(tx, spawnCtx),
           };
           // EI-18808330244321407: this is the ONE branch that holds a transaction open
@@ -3211,6 +3215,7 @@ async function buildMcpToolContext(
       })) as McpCallResult;
     const progressBridge = nativeMcpProgressBridge(progressToken, sendNotification);
     const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, () =>
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/buildMcpToolContext/dispatchToolExact/<callback>:277f5bb41cc8580375dc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       nativeOwnerAddress ? runLocalTarget() : runNativeMcpTargetOnOwner({
         toolName: canonicalName, args: dispatchToolArgs, spawn: spawnCtx,
         requestedFormat: baseCtx.requestedFormat, requestedStructured: baseCtx.requestedStructured,
@@ -3409,13 +3414,17 @@ function withMcpMemoryReceipts<Req, Res extends object>(
   return async (req, extra) => {
     const receipt = (req as { params?: { _meta?: Record<string, unknown> } })?.params?._meta?.['papercusp/memoryReceipt'];
     if (!receipt || typeof receipt !== 'object' || !('version' in receipt) || receipt.version !== 1)
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpMemoryReceipts/<callback>:375b39e3bc9be8bfb288:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return handler(req, extra);
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpMemoryReceipts/<callback>:862f6616cf33d3b40b39:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const spawn = await tryBuildSpawnContext(extra);
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpMemoryReceipts/<callback>:375b39e3bc9be8bfb288:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (spawn.kind !== 'ok') return handler(req, extra);
     const [{ withMemoryEmissionReceipt }, { getOrgPg }] = await Promise.all([
       import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
     ]);
     return withMemoryEmissionReceipt(getOrgPg().sql, transportOwnerId(spawn.ctx),
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpMemoryReceipts/<callback>/<callback>:375b39e3bc9be8bfb288:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       'confirmations' in receipt ? receipt.confirmations : undefined, () => handler(req, extra), {
         workspaceId: spawn.ctx.workspaceId, harness: spawn.ctx.harnessSlug, client: spawn.ctx.callerAgent ?? 'unknown',
         port: (req as { method?: string })?.method === 'initialize' ? 'mcp-initialize' : 'mcp-result',
@@ -3464,6 +3473,7 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
   await phases.track('operatorToolsLoad', () => ensureOperatorToolsLoaded());
   // listingOnly (WI-6554700010048023): a native-incarnation mismatch must not
   // strand a session toolless — listing grants nothing; tools/call stays fenced.
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/resolveVisibleToolListings:62625fda87cee413ebff:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const spawnRes = await phases.track('spawnContext', () => tryBuildSpawnContext(extra, { listingOnly: true }));
   // WI-574 (loud auth-fail): carry the rejection reason so tools/list can fail LOUDLY instead of
   // silently advertising an empty tool list (which is indistinguishable from a healthy server).
@@ -3622,6 +3632,7 @@ async function resolveVisibleToolListings(extra: unknown, phases: PhaseTracker =
 async function identitySurfaceContext(spawn: BuiltSpawnContext): Promise<UnifiedToolContext> {
   const principal = spawn.authenticatedPrincipal || spawn.isSuperuser || !dispatchNeedsTx(spawn)
     ? synthesizeTransportPrincipal(spawn)
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/identitySurfaceContext/<callback>:2eacf4c47946d4f748cf:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : await withWorkspace(spawn.workspaceId, (tx) => synthesizeDispatchPrincipal(tx, spawn));
   return {
     workspaceId: spawn.workspaceId,
@@ -3843,6 +3854,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       listChangedSent = true;
     };
     const runHandler = async () => {
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>/runHandler:375b39e3bc9be8bfb288:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await handler(req, extra);
       // D-058: actual direct AND nested use changes continued-session detail,
       // even when the name was already in the seed. Discovery alone does not.
@@ -3889,6 +3901,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
     const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
     const declaredGeneration = declaredServingGeneration(req)
       ?? (requestedName === 'tools:invoke' ? declaredInvokeArgumentGeneration(req) : null);
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>:67896e8bc3d504d3ecb1:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (!sessionKey && declaredGeneration === null) return runHandler();
     // WI-6554700010048041: withMcpBuildFence runs OUTSIDE this wrapper and refuses a
     // build selector this operator does not serve, so a selector seen here is verified.
@@ -3938,6 +3951,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       );
     }
 
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>:67896e8bc3d504d3ecb1:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const result = await runHandler();
     if (sessionKey) {
       const after = await readGeneration();
@@ -3949,6 +3963,7 @@ function withMcpSessionSurfaceRecheck<Req, Res>(
       }
       try {
         const { recheckListedIdentitySurface } = await import('../../../capability-envelope/identity-tool-surface');
+        // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpSessionSurfaceRecheck/<callback>:eea1609fac8b10df8943:1","classification":"durable","reason":"The native source census reaches notify, notifyListChanged, sendNotification at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await recheckListedIdentitySurface(sessionKey, notifyListChanged);
       } catch (err) {
         console.warn(`[mcp-host] identity surface recheck failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -5644,6 +5659,7 @@ export function registerMcpHost(server: McpServer): void {
             // slice of 4,000 plus a spill file to go page. Reduction the caller
             // ASKED for should pre-empt the door's fixed policy, never race it.
             const projectedResult = applyResultProjection(
+              // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/registerMcpHost/<callback>/runDispatch/execute:8868a6db1220edea39bf:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               await maybeRunWithDeltaProxy({
                 sessionKey: replayOwnerKey,
                 toolName,
@@ -5671,6 +5687,7 @@ export function registerMcpHost(server: McpServer): void {
                   // Native admission lives in the attached engine's worker.
                   // This hop precedes generic gates and monetary reservation.
                   if (nativeMcpToolAddress(dispatchSpawnCtx)) {
+                    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/registerMcpHost/<callback>/runDispatch/execute/runRaw:b22557004df6975c9930:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                     return runNativeMcpTargetOnOwner({
                       toolName: projected.expose.mcp!.name, args: dispatchArgs, spawn: dispatchSpawnCtx, requestedFormat,
                       requestedStructured, requestedDelta: materializationCtx.requestedDelta,
@@ -6361,6 +6378,7 @@ export function registerMcpHost(server: McpServer): void {
             if (nativeMcpToolAddress(dispatchSpawnCtx)) {
               return await runWithMcpRequestTraceExecution(traceExecution, () => runDispatch(baseCtx));
             }
+            // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/registerMcpHost/<callback>/dispatchPreflight:bb198ce77dde362f0fda:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, async (ctx) => {
               // The outer race may have answered while acquisition or
               // principal synthesis was still in flight. Do not enter the
@@ -6998,6 +7016,7 @@ function withMcpRequestDeadline<Req, Res>(
       () => timeoutFactory(),
     );
     if (extraObject) mcpRequestDeadlineByExtra.set(extraObject, requestDeadline);
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/_mcp-host.ts#<module>/withMcpRequestDeadline/<callback>/<callback>:375b39e3bc9be8bfb288:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const work = Promise.resolve().then(() => handler(req, extra));
     let workSettled = false;
     const cleanup = () => {

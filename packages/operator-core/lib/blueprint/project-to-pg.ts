@@ -197,6 +197,7 @@ export async function projectBlueprintToPg(
     }
   }
   if (specification && ((specification.configuration.bundles?.length ?? 0) || resolveSeedPackKey(specification.configuration).packId)) {
+    // notify-classification: {"id":"packages/operator-core/lib/blueprint/project-to-pg.ts#<module>/projectBlueprintToPg:f8331850dce455ab1f69:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await provisionBlueprintPackages(specification, blueprintPackageProvisioners(sql));
   }
   // Legacy blueprints have no operation manifest and keep their current one-row
@@ -376,6 +377,7 @@ async function loadAndProjectSource(
   if (specification.specificationRevision === cachedHash) {
     return { blueprint: loaded.blueprint, contentHash: cachedHash };
   }
+  // notify-classification: {"id":"packages/operator-core/lib/blueprint/project-to-pg.ts#<module>/loadAndProjectSource:2d45eabd724b11676550:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const { contentHash } = await projectBlueprintToPg(sql, {
     workspaceId,
     harnessSlug,
@@ -407,6 +409,7 @@ async function reprojectIfSourceChanged(
   const key = reprojectionKey(workspaceId, harnessSlug);
   const running = reprojectionState.inFlight.get(key);
   if (running) return running;
+  // notify-classification: {"id":"packages/operator-core/lib/blueprint/project-to-pg.ts#<module>/reprojectIfSourceChanged:8872428883ede2281b0d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const attempt = (async (): Promise<ReprojectedBlueprint | null> => {
     let current = await statSourceVersion(path);
     if (!current) return null;
@@ -430,6 +433,7 @@ async function reprojectIfSourceChanged(
         return file;
       };
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/blueprint/project-to-pg.ts#<module>/reprojectIfSourceChanged/<callback>:b646c370378505e9bcec:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         projected = await loadAndProjectSource(sql, workspaceId, harnessSlug, path, track, cacheHash);
         cacheHash = projected.contentHash;
       } catch (error) {
@@ -531,6 +535,7 @@ export async function getEffectiveBlueprint(
     registerHarnessOpProxies((cached.ops ?? []) as HarnessOpManifestEntry[]);
     return cached;
   }
+  // notify-classification: {"id":"packages/operator-core/lib/blueprint/project-to-pg.ts#<module>/getEffectiveBlueprint:f1564cefdf93b6c6aafa:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const projected = await reprojectIfSourceChanged(sql, opts.workspaceId, opts.harnessSlug, null, opts.blueprintPath);
   return projected?.blueprint ?? null;
 }

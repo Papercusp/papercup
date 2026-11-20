@@ -211,8 +211,10 @@ export function makeBundleAppInstallers(workspaceId: string, opts: InstallBundle
           rounds: 0,
         });
       }
+      // notify-classification: {"id":"packages/operator-core/lib/cupboard/bundle-app-install-io.ts#<module>/makeBundleAppInstallers/resolveAndInstallDeps:6fece9ed93c256f2f9bc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return resolveAndInstallDeps(
         { packs: declared.packs ?? [], plugins: declared.plugins ?? [] },
+        // notify-classification: {"id":"packages/operator-core/lib/cupboard/bundle-app-install-io.ts#<module>/makeBundleAppInstallers/resolveAndInstallDeps/installUnit:231657deeeaec2b62350:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         { deriveCatalog: () => derivePackCatalog({}), installUnit: (u) => installCupboardUnitFromListing(u) },
       );
     },
@@ -225,6 +227,7 @@ export function makeBundleAppInstallers(workspaceId: string, opts: InstallBundle
     },
     installBlueprint: async (blueprint: BundleContentUnit) => {
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/cupboard/bundle-app-install-io.ts#<module>/makeBundleAppInstallers/installBlueprint:f1ab462836cfcacc03ef:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const res = await installBlueprintFromCupboardCore(
           { githubUrl: blueprint.githubUrl, listingRef: blueprint.listingRef },
           {
@@ -255,6 +258,7 @@ export function makeBundleAppInstallers(workspaceId: string, opts: InstallBundle
             error: `bundle declared blueprint id "${blueprint.id}" but the repo's blueprint.yaml declares "${res.id}"`,
           };
         }
+        // notify-classification: {"id":"packages/operator-core/lib/cupboard/bundle-app-install-io.ts#<module>/makeBundleAppInstallers/installBlueprint:e28a89a66e17d5243642:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await withBlueprintSourceMutation([INSTALLED_BLUEPRINTS_DIR()], () =>
           writeBundleSource(join(INSTALLED_BLUEPRINTS_DIR(), res.id), blueprint));
         return { ok: true as const };
@@ -283,6 +287,7 @@ export function makeBundleAppInstallers(workspaceId: string, opts: InstallBundle
       }
     },
     installRubric: async (rubric: BundleContentUnit) => {
+      // notify-classification: {"id":"packages/operator-core/lib/cupboard/bundle-app-install-io.ts#<module>/makeBundleAppInstallers/installRubric:ef97f08619864587784c:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const res = await installRubricFromCupboard({
         githubUrl: rubric.githubUrl,
         listingRef: rubric.listingRef ?? rubric.id,
@@ -360,6 +365,7 @@ export async function installBundleAppFromCupboard(
     }
     const host = makeHostState(opts.workspaceId, opts);
     const installers = makeBundleAppInstallers(opts.workspaceId, opts);
+    // notify-classification: {"id":"packages/operator-core/lib/cupboard/bundle-app-install-io.ts#<module>/installBundleAppFromCupboard:b10fc699b69f4419e3fa:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const result = await installBundleApp(manifest, host, installers, {
       allowConflicts: input.allowConflicts === true,
     });

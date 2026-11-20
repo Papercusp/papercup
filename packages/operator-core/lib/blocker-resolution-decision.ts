@@ -517,6 +517,7 @@ export async function validateBlockerDecisionEvidence(
   // or permission to release. Each distinct ref is measured once per request.
   for (let offset = 0; offset < entries.length; offset += 8) {
     await Promise.all(entries.slice(offset, offset + 8).map(async ([key, ref]) => {
+      // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-decision.ts#<module>/validateBlockerDecisionEvidence/<callback>:345362d19fde0c705d7b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       try { measured.set(key, await context.readEvidence(ref)); }
       catch { measured.set(key, { status: 'unknown', detail: 'canonical reader failed' }); }
     }));
@@ -605,6 +606,7 @@ export async function validateBlockerDecisionEvidence(
     const facts = await Promise.all(prior.reasonEvidenceRefs.map(async (fact): Promise<BlockerEvidenceMeasurement> => {
       const known = measured.get(evidenceKey(fact));
       if (known) return known;
+      // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-decision.ts#<module>/validateBlockerDecisionEvidence/lapsedPeerCustody/<callback>:30bc24444b0a494397ce:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       try { return await context.readEvidence(fact); } catch { return { status: 'unknown', detail: 'canonical reader failed' }; }
     }));
     return facts.every((fact) => fact.status === 'available') &&

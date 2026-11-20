@@ -1194,6 +1194,7 @@ export default defineTool({
 
       const writeConformance = conformanceRefusal(false);
       if (writeConformance) return writeConformance;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/audit.ts#<module>/handler/attempt/<callback>:ca1a1a6094f049b501df:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const recorded = await trackPhase(ctx.phases, 'plans:audit:activation-write', () => recordCurrentActivationAudit({
         workspaceId,
         planSlug: args.slug,
@@ -1467,6 +1468,7 @@ export default defineTool({
     const known = new Set(planItems.map((i) => i.itemId));
 
     if (args.proposeCitations) {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/audit.ts#<module>/handler/attempt:aadbae0c77d83e9aa66c:3","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const context = await repoCitationContextForHarness(harnessSlug);
       if (!harnessSlug || !context || isCitationContextFailure(context)) {
         return { data: { ok: false as const, error: 'citation_context_unavailable', slug: args.slug } };
@@ -2027,6 +2029,7 @@ export default defineTool({
     const deadlineMs = Date.now() + diagnosticTimeoutMs;
     const fallback = unavailableActivationReadiness(new Error('Activation-audit diagnostic deadline exceeded.'));
     const diagnostic = await trackPhase(ctx.phases, 'plans:audit:activation-diagnostics', () =>
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/audit.ts#<module>/handler/<callback>/<callback>:9680ae666311fd1b2232:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       withBoundedTimeout(signal => readPlanActivationReadiness({
         workspaceId: sctx.workspaceId ?? activeWorkspaceId(), harnessSlug: harnessSlug ?? '',
         planSlug: args.slug, requesterId: resolveAgentIdentity(sctx).ownerId,

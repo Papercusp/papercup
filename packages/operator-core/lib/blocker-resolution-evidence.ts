@@ -322,6 +322,7 @@ async function readRubricGateCondition(ref: string, context: BlockerEvidenceCont
   }
   const { getAcceptanceRubricVettingStatus } = await import('./acceptance-rubric-vetting');
   const { listScorecards } = await import('./scorecards');
+  // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/readRubricGateCondition:b59abdad945b6649d0e3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const vetting = await getAcceptanceRubricVettingStatus(rubric, { listScorecards,
     getRubric: async id => {
       const entry = await read(id);
@@ -375,6 +376,7 @@ async function readPlanRouteCondition(ref: string, context: BlockerEvidenceConte
   const { getPlanRow } = await import('./agent-tools/plans/source');
   const scope = { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug, slug: match[1] };
   const [plan, nodes] = await Promise.all([
+    // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/readPlanRouteCondition:a1233d3622d75a7bf61d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     getPlanRow(match[1], scope), readPlanLineNodes(getOrgPg().sql, scope),
   ]);
   if (!plan || plan.workspaceId !== context.workspaceId || plan.harnessSlug !== context.harnessSlug ||
@@ -691,6 +693,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
           const hash = raw.indexOf('#');
           const cell = hash < 0 ? raw : raw.slice(0, hash);
           const { readCell, formatCellHoist } = await import('./cell-read');
+          // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/createBlockerEvidenceReader/readEvidence:d12bfd094f7bd8e27318:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const read = await readCell(cell, { ownerId: context.ownerId, roles: context.role ? [context.role] : [],
             harnessSlug: context.harnessSlug ?? undefined, workItems: [context.workItemId] }, context);
           if (read.status === 'absent') return absent('cell is not available to this caller');
@@ -719,7 +722,9 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             condition: isDeepStrictEqual(actual, expected) ? 'satisfied' : 'pending' };
         }
         case 'event': {
+          // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/createBlockerEvidenceReader/readEvidence:366c47aa5d0f3435a0d8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (ref.ref.startsWith('rubric:')) return await readRubricGateCondition(ref.ref, context);
+          // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/createBlockerEvidenceReader/readEvidence:9d29eb20022a893e0afa:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (ref.ref.startsWith('plan-route:')) return await readPlanRouteCondition(ref.ref, context);
           if (ref.ref.startsWith('grading-audit:') || ref.ref.startsWith('scorecard:grading-audit:')) {
             return await readGradingAuditCondition(ref.ref, context, loadAuditHeader);
@@ -816,6 +821,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             const [nodes, plan] = await Promise.all([
               readPlanLineNodes(getOrgPg().sql, { workspaceId: context.workspaceId,
                 harnessSlug: context.harnessSlug, slug: match[1] }),
+              // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/createBlockerEvidenceReader/readEvidence:ce168abdc3e5fd65525a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               getPlanRow(match[1], { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug }),
             ]);
             const identities = nodes.filter(node => node.id === match[2]);
@@ -957,6 +963,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             if (!match) return absent('expected plan:SLUG#D-NNN');
             if (!context.workspaceId || activeWorkspaceId() !== context.workspaceId) return unknown('plan document tenant context mismatch');
             const { getPlanRow } = await import('./agent-tools/plans/source');
+            // notify-classification: {"id":"packages/operator-core/lib/blocker-resolution-evidence.ts#<module>/createBlockerEvidenceReader/readEvidence:ce168abdc3e5fd65525a:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const plan = await getPlanRow(match[1], { workspaceId: context.workspaceId, harnessSlug: context.harnessSlug });
             if (!plan || plan.workspaceId !== context.workspaceId || plan.harnessSlug !== context.harnessSlug || plan.planSlug !== match[1]) {
               return unknown('canonical cited plan is unavailable');

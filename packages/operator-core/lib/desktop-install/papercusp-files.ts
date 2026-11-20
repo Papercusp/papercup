@@ -3614,6 +3614,7 @@ export async function checkHookSyntax(
       // A child killed by a signal reports code === null: also could-not-tell.
       child.on('close', (code) => {
         if (code === 0 || code === null) return done({ ok: true });
+        // notify-classification: {"id":"packages/operator-core/lib/desktop-install/papercusp-files.ts#<module>/checkHookSyntax/<callback>/<callback>:7e6efdb4a8d8880bd538:1","classification":"durable","reason":"The native source census reaches notifyDecoded at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const detail = stderrCollector.text().slice(0, 4096).trim().split('\n').slice(0, 3).join('; ');
         done({ ok: false, detail: detail || `exit ${code}` });
       });
@@ -4047,6 +4048,7 @@ async function runInstallRtkScript(script: string, home: string): Promise<RtkIns
     const out = collectChildOutput(child);
     child.on('error', (err) => resolve({ exitCode: null, signal: null, stderrTail: String(err) }));
     child.on('close', (exitCode, signal) =>
+      // notify-classification: {"id":"packages/operator-core/lib/desktop-install/papercusp-files.ts#<module>/runInstallRtkScript/<callback>/<callback>:db990959bcef2e5d0570:1","classification":"durable","reason":"The native source census reaches notifyDecoded at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       resolve({ exitCode, signal, stderrTail: out.stderr.text().slice(-600) }),
     );
   });

@@ -2169,6 +2169,7 @@ async function defaultReadScorecards(rubric: Rubric): Promise<BoundedAcceptanceB
   let before: import('./scorecards').ScorecardListCursor | undefined;
   const visited = new Set<string>();
   for (;;) {
+    // notify-classification: {"id":"packages/operator-core/lib/acceptance-bar-contract-snapshot.ts#<module>/defaultReadScorecards:adeb9726a5d9b77489f9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const page = await listScorecardPage({
       rubricRef: rubric.rubricId,
       includeSuperseded: true,

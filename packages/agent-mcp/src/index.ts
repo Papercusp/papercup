@@ -354,6 +354,7 @@ import {
 // consumers migrate. The generic framework defaults to batch-v1. A migrated
 // host caller explicitly overrides the version in deps for either input form.
 export const dispatchProjectedTool: typeof dispatchFrameworkTool = (tool, name, input, ctx, deps, stack) =>
+  // notify-classification: {"id":"packages/agent-mcp/src/index.ts#<module>/dispatchProjectedTool:64339c1a345ff91eb53f:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   dispatchFrameworkTool(tool, name, input, ctx, { batchResponseVersion: 'operation-v0', ...deps }, stack);
 export const dispatchProjectedToolStream: typeof streamFrameworkTool = (tool, name, input, ctx, deps) =>
   streamFrameworkTool(tool, name, input, ctx, { batchResponseVersion: 'operation-v0', ...deps });

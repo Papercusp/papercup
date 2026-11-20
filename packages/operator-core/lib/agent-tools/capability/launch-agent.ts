@@ -1016,6 +1016,7 @@ export default defineTool({
   async handler(args, ctx) {
     const nativePermit = (ctx as unknown as Record<PropertyKey, unknown>)[INTERNAL_BLIND_REVIEW_RESUME] as BlindReviewResumePermit | undefined;
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/capability/launch-agent.ts#<module>/handler:6a3c4dca1e6d26242b87:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return await withBlindReviewNativeLaunch({ permit: nativePermit, request: args,
         workspaceId: typeof ctx.workspaceId === 'string' ? ctx.workspaceId : '',
         actor: nativePermit ? resolveAgentIdentity(ctx).ownerId : null,

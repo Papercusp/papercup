@@ -1376,6 +1376,7 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
   try {
     const ref = workItemObjectRef(wi);
     const blockEdges = await listOut(ref, { rel: 'blocks' });
+    // notify-classification: {"id":"packages/operator-core/lib/work-items-events.ts#<module>/emitWorkItemSettledEvents:11aaefa39ffd314eeb75:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await emitUnblockedForClearedEdges(
       blockEdges.map((e) => e.dst),
       wi.id,

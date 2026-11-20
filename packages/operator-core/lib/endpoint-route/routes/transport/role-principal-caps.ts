@@ -487,6 +487,7 @@ export async function loadRoleCapabilities(
   // so a harness blueprint can never widen a provisioned or platform role.
   if (harnessSlug && harnessSlug !== '*' && raw === undefined &&
       !BLUEPRINT_ROLE_CAPS[roleName] && !Object.hasOwn(ROLE_ENVELOPES, roleName)) {
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts#<module>/loadRoleCapabilities:6a2eeeda9dc20479c647:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     for (const c of await declaredPotWorkerRoleCapabilities(workspaceId, harnessSlug, roleName)) caps.add(c);
   }
   // B-18 cutover parity: these roles can have Bash/Edit/Write/WebFetch removed
@@ -669,6 +670,7 @@ async function declaredPotWorkerRoleCapabilities(
     const { getOrgPg } = await import('@papercusp/db-org');
     const { getEffectiveBlueprint } = await import('../../../blueprint/project-to-pg');
     for (const scope of new Set([harnessSlug, potSlug])) {
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts#<module>/declaredPotWorkerRoleCapabilities:b035b008a033e3527775:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const blueprint = await getEffectiveBlueprint(getOrgPg().sql, { workspaceId, harnessSlug: scope });
       if (!blueprint) continue;
       const roles = blueprint.roles.filter(role => role.id === roleName);
@@ -699,6 +701,7 @@ export async function synthesizeDispatchPrincipal(
   if (spawnCtx.authenticatedPrincipal) return spawnCtx.authenticatedPrincipal;
   const capabilities = spawnCtx.isSuperuser
     ? new Set<string>()
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/transport/role-principal-caps.ts#<module>/synthesizeDispatchPrincipal:574bcaf6dacaf39cd023:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : await loadRoleCapabilities(tx, spawnCtx.workspaceId, spawnCtx.role, spawnCtx.harnessSlug);
   // Keep the legacy capability/role behavior above, but carry the transport's
   // resolved provenance into telemetry. `sigVerifiedSpawn` is supplied by the

@@ -565,6 +565,7 @@ async function copyPackage(src: string, target: string): Promise<void> {
 }
 
 async function withLifecycleLock<T>(installedDir: string, id: string, run: () => Promise<T>): Promise<T> {
+  // notify-classification: {"id":"packages/operator-core/lib/cupboard/blueprint-release.ts#<module>/withLifecycleLock:fbfae85fda38b14a75e7:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withBlueprintSourceMutation([installedDir], async () => {
   const root = releaseRoot(installedDir, id);
   await fs.mkdir(root, { recursive: true });
@@ -853,6 +854,7 @@ export async function commitBlueprintRelease(
   input: CommitBlueprintReleaseInput,
 ): Promise<CommitBlueprintReleaseResult> {
   assertSafeId(input.id);
+  // notify-classification: {"id":"packages/operator-core/lib/cupboard/blueprint-release.ts#<module>/commitBlueprintRelease:44ac6ad089bdf3f10d92:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withLifecycleLock(input.installedDir, input.id, async () => {
     const assertInstalledPackage = () => {
       if (input.expectedInstalledPackageHash === undefined) return;
@@ -993,6 +995,7 @@ export async function rollbackBlueprintRelease(input: {
   journal?: BlueprintJournalReport;
 }> {
   assertSafeId(input.id);
+  // notify-classification: {"id":"packages/operator-core/lib/cupboard/blueprint-release.ts#<module>/rollbackBlueprintRelease:8e912b056222bdb10ecd:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withLifecycleLock(input.installedDir, input.id, async () => {
     const index = await readIndex(input.installedDir, input.id);
     const candidates = index.releases.filter(
@@ -1036,6 +1039,7 @@ export async function uninstallBlueprintRelease(input: {
   journal?: BlueprintJournalReport;
 }> {
   assertSafeId(input.id);
+  // notify-classification: {"id":"packages/operator-core/lib/cupboard/blueprint-release.ts#<module>/uninstallBlueprintRelease:41e49a7df688b0aeb60e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withLifecycleLock(input.installedDir, input.id, async () => {
     const index = await readIndex(input.installedDir, input.id);
     const removed = index.releases.find((release) => release.contentHash === index.activeContentHash);

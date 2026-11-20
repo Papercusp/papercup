@@ -721,6 +721,7 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
                   const work = Promise.resolve().then(() => {
                     cancellation.assertNotAborted();
                     markStarted();
+                    // notify-classification: {"id":"packages/operator-core/lib/pg-bounded-txn.ts#<module>/boundedOrgTxn/<callback>/<callback>/<callback>/<callback>/<callback>:b575d81c261c5956a897:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                     return fn(waitObserver?.tx ?? cancellation.tx);
                   });
                   // If cancellation wins the race, the transaction callback returns early while

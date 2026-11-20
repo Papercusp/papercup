@@ -4901,6 +4901,7 @@ export async function setWorkItemState(
   }
   if (!opts.skipCompletionGate && ['done', 'passed', 'resolved'].includes(state)) {
     const { workItemNativeProofClearance } = await import('./native-proof-clearance');
+    // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/setWorkItemState:2b70e9e10601566692b4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const refusal = await workItemNativeProofClearance(wi, activeWorkspaceId());
     if (refusal) throw new Error(`${refusal.code}: ${refusal.error}`);
   }
@@ -6479,6 +6480,7 @@ export async function claimWorkItem(
     // Even an outer caller that catches a refusal cannot commit an uncorrelated
     // claim; its notifications are appended only after this savepoint succeeds.
     const afterCommit: WorkItemClaimTransaction['afterCommit'] = [];
+    // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/claimWorkItem/<callback>:4a60da9eb5699da54052:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const claimed = await boundedOrgTxn(client => claimWorkItemInTransaction(
       id, assignee, opts, { client, afterCommit },
     ), { ...(transaction ? { client: transaction.client } : {}), phase: 'work_items:claim:invocation' });
@@ -6486,6 +6488,7 @@ export async function claimWorkItem(
     else for (const publish of afterCommit) await publish();
     return claimed;
   }
+  // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/claimWorkItem:18ac9edfa0fbb918e523:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return claimWorkItemInTransaction(id, assignee, opts, transaction);
 }
 
@@ -6557,6 +6560,7 @@ async function claimWorkItemInTransaction(
     // assignedBy provenance, so they never mint this exception and keep the
     // ordinary admission floor below unchanged.
     const leaderDispatchAdmission = prior.assignedBy
+      // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/claimWorkItemInTransaction:5e1ab40476621f332e07:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       ? await deriveLeaderDispatchAdmission(prior, assignee, issueWs)
       : null;
     // EI-218293: the fleet admission seam already allows a member to absorb a
@@ -6565,6 +6569,7 @@ async function claimWorkItemInTransaction(
     // dispatch: a self-filed bug is not leader-authorized work.
     const selfFiledFalloutAdmission =
       prior.kind === 'bug' && prior.createdBy
+        // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/claimWorkItemInTransaction:17882905466687ae702b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         ? await deriveSelfFiledFalloutAdmission(
             // `prior` is a WorkItem, whose `kind` spans the whole work-item union;
             // the helper takes the narrower EngineerIssue shape. The guard above has
@@ -6820,9 +6825,11 @@ async function claimWorkItemInTransaction(
     // than hand-patched into each tool. Same durability argument as the `auto`
     // stamp in coordination/messages.ts: the next claim path anyone adds is
     // covered for free and cannot silently leave the goal unstamped.
+    // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/claimWorkItemInTransaction/publish:a4a022b569ea4a0ce75d:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     noteGoalClaimed(assignee, won.id);
     };
     if (transaction) transaction.afterCommit.push(publish);
+    // notify-classification: {"id":"packages/operator-core/lib/work-items.ts#<module>/claimWorkItemInTransaction:8c7388af18d4c4261312:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     else await publish();
   }
   return claimed;

@@ -839,6 +839,7 @@ export async function installBlueprintFromCupboardCore(
 
     let lifecycle: Awaited<ReturnType<typeof commitBlueprintRelease>>;
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-core.ts#<module>/installBlueprintFromCupboardCore:66f887004fdfdf14e7e8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       lifecycle = await commitBlueprintRelease({
         installedDir: deps.installedBlueprintsDir(),
         sourceDir: bpDir,

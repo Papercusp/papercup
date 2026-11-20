@@ -123,6 +123,7 @@ export async function routeFrozenRepairLegs(
   // one refused early item cannot starve a later check.
   for (let offset = 0; offset < plan.open.length; offset += MAX_ROUTED_LEGS) {
     const batch = plan.open.slice(offset, offset + MAX_ROUTED_LEGS);
+    // notify-classification: {"id":"packages/operator-core/lib/release/frozen-repair-leg-routing.ts#<module>/routeFrozenRepairLegs/<callback>:aa47dff5046bcd6989b4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const results = await Promise.allSettled(batch.map((o) => deps.broadcastOpen(o)));
     for (const [i, result] of results.entries()) {
       const conditionKey = batch[i]!.conditionKey;
@@ -132,6 +133,7 @@ export async function routeFrozenRepairLegs(
   }
   const resolved: string[] = [];
   if (plan.resolve.length > 0) {
+    // notify-classification: {"id":"packages/operator-core/lib/release/frozen-repair-leg-routing.ts#<module>/routeFrozenRepairLegs:5455f7e8241da53822e3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const ok = await deps.broadcastResolved({
       conditionKeys: plan.resolve,
       summary: req.queue
@@ -144,6 +146,7 @@ export async function routeFrozenRepairLegs(
   let summaryPublished: boolean | undefined;
   const pendingKeys = await deps.readPendingSummaryKeys?.(req.pipeline) ?? [];
   if (deps.broadcastSummary && (opened.length || resolved.length || failed.length || pendingKeys.length)) {
+    // notify-classification: {"id":"packages/operator-core/lib/release/frozen-repair-leg-routing.ts#<module>/routeFrozenRepairLegs:278da1959019eb736b7e:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     summaryPublished = await deps.broadcastSummary({ pipeline: req.pipeline, queue: req.queue,
       opened: opened.length, resolved: resolved.length, failed: failed.length, pendingKeys });
     if (summaryPublished && pendingKeys.length) await deps.acknowledgeSummary?.(req.pipeline, pendingKeys);
@@ -214,6 +217,7 @@ export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDe
       const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');
       const workspaceId = coordScopeWorkspace();
       if (!workspaceId) throw new Error('Frozen failure publication requires a workspace');
+      // notify-classification: {"id":"packages/operator-core/lib/release/frozen-repair-leg-routing.ts#<module>/productionFrozenRepairLegRoutingDeps/broadcastOpen:a5cd54ba41cc4d1929e8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await acquireConditionOwner(ev.conditionKey, {
         title: ev.summary,
         summary: ev.body + '\n\nComplete recorded identity and output: work_items:get → payload.frozenRepairFailure.',
@@ -235,6 +239,7 @@ export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDe
              SET payload = jsonb_set(payload, '{_frozenRepairAnnouncementPending}', 'true'::jsonb)
            WHERE workspace_id = ${workspaceId} AND condition_key = ${conditionKey}
              AND payload -> 'frozenRepairFailure' IS NOT NULL`;
+        // notify-classification: {"id":"packages/operator-core/lib/release/frozen-repair-leg-routing.ts#<module>/productionFrozenRepairLegRoutingDeps/broadcastResolved:8af3a6d2d0cb374f988a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const result = await releaseConditionOwner(conditionKey, { workspaceId, settle: true, reason: res.summary });
         if (result.released && !result.settled) return false;
       }
@@ -271,6 +276,7 @@ export function productionFrozenRepairLegRoutingDeps(): FrozenRepairLegRoutingDe
         .update(JSON.stringify([input.pipeline, input.queue?.candidate, input.queue?.repairHead, replayIdentity])).digest('hex');
       const published = input.pendingKeys.length ? input.pendingKeys.filter((k) => k.endsWith(':published')).length : input.opened;
       const resolved = input.pendingKeys.length ? input.pendingKeys.filter((k) => k.endsWith(':resolved')).length : input.resolved;
+      // notify-classification: {"id":"packages/operator-core/lib/release/frozen-repair-leg-routing.ts#<module>/productionFrozenRepairLegRoutingDeps/broadcastSummary:2e4a28b6af4abfda17ac:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return broadcastSevereEvent({
         msgId,
         summary: `[${input.pipeline}] frozen failures: ${published} publication notices, ${resolved} resolution notices, ${input.failed} awaiting publication.`,

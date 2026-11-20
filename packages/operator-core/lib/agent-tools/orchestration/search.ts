@@ -76,6 +76,7 @@ export async function searchOrchestrations(
   ctx: UnifiedToolContext,
   adapter: SavedRecipeAdapter = savedRecipeAdapterFor(ctx),
 ): Promise<ToolResult> {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/orchestration/search.ts#<module>/searchOrchestrations:7e1134c275f16fdc5571:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const raw = await adapter.search(args);
   const payload = { ok: true, query: args.query, matches: searchMatches(raw) };
   return { data: payload } as unknown as ToolResult;
@@ -98,6 +99,7 @@ const orchestrateSearchTool = defineTool({
   agentRoles: [...AGENT_ROLES],
   args: orchestrateSearchArgsSchema,
   handler(args, ctx) {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/orchestration/search.ts#<module>/handler:0e0e11ecb1f6f9f0c8ab:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return searchOrchestrations(args, ctx);
   },
 });

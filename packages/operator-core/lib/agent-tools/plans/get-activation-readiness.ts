@@ -198,6 +198,7 @@ export async function collectActivationReadiness(readers: ActivationReadinessRea
       try {
         const read = readers.stages[id];
         if (!read) throw new Error('stage reader unavailable');
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get-activation-readiness.ts#<module>/collectActivationReadiness:fda6a76ed112395d75c7:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const value = await read(signal);
         signal?.throwIfAborted();
         stages.push(boundedStage(id, value));
@@ -258,6 +259,8 @@ export async function createPlanActivationReadinessRequest(params: Parameters<ty
   return {
     quality: () => runWithWorkspaceIfConcrete(params.workspaceId, request.quality),
     collect: (signal?: AbortSignal, options?: ActivationReadinessCollectOptions) =>
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get-activation-readiness.ts#<module>/createPlanActivationReadinessRequest/collect:a4612449f0e118810fe7:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get-activation-readiness.ts#<module>/createPlanActivationReadinessRequest/collect/<callback>:4448e6b0ff6df940fd38:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       runWithWorkspaceIfConcrete(params.workspaceId, () => request.collect(signal, options)),
     recordQuality: request.recordQuality,
     recordCritique: request.recordCritique,
@@ -267,6 +270,7 @@ export async function createPlanActivationReadinessRequest(params: Parameters<ty
 
 export async function readPlanActivationReadiness(params: Parameters<typeof createPlanActivationReadinessRequest>[0],
   options?: ActivationReadinessCollectOptions) {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get-activation-readiness.ts#<module>/readPlanActivationReadiness:99a3c6360b6c0ed05ff2:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return (await createPlanActivationReadinessRequest(params)).collect(params.signal, options);
 }
 
@@ -505,6 +509,7 @@ async function createPlanActivationReadinessRequestInWorkspace(params: {
       const { deadlineMs } = options;
       const stages: ActivationReadinessReaders['stages'] = deadlineMs === undefined ? readers.stages
         : { ...readers.stages, consult: (stageSignal) => readConsult(stageSignal, deadlineMs) };
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get-activation-readiness.ts#<module>/createPlanActivationReadinessRequestInWorkspace/collect:25e3847b68a33735af78:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await collectActivationReadiness({ ...readers, stages, readBasis: async readSignal => {
         if (first) {
           first = false;

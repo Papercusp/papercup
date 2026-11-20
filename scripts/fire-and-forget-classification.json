@@ -67363,14 +67363,6 @@
       "deliveryState": "unverified"
     },
     {
-      "id": "packages/operator-core/lib/agent-tools/facts/retract.ts#<module>/handler:777075efd742d4385b40:1",
-      "path": "packages/operator-core/lib/agent-tools/facts/retract.ts",
-      "classification": "durable",
-      "reason": "No safe-to-lose proof recorded. This call reaches notifyRecipients, send, sendMessage; retain its terminal delivery obligation, including through aliases/wrappers.",
-      "durablePath": "UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009",
-      "deliveryState": "unverified"
-    },
-    {
       "id": "packages/operator-core/lib/agent-tools/fleet_registry/control-core.ts#<module>/fireFleetResumeGate/<callback>:4985652d50a84dfe7b08:1",
       "path": "packages/operator-core/lib/agent-tools/fleet_registry/control-core.ts",
       "classification": "durable",

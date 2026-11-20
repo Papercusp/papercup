@@ -80,6 +80,7 @@ function respawnReceiptResponse(
 /** Use the existing pending-result ledger: a lost response is observed by exact
  * attempt, never inferred from the ADV row or replayed as another mutation. */
 async function withRespawnReportReceipt(req: Request, execute: () => Promise<Response>): Promise<Response> {
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/withRespawnReportReceipt:b6e742bd4ae15b328adf:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   if (req.headers.get('x-papercusp-respawn-receipt') !== '1') return execute();
   const text = await req.clone().text();
   let body: { advSessionId?: unknown; coordOwnerId?: unknown; sessionId?: unknown };
@@ -103,6 +104,7 @@ async function withRespawnReportReceipt(req: Request, execute: () => Promise<Res
     result: { content: [], structuredContent: receipt, _meta: { state: 'pending' } } });
   if (!claim.claimed) return respawnReceiptResponse(claim.result, receipt, false);
   let response: Response;
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/withRespawnReportReceipt:b6e742bd4ae15b328adf:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   try { response = await execute(); }
   catch { response = jsonRes({ ok: false, error: 'respawn-report-failed' }, 503); }
   const completed: RespawnReportReceipt = { ...receipt, pending: false,
@@ -458,9 +460,13 @@ const sessionRespawned = defineTool({
     // Observe before the launcher's 2s deadline; keep tracing after a disconnect.
     // Timing evidence neither acknowledges a binding nor shortens authority checks.
     return withNamedQueryDiagnosticContext('session-respawn', () =>
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>:82bc789f529f70fd201f:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       withMcpHttpHandlerPhaseTrace(traceId, 'session_respawn', async () => {
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>:c06add0998289a14bf2b:1","classification":"durable","reason":"The native source census reaches notify, notifyAttentionOnce, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate, notifyWorkspace at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>/<callback>:51bfd58e1c7f637fc7c5:1","classification":"durable","reason":"The native source census reaches notify, notifyAttentionOnce, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate, notifyWorkspace at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const denied = await phases.track('principal', () => gatePrincipal(req.headers, phases));
       if (denied) return denied;
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>:af7f84b8f6391846a387:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return withRespawnReportReceipt(req, async () => {
       let advSessionId: number | null = null;
       let coordOwnerId: string | null = null;
@@ -531,6 +537,8 @@ const sessionRespawned = defineTool({
         let reanchored = false;
         let owner: string | null = null;
         if (advSessionId != null && advSessionId > 0) {
+          // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>/<callback>:0832685dde58bf9910d9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+          // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>/<callback>/<callback>:1197c6642407805b1c73:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           ({ reanchored, owner } = await phases.track('nativeReanchor', () => reanchorAdvSessionNativeId(advSessionId!, sessionId!, {
             childLaunchSessionId, phases, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
             ...(managedSuccession ? { managedSuccessionPermit: managedSuccession.permit as
@@ -542,7 +550,9 @@ const sessionRespawned = defineTool({
         // a different row by owner; that is the numeric-home identity split this
         // route is responsible for preventing.
         if (advSessionId == null && coordOwnerId) {
+          // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>/<callback>:5751012040aba57f95fb:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const fallback = await phases.track('nativeReanchor', () =>
+            // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts#<module>/handler/<callback>/<callback>/<callback>/<callback>:8b8c28abd086325853c4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             reanchorAdvSessionNativeIdByOwner(coordOwnerId!, sessionId!, {
               phases, ...(turnProvenanceDir ? { turnProvenanceDir } : {}),
             }));

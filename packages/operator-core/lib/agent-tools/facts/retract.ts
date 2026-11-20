@@ -83,6 +83,7 @@ export default defineTool({
     // without a ref can be retracted the same way — symmetry with facts:assert.
     const scopeRef = await resolveScopeRefFromCtx(scope, scopeRefInput, ctx);
     let cascade: FactCascadeProgress | undefined;
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/facts/retract.ts#<module>/handler:82c52d4ac998d0faaa1f:1","classification":"durable","reason":"The retraction still reaches notifyRecipients, send and sendMessage. Its cascade progress callback changes the source identity without proving loss tolerance; retain terminal retraction notices through aliases and wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const retracted = await retractFact({
       scope,
       scopeRef: scopeRef ?? null,

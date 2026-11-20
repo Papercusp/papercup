@@ -176,6 +176,7 @@ export function createSavedRecipeAdapter(call: InnerCall): SavedRecipeAdapter {
   };
 
   return {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/orchestration/saved-recipe-adapter.ts#<module>/createSavedRecipeAdapter/search:13b7cc511bf0b1d2714d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     search: (args) => call('recipes:search', args),
     inspect,
     async run(args) {

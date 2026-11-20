@@ -1702,6 +1702,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     if (finishedDurably && args.status === 'failed' && (childStarted || args.superviseBeforeChildStart)) {
       try {
         const { superviseCrash } = await import('./supervision');
+        // notify-classification: {"id":"packages/operator-core/lib/fleet/operator-spawn.ts#<module>/spawnAgentInHarness/completeSpawn:59d2b4661b5b16c420e1:1","classification":"durable","reason":"The native source census reaches escalate at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const result = await superviseCrash(sql, {
           workspaceId: input.workspaceId,
           spawnId,
@@ -1751,6 +1752,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   // WI-344 ③: route through the spawner-sidecar front door — when
   // PAPERCUSP_SPAWNER_SIDECAR=1 (bg-host only) the child_process.spawn + buildInvokeOnce
   // run in the sidecar process, OFF this main loop; env unset ⇒ in-process, byte-identical.
+  // notify-classification: {"id":"packages/operator-core/lib/fleet/operator-spawn.ts#<module>/spawnAgentInHarness:002a60537b5b59caceb7:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   void spawnInvokeOnceWithFallback(project.path, role, extras, extraEnv, {
     signal: abort.signal,
     forceSessionId,

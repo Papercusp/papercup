@@ -179,6 +179,7 @@ export async function provisionSessionPackageResources(sql: Sql, input: {
       enrolled.push(workspaceId);
     }
     const provisioners = blueprintPackageProvisioners(sql, { dependentId });
+    // notify-classification: {"id":"packages/operator-core/lib/blueprint/session-package-resources.ts#<module>/provisionSessionPackageResources:09eab8f1747c972b4f6a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     for (const artifact of input.artifacts) await provisionBlueprintPackages(artifact, provisioners);
   } catch (error) {
     const cleanupErrors: unknown[] = [];

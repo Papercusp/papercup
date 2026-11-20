@@ -711,6 +711,7 @@ async function reconcileQueueRowWithLineage(
       return { queue, ledger: { status: probe.status, reconciled: 0, detail: probe.detail } };
     }
     let last = probe;
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/reconcileQueueRowWithLineage:5d5306196f7f095310b4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const outcome = await applyFrozenCandidateRepairQueueTransition(queueTarget, async (fresh) => {
       last = await reconcile(fresh);
       return last.queue;
@@ -888,6 +889,7 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
   let queue = read.status === 'value' ? read.queue : null;
   let ledger: { status: string; reconciled: number; detail: string } | null = null;
   let precheckLiveness: 'live' | 'unknown' | 'untracked' | 'ended' | null = null;
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/inspectQueue:d5922ba2a34f8a180d97:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue, root));
   // New R6 runs live in task-manager scopes and persist progress/verdict by operationId.
   // The launcher host PID is only the pre-spawn race guard; after the task row exists,
@@ -941,6 +943,7 @@ async function inspectQueue(queueTarget: GateVerdictTarget, root: string) {
         { ran: false, reason: 'runner-failed', detail: `${detail} The admission remains fail-closed; retryPrecheck:true resumes matching durable evidence or starts a fresh measurement.` },
       );
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/inspectQueue:90ee4c1a2f461328be1c:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await settleAdmissionPrecheck(queueTarget, pending.operationId, verdict);
         const refreshed = await readFrozenCandidateRepairQueueState(queueTarget);
         if (refreshed.status === 'value') queue = refreshed.queue;
@@ -1223,12 +1226,15 @@ export default defineTool({
       : null;
     try {
     let inspected = clock
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core/<callback>:dcac31f24efbd7e6e7c4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       ? await clock.step('inspect-queue', () => inspectQueue(queueTarget, scopeRoot))
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:dcac31f24efbd7e6e7c4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       : await inspectQueue(queueTarget, scopeRoot);
     const healGeneratedOperation = args.op === 'get' && inspected.queue?.healGeneratedOperation
       ? await observeGeneratedRepair(inspected.target) : null;
     // Recovery can settle a stopped task or its terminal notifications, advancing the row CAS.
     // Render the resulting revision so this very read can be used for a later exact-head action.
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:dcac31f24efbd7e6e7c4:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (healGeneratedOperation) inspected = await inspectQueue(queueTarget, scopeRoot);
     const compactRead =
       inspected.read.status === 'value'
@@ -1406,6 +1412,7 @@ export default defineTool({
         generator: args.generator, judgedSha: queue.repairHead,
         paths: ['apps/operator/scripts/tool-delivery.generated.d.mts'] });
       const identity = readIdentity(ctx);
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:945676da0411c2d954ad:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const launched = await beginGeneratedRepair({ queueTarget: inspected.target, integrationRoot: scopeRoot, queue,
         actor: identity.ownerId, conditionKey: ownership.eventKey,
         delegate: { authorized: callerAuthorization.status === 'authorized-delegate',
@@ -1551,6 +1558,7 @@ export default defineTool({
       }
       // WI-10005695: every slow step below runs through `step`, so the response and the
       // journal both name where an admit spent its time.
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core/step:90ffc80152961eebc5ee:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const step = <T,>(name: string, run: () => Promise<T>): Promise<T> => (clock ? clock.step(name, run) : run());
       const runJob = <K extends AdmissionJobKind>(name: string, job: AdmissionJobOf<K>) =>
         step(name, () =>
@@ -2318,7 +2326,9 @@ export default defineTool({
             updatedAtMs: Math.max(queue.updatedAtMs + 1, startedAtMs),
           };
           try {
+            // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:1e59348d0bcd3f1a75ee:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             await step('precheck-marker-write', () =>
+              // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core/<callback>:38c6c544c339e60c1701:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               writeFrozenCandidateRepairQueue(inspected.target, pendingQueue, {
                 expectedUpdatedAtMs: queue.updatedAtMs,
               }),
@@ -2367,6 +2377,7 @@ export default defineTool({
               detail: `Could not launch host-independent managed R6 pre-check ${operationId}: ${launchFailure}`,
             });
             try {
+              // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:72aafcf073ef2d2661dc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               await settleAdmissionPrecheck(inspected.target, operationId, precheck);
             } catch (err) {
               console.error(`[release:repair-queue] failed to persist managed pre-check launch failure ${operationId}`, err);
@@ -2770,10 +2781,12 @@ export default defineTool({
       let settlementFresh: FrozenCandidateRepairQueue | null | undefined;
       try {
         if (expectedQueueIdentity) {
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:4a8a9c6ed0b54e259ea4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await writeFrozenCandidateRepairQueue(inspected.target, next, {
             expectedUpdatedAtMs: expectedQueueIdentity.expectedUpdatedAtMs,
           });
         } else {
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:239399981e4c8e4b42d9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await writeFrozenCandidateRepairQueue(inspected.target, next, {
             expectedUpdatedAtMs: queue.updatedAtMs,
           });
@@ -2782,6 +2795,7 @@ export default defineTool({
         persistError = writeErr instanceof Error ? writeErr.message : String(writeErr);
         const settle: { kind: string; detail: string | null } = { kind: 'diverged', detail: null };
         try {
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core:4016af7f39bc5db1f697:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const settled = await applyFrozenCandidateRepairQueueTransition(inspected.target, (fresh) => {
             const s = settleFrozenRepairAdmission(fresh, entry);
             settle.kind = s.kind;
@@ -3033,6 +3047,7 @@ export default defineTool({
           leg: legId, release },
         run: async () => {
           try {
+            // notify-classification: {"id":"packages/operator-core/lib/agent-tools/release/repair-queue.ts#<module>/handler/core/run:239399981e4c8e4b42d9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             await writeFrozenCandidateRepairQueue(inspected.target, next, {
               expectedUpdatedAtMs: queue.updatedAtMs,
             });

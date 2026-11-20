@@ -679,6 +679,7 @@ async function claimOne(
   // `assignee` in this same compare-and-claim, instead of being refused and left with
   // release → peer-claims (which exposes the item to the whole fleet in between). When
   // no `assignee` was passed, `claimer` IS `claimerDefault`, so this is a no-op.
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/claim.ts#<module>/claimOne:1da1bd85faa255a2aa9c:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const workItem = await claimWorkItem(it.id, claimer, {
     harness: it.harness,
     fromHolder: legacySelfHolder ?? claimerDefault,
@@ -1555,6 +1556,7 @@ export default defineTool({
           }))
         : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
     );
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/claim.ts#<module>/handler/<callback>:8e73faf289f1018b007e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const claimed = await runBulk(list, (it) => claimOne(
       it, ident, reader, verifiedCallerAlias, declaredById, callerRole, judgeRequestIsSingleSelfClaim, ctx.dispatchCallId, reuse,
     ), {

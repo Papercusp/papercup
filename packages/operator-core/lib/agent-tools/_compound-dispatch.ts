@@ -192,12 +192,14 @@ export function inProcessCall(
       dispatchCtx = {
         ...dispatchCtx,
         tx: adminTx,
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/_compound-dispatch.ts#<module>/inProcessCall/<callback>:6211386764abedb37f01:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         principal: await synthesizeDispatchPrincipal(adminTx, {
           workspaceId,
           role: innerCtx.role ?? '',
           isSuperuser: innerCtx.isSuperuser,
         }),
       };
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/_compound-dispatch.ts#<module>/inProcessCall/<callback>:aff77495bd1a26dcadb4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return runWithWorkspaceIfConcrete(dispatchCtx.workspaceId, async () => {
         const r = await dispatchProjectedTool(tool, name, args, dispatchCtx, PROJECTED_DEPS);
         if (!r.ok) {
@@ -208,6 +210,7 @@ export function inProcessCall(
         return unwrap(r.result);
       });
     }
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/_compound-dispatch.ts#<module>/inProcessCall/<callback>:cda61fe1c0d0c82be7be:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const r = await dispatchProjectedTool(tool, name, args, dispatchCtx, PROJECTED_DEPS);
     if (!r.ok) {
       throw new Error(

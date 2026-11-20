@@ -187,6 +187,7 @@ export async function guardFileLock<T>(ctx: FileLockCtx, rawPaths: string[], spe
   // Preserve the established malformed-cohort refusal (and default behavior)
   // before filesystem canonicalization can throw on a NUL path.
   if (rawPaths.some(path => !path || path.includes('\0')))
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLock:47520016d992f2e2ff67:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return guardFileLockWithinSourceCustody(ctx, rawPaths, spec, run);
   const cwd = resolveCapabilityBaseDir(ctx);
   const repoRoot = findRepoRoot(cwd) ?? cwd;
@@ -196,7 +197,10 @@ export async function guardFileLock<T>(ctx: FileLockCtx, rawPaths: string[], spe
   // This boundary is required even when the ordinary per-file policy would
   // fail open. A source inventory must not race an admitted file-tool effect.
   return roots.length
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLock:298271523ff2a76aef46:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLock/<callback>:47520016d992f2e2ff67:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     ? withBlueprintSourceMutation(roots, () => guardFileLockWithinSourceCustody(ctx, rawPaths, spec, run))
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLock:47520016d992f2e2ff67:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : guardFileLockWithinSourceCustody(ctx, rawPaths, spec, run);
 }
 
@@ -297,6 +301,7 @@ async function guardFileLockWithinSourceCustody<T>(
   const coordinationDomain = domains[0] ?? defaultDomain;
 
   const ttlSec = spec.ttlSec ?? DEFAULT_TTL_SEC;
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:c521df2b382220f56b88:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const goalRef = readAgentStateStamp(ownerId).goalRef ?? undefined;
   const operation = { id: randomUUID(), deadline: new Date(Date.now() + 120_000).toISOString() };
 
@@ -306,7 +311,9 @@ async function guardFileLockWithinSourceCustody<T>(
     // timeout under box load) before failing open. Under load this acquire was
     // FAULTING on a single timeout and silently bypassing the file-lock (so
     // concurrent fleet edits raced); a few backoff retries ride out the dip.
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:88ba06a8485912c43ac6:1","classification":"durable","reason":"The native source census reaches notifyResourceExpiries at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     acquired = await acquireWithContentionRetry(() =>
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody/<callback>:b02d1337af40be711193:1","classification":"durable","reason":"The native source census reaches notifyResourceExpiries at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
         tryAcquire(tx, {
           coordinationDomain,
@@ -374,6 +381,7 @@ async function guardFileLockWithinSourceCustody<T>(
   let bodySucceeded = false;
   let completionConfirmed = false;
   const finish = (outcome: 'completed' | 'cancelled') =>
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody/finish:34dc20bcb53fb9d8b6a5:1","classification":"durable","reason":"The native source census reaches notifyResourceExpiries at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     inWorkspaceTxn(coordinationDomain, ownerId, (tx) => tryFinishHookOperation(tx, {
       coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent,
       ttlSec, goalRef, automatic: true, operation, outcome,
@@ -400,6 +408,7 @@ async function guardFileLockWithinSourceCustody<T>(
       try { if (JSON.parse(part.text)?.ok === false) succeeded = false; } catch { /* ordinary prose result */ }
     }
     bodySucceeded = succeeded;
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:5a7082757a5aac1b6442:1","classification":"durable","reason":"The native source census reaches notifyResourceExpiries at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const finished = await finish(succeeded ? 'completed' : 'cancelled');
     if (!finished.ok) throw new Error(`file-lock completion refused: ${finished.reason}`);
     completionConfirmed = true;
@@ -430,6 +439,7 @@ async function guardFileLockWithinSourceCustody<T>(
       }), { cause: err });
     }
     if (!bodyReturned) {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:f8e1f83375c9aed4e134:1","classification":"durable","reason":"The native source census reaches notifyResourceExpiries at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await finish('cancelled').catch((cleanupError) => {
         ctx.log?.(`[file-lock] cancellation faulted: ${String(cleanupError)}`);
       });

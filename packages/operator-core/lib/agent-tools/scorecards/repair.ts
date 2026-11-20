@@ -131,6 +131,7 @@ export default defineTool({
   timeoutSec: SCORECARD_REPAIR_TIMEOUT_SEC,
   args: scorecardRepairArgs,
   async handler(args, ctx) {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/scorecards/repair.ts#<module>/handler:c4b2077070124f9ab598:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const outcome = await withScorecardAuditDispatchLease(
       ctx,
       'scorecards:repair reads and dispatches through the staging runtime',

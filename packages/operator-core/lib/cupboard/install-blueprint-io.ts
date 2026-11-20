@@ -316,6 +316,7 @@ function makeInstallCoreDeps(
           deriveCatalog: () => derivePackCatalog({}),
           reviewUnit: reviewCupboardUnitFromListing,
           installUnit: async (unit, expectedReview) => {
+            // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-io.ts#<module>/makeInstallCoreDeps/installCapabilityProviderPackages/installUnit:a63cac4257561fab604a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const installed = await installCupboardUnitFromListing(unit, { expectedReview });
             return installed.ok
               ? {
@@ -376,10 +377,12 @@ export async function installBlueprintFromCupboard(
     );
     try {
       if (operation === 'uninstall') {
+        // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-io.ts#<module>/installBlueprintFromCupboard:15b9b035501603a6e16f:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         return { ok: true, result: await uninstallBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id, journal }) };
       }
       const target = input.targetVersion?.trim() ?? '';
       if (!target) return { ok: false, status: 400, error: 'targetVersion required for rollback' };
+      // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-io.ts#<module>/installBlueprintFromCupboard:f20562b69d95542dd96b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return { ok: true, result: await rollbackBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id, target, journal }) };
     } catch (error) {
       if (error instanceof BlueprintLifecycleError) {
@@ -442,6 +445,7 @@ export async function installBlueprintFromCupboard(
     : undefined;
 
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-io.ts#<module>/installBlueprintFromCupboard:6f39ab4785209bcd6bff:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const result = await installBlueprintFromCupboardCore({
       githubUrl,
       listingRef,
@@ -471,6 +475,7 @@ export async function installBlueprintFromCupboard(
           const listing = (data.results ?? []).find((l) => l.listing_ref === name);
           const url = typeof listing?.github_url === 'string' ? listing.github_url : '';
           if (!url) throw new Error('no plugin listing with that ref');
+          // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-io.ts#<module>/installBlueprintFromCupboard:af5ce0c47ce0d9990fe9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await installPluginFromCupboardCore({ githubUrl: url, listingRef: name }, buildInstallPluginDeps());
           pluginInstalls.push({ plugin: name, ok: true });
         } catch (e) {
@@ -497,6 +502,7 @@ export async function installBlueprintFromCupboard(
           const listing = (data.results ?? []).find((l) => l.listing_ref === name);
           const url = typeof listing?.github_url === 'string' ? listing.github_url : '';
           if (!url) throw new Error('no blueprint listing with that ref');
+          // notify-classification: {"id":"packages/operator-core/lib/cupboard/install-blueprint-io.ts#<module>/installBlueprintFromCupboard:2e03b5c1f51700f7a0b8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await installBlueprintFromCupboardCore({
             githubUrl: url,
             listingRef: name,

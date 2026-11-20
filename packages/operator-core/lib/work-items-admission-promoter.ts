@@ -5824,6 +5824,7 @@ async function persistAdmissionPlanInTransaction(
   });
   // All endpoint rows are locked; renew the real WRITE policy and compare the
   // signed request/custody before the first adjudication or admission write.
+  // notify-classification: {"id":"packages/operator-core/lib/work-items-admission-promoter.ts#<module>/persistAdmissionPlanInTransaction:121c64d92e946a71ca30:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await input.reviewOnly?.beforeWrite(sql);
 
   const guardRefusals: AdmissionMergeGuardRefusal[] = [];

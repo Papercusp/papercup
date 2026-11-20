@@ -509,6 +509,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // the supplied slug verbatim. Passing opts.harnessSlug here can therefore miss this same row
   // on a run-instance promotion and report a missing plan/BAR. A plan slug is unique only per
   // harness, so keep the exact resolved scope rather than widening to an ambiguous unscoped read.
+  // notify-classification: {"id":"packages/operator-core/lib/plan-workitem-promotion-run.ts#<module>/promotePlanItems:c19fbd2883cc3b4fa332:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const acceptanceBarLifecycle = await readAndEvaluateAcceptanceBarLifecycle(opts.planSlug, 'pre-start', {
     harnessSlug: read.row.harnessSlug,
     // Promotion checks the contract before implementation. Grading lineage and

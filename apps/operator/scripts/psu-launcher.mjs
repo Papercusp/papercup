@@ -4051,6 +4051,7 @@ export function createStartupStepRunner({ record = () => {}, notice = () => {},
       emit(phase);
     };
     try {
+      // notify-classification: {"id":"apps/operator/scripts/psu-launcher.mjs#<module>/createStartupStepRunner/startupStep:22479e25eb9f5221ba9b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = operation();
       if (result && typeof result.then === "function") {
         return Promise.resolve(result).then((value) => {
@@ -14132,6 +14133,7 @@ export function runWrapper(options) {
         },
         ensureCodexHome: async (options = {}) => {
           let failure = null;
+          // notify-classification: {"id":"apps/operator/scripts/psu-launcher.mjs#<module>/runWrapper/launchNative/ensureCodexHome:22d69b61f8e80527aa17:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const result = await ensureCodexHomeViaOperator(
             ownerId,
             env.CODEX_HOME || null,
@@ -15679,6 +15681,7 @@ async function launchResume(
           throw new Error("original Codex routing refused: typed resume reservation required");
         await applyOriginalCodexRouting(session, originalRouting, accountEnv);
       } else {
+      // notify-classification: {"id":"apps/operator/scripts/psu-launcher.mjs#<module>/launchResume:096904ce773abb643707:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await ensureCodexHomeViaOperator(
         session.coordOwnerId ?? null,
         env.CODEX_HOME,
@@ -19760,6 +19763,7 @@ export async function main({
     clearClaudeTokenFlow();
     return;
   }
+  // notify-classification: {"id":"apps/operator/scripts/psu-launcher.mjs#<module>/main:08c9228302e6963d1a3d:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await startupStep("recovery-audit-reconciliation", reconcileRecoveryAuditSoft);
   // --fork only has meaning when resuming an existing session — warn (don't fail)
   // so a stray `psu --fork` on a fresh launch doesn't silently look honored.

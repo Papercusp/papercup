@@ -148,6 +148,7 @@ export async function admissionReplayContext(
   return {
     ...authority.context, uiClientId: caller,
     role: authority.role as UnifiedToolContext['role'], isSuperuser, sigVerifiedSpawn: !isSuperuser,
+    // notify-classification: {"id":"packages/operator-core/lib/work-item-admission-authority.ts#<module>/admissionReplayContext:3890ef2cfb297af22fad:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     principal: await synthesizeDispatchPrincipal(sql, {
       workspaceId: scope.workspaceId, role: authority.role, isSuperuser, sigVerifiedSpawn: !isSuperuser,
     }),
@@ -162,6 +163,7 @@ export async function authorizeAdmissionReplay(
   sql: Sql, scope: AdmissionRecoveryScope,
   request: { caller: string; target: string; authority?: AdmissionRecoveryAuthority; note?: string; body?: string },
 ): Promise<void> {
+  // notify-classification: {"id":"packages/operator-core/lib/work-item-admission-authority.ts#<module>/authorizeAdmissionReplay:53ee3793bec2ce505c56:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const ctx = await admissionReplayContext(sql, scope, request.caller, request.authority);
   const { PROJECTED_DEPS } = await import('./projected-tool-deps');
   // Background hosts need the same definitions as the public dispatch, not a
@@ -201,6 +203,7 @@ export async function authorizeAdmissionReviewReplay(
   request: { caller: string; requestId: string; purpose: 'admission-review'; authority: AdmissionRecoveryAuthority },
 ): Promise<string> {
   await import('./agent-tools/work_items/review-admission');
+  // notify-classification: {"id":"packages/operator-core/lib/work-item-admission-authority.ts#<module>/authorizeAdmissionReviewReplay:3673182b124042590656:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return renewReviewWriteAuthority(sql, scope.workspaceId, request.caller, request.authority,
     'work_items:review-admission', {
       id: scope.workItemId, harness: scope.harnessSlug, requestId: request.requestId, purpose: request.purpose,
@@ -214,6 +217,7 @@ export async function renewReviewWriteAuthority(
   name: 'work_items:review-admission' | 'harness_docs:verify' | 'harness_docs:anchor' | 'docs:author',
   args: Record<string, unknown>,
 ): Promise<string> {
+  // notify-classification: {"id":"packages/operator-core/lib/work-item-admission-authority.ts#<module>/renewReviewWriteAuthority:dee1e3ba8f9759f34c4b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const ctx = await admissionReplayContext(sql, { workspaceId }, caller, authority);
   const { PROJECTED_DEPS } = await import('./projected-tool-deps');
   const tool = lookupByMcpName(name);

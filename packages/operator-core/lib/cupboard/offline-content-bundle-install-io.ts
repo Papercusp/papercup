@@ -99,6 +99,7 @@ function gitCloneShallow(url: string, dest: string): Promise<void> {
     child.on('close', (code) =>
       code === 0
         ? resolveClone()
+        // notify-classification: {"id":"packages/operator-core/lib/cupboard/offline-content-bundle-install-io.ts#<module>/gitCloneShallow/<callback>/<callback>:2f3a69175a02c4966dcc:1","classification":"durable","reason":"The native source census reaches notifyDecoded at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         : reject(new Error(`git clone failed (exit ${code}): ${error.text().slice(0, 300)}`)),
     );
   });
@@ -127,6 +128,7 @@ async function installOfflineBlueprint(
   if (!SAFE_BLUEPRINT_ID_RE.test(unit.id)) return { ok: false, error: `unsafe blueprint id "${unit.id}"` };
 
   const root = join(contentHome(), 'blueprints');
+  // notify-classification: {"id":"packages/operator-core/lib/cupboard/offline-content-bundle-install-io.ts#<module>/installOfflineBlueprint:87e911f686e6bedb891e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return withBlueprintSourceMutation([root], async () => {
   const target = join(root, unit.id);
   assertInside(root, target, `blueprint id "${unit.id}"`);
@@ -225,6 +227,7 @@ function makeOfflineInstallers(cloneRepo: typeof gitCloneShallow): BundleAppInst
       rounds: 0,
     }),
     installDatatype: async (id) => ({ ok: false, error: `offline content bootstrap refuses datatype "${id}"` }),
+    // notify-classification: {"id":"packages/operator-core/lib/cupboard/offline-content-bundle-install-io.ts#<module>/makeOfflineInstallers/installBlueprint:1aaffab3335d7344c601:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     installBlueprint: (unit) => installOfflineBlueprint(unit, cloneRepo),
     installTemplate: async (unit) => {
       const target = contentPath('templates', unit);

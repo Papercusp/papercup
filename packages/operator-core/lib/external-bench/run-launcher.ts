@@ -775,6 +775,7 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput, p
         outputTokenLimit: Math.min(4096, currentArm.generationBudget.maxTokens ?? 4096) }),
       authenticateProvider: auth.authenticateProvider, captureProviderInput: capture.captureProviderInput },
       { enabled: async () => true, getSql: async () => resolveDb(scope).sql });
+    // notify-classification: {"id":"packages/operator-core/lib/external-bench/run-launcher.ts#<module>/startCurrentBenchTaskAssignment:ea9264d94ec077e3d1d1:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     host = await controller.startNativeGateway(context.log, ports.startGateway);
     const observeIdentity = currentBenchObservationReader({ ...scope, ...input.observation,
       workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);

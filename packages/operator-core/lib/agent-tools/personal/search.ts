@@ -64,6 +64,7 @@ export default defineTool({
         workspaceId, userId: user.id, datatype: 'email-message', sourceId,
         capabilities: attachmentId ? ['mail.read', 'mail.attachments'] : ['mail.read'],
       });
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/personal/search.ts#<module>/handler:a6acbc6fa53cbf897103:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const read = await invokeOutboundProvider(sql, target, 'mail.read', { messageId });
       const message = read.message;
       if (!message || typeof message !== 'object' || Array.isArray(message) ||
@@ -86,6 +87,7 @@ export default defineTool({
         // read. Comparing against this fresh list rejects a reference from the
         // caller's previous read. The provider resolves the original token at
         // its exact source/message resource (Gmail: messages/{id}/attachments/{id}).
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/personal/search.ts#<module>/handler:4e242b1e29ca227bd004:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         attachment = await invokeOutboundProvider(sql, target, 'mail.attachments', { messageId, attachmentId });
         if (attachment.messageId !== messageId || attachment.attachmentId !== attachmentId) {
           throw new Error('personal_mail_attachment_mismatch');

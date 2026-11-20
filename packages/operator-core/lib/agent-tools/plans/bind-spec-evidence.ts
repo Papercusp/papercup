@@ -515,6 +515,7 @@ async function supersedeSiblings(input: {
   });
   const keepBindingIds = bound.flatMap((row) => (row ? [row.id] : []));
   const persistedEvidence = keepBindingIds.length > 0
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/supersedeSiblings:c640d2b7cfb217a710d9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     ? await listSpecEvidence({
         harnessSlug: input.harnessSlug,
         workspaceId: input.workspaceId,
@@ -550,6 +551,7 @@ async function supersedeSiblings(input: {
     eligible.push({ index, row, declared, clause });
   }
   if (eligible.length > 0) {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/supersedeSiblings:2666ae152155dd7e6bab:1","classification":"durable","reason":"The native source census reaches notify, notifyCancelledAuditorsAfterCommit at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const batch = await supersedeSpecEvidenceAtRevisionBatch({
       harnessSlug: input.harnessSlug,
       workspaceId: input.workspaceId,
@@ -884,6 +886,7 @@ export function bindingStageDiagnostics(
       const start = now();
       active[name] = (active[name] ?? 0) + 1;
       emit();
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/bindingStageDiagnostics/phase:22479e25eb9f5221ba9b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       try { return await operation(); }
       finally {
         phaseMs[name] = (phaseMs[name] ?? 0) + Math.max(0, now() - start);
@@ -1026,6 +1029,7 @@ export default defineTool({
       const actorId = resolveAgentIdentity(ctx).ownerId;
       const retract = args.retract;
       if (retract) {
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/handler:8c914a865253d71c25e3:1","classification":"durable","reason":"The native source census reaches notify, notifyCancelledAuditorsAfterCommit at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const retractions = await timing.phase('retract', async () => {
           const results = await retractSpecEvidenceBatch({ harnessSlug, actorId, items: retract });
           // The mutation is complete before runBulk shapes the per-row response. A database
@@ -1068,6 +1072,7 @@ export default defineTool({
         return bulkContent({ ...retractions, ...(lost ? { advisories: [lost] } : {}) });
       }
       return bulkContent(
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/handler:9a188a40c5319b5b33be:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await bindSpecEvidenceItems(
           {
             harnessSlug,
@@ -1203,6 +1208,7 @@ export async function bindSpecEvidenceItems(
               requested = { ...requested, measurement: dependencies.measurement,
                 details: { ...(requested.details ?? {}), codeDependencies: dependencies.evidence } };
             }
+            // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/bindSpecEvidenceItems/<callback>/<callback>:1d0a005b8526b9dbc227:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const targetingRefusal = await timing.phase('mutationTargeting', () =>
               mutationTargetingRefusal(requested, {
                 planSlug: args.slug ?? ADHOC_WORK_ITEM_SPEC_SCOPE,
@@ -1301,6 +1307,7 @@ export async function bindSpecEvidenceItems(
       // actually succeeded, so a refused binding never triggers it.
       const boundSpecIds = env.results.flatMap((result, index) => (result.ok ? [bindings[index]?.specId] : []));
       const workspaceId = input.workspaceId;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/bindSpecEvidenceItems:1d82ade1dc6d8c94df99:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const advisory = await timing.phase('vettingAdvisory', () =>
         runWithWorkspaceIfConcrete(workspaceId, () =>
           unvettedRubricBindAdvisory(
@@ -1343,7 +1350,9 @@ export async function bindSpecEvidenceItems(
         ),
       );
       const supersession = args.supersedeAtRevision
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/bindSpecEvidenceItems:da1c4dd9f967c799d8d8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         ? await timing.phase('supersedeSiblings', () =>
+            // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/bind-spec-evidence.ts#<module>/bindSpecEvidenceItems/<callback>:95be6dfca57202c86db0:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             supersedeSiblings({ bindings, results: env.results, ...scopeOptions, actorId }),
           )
         : undefined;

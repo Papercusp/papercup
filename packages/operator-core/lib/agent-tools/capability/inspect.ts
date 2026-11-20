@@ -775,6 +775,7 @@ export default defineTool({
         files, background: true, ...(args.timeout !== undefined ? { timeoutMs: args.timeout } : {}),
       });
       if (!request.success) return err('bad_args', request.error.message);
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/capability/inspect.ts#<module>/handler:52f8ac2f7f2a5b50949f:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const response = await testing.handler(request.data, ctx);
       return 'data' in response
         ? { content: [{ type: 'text' as const, text: JSON.stringify(response.data) }] }

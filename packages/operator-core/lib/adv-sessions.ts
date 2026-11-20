@@ -1959,6 +1959,7 @@ export async function reanchorAdvSessionNativeId(
     }));
     if (transactionWorkEnded !== undefined)
       opts.phases?.addCompleted('nativeReanchor:transactionCommit', transactionWorkEnded, Date.now() - transactionWorkEnded);
+    // notify-classification: {"id":"packages/operator-core/lib/adv-sessions.ts#<module>/reanchorAdvSessionNativeId:ad55f8a1f5edb9b8efbc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId, opts.phases));
     return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {
@@ -2071,6 +2072,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
     }));
     if (transactionWorkEnded !== undefined)
       opts.phases?.addCompleted('nativeReanchor:transactionCommit', transactionWorkEnded, Date.now() - transactionWorkEnded);
+    // notify-classification: {"id":"packages/operator-core/lib/adv-sessions.ts#<module>/reanchorAdvSessionNativeIdByOwner:ad55f8a1f5edb9b8efbc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await trackPhase(opts.phases, 'nativeReanchor:identitySpan', () => recordReanchorSpan(result.workspaceId, result.owner, sessionId, opts.phases));
     return { reanchored: result.reanchored, owner: result.owner };
   } catch (e) {

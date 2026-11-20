@@ -3354,8 +3354,10 @@ async function awaitBounded(
       ),
       new Promise<void>((resolve) => {
         graceTimer = setTimeout(() => {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/awaitBounded/<callback>/<callback>:c673fd00975ef9a362e4:1","classification":"durable","reason":"The <module>/awaitBounded/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (onTimeout) onTimeout();
           else {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/awaitBounded/<callback>/<callback>:8a03a1a8af75fa20e097:1","classification":"durable","reason":"The <module>/awaitBounded/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             log(
               `self-watchdog onFire hook did not settle within ${graceMs}ms — ` +
                 `proceeding to SIGKILL (the red verdict may not have been emitted)`,
@@ -4817,6 +4819,7 @@ export function createTerminationSignalHandler(
     try {
       // Invoke synchronously so the finalizer can claim the terminal race before a normal
       // completion callback gets another turn on the event loop.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/createTerminationSignalHandler/<callback>:96c80cd4a699d7fe94ff:1","classification":"durable","reason":"The <module>/createTerminationSignalHandler/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       finalization = finalize(signal);
     } catch (error) {
       log(
@@ -4862,6 +4865,7 @@ export function createFatalProcessHandler(
   return (error: unknown): void => {
     if (handling) return;
     handling = true;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/createFatalProcessHandler/<callback>:b20755302d0dbde4c682:1","classification":"durable","reason":"The <module>/createFatalProcessHandler/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     void finalize(error)
       .then((owned) => {
         if (owned) exit(1);
@@ -4893,6 +4897,7 @@ export function createFatalCheckpointFinalizer(deps: {
     deps.cancelWatchdog();
     deps.logFailure(error);
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/createFatalCheckpointFinalizer/<callback>:5c76497c24a65dce2139:1","classification":"durable","reason":"The <module>/createFatalCheckpointFinalizer/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitCrashResult(error);
     } finally {
       deps.releaseLock();
@@ -4921,6 +4926,7 @@ export function createNormalCheckpointFinalizer(deps: {
     if (!deps.claimTerminal("normal")) return;
     const now = deps.now ?? Date.now;
     const resolvedAtMs = now();
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/createNormalCheckpointFinalizer/<callback>:ca86569db17be2256a36:1","classification":"durable","reason":"The <module>/createNormalCheckpointFinalizer/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.emitResult(result);
     const terminalEmissionCompletedAtMs = now();
     const capture = await deps.captureProofs();
@@ -5128,6 +5134,7 @@ export async function emitTerminalCheckpointResult(
   // but do not cancel incumbent waiters or clear its in-flight candidate. Render-only
   // callers without a recorder retain the legacy wrapper-owned notification path.
   if (deps.record && !recorded) return;
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/emitTerminalCheckpointResult:b074aa061242fd59a41b:1","classification":"durable","reason":"The <module>/emitTerminalCheckpointResult context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await deps.emitTerminalEvents?.(terminal, recorded);
   if (
     terminal.green === null &&
@@ -5173,6 +5180,7 @@ export function createCheckpointTerminalEventBuffer(
         pending.set(`${event.key}:${sha}:${runId}`, event);
         return;
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/createCheckpointTerminalEventBuffer/emit:d96db5f9dd28bf7e26d5:1","classification":"durable","reason":"The <module>/createCheckpointTerminalEventBuffer/emit context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await emit(event);
     },
     async flush(result, recorded) {
@@ -5195,6 +5203,7 @@ export function createCheckpointTerminalEventBuffer(
           continue;
         }
         try {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/createCheckpointTerminalEventBuffer/flush:d96db5f9dd28bf7e26d5:1","classification":"durable","reason":"The <module>/createCheckpointTerminalEventBuffer/flush context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await emit(event);
         } catch (error) {
           warn(`${event.key} emit failed after terminal record: ${error instanceof Error ? error.message : error}`);
@@ -6690,6 +6699,7 @@ export async function splitTipFailuresPerFile(
   const out: TipPerFileResult[] = [];
   for (const f of files) {
     if (now() >= deadline) return undefined;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/splitTipFailuresPerFile:37a0226b5204df4eb2eb:1","classification":"durable","reason":"The <module>/splitTipFailuresPerFile context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const pass = await runOne(f.workspace, f.file);
     if (pass === null) return undefined;
     out.push({ workspace: f.workspace, file: f.file, pass });
@@ -7719,6 +7729,7 @@ async function commitFrozenRepairQueueTransition(
   if (deps.transitionFrozenRepairQueue) {
     const outcome = await deps.transitionFrozenRepairQueue(transition);
     if (outcome.queue) return outcome.queue;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/commitFrozenRepairQueueTransition:1dcc35af92edeba67ef6:1","classification":"durable","reason":"The <module>/commitFrozenRepairQueueTransition context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `frozen repair queue ${label}: the row is gone (retired while this run was in flight) — ` +
         `not resurrecting it from this run's ${snapshot.repairHead.slice(0, 8)} snapshot`,
@@ -7867,6 +7878,7 @@ async function traceRepairVerificationPhase<T>(
   let result: T | undefined;
   let outcome: "returned" | "threw" = "threw";
   try {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/traceRepairVerificationPhase:87911bfb4f4c7b5aae55:1","classification":"durable","reason":"The <module>/traceRepairVerificationPhase context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     result = await run({ ...context, parentSpanId: spanId });
     outcome = "returned";
     return result;
@@ -7970,6 +7982,7 @@ export async function verifyRepairHead(
     // `.catch(() => null)` here once parked a queue for hours on a hold that named no cause
     // (a missing dependency generation for a partial package-lock.json admission).
     const settled = await settleRepairHeadRunner(
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/verifyRepairHead:32ae50c970bb18e6df5e:1","classification":"durable","reason":"The <module>/verifyRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.affectedTestsAtRef(head, admitted),
     );
     const radius = "value" in settled ? settled.value : null;
@@ -8012,6 +8025,7 @@ export async function verifyRepairHead(
   // two concurrent setupTree calls on one directory race each other's checkout.
   const fileSettled =
     fileList.length > 0
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/verifyRepairHead:bb7db137aa3c35f7d6e1:1","classification":"durable","reason":"The <module>/verifyRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       ? await settleRepairHeadRunner(deps.runTestsAtRef!(head, fileList))
       : undefined;
   // A runner that REJECTS carries its described cause; one that RESOLVES null produced no
@@ -8026,6 +8040,7 @@ export async function verifyRepairHead(
   const gateSettled =
     gateList.length > 0
       ? await settleRepairHeadRunner(
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/verifyRepairHead:296300fd04270294d5af:1","classification":"durable","reason":"The <module>/verifyRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.runGateAtRef!(head, gateList, {
             frozenCandidateOpenedAtMs: queue.openedAtMs,
           }),
@@ -8427,7 +8442,9 @@ export async function shadowComposedProofAtRepairHead(input: {
   let proofContext = input.proofContext;
   if (input.captureProofContextAtRef) {
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/shadowComposedProofAtRepairHead:ee7e147fdfc978bbabac:1","classification":"durable","reason":"The <module>/shadowComposedProofAtRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const before = await input.captureProofContextAtRef(input.queue.candidate);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/shadowComposedProofAtRepairHead:a2ff8c3c0c5c3c90692d:1","classification":"durable","reason":"The <module>/shadowComposedProofAtRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const after = await input.captureProofContextAtRef(input.repairHead);
       proofContext = compareCheckpointProofContextCaptures({ candidate: input.queue.candidate,
         repairHead: input.repairHead, before, after });
@@ -8464,6 +8481,7 @@ export async function shadowComposedProofAtRepairHead(input: {
   const radius: RadiusQuery = async (paths) => {
     if (!input.affectedTestsAtRef) return null;
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/shadowComposedProofAtRepairHead/radius:9005ee100cef0e9c88c8:1","classification":"durable","reason":"The <module>/shadowComposedProofAtRepairHead/radius context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const r = await input.affectedTestsAtRef(input.repairHead, [...paths]);
       if (!r || (r.widenedTasks ?? 0) > 0 || r.coverageComplete === false) return null;
       return new Set(r.files.map((f) => f.file));
@@ -8471,6 +8489,7 @@ export async function shadowComposedProofAtRepairHead(input: {
       return null;
     }
   };
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/shadowComposedProofAtRepairHead:3ec2b52610625d07712e:1","classification":"durable","reason":"The <module>/shadowComposedProofAtRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return planComposedProofShadow({
     instrument: captureRatchetInstrument(runtimeObservabilityHealth().artifact, proofContext?.after),
     proofContext,
@@ -8815,6 +8834,7 @@ export async function measureTargetedGateRuns(
     // first line of the reason, bounded and stripped of the `;` that separates summary entries.
     let erroredReason: string | null = null;
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/measureTargetedGateRuns:26c0a40caefdcb7f47b3:1","classification":"durable","reason":"The <module>/measureTargetedGateRuns context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await run(script, workspace);
       status = result.code === 0 ? "pass"
         : result.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label) ? "not-checked"
@@ -12076,12 +12096,14 @@ async function pushGreenCandidateOrThrow(
   baseSha: string | null,
 ): Promise<void> {
   try {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/pushGreenCandidateOrThrow:95e587d2df0d217a3fd6:1","classification":"durable","reason":"The <module>/pushGreenCandidateOrThrow context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.push(cfg.releaseRef, baseSha, candidate);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const summary =
       `green-checkpoint push failed: green candidate ${candidate.slice(0, 12)} was NOT published ` +
       `to origin/${cfg.releaseRef}; local ${cfg.releaseRef} remains at ${baseSha?.slice(0, 12) ?? "unset"}. ${detail}`;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/pushGreenCandidateOrThrow:9394e76b577eec0be4e8:1","classification":"durable","reason":"The <module>/pushGreenCandidateOrThrow context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(`ERROR: ${summary}`);
     await deps
       .escalate?.(
@@ -12089,6 +12111,7 @@ async function pushGreenCandidateOrThrow(
         summary,
       )
       .catch(() => {});
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/pushGreenCandidateOrThrow:a5fc026e460e249a04c3:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps
       .broadcast(
         `🟥 green-checkpoint: origin/${cfg.releaseRef} push FAILED — promotion held`,
@@ -12165,9 +12188,11 @@ async function tryLongestGreenPrefix(
   // Narrowed once here: the guard's narrowing does not reach into the async probe closures.
   const affectedWorkspacesForRange = deps.affectedWorkspacesForRange;
   if (!failingTests?.length) return null; // no signature → can't localize → don't guess
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:ce027b3546bf76ceedd0:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const commits = await deps.commitsInRange(lastReady, candidate); // oldest→newest, full shas
   if (commits.length <= 1) return null; // only the red tip itself — nothing to salvage behind it
 
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:c86aac9d128add7d0146:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const fullAffected = await deps.affectedWorkspacesForRange(
     lastReady,
     candidate,
@@ -12220,6 +12245,7 @@ async function tryLongestGreenPrefix(
   );
   const locateByFile = failingPaths.length > 0 && !!deps.changedFilesForRange;
   if (failingWs.size === 0 && !locateByFile) return null; // localizable by neither → hold
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:e9de47ce98fb0e96a59f:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   logPartialGreenGate(
     `partial-green-gate: locating at ${locateByFile ? "FILE" : "workspace"} granularity ` +
       `(${locateByFile ? `${failingPaths.length} failing path(s)` : `failing ws: ${[...failingWs].join(", ")}`})`,
@@ -12244,6 +12270,7 @@ async function tryLongestGreenPrefix(
   // hourly cron found the lock held and judged nothing.
   const walk = commits.slice(0, -1); // exclude the red tip itself
   const locateStartedMs = Date.now();
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:ce0301d467bd898be66f:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const located = await longestCleanPrefix(walk, async (sha) => {
     if (locateByFile) {
       const files = await deps.changedFilesForRange!(lastReady, sha);
@@ -12252,6 +12279,7 @@ async function tryLongestGreenPrefix(
       // the SAME matcher the lineage note uses, so the two cannot drift.
       return matchFailingFilesToChanged(failingPaths, files).length === 0;
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/<callback>:88523ba88c00da8c1175:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const aff = await affectedWorkspacesForRange(lastReady, sha);
     if (!aff) return null; // can't compute this prefix → cannot extend through it
     // clean unless this commit (cumulatively) touches a failing ws
@@ -12259,6 +12287,7 @@ async function tryLongestGreenPrefix(
   });
   prefixTip = located.prefixTip;
   scanStopped = located.stopped;
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:39802b3a9e73ccc59c97:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   logPartialGreenGate(
     `partial-green-gate: located the longest clean prefix by bisection — ` +
       `${located.probes} probe(s) over ${walk.length} commit(s) in ` +
@@ -12309,6 +12338,7 @@ async function tryLongestGreenPrefix(
       !!tailFiles &&
       matchFailingFilesToChanged(failingPaths, tailFiles).length > 0;
     if (!tailImplicates) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:58c386e34fba8448f0ec:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: NO SIGNAL at file granularity — none of the ` +
           `${failingPaths.length} failing path(s) is touched by ANY commit in ` +
@@ -12326,7 +12356,9 @@ async function tryLongestGreenPrefix(
       // — bisected for the same reason as the walk above.
       declineGranularity = "workspace";
       prefixTip = (
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:6107b359d0a56641fa0e:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await longestCleanPrefix(walk, async (sha) => {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/<callback>:88523ba88c00da8c1175:2","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const aff = await affectedWorkspacesForRange(lastReady, sha);
           if (!aff) return null;
           return !aff.some((w) => failingWs.has(w));
@@ -12339,6 +12371,7 @@ async function tryLongestGreenPrefix(
     // WI-38218: say WHY. "the first new commit already implicates the failure" is a
     // legitimate outcome, but it is the same silent null as "the salvage never ran",
     // which is exactly the ambiguity WI-38207 had to fix by reading the source.
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:4a4ca359892b684bcee8:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     logPartialGreenGate(
       `partial-green-gate: no salvageable prefix — the first commit after ${lastReady.slice(0, 8)} already ` +
         `implicates the failure at ${declineGranularity} granularity`,
@@ -12366,6 +12399,7 @@ async function tryLongestGreenPrefix(
   > => {
     const startedAt = Date.now();
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/runConfirm:5a632e85f85fd7a2888b:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/runConfirm context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return await deps.runGreen(cfg.checkpointRoot, lastReady, {
         candidate: confirmedRef,
         headAtStart: confirmedRef,
@@ -12381,6 +12415,7 @@ async function tryLongestGreenPrefix(
 
   // CONFIRM the prefix is itself green before FF-ing `main` to it (the invariant guard).
   if (confirmWouldOverrun()) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:9fa47ff7ed5204ffe712:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     logPartialGreenGate(
       `partial-green-gate: skipped — no budget for the confirm suite ` +
         `(~${Math.round(nextConfirmEstimateMs() / 60_000)}m estimated, ` +
@@ -12389,6 +12424,7 @@ async function tryLongestGreenPrefix(
     );
     return null;
   }
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:258d07424eac373a4caf:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   logPartialGreenGate(
     `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(", ")}); ` +
       `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
@@ -12397,10 +12433,12 @@ async function tryLongestGreenPrefix(
   type ConfirmResult = Awaited<ReturnType<CheckpointDeps["runGreen"]>>;
   let initialPrefixUnbuildable = false;
   try {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:32fca7118587699117ff:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.setupTree(prefixTip);
   } catch (error) {
     initialPrefixUnbuildable = true;
     const detail = error instanceof Error ? error.message : String(error);
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:15b465abd59e2b022896:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     logPartialGreenGate(
       `partial-green-gate: prefix ${prefixTip.slice(0, 8)} unbuildable during setup/build — ` +
         `${detail}; attempting bounded forward/bisect recovery`,
@@ -12408,6 +12446,7 @@ async function tryLongestGreenPrefix(
   }
   let confirm: ConfirmResult | null = initialPrefixUnbuildable
     ? null
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:35793dfd52fa6bab2d1b:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : await runConfirm(prefixTip);
   if (!confirm?.green) {
     // WI-38298: the cheap locator is deliberately conservative, but its first candidate
@@ -12422,6 +12461,7 @@ async function tryLongestGreenPrefix(
     let recoveryPrefix: string | null = null;
 
     if (!initialPrefixUnbuildable) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:bf7d2094015b26812989:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — ` +
           `attempting bounded forward/bisect recovery`,
@@ -12433,27 +12473,32 @@ async function tryLongestGreenPrefix(
       strategy: "forward" | "bisect",
     ): Promise<boolean> => {
       const sha = commits[index];
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/confirmLaterPrefix:482b2ba2f656310ec20b:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/confirmLaterPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: ${strategy} recovery confirming later prefix ${sha.slice(0, 8)} ` +
           `(attempt ${recoveryAttempts + 1}/${maxRecoveryConfirms})`,
       );
       recoveryAttempts += 1;
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/confirmLaterPrefix:0d4e3a3c91fc615bfb40:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/confirmLaterPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await deps.setupTree(sha);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/confirmLaterPrefix:fa700335921db6ce4490:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/confirmLaterPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         logPartialGreenGate(
           `partial-green-gate: ${strategy} recovery prefix ${sha.slice(0, 8)} ` +
             `unbuildable during setup/build — ${detail}; continuing recovery`,
         );
         return false;
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/confirmLaterPrefix:f915d031af6275e300b5:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/confirmLaterPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const laterConfirm = await runConfirm(sha);
       if (laterConfirm.green) {
         recoveryPrefix = sha;
         confirm = laterConfirm;
         return true;
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/confirmLaterPrefix:71e86c76662aa2e2e983:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/confirmLaterPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: later prefix ${sha.slice(0, 8)} did NOT confirm green — continuing recovery`,
       );
@@ -12472,6 +12517,7 @@ async function tryLongestGreenPrefix(
       if (!confirmWouldOverrun()) return false;
       if (!deadlineHit) {
         deadlineHit = true;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix/outOfTimeForAnotherConfirm:e744cb641f50aeaa6d99:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix/outOfTimeForAnotherConfirm context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         logPartialGreenGate(
           `partial-green-gate: recovery STOPPED after ${recoveryAttempts} of ${maxRecoveryConfirms} ` +
             `confirm(s) — next confirm ~${Math.round(nextConfirmEstimateMs() / 60_000)}m, ` +
@@ -12487,9 +12533,11 @@ async function tryLongestGreenPrefix(
     if (
       recoveryLeft <= lastPrefixIndex &&
       recoveryAttempts < maxRecoveryConfirms &&
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:d42c117ed1738abf974c:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       !outOfTimeForAnotherConfirm()
     ) {
       const forwardIndex = recoveryLeft;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:fc387374bdfba87b289b:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await confirmLaterPrefix(forwardIndex, "forward");
       recoveryLeft = forwardIndex + 1;
     }
@@ -12500,10 +12548,12 @@ async function tryLongestGreenPrefix(
     while (
       recoveryLeft <= lastPrefixIndex &&
       recoveryAttempts < maxRecoveryConfirms &&
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:d42c117ed1738abf974c:2","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       !outOfTimeForAnotherConfirm()
     ) {
       const middle =
         recoveryLeft + Math.floor((lastPrefixIndex - recoveryLeft) / 2);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:353605eae62942475fff:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const green = await confirmLaterPrefix(middle, "bisect");
       recoveryLeft = middle + 1;
       if (!green) continue;
@@ -12515,11 +12565,13 @@ async function tryLongestGreenPrefix(
     const recoveredPrefix = recoveryPrefix as string | null;
     if (recoveredPrefix === null || confirm === null) {
       if (initialPrefixUnbuildable) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:770a23cb60e8b94895d2:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         logPartialGreenGate(
           `partial-green-gate: prefix ${prefixTip.slice(0, 8)} remained unbuildable ` +
             `or no later prefix confirmed green — holding (no partial advance)`,
         );
       } else {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:60683eb7340b4e716cec:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         logPartialGreenGate(
           `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`,
         );
@@ -12528,6 +12580,7 @@ async function tryLongestGreenPrefix(
     }
 
     prefixTip = recoveredPrefix;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:e542144eb3d89c974623:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     logPartialGreenGate(
       `partial-green-gate: recovered later green prefix ${prefixTip.slice(0, 8)} ` +
         `(after ${recoveryAttempts} additional confirm${recoveryAttempts === 1 ? "" : "s"})`,
@@ -12540,10 +12593,12 @@ async function tryLongestGreenPrefix(
   }
   const adv = await deps.advance(prefixTip);
   if (!adv.advanced) return null;
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:292c6cc3bf2e62329611:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   logPartialGreenGate(
     `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${prefixTip.slice(0, 8)} ` +
       `(longest green prefix; tip ${candidate.slice(0, 8)} still red)`,
   );
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:3f329a35eb8ca6a3b80c:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await deps
     .broadcast(
       `🟧 green-checkpoint: PARTIAL advance — \`${pipelineRef(pipelineName(cfg.integrationRoot), cfg.releaseRef)}\` → ${prefixTip.slice(0, 8)} (longest GREEN prefix), tip ${candidate.slice(0, 8)} still red`,
@@ -12581,6 +12636,7 @@ async function tryLongestGreenPrefix(
       // pipeline-scoped, candidate-bound default) must be able to see it. Before this fix
       // only the global key fired, so a candidate-bound waiter on a partial advance could
       // hang to its own timeout despite the gate having genuinely resolved for its candidate.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:a840c3ad8778f930301f:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: "release:green",
         summary: prefixSummary,
@@ -12589,6 +12645,7 @@ async function tryLongestGreenPrefix(
         // pending red await for this pipeline can now never legitimately fire.
         cancelSiblingKeysFor,
       });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:903e9ae316de83788580:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: `release:green:${pipeline}`,
         summary: prefixSummary,
@@ -12596,6 +12653,7 @@ async function tryLongestGreenPrefix(
         cancelSiblingKeysFor,
       });
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/tryLongestGreenPrefix:87494bcfa2f9f5230670:1","classification":"durable","reason":"The <module>/tryLongestGreenPrefix context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `warn: release:green (partial) emit failed: ${e instanceof Error ? e.message : e}`,
       );
@@ -12824,6 +12882,7 @@ function appendPartialGreenGateLine(
   line: string,
   log: (s: string) => void,
 ): void {
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/appendPartialGreenGateLine:b641554e31ccd75446e5:1","classification":"durable","reason":"The <module>/appendPartialGreenGateLine context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   log(line);
   if (!logPath) return;
   try {
@@ -12832,6 +12891,7 @@ function appendPartialGreenGateLine(
       `\n${sanitizeCheckpointLogText(defangCapturedResultMarkers(line))}\n`,
     );
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/appendPartialGreenGateLine:4cc1921d7dc66c4d9dfe:1","classification":"durable","reason":"The <module>/appendPartialGreenGateLine context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     log(
       `warn: partial-green-gate line not published to ${logPath}: ${e instanceof Error ? e.message : e}`,
     );
@@ -12853,6 +12913,7 @@ export function stampGatePromotion(
   try {
     appendFileSync(logPath, formatGatePromotionTrailer({ ...v, recordedAtMs: Date.now() }));
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/stampGatePromotion:8e943666d9e531068d4e:1","classification":"durable","reason":"The <module>/stampGatePromotion context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     log?.(
       `warn: GATE_PROMOTION trailer not stamped on ${logPath}: ${e instanceof Error ? e.message : e}`,
     );
@@ -13081,6 +13142,7 @@ async function broadcastHeldGateAlert(
   if (heldMs == null) return;
   const alert = heldGateAlert(heldMs);
   if (!alert) return;
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/broadcastHeldGateAlert:1e21326b93524b6af004:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await deps
     .broadcast(
       `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${input.releaseRef}\` stuck at ${input.lastReady?.slice(0, 8) ?? "unset"}, ${input.candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
@@ -13147,6 +13209,7 @@ async function applyFrozenRepairCarryAtCut(
   try {
     pending = await deps.readFrozenRepairPendingCarry();
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/applyFrozenRepairCarryAtCut:95f3103b5e27389f1eb7:1","classification":"durable","reason":"The <module>/applyFrozenRepairCarryAtCut context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(`warn: P-010 pending carry unreadable; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
     return candidate;
   }
@@ -13161,14 +13224,17 @@ async function applyFrozenRepairCarryAtCut(
       blobAt,
     );
     const { record } = proposal;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/applyFrozenRepairCarryAtCut:4195cd860f9622bdfbd3:1","classification":"durable","reason":"The <module>/applyFrozenRepairCarryAtCut context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(frozenRepairCarrySummary(record));
     let consumed = false;
     try {
       consumed = await deps.consumeFrozenRepairCarry(pending, record);
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/applyFrozenRepairCarryAtCut:b3fd9b9abd2b2dbb6e57:1","classification":"durable","reason":"The <module>/applyFrozenRepairCarryAtCut context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`warn: P-010 carry record write failed (the carry stays pending): ${errorText(e)}`);
     }
     if (!consumed) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/applyFrozenRepairCarryAtCut:7dcacd2e976d29cc660d:1","classification":"durable","reason":"The <module>/applyFrozenRepairCarryAtCut context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `P-010 carry from retired ${pending.fromCandidate.slice(0, 8)} was replaced before it could be recorded; ` +
           `the next fresh cut assesses the newer carry`,
@@ -13176,6 +13242,7 @@ async function applyFrozenRepairCarryAtCut(
     }
     return proposal.candidate;
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/applyFrozenRepairCarryAtCut:871b7719056495fd9f7e:1","classification":"durable","reason":"The <module>/applyFrozenRepairCarryAtCut context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(`warn: P-010 carry assessment failed; judging ${candidate.slice(0, 8)} and keeping the carry: ${errorText(e)}`);
     return candidate;
   }
@@ -13248,6 +13315,7 @@ async function selectCheckpointFreshCandidate(
           (!lastReady ||
             (await isAncestor(cfg.integrationRoot, lastReady, aged)))
         ) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/selectCheckpointFreshCandidate:5acf8ca73e88719bd1f9:1","classification":"durable","reason":"The <module>/selectCheckpointFreshCandidate context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `quiet-cut: tip ${candidate.slice(0, 8)} is ${nowSec - tipTime}s old (<${quietSec}s quiet window) — ` +
               `judging ${aged.slice(0, 8)} instead (the newest ≥${quietSec}s-old state); the tip gets the next run`,
@@ -13257,6 +13325,7 @@ async function selectCheckpointFreshCandidate(
         }
       }
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/selectCheckpointFreshCandidate:50bbd2896209d776b605:1","classification":"durable","reason":"The <module>/selectCheckpointFreshCandidate context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`,
       );
@@ -13283,6 +13352,7 @@ async function selectCheckpointFreshCandidate(
       knownGood = (await deps.resolveKnownGoodRecutTarget?.()) ?? null;
     } catch (e) {
       knownGoodUnreadable = true;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/selectCheckpointFreshCandidate:a891bfaef9b445d9cb06:1","classification":"durable","reason":"The <module>/selectCheckpointFreshCandidate context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`warn: P-012 known-good point unreadable, judging ${candidate.slice(0, 8)}: ${e instanceof Error ? e.message : e}`);
     }
     freezeCut = await decideKnownGoodFreezeCut({
@@ -13299,6 +13369,7 @@ async function selectCheckpointFreshCandidate(
       // window (tipAtSelection) and run the split-pair detector over it.
       quietCutApplied = candidate !== candidateBeforeQuietCut;
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/selectCheckpointFreshCandidate:a6a5abe7f0453b528e09:1","classification":"durable","reason":"The <module>/selectCheckpointFreshCandidate context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(formatFreezeCutLine(freezeCut));
   }
 
@@ -13317,6 +13388,7 @@ async function publishInFlightCandidateMarker(
   info: Parameters<NonNullable<CheckpointDeps["recordInFlightCandidate"]>>[0],
 ): Promise<void> {
   const abandonedNote = diagnosticOnly ? null : await deps.reportAbandonedInFlightCandidate?.();
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/publishInFlightCandidateMarker:cb3beb1f785c16ddd9b9:1","classification":"durable","reason":"The <module>/publishInFlightCandidateMarker context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   if (abandonedNote) deps.log(abandonedNote);
   await deps.recordInFlightCandidate?.(info);
 }
@@ -13358,6 +13430,7 @@ async function runGreenCheckpointInner(
     // captured by scheduler/routine invocations. Record the judged root through the
     // orchestrator logger so it reaches the persisted checkpoint transcript as well.
     const { root: derivedRoot, source } = describeIntegrationRoot();
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:e378039cc02785088384:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `integration root: ${cfg.integrationRoot} (source=${source}, emitter=gate-run)`,
     );
@@ -13369,9 +13442,11 @@ async function runGreenCheckpointInner(
     // table(s) missing" verdict about a database that was never the subject. Emitting it here
     // puts the one datum that separates that from real drift into the persisted transcript
     // responders actually read, instead of a /proc/<pid>/environ dig on an exited process.
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b2e0fb87d3f9f2c5eb18:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(databaseEvidence(process.env, "gate-run"));
     const norm = (p: string) => p.replace(/\/+$/, "");
     if (norm(derivedRoot) !== norm(cfg.integrationRoot)) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:73433fc09640016f7e2a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `WARNING integration-root MISMATCH — this run judges ${cfg.integrationRoot} but the resolver derives ` +
           `${derivedRoot} (source=${source}). The run's cfg governs. (WI-38250)`,
@@ -13481,6 +13556,7 @@ async function runGreenCheckpointInner(
           }); dispatching anyway rather than withholding on an unknown`,
         };
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/dispatchFrozenRepair:985ca2883732f5a0b781:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/dispatchFrozenRepair context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `frozen repair provider-capacity preflight: ${capacity.summary}`,
       );
@@ -13505,6 +13581,7 @@ async function runGreenCheckpointInner(
           allowCreateIfAbsent,
         });
       } catch (error) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/dispatchFrozenRepair:4f78a037cb4aaf2e9feb:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/dispatchFrozenRepair context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `frozen repair dispatch reservation failed — holding without launch: ${
             error instanceof Error ? error.message : error
@@ -13593,6 +13670,7 @@ async function runGreenCheckpointInner(
     }
 
     if (reservationLost && !fired) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/dispatchFrozenRepair:d285471ccc2a094aeaae:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/dispatchFrozenRepair context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `frozen repair dispatch reservation was lost during preparation — holding without launch${
           reservationLoss
@@ -13618,6 +13696,7 @@ async function runGreenCheckpointInner(
       } catch (error) {
         // Keep the reservation in the returned queue and fail closed. The next tick will
         // observe the lease instead of launching a second fixer while this result is uncertain.
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/dispatchFrozenRepair:73f745885a9aa2e7990f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/dispatchFrozenRepair context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `frozen repair dispatch finalization failed — retaining the reservation: ${
             error instanceof Error ? error.message : error
@@ -13626,6 +13705,7 @@ async function runGreenCheckpointInner(
       }
     } else if (fired?.spawnId) {
       const dispatchedSpawnId = fired.spawnId;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/dispatchFrozenRepair:b6ce06073f083f261850:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/dispatchFrozenRepair context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       dispatchQueue = await commitFrozenRepairQueueTransition(
         deps,
         dispatchQueue,
@@ -13655,6 +13735,7 @@ async function runGreenCheckpointInner(
     try {
       return (await deps.readFrozenRepairQueue?.()) ?? null;
     } catch (error) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/repairReservationHold:9499d745077bc4b32e3d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/repairReservationHold context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `frozen repair queue re-read after ${context} reservation loss failed: ${
           error instanceof Error ? error.message : error
@@ -13730,12 +13811,14 @@ async function runGreenCheckpointInner(
       `green-checkpoint:inconclusive:${pipeline}`,
     ];
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitTerminalRed:c8fb9fa1f1218f9f24b7:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitTerminalRed context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: "green-checkpoint:red",
         summary: redSummary,
         payload,
         cancelSiblingKeysFor,
       });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitTerminalRed:929f8a5d19d766bee3ae:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitTerminalRed context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: `green-checkpoint:red:${pipeline}`,
         summary: redSummary,
@@ -13743,6 +13826,7 @@ async function runGreenCheckpointInner(
         cancelSiblingKeysFor,
       });
     } catch (error) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitTerminalRed:8fe02c77cd9a985888a5:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitTerminalRed context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `warn: green-checkpoint:red terminal emit failed: ${error instanceof Error ? error.message : error}`,
       );
@@ -13750,6 +13834,7 @@ async function runGreenCheckpointInner(
     try {
       await deps.clearInFlightCandidate?.();
     } catch (error) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitTerminalRed:3dbaf6734f9edf4fbb2d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitTerminalRed context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `warn: terminal red in-flight marker clear failed: ${error instanceof Error ? error.message : error}`,
       );
@@ -13771,6 +13856,7 @@ async function runGreenCheckpointInner(
           const summary =
             `${describeUnreadableFrozenCandidateRepairQueue(read)} — ` +
             "refusing to conclude that no candidate is frozen or to cut a moving candidate";
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(summary);
           return {
             advanced: false,
@@ -13791,6 +13877,7 @@ async function runGreenCheckpointInner(
       }
     } catch (e) {
       const summary = `frozen repair queue read failed — refusing to cut a moving candidate: ${e instanceof Error ? e.message : e}`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(summary);
       return {
         advanced: false,
@@ -13826,6 +13913,7 @@ async function runGreenCheckpointInner(
         summary: `staging-lineage recovery threw: ${error instanceof Error ? error.message : error}`,
       };
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d4c086012181a6079892:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(`P-008 post-promotion recovery: ${absorption.summary}`);
     if (absorption.ok) {
       try {
@@ -13836,6 +13924,7 @@ async function runGreenCheckpointInner(
         const summary =
           `${absorption.summary}; ancestry is absorbed but the ready-to-promote queue clear ` +
           `failed, so the row remains as an idempotent retry marker: ${error instanceof Error ? error.message : error}`;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:3","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(summary);
         return withRepairIdentity({
           advanced: false,
@@ -13862,6 +13951,7 @@ async function runGreenCheckpointInner(
       `${absorption.summary}; main is already at proven repairHead ` +
       `${pendingQueue.repairHead.slice(0, 12)}, and the ready-to-promote queue is retained ` +
       `for an idempotent staging-absorption retry`;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:4","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(summary);
     return withRepairIdentity({
       advanced: false,
@@ -13899,12 +13989,15 @@ async function runGreenCheckpointInner(
         const reconciled =
           await deps.reconcileFrozenRepairQueueWithLineage(repairQueue);
         if (reconciled.reconciled > 0) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:cce97b1db5cf18717195:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(`FROZEN_REPAIR_LEDGER_RECONCILED: ${reconciled.detail}`);
         } else if (reconciled.status !== "in-sync") {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:fd66ca1552a32d3fc34c:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(`FROZEN_REPAIR_LEDGER_DISAGREES: ${reconciled.detail}`);
         }
         repairQueue = reconciled.queue;
       } catch (e) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5ccec25a98f555bd425c:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `frozen repair ledger reconcile skipped (non-fatal): ${e instanceof Error ? e.message : e}`,
         );
@@ -13917,6 +14010,7 @@ async function runGreenCheckpointInner(
     // selectively and, on green, the full canonical gate at that same sha before promoting —
     // idempotent, and it can never fall through to a moving tip.
     if (repairQueue.phase === "ready-to-promote") {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5464f23a4b00a0e5bfc8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       repairQueue = await commitFrozenRepairQueueTransition(
         deps,
         repairQueue,
@@ -13926,6 +14020,7 @@ async function runGreenCheckpointInner(
             : fresh,
         "resume-ready-to-promote",
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b726fbc2c0e5cf1ce0b8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `resuming frozen repair ${repairQueue.repairHead.slice(0, 8)}: it proved green but never ` +
           `advanced ${cfg.releaseRef}; re-verifying at its own sha before promotion`,
@@ -13954,6 +14049,7 @@ async function runGreenCheckpointInner(
     // operator `retire` decision rather than this one.
     if (frozenCandidateAlreadyGreen(repairQueue, lastReady)) {
       const unreachable = repairQueue;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f8d8776f5aebec37730a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       repairQueue = await commitFrozenRepairQueueTransition(
         deps,
         repairQueue,
@@ -13963,6 +14059,7 @@ async function runGreenCheckpointInner(
             : fresh,
         "resume-unreachable-ready-to-test",
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:0f4e09061bf12508f1da:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `frozen candidate ${unreachable.candidate.slice(0, 8)} IS ${cfg.releaseRef} — its ` +
           `ready-to-test phase can never be discharged (the up-to-date short-circuit returns ` +
@@ -13997,12 +14094,14 @@ async function runGreenCheckpointInner(
         // the NEXT no-op fixer onto the dead path below, so a red head can never re-enter
         // the suite for free. The attempt stays spent: the fixer did work, and a refund
         // would need the dead-marker's phase, which ready-to-verify cannot carry.
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:01e51c619a8c2f6f1ab0:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `FROZEN_REPAIR_ADMITTED_HEAD_READY_TO_VERIFY: fixer ${deadSpawnId} exited with ` +
             `repairHead ${repairQueue.repairHead.slice(0, 8)} admitted onto frozen candidate ` +
             `${repairQueue.candidate.slice(0, 8)} and never verified — running the repair ` +
             `verification at that head instead of spending another dispatch on it.`,
         );
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:9606a7dc63bd2d73f714:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
@@ -14022,6 +14121,7 @@ async function runGreenCheckpointInner(
           .classifyDeadFrozenRepairFixer?.(deadSpawnId)
           .catch(() => null);
         const attemptsBefore = repairQueue.attempts;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:e2a64db7aee4cb0ce647:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
@@ -14040,6 +14140,7 @@ async function runGreenCheckpointInner(
           "dead-fixer",
         );
         if (repairQueue.attempts < attemptsBefore) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:4b21c7efda5def74bb7b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `FIXER_ATTEMPT_REFUNDED: fixer ${deadSpawnId} died of infrastructure without doing ` +
               `any repair work (${deathClass?.reason ?? "unclassified"}); attempt refunded ` +
@@ -14047,6 +14148,7 @@ async function runGreenCheckpointInner(
               `refund budget). The retry is free — the spawn plane, not the repair, failed here.`,
           );
         } else if (deathClass && !deathClass.infrastructure) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:fc1285f72b515f499795:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `fixer ${deadSpawnId} died AFTER doing real repair work (${deathClass.reason}); ` +
               `attempt stays spent`,
@@ -14072,12 +14174,14 @@ async function runGreenCheckpointInner(
         .frozenRepairRedUnmeasured?.(repairQueue)
         .catch(() => false)) === true
     ) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c89ad1d2933f715f451b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `FROZEN_REPAIR_UNMEASURED_RED_RETEST: repairHead ${repairQueue.repairHead.slice(0, 8)} ` +
           `of frozen candidate ${repairQueue.candidate.slice(0, 8)} is red with no measured ` +
           `failing test (killed/timed-out legs) and no fixer can be dispatched for it — ` +
           `re-verifying the same head once instead of holding for a fixer that will never spawn.`,
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:1a6f1794ad78ac7569fa:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       repairQueue = await commitFrozenRepairQueueTransition(
         deps,
         repairQueue,
@@ -14098,6 +14202,7 @@ async function runGreenCheckpointInner(
     {
       const ageRung = frozenRepairAgeEscalationRung(repairQueue, Date.now());
       if (ageRung > (repairQueue.ageEscalatedRung ?? 0)) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8c24c78b26cca2075f62:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
@@ -14114,6 +14219,7 @@ async function runGreenCheckpointInner(
             frozenRepairAgeEscalationBody(repairQueue, ageRung),
           )
           .catch((e) =>
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:620d0a39fd7db615acd4:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `warn: frozen-repair age escalation failed: ${e instanceof Error ? e.message : e}`,
             ),
@@ -14136,6 +14242,7 @@ async function runGreenCheckpointInner(
       // treadmill the freeze exists to stop. Retire stays OWNER-ONLY.
       if (repairQueue.phase !== "blocked") {
         const exhaustedReason = decision.reason;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:cf9da1f80f3fb8f65628:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
@@ -14152,6 +14259,7 @@ async function runGreenCheckpointInner(
             frozenRepairHoldEscalationBody(repairQueue, decision.reason),
           )
           .catch((e) =>
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:4fa795e1d48391884281:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `warn: frozen-repair exhaustion escalation failed: ${e instanceof Error ? e.message : e}`,
             ),
@@ -14170,6 +14278,7 @@ async function runGreenCheckpointInner(
         `(${decision.reason}) at ${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head ` +
         `and refusing to select a newer staging tip — admit a fix with ` +
         `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:5","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(summary);
       await deps.recordFreezeDisposition?.({
         ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
@@ -14191,6 +14300,7 @@ async function runGreenCheckpointInner(
       candidate = await revParse(cfg.integrationRoot, decision.candidate);
       initialCandidateVerification = true;
     } else if (decision.kind === "dispatch-fixer") {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:23d7ce4f8a0ee93bfb44:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const dispatch = await dispatchFrozenRepair(repairQueue, false);
       if (dispatch.capacityHold) {
         // WI-606293 / EI-218123: a measured provider wall with an unassigned, zero-attempt
@@ -14216,6 +14326,7 @@ async function runGreenCheckpointInner(
         ) {
           // Capacity cannot retire a candidate. Verify its admitted repair head
           // while preserving the queue, failure signature and admission history.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:38789e1a0409c5babd0a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           repairQueue = await commitFrozenRepairQueueTransition(
             deps, repairQueue,
             (fresh) => ({ ...fresh, phase: "ready-to-verify",
@@ -14224,6 +14335,7 @@ async function runGreenCheckpointInner(
           );
           candidate = await revParse(cfg.integrationRoot, repairQueue.repairHead);
           initialCandidateVerification = false;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:dba7025d8f984ba5619e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(`frozen candidate ${repairQueue.candidate.slice(0, 8)} retained under provider-capacity ` +
             `infeasibility; verifying admitted repairHead ${candidate.slice(0, 8)}`);
           await deps.recordFreezeDisposition?.({
@@ -14251,6 +14363,7 @@ async function runGreenCheckpointInner(
           const summary = dispatchInfeasible.zeroAttemptStalled
             ? `${baseSummary} Held for convergence: the wall outlasts the ${dispatchInfeasible.zeroAttemptStallMs}ms stall window, so the freeze is kept and agent/human convergence is the repair path (${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.convergenceHoldMs}ms).`
             : `${baseSummary} Zero-attempt, not yet stalled: ${dispatchInfeasible.ageMs}ms of ${dispatchInfeasible.zeroAttemptStallMs}ms before this queue is held for convergence.`;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c4e732bea68de80b067c:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             dispatchInfeasible.zeroAttemptStalled
               ? // The LONG-WALL hold: the stall window HAS elapsed, but the measured wall
@@ -14286,6 +14399,7 @@ async function runGreenCheckpointInner(
             //
             // Best-effort, and swallowing here is the point: routing failing must never
             // convert a held candidate into a failed checkpoint.
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:af74a5bcae569402c14c:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             await deps
               .routeFrozenRepairToAgents?.({
                 pipeline: pipelineName(cfg.integrationRoot),
@@ -14298,6 +14412,7 @@ async function runGreenCheckpointInner(
                 convergenceHoldMs: dispatchInfeasible.convergenceHoldMs,
               })
               .catch((e) =>
+                // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:28804eafc4aafd7c21f3:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                 deps.log(
                   `warn: frozen-repair agent routing failed (candidate stays held): ${e instanceof Error ? e.message : e}`,
                 ),
@@ -14320,6 +14435,7 @@ async function runGreenCheckpointInner(
           // the queue with the same row/candidate/repairHead, escalates once, and holds:
           // agents and humans converge onto the frozen lineage through admission.
           const infeasibleReason = dispatchInfeasible.reason;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:16e8ea2cd301d1b62fb0:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
             repairQueue,
@@ -14339,6 +14455,7 @@ async function runGreenCheckpointInner(
               ) + ` Measured wall: ${dispatch.capacityHold.summary}`,
             )
             .catch((e) =>
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:862aeb80d955cb0621bb:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               deps.log(
                 `warn: frozen-repair dispatch-infeasible escalation failed: ${e instanceof Error ? e.message : e}`,
               ),
@@ -14349,6 +14466,7 @@ async function runGreenCheckpointInner(
             `${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head and refusing to ` +
             `select a newer staging tip — admit a fix with ` +
             `release:repair-queue { op: 'admit', paths: [...] } to resume verification`;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:6","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(summary);
           await deps.recordFreezeDisposition?.({
             ...deriveTickFreezeDisposition({ flagEnabled: true, repairQueue }),
@@ -14374,6 +14492,7 @@ async function runGreenCheckpointInner(
             repairQueue.repairHead,
             dispatch.capacityHold,
           );
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:7","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(summary);
           return withRepairIdentity({
             advanced: false,
@@ -14391,12 +14510,14 @@ async function runGreenCheckpointInner(
         // process returns the live reservation (rather than a stale unassigned snapshot),
         // and never runs a second fixer or suite while the winner is preparing it.
         repairQueue =
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c5ed782b47e23a9b027e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           (await repairReservationHold(repairQueue, "existing queue")) ??
           repairQueue;
         const reservation = repairQueue.dispatchReservation;
         const summary = reservation
           ? `frozen repair fixer dispatch is reserved by another checkpoint until ${reservation.expiresAtMs}; candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`
           : `frozen repair fixer dispatch reservation was unavailable for ${repairQueue.repairHead.slice(0, 8)}; holding without a second launch`;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:8","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(summary);
         return withRepairIdentity({
           advanced: false,
@@ -14413,6 +14534,7 @@ async function runGreenCheckpointInner(
         const summary = fired?.spawnId
           ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
           : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}${frozenRepairNoSpawnDetail(dispatch.dispatchSkip)}; queue remains unassigned for retry`;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:9","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(summary);
         return withRepairIdentity({
           advanced: false,
@@ -14428,6 +14550,7 @@ async function runGreenCheckpointInner(
       const summary =
         `frozen repair fixer dispatch reservation ${decision.reservationToken} is active until ${decision.reservationExpiresAtMs}; ` +
         `candidate ${repairQueue.repairHead.slice(0, 8)} remains serialized and no suite was run`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:10","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(summary);
       return withRepairIdentity({
         advanced: false,
@@ -14440,6 +14563,7 @@ async function runGreenCheckpointInner(
       });
     } else if (decision.kind === "wait-for-fixer") {
       const summary = `frozen repair fixer ${decision.fixerSpawnId} is ${decision.liveness}; candidate ${repairQueue.candidate.slice(0, 8)} remains serialized and no suite was run`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:11","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(summary);
       return withRepairIdentity({
         advanced: false,
@@ -14469,6 +14593,7 @@ async function runGreenCheckpointInner(
           integrationRef: cfg.integrationBranch,
           nowMs: Date.now(),
         });
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:417bce6ba668b1309640:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `repair head ${candidate.slice(0, 8)}: lockfile-drift convergence — ${describeLockfileConvergence(convergence)}`,
         );
@@ -14476,6 +14601,7 @@ async function runGreenCheckpointInner(
           // WI-6554700010019277: persist through the fresh-row transition (see the gen:*:check
           // heal below) — a field-only peer write since this run's read must not crash the run.
           const convergenceBase = repairQueue;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:757c0434e79d05bfff4e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
             convergenceBase,
@@ -14483,6 +14609,7 @@ async function runGreenCheckpointInner(
             "lockfile-convergence-admission",
           );
           if (repairQueue.repairHead !== convergence.toRepairHead) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6eddc870234d0fbcaef8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `repair head ${candidate.slice(0, 8)}: ⚠ lockfile-drift convergence NOT recorded on the ` +
                 `queue row — the fresh row is at ${repairQueue.repairHead.slice(0, 8)}, not ` +
@@ -14496,6 +14623,7 @@ async function runGreenCheckpointInner(
       // admission→resume-start boundary through the fresh-row transition immediately before
       // verification begins. A concurrent admission returns the fresh row unchanged; a retry
       // of the same head preserves the first start for that admission.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:11d42127b7e7ae548a33:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       repairQueue = await commitFrozenRepairQueueTransition(
         deps,
         repairQueue,
@@ -14528,6 +14656,7 @@ async function runGreenCheckpointInner(
       // `materializing` → `suite` writes below, so without this the pass-start
       // `materializing` marker described the whole multi-hour run (measured 2026-10-26).
       writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ac670ddebc1f23ade626:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.reportProgress?.("phase:suite");
       // WI-6554700010029556 (step 4): the same gap held for `gate_health.inFlightCandidate`. Its
       // candidate-FINAL publish below is reached by a repair-head run only when the selective
@@ -14536,6 +14665,7 @@ async function runGreenCheckpointInner(
       // is the gate judging?" reader saw no run at all (measured 2026-10-26). Publish the repair
       // head now. The later publish re-stamps it if the head proceeds to the full gate, and the
       // CLI seam clears it on every exit.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:4361464311359604c5ee:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await publishInFlightCandidateMarker(deps, diagnosticOnly, {
         candidate,
         candidateSource,
@@ -14548,7 +14678,9 @@ async function runGreenCheckpointInner(
         ...(deps.routineId ? { routineId: deps.routineId } : {}),
         ...(deps.routineFireWorkflowId ? { routineFireWorkflowId: deps.routineFireWorkflowId } : {}),
       });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5a29880e37287f159e28:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       let verification = await verifyRepairHead(verifyDeps, repairQueue);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:86632be4f30abcce1817:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`repair head ${candidate.slice(0, 8)}: ${verification.summary}`);
       // P-005 (green-gate-zero-wait-convergence-2026-09-08, R-5, D-001): a red whose signature
       // carries `gen:*:check` legs is artifact drift with a MECHANICAL repair — run the paired
@@ -14565,11 +14697,13 @@ async function runGreenCheckpointInner(
       ) {
         let heal: GenCheckHealOutcome;
         try {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5c9b2071debc40fcd173:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           heal = await deps.healGenCheckLegs(repairQueue, verification.signature);
         } catch (e) {
           heal = { kind: "probe-failed", detail: e instanceof Error ? e.message : String(e) };
         }
         if (heal.kind !== "nothing-to-heal") {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:1bab977893a1ce9a115a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `repair head ${candidate.slice(0, 8)}: gen:*:check self-heal — ${describeGenCheckHeal(heal)}`,
           );
@@ -14588,6 +14722,7 @@ async function runGreenCheckpointInner(
           // (run 425120c3: 2h45m of suite, no verdict). The reducer applies the heal only to
           // a row still at the head the healer admitted onto.
           const admissionBase = heal.refreshedQueue ?? repairQueue;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:77796a403d3edc28059d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
             admissionBase,
@@ -14595,6 +14730,7 @@ async function runGreenCheckpointInner(
             "gen-check-heal-admission",
           );
           if (repairQueue.repairHead !== heal.toRepairHead) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:1477f4be2d0db9e2e73a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `repair head ${candidate.slice(0, 8)}: ⚠ gen:*:check self-heal admission NOT recorded on ` +
                 `the queue row — the fresh row is at ${repairQueue.repairHead.slice(0, 8)}, not the ` +
@@ -14604,7 +14740,9 @@ async function runGreenCheckpointInner(
           } else if (signatureWithoutHealed(verification.signature, heal).length === 0) {
             candidate = repairQueue.repairHead;
             writeCheckpointRunPhase(phaseLockDir, "suite", { activity: "repair-head-verification" });
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5a29880e37287f159e28:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             verification = await verifyRepairHead(verifyDeps, repairQueue);
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:cd3a32b687a381d769fe:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `repair head ${candidate.slice(0, 8)}: ${verification.summary} (re-judged in-run after gen:*:check self-heal)`,
             );
@@ -14641,6 +14779,7 @@ async function runGreenCheckpointInner(
             // WI-10007489: the round records the targeted radius that produced this red.
             ...(verification.executed ? { executed: verification.executed } : {}),
           };
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:437f77f29a440bf03d63:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
             repairQueue,
@@ -14667,6 +14806,7 @@ async function runGreenCheckpointInner(
             "repair-head-red",
           );
           if (supersededBy) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:63d37f6d83be75321d64:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `FROZEN_REPAIR_VERDICT_SUPERSEDED: red at ${candidate.slice(0, 8)} recorded as ` +
                 `round ${recordedRoundAt(repairQueue, candidate)} at that head WITHOUT moving the row's head — an admission ` +
@@ -14680,6 +14820,7 @@ async function runGreenCheckpointInner(
           (canRequeue
             ? `re-queued it for the next fixer without spending a full suite`
             : `holding without spending a suite because no queue writer is available`);
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:12","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(summary);
         return withRepairIdentity({
           advanced: false,
@@ -14699,7 +14840,9 @@ async function runGreenCheckpointInner(
         const summary =
           `frozen repair head ${candidate.slice(0, 8)} could not be verified this tick (${verification.summary}); ` +
           `holding the ready-to-verify queue without spending a suite`;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a2ffe35a48274988ed00:13","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(summary);
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:385417def4cea5092373:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await broadcastHeldGateAlert(deps, {
           releaseRef: cfg.releaseRef,
           lastReady,
@@ -14724,14 +14867,18 @@ async function runGreenCheckpointInner(
       // #D-025 (P-018 shadow): what a composed proof would re-run instead of this full run.
       // Recorded and compared after the full run; the full run still decides.
       if (verification.kind === "green") {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5496b3cbb99670d36e99:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         composedProofShadow = await shadowComposedProofAtRepairHead({
           root: cfg.integrationRoot,
           queue: repairQueue,
           repairHead: candidate,
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:847a876c1653efeccd81:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           captureProofContextAtRef: deps.captureProofContextAtRef?.bind(deps),
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:2c7faaea894923ff5a72:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           affectedTestsAtRef: deps.affectedTestsAtRef?.bind(deps),
           nowMs: Date.now(),
         });
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:358341ea24efa1230986:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `RATCHET_SHADOW composed-proof status=${composedProofShadow.record.status} ` +
             `mode=${composedProofShadow.record.mode ?? "-"} rerun=${composedProofShadow.record.rerunCount ?? "-"} ` +
@@ -14752,6 +14899,7 @@ async function runGreenCheckpointInner(
       `frozenCandidate=${repairQueue?.candidate ?? "none"}, repairHead=${repairQueue?.repairHead ?? "none"}`,
     );
   }
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5bb14b7512ac4b85a9d7:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const selected = opts.preparedSelection ?? await selectCheckpointFreshCandidate(cfg, deps, {
     candidate, lastReady, opts, repairVerification, initialCandidateVerification,
     diagnosticOnly, repairQueue,
@@ -14773,6 +14921,7 @@ async function runGreenCheckpointInner(
     !diagnosticOnly &&
     repairQueue === null
   ) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:dca9fe396da2c70b5953:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const carried = await applyFrozenRepairCarryAtCut(cfg, deps, candidate);
     if (carried !== candidate) {
       candidate = carried;
@@ -14783,6 +14932,7 @@ async function runGreenCheckpointInner(
   }
 
   if (candidate === lastReady) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c48130d3e9742eb79128:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `${cfg.releaseRef} already at integration HEAD ${candidate.slice(0, 8)} — nothing to checkpoint`,
     );
@@ -14831,6 +14981,7 @@ async function runGreenCheckpointInner(
       repairQueue.repairHead === candidate &&
       frozenRepairHeadOwesVerification(repairQueue);
     if (judgedRed && judgedRed === candidate && frozenHeadUnjudged) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:09bdd626cc5ccc1b671f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `unchanged-since-verdict: ${candidate.slice(0, 8)} carries a judged-red marker but the frozen ` +
           `repair queue has NO verdict at this repair head (its signature was measured at an earlier ` +
@@ -14838,6 +14989,7 @@ async function runGreenCheckpointInner(
           `Judging it so the convergence can record a verdict and advance instead of livelocking.`,
       );
     } else if (judgedRed && judgedRed === candidate) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:97dc9412b4a9ea604e57:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `unchanged-since-verdict: ${candidate.slice(0, 8)} already reached a RED verdict and the tree is ` +
           `byte-identical — skipping materialization and the suite (WI-42350). This is NOT a new red: it is ` +
@@ -14856,6 +15008,7 @@ async function runGreenCheckpointInner(
       };
     }
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:eb269f9afec9b2dfab69:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `unchanged-since-verdict: marker unreadable (${e instanceof Error ? e.message : e}) — judging normally`,
     );
@@ -14866,6 +15019,7 @@ async function runGreenCheckpointInner(
     lastReady &&
     !(await isAncestor(cfg.integrationRoot, lastReady, candidate))
   ) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b8e533e26f993ece1560:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT a descendant of ${cfg.releaseRef} ${lastReady.slice(0, 8)} — refusing`,
     );
@@ -14894,6 +15048,7 @@ async function runGreenCheckpointInner(
         tip: candidateBeforeQuietCut,
       });
       if (splitSourceTestPairs.length > 0) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:4760d7930fc908a4663d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `quiet-cut split-pair suspected: ${splitSourceTestPairs
             .map(
@@ -14904,6 +15059,7 @@ async function runGreenCheckpointInner(
         );
       }
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:e36162da43744f13ff0a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `quiet-cut split-pair detector skipped (${e instanceof Error ? e.message : e})`,
       );
@@ -14917,6 +15073,7 @@ async function runGreenCheckpointInner(
   if (deps.checkDiskHeadroom) {
     let headroom: { ok: boolean; summary: string; blocker?: GatePreconditionBlocker };
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8ca046e83fd50bf19593:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       headroom = await deps.checkDiskHeadroom();
     } catch (e) {
       headroom = {
@@ -14924,6 +15081,7 @@ async function runGreenCheckpointInner(
         summary: `disk headroom probe failed: ${e instanceof Error ? e.message : e}`,
       };
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d22cac87b5d404d3739e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(`disk-headroom preflight: ${headroom.summary}`);
     if (!headroom.ok) {
       // P-022: a wedged copy lock is the same condition as setup's own exit 76, so it takes that
@@ -14953,12 +15111,14 @@ async function runGreenCheckpointInner(
     try {
       admission = await deps.preflightGovernedAdmission();
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:378c1a65fc9e8d702fa8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `governed-admission preflight failed to run (${e instanceof Error ? e.message : e}) — ` +
           "judging anyway; the suite reports its own admission failures",
       );
     }
     if (admission) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:1e4457875f383194454b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(admission.summary);
       if (!admission.ok) {
         return {
@@ -14980,14 +15140,17 @@ async function runGreenCheckpointInner(
   if (deps.checkPromotionTargetAncestry && !opts.noPush && !diagnosticOnly) {
     let ancestry: PromotionTargetAncestryResult | null = null;
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:28189f9ae10ea8e8f2a6:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       ancestry = await deps.checkPromotionTargetAncestry({ ref: cfg.releaseRef, candidate });
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8ef8d1dd4fb1ecda7905:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `promotion-target preflight failed to run (${e instanceof Error ? e.message : e}) — ` +
           "judging anyway; the promotion push stays the final check",
       );
     }
     if (ancestry) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:be95881f5fc2aeb3c57d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(ancestry.summary);
       if (!ancestry.ok) {
         await deps
@@ -15030,11 +15193,13 @@ async function runGreenCheckpointInner(
     await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs: null });
     repairQueueCreatedThisPass = true;
     initialCandidateVerification = true;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:cd29f81d18c24dfaf9ae:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `stable-candidate queue persisted ${candidate.slice(0, 8)} before its first suite`,
     );
   }
 
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6b3818c65e2d3bfb6655:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.log(
     `checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? "none"})`,
   );
@@ -15085,6 +15250,7 @@ async function runGreenCheckpointInner(
   // only instant that question can be asked — our own write destroys the evidence. A loss detected
   // here is announced into the transcript AND persisted to `gate_health.lastLostRun`, so "a run
   // died judging that sha" stops being indistinguishable from "a run is judging that sha".
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:44cf5fef46f69a748de7:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await publishInFlightCandidateMarker(deps, diagnosticOnly, {
     candidate,
     candidateSource,
@@ -15120,10 +15286,12 @@ async function runGreenCheckpointInner(
     if (!deps.ensureMigrationsCurrent) return [];
     const preflightStartedAtMs = Date.now();
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/runCandidateMigrationPreflight:2c8f38e796d0372a6f69:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const migrated = await deps.ensureMigrationsCurrent(
         candidateMigrationInput,
       );
       if (migrated && migrated.applied > 0) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/runCandidateMigrationPreflight:c6799cf0344bc99bdeb5:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/runCandidateMigrationPreflight context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `migration preflight (${stage}): applied ${migrated.applied} pending migration(s) ` +
             `from candidate ${candidate.slice(0, 8)} to the dev PG`,
@@ -15134,6 +15302,7 @@ async function runGreenCheckpointInner(
       // Preserve the existing unknown-state policy: an exception means the
       // schema state is unknown, not affirmatively behind. The later backstop
       // retries after setup and the suite remains the final verdict.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/runCandidateMigrationPreflight:86aaf7c03529baf7b936:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/runCandidateMigrationPreflight context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `migration preflight (${stage}) skipped (${e instanceof Error ? e.message : e})`,
       );
@@ -15147,6 +15316,7 @@ async function runGreenCheckpointInner(
     stage: "pre-materialization" | "post-materialization-backstop",
   ): CheckpointResult => {
     const detail = pending.map((f) => `${f.file}: ${f.error}`).join("; ");
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/pendingMigrationsResult:9d2d9a5725dbd2f79704:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/pendingMigrationsResult context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `migration preflight (${stage}): ${pending.length} migration(s) failed to apply (left pending) — ` +
         `ABORTING this run as INCONCLUSIVE rather than judging ${candidate.slice(0, 8)} against a schema known to be ` +
@@ -15173,11 +15343,14 @@ async function runGreenCheckpointInner(
   // missing, throwing, empty, zero-evidence, or unsafe selector result fails WIDE.
   let setupOptions: CheckpointSetupOptions | undefined;
   if (deps.prepareSource) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:0116fb83765473fad844:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.reportProgress?.("phase:preselecting");
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b48589622094b8056977:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.prepareSource(candidate);
       setupOptions = { preparedSource: true };
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:807a49c8844a92d0ada8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `pre-materialization source preparation failed (${e instanceof Error ? e.message : e}) — ` +
           "falling back to the full setup path",
@@ -15185,10 +15358,12 @@ async function runGreenCheckpointInner(
     }
   }
   if (setupOptions?.preparedSource) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8f02a9e4fc62c2c46ce8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const pendingBeforeMaterialization = await runCandidateMigrationPreflight(
       "pre-materialization",
     );
     if (pendingBeforeMaterialization.length > 0) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6123894b14f1cc8cc962:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return pendingMigrationsResult(
         pendingBeforeMaterialization,
         "pre-materialization",
@@ -15202,6 +15377,7 @@ async function runGreenCheckpointInner(
   ) {
     try {
       const selection = normalizeCheckpointMaterializationSelection(
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b0852a685aa0d88e4e2e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await deps.selectMaterializationClosure({
           candidate,
           base: lastReady,
@@ -15212,17 +15388,20 @@ async function runGreenCheckpointInner(
           preparedSource: true,
           workspaceDirs: selection.workspaceDirs,
         };
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:cfdeb7eb5cfca279515c:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `pre-materialization selection: ${selection.summary}; ` +
             `${selection.affectedWorkspaceDirs.length} affected workspace(s), ` +
             `${selection.workspaceDirs.length} workspace(s) in dependency closure`,
         );
       } else {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:01aa8a9e4b67c22d2466:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           "pre-materialization selection produced no safe positive evidence — falling back to the full dependency generation",
         );
       }
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f49cc7e9e8693ef43700:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `pre-materialization selection failed (${e instanceof Error ? e.message : e}) — ` +
           "falling back to the full dependency generation",
@@ -15235,12 +15414,14 @@ async function runGreenCheckpointInner(
   // pc-heavy's reciprocal --exclusive-all-slots mode, and this protocol-3 phase clamps new
   // callers to slot 0 while that wrapper drains the pre-existing holders.
   writeCheckpointRunPhase(phaseLockDir, "materializing");
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f7ee96c57a136bae9943:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:materializing");
   const stopMaterializationHeartbeat =
     startMaterializationHeartbeat(phaseLockDir);
   let setupIdentity: void | CheckpointSetupIdentity;
   const setupTreeStartedAtMs = Date.now();
   try {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:30c7f59aead71ad9538d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     setupIdentity = await deps.setupTree(candidate, setupOptions);
   } finally {
     stopMaterializationHeartbeat();
@@ -15262,6 +15443,7 @@ async function runGreenCheckpointInner(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
     "suite",
   );
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ac670ddebc1f23ade626:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:suite");
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused
@@ -15293,10 +15475,12 @@ async function runGreenCheckpointInner(
   // preflight means the schema state is UNKNOWN (dev PG unreachable, no answer
   // either way), and unknown is not a reason to stop judging — that path keeps
   // today's behaviour. Only an affirmative `failed.length > 0` is knowledge.
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:4f61acd8717253b6ed17:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const pendingAfterMaterialization = await runCandidateMigrationPreflight(
     "post-materialization-backstop",
   );
   if (pendingAfterMaterialization.length > 0) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ca9b88016df8ddf15ab1:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return pendingMigrationsResult(
       pendingAfterMaterialization,
       "post-materialization-backstop",
@@ -15314,6 +15498,7 @@ async function runGreenCheckpointInner(
       const drift = await deps.checkTreeDrift();
       if (drift && !drift.skipped) {
         if (drift.missing.length > 0) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:43683ee438b3245b422d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `tree-drift preflight: ${drift.missing.length} package(s) required by package-lock.json are MISSING from ` +
               `node_modules in the checkpoint tree: ${drift.missing.join(", ")} — this run will likely fail on an ` +
@@ -15321,17 +15506,20 @@ async function runGreenCheckpointInner(
           );
         }
         if (drift.extraneous.length > 0) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6bbcb6416684b64ba0e4:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `tree-drift preflight: ${drift.extraneous.length} node_modules director${drift.extraneous.length === 1 ? "y is" : "ies are"} ` +
               `extraneous (not in package-lock.json, will be pruned on next install): ${drift.extraneous.join(", ")}`,
           );
         }
       } else if (drift?.skipped) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c92c47d1caec29cde495:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `tree-drift preflight skipped (${drift.error ?? "unknown reason"})`,
         );
       }
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:06e20880fce9798335f7:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `tree-drift preflight failed (${e instanceof Error ? e.message : e})`,
       );
@@ -15381,6 +15569,7 @@ async function runGreenCheckpointInner(
     });
     earlyTypecheckBase = early.base;
     if (early.source === "upstream-integration") {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:55e407fbcac9b4561408:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `early changed-file typecheck preflight: base=${early.base?.slice(0, 12) ?? "null"} ` +
           `source=upstream-integration (D-064: fork pot judges only its own delta; lastReady ` +
@@ -15391,6 +15580,7 @@ async function runGreenCheckpointInner(
     const elapsed = () =>
       `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
     if (!earlyTypecheckBase) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:de16eeb5aee4af30413b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         "early changed-file typecheck preflight: skipped (no prior green pin to diff from) — full gate retained",
       );
@@ -15398,6 +15588,7 @@ async function runGreenCheckpointInner(
       try {
         const resolved = await deps.changedFilesForRange(earlyTypecheckBase, candidate);
         if (resolved === null) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:12a2553bb6694692bd64:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `early changed-file typecheck preflight: skipped after ${elapsed()} (changed-file resolution unavailable) — full gate retained`,
           );
@@ -15410,12 +15601,14 @@ async function runGreenCheckpointInner(
             ),
           ].sort();
           if (files.length === 0) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:30d3c161baa94afb4b2b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
                 "(the committed diff contained no changed files) — full gate retained",
             );
           } else {
             const preflight =
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f15d003b511a7f56ce28:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               await deps.runChangedFileTypecheckPreflight(files, {
                 from: earlyTypecheckBase,
                 to: candidate,
@@ -15448,6 +15641,7 @@ async function runGreenCheckpointInner(
                   EARLY_TYPECHECK_DIAGNOSTIC_MAX,
                 ),
               };
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ff2974db3929df6ebbc4:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               deps.log(
                 `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${checkedFiles.length} file(s) ` +
                   `(${files.length} total changed file(s)) — ` +
@@ -15456,6 +15650,7 @@ async function runGreenCheckpointInner(
                     : "rejecting the repair head before its suite; full post-suite checks remain required for every later passing candidate"),
               );
               if (preflight.summary.trim())
+                // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:1a62976445f21dfa7981:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                 deps.log(
                   `early changed-file typecheck output:\n${preflight.summary}`,
                 );
@@ -15489,6 +15684,7 @@ async function runGreenCheckpointInner(
                 summary: earlySummary,
               });
               if (earlyLogPath)
+                // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c9f1d68770ae940619ef:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                 deps.log(`early typecheck evidence → ${earlyLogPath}`);
               earlyPreflightFailure = {
                 green: false,
@@ -15502,6 +15698,7 @@ async function runGreenCheckpointInner(
                 ...(earlyLogPath ? { logPath: earlyLogPath } : {}),
               };
             } else {
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:2d41c60a7a710ddd08a0:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               deps.log(
                 `early changed-file typecheck preflight: ${preflight.status.toUpperCase()} in ${elapsed()} across ` +
                   `${checkedFiles.length} file(s) (${files.length} total changed file(s)) — ` +
@@ -15511,6 +15708,7 @@ async function runGreenCheckpointInner(
           }
         }
       } catch (e) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5f32235836261da6d88c:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `early changed-file typecheck preflight: errored after ${elapsed()} ` +
             `(${e instanceof Error ? e.message : e}) — falling back to the unchanged full gate`,
@@ -15536,6 +15734,7 @@ async function runGreenCheckpointInner(
     earlyPreflightFailure !== null &&
     deferEarlyFailureInventory;
   if (roundOneMeasuresSuite)
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:9c630b9738c07273299d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       "early changed-file typecheck failed on the candidate's own round (not a repair head) — " +
         "P-016: running the affected-test sweep anyway so round 1 measures the full failing set",
@@ -15579,6 +15778,7 @@ async function runGreenCheckpointInner(
       // P-005: the culprit is MEASURED, not guessed — the dominant phase clause replaces the
       // old fixed "suspect setup-release-checkout.sh" text, which was right only while that
       // script was the sole unbounded call on this path.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:e3573537c61bf06b604b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `⚠ ${line} — this exceeds the ${Math.round(CANDIDATE_SELECTION_TO_SUITE_WARN_MS / 60_000)}m ` +
           `expected setup budget, so the verdict about to be produced describes a STALE tree. ` +
@@ -15587,6 +15787,7 @@ async function runGreenCheckpointInner(
           `not a bad candidate choice.`,
       );
     } else {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:71d6dd73a3bc5afba33f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(line);
     }
   }
@@ -15598,6 +15799,7 @@ async function runGreenCheckpointInner(
   // wiring is directly testable (the P-009 augmentWithRepairTickLegs pattern).
   const suiteSelectionBase: string | null = suiteSkipped
     ? lastReady
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:9532dce2cdeca0d73df8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : await resolveSuiteSelectionBaseForRun(deps, cfg.checkpointRoot, {
         lastReady,
         judgedHead: candidate,
@@ -15607,6 +15809,7 @@ async function runGreenCheckpointInner(
   const candidateSuiteStartedAtMs = Date.now();
   const suiteRun = suiteSkipped
     ? null
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3c2a9b54790b98fcc78a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : await deps.runGreen(cfg.checkpointRoot, suiteSelectionBase, {
       candidate,
       headAtStart: candidate,
@@ -15700,6 +15903,7 @@ async function runGreenCheckpointInner(
       : undefined;
   if (ratchetShadow?.composedProof?.comparison) {
     const c = ratchetShadow.composedProof.comparison;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:807887d73313cf7f4c3f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `RATCHET_SHADOW composed-proof-vs-full agree=${c.agree} composedGreen=${c.composedGreen} ` +
         `fullGreen=${c.fullGreen} missed=${c.missedByComposed.length} extra=${c.extraInComposed.length}`,
@@ -15728,6 +15932,7 @@ async function runGreenCheckpointInner(
     ...(redLegsAtR1 ? { redLegsAtR1 } : {}),
   };
   if (redLegsAtR1) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b96e7abece2b5b3402c0:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `GATE_RED_LEGS_AT_R1 candidate=${redLegsAtR1.candidate.slice(0, 12)} source=${redLegsAtR1.source} ` +
         `legs=${redLegsAtR1.legs.length > 0 ? redLegsAtR1.legs.join(",") : "none"}`,
@@ -15762,9 +15967,11 @@ async function runGreenCheckpointInner(
     reason: GatePromotionReason,
     advancedTo?: string | null,
   ) =>
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/stampPromotion:661af5fdc0ba50ee1785:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/stampPromotion context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     stampGatePromotion(
       logPath,
       { candidate, green, promoted, reason, advancedTo },
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/stampPromotion/<callback>:905aa744a96e046fa6b9:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/stampPromotion/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       (s) => deps.log(s),
     );
 
@@ -15813,10 +16020,12 @@ async function runGreenCheckpointInner(
       )
     ) {
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8cfe7884036c050766e4:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const tip = await deps.resolveTip();
         if (tip && tip !== candidate) {
           const [changedPathsSinceCandidate, affected] = await Promise.all([
             deps.changedFilesForRange(candidate, tip),
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5352dea63c51b25f669f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.affectedTestsForRange(candidate, tip),
           ]);
           const plan = planTargetedReVerdict({
@@ -15831,8 +16040,10 @@ async function runGreenCheckpointInner(
             incrementalChainDepth: 0,
             msSinceLastFullSuiteVerdict: 0,
           });
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b7756109ef389c14750a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(plan.summary);
           if (plan.admitted) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f178b53771083b9d5bf1:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const targetedRun = await deps.runTestsAtRef(
               plan.verdictSha,
               plan.reRunFiles,
@@ -15846,12 +16057,14 @@ async function runGreenCheckpointInner(
                 passed: targetedRun.pass && postSuite.pass,
               }),
             );
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8cfe7884036c050766e4:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const tipAtCompletion = await deps.resolveTip().catch(() => null);
             const outcome = assessTargetedReVerdict({
               plan,
               results,
               tipAtCompletion,
             });
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b1ad02d4b4a4c2426cd0:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(`${outcome.summary} Post-suite: ${postSuite.summary}`);
             if (outcome.upgraded) {
               candidate = outcome.verdictSha;
@@ -15864,12 +16077,14 @@ async function runGreenCheckpointInner(
           }
         }
       } catch (e) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:06b4c70f9525078685df:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `targeted-reverdict: execution unavailable (${e instanceof Error ? e.message : e}) — preserving candidate-fossil hold`,
         );
       }
     }
     if (green && targetedUpgradeSummary) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:2c899d4c05098b97ba74:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `candidate-fossil rescued by targeted re-verdict; continuing the normal green publication path at ${candidate.slice(0, 8)}`,
       );
@@ -15881,7 +16096,9 @@ async function runGreenCheckpointInner(
         `the candidate was already ${ageHours}h old when the suite result was ready to publish ` +
         `(threshold ${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m). ` +
         `No failing-test signature was published; the next run must re-judge a fresh tip.`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8d5bbc022603db751415:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(fossilSummary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:26cf2d5edea0f32b6e7e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "candidate-fossil");
       return {
         advanced: false,
@@ -15909,6 +16126,7 @@ async function runGreenCheckpointInner(
     const diagnosticSummary =
       `${infraFault ? `green-checkpoint ABORTED its verdict on ${candidate.slice(0, 8)} — ${infraFault.note}` : summary}` +
       `\n\nCandidate-pinned diagnostic: suite/log/pipeline evidence retained; promotion and every live-gate side effect suppressed.`;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3cdaa257397e51df22fe:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     stampPromotion(false, "diagnostic-only");
     return {
       advanced: false,
@@ -15957,7 +16175,9 @@ async function runGreenCheckpointInner(
   // plus a best-effort pending state write. The pending write carries this run's identity so the
   // terminal recorder can replace it without counting ONE red twice; if the process dies here,
   // gate_health still reflects the known suite result instead of the previous run.
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:98337d3e3294dc259675:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   stampPromotion(false, "decision-pending");
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ce6e8c2d48ebef9390cc:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await deps
     .recordPendingVerdict?.({
       advanced: false,
@@ -15978,11 +16198,14 @@ async function runGreenCheckpointInner(
       ...(logPath ? { logPath } : {}),
     })
     .catch((e) =>
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:99a541ca137016eef499:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `${orchestratorStdoutTag()} pending verdict record failed (promotion continues): ${e instanceof Error ? e.message : e}`,
       ),
     );
   const logPartialGreenGate = (line: string) =>
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/logPartialGreenGate:470606301239d86cd728:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/logPartialGreenGate context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/logPartialGreenGate/<callback>:905aa744a96e046fa6b9:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/logPartialGreenGate/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     appendPartialGreenGateLine(logPath, line, (s) => deps.log(s));
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
   // affected suite went red under the gate's 8-fork load, but every originally-failing
@@ -15991,6 +16214,7 @@ async function runGreenCheckpointInner(
   // below so a flake-absorbed advance is auditable (and the file is on record for the
   // P-009 chronic-flake ledger / quarantine nudge), without holding the whole fleet's gate.
   if (green && flakeSuspects?.length) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5b758296a9a8f392c0a1:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `candidate ${candidate.slice(0, 8)} is green (load-flake absorbed: ${flakeSuspects.join(", ")} — failed under load, passed in isolation)`,
     );
@@ -16003,6 +16227,7 @@ async function runGreenCheckpointInner(
     const passedOnRerun = (retriedTests ?? []).filter(
       (t) => t.outcome === "passed-on-rerun",
     );
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:60bb61d32c2a43496eb3:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `candidate ${candidate.slice(0, 8)} is green (${passedOnRerun.length} test(s) passed on RE-RUN, not first pass) — ` +
         `a flake or a real intermittent bug is live and would otherwise be invisible: ` +
@@ -16042,6 +16267,7 @@ async function runGreenCheckpointInner(
   }, suiteDecisionInput);
   roundObservations.suiteVerdictReplay.decisions = decisionTrace;
   if (!green && !hygieneSplit?.promote) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:fc004bb2774758e53178:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
     );
@@ -16068,7 +16294,9 @@ async function runGreenCheckpointInner(
         `green-checkpoint ABORTED its verdict on ${candidate.slice(0, 8)} — ${infraFault.note} ` +
         `The suite reported ${failingTests?.length ?? 0} failing signature(s); they are NOT reported as ` +
         `failingTests and must not be triaged. The next run judges normally once the host fault clears.`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:9d7af121c6220418ae26:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(infraSummary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6929e1614037a09c834b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "infra-inconclusive");
       return {
         advanced: false,
@@ -16171,6 +16399,7 @@ async function runGreenCheckpointInner(
         // row's head. The queue reducer still refuses the receipt unless the admission chain
         // and the failure frontier are lossless, and the full gate stays the promotion proof.
         const fullGateSuiteRan = suiteMeasured;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:fadc6bd25c9562455d3c:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
@@ -16209,6 +16438,7 @@ async function runGreenCheckpointInner(
           "full-gate-red",
         );
         if (supersededBy) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:928261476a6a8fd3afef:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `FROZEN_REPAIR_VERDICT_SUPERSEDED: full-gate red at ${candidate.slice(0, 8)} recorded as ` +
               `round ${recordedRoundAt(repairQueue, candidate)} at that head WITHOUT moving the row's head — ` +
@@ -16239,6 +16469,7 @@ async function runGreenCheckpointInner(
         // pre-D-014 fallback for stubs and non-recording runs that expose no transition hook.
         const snapshotHead = repairQueue.repairHead;
         if (deps.transitionFrozenRepairQueue) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f9b4ab957adfcf0ea5c7:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           repairQueue = await commitFrozenRepairQueueTransition(
             deps,
             repairQueue,
@@ -16250,6 +16481,7 @@ async function runGreenCheckpointInner(
             "candidate-red",
           );
           if (repairQueue.repairHead !== snapshotHead) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d6a6a16c187caff8f93d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `frozen candidate ${repairQueue.candidate.slice(0, 8)} red transition applied to the fresh ` +
                 `row: preserving converged repairHead ${repairQueue.repairHead.slice(0, 8)} ` +
@@ -16267,6 +16499,7 @@ async function runGreenCheckpointInner(
               ? freshQueue
               : repairQueue;
           if (queueForRedTransition !== repairQueue) {
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a0dcaef438ccc3cda388:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               `frozen candidate ${repairQueue.candidate.slice(0, 8)} repairHead re-read before red ` +
                 `transition: preserving converged repairHead ${queueForRedTransition.repairHead.slice(0, 8)} ` +
@@ -16289,6 +16522,7 @@ async function runGreenCheckpointInner(
         // holds that policy; an absent dep hook reads as enabled, so this is behaviour-
         // identical unless an owner has explicitly turned the default off.
         const cycleEntry = recordedGateDecision('frozen-cycle', decideFrozenConvergenceCycleEntry, [{
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3c93d70d49d94d532e89:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           flagEnabled: (await deps.freezeAndConvergeEnabled?.()) ?? true,
           hasOpenQueue: false,
         }], decisionTrace);
@@ -16296,6 +16530,7 @@ async function runGreenCheckpointInner(
           // The owner turned freeze-and-converge off: this red does NOT freeze the
           // candidate, and the gate re-cuts at tip on the next tick. Announced rather than
           // silent — a suppressed cycle looks exactly like a gate that forgot to open one.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a6d9af3ed5dff143cf9a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `frozen convergence cycle SUPPRESSED for ${candidate.slice(0, 8)} — FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set). The red stands and the candidate is NOT frozen; the next tick re-cuts at tip.`,
           );
@@ -16328,6 +16563,7 @@ async function runGreenCheckpointInner(
       if (deferNewRepairDispatch && repairQueue && !repairQueueRedPersisted) {
         // Compatibility callers create the queue only after the suite. Persist its red
         // transition before allowing the moving-tip rescue to inspect the failure.
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ca4d3d71bc245869267b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
@@ -16353,6 +16589,7 @@ async function runGreenCheckpointInner(
         repairQueue &&
         repairQueue.phase !== "awaiting-fixer"
       ) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f7c8a30b4c09d6574c8d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `frozen candidate ${repairQueue.candidate.slice(0, 8)} red recorded; queue is ` +
             `${repairQueue.phase} at repairHead ${repairQueue.repairHead.slice(0, 8)}, so no fixer ` +
@@ -16370,6 +16607,7 @@ async function runGreenCheckpointInner(
           // Reserve the durable candidate row before the external fixer launch. The candidate
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
           // compatibility first-red path atomic for callers that learned about C only here.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8e45ddc1cb9b154204e6:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const dispatch = await dispatchFrozenRepair(
             repairQueue,
             true,
@@ -16379,6 +16617,7 @@ async function runGreenCheckpointInner(
           if (dispatch.capacityHold) {
             // WI-606293: the queue row is written and the red still stands — we simply do
             // not launch into an exhausted pool. No attempt is spent; the next tick retries.
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:77d58c05b34cdece90e4:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             deps.log(
               frozenRepairCapacityHoldSummary(
                 repairQueue.candidate,
@@ -16387,6 +16626,7 @@ async function runGreenCheckpointInner(
             );
           } else if (dispatch.reservationBlocked) {
             repairQueue =
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:592b50849f559303dbce:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               (await repairReservationHold(repairQueue, "new queue")) ??
               repairQueue;
             const reservation = repairQueue.dispatchReservation;
@@ -16394,6 +16634,7 @@ async function runGreenCheckpointInner(
               ? `frozen repair queue ${repairQueue.candidate.slice(0, 8)} is reserved by another checkpoint until ${reservation.expiresAtMs}; no second fixer launch was attempted`
               : `frozen repair queue ${repairQueue.candidate.slice(0, 8)} could not reserve its dispatch window; no fixer launch was attempted`;
             const redSummary = `${verdictSummary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:26ceb38485229389f69f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             stampPromotion(false, "not-green");
             const terminalResult: CheckpointResult = {
               advanced: false,
@@ -16418,6 +16659,7 @@ async function runGreenCheckpointInner(
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
               ...roundObservations,
             };
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:dbde257065ea3d9a1891:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             await emitTerminalRed(terminalResult);
             return terminalResult;
           }
@@ -16429,6 +16671,7 @@ async function runGreenCheckpointInner(
           await deps.writeFrozenRepairQueue(repairQueue, {
             expectedUpdatedAtMs: repairQueue.updatedAtMs,
           });
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ce9db3a5153a72100eff:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const dispatch = await dispatchFrozenRepair(
             repairQueue,
             false,
@@ -16469,6 +16712,7 @@ async function runGreenCheckpointInner(
           `\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
           `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : `dispatch returned no spawn${frozenRepairNoSpawnDetail(dispatchSkip)} and will retry`} ` +
           `from head ${repairQueue.repairHead.slice(0, 8)}.`;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:65cdfd9674dfaae73e15:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red persisted and fixer dispatch resolved; ` +
             "continuing to moving-tip re-triage and prefix salvage",
@@ -16478,6 +16722,7 @@ async function runGreenCheckpointInner(
         // switch OFF there is no queue at all, and this branch would otherwise announce a
         // "red transition persisted" that never happened. The suppression path logged its
         // own line above; a suppressed cycle must not also claim a queue exists.
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:49c8525a89b082575984:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red transition persisted; ` +
             "deferring first fixer dispatch until moving-tip re-triage",
@@ -16511,11 +16756,13 @@ async function runGreenCheckpointInner(
       candidate,
       failingTests ?? [],
     ).catch((e: unknown) => {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:4664584725d2d411693b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`lineage check skipped (${e instanceof Error ? e.message : e})`);
       return null;
     });
     if (lineage) {
       lineageNote = `\n\n${formatGateLineageLine(lineage)}`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d362f302749ff160c52e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `lineage: candidate ${lineage.candidate.slice(0, 8)} is ${lineage.commitsBehind} commit(s) behind tip ${lineage.tip.slice(0, 8)}` +
           (lineage.failingFilesChangedInRange.length
@@ -16578,6 +16825,7 @@ async function runGreenCheckpointInner(
         const stats = await deps.flakeLookup(failingTests);
         historicalFlakeNote = historicalFlakeAnnotations(stats, failingTests);
       } catch (e) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:bc282e23e552107c10ae:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `historical-flake-lookup skipped (${e instanceof Error ? e.message : e})`,
         );
@@ -16687,6 +16935,7 @@ async function runGreenCheckpointInner(
         /* best-effort — the gate verdict must not depend on logging */
       }
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:24e1e7c836818be4be0e:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps
       .broadcast(
         `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${pipelineRef(pipelineName(cfg.integrationRoot), cfg.releaseRef)}\` held at ${lastReady?.slice(0, 8) ?? "unset"}`,
@@ -16753,12 +17002,14 @@ async function runGreenCheckpointInner(
         `green-checkpoint:inconclusive:${pipeline}`,
       ];
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c8fb9fa1f1218f9f24b7:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await deps.emitEvent?.({
           key: "green-checkpoint:red",
           summary: redSummary,
           payload,
           cancelSiblingKeysFor,
         });
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:929f8a5d19d766bee3ae:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await deps.emitEvent?.({
           key: `green-checkpoint:red:${pipeline}`,
           summary: redSummary,
@@ -16766,6 +17017,7 @@ async function runGreenCheckpointInner(
           cancelSiblingKeysFor,
         });
       } catch (e) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:227e6918d4ce2d9e48c3:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `warn: green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`,
         );
@@ -16778,6 +17030,7 @@ async function runGreenCheckpointInner(
         `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${verdictSummary}${lineageNote}${failingSetNote}${alreadyFixedNote}${residueNote}${historicalFlakeNote}`,
       )
       .catch(() => {});
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:40b1180611bd50c11f24:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await broadcastHeldGateAlert(deps, {
       releaseRef: cfg.releaseRef,
       lastReady,
@@ -16816,6 +17069,7 @@ async function runGreenCheckpointInner(
       checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
       "delivering",
     );
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:605ecacb491be5e2c068:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.reportProgress?.("phase:delivering");
     // P-024 (D-003 / D-011, WI-2144110): the sha this rescue re-runs at — and REFIRES on when the
     // red proves stale — is resolved through the frozen lineage whenever a repair queue row exists
@@ -16838,6 +17092,7 @@ async function runGreenCheckpointInner(
           isAncestor(cfg.integrationRoot, base, ref),
       });
     const retriageTarget = await resolveRetriageRef();
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3177a7eefee5d5a93215:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(describeRetriageTarget(retriageTarget));
     const tip = retriageTarget.ref;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
@@ -16873,6 +17128,7 @@ async function runGreenCheckpointInner(
         ]
           .filter((part): part is string => part !== null)
           .join(" + ");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c315844fff63a9ed0df8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `red at ${candidate.slice(0, 8)}; re-running ${scope} at tip ${tip.slice(0, 8)}`,
         );
@@ -16882,9 +17138,11 @@ async function runGreenCheckpointInner(
         // failure would trade the other half's diagnostic for nothing the verdict consumes.
         const fileRun =
           needFiles && deps.runTestsAtRef
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:591b4416575845666435:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             ? await deps
                 .runTestsAtRef(tip, failingFiles)
                 .catch((e: unknown) => {
+                  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:18c5350bad8aecc46483:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                   deps.log(
                     `tip re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`,
                   );
@@ -16893,7 +17151,9 @@ async function runGreenCheckpointInner(
             : undefined;
         const gateRun =
           needGates && deps.runGateAtRef
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:5e5e997764bba17f088d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             ? await deps.runGateAtRef(tip, rescueGates).catch((e: unknown) => {
+                // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:4dc33d468967342e66df:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                 deps.log(
                   `tip gate re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`,
                 );
@@ -16989,6 +17249,7 @@ async function runGreenCheckpointInner(
         const ranSummary = [fileRun?.summary, gateRun?.summary]
           .filter(Boolean)
           .join("; ");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d5f803b67f31a31cdecb:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `re-triage: ${verdict.classification} — ${verdict.detail}${ranSummary ? ` (${ranSummary})` : ""}`,
         );
@@ -16997,6 +17258,7 @@ async function runGreenCheckpointInner(
         // holding the pin on a failure that no longer exists — bounded by the refire cap
         // so a genuinely-broken tip still converges to a held gate and a human.
         if (verdict.autoRefire) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3c334b1dea6e16395d65:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await deps
             .broadcast(
               `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${scope} pass at tip)`,
@@ -17041,12 +17303,14 @@ async function runGreenCheckpointInner(
           // WI-37490: record THIS pass's own (about-to-be-superseded) verdict before recursing
           // — if the refire below dies partway through, this completed pass's verdict survives
           // instead of gate_health freezing on whatever it held before this run even started.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:51c847b9490ba0c41223:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await deps
             .recordVerdict?.(buildNotGreenResult(retriage))
             .catch(() => {});
           // EI-20014356905761236: this pass is ABANDONING `candidate` for `tip`. Say so in this
           // pass's own log — it is the one artifact naming the discarded candidate, and "which
           // sha was this run judging" is the question the marker had to be invented to answer.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6a5dd2cdd382b0072654:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           stampPromotion(false, "superseded-by-refire");
           return runGreenCheckpoint(cfg, deps, {
             ...opts,
@@ -17086,6 +17350,7 @@ async function runGreenCheckpointInner(
           hasGateRunner: Boolean(deps.runGateAtRef),
         }),
       };
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:248768e174048db1cecd:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`re-triage: ${retriage.classification} — ${retriage.detail}`);
     }
 
@@ -17160,14 +17425,17 @@ async function runGreenCheckpointInner(
     const staleRed = retriage?.classification === "stale-candidate";
     const partialGreenEnabled = partialGreenGateEnabledFromEnv();
     if (staleRed) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:595d40025c9e247de0ac:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         "partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom",
       );
     } else if (!lastReady) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:2403f4b9865e8e280747:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: skipped — no ${cfg.releaseRef} base to salvage a prefix from (lastReady unset)`,
       );
     } else if (!partialGreenEnabled) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:40c0716c7119d1f28eb5:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         "partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0",
       );
@@ -17227,6 +17495,7 @@ async function runGreenCheckpointInner(
     const salvageOutOfTime =
       Date.now() + salvageCostEstimateMs > salvageDeadlineMs;
     if (salvageOutOfTime && lastReady && !staleRed && partialGreenEnabled) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:7469b003c98a1c402c73:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: skipped — not enough run budget left for the confirm suite ` +
           `(~${Math.round(salvageCostEstimateMs / 60_000)}m estimated, ` +
@@ -17235,6 +17504,7 @@ async function runGreenCheckpointInner(
       );
     }
     if (lastReady && !staleRed && partialGreenEnabled && !salvageOutOfTime) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:832a0f64f79d6bd231e4:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       logPartialGreenGate(
         `partial-green-gate: attempting longest-green-prefix salvage between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)}`,
       );
@@ -17257,6 +17527,7 @@ async function runGreenCheckpointInner(
         },
       ).catch((e) => {
         salvageErrored = true;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:1cc4e473fa5434c5caa9:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         logPartialGreenGate(
           `partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`,
         );
@@ -17273,9 +17544,11 @@ async function runGreenCheckpointInner(
       // never-changing judgment target on this code path) is unaffected — only the checkout
       // an external probe reads drifted. Restore it before any further externally-observable
       // state (the fallthrough hold-result below, or a caller re-probing this tree).
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:229398b061e61ff5f07d:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps
         .setupTree(candidate)
         .catch((e) =>
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:db4e55ab0586e4c45aa1:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(
             `warn: restore checkpoint tree to ${candidate.slice(0, 8)} after prefix-salvage: ${e}`,
           ),
@@ -17283,6 +17556,7 @@ async function runGreenCheckpointInner(
       if (partial) {
         // EI-20014356905761236: a prefix salvage DID promote — `main` moved, just not to this
         // (red) tip. Without this the log's `green=false` reads as "nothing shipped".
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:329312afce92afedafcf:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         stampPromotion(partial.advanced, partial.reason, partial.advancedTo);
         return {
           ...partial,
@@ -17294,6 +17568,7 @@ async function runGreenCheckpointInner(
       // found no green prefix — an entirely different operator situation from "it never ran",
       // and previously indistinguishable from it in the log.
       if (!salvageErrored) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d4428358996489dd8f78:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         logPartialGreenGate(
           `partial-green-gate: no salvageable green prefix between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)} — holding ${cfg.releaseRef}`,
         );
@@ -17308,6 +17583,7 @@ async function runGreenCheckpointInner(
     let redTailExpired = false;
     await awaitBounded(
       (async () => {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:4384801af757c1faf147:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const staleness = await deps.deployStaleness?.().catch(() => null);
         if (!staleness || redTailExpired) return;
         const verdict = evaluateDeployStaleness(
@@ -17315,6 +17591,7 @@ async function runGreenCheckpointInner(
           deployStalenessThresholdsFromEnv(),
         );
         if (verdict.alarm) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:14bc968e38eccaf4578a:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await deps
             .broadcast(verdict.message.split("\n")[0], verdict.message)
             .catch(() => {});
@@ -17332,10 +17609,12 @@ async function runGreenCheckpointInner(
       deps.log,
       () => {
         redTailExpired = true;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:0cdcbd5585fcb6e3260b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log("red-tail advisory exceeded 8000ms — finalizing the known red without waiting for notifications");
       },
     );
 
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:26ceb38485229389f69f:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     stampPromotion(false, "not-green");
     // WI-42350 — the ORDINARY terminal red exit. This is the common path (the frozen-repair
     // early resolution above is the exception), so the marker must be stamped here or the
@@ -17381,6 +17660,7 @@ async function runGreenCheckpointInner(
   // log both exist because a qualified green that logs like a clean one trains everyone to
   // read "green" as "everything passed". A hygiene-promoted green is exactly that hazard.
   if (hygieneSplit?.promote && green === false) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:a8dbb53447b1dd0765d3:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `candidate ${candidate.slice(0, 8)} advanced with HYGIENE DEBT — the suite was RED and every ` +
         `failure was a hygiene/drift guard, so no product-correctness test failed: ` +
@@ -17422,12 +17702,14 @@ async function runGreenCheckpointInner(
       `green-checkpoint:inconclusive:${pipeline}`,
     ];
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitHeldVerdict:f5c909c638a2b289bea6:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitHeldVerdict context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: "green-checkpoint:held",
         summary: heldSummary,
         payload,
         cancelSiblingKeysFor,
       });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitHeldVerdict:2f4458ad8db7ef7d8dd3:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitHeldVerdict context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: `green-checkpoint:held:${pipeline}`,
         summary: heldSummary,
@@ -17435,6 +17717,7 @@ async function runGreenCheckpointInner(
         cancelSiblingKeysFor,
       });
     } catch (error) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/emitHeldVerdict:2f83d16a30ef8e1c92ce:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/emitHeldVerdict context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `warn: green-checkpoint:held emit failed: ${error instanceof Error ? error.message : error}`,
       );
@@ -17446,11 +17729,14 @@ async function runGreenCheckpointInner(
   // runtime. Default-WARN (surface + still advance); BLOCK only when the owner armed
   // block-mode. Flag-gated + fail-soft (a no-op `pass` unless enabled), so the default
   // deploy path is unchanged until the owner opts in.
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d6fd690c6bc6747f388e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const perf = await deps.perfGate?.(candidate).catch(() => undefined);
   if (perf?.replay) decisionTrace.push(perf.replay);
   const perfHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [perf?.action ?? null], decisionTrace);
   if (perf && perf.action !== "pass") {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:09df1eca1f7befd778cc:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(perf.summary);
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:ac38fa3567f9f1dec811:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.broadcast(perf.summary).catch(() => {});
     if (perfHeld) {
       await deps
@@ -17459,7 +17745,9 @@ async function runGreenCheckpointInner(
           perf.summary,
         )
         .catch(() => {});
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f7956daa78ef4021479f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await emitHeldVerdict("perf-held", perf.summary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:2e256aabc0527b878744:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "perf-held");
       return {
         advanced: false,
@@ -17525,10 +17813,13 @@ async function runGreenCheckpointInner(
     // Measured again ⇒ the detector recovered. Narrow on purpose: a stub that
     // reports no verdictStatus tells us nothing, and "nothing" must not be read
     // as recovery. Only a positively-measured verdict closes the alert.
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3fba6beb5fcd7c8bbf15:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.clearDetectorEscalation?.().catch(() => {});
   }
   if (desktopPerf && desktopPerf.action !== "pass") {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:0f4f7e1b8a7d4eb96854:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(desktopPerf.summary);
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:51229a39c29b6b24395e:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.broadcast(desktopPerf.summary).catch(() => {});
     if (desktopPerfHeld) {
       // The summary distinguishes an invariant breach from a timing regression;
@@ -17543,7 +17834,9 @@ async function runGreenCheckpointInner(
           desktopPerf.summary,
         )
         .catch(() => {});
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:2927624bc906b308c353:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await emitHeldVerdict("desktop-perf-held", desktopPerf.summary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:f5acc3066c6e7a9019b8:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "desktop-perf-held");
       return {
         advanced: false,
@@ -17570,7 +17863,9 @@ async function runGreenCheckpointInner(
   if (delta?.replay) decisionTrace.push(delta.replay);
   const deltaHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [delta?.action ?? null], decisionTrace);
   if (delta && delta.action !== "pass") {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b093ada9bb36df8dd1be:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(delta.summary);
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:fd116b7b391cc1280a22:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.broadcast(delta.summary).catch(() => {});
     if (deltaHeld) {
       await deps
@@ -17579,7 +17874,9 @@ async function runGreenCheckpointInner(
           delta.summary,
         )
         .catch(() => {});
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8e78d69caa11992905bd:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await emitHeldVerdict("delta-held", delta.summary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:53b36caf5621ad38f3ca:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "delta-held");
       return {
         advanced: false,
@@ -17606,7 +17903,9 @@ async function runGreenCheckpointInner(
   if (cupboardHygiene?.replay) decisionTrace.push(cupboardHygiene.replay);
   const cupboardHeld = recordedGateDecision('post-gate-action', gateActionBlocks, [cupboardHygiene?.action ?? null], decisionTrace);
   if (cupboardHygiene && cupboardHygiene.action !== "pass") {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:16e93dbe5920b36c1833:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(cupboardHygiene.summary);
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:56784a6291e674960fd4:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await deps.broadcast(cupboardHygiene.summary).catch(() => {});
     if (cupboardHeld) {
       await deps
@@ -17615,7 +17914,9 @@ async function runGreenCheckpointInner(
           cupboardHygiene.summary,
         )
         .catch(() => {});
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:c387589740fd71091d5a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await emitHeldVerdict("cupboard-hygiene-held", cupboardHygiene.summary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:34ae28be3b9815c19d23:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "cupboard-hygiene-held");
       return {
         advanced: false,
@@ -17651,6 +17952,7 @@ async function runGreenCheckpointInner(
     // suite, this green is SUPERSEDED: the row keeps the newer head unjudged (so the promotion
     // proof below — judged sha == repairHead — refuses, fail-closed) and nothing is overwritten.
     let greenSupersededBy = null as FrozenCandidateRepairQueue | null;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:8f6703ede1535ac51be9:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     repairQueue = await commitFrozenRepairQueueTransition(
       deps,
       repairQueue,
@@ -17670,6 +17972,7 @@ async function runGreenCheckpointInner(
       "repair-head-green",
     );
     if (greenSupersededBy) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:83c662c3a9f3c40b8819:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `FROZEN_REPAIR_VERDICT_SUPERSEDED: green at ${candidate.slice(0, 8)} not recorded — an ` +
           `admission advanced repairHead to ${greenSupersededBy.repairHead.slice(0, 8)} while the ` +
@@ -17704,7 +18007,9 @@ async function runGreenCheckpointInner(
         `frozen repair ${candidate.slice(0, 8)} passed the full canonical gate but may not ` +
         `advance ${cfg.releaseRef}: ${promotion.summary} [${promotion.code}]. The ` +
         `ready-to-promote queue is kept and no moving tip may be selected`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b42e68c8af92d2618f7f:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(refusalSummary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:94b6a0d403ee338f5189:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "repair-in-progress");
       return {
         advanced: false,
@@ -17720,6 +18025,7 @@ async function runGreenCheckpointInner(
         ...roundObservations,
       };
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:33a6717b4d188ad04d66:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `frozen repair ${candidate.slice(0, 8)} may advance ${cfg.releaseRef}: ${promotion.summary}`,
     );
@@ -17728,6 +18034,7 @@ async function runGreenCheckpointInner(
     if (!opts.noPush) {
       await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady).catch(
         (error: unknown) => {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:86be48cefd4a48641770:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           stampPromotion(false, "push-failed");
           throw error;
         },
@@ -17736,6 +18043,7 @@ async function runGreenCheckpointInner(
     repairPromotionAdvance = await deps
       .advance(candidate)
       .catch((error: unknown) => {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:44cb8f21ebcb60937a2a:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         stampPromotion(false, "advance-failed");
         throw error;
       });
@@ -17754,7 +18062,9 @@ async function runGreenCheckpointInner(
         `frozen repair ${candidate.slice(0, 8)} passed the full gate but ${cfg.releaseRef} ` +
         `did not advance (${adv.reason}); retaining the ready-to-promote queue and refusing ` +
         `to fold or clear the lineage`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:b42e68c8af92d2618f7f:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(refusalSummary);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:94b6a0d403ee338f5189:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       stampPromotion(false, "repair-in-progress");
       return withRepairIdentity({
         advanced: false,
@@ -17784,6 +18094,7 @@ async function runGreenCheckpointInner(
           summary: `staging-lineage absorption threw: ${error instanceof Error ? error.message : error}`,
         };
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:0423fbe237dff83ee61b:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`P-008 post-promotion staging bridge: ${absorption.summary}`);
       if (absorption.ok) {
         try {
@@ -17796,12 +18107,14 @@ async function runGreenCheckpointInner(
             `Staging now descends from the promoted lineage, but clearing the durable queue ` +
             `failed (${error instanceof Error ? error.message : error}); the ready-to-promote ` +
             `row remains as an idempotent retry marker.`;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:422ef68fb3cbc8180f12:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           deps.log(`P-008 ${stagingAbsorptionNote}`);
         }
       } else {
         stagingAbsorptionNote =
           `${absorption.summary}. Main is already at the proven lineage; the ready-to-promote ` +
           `queue remains so the next tick retries only this ancestry bridge.`;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:422ef68fb3cbc8180f12:2","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(`P-008 ${stagingAbsorptionNote}`);
         await deps
           .escalate?.(
@@ -17820,6 +18133,7 @@ async function runGreenCheckpointInner(
       repairQueue = null;
     }
   }
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:d05891781562d5f80e27:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
   );
@@ -17840,6 +18154,7 @@ async function runGreenCheckpointInner(
   const stagingNote = stagingAbsorptionNote
     ? `\n\n⚠️ Post-promotion staging ancestry bridge pending: ${stagingAbsorptionNote}`
     : "";
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:80a246a9890fe348a930:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await deps
     .broadcast(
       // EI-18685042025868279: the HEADLINE must carry the qualification, not just the body.
@@ -17855,6 +18170,7 @@ async function runGreenCheckpointInner(
     )
     .catch(() => {});
   // P-002: the gate recovered — resolve any open `release-not-green` escalation.
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:3781d286090f92336d17:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await deps.clearEscalation?.().catch(() => {});
   // await-event-primitive-2026-06-05 P-015: `release:green` is awaitable — an agent blocked
   // on "the next green ready" sleeps on it (events:await) instead of polling the checkpoint.
@@ -17893,12 +18209,14 @@ async function runGreenCheckpointInner(
       `green-checkpoint:inconclusive:${pipeline}`,
     ];
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:24d2617e87cb5f072ee2:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: "release:green",
         summary: greenSummary,
         payload,
         cancelSiblingKeysFor,
       });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:300b6ec8798fe7197238:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await deps.emitEvent?.({
         key: `release:green:${pipeline}`,
         summary: greenSummary,
@@ -17906,6 +18224,7 @@ async function runGreenCheckpointInner(
         cancelSiblingKeysFor,
       });
     } catch (e) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:6358c12daa4c91fa3a5e:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `warn: release:green emit failed: ${e instanceof Error ? e.message : e}`,
       );
@@ -17915,6 +18234,7 @@ async function runGreenCheckpointInner(
   // readable. `promoted` is `adv.advanced`, not a restatement of reason='advanced' — a run
   // that reached here with the fast-forward declined is exactly the silent state this log
   // could not express.
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:9535a57ad49ce8d3d168:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   stampPromotion(adv.advanced, "advanced", adv.advanced ? candidate : null);
   return {
     advanced: adv.advanced,
@@ -18150,6 +18470,7 @@ export async function measureRepairTickLegs(
       }
       const scriptStartedAt = now();
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/measureRepairTickLegs:680b37af1960f6d2310b:1","classification":"durable","reason":"The <module>/measureRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const r = await io.runScript(script, workspace);
         io.log(
           `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} exit ${r.code} ` +
@@ -18282,12 +18603,14 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   // the tick leaves the legs unmeasured, and the lifecycle never infers anything from that.
   // WI-6554700010009547: entry line, so a stall in the headroom probe or the leg runs is
   // attributable from the run log (the completion line below only prints on return).
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:6b42aa10756168a705ed:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.log(
     `P-009 repair-tick legs started at ${queue.repairHead.slice(0, 12)}`,
   );
   if (deps.checkDiskHeadroom) {
     let headroom: { ok: boolean; summary: string };
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:8ca046e83fd50bf19593:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       headroom = await deps.checkDiskHeadroom();
     } catch (e) {
       headroom = {
@@ -18296,6 +18619,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
       };
     }
     if (!headroom.ok) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:26ee9ae451e41af4f539:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `P-009 repair-tick legs NOT measured: disk-headroom — ${headroom.summary}`,
       );
@@ -18314,6 +18638,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   try {
     remainingMs = deps.postVerdictRemainingMs?.();
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:185b5441ca952cb68afe:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `warn: post-verdict watchdog budget read failed: ${e instanceof Error ? e.message : e}`,
     );
@@ -18323,6 +18648,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     remainingMs,
   });
   if (!budget.run) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:2bea091294b8ded76ac2:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `P-009 repair-tick legs NOT measured: post-verdict budget — ${budget.availableMs}ms usable ` +
         `before the self-watchdog ceiling (needs ${REPAIR_TICK_LEGS_MIN_WINDOW_MS}ms); ` +
@@ -18331,6 +18657,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     return result;
   }
   if (budget.clampedByCeiling) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:9177b3b2aed717e5522d:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `P-009 repair-tick legs deadline clamped to ${budget.deadlineMs}ms by the self-watchdog ceiling`,
     );
@@ -18344,6 +18671,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     deadlineTimer = setTimeout(() => resolve("deadline"), deadlineMs);
   });
   try {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:fc53fbc30b46a20c34ef:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const measurement = deps.runRepairTickLegs(
       queue.repairHead,
       repairTickGateIds(queue),
@@ -18366,6 +18694,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
       ]);
       if (graceTimer) clearTimeout(graceTimer);
       const elapsedMs = Date.now() - startedAtMs;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:0f7ba2dae93b413e6d63:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `warn: P-009 repair-tick legs deadline-exceeded after ${elapsedMs}ms (deadline ${deadlineMs}ms) — ` +
           `in-flight leg aborted${unwound ? "" : ` (did not unwind within ${abortGraceMs}ms)`}; ` +
@@ -18373,6 +18702,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
       );
       if (deps.recordPostVerdictStepDeadline) {
         const record = deps.recordPostVerdictStepDeadline;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:cad1f73deab19f91d3cb:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await recordPostVerdictDeadline(
           (info) => record.call(deps, info),
           { label: "P-009 repair-tick legs", deadlineMs, elapsedMs },
@@ -18383,6 +18713,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     }
     const measured = outcome;
     if (!measured) return result;
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:e70a55dc06b04479b5eb:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `P-009 repair-tick legs at ${measured.head.slice(0, 12)}: ` +
         (measured.ok
@@ -18390,9 +18721,11 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
           : `FAILING ${measured.failingSignatures.join(", ")}`) +
         ` (awaiting-fixer hold stays measured)`,
     );
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:635719c37de4b0e95d7d:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const repairQueue = await foldRepairTickLegsIntoQueue(queue, measured, deps);
     return { ...result, repairTickLegs: measured, repairQueue };
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:c56dffb2ac632ce11d2b:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `warn: P-009 repair-tick leg measurement failed: ${e instanceof Error ? e.message : e}`,
     );
@@ -18515,6 +18848,7 @@ async function foldRepairTickLegsIntoQueue(
   }
   if (measurements.length === 0) return queue;
   try {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/foldRepairTickLegsIntoQueue:30f99e5e45460ecbe419:1","classification":"durable","reason":"The <module>/foldRepairTickLegsIntoQueue context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return await commitFrozenRepairQueueTransition(
       deps,
       queue,
@@ -18525,6 +18859,7 @@ async function foldRepairTickLegsIntoQueue(
       "repair-tick leg lifecycle",
     );
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/foldRepairTickLegsIntoQueue:ac69374f3aeeafaae0cf:1","classification":"durable","reason":"The <module>/foldRepairTickLegsIntoQueue context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `warn: WI-10005728 repair-tick leg lifecycle write failed: ${e instanceof Error ? e.message : e}`,
     );
@@ -18622,24 +18957,29 @@ export async function runPostVerdictStepWithDeadline(
   onDeadline?: PostVerdictDeadlineRecorder,
 ): Promise<boolean> {
   const startedAt = Date.now();
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runPostVerdictStepWithDeadline:94857a8b923753c87816:1","classification":"durable","reason":"The <module>/runPostVerdictStepWithDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   log(`${label} started (deadline ${deadlineMs}ms)`);
   let timer: ReturnType<typeof setTimeout> | undefined;
   let completed: boolean;
   try {
     completed = await Promise.race([
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runPostVerdictStepWithDeadline:78247e0b3910831fd7fe:1","classification":"durable","reason":"The <module>/runPostVerdictStepWithDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       step().then(() => true),
       new Promise<boolean>((resolve) => {
         timer = setTimeout(() => resolve(false), deadlineMs);
       }),
     ]);
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runPostVerdictStepWithDeadline:eaaec321e0535c760901:1","classification":"durable","reason":"The <module>/runPostVerdictStepWithDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     log(`${label} ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
   } catch (error) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runPostVerdictStepWithDeadline:d57cc9415be97cbb1133:1","classification":"durable","reason":"The <module>/runPostVerdictStepWithDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     log(`${label} failed: ${error instanceof Error ? error.message : error}`);
     return false;
   } finally {
     if (timer) clearTimeout(timer);
   }
   if (!completed && onDeadline) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runPostVerdictStepWithDeadline:5be237526dbc41a65e59:1","classification":"durable","reason":"The <module>/runPostVerdictStepWithDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await recordPostVerdictDeadline(
       onDeadline,
       { label, deadlineMs, elapsedMs: Date.now() - startedAt },
@@ -18680,11 +19020,13 @@ async function recordPostVerdictDeadline(
       }),
     ]);
     if (!recorded) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/recordPostVerdictDeadline:55a409a48773c1e5833b:1","classification":"durable","reason":"The <module>/recordPostVerdictDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       log(
         `${info.label} deadline record did not finish within ${POST_VERDICT_DEADLINE_RECORD_BOUND_MS}ms; abandoned`,
       );
     }
   } catch (error) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/recordPostVerdictDeadline:91d8ffe91b9b02e8fdae:1","classification":"durable","reason":"The <module>/recordPostVerdictDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     log(
       `${info.label} deadline record failed: ${error instanceof Error ? error.message : error}`,
     );
@@ -18701,6 +19043,7 @@ export async function recordDerivedFreezeDispositionWithDeadline(
   deadlineMs = DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
   onDeadline?: PostVerdictDeadlineRecorder,
 ): Promise<boolean> {
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/recordDerivedFreezeDispositionWithDeadline:96c476236e6ba7871f2f:1","classification":"durable","reason":"The <module>/recordDerivedFreezeDispositionWithDeadline context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return runPostVerdictStepWithDeadline(
     "derived freeze-disposition write",
     write,
@@ -18730,6 +19073,7 @@ async function retryAfterGatePrecondition(
   let cleanup = "not run (copy-lock refusal)";
   if (retry.blocker === "disk-headroom") {
     if (deps.reclaimDependencyHeadroom) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/retryAfterGatePrecondition:59904f58e5dbfbf607e5:1","classification":"durable","reason":"The <module>/retryAfterGatePrecondition context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.reportProgress?.("phase:precondition-reclaim");
       try {
         cleanup = await deps.reclaimDependencyHeadroom();
@@ -18742,6 +19086,7 @@ async function retryAfterGatePrecondition(
   }
   // Cleanup time counts toward the delay: the point is a short retry, not a longer one.
   const waitMs = Math.max(0, retry.delayMs - (Date.now() - startedAtMs));
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/retryAfterGatePrecondition:e2a9733028e8e8b8fd80:1","classification":"durable","reason":"The <module>/retryAfterGatePrecondition context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.log(
     `GATE_PRECONDITION_RETRY blocker=${retry.blocker} attempt=${attempt}/${MAX_GATE_PRECONDITION_RETRIES} ` +
       `delayMs=${retry.delayMs} waitMs=${waitMs} cleanup=${cleanup}`,
@@ -18750,6 +19095,7 @@ async function retryAfterGatePrecondition(
     deps.preconditionRetrySleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   for (let remaining = waitMs; remaining > 0; remaining -= 60_000) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/retryAfterGatePrecondition:b36e508ca294f8c8f370:1","classification":"durable","reason":"The <module>/retryAfterGatePrecondition context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.reportProgress?.("phase:precondition-retry-wait");
     await sleep(Math.min(60_000, remaining));
   }
@@ -18792,6 +19138,7 @@ export async function runGreenCheckpoint(
       suiteReplayCanary = previous && replay
         ? { status: replay.canaryOk === true ? 'passed' : replay.canaryOk === false ? 'mismatch' : 'unreadable', detail: replay.canaryDetail }
         : { status: 'bootstrap', detail: 'no recorded measured-suite replay exists yet; the next measured verdict will capture it' };
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:02db68f17a6f2cdeef1f:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`GATE_SUITE_REPLAY status=${suiteReplayCanary.status} ${suiteReplayCanary.detail}`);
       if (replay && replay.canaryOk !== true) return {
         advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
@@ -18800,6 +19147,7 @@ export async function runGreenCheckpoint(
       };
     } catch (error) {
       suiteReplayCanary = { status: 'unreadable', detail: `measured-suite replay unavailable: ${error instanceof Error ? error.message : String(error)}` };
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:aa6f391498c6708b8459:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(`GATE_SUITE_REPLAY status=unreadable ${suiteReplayCanary.detail}`);
       return { advanced: false, candidate: opts.candidate ?? opts.candidateHint ?? '', from: null,
         green: null, reason: 'infra-inconclusive', summary: suiteReplayCanary.detail, suiteReplayCanary,
@@ -18834,6 +19182,7 @@ export async function runGreenCheckpoint(
       budgetMs: refireRunBudgetMsFromEnv(),
     });
     if (!decision.retry) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint/retryPrecondition:d8a12f8de1f9bbd3a6f9:1","classification":"durable","reason":"The <module>/runGreenCheckpoint/retryPrecondition context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `GATE_PRECONDITION_RETRY skipped blocker=${refused.preconditionBlocker} reason=${decision.reason}`,
       );
@@ -18875,6 +19224,7 @@ export async function runGreenCheckpoint(
   const roundPhases = roundPhaseStamps
     ? buildGateRoundPhases(roundPhaseStamps, Date.now() - admissionPassStartedAtMs)
     : null;
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:4d325bd8146b38d7c026:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   if (roundPhases) deps.log(`GATE_ROUND_PHASES ${roundPhases.breakdown}`);
   const result: CheckpointResult = roundPhases
     ? { ...innerResult, roundPhases }
@@ -18929,6 +19279,7 @@ export async function runGreenCheckpoint(
         settleJudgedHead: passSettledJudgedHead,
       });
     } catch (error) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:26ec239cfd03ec7b0513:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `repair admission retest marker consume failed (marker retained): ${error instanceof Error ? error.message : error}`,
       );
@@ -18936,6 +19287,7 @@ export async function runGreenCheckpoint(
     if (consumed?.kind === "settled") {
       const identity = buildFrozenRepairStatusIdentity(consumed.queue);
       finalResult = { ...finalResult, repairQueue: consumed.queue, ...identity };
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:3c4c7c98e0f0b4b17e2f:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `repair admission retest settled at ${judgedRepairHead.slice(0, 8)}; durable marker consumed`,
       );
@@ -18958,6 +19310,7 @@ export async function runGreenCheckpoint(
         admissionRefires < MAX_ADMISSION_REFIRE_ATTEMPTS &&
         !deadlineExceeded
       ) {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:5d10d52ebf33c5da4f91:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         deps.log(
           `repair admission advanced the in-flight pass ${judgedRepairHead.slice(0, 8)} → ` +
             `${consumed.request.repairHead.slice(0, 8)}; self-refiring now ` +
@@ -18970,6 +19323,7 @@ export async function runGreenCheckpoint(
           runStartedAtMs: admissionRunStartedAtMs,
         });
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:db457112b39a79d101cd:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
         `repair admission retest ${requiresUnlockedPreparation ? "deferred" : "remains requested"} at ${consumed.request.repairHead.slice(0, 8)}; ` +
           (requiresUnlockedPreparation
@@ -18996,10 +19350,12 @@ export async function runGreenCheckpoint(
   // b874ad21 stalled past this point for ~2h with nothing bounding it but the 180m ceiling.
   // WI-6554700010009616: publish the post-verdict phase to the qualification runner, so the
   // lost-run sweep can flag a live run parked here (its heartbeat stays fresh through a hang).
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:3676c6aedf8a9c086d43:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:finalizing");
   try {
     deps.enterPostVerdictPhase?.(finalResult);
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:f5cb19aebf4ddd4501a5:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
     );
@@ -19010,10 +19366,13 @@ export async function runGreenCheckpoint(
     ? (info) => recordDeadline.call(deps, info)
     : undefined;
   if (deps.recordDerivedFreezeDisposition) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:343f6e9dd7de5c2935c6:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await recordDerivedFreezeDispositionWithDeadline(
       async () => {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint/<callback>:5bbd7604d06a8b6ebd38:1","classification":"durable","reason":"The <module>/runGreenCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await deps.recordDerivedFreezeDisposition?.({
           flagEnabled:
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint/<callback>:3c93d70d49d94d532e89:1","classification":"durable","reason":"The <module>/runGreenCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
           repairQueue: finalResult.repairQueue ?? null,
           repairQueueRead: finalResult.repairQueueRead,
@@ -19039,8 +19398,11 @@ export async function runGreenCheckpoint(
   // a live finalizing runner after 20m because the *bounded tail* below should take only
   // seconds. Model this suite-like measurement as `suite`, then re-enter `finalizing`
   // once it completes so a genuinely stuck routing/finalization tail is still detected.
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:ac670ddebc1f23ade626:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:suite");
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:1551a7c97893936bd28e:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   finalResult = await augmentWithRepairTickLegs(finalResult, deps);
+  // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:3676c6aedf8a9c086d43:2","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:finalizing");
   // P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): route each failing leg of the
   // queue this tick ended holding to its own claimable item, from the same funnel every
@@ -19064,9 +19426,11 @@ export async function runGreenCheckpoint(
     const failureTailMeasurements = repairFailureTailMeasurements(finalResult);
     // WI-6554700010009547: bounded and entry-logged, like the disposition write above. A
     // failure or a deadline is non-fatal: the held candidate stays correctly held.
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:340d55644be6a6a6844e:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await runPostVerdictStepWithDeadline(
       "frozen-repair leg routing",
       () =>
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint/<callback>:64249c99e7648a0ce6ba:1","classification":"durable","reason":"The <module>/runGreenCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         routeLegs({
           pipeline: pipelineName(cfg.integrationRoot),
           queue: queueForRouting,
@@ -19115,9 +19479,11 @@ export async function resolveSuiteSelectionBaseForRun(
           ...selectionInput,
           git: selectionBaseGitFor(repo),
         });
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/resolveSuiteSelectionBaseForRun:4d35fcbf9fd7b26ddedd:1","classification":"durable","reason":"The <module>/resolveSuiteSelectionBaseForRun context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(selectionBaseLine(resolved, input.lastReady));
     return resolved.base;
   } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/resolveSuiteSelectionBaseForRun:10ff53434ff164d9f87f:1","classification":"durable","reason":"The <module>/resolveSuiteSelectionBaseForRun context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `SELECTION_BASE resolver errored (${e instanceof Error ? e.message : e}) — ` +
         `using last-ready ${input.lastReady ? input.lastReady.slice(0, 12) : "null"} ` +
@@ -19539,6 +19905,7 @@ export async function beginCheckpointPreflight(
     throw error;
   }
   if (dependencyPrebuildDeps.checkpointSelection) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpointPreflight:f326c47fe3d7bef365cf:1","classification":"durable","reason":"The <module>/beginCheckpointPreflight context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return beginPreparedCheckpointPreflight(cfg, candidate, exec, dependencyPrebuildDeps);
   }
   let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
@@ -19728,6 +20095,7 @@ async function beginPreparedCheckpointPreflight(
       }
     }
     // The existing preflight publishes dependencies before taking the serializer. No selection recursion.
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginPreparedCheckpointPreflight:041054df68a33d2a037e:1","classification":"durable","reason":"The <module>/beginPreparedCheckpointPreflight context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const ready = await beginCheckpointPreflight(cfg, selected.candidate, exec, prebuild);
     if (ready.kind !== "ready") return ready;
     if (!ready.lock.acquired) return ready; // A contender never consumes authority.
@@ -20115,6 +20483,7 @@ export async function clearDetectorEscalation(
 ): Promise<void> {
   const open = await io.list();
   for (const e of open) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/clearDetectorEscalation:88881cf568be933c8ace:1","classification":"durable","reason":"The <module>/clearDetectorEscalation context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (e.source === DETECTOR_ESCALATION_SOURCE) await io.resolve(e.msg_id);
   }
 }
@@ -20165,6 +20534,7 @@ async function realDetectorEscalationIo(): Promise<DetectorEscalationIo> {
       );
     },
     resolve: async (msg_id) => {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realDetectorEscalationIo/resolve:aad4b7707cf7195294b4:1","classification":"durable","reason":"The <module>/realDetectorEscalationIo/resolve context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await resolveEscalation({
         msg_id,
         choice: "desktop-perf measured again",
@@ -22316,6 +22686,7 @@ export function realCheckpointDeps(
       }
     } catch { /* diagnostic-only: an absent/unreadable marker stays unmeasured */ }
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/notifyProgress:e1d2fc236b6b16a8eee8:1","classification":"durable","reason":"The <module>/realCheckpointDeps/notifyProgress context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       reportProgress?.(detail);
     } catch {
       /* progress is diagnostic/liveness only and must never change the gate verdict */
@@ -22724,6 +23095,7 @@ export function realCheckpointDeps(
     };
     let publishedGeneration: CheckpointExecResult;
     try {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/selectPrewarmedDependencyGeneration:68650223d6aeae2b9815:1","classification":"durable","reason":"The <module>/realCheckpointDeps/selectPrewarmedDependencyGeneration context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       publishedGeneration = await exec(process.execPath, generationArgs, {
         killProcessGroupOnTimeout: true,
         onOutput: relayOutput,
@@ -22767,6 +23139,7 @@ export function realCheckpointDeps(
       toolingRoot(),
       "apps/operator/bin/release/setup-release-checkout.sh",
     );
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/prepareExactSource:a4cc5486c0e113143e7c:1","classification":"durable","reason":"The <module>/realCheckpointDeps/prepareExactSource context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const prepared = await exec(
       "bash",
       [
@@ -22864,6 +23237,7 @@ export function realCheckpointDeps(
           ...input,
           nowMs: Date.now(),
         });
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/routeFrozenRepairToAgents:ebf9ec0a329ad732bbd9:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await broadcastSevereEvent({
           summary: ev.summary,
           body: ev.body,
@@ -22884,6 +23258,7 @@ export function realCheckpointDeps(
       try {
         const { routeFrozenRepairLegs } =
           await import("@papercusp/operator-core/lib/release/frozen-repair-leg-routing");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/routeFrozenRepairLegsToAgents:4f43461c08ebe922ba74:1","classification":"durable","reason":"The <module>/realCheckpointDeps/routeFrozenRepairLegsToAgents context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const out = await routeFrozenRepairLegs(input);
         if (out.opened.length > 0 || out.resolved.length > 0) {
           console.log(
@@ -23013,7 +23388,9 @@ export function realCheckpointDeps(
       const { gitOriginUrl } =
         await import("@papercusp/operator-core/lib/cupboard/resolve-repo-coords");
       if (!(await gitOriginUrl(cfg.integrationRoot))) return null;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/checkPromotionTargetAncestry:9458777cd26f253924f9:1","classification":"durable","reason":"The <module>/realCheckpointDeps/checkPromotionTargetAncestry context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return checkPromotionTargetAncestry({ ref, candidate }, async (argv) => {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/checkPromotionTargetAncestry/<callback>:bef74b94e68c80f756f6:1","classification":"durable","reason":"The <module>/realCheckpointDeps/checkPromotionTargetAncestry/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const r = await exec("git", ["-C", cfg.integrationRoot, ...argv], {
           allowNonZero: true,
           timeoutMs: 120_000,
@@ -23166,6 +23543,7 @@ export function realCheckpointDeps(
           .join("; ");
 
       const beforeBreaches = detectCriticalWriteHeadroom(before, policy);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/checkDiskHeadroom:6fad0e2fd11bee2ba13c:1","classification":"durable","reason":"The <module>/realCheckpointDeps/checkDiskHeadroom context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const copyBefore = await dependencyCopyHeadroom();
       if (beforeBreaches.length === 0 && copyBefore.ok)
         return {
@@ -23265,6 +23643,7 @@ export function realCheckpointDeps(
         };
       }
       const afterBreaches = detectCriticalWriteHeadroom(after, policy);
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/checkDiskHeadroom:6fad0e2fd11bee2ba13c:2","classification":"durable","reason":"The <module>/realCheckpointDeps/checkDiskHeadroom context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const copyAfter = await dependencyCopyHeadroom();
       if (afterBreaches.length === 0 && copyAfter.ok) {
         return {
@@ -23817,6 +24196,7 @@ export function realCheckpointDeps(
           writeFileSync(responseFile, JSON.stringify(route.files), {
             mode: 0o600,
           });
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runChangedFileTypecheckPreflight:4bcf90dc5aebe9c330f0:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runChangedFileTypecheckPreflight context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const result = await exec(
             "npm",
             ["run", route.npmScript, "--", `--files-from=${responseFile}`],
@@ -23974,6 +24354,7 @@ export function realCheckpointDeps(
         for (const failure of recovered.failed) console.warn(`${orchestratorStdoutTag()} terminal wake remains pending: ${failure}`);
         return;
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/flushTerminalEvents:24445147b29f99c56df0:1","classification":"durable","reason":"The <module>/realCheckpointDeps/flushTerminalEvents context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await terminalEvents.flush(result, recorded);
     },
     // WI-6554700010010213: a post-verdict deadline overrun becomes one durable pipeline event, so
@@ -24027,6 +24408,7 @@ export function realCheckpointDeps(
       }
       const { applyPendingMigrationsNow } =
         await import("@papercusp/operator-core/lib/db-boot-migrate");
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/ensureMigrationsCurrent:1c32f2cf5baf372e7214:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return applyPendingMigrationsNow({ sqlDir: input.sqlDir });
     },
     // EI-18666996942859193: real wiring for the tree-drift preflight (see
@@ -24166,6 +24548,7 @@ export function realCheckpointDeps(
         if (!target) return false; // not the record-target-designated run — nothing to record.
         const { recordCheckpointVerdict } =
           await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/recordVerdict:e85ecee1d5ab3e9d0e38:1","classification":"durable","reason":"The <module>/realCheckpointDeps/recordVerdict context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         return await recordCheckpointVerdict(
           target,
           checkpointVerdictFromResult(r),
@@ -24189,6 +24572,7 @@ export function realCheckpointDeps(
         if (!target) return false;
         const { recordPendingCheckpointVerdict } =
           await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/recordPendingVerdict:d203061685384c43b538:1","classification":"durable","reason":"The <module>/realCheckpointDeps/recordPendingVerdict context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         return await recordPendingCheckpointVerdict(
           target,
           checkpointVerdictFromResult(r),
@@ -24201,9 +24585,11 @@ export function realCheckpointDeps(
       }
     },
     async prepareSource(ref) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/prepareSource:95cb80d587f66bc6635f:1","classification":"durable","reason":"The <module>/realCheckpointDeps/prepareSource context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await prepareExactSource(ref);
     },
     async selectMaterializationClosure({ candidate, base }) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/selectMaterializationClosure:c00c955223a77d2b1882:1","classification":"durable","reason":"The <module>/realCheckpointDeps/selectMaterializationClosure context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const probe = await exec(
         process.execPath,
         [
@@ -24308,6 +24694,7 @@ export function realCheckpointDeps(
       // time is otherwise reconstructible only from setup-release's own stage markers.
       if (!options?.preparedSource) {
         const prepareStartedAtMs = Date.now();
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/setupTree:95cb80d587f66bc6635f:1","classification":"durable","reason":"The <module>/realCheckpointDeps/setupTree context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await prepareExactSource(ref);
         log(
           formatSetupSubPhaseLine(
@@ -24321,6 +24708,7 @@ export function realCheckpointDeps(
       const selectedDependencyGeneration =
         prewarmedDependencyGeneration?.candidate === ref
           ? prewarmedDependencyGeneration
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/setupTree:f6c8892ef1b720a931d0:1","classification":"durable","reason":"The <module>/realCheckpointDeps/setupTree context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           : await selectPrewarmedDependencyGeneration(ref, cfg.checkpointRoot);
       log(
         formatSetupSubPhaseLine(
@@ -24362,6 +24750,7 @@ export function realCheckpointDeps(
         ? beginPublishedMaterialization(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot))
         : null;
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/setupTree:73cb06d818513ae3cf91:1","classification":"durable","reason":"The <module>/realCheckpointDeps/setupTree context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         setup = await exec(
           "bash",
           [
@@ -25455,6 +25844,7 @@ export function realCheckpointDeps(
     // Stale-candidate re-triage seams (P-004). The quiet-cut judges a commit that is
     // minutes-to-hours old; these let the gate ask "is this red still real at tip?".
     async resolveTip() {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/resolveTip:1195b748614251fbc17a:1","classification":"durable","reason":"The <module>/realCheckpointDeps/resolveTip context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const r = await exec(
         "git",
         ["-C", cfg.integrationRoot, "rev-parse", cfg.integrationBranch],
@@ -25473,6 +25863,7 @@ export function realCheckpointDeps(
       };
     },
     async runTestsAtRef(ref, files) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef:57096e946b60fa674135:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return traceRepairVerificationPhase({ log, runId, ref }, "file-runner", async (phase) => {
       // Re-run EXACTLY the originally-failing files, at `ref`, in a throwaway checkout —
       // never the churning integration tree (a concurrent edit would poison the answer).
@@ -25578,6 +25969,8 @@ export function realCheckpointDeps(
                 ],
               }
             : invocation;
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef/<callback>:c3eb3ee8c4082394fd12:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback>:37a5dc44104fed7a9f43:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const r = await traceRepairVerificationPhase(phase, "workspace-files", () => exec(command.cmd, command.args, {
             cwd: invocation.cwd,
             env,
@@ -25610,6 +26003,8 @@ export function realCheckpointDeps(
           // Timing is safe by construction: a FAILED group run always classifies `real-red`, so
           // no auto-refire is pending and these extra minutes cannot starve a rescue. The only
           // cost is delaying a verdict that is not going to change.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef/<callback>:144b68d6a573a071b9ab:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback>:5560779a47f5b66d9ffa:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           perFile = await traceRepairVerificationPhase(phase, "diagnostic-split", (splitPhase) => splitTipFailuresPerFile(
             files,
             async (wsName, file) => {
@@ -25622,6 +26017,8 @@ export function realCheckpointDeps(
                   `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
                 ],
               );
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback>/<callback>:009efdeead3ab33fe534:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+              // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback>/<callback>/<callback>:c1573b32bcf424caab00:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runTestsAtRef/<callback>/<callback>/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               const one = await traceRepairVerificationPhase(splitPhase, "diagnostic-file", () => exec(invocation.cmd, invocation.args, {
                 cwd: invocation.cwd,
                 env,
@@ -25680,6 +26077,7 @@ export function realCheckpointDeps(
     // never populates `failingFiles` (that list is test-FILE-only), so without this seam
     // it fell straight past the stale-candidate rescue with nothing to re-run.
     async runGateAtRef(ref, gateIds, opts) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runGateAtRef:490c11fada2eee59bcb2:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runGateAtRef context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return traceRepairVerificationPhase({ log, runId, ref }, "gate-runner", async (phase) => {
       // Same honest-absence contract as runTestsAtRef: a setupTree throw here propagates
       // to the caller's .catch(() => null), which reads as tipRetest=null → 'tip re-run
@@ -25711,6 +26109,7 @@ export function realCheckpointDeps(
         verifiedHead === ref ? ref : null,
         opts?.frozenCandidateOpenedAtMs,
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runGateAtRef/<callback>:e5ce7da7e1c8f51ab047:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runGateAtRef/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const measured = await measureTargetedGateRuns(gateIds, async (script, workspace) => {
         const invocation = workspace
           ? resolveWorkspaceScriptInvocation(
@@ -25774,6 +26173,8 @@ export function realCheckpointDeps(
             ? [...invocation.args, "--", ...armed.args]
             : invocation.args;
           measuredCommand = [invocation.cmd, ...taskArgs].join(' ');
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runGateAtRef/<callback>/<callback>:04090bd1413ffabea001:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runGateAtRef/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runGateAtRef/<callback>/<callback>/<callback>:51f81d254f9d3108472c:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runGateAtRef/<callback>/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           taskResult = await traceRepairVerificationPhase(phase, "task-execution", () => exec(invocation.cmd, taskArgs, {
             cwd: invocation.cwd,
             env: taskEnv,
@@ -25827,6 +26228,7 @@ export function realCheckpointDeps(
       // WI-6554700010029556: name the activity and each leg in the run-lock's phase.json.
       const tickPhaseLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
       writeCheckpointRunPhase(tickPhaseLockDir, "suite", { activity: "repair-tick-legs" });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runRepairTickLegs:a26a379867830040ca77:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return measureRepairTickLegs(
         {
           setupTree: (r) => this.setupTree(r),
@@ -25851,6 +26253,7 @@ export function realCheckpointDeps(
                 };
             // WI-10006055: the round-24 false red — plane lints measured here had no DSN.
             const scriptEnv = gateScriptEnv(script, env);
+            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/runRepairTickLegs/runScript:30f2a73f6520124bde3a:1","classification":"durable","reason":"The <module>/realCheckpointDeps/runRepairTickLegs/runScript context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const r = await exec(invocation.cmd, invocation.args, {
               cwd: invocation.cwd,
               env: scriptEnv,
@@ -25899,6 +26302,7 @@ export function realCheckpointDeps(
         checkpointRoot: cfg.checkpointRoot,
         integrationRoot: cfg.integrationRoot,
         runScript: async (script) => {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/healGenCheckLegs/runScript:7b8f272102d38128effc:1","classification":"durable","reason":"The <module>/realCheckpointDeps/healGenCheckLegs/runScript context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const r = await exec("npm", ["run", script], {
             cwd: cfg.checkpointRoot,
             env,
@@ -25921,6 +26325,7 @@ export function realCheckpointDeps(
         },
         log: (line) => console.log(line),
       });
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/healGenCheckLegs:5bb9ac0f87de6173f639:1","classification":"durable","reason":"The <module>/realCheckpointDeps/healGenCheckLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return healGenCheckLegs(io, {
         root: cfg.integrationRoot,
         queue,
@@ -25931,6 +26336,7 @@ export function realCheckpointDeps(
     // it trail tip? `null` on any git failure ⇒ the alarm simply doesn't fire.
     async deployStaleness() {
       try {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/deployStaleness:c82ebad9488cb672030d:1","classification":"durable","reason":"The <module>/realCheckpointDeps/deployStaleness context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const pin = await exec(
           "git",
           ["-C", cfg.integrationRoot, "rev-parse", cfg.releaseRef],
@@ -25938,11 +26344,13 @@ export function realCheckpointDeps(
         );
         if (pin.code !== 0) return null;
         const pinSha = pin.stdout.trim();
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/deployStaleness:7c21647a5ce6970c3f5b:1","classification":"durable","reason":"The <module>/realCheckpointDeps/deployStaleness context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const ts = await exec(
           "git",
           ["-C", cfg.integrationRoot, "show", "-s", "--format=%ct", pinSha],
           { allowNonZero: true },
         );
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/deployStaleness:e6a63e2fdabe6b1100cc:1","classification":"durable","reason":"The <module>/realCheckpointDeps/deployStaleness context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const behind = await exec(
           "git",
           [
@@ -25967,6 +26375,7 @@ export function realCheckpointDeps(
     // P-016 (D-010): the batch commits oldest-first (full shas), from the integration
     // repo's own history — `from..to` excludes `from`, includes `to`.
     async commitsInRange(from, to) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/commitsInRange:29502c12df11250ceaaf:1","classification":"durable","reason":"The <module>/realCheckpointDeps/commitsInRange context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const r = await exec(
         "git",
         [
@@ -25995,6 +26404,7 @@ export function realCheckpointDeps(
         cfg.integrationRoot,
         "scripts/affected-tests.mjs",
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/affectedWorkspacesForRange:17efb587038c5822fbbe:1","classification":"durable","reason":"The <module>/realCheckpointDeps/affectedWorkspacesForRange context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const r = await exec(
         "node",
         [script, "--range-from", from, "--range-to", to, "--print-affected"],
@@ -26035,6 +26445,7 @@ export function realCheckpointDeps(
         cfg.integrationRoot,
         "scripts/affected-tests.mjs",
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/affectedTestsForRange:c3528c14eebab0cd2163:1","classification":"durable","reason":"The <module>/realCheckpointDeps/affectedTestsForRange context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const probe = await exec(
         process.execPath,
         [
@@ -26064,10 +26475,12 @@ export function realCheckpointDeps(
     // generation) or a non-zero selector exit PROPAGATES as an error naming its cause;
     // verifyRepairHead carries it into the hold (WI-10004151). `null` is only malformed output.
     async captureProofContextAtRef(ref) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/captureProofContextAtRef:bef544b3fc1ff75aa817:1","classification":"durable","reason":"The <module>/realCheckpointDeps/captureProofContextAtRef context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return captureCheckpointProofContextAtRef({ ref,
         setupTree: async pinned => { await this.setupTree(pinned); return cfg.checkpointRoot; },
         readTree: async root => ({ head: (await git(root, ["rev-parse", "HEAD"])).trim(),
           dirty: !!(await git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"])).trim() }),
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/captureProofContextAtRef/select:eb92b353318c7a44ede3:1","classification":"durable","reason":"The <module>/realCheckpointDeps/captureProofContextAtRef/select context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         select: root => exec(process.execPath,
           [path.join(root, "scripts/affected-tests.mjs"), ...CHECKPOINT_PROOF_CONTEXT_SELECTION_ARGS],
           { cwd: root, allowNonZero: true, timeoutMs: SETUP_TREE_TIMEOUT_MS, killProcessGroupOnTimeout: true }),
@@ -26075,8 +26488,11 @@ export function realCheckpointDeps(
       });
     },
     async affectedTestsAtRef(ref, paths) {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/affectedTestsAtRef:75a61b16580109558f96:1","classification":"durable","reason":"The <module>/realCheckpointDeps/affectedTestsAtRef context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return traceRepairVerificationPhase({ log, runId, ref }, "radius", async (phase) => {
       await traceRepairVerificationPhase(phase, "setup", () => this.setupTree(ref));
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/affectedTestsAtRef/<callback>:b9f241cdb102b73af625:1","classification":"durable","reason":"The <module>/realCheckpointDeps/affectedTestsAtRef/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/affectedTestsAtRef/<callback>/<callback>:e688ccd333bba085349e:1","classification":"durable","reason":"The <module>/realCheckpointDeps/affectedTestsAtRef/<callback>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const probe = await traceRepairVerificationPhase(phase, "selector", () => exec(
         process.execPath,
         [
@@ -26123,6 +26539,7 @@ export function realCheckpointDeps(
       // origin push below unchanged; an unknown mode THROWS (promotion held).
       const { publishPromotion, createDefaultPublishPromotionDeps } =
         await import("@papercusp/operator-core/lib/harness/git-sync/promotion-push-target");
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/push:214f9634ced564675e5a:1","classification":"durable","reason":"The <module>/realCheckpointDeps/push context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const routed = await publishPromotion(
         {
           repoPath: cfg.integrationRoot,
@@ -26161,6 +26578,7 @@ export function realCheckpointDeps(
       if (pins.length > 0) {
         log(`git-push: published gate-pin tag(s) ${pins.map((p) => `${p.path}@${p.sha.slice(0, 12)}`).join(", ")}`);
       }
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/push:05de276699f9c975779e:1","classification":"durable","reason":"The <module>/realCheckpointDeps/push context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await exec(
         "git",
         [
@@ -26177,6 +26595,7 @@ export function realCheckpointDeps(
       // See dispatchCiWorkflow's doc comment (EI-18661485259809120): the pushed commit's
       // `[skip ci]` message means the push above never actually triggers test.yml on
       // GitHub's side — re-fire it explicitly so the remote gate still runs.
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/push:28831b86c8a80e2f97f9:1","classification":"durable","reason":"The <module>/realCheckpointDeps/push context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await dispatchCiWorkflow(cfg.integrationRoot, ref, log, baseSha, candidateSha);
     },
     async broadcast(summary, body) {
@@ -26198,6 +26617,7 @@ export function realCheckpointDeps(
       const msgId = `checkpoint-broadcast:${createHash("sha256").update(JSON.stringify([
         target?.workspaceId ?? null, target?.installSlug ?? null, pipeline, runId, summary, body ?? null,
       ])).digest("hex")}`;
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/broadcast:1117ec8a3676141bd6ec:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await sendMessage(
         {
           ownerId: "green-checkpoint",
@@ -26222,6 +26642,7 @@ export function realCheckpointDeps(
       // The legacy escalation store and its owner-notification dedup cannot hide the condition.
       try {
         const { broadcastSevereEvent } = await import("@papercusp/operator-core/lib/severe-event-broadcast");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/escalate:65271a3d061161ec2855:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await broadcastSevereEvent({ conditionKey: `alarm:checkpoint-release-red:${pipelineName(cfg.integrationRoot)}`,
           summary, body, oneShot: true });
       } catch { /* fail-safe — the gate verdict never depends on the broadcast */ }
@@ -26284,6 +26705,7 @@ export function realCheckpointDeps(
       try {
         const { notifyAttention } =
           await import("@papercusp/operator-core/lib/attention-notify");
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/escalate:8d772910445f856ae5f9:1","classification":"durable","reason":"The native source census reaches notify, notifyAttention, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate, notifyWorkspace at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await notifyAttention({
           kind: "intervention",
           title: "Release gate RED",
@@ -26307,6 +26729,7 @@ export function realCheckpointDeps(
         // documented to resolve. See `isReleaseNotGreenEscalation` for why an
         // unmarked legacy row must still match.
         if (isReleaseNotGreenEscalation(e)) {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/clearEscalation:0f04590555b5bd443729:1","classification":"durable","reason":"The <module>/realCheckpointDeps/clearEscalation context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await resolveEscalation({
             msg_id: e.msg_id,
             choice: "gate green",
@@ -26329,6 +26752,7 @@ export function realCheckpointDeps(
       );
     },
     async clearDetectorEscalation() {
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/clearDetectorEscalation:449ab6427905b2dac852:1","classification":"durable","reason":"The <module>/realCheckpointDeps/clearDetectorEscalation context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await clearDetectorEscalation(await realDetectorEscalationIo());
     },
     // docs-audit #2: how long the current `release-not-green` escalation has been
@@ -26399,6 +26823,7 @@ export function realCheckpointDeps(
     // inherits the launcher's env. Warn-only: block-mode is hardwired false, so a crit
     // flags the deploy but never holds it. Mirrors its desktopPerfGate sibling below.
     perfGate: async (candidate) =>
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/perfGate:9632109c91aa113ed3b6:1","classification":"durable","reason":"The <module>/realCheckpointDeps/perfGate context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       runPerfGate(await perfGatePolicyFromFlags(), candidate),
     // desktop-performance-suite-2026-07-20 P-011: the real desktop-perf gate reads
     // the latest persisted desktop-perf run (desktop_perf_runs) and evaluates its
@@ -26912,6 +27337,7 @@ if (require.main === module) {
     // slice span both + the marker text → invalid JSON → recorded 'error' (and wedged
     // the pipeline). One object on stdout keeps the old brace-slice AND the new marker
     // parse both working.
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/emitResult:f1e834034b14543f21af:1","classification":"durable","reason":"The <module>/emitResult context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await emitTerminalCheckpointResult(r, {
       // WI-10000288: recording belongs inside the one terminal seam, before the marker/event.
       // The pre-lock crash path also calls emitResult; keeping the recorder here prevents an
@@ -26939,6 +27365,7 @@ if (require.main === module) {
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
       emitInconclusive: (result) => emitInconclusiveVerdict(result, pipelineName(cfg.integrationRoot)),
       emitTerminalEvents: async (result, recorded) => {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/emitResult/emitTerminalEvents:c18aabcdb44692ea2634:1","classification":"durable","reason":"The <module>/emitResult/emitTerminalEvents context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await flushTerminalEvents?.(result, recorded);
       },
       // Retire here because every terminal path funnels through this seam. Best-effort cleanup
@@ -27056,6 +27483,7 @@ if (require.main === module) {
         /* best-effort — keep the fallback candidate above */
       }
     }
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/emitCrashResult:8c75529695d90c42e5f3:1","classification":"durable","reason":"The <module>/emitCrashResult context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await emitResult({
       ...buildTerminalFailureCheckpointResult({ candidate, error: e, runId }),
       candidateSource,
@@ -27148,6 +27576,7 @@ if (require.main === module) {
         if (incumbent) {
           const summary = attachRaceSkipSummary(incumbent);
           console.log(`${orchestratorStdoutTag()} ${summary}`);
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint:921e205b3887d39a58d4:1","classification":"durable","reason":"The <module>/beginCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await emitResult({
             advanced: false,
             candidate: incumbent.candidate ?? qualificationCandidate ?? cfg.integrationBranch,
@@ -27174,6 +27603,7 @@ if (require.main === module) {
       });
       stopQualificationProgress = qualificationProgress.stop;
 
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint:53730db995edd70f9d63:1","classification":"durable","reason":"The <module>/beginCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const preflight = await beginCheckpointPreflight(
         cfg,
         candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? cfg.integrationBranch,
@@ -27186,6 +27616,7 @@ if (require.main === module) {
         } } },
       );
       if (preflight.kind === "superseded") {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint:eee9bcb0a23004fad87e:1","classification":"durable","reason":"The <module>/beginCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await emitResult({
           advanced: false,
           candidate: preflight.candidate,
@@ -27201,6 +27632,7 @@ if (require.main === module) {
         process.exit(0);
       }
       if (preflight.kind === "not-applicable") {
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint:75389b9625064264f7d9:1","classification":"durable","reason":"The <module>/beginCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await emitResult({
           advanced: false,
           candidate: preflight.candidate,
@@ -27245,6 +27677,7 @@ if (require.main === module) {
         `${orchestratorStdoutTag()} FAILED before checkpoint lock:`,
         e instanceof Error ? e.message : e,
       );
+      // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint:376653e85b962afb06c9:1","classification":"durable","reason":"The <module>/beginCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await emitCrashResult(e);
       process.exit(1);
     }
@@ -27258,6 +27691,7 @@ if (require.main === module) {
           .catch(() => null),
       ])
         .then(async ([candidate, from]) => {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:5abec013a861e3530c08:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await emitResult({
             advanced: false,
             candidate,
@@ -27280,6 +27714,7 @@ if (require.main === module) {
             `${orchestratorStdoutTag()} FAILED:`,
             e instanceof Error ? e.message : e,
           );
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:376653e85b962afb06c9:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await emitCrashResult(e);
           process.exit(1);
         });
@@ -27376,6 +27811,7 @@ if (require.main === module) {
           // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
           // WI-6554700010009547: selfWatchdog skips signed shard publication so the whole
           // emit fits inside SELF_WATCHDOG_ONFIRE_GRACE_MS.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/onFire:78a26f319800b64f1227:1","classification":"durable","reason":"The <module>/beginCheckpoint/onFire context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await emitResult(inconclusive, { selfWatchdog: true });
           // EI-20702428259478130: this path used to ALSO hand-roll `green-checkpoint:red` +
           // `green-checkpoint:red:<pipeline>` here. That is deleted rather than converted, for two
@@ -27460,6 +27896,7 @@ if (require.main === module) {
         };
         // emitResult owns record-before-marker ordering for every terminal path. The signal
         // handler awaits it, so releaseAndExit cannot tear down either write before it is durable.
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/finalizeTermSignal:4a5e304d964ea262162d:1","classification":"durable","reason":"The <module>/beginCheckpoint/finalizeTermSignal context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await emitResult(cancelled);
         return true;
       };
@@ -27516,6 +27953,7 @@ if (require.main === module) {
         runId,
         undefined,
         (detail) => {
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:9ae4b2a123127c4dcb81:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           watchdog.progress();
           qualificationProgress.note(detail);
         },
@@ -27529,6 +27967,7 @@ if (require.main === module) {
       // WI-6554700010009615 stage 1: past the admission refire the run is post-verdict.
       checkpointDeps.enterPostVerdictPhase = (verdict) => {
         if (verdict) postVerdictResult = verdict;
+        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:69f09cc459531af1679a:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         watchdog.tighten({
           hardCeilingMs: POST_VERDICT_WATCHDOG_MS,
           reason: "post-verdict return funnel",
@@ -27580,15 +28019,18 @@ if (require.main === module) {
         .then((result) => {
           // WI-6554700010009615 stage 2: every leg is done; only the terminal emit is left before
           // pure proof capture cancels the watchdog and runs on its own budget.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:e8496695f835909c5352:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           watchdog.tighten({
             hardCeilingMs: POST_VERDICT_FINALIZE_WATCHDOG_MS,
             reason: "terminal finalize",
           });
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:bdfc772115560ca64723:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           return finalizeNormalResult(result);
         })
         .catch(async (e) => {
           // The same awaited finalizer serves ordinary promise rejection and process-level fatal
           // events, so neither path can drift back to a bare exit without the typed marker.
+          // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/beginCheckpoint/<callback>:0662b3ba94c6d352f4c6:1","classification":"durable","reason":"The <module>/beginCheckpoint/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (await finalizeFatalError(e)) process.exit(1);
         });
     }
@@ -27598,6 +28040,7 @@ if (require.main === module) {
       `${orchestratorStdoutTag()} FAILED while starting checkpoint:`,
       e instanceof Error ? e.message : e,
     );
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/<callback>:376653e85b962afb06c9:1","classification":"durable","reason":"The <module>/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await emitCrashResult(e);
     process.exit(1);
   });

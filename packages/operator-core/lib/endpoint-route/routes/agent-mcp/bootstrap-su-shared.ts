@@ -18,6 +18,7 @@ export function jsonRes(body: unknown, init?: number | ResponseInit): Response {
 
 export async function gatePrincipal(headers: Headers, phases?: PhaseTracker): Promise<Response | null> {
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-shared.ts#<module>/gatePrincipal:48f90a8e22902a716c71:1","classification":"durable","reason":"The native source census reaches notify, notifyAttentionOnce, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate, notifyWorkspace at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await requirePrincipal(headers, {}, phases);
     return null;
   } catch (err) {

@@ -399,6 +399,7 @@ export async function provisionLaunchIdentityResources(result: LaunchArtifactRes
     // D-018: one journaled installation per wearer attempt, with a durable
     // manifest before any write and exact-address compensation on failure.
     const { provisionSessionPackageResources } = await import('./blueprint/session-package-resources');
+    // notify-classification: {"id":"packages/operator-core/lib/role-launch-spec.ts#<module>/provisionLaunchIdentityResources:9b2609f0d2537b24ee40:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await provisionSessionPackageResources(sql, { ownerId: wearer.ownerId,
       revision: { specificationRevision: result.specificationRevision, stateRevision: result.stateRevision },
       artifacts: result.resourceArtifacts });
@@ -407,6 +408,7 @@ export async function provisionLaunchIdentityResources(result: LaunchArtifactRes
   const { provisionBlueprintPackages, blueprintPackageProvisioners } = await import('./blueprint/compile-packages');
   const provisioners = blueprintPackageProvisioners(sql);
   for (const artifact of result.resourceArtifacts) {
+    // notify-classification: {"id":"packages/operator-core/lib/role-launch-spec.ts#<module>/provisionLaunchIdentityResources:09eab8f1747c972b4f6a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await provisionBlueprintPackages(artifact, provisioners);
   }
 }
@@ -1046,6 +1048,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   await assertIdentityActivationFunded({ stack: compiled.stack, repoDir: cwd, workspaceId: input.workspaceId });
   if (compiled.resourceArtifacts.length > 0) {
     const { getOrgPg } = await import('@papercusp/db-org');
+    // notify-classification: {"id":"packages/operator-core/lib/role-launch-spec.ts#<module>/buildRoleLaunchSpec:32c763672910a61ddc5d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await provisionLaunchIdentityResources(compiled, getOrgPg().sql, { ownerId: sid });
   }
   promptText = compiled.promptText;
@@ -1312,6 +1315,7 @@ export interface LaunchSpec {
  */
 export async function buildLaunchSpec(input: BuildLaunchSpecInput): Promise<LaunchSpec> {
   if (input.kind === 'role') {
+    // notify-classification: {"id":"packages/operator-core/lib/role-launch-spec.ts#<module>/buildLaunchSpec:3d7d375681ea787edc77:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const spec = await buildRoleLaunchSpec(input);
     return { kind: 'role', ...spec };
   }

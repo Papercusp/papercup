@@ -390,6 +390,7 @@ export async function createHostedHandlerFromEnvironment(
   // credentials) is composed in. The runtime modules themselves default to the
   // generic env:/file: resolver so the portal's esbuild prebundle of
   // hosted-auth-runtime.ts never inherits operator-state-pg (EI-22091008218242870).
+  // notify-classification: {"id":"apps/operator/bin/hosted-handler.ts#<module>/createHostedHandlerFromEnvironment:94a2d986d74c316709e5:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const plane = await createHostedRuntime(configuration, {
     resolveSecret: resolveHostedSecretRef,
     ...dependencies,

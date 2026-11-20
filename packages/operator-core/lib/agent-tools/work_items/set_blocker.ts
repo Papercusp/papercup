@@ -368,6 +368,7 @@ async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: W
       continue;
     }
     if (!dependentTerminal) {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/set_blocker.ts#<module>/migrateWorkItemRefRows:5e27ed8cb08d69e51cd3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const linked = await linkWorkItemRefDependencies({
         dependentId: input.id,
         harness: input.harness,
@@ -799,6 +800,7 @@ export default defineTool({
               code: 'blocker_decision_relation_required',
               error: 'Use work_items:link for a work-item dependency and its decision; no relation or blocker was changed.' };
           const linked = await trackPhase(ctx.phases, 'set_blocker:link-dependency', () =>
+            // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/set_blocker.ts#<module>/handler/<callback>/<callback>:884c47fd27573e2f2e62:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             linkWorkItemRefDependencies({
               dependentId: input.id,
               harness: input.harness,

@@ -1259,6 +1259,8 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
     const serializedWrite = <T>(write: () => Promise<T> | T): Promise<T> => {
       // An idle chain starts the write at once (the unserialized timing); a busy one queues it.
       const run: Promise<T> = writesInFlight === 0
+        // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/serializedWrite:db1c3d03ca88117e68e5:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+        // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/serializedWrite/<callback>:3336ad76b4de32f43b73:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         ? (async () => write())()
         : writeChain.catch(() => undefined).then(write);
       writesInFlight += 1;
@@ -1266,10 +1268,12 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       void run.then(() => { writesInFlight -= 1; }, () => { writesInFlight -= 1; });
       return run;
     };
+    // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/reportProgress:f3a35009c40d44148746:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const reportProgress = (progress: () => FixPrecheckProgress): Promise<void> => serializedWrite(async () => {
       if (!onProgress) return;
       const snapshot = progress();
       try {
+        // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/reportProgress/<callback>:bb203a097a75c8781206:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await onProgress(snapshot);
       } catch (err) {
         // Progress is a liveness aid, never a substitute for the measured verdict. A transient
@@ -1297,10 +1301,12 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
         if (reporting) return;
         // Keep at most one pending snapshot while a CAS write is in flight. Await the last
         // write before advancing phases so delayed setup progress cannot overwrite a file.
+        // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/execWithProgress/onOutput:3ca311301a2c7e6e8d91:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         reporting = (async () => {
           while (pendingHeartbeatAtMs !== null) {
             const at = pendingHeartbeatAtMs;
             pendingHeartbeatAtMs = null;
+            // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/execWithProgress/onOutput/<callback>:06f1dadccac45a918e82:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             await reportProgress(() => ({ ...fileProgress(), heartbeatAtMs: at }));
           }
         })().finally(() => { reporting = null; });
@@ -1438,6 +1444,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
       const heartbeatAtMs = Date.now();
       if (environmentProgress || heartbeatAtMs - lastEnvironmentHeartbeat < ADMISSION_PRECHECK_HEARTBEAT_INTERVAL_MS) return;
       lastEnvironmentHeartbeat = heartbeatAtMs;
+      // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/<callback>:50012ee116d81a183379:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       environmentProgress = reportProgress(() => ({ currentFile: files[0] as string, completedCount: 0,
         totalCount: files.length, heartbeatAtMs })).finally(() => { environmentProgress = undefined; });
     }) ?? {};
@@ -1487,6 +1494,7 @@ export function createCheckpointTreeFixPrecheckRunner(opts: CheckpointTreeRunner
           const index = nextIndex;
           nextIndex += 1;
           const file = files[index] as string;
+          // notify-classification: {"id":"packages/operator-core/lib/release/admission-fix-precheck.ts#<module>/createCheckpointTreeFixPrecheckRunner/<callback>/measureFiles:521c5efd9751735cae68:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           await reportProgress(() => ({ ...progressFor(file)(), heartbeatAtMs: Date.now() }));
           log(`[admission-precheck] test-file ${file} @ ${commit.slice(0, 12)}`);
           const argv = fileTestCommand?.length

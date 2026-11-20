@@ -365,6 +365,7 @@ export async function withMcpHttpHandlerPhaseTrace<T>(
   timer.unref?.();
   let outcome: McpRequestTraceEvent['outcome'] = 'success';
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/mcp-request-trace.ts#<module>/withMcpHttpHandlerPhaseTrace:69150e4d01678563d004:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return await work();
   } catch (error) {
     outcome = 'tool_error';

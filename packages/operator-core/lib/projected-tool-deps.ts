@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { resolveCapabilityBaseDir } from './agent-tools/capability/base-dir';
 import {
   acquireSnapshot,
   acquireTicketSnapshot,
@@ -1060,8 +1061,10 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
       if (!identity.workspaceId) return operatorKernelDenial('plan_execution_not_ready',
         'Implementation workspace is unresolved; no plan execution authority can be established.');
       const guardStartedAt = beginKernelAuthorityTiming(timingCollector, 'planExecutionGuard');
+      // notify-classification: {"id":"packages/operator-core/lib/projected-tool-deps.ts#<module>/controlAnchorKernelResolver:d9589fcde45e8eb4b8b4:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const refused = await checkPlanExecutionGuard({ ownerId: identity.ownerId, workspaceId: identity.workspaceId,
-        toolName: request.toolName, args: request.args, observeTiming: planExecutionStageObserver(timingCollector) });
+        toolName: request.toolName, args: request.args, cwd: resolveCapabilityBaseDir(request.ctx),
+        observeTiming: planExecutionStageObserver(timingCollector) });
       recordKernelAuthorityTiming(timingCollector, 'planExecutionGuard', guardStartedAt);
       // Keep the timings on a refusal too: a slow refused call is the one being diagnosed.
       if (refused) return attachKernelAuthorityTimings({ ...final, decision: 'deny', availability: 'available', applied: true,
@@ -1320,6 +1323,7 @@ const reserveQuotaImpl: NonNullable<DispatchProjectedDeps['reserveQuota']> = asy
   if (!ctx.workspaceId || !Number.isInteger(limit) || limit < 1 || !callId) {
     throw new Error('Atomic quota admission identity is unavailable');
   }
+  // notify-classification: {"id":"packages/operator-core/lib/projected-tool-deps.ts#<module>/reserveQuotaImpl:e36deba39bf08fe84832:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const row = buildTelemetryRow({ toolName, pluginName: request.pluginName, ctx, callId,
     windowKey, durationMs: 0, status: 'ok', metadataJson: { originalInvocation: { callId } } });
   if (!row) throw new Error('Atomic quota invocation is unavailable');

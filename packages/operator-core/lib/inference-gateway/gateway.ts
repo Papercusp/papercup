@@ -2508,6 +2508,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try { binding = await deps.readAcceptedOperationBudgetBinding(ownerId); }
       catch { throw trialRefusal(); }
     }
+    // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/authorizeCarryTrialAttempt/<callback>:b6d51222d6abc9517e51:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     if (!binding) return send => send();
     if ((carryTrial && !carryTrialRequests.has(req)) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
     if (!carryTrial && transport !== 'oauth-http' && binding.outputTokenLimit !== undefined) {
@@ -2598,6 +2599,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         throw error;
       }
       let response: Response;
+      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/authorizeCarryTrialAttempt/<callback>:b6d51222d6abc9517e51:2","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       try { response = await send(); } catch (error) {
         await observe({ outcome: 'fetch-failed', responseStatus: null, costUsdMeasurementMissing: true });
         // Network exceptions can contain private routes or credentials. The
@@ -3446,6 +3448,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (last !== undefined && now - last < CODEX_CREDENTIAL_DEAD_REALERT_MS) return;
     codexCredentialDeadAlertedAt.set(accountId, now);
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/noteCodexCredentialDead:8948006b3a726d9143f4:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.onCredentialDead?.({ accountId, consecutive401s: 1, provider: 'codex', reason });
     } catch {
       /* fire-and-forget: the alert side-channel must never throw into the request path */
@@ -7480,6 +7483,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
             // Authorization sees the adapter's final body and selected provider
             // account. Re-check its copied receipt synchronously at every send.
+            // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/proxyAdmitted/fetch:5ae65d65d2b49a10cb75:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const upstream = await authorizedSend(() => {
               stageSpan?.recordProviderBody(init.body);
               return doFetch(target, fetchInit as RequestInit);
@@ -7910,6 +7914,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                         account.accountId,
                         Date.now(),
                       );
+                      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/proxyAdmitted/observeAttempt:759c85de8a60d2fa2d5d:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                       deps.onOrgDisallowed?.({
                         accountId: account.accountId,
                         consecutive: orgStreak,
@@ -7937,6 +7942,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                       `inference-gateway: credential for '${account.accountId}' is DEAD — ${streak} consecutive 401s despite token refresh; firing credential-health alert`,
                     );
                     try {
+                      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/proxyAdmitted/observeAttempt:bd1de6498f2b0fdc204c:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                       deps.onCredentialDead?.({ accountId: account.accountId, consecutive401s: streak });
                     } catch {
                       /* fire-and-forget: the alert side-channel must never throw here */
@@ -9084,6 +9090,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               );
             }
             if (outcome.authClass) {
+              // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/serveCodexCliBridge/observeAttempt:c7f3e9d2a7e297d8204c:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
               noteCodexCredentialDead(account, `codex-cli login unusable (repair with \`codex login\` in ${cli.home}): ${error.message.slice(0, 200)}`);
             }
             if (outcome.nextAccountId) codexFailovers++;
@@ -9496,6 +9503,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // the request moves to a non-refusing sibling, and a later 2xx (or the TTL) clears the mark.
         model: bodyModel || null,
         onModelRefused: ({ accountId, model, status, detail }) => {
+          // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/serveCodexOAuthProxy/makeKernelAdapter/onModelRefused:568292c170ce628b6356:1","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (codexModelRefusals.record(accountId, model, detail)) {
             log(
               'warn',
@@ -9504,6 +9512,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
         },
         onModelServed: ({ accountId, model }) => {
+          // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/serveCodexOAuthProxy/makeKernelAdapter/onModelServed:767ed324a0d10dc1b5a7:1","classification":"durable","reason":"The native source census reaches notify at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (codexModelRefusals.clear(accountId, model)) {
             log('warn', `inference-gateway: Codex account '${accountId}' serves model '${model}' again — refusal mark cleared`);
           }
@@ -9617,12 +9626,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const authorizedSend = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
+          // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/serveCodexOAuthProxy/makeKernelAdapter/fetch/send:5ae65d65d2b49a10cb75:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const send = () => authorizedSend(() => {
             stageSpan?.recordProviderBody(init.body);
             return doFetch(target, fetchInit as RequestInit);
           });
           const upstream = stageSpan
             ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
+            // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/serveCodexOAuthProxy/makeKernelAdapter/fetch:b6d51222d6abc9517e51:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             : await send();
           return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
         },
@@ -9754,6 +9765,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                       ' rejected refresh credentials; ' +
                       disposition,
                   );
+                  // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/serveCodexOAuthProxy/runOAuthRecovery/observeAttempt:1c834e3089cfc2cff8eb:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                   noteCodexCredentialDead(account, `Codex OAuth token refresh rejected: ${error.message.slice(0, 240)}`);
                 }
                 log(
@@ -10808,12 +10820,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const authorizedSend = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
+        // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/proxyOpenAiAdmitted/fetch/send:5ae65d65d2b49a10cb75:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const send = () => authorizedSend(() => {
           stageSpan?.recordProviderBody(init.body);
           return doFetch(target, fetchInit as RequestInit);
         });
         const upstream = stageSpan
           ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
+          // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/gateway.ts#<module>/createInferenceGateway/proxyOpenAiAdmitted/fetch:b6d51222d6abc9517e51:1","classification":"durable","reason":"The native source census reaches send at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           : await send();
         return { status: upstream.status, headers: upstream.headers, body: toKernelResponseBody(upstream.body) };
       },

@@ -363,8 +363,10 @@ function makeWindowProjector(
       // EI-19303809952284205: this write IS the Accounts tab's live data, and its failure was silent
       // for hours. Record BOTH outcomes — the success is what clears a streak, so recording only
       // failures would latch the alarm on after a single transient blip.
+      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/makeWindowProjector/<callback>/<callback>:6503c060197f1a9f2f2f:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       .then(() => recordDbOutcome('window-projection', true))
       .catch((e) => {
+        // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/makeWindowProjector/<callback>/<callback>:1ad339f03ed7856f12cd:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         recordDbOutcome('window-projection', false, e);
         log('warn', `account window projection write failed for '${accountId}': ${(e as Error).message}`);
       });
@@ -1048,8 +1050,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
             opts.workspace ?? activeWorkspaceId(),
           );
         })
+        // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/persistCodexModelRefusal/<callback>:0ad42ff171ae718edfb0:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         .then(() => recordDbOutcome('model-refusals', true))
         .catch((e) => {
+          // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/persistCodexModelRefusal/<callback>:498f23648a628dff9e88:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           recordDbOutcome('model-refusals', false, e);
           log('warn', `codex model-refusal persist failed for ${accountId}/${model}: ${String(e)}`);
         });
@@ -1305,8 +1309,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       // idle gateway. When this fails the pool cannot load at all and the gateway silently collapses
       // to a single synthetic `local` credential (healthyAccounts: 0, every account pin ignored).
       void reloadPool()
+        // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/<callback>/<callback>:38d747872f8521de0d95:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         .then(() => recordDbOutcome('pool-reload', true))
         .catch((e) => {
+          // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/<callback>/<callback>:3405dfdf9f1affddc6c6:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           recordDbOutcome('pool-reload', false, e);
           log('warn', `pool reload poll failed: ${(e as Error).message}`);
         });
@@ -1356,10 +1362,12 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           burnAction: accountGatewayBurnAction(a, hintNow),
         })),
       );
+      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/refreshGatewayHints:63c066d894bbd806578f:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       recordDbOutcome('rate-hints', true);
     } catch (e) {
       // EI-19303809952284205: a failure here means the drain selector is running on cold-start
       // defaults — a known-dead account is no longer disqualified. Silent before this.
+      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/refreshGatewayHints:06d272354b970c0a48cb:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       recordDbOutcome('rate-hints', false, e);
       log('warn', `inference-gateway: rate-hint refresh failed: ${(e as Error).message}`);
     }
@@ -1372,12 +1380,14 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       log('warn', `inference-gateway: owner-pin refresh failed (expected until migration 416 applies): ${(e as Error).message}`);
     }
   };
+  // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService:8576390bc7c820400a7b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await refreshGatewayHints();
   let hintTimer: ManagedHandle | undefined;
   if (reloadMs > 0) {
     hintTimer = managedSetInterval(
       EXTERNAL_SCHEDULES.gatewayRateHintPinResync.name,
       reloadMs,
+      // notify-classification: {"id":"packages/operator-core/lib/inference-gateway/launch.ts#<module>/startGatewayService/<callback>:8576390bc7c820400a7b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       () => void refreshGatewayHints(),
       {
         category: EXTERNAL_SCHEDULES.gatewayRateHintPinResync.category,

@@ -23,8 +23,10 @@ export default defineTool({
     rescoreIntervalMs: z.number().int().positive().safe().nullable().optional(), expectedVersion: z.number().int().positive().optional() }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/rubrics/suites.ts#<module>/handler:f162151dabc6d2031724:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       const scope = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/rubrics/suites.ts#<module>/handler/<callback>:433416c274e2a150f7b2:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = args.op === 'get' ? await readSuiteDefinitionPage(args.suiteRef, { scope, limit: args.limit, cursor: args.cursor }) :
         await writeRubricSuite({ ...args, create: args.op === 'create' }, scope, ctx);
       return { data: result };
@@ -42,9 +44,11 @@ export const suiteScorecardTool = defineTool({
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/rubrics/suites.ts#<module>/handler:c79819adb97d79302c9a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return runWithWorkspaceIfConcrete(identity.workspaceId ?? undefined, async () => {
       const scope = await ctxToPlanSourceOpts(harnessScopedCtx(args.harness, ctx));
       const opts = { scope, runId: args.runId, cursor: args.cursor, limit: args.limit, byteLimit: SUITE_RESULT_PAGE_BYTES - 128 };
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/rubrics/suites.ts#<module>/handler/<callback>:bc99923b9e1d104f9c36:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = args.page ? await readSuiteScorecardPage(args.suiteRef, opts) : await advanceRubricSuiteRun(args.suiteRef, opts);
       return { data: result };
     });

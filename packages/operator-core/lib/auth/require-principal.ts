@@ -88,6 +88,8 @@ export async function requirePrincipal(
   // Keep the chain sequential, including terminal app-key and revocation failures.
   const cookiePrincipal = await trackPhase(phases, 'principal:cookie', () => principalFromCookie(headers));
   const appKey = cookiePrincipal ? null
+    // notify-classification: {"id":"packages/operator-core/lib/auth/require-principal.ts#<module>/requirePrincipal:afbf36acea800da9b28b:1","classification":"durable","reason":"The native source census reaches notify, notifyAttentionOnce, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate, notifyWorkspace at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    // notify-classification: {"id":"packages/operator-core/lib/auth/require-principal.ts#<module>/requirePrincipal/<callback>:5940a61d3dacb0f41d55:1","classification":"durable","reason":"The native source census reaches notify, notifyAttentionOnce, notifyFloorCfg, notifyInvalidate, notifySyncInvalidate, notifyWorkspace at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     : await trackPhase(phases, 'principal:appKey', () => resolveAppKeyPrincipal(headers));
   if (appKey && !appKey.ok) {
     throw new PrincipalCheckError(401, `app key refused: ${appKey.reason}`, {

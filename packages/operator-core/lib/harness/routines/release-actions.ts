@@ -2804,6 +2804,7 @@ export async function recordCheckpointVerdict(
   }
   // EI-19405864032365760: `summary` rides along so the 'migrations-pending' abort path can name
   // the pending migration in `gate_health.inconclusive` — it is the only field carrying it.
+  // notify-classification: {"id":"packages/operator-core/lib/harness/routines/release-actions.ts#<module>/recordCheckpointVerdict:ed253e8759c94f314ed0:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await trackGateStall(
     target,
     verdict.reason,
@@ -2852,6 +2853,7 @@ export async function recordCheckpointVerdict(
     !verdict.repairQueue &&
     shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests, verdict.retriage)
   ) {
+    // notify-classification: {"id":"packages/operator-core/lib/harness/routines/release-actions.ts#<module>/recordCheckpointVerdict:a0b88a9c4ac725a740e6:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await dispatchReleaseFixer(
       target,
       verdict.candidate,
@@ -2892,6 +2894,7 @@ export async function recordPendingCheckpointVerdict(
   // Keep the pending diagnostic row for history, but never mutate gate health or dispatch a
   // fixer for a candidate that was explicitly pinned for investigation.
   if (isPinnedCheckpointVerdict(verdict)) return true;
+  // notify-classification: {"id":"packages/operator-core/lib/harness/routines/release-actions.ts#<module>/recordPendingCheckpointVerdict:db228729d935446203ea:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   await trackGateStall(
     target,
     verdict.reason,
@@ -7093,6 +7096,7 @@ export async function applyFrozenCandidateRepairQueueTransition(
     if (next === fresh) return { status: 'unchanged', queue: fresh, fresh, retries: attempt };
     if (!(next.updatedAtMs > fresh.updatedAtMs)) next = { ...next, updatedAtMs: fresh.updatedAtMs + 1 };
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/harness/routines/release-actions.ts#<module>/applyFrozenCandidateRepairQueueTransition:29556dbb06b9d46f2c8e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await writeFrozenCandidateRepairQueue(target, next, { expectedUpdatedAtMs: fresh.updatedAtMs });
       return { status: 'written', queue: next, fresh, retries: attempt };
     } catch (e) {
@@ -7301,6 +7305,7 @@ export async function writeFrozenCandidateRepairQueue(
   projectFrozenRepairMarker(queue, target);
   if (manifested) {
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/harness/routines/release-actions.ts#<module>/writeFrozenCandidateRepairQueue:e8eeaee65f29ec648b4c:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await publishRepairManifestToGateWorkItem(sql, target, manifested);
     } catch (e) {
       console.warn(
@@ -8392,6 +8397,7 @@ async function launchLiveReleaseCertification(
     child.on('close', (code) =>
       resolve({
         launched: code === 0,
+        // notify-classification: {"id":"packages/operator-core/lib/harness/routines/release-actions.ts#<module>/launchLiveReleaseCertification/<callback>/<callback>:6957f30707de724b0262:1","classification":"durable","reason":"The native source census reaches notifyDecoded at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         reason: code === 0 ? null : `systemd-run exited ${String(code)}: ${stderr.text().trim().slice(0, 300)}`,
       }),
     );

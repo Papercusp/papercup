@@ -4469,6 +4469,8 @@ async function completeOneTracked(
   let deferredContributions: import('./item-close-contributions').DeferredContribution[] | undefined;
   if (shouldEvaluateSpecAdequacyAtCompletion) {
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked:c5a631e6e37070a747e3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/<callback>:cf6494b1a3ba4ac37e73:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const gate = await track('spec-adequacy', () => specTestAdequacyCompletionGate({
         workItem: existing,
         ...(ctx.phases ? { phases: ctx.phases } : {}),
@@ -4933,6 +4935,8 @@ async function completeOneTracked(
 
   if (closeIntentRequested && !isAbandonedClose) {
     const { workItemNativeProofClearance } = await import('../../native-proof-clearance');
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked:5e74fa1504694c6a310e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked/<callback>:3dc6325b652ed86877a5:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const refusal = await track('native-proof', () => workItemNativeProofClearance(existing,
       ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId()));
     if (refusal) refuseGate(refusal.error, { nativeProofRefusal: refusal });
@@ -5787,6 +5791,7 @@ async function completeOneTracked(
   // preview/write boundary. A revised contract cannot reuse a preview's deferral.
   if (deferredContributions?.length) {
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked:59d3704913f767256538:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const current = await specTestAdequacyCompletionGate({
         workItem: existing, attestation: it.specAdequacy,
         workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
@@ -5839,6 +5844,7 @@ async function completeOneTracked(
     try {
       for (const stamp of finishPlanStamps(existing)) {
         const { checkDraftItemStartGateLive } = await import('../plans/draft-item-start-gate');
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/work_items/complete.ts#<module>/completeOneTracked:b328673391dae5156928:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const refusal = await checkDraftItemStartGateLive({
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
           harnessSlug: stamp.harness_slug,

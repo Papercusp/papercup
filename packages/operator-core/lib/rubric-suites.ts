@@ -38,6 +38,7 @@ const serializeEvidence = (value: unknown): string => JSON.stringify(value, (_ke
     ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b))) : entry) ?? 'null';
 
 export async function getRubricSuite(suiteRef: string, scope: PlanSourceOpts = {}, deps: Partial<SuiteDeps> = {}): Promise<RubricSuite | null> {
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/getRubricSuite:426b52eee2e97dbc97f8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const row = await dependencies(deps).readPlan(suiteRef, scope);
   if (!row) return null;
   if (row.template !== 'rubric-suite') throw new Error(`not_a_rubric_suite: ${suiteRef}`);
@@ -75,6 +76,7 @@ export async function writeRubricSuite(input: WriteSuiteInput, scope: PlanSource
       ...(interval != null ? { rescoreIntervalMs: interval } : {}),
     });
     for (const { rubricRef } of data.members) {
+      // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/writeRubricSuite/<callback>:4a0e655af770af9ab9c2:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const rubric = await d.readRubric(rubricRef);
       if (!rubric) throw new Error(`unknown_suite_member: ${rubricRef}`);
       if (rubric.status === 'retired') throw new Error(`retired_suite_member: ${rubricRef}`);
@@ -136,6 +138,7 @@ export function boundSuiteMemberResult<T extends object, R extends { rubricRef: 
 
 /** Read the canonical definition in recoverable, byte-bounded member pages. */
 export async function readSuiteDefinitionPage(suiteRef: string, opts: { scope?: PlanSourceOpts; cursor?: SuiteCursor; limit?: number; byteLimit?: number; now?: number } = {}, deps: Partial<SuiteDeps> = {}) {
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/readSuiteDefinitionPage:1e1a378b4eedbdbf897b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const suite = await getRubricSuite(suiteRef, opts.scope, deps);
   if (!suite) throw new Error(`suite_not_found: ${suiteRef}`);
   const { offset, comparisonTime } = pageBounds(suite, opts.limit ?? SUITE_PAGE_SIZE, opts.cursor, opts.now, opts.scope);
@@ -180,6 +183,7 @@ export interface SuiteHistoryProgress {
 export async function advanceSuiteMemberHistory(rubricRef: string, suite: RubricSuite, comparisonTime: string,
   prior: SuiteHistoryProgress | undefined, deps: Partial<SuiteDeps> = {}, scope: PlanSourceOpts = {}) {
   const d = dependencies(deps);
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceSuiteMemberHistory:4a0e655af770af9ab9c2:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const rubric = await d.readRubric(rubricRef);
   const out = prior ? { ...prior.result } : emptyMemberVerdict(rubricRef);
   if (!rubric) return { complete: true, progress: { rubricFingerprint: '', eligibilityUnknown: false,
@@ -195,6 +199,7 @@ export async function advanceSuiteMemberHistory(rubricRef: string, suite: Rubric
   // rejects incomplete evidence; a new run can retry after the graph is readable.
   // Keep the injected pairwise seam for callers supplying their own relation.
   let lineage: Promise<Set<string>> | undefined;
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceSuiteMemberHistory:a0d3ff0a8622ef6af491:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const page = await d.scorecardPage({ rubricRef, limit: SUITE_SCORECARD_PAGE_SIZE, before: prior?.before, comparisonTime });
   out.historyRead += page.rows.length;
   for (const row of page.rows) {
@@ -228,6 +233,7 @@ export async function advanceSuiteMemberHistory(rubricRef: string, suite: Rubric
     out.verdict = worstMemberVerdict(rubric.criteria.map(criterion => classifyRatingForGate(row.ratings[criterion.key].rating)));
     out.reason = 'latest complete outside-lineage scorecard on the current revision';
   }
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceSuiteMemberHistory:4a0e655af770af9ab9c2:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const current = await d.readRubric(rubricRef);
   if (!current || rubricFingerprint(current) !== identity) throw new StaleSuiteCursorError();
   const tail = page.rows.at(-1);
@@ -242,6 +248,7 @@ export async function readSuiteMemberVerdict(rubricRef: string, suite: RubricSui
   let progress: SuiteHistoryProgress | undefined;
   try {
     while (true) {
+      // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/readSuiteMemberVerdict:65939fc7e81d12618127:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const page = await advanceSuiteMemberHistory(rubricRef, suite, comparisonTime, progress, deps, scope);
       progress = page.progress;
       if (page.complete) return progress.result;
@@ -289,6 +296,7 @@ export async function advanceRubricSuiteRun(suiteRef: string, opts: { scope?: Pl
   deps: Partial<SuiteDeps> = {}, store: SuiteRunStore = suiteRunStore) {
   const scope = opts.scope ?? {};
   return runWithWorkspaceIfConcrete(scope.workspaceId, async () => {
+    // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceRubricSuiteRun/<callback>:7e1f7f19e0ece136759d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const suite = await getRubricSuite(suiteRef, scope, deps);
     if (!suite) throw new Error('suite_not_found: ' + suiteRef);
     const runId = opts.runId ?? await store.create(suiteRef, scope);
@@ -306,6 +314,7 @@ export async function advanceRubricSuiteRun(suiteRef: string, opts: { scope?: Pl
     if (prior?.phase === 'done') {
       // Finished output is durable history. Before serving it as a current read,
       // check that its complete source population still produces the same proof.
+      // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceRubricSuiteRun/<callback>:c525b9cc18f32368f06e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const current = await evaluateRubricSuite(suiteRef, scope, deps, Date.parse(state.comparisonTime));
       if (serializeEvidence(current.members) !== serializeEvidence(state.members)) throw new StaleSuiteCursorError();
     }
@@ -314,6 +323,7 @@ export async function advanceRubricSuiteRun(suiteRef: string, opts: { scope?: Pl
       else {
         const ref = suite.members[state.offset]?.rubricRef;
         if (!ref) throw new StaleSuiteCursorError();
+        // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceRubricSuiteRun/<callback>:e2e15abb8f0686fe1151:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const page = await advanceSuiteMemberHistory(ref, suite, state.comparisonTime, state.history, deps, scope);
         if (page.complete) {
           if (state.phase === 'collect') state.members.push(page.progress.result);
@@ -325,6 +335,7 @@ export async function advanceRubricSuiteRun(suiteRef: string, opts: { scope?: Pl
           }
         } else state.history = page.progress;
       }
+      // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/advanceRubricSuiteRun/<callback>:7e1f7f19e0ece136759d:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const after = await getRubricSuite(suiteRef, scope, deps);
       if (!after || after.version !== state.version) throw new StaleSuiteCursorError();
       if (!await store.save(runId, suiteRef, scope, prior, { ...state }, state.phase === 'done')) {
@@ -358,12 +369,15 @@ export async function advanceRubricSuiteRun(suiteRef: string, opts: { scope?: Pl
 
 /** A portable page cursor can be saved on an existing plan run/checkpoint. */
 export async function readSuiteScorecardPage(suiteRef: string, opts: { scope?: PlanSourceOpts; cursor?: SuiteCursor; limit?: number; now?: number; byteLimit?: number } = {}, deps: Partial<SuiteDeps> = {}) {
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/readSuiteScorecardPage:1e1a378b4eedbdbf897b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const suite = await getRubricSuite(suiteRef, opts.scope, deps);
   if (!suite) throw new Error(`suite_not_found: ${suiteRef}`);
   const { offset, comparisonTime } = pageBounds(suite, opts.limit ?? SUITE_PAGE_SIZE, opts.cursor, opts.now, opts.scope);
   const selected = suite.members.slice(offset, offset + (opts.limit ?? SUITE_PAGE_SIZE));
   const members: SuiteMemberVerdict[] = [];
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/readSuiteScorecardPage:3ee029a94d15077f53ed:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   for (const member of selected) members.push(await readSuiteMemberVerdict(member.rubricRef, suite, comparisonTime, deps, opts.scope));
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/readSuiteScorecardPage:1e1a378b4eedbdbf897b:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const after = await getRubricSuite(suiteRef, opts.scope, deps);
   if (!after || after.version !== suite.version) throw new StaleSuiteCursorError();
   const snapshot = { suiteRef, scopeKey: suiteScopeKey(opts.scope), version: suite.version, comparisonTime };
@@ -378,6 +392,7 @@ export async function evaluateRubricSuite(suiteRef: string, scope: PlanSourceOpt
   let total = 0;
   let snapshot: Omit<SuiteCursor, 'offset'> | undefined;
   do {
+    // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/evaluateRubricSuite:67c4d146214e329fa160:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const page = await readSuiteScorecardPage(suiteRef, { scope, cursor, now }, deps);
     total = page.total;
     snapshot = page.snapshot;
@@ -428,6 +443,7 @@ export function boundSuiteListResult<T extends { rubrics: unknown[]; total: numb
 
 /** List filter reads the canonical members on every call, including acceptance rubrics. */
 export async function listSuiteRubricsPage(suiteRef: string, filter: { status?: string; characteristic?: string; subjectPlan?: string; kind?: string; limit?: number; offset?: number; suiteVersion?: number } = {}, scope: PlanSourceOpts = {}, deps: Partial<SuiteDeps> = {}) {
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/listSuiteRubricsPage:7e1f7f19e0ece136759d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const suite = await getRubricSuite(suiteRef, scope, deps);
   if (!suite) throw new Error(`suite_not_found: ${suiteRef}`);
   const limit = filter.limit ?? SUITE_PAGE_SIZE;
@@ -438,6 +454,7 @@ export async function listSuiteRubricsPage(suiteRef: string, filter: { status?: 
   const matching: Rubric[] = [];
   const unreadable: string[] = [];
   for (const { rubricRef } of suite.members) {
+    // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/listSuiteRubricsPage:c40d4e38dbeb0222179e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const rubric = await dependencies(deps).readRubric(rubricRef);
     if (!rubric) { unreadable.push(rubricRef); continue; }
     if (filter.status && rubric.status !== filter.status) continue;
@@ -447,6 +464,7 @@ export async function listSuiteRubricsPage(suiteRef: string, filter: { status?: 
     matching.push(rubric);
   }
   const rubrics = matching.slice(offset, offset + limit);
+  // notify-classification: {"id":"packages/operator-core/lib/rubric-suites.ts#<module>/listSuiteRubricsPage:7e1f7f19e0ece136759d:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const after = await getRubricSuite(suiteRef, scope, deps);
   if (!after || after.version !== suite.version) throw new StaleSuiteCursorError();
   const hasMore = offset + rubrics.length < matching.length;

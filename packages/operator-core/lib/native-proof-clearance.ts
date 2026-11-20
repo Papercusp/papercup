@@ -68,6 +68,7 @@ export async function assessNativeProofClearance(scope: NativeClearanceScope & {
           || run.events.some(e => e.fingerprint !== witness.fingerprint)) continue;
         let preflightsPass = true;
         for (const role of ['numericFold', 'physicalInstall', 'priorFailureAudit'] as const) {
+          // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/assessNativeProofClearance:2a67bac3f455902156ca:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const proof = await deps.preflight(run.admission.preflightRefs[role]);
           const expected = clauses.find(c => c.specId === requirement.preflightSpecIds[role]
             && c.planSlug === scope.planSlug && current(c));
@@ -102,10 +103,12 @@ export async function requiredNativeProofClearance(scope: NativeClearanceScope &
   planItemIds: readonly string[]; workItemId?: string;
 }): Promise<NativeClearanceRefusal | null> {
   const { runWithWorkspace } = await import('./workspace-als');
+  // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/requiredNativeProofClearance:722272d2fcc840cc0a20:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return runWithWorkspace(scope.workspaceId, async () => {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { listSpecClauses } = await import('./agent-tools/plans/spec-clauses-store');
     const sql = getOrgPg().sql;
+    // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/requiredNativeProofClearance/<callback>:e4cfd5662c9b26692337:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return assessNativeProofClearance(scope, {
       clauses: () => listSpecClauses({ workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, planSlug: scope.planSlug }),
       async bindings(clause) {
@@ -136,6 +139,7 @@ export async function requiredNativeProofClearance(scope: NativeClearanceScope &
         const match = /^spec-evidence:([1-9][0-9]*)$/.exec(ref);
         if (!match || !Number.isSafeInteger(Number(match[1]))) return null;
         const { listSpecEvidence } = await import('./agent-tools/plans/spec-evidence-store');
+        // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/requiredNativeProofClearance/<callback>/preflight:8e0d97ea129526313ce8:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         const rows = await listSpecEvidence({ ...scope, planSlugs: [scope.planSlug],
           bindingIds: [Number(match[1])], includeCaseEvidence: true, limit: 1 });
         const row = rows[0];
@@ -173,6 +177,7 @@ export async function requiredPrerequisiteNativeProofClearance(scope: NativeClea
   try {
     const { getPlanRow, planItemsForRow } = await import('./agent-tools/plans/source');
     const opts = { workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug };
+    // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/requiredPrerequisiteNativeProofClearance:e6d391448e6a558878b9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const row = await getPlanRow(scope.planSlug, opts);
     if (!row) throw new Error('Prerequisite plan is unavailable.');
     const items = new Map(planItemsForRow(row).map(item => [item.id, item]));
@@ -187,8 +192,10 @@ export async function requiredPrerequisiteNativeProofClearance(scope: NativeClea
     }
     const planItemIds = [...seen].filter(id => !roots.has(id));
     if (planItemIds.length === 0) return null;
+    // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/requiredPrerequisiteNativeProofClearance:e58ae6582caa0282c87a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const refusal = await requiredNativeProofClearance({ ...scope, planItemIds });
     if (refusal) return refusal;
+    // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/requiredPrerequisiteNativeProofClearance:e6d391448e6a558878b9:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const fresh = await getPlanRow(scope.planSlug, opts);
     if (!fresh || fresh.contentHash !== row.contentHash)
       throw new Error('Prerequisite graph changed during native proof clearance.');
@@ -212,7 +219,9 @@ export async function workItemNativeProofClearance(item: Pick<WorkItem, 'id' | '
     }
     if (!item.harness) throw new Error('Native proof harness is unavailable.');
     const scope = { workspaceId, harnessSlug: item.harness, planSlug: stamp.plan_slug, planItemIds: stamp.item_ids };
+    // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/workItemNativeProofClearance:583f2b73211beb9c409a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return await requiredNativeProofClearance({ ...scope, workItemId: item.id })
+      // notify-classification: {"id":"packages/operator-core/lib/native-proof-clearance.ts#<module>/workItemNativeProofClearance:fc973a3b39cb0ec04893:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       ?? await requiredPrerequisiteNativeProofClearance(scope);
   } catch (error) {
     return { code: 'native_proof_authority_unavailable', error: `Cannot establish work-item native proof: ${String(error)}` };

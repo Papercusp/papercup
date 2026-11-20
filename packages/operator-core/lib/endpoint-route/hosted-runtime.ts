@@ -496,6 +496,7 @@ export async function createHostedRuntime(
   // The hosted SPA gets its own explicit browser boundary. Keep the browser
   // leaf on the same tenant runner as the hosted identity/session stack so
   // every customer read/write enters the RLS transaction exactly once.
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/hosted-runtime.ts#<module>/createHostedRuntime:f139d19f39862b95fdf0:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const hostedBrowser = createHostedBrowserRoutes({
     publicOrigin: configuration.publicOrigin,
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
@@ -521,6 +522,7 @@ export async function createHostedRuntime(
     },
   });
 
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/hosted-runtime.ts#<module>/createHostedRuntime:898ec2d39cf9fdc42a63:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const plane = assembleHostedControlPlane({
     provider,
     publicOrigin: configuration.publicOrigin,

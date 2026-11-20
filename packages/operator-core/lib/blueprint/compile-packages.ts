@@ -587,6 +587,7 @@ export async function provisionBlueprintPackages(
   }
   for (const pin of pins) {
     if (pin.packageKind === 'recipe') await provisioners.recipe(pin, target);
+    // notify-classification: {"id":"packages/operator-core/lib/blueprint/compile-packages.ts#<module>/provisionBlueprintPackages:f72afdb34020b2566a2d:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     else if (pin.packageKind === 'rubric') await provisioners.rubric(pin, target);
     // notify-classification: {"id":"packages/operator-core/lib/blueprint/compile-packages.ts#<module>/provisionBlueprintPackages:b0d4f0d7257c91ad6680:1","classification":"safe-to-lose","reason":"The knowledge provisioner awaits the scoped memory writes and rejects failed installs. Its detached notice only invalidates learning and pack query views; those views reconstruct their state from the stored memory rows."}
     else if (pin.packageKind === 'knowledge-pack') await provisioners.knowledge(pin, target);
@@ -624,6 +625,7 @@ export function blueprintPackageProvisioners(sql: Sql, resourceInstall?: {
     },
     async rubric(pin, scope) {
       const { provisionPinnedRubric } = await import('../rubrics');
+      // notify-classification: {"id":"packages/operator-core/lib/blueprint/compile-packages.ts#<module>/blueprintPackageProvisioners/rubric:5cf37a795e98b013eca9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await provisionPinnedRubric(pin.value as import('../cupboard/rubric-store').RubricSeedSource, scope.workspaceId);
     },
     async knowledge(pin, scope) {

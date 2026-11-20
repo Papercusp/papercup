@@ -2319,6 +2319,7 @@ export function nativeLatestTurnCompleted({
   if (!Number.isFinite(completedAtOrAfterMs)) return false;
   const transcriptPath = newestNativeTranscriptPath(agent, env, home, nativeSessionId);
   return transcriptPath
+    // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/nativeLatestTurnCompleted:908bd232f74cce22ed08:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     ? nativeTurnCompletedInTranscript({
       agent, env, transcriptPath, receivedAtMs: completedAtOrAfterMs, home, nowMs,
     })
@@ -5533,9 +5534,11 @@ export function makeAgentBusyGate({
         let inputSurface = readBlockedInputSurface();
         const nativeBusy = nativeExecutionBlocksInjection(nativeExecution());
         nativeBusyObserved = nativeBusy;
+        // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/makeAgentBusyGate/waitAtPrompt:a64d5b24fd4bf8b931be:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         if (!inputSurface && !nativeBusy && verifiedBoundary?.()) {
           await new Promise((resolve) => setImmediate(resolve));
           inputSurface = readBlockedInputSurface();
+          // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/makeAgentBusyGate/waitAtPrompt:602cd0af7000cb8418fc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           if (!inputSurface && !nativeExecutionBlocksInjection(nativeExecution()) && verifiedBoundary()) {
             return { deferred: false, boundary: 'native-turn-complete' };
           }
@@ -13192,6 +13195,7 @@ export function hostThroughPty(o) {
         }
       },
     });
+    // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/verifySubmitted:82cafe38fe9f9d0c6879:1","classification":"durable","reason":"The native source census reaches notifyExhausted at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const result = await verifier.verify();
     if (result.aborted) {
       appendHostEvent(ownerId, 'submit-verify-unconfirmed', {
@@ -13609,6 +13613,7 @@ export function hostThroughPty(o) {
             break;
           }
           if (quotaBlockDetector.isBlocked()) {
+            // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/injectTurnAtPrompt:bed31a8de63820f2e5ab:1","classification":"durable","reason":"The native source census reaches notifyExhausted at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             await verifySubmitted(label);
             dropReason = 'submit-verification-aborted-quota-blocked';
             break;
@@ -13855,6 +13860,7 @@ export function hostThroughPty(o) {
           if (child !== injectChild) {
             return { delivered: false, reason: 'superseded', attempts };
           }
+          // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/injectTurnAtPrompt:0c085d72db34d3206f9e:1","classification":"durable","reason":"The native source census reaches notifyExhausted at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           let submitVerification = await verifySubmitted(label, {
             abortReason: abortSubmission,
             terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
@@ -13907,6 +13913,7 @@ export function hostThroughPty(o) {
             if (child !== injectChild) {
               return { delivered: false, reason: 'superseded', attempts };
             }
+            // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/injectTurnAtPrompt:400e143c0b47f8a6dd87:1","classification":"durable","reason":"The native source census reaches notifyExhausted at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             submitVerification = await verifySubmitted(label, {
               abortReason: abortSubmission,
               terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
@@ -14159,6 +14166,7 @@ export function hostThroughPty(o) {
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
       !args.some((arg) => arg === 'resume' || arg === 'fork') &&
       Boolean(leadingTurnOriginMarker(launchKickoff));
+    // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty:cd381a11b3d48d482f58:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     launchKickoffCompletion = (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
       const isResumeLaunch = args.some((arg) => arg === 'resume' || arg === 'fork');
@@ -14233,6 +14241,7 @@ export function hostThroughPty(o) {
         void kickoffCarryBinding?.then((binding) => {
           if (!binding.ok && binding.reason === 'successor-native-id-missing') kickoffBindingFailure = binding.reason;
         });
+        // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/injectLaunchKickoff:ebf5971b765bb75917f3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         return injectTurnAtPrompt({
           text: launchKickoff,
           label,
@@ -14308,6 +14317,7 @@ export function hostThroughPty(o) {
           terminateOnSubmitVerifyExhaustion: !managedKickoff && !launchKickoffNativeProofAvailable,
         });
       };
+      // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>:c65cb4c6e4b8c09e3bf3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       let r = await injectLaunchKickoff();
       if (!managedKickoff && isResumeLaunch && !r.delivered && r.reason === 'successor-reanchor-unconfirmed') {
         // The same child's durable report can acknowledge AFTER the bounded
@@ -14352,6 +14362,7 @@ export function hostThroughPty(o) {
         if (binding && !rejection()) {
           lateBindingRecovered = true;
           appendHostEvent(ownerId, 'launch-kickoff-binding-recovery-started', { nativeId });
+          // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>:c65cb4c6e4b8c09e3bf3:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           r = await injectLaunchKickoff();
         } else {
           const reason = rejection() ?? 'child-exited';
@@ -14398,6 +14409,7 @@ export function hostThroughPty(o) {
           }
           break;
         }
+        // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>:c65cb4c6e4b8c09e3bf3:3","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         r = await injectLaunchKickoff();
       }
       launchKickoffAttemptStartedAtMs = 0;
@@ -14436,6 +14448,7 @@ export function hostThroughPty(o) {
         try {
           r = hostCleanedUp || shuttingDown
             ? { delivered: false, reason: 'host-shutting-down', attempts: 0 }
+            // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>:c65cb4c6e4b8c09e3bf3:4","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             : await injectLaunchKickoff();
         } finally {
           releaseInject?.();
@@ -14768,6 +14781,7 @@ export function hostThroughPty(o) {
           // exactly the case those gates exist to defer. Never terminate on this
           // path: the child is still usable and the first turn already persisted.
           try {
+            // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>:751c9495af8f1004cfd2:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const retry = await injectTurnAtPrompt({
               text: launchKickoff,
               label: 'launch kickoff (model-turn retry)',
@@ -15280,6 +15294,7 @@ export function hostThroughPty(o) {
       };
     }
     return {
+      // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/verifiedBoundaryFor/boundary:ef8e7fc8a8d016c9df49:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       boundary: () => nativeLatestTurnCompleted({
         agent,
         env,
@@ -15514,6 +15529,7 @@ export function hostThroughPty(o) {
     let exitEvent = null;
     const fire = (fn) => setImmediate(() => {
       try {
+        // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/makeParkedChild/fire/<callback>:a8c6978a7dd1d596e7f9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         fn(exitEvent);
       } catch {
         /* a listener must never break another */
@@ -15603,6 +15619,7 @@ export function hostThroughPty(o) {
     writeMeta();
   };
   const captureParkProviderFailure = () => {
+    // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/captureParkProviderFailure:3c2c925b9dd309e50e76:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const execution = currentNativeExecution();
     if (execution.phase !== 'failed' || execution.failure?.retryable !== true ||
         ownerStopRequested || execution.ownerInputPending || nativeExecutionBlocksInjection(execution) ||
@@ -15613,6 +15630,7 @@ export function hostThroughPty(o) {
     if (identityAssumeFence?.blocksInput()) return false;
     const minted = mintResumeForPark();
     if (!minted) return false;
+    // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/parkChild:5ab2e3636f3f83dfb378:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const resume = { ...minted, parkedGeneration: childGeneration, providerFailure: captureParkProviderFailure() };
     const parkedChild = child;
     const childPid = Number.isInteger(parkedChild?.pid) ? parkedChild.pid : null;
@@ -15812,6 +15830,7 @@ export function hostThroughPty(o) {
     const releaseSlot = () => {
       if (unparkPromise === attempt) unparkPromise = null;
     };
+    // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/unparkChild:4929fdc3ba4cb8434c37:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     attempt = (async () => {
       const startedAt = Date.now();
       try {
@@ -16019,6 +16038,7 @@ export function hostThroughPty(o) {
     // own behavior (same gates, same logging, same side effects) — each just
     // now also reports what happened, on the same connection, before it closes.
     conn.on('end', async () => {
+      // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>:30d0539840c127364acd:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const outcome = await (async () => {
       if (payloadRejected) return { ok: false, reason: 'payload-rejected' };
       const payload = Buffer.concat(chunks);
@@ -16476,6 +16496,7 @@ export function hostThroughPty(o) {
         }
         if ('expectedProviderFailure' in msg &&
             (!Number.isFinite(msg.expectedStartedAt) ||
+             // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>/<callback>:3c2c925b9dd309e50e76:3","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
              !providerFailureShutdownMatches(msg.expectedProviderFailure, currentNativeExecution()))) {
           return { ok: false, reason: 'shutdown-refused:stale-provider-failure' };
         }
@@ -16748,6 +16769,7 @@ export function hostThroughPty(o) {
           // completion), so an absent sourceTranscriptPath must fall back to the
           // output gate, NOT silently widen to the newest transcript.
           const { boundary: verifiedBoundary, support: verifierSupport } = verifiedBoundaryFor(msg);
+          // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>/<callback>/runGatedDelivery:595790032d9984885bc9:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const atPrompt = await agentBusyGate.waitAtPrompt(undefined, verifiedBoundary);
           if (atPrompt.deferred) {
             // Agent stayed mid-turn past the cap. DROP the live inject/kill rather
@@ -17331,6 +17353,7 @@ export function hostThroughPty(o) {
             if (firstInputWrite && msg.mode === 'turn') {
               if (Object.hasOwn(deliver, 'providerRecovery')) {
                 const fence = deliver.providerRecovery;
+                // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>/<callback>/runGatedDelivery:3c2c925b9dd309e50e76:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
                 const execution = currentNativeExecution();
                 const parkedFailure = unparkTransition?.providerFailure;
                 const sameParkedFailure = fence && parkedFailure &&
@@ -17492,6 +17515,7 @@ export function hostThroughPty(o) {
               submissionRecovery: pendingSubmissionRecovery(turnWriteStartedAt, composerGenerationAtWrite) };
             for (const id of coalescedDeliveryIds) nativeStartPending.set(id, pending);
           }
+          // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>/<callback>/runGatedDelivery:14d0390ec2c8a6ad944d:1","classification":"durable","reason":"The native source census reaches notifyExhausted at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const result = await verifySubmitted(`${msg.mode} inject`, {
             text: deliver.data,
             submittedAtMs: turnWriteStartedAt,
@@ -18783,6 +18807,7 @@ export function hostThroughPty(o) {
       if (quotaRecovery && quotaRecovery.cause !== 'auth' && env.PAPERCUSP_AGENT === 'codex') {
         let autoRouteReady = false;
         try {
+          // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>:0dad0605e78d01d1d856:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const repaired = await ensureCodexHome({ routeMode: 'auto' });
           const config = require('@iarna/toml').parse(readFileSync(join(env.CODEX_HOME, 'config.toml'), 'utf8'));
           const provider = config.model_providers?.['papercusp-codex-gateway'];
@@ -18892,6 +18917,7 @@ export function hostThroughPty(o) {
         ) {
           let homeEnsureFailure = null;
           try {
+            // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>:09efa6ac5e68785ce58a:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
             const repaired = await ensureCodexHome();
             homeEnsureFailure = repaired?.failure ?? null;
             if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') && repaired?.ok !== true)
@@ -19653,6 +19679,7 @@ export function hostThroughPty(o) {
         Boolean(leadingTurnOriginMarker(carryText)) &&
         nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
       let carryNativeSubmission = null;
+      // notify-classification: {"id":"apps/operator/scripts/psu-pty-host.mjs#<module>/hostThroughPty/<callback>/<callback>/deliverCarry:0a54ebddc7ea5265cd38:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       let carryResult = await injectTurnAtPrompt({
         text: carryText,
         abortSubmission: () => carryBindingFailure || (recovering ? bindingRecoveryRejection() : null),
