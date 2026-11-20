@@ -3310,20 +3310,29 @@ export async function setCarryNoteWithPrior(
     // journaling ON: append (blank ⇒ unchanged ring); OFF: never keep a ring.
     const journal = journalEnabled ? appendCarryJournal(prevJournal, trimmed, now, opts?.workItem) : [];
     const noteCol = trimmed.length > 0 ? trimmed : null;
+    const sealedAway = opts?.seal !== undefined && trimmed !== (effectiveNote ?? '').trim();
     if (journalEnabled && noteCol !== null && opts && 'latestUpdate' in opts) {
+      const priorEntry = prevJournal.at(-1);
+      const entry = journal[journal.length - 1];
       const latest = opts.latestUpdate === undefined
-        ? readCarryLatestUpdate(priorNote ?? '', prevJournal.at(-1)?.latestUpdate)?.text
+        ? readCarryLatestUpdate(priorNote ?? '', priorEntry?.latestUpdate)?.text
         : opts.latestUpdate.trim();
-      const offset = latest ? noteCol.indexOf(latest) : -1;
-      journal[journal.length - 1].latestUpdate = {
+      const offset = latest && !sealedAway ? noteCol.indexOf(latest) : -1;
+      entry.latestUpdate = {
         noteHash: shortCarryHash(noteCol), offset, length: offset >= 0 ? latest!.length : 0,
       };
+      if (opts.latestUpdate === undefined) {
+        // A metadata refresh inherits the subject of the retained authored update.
+        // The reader compares that original identity with the current work item.
+        const subject = offset >= 0 ? normalizeWorkItemSubjectFingerprint(priorEntry?.subjectFingerprint) : undefined;
+        if (subject) entry.subjectFingerprint = subject;
+        else delete entry.subjectFingerprint;
+      }
     }
     // Unspecified ⇒ carry the prior declaration forward (see the `deps` opt doc).
     const declaredDepsCol = depsSpecified ? (opts?.deps ?? null) : priorDeps;
     // P-002 / D-006: reference stamps ride beside the declared stamps under `deps.refs`.
     // A sealed note keeps none — the stamps would name what the sealed text cited.
-    const sealedAway = opts?.seal !== undefined && trimmed !== (effectiveNote ?? '').trim();
     const depsCol = mergeCarryRefStampsIntoDeps(
       declaredDepsCol,
       sealedAway ? [] : reconcileCarryRefStamps(noteCol, opts?.refStamps, priorDeps),

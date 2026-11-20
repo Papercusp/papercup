@@ -12,7 +12,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
@@ -30,7 +30,8 @@ vi.mock('./workspace-registry', async () => {
 // contention regression short while leaving the production default untouched.
 const PRIOR_ATTEST_LOCK_TIMEOUT = process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
 process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS = '100';
-const { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta, attestWorkItemCheckpointUnchanged } = await import(
+const { setWorkItemCheckpoint, setWorkItemCheckpointWithPrior, getWorkItemCheckpoint, getWorkItemCheckpointWithMeta,
+  getWorkItemCheckpointFreshness, attestWorkItemCheckpointUnchanged } = await import(
   './work-item-checkpoint'
 );
 if (PRIOR_ATTEST_LOCK_TIMEOUT === undefined) delete process.env.PAPERCUSP_COORD_WRITE_LOCK_TIMEOUT_MS;
@@ -126,8 +127,26 @@ async function rowCount(): Promise<number> {
   return Number(r[0]?.n ?? 0);
 }
 
+const resumeReaders = { checkpoint: getWorkItemCheckpointWithMeta, freshness: getWorkItemCheckpointFreshness,
+  evidence: async () => [] };
+
+async function seedResumeSubject(id: string) {
+  const source = { id, harness: HARNESS, kind: 'feature', title: 'Verify the current edition',
+    summary: 'Read the original observation', state: 'open', assignee: 'successor' };
+  const dependency = 'WI-5015';
+  await db.sql`INSERT INTO harness_shared.work_items
+    (workspace_id,harness_slug,feature_id,title,summary,status,taken_by,updated_ts)
+    VALUES ('default',${HARNESS},${id},${source.title},${source.summary},'open','successor',1),
+           ('default',${HARNESS},${dependency},'Original measurement','', 'done',NULL,2)`;
+  return { ref: { harness: HARNESS, workItemId: id, workspaceId: 'default' }, source,
+    firstWrite: { workItem: source, dependsOn: ['work-item:' + dependency] } };
+}
+
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
-  it('persists all four cited reference kinds and excludes its own item through the work-item checkpoint writer (R-13)', async () => {
+  it('persists all four cited reference kinds and excludes its own item through the work-item checkpoint writer (R-13)', async ({ onTestFinished }) => {
+    const sourceRoot = realpathSync(new URL('../../../', import.meta.url));
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', sourceRoot);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
     const ref = { harness: HARNESS, workItemId: 'WI-5000', workspaceId: 'default' };
     await db.sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, status, updated_ts)
@@ -149,7 +168,8 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
       { dep: 'work-item:WI-1313', token: 'open@10', at: expect.any(Number) },
       { dep: 'decision:reference-plan#D-001', token: hash('Keep baseline\nRead before replacing'), at: expect.any(Number) },
       { dep: 'fact:reference-fact', token: 'live:1313@10', at: expect.any(Number) },
-      { dep: 'file:packages/operator-core/lib/carry-ref-stamps.test.ts', token: hash(readFileSync(new URL('./carry-ref-stamps.test.ts', import.meta.url))), at: expect.any(Number) },
+      { dep: 'file:packages/operator-core/lib/carry-ref-stamps.test.ts', token: hash(readFileSync(new URL('./carry-ref-stamps.test.ts', import.meta.url))),
+        at: expect.any(Number), sourceRoot, sourceRootKind: 'canonical-repo' },
     ];
 
     await setWorkItemCheckpointWithPrior(ref, citations);
@@ -205,15 +225,14 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
   it('tracks the latest authored update across append, refresh, metadata changes and stale span data', async () => {
     const { renderCarryNote, withCarryNoteChecks } = await import('./carry-note');
     const { readWorkItemResume } = await import('./agent-tools/work_items/resume');
-    const ref = { harness: HARNESS, workItemId: 'WI-resume-latest-update' };
-    const source = { id: ref.workItemId, harness: HARNESS, state: 'open', assignee: 'successor' };
-    const deps = { checkpoint: getWorkItemCheckpointWithMeta,
-      freshness: async () => undefined, evidence: async () => [] };
-    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acquire run.ts and implement the wiring.' }));
+    const { ref, source, firstWrite } = await seedResumeSubject('WI-resume-latest-update');
+    const deps = resumeReaders;
+    await setWorkItemCheckpointWithPrior(ref, renderCarryNote({ next: 'Acquire run.ts and implement the wiring.' }), firstWrite);
     // A plain-prose update is progress, not an action. Neither it nor a possibly
     // superseded historical Next is a verified current instruction.
     const prose = 'Recorded the saved proof for the wiring review.';
     await setWorkItemCheckpointWithPrior(ref, prose, {
+      workItem: source,
       latestUpdate: prose,
       transform: prior => `${prior}\n\n---\n${prose}`,
     });
@@ -223,6 +242,7 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     // An appended update that names its own Next becomes the action.
     const added = renderCarryNote({ next: 'Wiring is complete. Review the saved proof.' });
     await setWorkItemCheckpointWithPrior(ref, added, {
+      workItem: source,
       latestUpdate: added,
       transform: prior => `${prior}\n\n---\n${added}`,
     });
@@ -231,6 +251,7 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     });
     const refreshed = renderCarryNote({ next: 'Run the independent acceptance check.' });
     await setWorkItemCheckpointWithPrior(ref, refreshed, {
+      workItem: source,
       latestUpdate: refreshed,
       transform: prior => `${refreshed}\n\n---\n${prior}`,
     });
@@ -241,9 +262,22 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     const updated = await readWorkItemResume(source, deps);
     expect(updated.nextAction.text).toBe('Run the independent acceptance check.');
     expect(updated.checks.rows).toHaveLength(1);
+    const successor = { ...source, title: 'A different subject' };
+    await db.sql`UPDATE harness_shared.work_items SET title=${successor.title}
+      WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${source.id}`;
+    await setWorkItemCheckpointWithPrior(ref, undefined, { workItem: successor, transform: prior => prior });
+    expect((await getWorkItemCheckpointWithMeta(ref)).subjectFingerprint).toEqual(computeWorkItemSubjectFingerprint(source));
+    expect((await readWorkItemResume(successor, deps)).nextAction).toMatchObject({ status: 'unknown', text: null });
+    // A legacy update without an observed subject cannot acquire one from a metadata write.
+    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Legacy instruction without a subject.' }));
+    await setWorkItemCheckpointWithPrior(ref, undefined, { workItem: successor, transform: prior => prior });
+    expect((await getWorkItemCheckpointWithMeta(ref)).subjectFingerprint).toBeUndefined();
+    expect((await readWorkItemResume(successor, deps)).nextAction).toMatchObject({ status: 'unknown', text: null });
+    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Current successor instruction.' }), { workItem: successor });
+    expect((await readWorkItemResume(successor, deps)).nextAction.text).toBe('Current successor instruction.');
     await db.sql`UPDATE harness_shared.carry_notes SET note = note || '\nChanged outside the checkpoint writer'
       WHERE workspace_id = 'default' AND scope = ${workItemScope(HARNESS, ref.workItemId)}`;
-    expect((await readWorkItemResume(source, deps)).nextAction).toMatchObject({ status: 'unknown', text: null });
+    expect((await readWorkItemResume(successor, deps)).nextAction).toMatchObject({ status: 'unknown', text: null });
   });
 
   it.each(['lease-release', 'forced-interrupt'] as const)(
@@ -253,16 +287,15 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
       const sessionBrief = await import('./session-brief');
       const brief = vi.spyOn(sessionBrief, 'getSessionBrief').mockResolvedValue(null);
       const { captureWorkItemFlightRecordsForItems } = await import('./work-item-flight-record');
-      const ref = { harness: HARNESS, workItemId: 'WI-flight-resume', workspaceId: 'default' };
-      const source = { id: ref.workItemId, harness: HARNESS, state: 'open', assignee: 'successor' };
-      const deps = { checkpoint: getWorkItemCheckpointWithMeta,
-        freshness: async () => undefined, evidence: async () => [] };
+      const { ref, source, firstWrite } = await seedResumeSubject('WI-flight-resume');
+      const deps = resumeReaders;
       const latest = renderCarryNote({ did: 'The native fixture run is complete.',
         next: 'Reuse the saved proof; await the qualified hosted handoff.' });
       try {
-        await setWorkItemCheckpoint(ref, renderCarryNote({ did: 'Historical detail '.repeat(1_800),
-          next: 'Run the old native fixture job.' }));
+        await setWorkItemCheckpointWithPrior(ref, renderCarryNote({ did: 'Historical detail '.repeat(1_800),
+          next: 'Run the old native fixture job.' }), firstWrite);
         await setWorkItemCheckpointWithPrior(ref, latest, {
+          workItem: source,
           transform: prior => withCarryNoteChecks(`${prior}\n\n---\n${latest}`, [
             { id: 'proof', claim: 'Retain the fixture boundary.', verified: 'saved-run' },
           ]),
@@ -280,6 +313,7 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
         // A newer authored update without Next must still supersede the old action.
         const insight = renderCarryNote({ insight: 'The remaining step needs account authority.' });
         await setWorkItemCheckpointWithPrior(ref, insight, {
+          workItem: source,
           transform: prior => `${prior}\n\n---\n${insight}`,
         });
         await captureWorkItemFlightRecordsForItems({ ownerId: 'successor', workspaceId: 'default',
@@ -296,19 +330,17 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     const { renderCarryNote } = await import('./carry-note');
     const { readWorkItemResume } = await import('./agent-tools/work_items/resume');
     const { shapeWorkItemsGet } = await import('./agent-tools/work_items/get-shape');
-    const ref = { harness: HARNESS, workItemId: 'WI-resume-roundtrip' };
-    const source = { id: ref.workItemId, harness: HARNESS, state: 'open', assignee: 'successor' };
-    const deps = { checkpoint: getWorkItemCheckpointWithMeta,
-      freshness: async () => undefined, evidence: async () => [] };
-    await setWorkItemCheckpoint(ref, renderCarryNote({ did: 'Prior detail '.repeat(700),
-      next: 'Reuse test-run:44; request independent acceptance.' }));
+    const { ref, source, firstWrite } = await seedResumeSubject('WI-resume-roundtrip');
+    const deps = resumeReaders;
+    await setWorkItemCheckpointWithPrior(ref, renderCarryNote({ did: 'Prior detail '.repeat(700),
+      next: 'Reuse test-run:44; request independent acceptance.' }), firstWrite);
     const resume = await readWorkItemResume(source, deps);
     const shaped = shapeWorkItemsGet({ ok: true, __resumeOnly: true,
       results: [{ ok: true, id: source.id, resume }], counts: { ok: 1, failed: 0 } }, 'trimmed') as any;
     expect(shaped.results[0].resume.nextAction.text).toBe('Reuse test-run:44; request independent acceptance.');
     expect(shaped.results[0].resume.claim.assignee).toBe('successor');
     expect(JSON.stringify(shaped).length).toBeLessThan(6_000);
-    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acceptance is complete; advance the next item.' }));
+    await setWorkItemCheckpoint(ref, renderCarryNote({ next: 'Acceptance is complete; advance the next item.' }), { workItem: source });
     const updated = await readWorkItemResume(source, deps);
     expect(updated.nextAction.text).toBe('Acceptance is complete; advance the next item.');
     expect(updated.checkpoint.contentHash).not.toBe(resume.checkpoint.contentHash);
