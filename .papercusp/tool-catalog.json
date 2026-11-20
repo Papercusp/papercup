@@ -24990,7 +24990,7 @@
           "POST"
         ]
       },
-      "description": "Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Returns a react-diff-view-parseable patch string. Seq 1 returns the file-against-empty creation diff.",
+      "description": "Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Seq 1 returns the creation diff. A missing predecessor returns revision_predecessor_unavailable with the required sequence and exact retry.",
       "capabilities": [
         "plans:read"
       ],
