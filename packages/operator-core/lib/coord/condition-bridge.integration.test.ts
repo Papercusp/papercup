@@ -307,6 +307,40 @@ describe('P-002 frozen failure publisher — native work-item store', () => {
     expect(await stored()).toEqual(rows);
   }, 120_000);
 
+  it('publishes native recorded files and legs without a workspace aggregate across restart', async () => {
+    const { routeFrozenRepairLegs } = await import('../release/frozen-repair-leg-routing');
+    const { nextRepairSignature } = await import('../release/frozen-candidate-repair-queue');
+    const workspace = '@papercusp/operator-core';
+    const entries = [...Array.from({ length: 135 }, (_, i) => `lib/aggregate-${i}.test.ts`),
+      `${workspace} :: lint:condition-rail`, 'lint:tsc'];
+    const recorded = nextRepairSignature(undefined, {
+      head: 'aggregate-head', round: 1, failingTests: [workspace, ...entries],
+      casesByFile: Object.fromEntries(entries.slice(0, 135).map((id) => [id, ['case ' + 'x'.repeat(1601)]])),
+      legErrors: { 'lint:tsc': ['src/decisive.ts|TS1234'] },
+    });
+    const queue = { candidate: 'aggregate-candidate', repairHead: 'aggregate-head', ...recorded };
+    const before = structuredClone(queue);
+    const tails = new Map(entries.map((id) => [id, 'full failure ' + id + '\n' + 'e'.repeat(1801)]));
+    const deps = await dependencies();
+    const first = await routeFrozenRepairLegs({ pipeline: H, queue, failureTails: tails }, deps);
+    expect(first.failed).toEqual([]);
+    expect(first.plan.workspaceAggregates).toEqual([workspace]);
+    const rows = await stored();
+    expect(rows.map((r) => r.failure.entry).sort()).toEqual([...entries].sort());
+    for (const { failure } of rows) expect(failure).toEqual({ pipeline: H,
+      candidate: queue.candidate, repairHead: queue.repairHead, entry: failure.entry,
+      signature: recorded.signature.find((s) => s.id === failure.entry), output: tails.get(failure.entry) });
+    expect(queue).toEqual(before);
+    expect(deps.broadcastSummary).toHaveBeenCalledTimes(1);
+    const restarted = await dependencies();
+    const replay = await routeFrozenRepairLegs({ pipeline: H,
+      queue: { ...queue, failingTests: [...queue.failingTests].reverse().concat(entries[136]!) },
+      failureTails: tails }, restarted);
+    expect(replay.opened).toEqual([]);
+    expect(restarted.broadcastSummary).not.toHaveBeenCalled();
+    expect(await stored()).toEqual(rows);
+  }, 120_000);
+
   it('retains one notification identity through delivery failure, restart and lost acknowledgement', async () => {
     const { routeFrozenRepairLegs, productionFrozenRepairLegRoutingDeps } = await import('../release/frozen-repair-leg-routing');
     const rail = await import('../severe-event-broadcast');
