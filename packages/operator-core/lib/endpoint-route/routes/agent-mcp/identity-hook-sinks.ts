@@ -63,6 +63,7 @@ interface HookBody {
   client?: string;
   // pre-tool
   tool?: string;
+  cwd?: string;
   input?: unknown;
   inputTruncated?: boolean;
   guardRequestId?: string;
@@ -195,6 +196,7 @@ export async function toolGuardText(
     reason: 'Native plan execution authority did not finish within the hook budget; this call was not performed. Retry after authority reads recover.',
   };
   let planRefused = false;
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-hook-sinks.ts#<module>/toolGuardText:e6ef971de2b1e4e59f44:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   const plan = (async () => {
     const startedAt = performance.now();
     let timingRecorded = false;
@@ -208,8 +210,11 @@ export async function toolGuardText(
       // authority computation so none of those reads can exhaust the client wall.
       // Start the check now and publish immediate refusals before the speculative
       // identity microtask; the timeout wrapper must not delay that fast path.
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-hook-sinks.ts#<module>/toolGuardText/<callback>:3f1e96db3b3a56681bf4:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const check = checkPlanExecutionGuard({ ownerId: input.ownerId, workspaceId: input.workspaceId,
-        toolName: input.call.tool, args: input.call.input, observeTiming: observePlanTiming, readinessDeadlineAtMs })
+        toolName: input.call.tool, args: input.call.input,
+        ...(typeof input.call.cwd === 'string' ? { cwd: input.call.cwd } : {}),
+        observeTiming: observePlanTiming, readinessDeadlineAtMs })
         .then(refusal => {
           // A late promise can settle before an overdue timer callback. Keep
           // that expired plan permit from being attributed to identity below.
@@ -295,9 +300,9 @@ const toolGuardInFlight = pinModuleState('@papercusp/operator-core.tool-guard-in
   () => new Map<string, { fingerprint: string; verdict: Promise<Awaited<ReturnType<typeof toolGuardText>>> }>());
 
 function toolGuardFingerprint(ownerId: string, workspaceId: unknown,
-  body: { tool?: unknown; client?: unknown; inputTruncated?: unknown; input?: unknown }): string {
+  body: { tool?: unknown; client?: unknown; cwd?: unknown; inputTruncated?: unknown; input?: unknown }): string {
   return createHash('sha256').update(JSON.stringify([ownerId, workspaceId, body.tool ?? null,
-    body.client ?? null, body.inputTruncated === true, body.input ?? null])).digest('hex');
+    body.client ?? null, body.cwd ?? null, body.inputTruncated === true, body.input ?? null])).digest('hex');
 }
 
 const toolGuard = defineTool({
@@ -318,18 +323,19 @@ const toolGuard = defineTool({
     const phases: Partial<Record<'plan' | 'identity', number>> = {};
     const planStages: Record<string, number> = {};
     const repeatedPlanStageCounts = new Map<string, number>();
+    const pendingPlanStages = new Map<symbol, { stage: string; startedAtMs: number }>();
     const identityStages: Record<string, number> = {};
     const observeIdentityTiming: IdentityRuleReadTimingObserver = ({ stage, durationMs }) => {
       if (!['applied_revision', 'applied_artifact', 'local_rules'].includes(stage) ||
           !Number.isFinite(durationMs) || durationMs < 0) return;
       identityStages[stage] = (identityStages[stage] ?? 0) + durationMs;
     };
-    const observePlanTiming: PlanExecutionTimingObserver = ({ stage, durationMs }) => {
       // Keep the existing bounds plus the exact snapshot names with hyphens.
       // These timing-only labels contain no owner, plan, input or verdict content.
-      if (!(/^[a-z_]{1,32}$/.test(stage) ||
-          /^start_gate_snapshot_(?:plan-items|work-contracts|lineage-parties)$/.test(stage)) ||
-          !Number.isFinite(durationMs) || durationMs < 0) return;
+    const isPlanTimingStage = (stage: string) => /^[a-z_]{1,32}$/.test(stage) ||
+      /^start_gate_snapshot_(?:plan-items|work-contracts|lineage-parties)$/.test(stage);
+    const observePlanTiming: PlanExecutionTimingObserver = ({ stage, durationMs }) => {
+      if (!isPlanTimingStage(stage) || !Number.isFinite(durationMs) || durationMs < 0) return;
       // Preserve the 41 guard, snapshot, goal and canonical-reader phases,
       // including late revision rechecks; keep future labels bounded at 48.
       if (Object.hasOwn(planStages, stage)) {
@@ -340,6 +346,12 @@ const toolGuard = defineTool({
       } else if (Object.keys(planStages).length < 48) {
         planStages[stage] = durationMs;
       }
+    };
+    observePlanTiming.trackPending = (stage, startedAtMs) => {
+      if (!isPlanTimingStage(stage)) return;
+      const id = Symbol(stage);
+      pendingPlanStages.set(id, { stage, startedAtMs });
+      return () => { pendingPlanStages.delete(id); };
     };
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
@@ -356,6 +368,7 @@ const toolGuard = defineTool({
       return acquisitionSnapshot;
     };
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-hook-sinks.ts#<module>/handler/run/<callback>:dbf56c2a8f4182ad84b1:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const run = () => withPriorityOrgPg(() => toolGuardText({
         ownerId,
         workspaceId,
@@ -363,6 +376,7 @@ const toolGuard = defineTool({
           tool,
           input: body.inputTruncated === true ? null : body.input ?? null,
           client: typeof body.client === 'string' ? body.client : '',
+          ...(typeof body.cwd === 'string' ? { cwd: body.cwd } : {}),
           ...(body.inputTruncated === true ? { inputTruncated: true } : {}),
         },
       }, readAppliedWornRules, (phase, durationMs) => { phases[phase] = durationMs; }, observePlanTiming, observeIdentityTiming));
@@ -390,7 +404,8 @@ const toolGuard = defineTool({
         text = await compute();
       }
     } finally {
-      const totalMs = performance.now() - startedAt;
+      const observedAtMs = performance.now();
+      const totalMs = observedAtMs - startedAt;
       if (totalMs >= 500) {
         const recordRoutePhase = (phase: string, durationMs: number) => {
           try { ctx?.routeDiagnostics?.record?.(phase, durationMs); } catch { /* diagnostics only */ }
@@ -416,6 +431,8 @@ const toolGuard = defineTool({
         ...(joinedInFlight ? { joinedInFlight: true } : {}),
         ...(repeatedPlanStageCounts.size ? { repeatedPlanStageCounts: Object.fromEntries(repeatedPlanStageCounts) } : {}),
         ...(Object.keys(planStages).length ? { planStages } : {}),
+        ...(pendingPlanStages.size ? { pendingPlanStages: Array.from(pendingPlanStages.values(),
+          ({ stage, startedAtMs }) => ({ stage, elapsedMs: Math.round(observedAtMs - startedAtMs) })) } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
         ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId),
           pgAcquisitions: toolGuardPgAcquisitions(readAcquireSnapshot) } : {}),

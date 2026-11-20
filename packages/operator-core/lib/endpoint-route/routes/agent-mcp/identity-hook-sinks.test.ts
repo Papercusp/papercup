@@ -525,7 +525,7 @@ describe('POST /agent-mcp/tool-guard', () => {
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
 
-  it('retains repeated plan-stage counts and total timings without leaking binding content', async () => {
+  it('retains completed and pending plan-stage timings without leaking binding content', async () => {
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
@@ -536,7 +536,12 @@ describe('POST /agent-mcp/tool-guard', () => {
       observeTiming({ stage: 'start_proof', durationMs: 800 });
       observeTiming({ stage: 'private-plan-content', durationMs: 1 });
       observeTiming({ stage: 'invalid', durationMs: NaN });
-      now += 1710;
+      const clearSettled = observeTiming.trackPending('start_proof', now);
+      observeTiming.trackPending('private-plan-content', now);
+      now += 1000;
+      clearSettled?.();
+      observeTiming.trackPending('canonical_binding_recheck', now);
+      now += 710;
       return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
     });
     try {
@@ -550,6 +555,7 @@ describe('POST /agent-mcp/tool-guard', () => {
         totalMs: 1710, setupMs: 0, planMs: 1710, identityMs: null, aborted: false,
         repeatedPlanStageCounts: { start_proof: 2 },
         planStages: { bindings: 10, start_proof: 1700, binding: 900 },
+        pendingPlanStages: [{ stage: 'canonical_binding_recheck', elapsedMs: 710 }],
       }));
       expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
       expect(JSON.stringify(log.mock.calls)).not.toContain('private-plan-content');
@@ -715,6 +721,38 @@ describe('POST /agent-mcp/tool-guard', () => {
     expect(await post('/agent-mcp/tool-guard', { tool: 'Bash' })).toEqual({ ok: true, text: '' });
     expect(await post('/agent-mcp/tool-guard', { owner: 'o' })).toEqual({ ok: true, text: '' });
     expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['claude', 'codex', 'omp'])('preserves the %s adapter cwd for native plan authority', async client => {
+    const cwd = '/repo/selected';
+    expect(await post('/agent-mcp/tool-guard', { owner: 'builder', workspace: 'ws', client,
+      tool: 'apply_patch', cwd, input: { patch: 'literal patch' } })).toEqual({ ok: true, text: '' });
+    expect(planExecutionGuard).toHaveBeenLastCalledWith(expect.objectContaining({ cwd,
+      ownerId: 'builder', workspaceId: 'ws', toolName: 'apply_patch', args: { patch: 'literal patch' } }));
+  });
+
+  it.each([undefined, null, 7, {}, false])('does not synthesize a native cwd from %j', async cwd => {
+    await post('/agent-mcp/tool-guard', { owner: 'builder', workspace: 'ws', tool: 'apply_patch', cwd });
+    expect(planExecutionGuard.mock.calls[0]![0]).not.toHaveProperty('cwd');
+  });
+
+  it('does not reuse an in-flight native verdict across different directories', async () => {
+    let firstEntered!: () => void;
+    const entered = new Promise<void>(resolve => { firstEntered = resolve; });
+    let release!: (value: null) => void;
+    planExecutionGuard.mockImplementationOnce(() => {
+      firstEntered();
+      return new Promise<null>(resolve => { release = resolve; });
+    });
+    const body = { owner: 'builder', workspace: 'ws', tool: 'apply_patch',
+      guardRequestId: '7723ce6f-ec93-4d4b-830d-33e5163f7396', input: { patch: 'same patch' } };
+    const first = post('/agent-mcp/tool-guard', { ...body, cwd: '/repo/first' });
+    await entered;
+    try {
+      expect(await post('/agent-mcp/tool-guard', { ...body, cwd: '/repo/second' })).toEqual({ ok: true, text: '' });
+      expect(planExecutionGuard).toHaveBeenCalledTimes(2);
+      expect(planExecutionGuard.mock.calls.map(([input]) => input.cwd)).toEqual(['/repo/first', '/repo/second']);
+    } finally { release(null); await first; }
   });
 
   it("refuses from the wearer's worn rules, in the resolved workspace", async () => {

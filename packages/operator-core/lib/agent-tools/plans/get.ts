@@ -1739,6 +1739,7 @@ export default defineTool({
           // select a different item. Read the current source independently of
           // both that shape and the response cache, then share its content with
           // the existing live gate rather than reading the plan twice.
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get.ts#<module>/handler:0aa2ca8bd5dc5047678e:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const currentPlan = await readPlanBySlug(planResult.slug, {
             ...opts,
             workspaceId: startScope.workspaceId,
@@ -1777,6 +1778,7 @@ export default defineTool({
             };
             continue;
           }
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get.ts#<module>/handler:f11dc7079291dd34cb70:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           const refusal = await checkDraftItemStartGateLive({
             workspaceId: startScope.workspaceId,
             harnessSlug: startScope.harnessSlug,
@@ -1980,6 +1982,7 @@ export default defineTool({
         try {
           const scope = await resolvePlanScope({ ...opts,
             ...(typeof result.harness === 'string' ? { harnessSlug: result.harness } : {}) });
+          // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/get.ts#<module>/handler:cc39935c7d6ddf126152:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
           result.activationReadiness = await readPlanActivationReadiness({ ...scope, requesterId, planSlug: slug });
         } catch (error) {
           // Keep the advisory read useful if a plan disappears between the

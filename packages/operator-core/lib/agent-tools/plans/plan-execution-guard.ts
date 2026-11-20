@@ -1,7 +1,8 @@
 /** EI-27540173897381380: plan readiness also binds direct implementation writes. */
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { lstatSync, realpathSync } from 'node:fs';
 import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
@@ -14,6 +15,9 @@ import type { AcceptanceBarSnapshotSource } from '../../acceptance-bar-contract-
 import type { Sql } from 'postgres';
 import { parseExecutionPlanRebind } from '../fleet_registry/execution-plan-rebind';
 import { PLAN_READINESS_PENDING, READINESS_PENDING_RETRY_AFTER_MS } from './plan-continuation-readiness';
+import { previewDiscoveryDeclaration, scopedFeasibilityPathSchema,
+  type ScopedFeasibilityExperiment } from './plan-declarations';
+import { hasValidGitEntry } from '../locks/valid-git-entry';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -185,19 +189,26 @@ export interface PlanExecutionRefusal {
 }
 export interface PlanExecutionGuardInput {
   ownerId: string; workspaceId: string; toolName: string; args: unknown;
+  /** Native adapter's effective directory, or the MCP capability's resolved base. */
+  cwd?: string;
   observeTiming?: PlanExecutionTimingObserver;
   /** Native port's monotonic deadline; ordinary MCP checks retain their standard budget. */
   readinessDeadlineAtMs?: number;
 }
 export interface PlanExecutionTiming { stage: string; durationMs: number }
-export type PlanExecutionTimingObserver = (timing: PlanExecutionTiming) => void;
+export type PlanExecutionTimingObserver = ((timing: PlanExecutionTiming) => void) & {
+  trackPending?: (stage: string, startedAtMs: number) => (() => void) | undefined;
+};
 
 /** Diagnostics must never grant, refuse, or interrupt an authority check. */
 async function measurePlanStage<T>(stage: string, observe: PlanExecutionTimingObserver | undefined,
   read: () => Promise<T>): Promise<T> {
   if (!observe) return read();
   const startedAt = performance.now();
+  let clearPending: (() => void) | undefined;
+  try { clearPending = observe.trackPending?.(stage, startedAt); } catch { /* diagnostics only */ }
   try { return await read(); } finally {
+    try { clearPending?.(); } catch { /* diagnostics only */ }
     try { observe({ stage, durationMs: performance.now() - startedAt }); } catch { /* diagnostics only */ }
   }
 }
@@ -243,16 +254,18 @@ export interface PlanExecutionGuardDeps {
     signal?: AbortSignal) => Promise<ExecutionPlanGoalResolution>;
   checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver,
     readinessDeadlineAtMs?: number) => Promise<string[]>;
+  checkFeasibility?: (input: PlanExecutionGuardInput, binding: ExecutionPlanBinding,
+    bindings: readonly ExecutionPlanBinding[]) => Promise<boolean>;
   /** Test seam for the bounded selector path; production uses the fixed 650ms budget. */
   goalResolutionBudgetMs?: number;
 }
 
 const GOAL_RESOLUTION_BUDGET_MS = 650;
 
-const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'edit', 'write', 'apply_patch', 'lsp:apply', 'capability:edit',
+const fileTools = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'notebook_edit', 'edit', 'write', 'apply_patch', 'lsp:apply', 'capability:patch', 'capability:edit',
   'capability:write', 'locks:acquire', 'locks:acquire_granular']);
 const shellTools = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell', 'capability:bash']);
-const executionTools = new Set(['code:run', 'capability:terminal', 'capability:git', 'templates:new-app',
+const executionTools = new Set(['exec', 'code:run', 'testing:run', 'capability:terminal', 'capability:git', 'templates:new-app',
   'capability:launch-agent', 'fleet:launch-on-plan', 'plans:launch', 'plans:run-now', 'plans:arm-schedule']);
 const readCommands = new Set(['pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'rg', 'grep', 'readlink', 'realpath', 'sed']);
 
@@ -515,6 +528,135 @@ export function isPlanImplementationCall(toolName: string, args: unknown): boole
     !isPlanCanonicalControlCommand(command);
 }
 
+const scopedToolName = (name: string) => name.replace(/^functions\./, '').replace(/^mcp__.+?__/, '')
+  .replace(/^capability_/, 'capability:');
+const scopedRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const onlyScopedKeys = (args: Record<string, unknown>, keys: readonly string[]) =>
+  Object.keys(args).every(key => keys.includes(key));
+
+/** A single canonical byte rendering, never a general shell grammar. */
+export function renderScopedFeasibilityCommand(testPaths: readonly string[]): string {
+  if (!testPaths.length || new Set(testPaths).size !== testPaths.length
+    || testPaths.some(path => !scopedFeasibilityPathSchema.safeParse(path).success || !/\.test\.tsx?$/.test(path)))
+    throw new Error('feasibility_command_exact_tests_required');
+  const ordered = [...testPaths].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return 'node scripts/with-test-pg.mjs --isolated-runtime -- node scripts/test-files.mjs '
+    + ordered.map(path => "'" + path.replaceAll("'", "'\"'\"'") + "'").join(' ');
+}
+
+export interface ScopedFeasibilityCallReaders {
+  readPatch: typeof readScopedFeasibilityPatch;
+  readRoutes: typeof readScopedFeasibilityTestRoutes;
+}
+
+/** The receipt grants no wrapper, arbitrary shell, background or OS privilege.
+ * All paths remain intact; malformed input or a late disallowed target denies
+ * the entire invocation. The actual mutation sink still arbitrates its locks. */
+export async function checkScopedFeasibilityCall(input: PlanExecutionGuardInput,
+  authority: ScopedFeasibilityExperiment & { repositoryRoot: string },
+  readers: ScopedFeasibilityCallReaders = {
+    readPatch: readScopedFeasibilityPatch, readRoutes: readScopedFeasibilityTestRoutes,
+  },
+): Promise<boolean> {
+  const name = scopedToolName(input.toolName), args = input.args;
+  const root = authority.repositoryRoot, cwd = input.cwd;
+  if (!cwd || !isAbsolute(cwd) || resolve(cwd) !== cwd || !/^[\x20-\x7e]+$/.test(cwd)) return false;
+  const withinRoot = (path: string) => path === root || path.startsWith(root + '/');
+  if (!withinRoot(cwd)) return false;
+  try {
+    if (!lstatSync(cwd).isDirectory() || realpathSync(cwd) !== cwd) return false;
+    for (let dir = cwd; dir !== root; dir = resolve(dir, '..')) {
+      if (hasValidGitEntry(dir)) return false;
+    }
+    const { inspectScopedFeasibilitySelection } = await import('./plan-execution-authority');
+    const selection = inspectScopedFeasibilitySelection({ testPaths: authority.testPaths,
+      fixturePaths: authority.fixturePaths, lifetimeSec: authority.lifetimeSec }, root);
+    if (shellTools.has(name)) {
+      if (cwd !== root || !scopedRecord(args)) return false;
+      const keys = name === 'exec_command' || name === 'shell_command'
+        ? ['cmd', 'workdir', 'yield_time_ms', 'max_output_tokens', 'tty', 'login']
+        : ['command', 'cmd', 'timeout', 'description', 'yield_time_ms', 'run_in_background'];
+      if (!onlyScopedKeys(args, keys)
+        || (args.run_in_background !== undefined && args.run_in_background !== false)
+        || (args.tty !== undefined && args.tty !== false)
+        || (args.login !== undefined && typeof args.login !== 'boolean')
+        || (args.description !== undefined && typeof args.description !== 'string')
+        || ['timeout', 'yield_time_ms', 'max_output_tokens'].some(key =>
+          args[key] !== undefined && (!Number.isSafeInteger(args[key]) || (args[key] as number) < 0))
+        || (args.workdir !== undefined && args.workdir !== cwd)
+        || (args.command !== undefined && args.cmd !== undefined)) return false;
+      if ((args.command ?? args.cmd) !== renderScopedFeasibilityCommand(selection.testPaths)) return false;
+      if (selection.existingTestPaths.length !== selection.testPaths.length) return false;
+      const routes = await readers.readRoutes(selection.testPaths, root);
+      return routes.length === selection.testPaths.length
+        && routes.every((route, index) => route.path === selection.testPaths[index] && route.ok);
+    }
+    let targets: string[];
+    if (name === 'apply_patch') {
+      let patch: unknown = args;
+      if (scopedRecord(args)) {
+        if (Object.keys(args).length !== 1 || !onlyScopedKeys(args, ['patch', 'input'])) return false;
+        patch = args.patch ?? args.input;
+      }
+      const parsed = await readers.readPatch(patch, root);
+      if (!parsed.complete || parsed.errors.length || !parsed.targets.length) return false;
+      targets = parsed.targets;
+    } else if (['Edit', 'edit', 'capability:edit', 'Write', 'write', 'capability:write'].includes(name)) {
+      if (!scopedRecord(args) || typeof args.file_path !== 'string') return false;
+      const edit = name === 'Edit' || name === 'edit' || name === 'capability:edit';
+      if (edit ? !onlyScopedKeys(args, ['file_path', 'old_string', 'new_string', 'replace_all'])
+        || typeof args.old_string !== 'string' || typeof args.new_string !== 'string'
+        || (args.replace_all !== undefined && typeof args.replace_all !== 'boolean')
+        : !onlyScopedKeys(args, ['file_path', 'content', 'allow_empty_overwrite', 'allow_display_formatted_content'])
+        || typeof args.content !== 'string'
+        || ['allow_empty_overwrite', 'allow_display_formatted_content'].some(key =>
+          args[key] !== undefined && typeof args[key] !== 'boolean')) return false;
+      targets = [args.file_path];
+    } else return false;
+    const permitted = new Set([...selection.testPaths, ...selection.fixturePaths]);
+    return targets.every(target => {
+      if (!scopedFeasibilityPathSchema.safeParse(isAbsolute(target) ? target.slice(1) : target).success) return false;
+      const absolute = isAbsolute(target) ? target : resolve(cwd, target);
+      return withinRoot(absolute) && permitted.has(relative(root, absolute));
+    });
+  } catch { return false; }
+}
+
+/** Custody and question selection come from current server data, not tool
+ * arguments or a caller-provided receipt/root. Ambiguity denies intact. */
+export async function checkScopedFeasibilityAdmission(input: PlanExecutionGuardInput,
+  binding: ExecutionPlanBinding, bindings: readonly ExecutionPlanBinding[]): Promise<boolean> {
+  const held = bindings.filter(candidate => candidate.source === 'work-item' && candidate.sourceRef
+    && !candidate.canonicalInvalid && candidate.planSlug === binding.planSlug
+    && candidate.harnessSlug && (!binding.harnessSlug || candidate.harnessSlug === binding.harnessSlug));
+  const subjects = new Map(held.map(candidate => [JSON.stringify([candidate.harnessSlug, candidate.sourceRef]), candidate]));
+  if (subjects.size !== 1) return false;
+  const subject = [...subjects.values()][0]!;
+  const harnessSlug = subject.harnessSlug!, workItemId = subject.sourceRef!;
+  try {
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkScopedFeasibilityAdmission:2971093c210a8067b7f5:1","classification":"durable","reason":"The explicit workspace argument changes this feasibility call identity while its callback branch retains notification requirements. No delivery or loss-tolerance proof is established. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    return await runWithWorkspace(input.workspaceId, async () => {
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkScopedFeasibilityAdmission/<callback>:3715ea946a651797465a:1","classification":"durable","reason":"The explicit workspace argument changes this feasibility call identity while its callback branch retains notification requirements. No delivery or loss-tolerance proof is established. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      const plan = await getPlanRow(binding.planSlug, { harnessSlug, workspaceId: input.workspaceId });
+      if (!plan || parsePlan(plan.content).frontmatter.status !== 'draft') return false;
+      const declaration = previewDiscoveryDeclaration(plan.content);
+      if (declaration.status !== 'declared' || !declaration.data) return false;
+      const questions = declaration.data.questions.filter(question => question.outcome === 'unresolved' && question.experiment);
+      if (questions.length !== 1) return false;
+      const { repoCitationContextForHarness, isCitationContextFailure } = await import('../../plan-audits');
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkScopedFeasibilityAdmission/<callback>:aadbae0c77d83e9aa66c:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      const context = await repoCitationContextForHarness(harnessSlug);
+      if (!context || isCitationContextFailure(context) || context.rootSource !== 'registry') return false;
+      const { readScopedFeasibilityAuthority } = await import('./plan-execution-authority');
+      const authority = await readScopedFeasibilityAuthority({ workspaceId: input.workspaceId,
+        harnessSlug, planSlug: binding.planSlug }, { ownerId: input.ownerId, workspaceId: input.workspaceId },
+      { workItemId, questionId: questions[0]!.id }, context.repoRoot);
+      return checkScopedFeasibilityCall(input, authority);
+    });
+  } catch { return false; }
+}
+
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
 export async function readExecutionPlanBindings(ownerId: string, workspaceId: string): Promise<ExecutionPlanBinding[]> {
   const { sql } = getOrgPg();
@@ -724,6 +866,7 @@ export async function readExecutionPlanGoal(ownerId: string, workspaceId: string
  */
 export async function checkExecutionPlanLane(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
   const { planItemLaneBlockReason, resolvePlanItemStamp } = await import('../../scheduler/plan-item-lane-guard');
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkExecutionPlanLane:28b206f65f04ff5f6ff5:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return runWithWorkspace(workspaceId, async () => {
     let itemIds: string[];
     if (binding.canonical) itemIds = [binding.canonical.lineId];
@@ -746,6 +889,7 @@ export async function checkExecutionPlanLane(binding: ExecutionPlanBinding, work
       sourcePlanSlug: binding.planSlug, sourcePlanItemIds: itemIds }, { requireCompleteEvidence: true, workspaceId });
     if (block) return ['plan_item_lane_blocked:' + block.reason];
     const { requiredPrerequisiteNativeProofClearance } = await import('../../native-proof-clearance');
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkExecutionPlanLane/<callback>:82152dc459c97ffd6651:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const native = await requiredPrerequisiteNativeProofClearance({ workspaceId, harnessSlug: binding.harnessSlug,
       planSlug: binding.planSlug, planItemIds: itemIds });
     return native ? [native.code + ':' + native.error] : [];
@@ -766,13 +910,17 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
   // a positive verdict for the exact fenced revision is reused (WI-6554700010049220).
   return measurePlanStage('readiness', observe, () => checkContinuationReadiness(binding, workspaceId, observe, {
     preflight: async () => {
-      if (!await canonicalCurrent()) return ['canonical_plan_binding_stale'];
+      if (!await measurePlanStage('canonical_binding_preflight', observe, canonicalCurrent))
+        return ['canonical_plan_binding_stale'];
       const start = await measurePlanStage('start_proof', observe, () => readPlanExecutionStart(binding, workspaceId));
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkExecutionPlan/<callback>/preflight/<callback>:891a4fe5f737dd24d552:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       return start.length ? start : measurePlanStage('lane', observe, () => checkExecutionPlanLane(binding, workspaceId));
     },
     readFence: (b, ws) => measurePlanStage('readiness_fence', observe, () => readReadinessFence(b, ws)),
     evaluate: (b, ws, o) => checkPlanExecutionReadiness(b, ws, o, 'continuation'),
-    recheck: async () => !await canonicalCurrent() ? ['canonical_plan_binding_stale']
+    recheck: async () => !await measurePlanStage('canonical_binding_recheck', observe, canonicalCurrent)
+      ? ['canonical_plan_binding_stale']
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkExecutionPlan/<callback>/recheck/<callback>:891a4fe5f737dd24d552:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       : measurePlanStage('lane_recheck', observe, () => checkExecutionPlanLane(binding, workspaceId)),
     deadlineAtMs: readinessDeadlineAtMs,
   }));
@@ -782,6 +930,7 @@ export async function checkExecutionPlan(binding: ExecutionPlanBinding, workspac
 export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding, workspaceId: string,
   observe?: PlanExecutionTimingObserver, discoveryAdmission: 'start' | 'continuation' = 'start',
   onSelectedReviewRequired?: (required: boolean) => void): Promise<string[]> {
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkPlanExecutionReadiness:deca8da90a7d895cb01f:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   return runWithWorkspace(workspaceId, async () => {
     const { sql } = getOrgPg();
     // A known harness already scopes the canonical rendered read. Start it with
@@ -902,6 +1051,7 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     readBindings: readExecutionPlanBindings,
     resolveGoal: readExecutionPlanGoal,
     checkPlan: checkExecutionPlan,
+    checkFeasibility: checkScopedFeasibilityAdmission,
   },
 ): Promise<PlanExecutionRefusal | null> {
   if (!isPlanImplementationCall(input.toolName, input.args)) return null;
@@ -957,11 +1107,15 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
         reason: `Plan '${binding.planSlug}' readiness is still being evaluated and continues in the background. `
           + 'Nothing is known to be wrong with the plan and this call was not performed. Retry the same call in about '
           + `${Math.round(READINESS_PENDING_RETRY_AFTER_MS / 1000)}s; the finished evaluation then admits it (or reports the real blockers).` };
+      if (blockers.length && deps.checkFeasibility
+        // notify-classification: {"id":"packages/operator-core/lib/agent-tools/plans/plan-execution-guard.ts#<module>/checkPlanExecutionGuard:438e2f938a212dba9028:1","classification":"durable","reason":"Unresolved callback branches retain notification requirements at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+        && await deps.checkFeasibility(input, binding, bindings)) continue;
       if (blockers.length) return { code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers,
         reason: `Plan '${binding.planSlug}' is not executable (${blockers.join(', ')}). Implementation writes are refused. `
           + 'Repair the plan with plans:edit/audit and finish the standard plans:start process first. '
           + 'Read-only research and canonical plan repair remain available; an ad-hoc item, AUTO or force does not waive activation.'
-          + otherHeldWorkRemedy(allBindings, binding.planSlug) };
+          + otherHeldWorkRemedy(allBindings, binding.planSlug)
+          + (deps.checkFeasibility ? ' Required pre-start experiments use plans:audit phase:discovery with an exact held work-item/question feasibility grant; unsupported calls remain refused.' : '') };
     }
     return null;
   } catch {

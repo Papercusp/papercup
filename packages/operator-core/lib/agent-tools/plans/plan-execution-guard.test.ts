@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,7 +6,8 @@ import { execFileSync } from 'node:child_process';
 import { inspectScopedFeasibilitySelection, readScopedFeasibilityQuestion,
   scopedFeasibilityAuditSchema } from './plan-execution-authority';
 import { discoveryDeclarationSchema, scopedFeasibilityExperimentSchema } from './plan-declarations';
-import { readScopedFeasibilityTestRoutes } from './plan-execution-guard';
+import { checkScopedFeasibilityCall, readScopedFeasibilityPatch, readScopedFeasibilityTestRoutes,
+  renderScopedFeasibilityCommand, type PlanExecutionGuardInput } from './plan-execution-guard';
 
 import { readScopedFeasibilityHistory, type ScopedFeasibilityHistoryRow } from './plan-execution-authority';
 
@@ -398,6 +399,170 @@ import { resolveAgentGoal } from '../../agent-goal-ref';
 const call = (toolName = 'apply_patch', args: unknown = { patch: 'implementation' }) =>
   ({ ownerId: 'su-builder', workspaceId: 'ws', toolName, args });
 const binding = { planSlug: 'bound-plan', harnessSlug: 'project' };
+
+describe('scoped feasibility exact invocation admission', () => {
+  let root: string;
+  const repositoryRoot = realpathSync(new URL('../../../../../', import.meta.url));
+  const selection = () => ({ repositoryRoot: root, testPaths: ['Z.test.ts'],
+    fixturePaths: ['fixtures/data.json'], lifetimeSec: 60 });
+  const call = (toolName: string, args: unknown, cwd: string | undefined = root): PlanExecutionGuardInput =>
+    ({ ownerId: 'actor', workspaceId: 'workspace', toolName, args, cwd });
+  const routes = () => vi.fn(async (paths: string[], base: string) => paths.map(path => ({
+    path, ok: true as const, route: { cwd: base, config: null, absolute: join(base, path), requested: path },
+  })));
+  const readers = (readRoutes: typeof readScopedFeasibilityTestRoutes = routes()) => ({ readRoutes,
+    readPatch: (patch: unknown) => readScopedFeasibilityPatch(patch, repositoryRoot) });
+  const patch = (paths: string[]) => '*** Begin Patch\n' + paths.map(path =>
+    '*** Add File: ' + path + '\n+literal\n').join('') + '*** End Patch';
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), 'scoped-call-')));
+    execFileSync('git', ['init', '--quiet', root]);
+    mkdirSync(join(root, 'fixtures'));
+    writeFileSync(join(root, 'Z.test.ts'), 'export {};\n');
+    writeFileSync(join(root, 'fixtures/data.json'), '{}\n');
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it.each(['Write', 'write', 'capability:write', 'mcp__papercusp_su__capability_write'])(
+    'admits an exact selected file through %s', async tool => {
+      expect(await checkScopedFeasibilityCall(call(tool, { file_path: 'Z.test.ts', content: 'export {};' }),
+        selection(), readers())).toBe(true);
+    });
+  it.each(['Edit', 'edit', 'capability:edit'])('admits an exact selected fixture through %s', async tool => {
+    expect(await checkScopedFeasibilityCall(call(tool,
+      { file_path: join(root, 'fixtures/data.json'), old_string: '{}', new_string: '{"measured":true}' }),
+    selection(), readers())).toBe(true);
+  });
+  it('prepares an absent selected test but refuses its launcher until every test exists and routes', async () => {
+    const authority = { ...selection(), testPaths: ['Z.test.ts', 'new.test.ts'] };
+    expect(await checkScopedFeasibilityCall(call('Write', { file_path: 'new.test.ts', content: 'export {};' }),
+      authority, readers())).toBe(true);
+    const command = renderScopedFeasibilityCommand(authority.testPaths), readRoutes = routes();
+    expect(await checkScopedFeasibilityCall(call('Bash', { command }), authority, readers(readRoutes))).toBe(false);
+    expect(readRoutes).not.toHaveBeenCalled();
+    writeFileSync(join(root, 'new.test.ts'), 'export {};\n');
+    expect(await checkScopedFeasibilityCall(call('Bash', { command }), authority, readers(readRoutes))).toBe(true);
+    expect(readRoutes).toHaveBeenCalledWith(['Z.test.ts', 'new.test.ts'], root);
+  });
+  it('checks all literal patch targets in both orders using the maintained native parser', async () => {
+    for (const paths of [['Z.test.ts', 'fixtures/data.json'], ['fixtures/data.json', 'Z.test.ts']]) {
+      expect(await checkScopedFeasibilityCall(call('apply_patch', patch(paths)), selection(), readers())).toBe(true);
+    }
+    for (const paths of [['Z.test.ts', 'outside.ts'], ['outside.ts', 'Z.test.ts']]) {
+      expect(await checkScopedFeasibilityCall(call('apply_patch', { input: patch(paths) }),
+        selection(), readers())).toBe(false);
+    }
+    expect(await checkScopedFeasibilityCall(call('apply_patch', patch(['Z.test.ts']) + '\ntrailing'),
+      selection(), readers())).toBe(false);
+  });
+  it('requires both move endpoints and rejects a truncated or mixed patch frame', async () => {
+    const move = '*** Begin Patch\n*** Update File: Z.test.ts\n*** Move to: new.test.ts\n@@\n-export {};\n+export const measured = true;\n*** End Patch';
+    expect(await checkScopedFeasibilityCall(call('apply_patch', move), selection(), readers())).toBe(false);
+    const authority = { ...selection(), testPaths: ['Z.test.ts', 'new.test.ts'] };
+    expect(await checkScopedFeasibilityCall(call('apply_patch', move), authority, readers())).toBe(true);
+    expect(await checkScopedFeasibilityCall(call('apply_patch', move.replace('*** End Patch', '')),
+      authority, readers())).toBe(false);
+  });
+  it.each(['../Z.test.ts', './Z.test.ts', 'Z.test.ts/../Z.test.ts', 'unselected.test.ts', 'Z.test.ts\n'])(
+    'denies nonselected or aliased target %s intact', async file_path => {
+      expect(await checkScopedFeasibilityCall(call('Write', { file_path, content: 'x' }),
+        selection(), readers())).toBe(false);
+    });
+  it('never substitutes the operator directory for missing, sibling, noncanonical or nested-repository cwd', async () => {
+    for (const cwd of [undefined, '', root + '/.', root + '-sibling']) {
+      const input = { ...call('Write', { file_path: 'Z.test.ts', content: 'x' }), cwd };
+      expect(await checkScopedFeasibilityCall(input, selection(), readers())).toBe(false);
+    }
+    mkdirSync(join(root, 'nested'));
+    execFileSync('git', ['init', '--quiet', join(root, 'nested')]);
+    expect(await checkScopedFeasibilityCall(call('Write', { file_path: join(root, 'Z.test.ts'), content: 'x' },
+      join(root, 'nested')), selection(), readers())).toBe(false);
+  });
+  it('rechecks current file metadata and never reuses an earlier permit', async () => {
+    const input = call('Write', { file_path: 'Z.test.ts', content: 'x' });
+    expect(await checkScopedFeasibilityCall(input, selection(), readers())).toBe(true);
+    linkSync(join(root, 'Z.test.ts'), join(root, 'other-link'));
+    expect(await checkScopedFeasibilityCall(input, selection(), readers())).toBe(false);
+  });
+  it.each(['Bash', 'bash', 'exec_command', 'functions.exec_command', 'shell_command', 'capability:bash'])(
+    'admits only the exact foreground command through %s', async tool => {
+      const command = renderScopedFeasibilityCommand(selection().testPaths);
+      const args = tool.includes('exec_command') || tool === 'shell_command' ? { cmd: command, workdir: root } : { command };
+      expect(await checkScopedFeasibilityCall(call(tool, args), selection(), readers())).toBe(true);
+    });
+  const commandChanges: Array<[string, (command: string) => string]> = [
+    ['background', command => command + ' &'], ['stdin', command => command + ' </dev/null'],
+    ['env prefix', command => 'CONTROL=1 ' + command], ['coverage', command => command + ' --coverage'],
+    ['snapshot update', command => command + ' -u'], ['whitespace', command => ' ' + command],
+    ['alternate quoting', command => command.replace("'Z.test.ts'", '"Z.test.ts"')],
+    ['newline', command => command + '\n'], ['comment', command => command + ' # ignored'],
+    ['escape', command => command + '\\ '], ['substitution', command => command + ' $(id)'],
+    ['redirection', command => command + ' >output'], ['compound', command => command + '; true'],
+    ['wrapper', command => 'bash -c ' + JSON.stringify(command)],
+  ];
+  it.each(commandChanges)('denies altered command bytes: %s', async (_name, change) => {
+    const readRoutes = routes();
+    expect(await checkScopedFeasibilityCall(call('Bash',
+      { command: change(renderScopedFeasibilityCommand(selection().testPaths)) }),
+    selection(), readers(readRoutes))).toBe(false);
+    expect(readRoutes).not.toHaveBeenCalled();
+  });
+  it.each([
+    { run_in_background: true }, { run_in_background: 'yes' }, { stdin: '' }, { env: {} }, { command_extra: '' },
+  ])('denies unsupported foreground shape %j', async extra => {
+    expect(await checkScopedFeasibilityCall(call('capability:bash',
+      { command: renderScopedFeasibilityCommand(selection().testPaths), ...extra }), selection(), readers())).toBe(false);
+  });
+  it('revalidates every route and refuses a late failure or incomplete reader response', async () => {
+    writeFileSync(join(root, 'b.test.ts'), 'export {};\n');
+    const authority = { ...selection(), testPaths: ['Z.test.ts', 'b.test.ts'] };
+    const command = renderScopedFeasibilityCommand(authority.testPaths);
+    const readRoutes = vi.fn(async () => [
+      { path: 'Z.test.ts', ok: true as const,
+        route: { cwd: root, config: null, absolute: join(root, 'Z.test.ts'), requested: 'Z.test.ts' } },
+      { path: 'b.test.ts', ok: false as const, error: 'route disappeared' },
+    ]);
+    expect(await checkScopedFeasibilityCall(call('Bash', { command }), authority, readers(readRoutes))).toBe(false);
+    expect(await checkScopedFeasibilityCall(call('Bash', { command }), authority, readers(async () => []))).toBe(false);
+  });
+  it.each(['functions.exec', 'code:run', 'testing:run', 'capability:patch', 'NotebookEdit', 'capability:git',
+    'capability:terminal', 'deploy:harness'])('never extends its receipt to %s', async tool => {
+    expect(await checkScopedFeasibilityCall(call(tool,
+      { command: renderScopedFeasibilityCommand(selection().testPaths) }), selection(), readers())).toBe(false);
+  });
+  it('uses a fresh scoped permit per invocation and preserves every other held-plan refusal', async () => {
+    const subject: ExecutionPlanBinding = { planSlug: 'draft', harnessSlug: 'project',
+      source: 'work-item', sourceRef: 'WI-held' };
+    let permitted = true;
+    const checkFeasibility = vi.fn(async (_input: PlanExecutionGuardInput, binding: ExecutionPlanBinding) =>
+      permitted && binding.planSlug === 'draft');
+    const deps = { readBindings: async () => [subject],
+      checkPlan: async () => ['plan_status:draft'], checkFeasibility };
+    const input = call('Write', { file_path: 'Z.test.ts', content: 'x' });
+    expect(await checkPlanExecutionGuard(input, deps)).toBeNull();
+    permitted = false;
+    expect(await checkPlanExecutionGuard(input, deps)).toMatchObject({ planSlug: 'draft' });
+    expect(checkFeasibility).toHaveBeenCalledTimes(2);
+    permitted = true;
+    const other: ExecutionPlanBinding = { ...subject, planSlug: 'other-draft', sourceRef: 'WI-other' };
+    expect(await checkPlanExecutionGuard(input,
+      { ...deps, readBindings: async () => [subject, other] })).toMatchObject({ planSlug: 'other-draft' });
+  });
+  it('renders spaces and apostrophes in deterministic raw-byte order', () => {
+    expect(renderScopedFeasibilityCommand(["z's.test.ts", 'a space.test.ts']))
+      .toBe("node scripts/with-test-pg.mjs --isolated-runtime -- node scripts/test-files.mjs 'a space.test.ts' 'z'\"'\"'s.test.ts'");
+  });
+  it.each(['functions.exec', 'testing:run', 'capability:patch', 'NotebookEdit'])(
+    'retains ordinary implementation readiness for %s', async toolName => {
+      expect(isPlanImplementationCall(toolName, {})).toBe(true);
+      const checkFeasibility = vi.fn(async () => false);
+      expect(await checkPlanExecutionGuard(call(toolName, {}), {
+        readBindings: async () => [{ planSlug: 'draft', harnessSlug: 'project', source: 'work-item', sourceRef: 'WI-held' }],
+        checkPlan: async () => ['plan_status:draft'], checkFeasibility,
+      })).toMatchObject({ blockers: ['plan_status:draft'] });
+      expect(checkFeasibility).toHaveBeenCalledTimes(1);
+    });
+});
 
 describe('implementation authority before direct writes (EI-27540173897381380)', () => {
   it.each(['apply_patch', 'Edit', 'Write', 'MultiEdit', 'capability:edit', 'capability:write', 'locks:acquire',
