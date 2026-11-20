@@ -122,8 +122,7 @@ export const PLANE_PRODUCER_FIELDS = [
     tsColumn: 'created_at',
     sinceDays: 30,
     producer: 'facts:assert { dependsOn } → captureFactDependencies',
-    why: "WI-6548. D-007 auto-invalidation is what makes an assumption more than a weak-badged conclusion. With no dependsOn nothing can ever go stale on its own terms, and `acted-on-stale-or-wrong-value` is permanently uninterpretable. ⚠ This is the ONE row here that is still GENUINELY OPEN work rather than a ruled zero — D-103 measured the fix: capture must be inline-and-required in a workflow the agent already performs (as `work_items:complete { assumptions }` is), never a voluntary extra field.",
-    knownUnbuilt: 'WI-6548',
+    why: 'D-007: declared dependencies let fact staleness follow changes to their basis. This row checks dependency persistence. WI-6548 completed the separate `acted-on-stale-or-wrong-value` metric through inline coord:send cell citations; that completion is not an exemption from checking fact dependency writes.',
   },
   {
     id: 'agent_facts.claim',
@@ -150,7 +149,7 @@ export const PLANE_PRODUCER_FIELDS = [
     tsColumn: 'created_at',
     sinceDays: 30,
     producer: 'facts:assert { kind:"convention", enforcement }',
-    why: "P-017/D-016: a convention with no declared tier is prose exhortation in a costume. Measured 5 of 30 conventions at audit time.",
+    why: 'P-018/D-075: explicit enforcement declarations must reach the convention record. Untiered conventions are valid; zero here reports no recorded tier declarations in this window, not that every convention requires a tier.',
   },
 ];
 
@@ -189,8 +188,8 @@ export function fillRate({ populated, total }) {
 /**
  * Is this `knownUnbuilt` ref a WORK-ITEM (which can close) or a RULING (which cannot)?
  *
- * `D-103 (ruled)` and `WI-6548` are both legitimate explanations for a dead field,
- * but only one of them expires. A decision is a permanent statement that the zero is
+ * A ruling and an open work-item can both explain a dead field, but only the
+ * work-item exemption expires. A decision is a statement that the zero is
  * the intended outcome; a work-item is a promise that someone will fix it, and that
  * promise goes stale the moment the item closes.
  */

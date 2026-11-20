@@ -150,6 +150,19 @@ describe('⚠ EI-18850142725126359 — a `knownUnbuilt` pointer must not go stal
 });
 
 describe('P-001 — the census spec itself is non-vacuous', () => {
+  it('dependency writes must exist even after the separate stale-value metric gap closes', () => {
+    const field = PLANE_PRODUCER_FIELDS.find((f: { id: string }) => f.id === 'agent_facts.depends_on');
+    expect(field).toBeDefined();
+
+    const dead = { ...field, verdict: judgeProducerField({ populated: 0, total: 17 }) };
+    expect(rollupCensus([dead]).failures).toEqual([dead]);
+
+    const producing = { ...field, verdict: judgeProducerField({ populated: 17, total: 17 }) };
+    expect(rollupCensus([producing]).failures).toEqual([]);
+    expect(auditKnownUnbuiltRefs([producing], new Map([['WI-6548', 'done']]),
+      (status: string) => TERMINAL_STATUSES.has(status))).toEqual([]);
+  });
+
   it('covers the fields whose absence produced WI-6444 and WI-6465', () => {
     // Without this, deleting rows from the spec would green the gate by asking
     // fewer questions — the cheapest possible way to fake a pass.
