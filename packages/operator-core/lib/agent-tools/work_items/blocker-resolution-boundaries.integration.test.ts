@@ -756,9 +756,17 @@ describe('public blocker resolution boundaries', () => {
     const id = await seed('feature', false);
     const recheck = await seed('task', false);
     if (existingDependency || reverseDependency) {
-      expect(await call(link, { id: reverseDependency ? id : recheck, harness: HARNESS,
-        rel: 'blocks', target_id: reverseDependency ? recheck : id, satisfaction: 'success' }))
-        .toMatchObject({ ok: true });
+      const initialWitness = { kind: 'work-item' as const, ref: HARNESS + '#' + (reverseDependency ? id : recheck) };
+      const initialDecision: DeferralDecision = { schemaVersion: 1, idempotencyKey: 'initial-gate-' + id,
+        disposition: 'defer', symptom: 'A canonical provider remains pending', evidenceRefs: [initialWitness],
+        investigation: [{ action: 'Read the provider before adding its edge',
+          outcome: 'The current custodian retains the pending work', evidenceRefs: [initialWitness] }], attempts: [],
+        deferral: { reason: 'external-dependency', responsibleParty: OWNER, reasonEvidenceRefs: [initialWitness],
+          nextAction: 'Complete the canonical provider', recheckRef: initialWitness } };
+      const initial = await call(link, { id: reverseDependency ? id : recheck, harness: HARNESS,
+        rel: 'blocks', target_id: reverseDependency ? recheck : id, target_harness: HARNESS,
+        satisfaction: 'success', blockerDecision: initialDecision });
+      expect(initial, JSON.stringify(initial)).toMatchObject({ ok: true });
     }
     const gate = { kind: 'event' as const, ref: 'acceptance-route:legacy-full-run:P-008' };
     const witness = { kind: 'work-item' as const, ref: HARNESS + '#' + recheck };
@@ -770,12 +778,18 @@ describe('public blocker resolution boundaries', () => {
       payload=payload || ${db.sql.json({ externalBlockers: blockers })}
       WHERE workspace_id='default' AND harness_slug=${HARNESS} AND feature_id=${id}`;
     const input: DeferralDecision = { schemaVersion: 1, idempotencyKey: 'legacy-gate-' + id, disposition: 'defer',
+      ...(existingDependency ? { priorRevision: 1 } : {}),
       symptom: 'The original FULL-run gate remains unmeasured', evidenceRefs: [gate, witness],
       investigation: [{ action: 'Read the retained gate and its repair custodian',
         outcome: 'No FULL-run verdict was established', evidenceRefs: [gate, witness] }],
       attempts: [],
       deferral: { reason: 'external-dependency', responsibleParty: OWNER, reasonEvidenceRefs: [witness],
         nextAction: 'Complete the named repair before separately measuring the original gate', recheckRef: witness } };
+    const stored = await wi.getWorkItem(id, HARNESS);
+    expect((stored!.payload as Record<string, unknown>).externalBlockers).toEqual(blockers);
+    expect(await createBlockerEvidenceReader({ ownerId: OWNER, workspaceId: 'default', harnessSlug: HARNESS,
+      role: 'su', root: null, workItemId: id, custodianId: OWNER,
+      blockers: activeExternalBlockers(stored!.payload) })(gate)).toMatchObject({ status: 'unknown' });
     return { id, recheck, gate, witness, blockers, input };
   }
 
@@ -786,12 +800,13 @@ describe('public blocker resolution boundaries', () => {
       target_id: id, satisfaction: 'success', blockerDecision: input });
     expect(admitted, JSON.stringify(admitted)).toMatchObject({ ok: true });
     const linked = await wi.getWorkItem(id, HARNESS);
-    expect(activeExternalBlockers(linked!.payload)).toEqual(blockers);
+    expect((linked!.payload as Record<string, unknown>).externalBlockers).toEqual(blockers);
     expect(await wi.readUnresolvedDepBlockers(id, HARNESS)).toHaveLength(1);
     expect(readBlockerResolution(linked!.payload)).toMatchObject({ status: 'recorded',
       current: { revision: 1, decision: { disposition: 'defer' } } });
-    const reader = createBlockerEvidenceReader({ ownerId: OWNER, sessionId: OWNER, workspaceId: 'default',
-      harnessSlug: HARNESS, role: 'su', root: null, workItemId: id, custodianId: OWNER, blockers });
+    const reader = createBlockerEvidenceReader({ ownerId: OWNER, workspaceId: 'default',
+      harnessSlug: HARNESS, role: 'su', root: null, workItemId: id, custodianId: OWNER,
+      blockers: activeExternalBlockers(linked!.payload) });
     expect(await reader(gate)).toMatchObject({ status: 'unknown' });
 
     const releaseInput = { ...input, idempotencyKey: 'legacy-gate-release-' + id, priorRevision: 1 };
@@ -801,7 +816,7 @@ describe('public blocker resolution boundaries', () => {
     expect(released, JSON.stringify(released)).toMatchObject({ ok: true });
     const item = await wi.getWorkItem(id, HARNESS);
     expect(item).toMatchObject({ state: 'blocked', assignee: null, payload: { keep: 'original', _claimHold: true } });
-    expect(activeExternalBlockers(item!.payload)).toEqual(blockers);
+    expect((item!.payload as Record<string, unknown>).externalBlockers).toEqual(blockers);
     expect(readBlockerResolution(item!.payload)).toMatchObject({ status: 'recorded',
       current: { revision: 2, decision: { disposition: 'defer' } } });
     expect(await wi.readUnresolvedDepBlockers(id, HARNESS)).toHaveLength(1);

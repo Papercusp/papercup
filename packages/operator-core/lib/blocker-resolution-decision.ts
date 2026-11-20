@@ -421,6 +421,8 @@ export type BlockerEvidenceMeasurement =
   /** A system-generated plan-line park is deliberately not measured through
    * the plan graph while a host-proven write only retains or adds blockers. */
   | { status: 'unmeasured-parked-plan-lane'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
+  /** Retaining a gate is never evidence that its condition was measured or met. */
+  | { status: 'unmeasured-external-gate'; ref: string; scope: UnmeasuredRuntimeScope; detail: string }
   | {
     status: 'available';
     condition?: 'satisfied' | 'pending';
@@ -466,6 +468,8 @@ export async function validateBlockerDecisionEvidence(
     /** Host-only scope for a system plan-line park when the exact writer can
      * only retain blockers (plain release) or add a dependency edge. */
     unmeasuredParkedPlanLaneDeferral?: UnmeasuredRuntimeScope;
+    /** Host-only ordinary custody release or dependency addition, preserving the exact gate. */
+    unmeasuredExternalGateDeferral?: UnmeasuredRuntimeScope;
     /** The current recorded `defer` this decision supersedes; its recheckRef is
      * already one of obligationRefs. Host-read from the stored record, never the request. */
     priorDeferral?: Extract<BlockerDecisionInput, { disposition: 'defer' }>['deferral'];
@@ -527,6 +531,7 @@ export async function validateBlockerDecisionEvidence(
   const obligations = new Set(context.obligationRefs.filter(ref => !administrativelyRemoved(ref)).map(evidenceKey));
   const retainedRuntime = new Set<string>();
   const retainedParkedPlanLane = new Set<string>();
+  const retainedExternalGate = new Set<string>();
   const scope = context.unmeasuredRuntimeDeferral;
   for (const [key, ref] of entries) {
     const value = measured.get(key)!;
@@ -548,6 +553,15 @@ export async function validateBlockerDecisionEvidence(
         parkedScope.workspaceId === value.scope.workspaceId && parkedScope.harnessSlug === value.scope.harnessSlug &&
         parkedScope.workItemId === value.scope.workItemId && parkedScope.custodianId === value.scope.custodianId) {
       retainedParkedPlanLane.add(key);
+      continue;
+    }
+    const gateScope = context.unmeasuredExternalGateDeferral;
+    if (value.status === 'unmeasured-external-gate' && ref.kind === 'event' && gateScope &&
+        obligations.has(key) && value.ref === ref.ref && input.disposition === 'defer' &&
+        gateScope.custodianId === context.ownerId && gateScope.workItemId === context.workItemId &&
+        gateScope.workspaceId === value.scope.workspaceId && gateScope.harnessSlug === value.scope.harnessSlug &&
+        gateScope.workItemId === value.scope.workItemId && gateScope.custodianId === value.scope.custodianId) {
+      retainedExternalGate.add(key);
       continue;
     }
     if (value.status !== 'available') missing.push(`${ref.kind}:${ref.ref}: ${value.status} (${value.detail})`);
@@ -597,11 +611,12 @@ export async function validateBlockerDecisionEvidence(
       !facts.some((fact) => fact.status === 'available' && fact.condition === 'pending' && Boolean(fact.liveOwnerId));
   };
   const availableObligations = context.obligationRefs.filter(ref =>
-    !administrativelyRemoved(ref) && !retainedParkedPlanLane.has(evidenceKey(ref)));
+    !administrativelyRemoved(ref) && !retainedParkedPlanLane.has(evidenceKey(ref)) &&
+    !retainedExternalGate.has(evidenceKey(ref)));
   const conditionIdentities = new Set(availableObligations.map(ref => value(ref).conditionIdentity).filter(Boolean));
   const relevant = (ref: BlockerEvidenceRef) => {
     const key = evidenceKey(ref);
-    if (administrativelyRemoved(ref) || retainedParkedPlanLane.has(key)) return false;
+    if (administrativelyRemoved(ref) || retainedParkedPlanLane.has(key) || retainedExternalGate.has(key)) return false;
     return obligations.has(key) ||
       (Boolean(value(ref).conditionIdentity) && conditionIdentities.has(value(ref).conditionIdentity)) ||
       value(ref).subjectWorkItemId === context.workItemId;
