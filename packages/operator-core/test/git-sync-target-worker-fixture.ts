@@ -386,9 +386,17 @@ export async function runGitSyncTargetWorkerFixture() {
         const blocked = parse(await client.callTool({ name: 'git-sync:run', arguments: {
           ...mutation, target: ready.target,
         } }, undefined, requestOptions));
-        assert.equal(blocked.outcome?.reason, 'held_exclusive', JSON.stringify(blocked));
-        assert.equal(blocked.outcome.blockedOn, restartBarrierResource, JSON.stringify(blocked));
-        assert.ok(blocked.outcome.holders.some((holder: { lock_id: string }) => holder.lock_id === lockId));
+        // Shared admission can report exclusive_pending while an exclusive lease is held.
+        // Identify the refusal by the exact barrier and the lease this fixture acquired.
+        assert.equal(blocked.status, 'skipped', JSON.stringify(blocked));
+        assert.equal(blocked.success, false, JSON.stringify(blocked));
+        assert.equal(blocked.committed, false, JSON.stringify(blocked));
+        assert.equal(blocked.outcome?.blockedOn, restartBarrierResource, JSON.stringify(blocked));
+        const holdsBarrier = blocked.outcome.holders?.some(
+          (holder: { lock_id: string; mode: string; status: string }) =>
+            holder.lock_id === lockId && holder.mode === 'exclusive' && holder.status === 'held',
+        );
+        assert.ok(holdsBarrier, `expected the acquired exclusive lease in the refusal: ${JSON.stringify(blocked)}`);
         assert.equal(git('rev-parse', 'HEAD'), before, 'git-sync must respect the exclusive restart barrier');
       } finally {
         await releaseRestartBarrier(lockId);
