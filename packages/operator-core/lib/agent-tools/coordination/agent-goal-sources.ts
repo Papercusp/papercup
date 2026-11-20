@@ -483,7 +483,8 @@ async function readImplementsLinks(
         ON l.src_kind = 'feature'
        AND (f.harness_slug || '#' || f.feature_id) = l.src_ref
        AND f.workspace_id = ${ws}
-     WHERE l.dst_kind = 'plan_item'
+     WHERE l.workspace_id = ${ws}
+       AND l.dst_kind = 'plan_item'
        AND l.rel = 'implements'
        AND (
          (l.src_kind = 'feature' AND f.feature_id = ANY(${ids}))

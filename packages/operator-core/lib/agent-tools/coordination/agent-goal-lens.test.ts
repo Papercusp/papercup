@@ -244,6 +244,11 @@ describe('implements-link ref normalization', () => {
     const candidates = await readGoalCandidates(OWNER, 'self');
 
     expect(candidates.links).toEqual([{ workItemId: featureId, planItemRef }]);
+    const [strings, ...values] = sqlMock.mock.calls.find(([query]) =>
+      Array.isArray(query) && query.some(part => part.includes('FROM harness_shared.coord_links'))) ?? [];
+    const workspaceParameter = strings?.findIndex((part: string) => /\bl\.workspace_id\s*=\s*$/.test(part)) ?? -1;
+    expect(workspaceParameter).toBeGreaterThanOrEqual(0);
+    expect(values[workspaceParameter]).toBe('default');
   });
 
   it('keeps issue-family implements edges in their existing bare-ref form', async () => {
