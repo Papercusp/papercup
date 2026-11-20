@@ -317,6 +317,7 @@ const toolGuard = defineTool({
       ? body.guardRequestId : null;
     const phases: Partial<Record<'plan' | 'identity', number>> = {};
     const planStages: Record<string, number> = {};
+    const repeatedPlanStageCounts = new Map<string, number>();
     const identityStages: Record<string, number> = {};
     const observeIdentityTiming: IdentityRuleReadTimingObserver = ({ stage, durationMs }) => {
       if (!['applied_revision', 'applied_artifact', 'local_rules'].includes(stage) ||
@@ -331,8 +332,14 @@ const toolGuard = defineTool({
           !Number.isFinite(durationMs) || durationMs < 0) return;
       // Preserve the 41 guard, snapshot, goal and canonical-reader phases,
       // including late revision rechecks; keep future labels bounded at 48.
-      if (!(stage in planStages) && Object.keys(planStages).length >= 48) return;
-      planStages[stage] = (planStages[stage] ?? 0) + durationMs;
+      if (Object.hasOwn(planStages, stage)) {
+        // One duration can represent several bindings at different points in
+        // their checks. Record repeats so totals are not read as single spans.
+        repeatedPlanStageCounts.set(stage, (repeatedPlanStageCounts.get(stage) ?? 1) + 1);
+        planStages[stage] += durationMs;
+      } else if (Object.keys(planStages).length < 48) {
+        planStages[stage] = durationMs;
+      }
     };
     const workspaceId = await resolveWorkspace(body);
     const setupMs = performance.now() - startedAt;
@@ -407,6 +414,7 @@ const toolGuard = defineTool({
         identityMs: phases.identity === undefined ? null : Math.round(phases.identity),
         aborted: req.signal.aborted,
         ...(joinedInFlight ? { joinedInFlight: true } : {}),
+        ...(repeatedPlanStageCounts.size ? { repeatedPlanStageCounts: Object.fromEntries(repeatedPlanStageCounts) } : {}),
         ...(Object.keys(planStages).length ? { planStages } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
         ...(guardRequestId ? { pgTimings: toolGuardPgTimings(guardRequestId),

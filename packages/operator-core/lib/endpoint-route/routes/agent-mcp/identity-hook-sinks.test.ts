@@ -462,14 +462,15 @@ describe('POST /agent-mcp/tool-guard', () => {
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
 
-  it('aggregates bounded plan-stage timings on a refused request without leaking binding content', async () => {
+  it('retains repeated plan-stage counts and total timings without leaking binding content', async () => {
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let now = 0;
     const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
     planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
       observeTiming({ stage: 'bindings', durationMs: 10 });
-      observeTiming({ stage: 'start_gate', durationMs: 900 });
-      observeTiming({ stage: 'start_gate', durationMs: 800 });
+      observeTiming({ stage: 'start_proof', durationMs: 900 });
+      observeTiming({ stage: 'binding', durationMs: 900 });
+      observeTiming({ stage: 'start_proof', durationMs: 800 });
       observeTiming({ stage: 'private-plan-content', durationMs: 1 });
       observeTiming({ stage: 'invalid', durationMs: NaN });
       now += 1710;
@@ -480,10 +481,12 @@ describe('POST /agent-mcp/tool-guard', () => {
         method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit' }),
       }));
       expect(await res.json()).toEqual({ ok: true, text: 'plan_execution_not_ready: Bound plan is draft' });
-      expect(res.headers.get('Server-Timing')).toContain('plan_bindings;dur=10.0, plan_start_gate;dur=1700.0');
+      expect(res.headers.get('Server-Timing')).toContain(
+        'plan_bindings;dur=10.0, plan_start_proof;dur=1700.0, plan_binding;dur=900.0');
       expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
         totalMs: 1710, setupMs: 0, planMs: 1710, identityMs: null, aborted: false,
-        planStages: { bindings: 10, start_gate: 1700 },
+        repeatedPlanStageCounts: { start_proof: 2 },
+        planStages: { bindings: 10, start_proof: 1700, binding: 900 },
       }));
       expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
       expect(JSON.stringify(log.mock.calls)).not.toContain('private-plan-content');
@@ -526,7 +529,8 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(res.headers.get('Server-Timing')).toBe('guard;dur=1000.0, setup;dur=0.0, plan;dur=1000.0, '
         + Object.entries(expectedStages).map(([stage, duration]) => `plan_${stage};dur=${duration.toFixed(1)}`).join(', '));
       expect(log).toHaveBeenCalledWith('[tool-guard-timing]', JSON.stringify({
-        totalMs: 1000, setupMs: 0, planMs: 1000, identityMs: null, aborted: false, planStages: expectedStages,
+        totalMs: 1000, setupMs: 0, planMs: 1000, identityMs: null, aborted: false,
+        repeatedPlanStageCounts: { 'start_gate_snapshot_plan-items': 2 }, planStages: expectedStages,
       }));
       expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
       expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
