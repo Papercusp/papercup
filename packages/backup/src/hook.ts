@@ -879,14 +879,18 @@ async function dumpPg(opts: {
       if (guardReadyTask) await guardReadyTask.catch(() => {});
       if (out && !out.destroyed && !out.writableEnded) out.end();
       await outputClosed;
+      // A pre-PROCEED timeout kills an idle gzip, so its output cannot finish.
+      // Decide admission from actual I/O errors before adding that expected
+      // cleanup diagnostic; otherwise a retryable lock wait becomes terminal.
+      const guardAdmissionDeferred = guard && !guardDumpAuthorized && dumpedBytes === 0 && !output.error
+        && (dumpCode === 75 || guardAdmissionTimedOut);
       if (!output.finished && !output.error) {
         output.error = 'output stream closed before finish';
         stderr += `${output.error}\n`;
       }
       const outputOk = ok && output.finished && !output.error;
       let result: PreSnapshotHookResult;
-      if (!outputOk && guard && !guardDumpAuthorized && dumpedBytes === 0 && !output.error
-        && (dumpCode === 75 || guardAdmissionTimedOut)) {
+      if (!outputOk && guardAdmissionDeferred) {
         // The maintained wait-mode guard exits 75 when flock admission times
         // out. Before PROCEED, no dump has run: preserve this as queueing, not
         // a failed restore point. Never retry an error after authorizing work.

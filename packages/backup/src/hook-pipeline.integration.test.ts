@@ -112,6 +112,40 @@ process.exit(23);
     expect((await readdir(dumpDir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   }, 30_000);
 
+  it('keeps a readiness timeout retryable when cleanup kills the idle compressor', async () => {
+    const guard = join(bin, 'guard');
+    await writeFile(guard, `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+fs.writeFileSync(path.join(process.env.BACKUP_PIPE_FIXTURE, 'guard-waiting'), '');
+setInterval(() => {}, 1000);
+`, { mode: 0o700 });
+    vi.stubEnv('KOPIA_BACKUP_GUARD_ACTIVE', '0');
+    vi.stubEnv('KOPIA_BACKUP_GUARD_BIN', guard);
+    const dumpDir = join(root, 'db-dumps');
+    await mkdir(dumpDir);
+    const installed = join(dumpDir, 'pg-embedded.sql.gz');
+    const previous = Buffer.from('previous independently verified backup');
+    await writeFile(installed, previous);
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const pending = runPreSnapshotHook({ workspaceId: 'fixture', workspaceRoot: root, triggerReason: 'pre_destructive' });
+      await vi.waitFor(() => expect(existsSync(join(root, 'guard-waiting'))).toBe(true), { timeout: 20_000 });
+      const expiry = timeoutSpy.mock.calls.find(([, delay]) => delay === 1_805_000)?.[0];
+      expect(expiry).toBeTypeOf('function');
+      if (typeof expiry === 'function') expiry();
+      const result = await pending;
+      expect(result).toMatchObject({ ok: false, deferred: 'backup-guard-busy' });
+      expect(result.error).toContain('backup guard lock readiness timed out');
+      expect(existsSync(join(root, 'ready'))).toBe(false);
+      expect(await readFile(installed)).toEqual(previous);
+      const { readdir } = await import('node:fs/promises');
+      expect((await readdir(dumpDir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  }, 30_000);
+
   it('retains the guard READY/ACK fence before starting the inherited data transfer', async () => {
     const guard = join(bin, 'guard');
     await writeFile(guard, `#!${process.execPath}
