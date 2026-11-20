@@ -54,6 +54,7 @@ describe('autobind preserves logical clause proof across work-item origins', () 
     const result = await runSpecEvidenceAutobind('ws', deps);
     expect(bind).not.toHaveBeenCalled();
     expect(result.decisions).toEqual({ noop: 1, bind: 0, retract: 0 });
+    expect(result.retained).toEqual([expect.objectContaining({ bindingId: 1, testRunId: 1, workItemId: 'WI-manual-origin' })]);
     const rows = await h.db!.sql`SELECT details FROM harness_shared.spec_evidence_bindings`;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.details).toEqual(richDetails);
@@ -65,7 +66,8 @@ describe('autobind preserves logical clause proof across work-item origins', () 
     await seedProof({ details: { ...richDetails, currentMeasurement: measurement }, created_by: 'su-author' });
     const live = await defaultAutobindDeps().loadLiveBindings('ws', [target]);
     expect(live.get('app\u0000plan\u0000SPEC-1\u00001')).toEqual([{
-      id: 1, evidenceRef: file, testRunId: 1, observedAt: expect.any(String), measurement, createdBy: 'su-author',
+      id: 1, workItemId: 'WI-manual-origin', qualifiedRun: true, evidenceRef: file, testRunId: 1,
+      observedAt: expect.any(String), measurement, createdBy: 'su-author',
     }]);
     expect(live.get('app\u0000plan\u0000SPEC-1\u00001')![0]).not.toHaveProperty('adequacy');
   });
@@ -92,6 +94,49 @@ describe('autobind preserves logical clause proof across work-item origins', () 
 });
 
 describe('autobind selects containing-commit proof from the real ledger', () => {
+  it('refuses current proof for a linked dirty run with no source or fixture identity', async () => {
+    const db = h.db!.sql;
+    await db`INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,commit_sha,worktree_dirty)
+      VALUES ('ws','app',${file},'pass',${sha},false), ('ws','app',${file},'pass',${sha},true)`;
+    await db`INSERT INTO harness_shared.spec_evidence_bindings
+      (workspace_id,harness_slug,plan_slug,spec_id,spec_revision,work_item_id,evidence_kind,evidence_ref,test_run_id,created_by,observed_at)
+      VALUES ('ws','app','plan','SPEC-1',1,'WI-original','test',${file},2,'original-observer','2026-08-01T00:00:00Z')`;
+    const deps = defaultAutobindDeps();
+    const latest = (await deps.loadLatestRuns('ws', [target])).get(runKey('app', file))!;
+    const original = (await deps.loadLiveBindings('ws', [target])).get('app\u0000plan\u0000SPEC-1\u00001')!;
+    expect(original).toMatchObject([{ id: 1, workItemId: 'WI-original', testRunId: 2, qualifiedRun: false,
+      observedAt: '2026-08-01T00:00:00.000Z', createdBy: 'original-observer' }]);
+    expect(decideAutobind(target, latest, original)).toMatchObject({ kind: 'bind', run: { id: 1 } });
+    await db`INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,commit_sha,worktree_dirty)
+      VALUES ('ws','app',${file},'pass',${sha},false)`;
+    await db`INSERT INTO harness_shared.spec_evidence_bindings
+      (workspace_id,harness_slug,plan_slug,spec_id,spec_revision,work_item_id,evidence_kind,evidence_ref,test_run_id,created_by)
+      VALUES ('ws','app','plan','SPEC-1',1,'WI-fresh','test',${file},3,'second-observer')`;
+    const qualified = (await deps.loadLiveBindings('ws', [target])).get('app\u0000plan\u0000SPEC-1\u00001')!;
+    expect(decideAutobind(target, latest, qualified)).toMatchObject({ kind: 'noop', reason: 'newer-proof-bound' });
+    expect(qualified.find(row => row.testRunId === 2)).toMatchObject({ workItemId: 'WI-original', qualifiedRun: false });
+  });
+
+  it('uses fresh scoped proof when the historical relation or run is unavailable', async () => {
+    const db = h.db!.sql;
+    await db`INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,commit_sha,worktree_dirty)
+      VALUES ('ws','app',${file},'pass',${sha},false)`;
+    const [fresh] = await db`SELECT id FROM harness_shared.test_runs WHERE workspace_id='ws' AND harness_slug='app'`;
+    await db`INSERT INTO harness_shared.spec_evidence_bindings
+      (workspace_id,harness_slug,plan_slug,spec_id,spec_revision,work_item_id,evidence_kind,evidence_ref,test_run_id,created_by,observed_at)
+      VALUES ('ws','app','plan','SPEC-1',1,'WI-original','test',${file},900,'reviewer-of-original','2026-08-01T00:00:00Z')`;
+    const deps = defaultAutobindDeps();
+    const latest = (await deps.loadLatestRuns('ws', [target])).get(runKey('app', file))!;
+    for (const withdrawn of [false, true]) {
+      if (withdrawn) await db`UPDATE harness_shared.spec_evidence_bindings SET retracted_at=now() WHERE id=1`;
+      const prior = (await deps.loadLiveBindings('ws', [target])).get('app\u0000plan\u0000SPEC-1\u00001') ?? [];
+      expect(decideAutobind(target, latest, prior)).toMatchObject({ kind: 'bind', run: { id: Number(fresh.id), worktreeDirty: false } });
+      const [history] = await db`SELECT work_item_id,test_run_id,created_by FROM harness_shared.spec_evidence_bindings WHERE id=1`;
+      expect(history).toMatchObject({ work_item_id: 'WI-original', created_by: 'reviewer-of-original' });
+      expect(Number(history.test_run_id)).toBe(900);
+    }
+  });
+
   it('keeps a clean pass when newer passes are dirty, unknown, commitless, or malformed', async () => {
     await h.db!.sql`
       INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,commit_sha,worktree_dirty) VALUES

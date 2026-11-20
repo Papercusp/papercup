@@ -58,6 +58,7 @@ import {
   type CitationResolution,
 } from './plan-audits';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import { decideAutobind } from './agent-tools/plans/spec-evidence-autobind';
 
 describe('the saved activation audit comparison', () => {
   function fixture(count: number, reverse = false) {
@@ -92,6 +93,19 @@ describe('the saved activation audit comparison', () => {
       expect(page.observation).toMatchObject({ createdBy: input.audit.createdBy, createdAt: input.audit.createdAt });
     } while (cursor);
     expect(seen).toEqual(input.ids);
+  });
+
+  it('uses the original work item and proof through the existing consumer', () => {
+    const target = { workspaceId: 'ws', harnessSlug: 'h', planSlug: 'compare', specId: 'SPEC-1', specRevision: 1,
+      workItemId: 'WI-consumer', barKey: 'R-1', testFile: 'feature.test.ts' };
+    const run = { id: 17, filePath: target.testFile, status: 'pass' as const, finishedAt: '2026-08-01T10:00:00Z',
+      commitSha: 'a'.repeat(40), worktreeDirty: false };
+    const binding = { id: 23, workItemId: 'WI-original', testRunId: run.id, evidenceRef: target.testFile,
+      observedAt: '2026-08-01T10:01:00Z', createdBy: 'original-binder', qualifiedRun: true };
+    expect(decideAutobind(target, run, [binding])).toMatchObject({ kind: 'noop', reason: 'already-bound',
+      originals: [{ bindingId: 23, workItemId: 'WI-original', testRunId: 17, boundBy: 'original-binder',
+        observedAt: binding.observedAt, finishedAt: run.finishedAt }] });
+    expect(decideAutobind(target, { ...run, worktreeDirty: true }, [binding])).toMatchObject({ kind: 'noop', reason: 'run-not-committed' });
   });
 
   it('returns the late dependent at N minus one, N and N plus one under reversed discovery order', () => {

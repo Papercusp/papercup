@@ -32,7 +32,7 @@ const run = (id: number, status: AutobindLedgerRun['status'], finishedAt = `2026
   ({ id, filePath: TEST, status, finishedAt, commitSha: 'a'.repeat(40), worktreeDirty: false }) satisfies AutobindLedgerRun;
 
 const binding = (id: number, testRunId: number | null, observedAt = '2026-10-15T17:00:00.000Z', evidenceRef = TEST) =>
-  ({ id, evidenceRef, testRunId, observedAt }) satisfies AutobindLiveBinding;
+  ({ id, evidenceRef, testRunId, observedAt, qualifiedRun: testRunId !== null }) satisfies AutobindLiveBinding;
 
 describe('automatic binding preserves calibration inputs', () => {
   const derived = { schemaVersion: 1 as const, kind: 'repo-files' as const,
@@ -166,6 +166,8 @@ describe('decideAutobind', () => {
   it('does not backfill an older pass over newer bound proof', () => {
     expect(decideAutobind(target, run(10, 'pass'), [binding(1, 11)]))
       .toMatchObject({ kind: 'noop', reason: 'newer-proof-bound' });
+    expect(decideAutobind(target, run(10, 'pass'), [{ ...binding(1, 11), qualifiedRun: undefined }]))
+      .toMatchObject({ kind: 'bind', run: { id: 10 } });
   });
   it('retracts proof older than a later failing run, including a hand-bound row without a run id', () => {
     const failed = run(12, 'fail', '2026-10-15T18:00:00.000Z');

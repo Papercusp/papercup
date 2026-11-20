@@ -69,6 +69,9 @@ export interface AutobindLedgerRun {
 /** A live (un-retracted) `test` binding on the target's logical clause revision. */
 export interface AutobindLiveBinding {
   id: number;
+  workItemId?: string;
+  /** True only when the source ledger still contains a qualifying run for this exact file and scope. */
+  qualifiedRun?: boolean;
   evidenceRef: string;
   testRunId: number | null;
   observedAt: string;
@@ -138,8 +141,14 @@ export function prepareAutobindInput(
     : refuse('autobind_recipe_unverified', 'The combined measured recipe exceeds supported bounds; author a complete bounded recipe before automatic binding.');
 }
 
+interface RetainedTestObservation {
+  bindingId: number; workItemId: string | null; testRunId: number; observedAt: string;
+  boundBy: string | null; finishedAt: string;
+}
+
 export type AutobindDecision =
-  | { kind: 'noop'; target: AutobindTarget; reason: 'no-terminal-run' | 'run-not-committed' | 'already-bound' | 'newer-proof-bound' | 'nothing-to-retract' }
+  | { kind: 'noop'; target: AutobindTarget; reason: 'already-bound'; originals: RetainedTestObservation[] }
+  | { kind: 'noop'; target: AutobindTarget; reason: 'no-terminal-run' | 'run-not-committed' | 'newer-proof-bound' | 'nothing-to-retract' }
   | { kind: 'bind'; target: AutobindTarget; run: AutobindLedgerRun }
   | { kind: 'retract'; target: AutobindTarget; run: AutobindLedgerRun; bindingIds: number[] };
 
@@ -167,11 +176,14 @@ export function decideAutobind(
     if (latestRun.worktreeDirty !== false || !/^[0-9a-f]{40,64}$/i.test(latestRun.commitSha ?? '')) {
       return { kind: 'noop', target, reason: 'run-not-committed' };
     }
-    if (live.some((binding) => binding.testRunId != null && binding.testRunId > latestRun.id)) {
+    if (live.some((binding) => binding.qualifiedRun === true && binding.testRunId != null && binding.testRunId > latestRun.id)) {
       return { kind: 'noop', target, reason: 'newer-proof-bound' };
     }
-    return live.some((binding) => binding.testRunId === latestRun.id)
-      ? { kind: 'noop', target, reason: 'already-bound' }
+    const originals = live.filter(binding => binding.qualifiedRun === true && binding.testRunId === latestRun.id)
+      .map(binding => ({ bindingId: binding.id, workItemId: binding.workItemId ?? null, testRunId: latestRun.id,
+        observedAt: binding.observedAt, boundBy: binding.createdBy ?? null, finishedAt: latestRun.finishedAt }));
+    return originals.length
+      ? { kind: 'noop', target, reason: 'already-bound', originals }
       : { kind: 'bind', target, run: latestRun };
   }
   const failedAt = Date.parse(latestRun.finishedAt);
@@ -229,6 +241,7 @@ export const clauseKey = (t: Pick<AutobindTarget, 'harnessSlug' | 'planSlug' | '
 export interface AutobindRunResult {
   targets: number;
   decisions: Record<AutobindDecision['kind'], number>;
+  retained?: RetainedTestObservation[];
   outcomes: AutobindOutcome[];
   truncatedByLimit: boolean;
   summary: string;
@@ -252,7 +265,16 @@ export async function runSpecEvidenceAutobind(
     ),
   );
   const counts: AutobindRunResult['decisions'] = { noop: 0, bind: 0, retract: 0 };
-  for (const decision of decisions) counts[decision.kind] += 1;
+  const retained = new Map<number, RetainedTestObservation>();
+  const rememberOriginals = (decision: AutobindDecision) => {
+    if (decision.kind === 'noop' && decision.reason === 'already-bound') {
+      for (const original of decision.originals) retained.set(original.bindingId, original);
+    }
+  };
+  for (const decision of decisions) {
+    counts[decision.kind] += 1;
+    rememberOriginals(decision);
+  }
   const actionable = decisions.filter((decision) => decision.kind !== 'noop');
   const outcomes: AutobindOutcome[] = [];
   for (const decision of actionable.slice(0, maxActions)) {
@@ -283,6 +305,7 @@ export async function runSpecEvidenceAutobind(
     const refreshed = decideAutobind(decision.target, decision.run,
       bindingsForTarget(decision.target, current.get(clauseKey(decision.target)) ?? []));
     if (refreshed.kind === 'noop') {
+      rememberOriginals(refreshed);
       counts.bind -= 1;
       counts.noop += 1;
       continue;
@@ -299,6 +322,7 @@ export async function runSpecEvidenceAutobind(
   return {
     targets: targets.length,
     decisions: counts,
+    retained: [...retained.values()],
     outcomes,
     truncatedByLimit,
     summary:
@@ -429,15 +453,21 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
       const rows = await withWorkspace(workspaceId, (tx) => tx<
         { id: string | number; harness_slug: string; plan_slug: string; spec_id: string; spec_revision: number;
           work_item_id: string; evidence_ref: string; test_run_id: string | number | null; observed_at: Date | string;
-          details: { currentMeasurement?: unknown } | null; created_by: string | null }[]
+          details: { currentMeasurement?: unknown } | null; created_by: string | null;
+          run_file: string | null; qualified_run: boolean | null }[]
       >`
-        SELECT id, harness_slug, plan_slug, spec_id, spec_revision, work_item_id, evidence_ref, test_run_id, observed_at, details, created_by
-          FROM harness_shared.spec_evidence_bindings
-         WHERE workspace_id = ${workspaceId}
-           AND plan_slug = ANY(${plans}::text[])
-           AND spec_id = ANY(${specs}::text[])
-           AND evidence_kind = 'test'
-           AND retracted_at IS NULL`);
+        SELECT b.id, b.harness_slug, b.plan_slug, b.spec_id, b.spec_revision, b.work_item_id, b.evidence_ref,
+               b.test_run_id, b.observed_at, b.details, b.created_by, tr.file_path AS run_file,
+               (tr.status = 'pass' AND tr.source IS DISTINCT FROM 'mutation-probe' AND tr.worktree_dirty IS FALSE
+                AND tr.commit_sha ~* '^[0-9a-f]{40,64}$') AS qualified_run
+          FROM harness_shared.spec_evidence_bindings b
+          LEFT JOIN harness_shared.test_runs tr ON tr.id = b.test_run_id
+            AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
+         WHERE b.workspace_id = ${workspaceId}
+           AND b.plan_slug = ANY(${plans}::text[])
+           AND b.spec_id = ANY(${specs}::text[])
+           AND b.evidence_kind = 'test'
+           AND b.retracted_at IS NULL`);
       const byClause = new Map<string, AutobindLiveBinding[]>();
       for (const row of rows) {
         const key = clauseKey({
@@ -449,6 +479,8 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
         const list = byClause.get(key) ?? [];
         list.push({
           id: Number(row.id),
+          workItemId: row.work_item_id,
+          qualifiedRun: row.qualified_run === true && row.run_file != null && normalizeTestRef(row.run_file) === normalizeTestRef(row.evidence_ref),
           evidenceRef: row.evidence_ref,
           testRunId: row.test_run_id == null ? null : Number(row.test_run_id),
           observedAt: new Date(row.observed_at).toISOString(),
