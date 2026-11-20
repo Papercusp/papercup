@@ -21,6 +21,7 @@ interface Generation {
   scope_ref: string;
   fact_key: string;
   successor_id: string | null;
+  citation_after_version: string | null;
   actor: string | null;
   reason: string | null;
   cursor_harness: string | null;
@@ -135,6 +136,7 @@ async function eventOf(sql: Sql, g: Generation): Promise<FactChangeEvent> {
   const after = rows.find(r => r.id === String(g.successor_id));
   if (!before || !after) throw new Error('Original or successor fact version is unavailable');
   event.comparison = { bodyChanged: before.body.trim() !== after.body.trim(),
+    citationAfterVersion: g.citation_after_version === null ? null : versionNumber(g.citation_after_version),
     before: captureFactSupport(before), after: captureFactSupport(after) };
   return event;
 }
@@ -189,6 +191,7 @@ async function deliver(sql: Sql, tx: TransactionSql, g: Generation, event: FactC
       const notice = renderCascadeNotice(event, rows, Number(rows[0].total));
       const digest = createHash('sha256').update(JSON.stringify([g.workspace_id, ref.versionId, ref.kind, recipient])).digest('hex');
       const msgId = 'fact-change-' + digest;
+      // notify-classification: {"id":"packages/operator-core/lib/agent-facts/cascade-progress.ts#<module>/deliver:5a2ce032daf69f548b5a:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       await sendMessage({ ownerId: sender, ownerLabel: sender, source: 'static-client', workspaceId: g.workspace_id,
         userId: null }, { to: [recipient], msgId, summary: notice.summary,
         body: notice.body + (omitted ? '\nAdditional affected items: ' + omitted : '') + '\nYour full item list: facts:list ' + JSON.stringify(read),
@@ -226,6 +229,7 @@ export async function resumeFactCascade(sql: Sql, specific?: { ws: string; ref: 
       await tx.savepoint(async page => {
         const pageDb = page as unknown as Sql;
         const event = await eventOf(pageDb, g);
+        // notify-classification: {"id":"packages/operator-core/lib/agent-facts/cascade-progress.ts#<module>/resumeFactCascade/process/<callback>:f24f8ca921f1231b5f25:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         if (g.scan_finished || await scan(pageDb, g, event)) await deliver(pageDb, page, g, event);
       });
     } catch (error) {

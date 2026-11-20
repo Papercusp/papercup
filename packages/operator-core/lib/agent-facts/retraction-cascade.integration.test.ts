@@ -131,6 +131,29 @@ async function interruptSweep(boundary: 'before-commit' | 'after-commit') {
 }
 
 describe('fact-change recovery through the normal writers and maintenance', () => {
+  it.each(['confidence', 'body'] as const)('keeps the original citation applicable across exact refreshes before a %s change', async (field) => {
+    const subject = await seed('refresh-then-' + field, 1);
+    const input = { ...fact(subject.key), createdBy: recipient };
+    const refresh = await assertFact(input);
+    const latest = await assertFact(input);
+    expect(new Set([subject.versionId, String(refresh.id), String(latest.id)]).size).toBe(3);
+    expect(refresh.cascades ?? []).toEqual([]);
+    expect(latest.cascades ?? []).toEqual([]);
+
+    const replacement = await assertFact(field === 'body'
+      ? { ...input, body: 'A different observation.' }
+      : { ...input, confidence: 'suspected' });
+    expect(replacement.cascades).toHaveLength(1);
+    const progress = replacement.cascades![0];
+    expect(progress.matched).toBe(1);
+    await sweepExpiredFacts();
+    await verify(progress, { ...subject, versionId: String(latest.id) });
+    const [item] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspace} AND feature_id = ${subject.expected[0][1]}`;
+    expect(readAssumptionFlags(item.payload)[0]).toMatchObject({ citedVersionId: Number(subject.versionId),
+      versionId: latest.id, supersededBy: replacement.id });
+  });
+
   it('the normal fact writer reaches the decisive work item across 499, 500 and 501 matches', async () => {
     for (const path of ['direct', 'retire', 'supersede'] as const) {
       for (const count of [499, 500, 501]) {
@@ -146,6 +169,61 @@ describe('fact-change recovery through the normal writers and maintenance', () =
       }
     }
   }, 180_000);
+
+  it.each(['replacement', 'retraction'] as const)('starts a new statement after %s even when the original text returns', async (boundary) => {
+    const subject = await seed('reset-' + boundary, 1);
+    const input = { ...fact(subject.key), createdBy: recipient };
+    await assertFact(input);
+    if (boundary === 'replacement') {
+      await assertFact({ ...input, body: 'Another assertion.' });
+    } else {
+      await change(subject.key, 'direct');
+    }
+    await assertFact(input);
+    const next = await assertFact({ ...input, confidence: 'suspected' });
+    expect(next.cascades?.[0]).toMatchObject({ state: 'complete', scanned: 1, matched: 0 });
+    const [item] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspace} AND feature_id = ${subject.expected[0][1]}`;
+    expect(readAssumptionFlags(item.payload).map(f => f.citedVersionId)).toEqual([Number(subject.versionId)]);
+  });
+
+  it('retains the original support across pruning, a page boundary and a worker restart', async () => {
+    const subject = await seed('pruned-refresh', 501);
+    const input = { ...fact(subject.key), createdBy: recipient };
+    const current = await assertFact(input);
+    await db.adminSql`UPDATE harness_shared.agent_facts SET superseded_at = now() - interval '31 days'
+      WHERE workspace_id = ${workspace} AND id = ${subject.versionId}`;
+    await sweepExpiredFacts();
+    expect(await db.adminSql`SELECT id FROM harness_shared.agent_facts
+      WHERE workspace_id = ${workspace} AND id = ${subject.versionId}`).toHaveLength(0);
+    const progress = await change(subject.key, 'supersede');
+    expect(progress).toMatchObject({ matched: 500, remainingCandidates: 1 });
+    await interruptSweep('after-commit');
+    await sweepExpiredFacts();
+    await verify(progress, { ...subject, versionId: String(current.id) });
+    const [last] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspace} AND feature_id = ${subject.expected[500][1]}`;
+    expect(readAssumptionFlags(last.payload)[0].citedVersionId).toBe(Number(subject.versionId));
+  }, 120_000);
+
+  it.each([false, true])('recovers a legacy statement with missing predecessor = %s', async (missing) => {
+    const subject = await seed('legacy-refresh-' + String(missing), 1);
+    const input = { ...fact(subject.key), createdBy: recipient };
+    const current = await assertFact(input);
+    // Versions written before migration 1652 have no cached statement boundary.
+    await db.adminSql`UPDATE harness_shared.agent_facts SET citation_after_version = NULL
+      WHERE workspace_id = ${workspace} AND id = ${current.id!}`;
+    if (missing) {
+      await db.adminSql`DELETE FROM harness_shared.agent_facts WHERE workspace_id = ${workspace} AND id = ${subject.versionId}`;
+    }
+    const progress = await change(subject.key, 'supersede');
+    await verify(progress, { ...subject, versionId: String(current.id) });
+    const [item] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspace} AND feature_id = ${subject.expected[0][1]}`;
+    const [flag] = readAssumptionFlags(item.payload);
+    expect(flag.citedVersionId).toBe(Number(subject.versionId));
+    expect(flag.reason.includes('history is unavailable')).toBe(missing);
+  });
 
   it('resumes multiple fact change batches fairly after restart and reordered source rows', async () => {
     const a = await seed('reordered-a', 1503, { reverse: true, acrossHarnesses: true });

@@ -2140,11 +2140,29 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
          AND source_hive IS NULL
          AND superseded_at IS NULL
       RETURNING id, harness_slug, body, confidence, source_ref, source_provenance, depends_on
-    ), inserted AS (
+        ${durableCascade ? sql`, supersedes_id, retracted_at, citation_after_version` : sql``}
+    ) ${durableCascade ? sql`, statement_history AS (
+      -- Follow local predecessors until a known boundary, changed statement, or retraction.
+      -- New versions carry the boundary forward even after the original expires.
+      WITH RECURSIVE lineage AS (
+        SELECT id, supersedes_id, body, citation_after_version FROM superseded
+        UNION ALL
+        SELECT p.id, p.supersedes_id, p.body, p.citation_after_version
+          FROM lineage l JOIN harness_shared.agent_facts p ON p.id = l.supersedes_id
+         WHERE l.citation_after_version IS NULL AND p.id < l.id AND p.retracted_at IS NULL
+           AND p.workspace_id = ${ws} AND p.scope = ${input.scope} AND coalesce(p.scope_ref,'') = ${ref ?? ''}
+           AND p.key = ${key} AND p.source_hive IS NULL AND p.body = l.body
+      )
+      SELECT coalesce(l.citation_after_version, CASE WHEN l.supersedes_id IS NULL THEN l.id - 1 ELSE boundary.id END) AS after_version
+        FROM lineage l LEFT JOIN harness_shared.agent_facts boundary ON boundary.id = l.supersedes_id
+         AND boundary.id < l.id AND boundary.workspace_id = ${ws} AND boundary.scope = ${input.scope}
+         AND coalesce(boundary.scope_ref,'') = ${ref ?? ''} AND boundary.key = ${key} AND boundary.source_hive IS NULL
+       ORDER BY l.id LIMIT 1
+    )` : sql``}, inserted AS (
       INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
        audience_scope, source_provenance, confidence, measurement, recheck, supersedes_id, kind, depends_on, claim,
-       enforcement, settled_by)
+       enforcement, settled_by ${durableCascade ? sql`, citation_after_version` : sql``})
     VALUES
       (${ws},
        -- keep an already-stamped federation identity when a later assert omits
@@ -2165,7 +2183,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
        ${storedClaim ? JSON.stringify(storedClaim) : null}::text::jsonb,
        ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb,
-       ${storedSettledBy})
+       ${storedSettledBy} ${durableCascade ? sql`, (SELECT CASE WHEN s.retracted_at IS NULL AND s.body = ${storedBody}
+          THEN h.after_version ELSE s.id END FROM superseded s CROSS JOIN statement_history h)` : sql``})
       RETURNING id, superseded_at::text, supersedes_id,
                 scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
                 confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
@@ -2183,15 +2202,15 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       RETURNING key, id
     ) ${durableCascade ? sql`, queued AS (
       INSERT INTO harness_shared.fact_change_cascades
-        (workspace_id, version_id, kind, scope, scope_ref, fact_key, successor_id, actor, reason)
+        (workspace_id, version_id, kind, scope, scope_ref, fact_key, successor_id, actor, reason, citation_after_version)
       SELECT ${ws}, s.id, 'superseded', i.scope, coalesce(i.scope_ref,''), i.key, i.id, i.created_by,
-             'superseded by version ' || i.id::text
-        FROM superseded s CROSS JOIN inserted i
-       WHERE (s.body, s.confidence, s.source_ref, s.source_provenance, s.depends_on)
+             'superseded by version ' || i.id::text, h.after_version
+        FROM superseded s CROSS JOIN inserted i CROSS JOIN statement_history h
+       WHERE s.retracted_at IS NULL AND (s.body, s.confidence, s.source_ref, s.source_provenance, s.depends_on)
              IS DISTINCT FROM (i.body, i.confidence, i.source_ref, i.source_provenance, i.depends_on)
       UNION ALL
       SELECT ${ws}, r.id, 'retracted', i.scope, coalesce(i.scope_ref,''), r.key, NULL::bigint,
-             i.created_by, ${retractionReason} FROM retired r CROSS JOIN inserted i
+             i.created_by, ${retractionReason}, NULL::bigint FROM retired r CROSS JOIN inserted i
       RETURNING kind, scope, scope_ref, fact_key, version_id
     )` : sql``}
     SELECT inserted.*,

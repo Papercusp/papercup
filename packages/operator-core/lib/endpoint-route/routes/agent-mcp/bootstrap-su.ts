@@ -2026,6 +2026,7 @@ export const bootstrapSu = defineTool({
         : null;
     let spec;
     try {
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:b1980e2a8f0ae25595a3:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       spec = await buildLaunchSpec({
         kind: 'su',
         ownerId: body.owner_id?.trim() || null,
@@ -3056,6 +3057,7 @@ export const bootstrapSu = defineTool({
       const { assertIdentityActivationFunded } = await import('../../../cupboard/identity-activation-gate-io');
       await assertIdentityActivationFunded({ stack: launchArtifact.stack, repoDir: cwd, workspaceId: workspace });
       if (launchArtifact.resourceArtifacts.length > 0) {
+        // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts#<module>/handler:8ebdba02a84f38faa72b:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         await provisionLaunchIdentityResources(launchArtifact, getOrgPg().sql, { ownerId: sid });
       }
       promptText = launchArtifact.promptText;

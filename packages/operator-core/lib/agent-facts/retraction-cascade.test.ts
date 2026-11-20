@@ -168,6 +168,19 @@ describe('citesChangedFact', () => {
     expect(citesChangedFact(citation({ versionId: null }), supersession())).toBe(false);
   });
 
+  it('compares the consumed input inside the predecessor statement and preserves the original pin', () => {
+    const before = captureFactSupport({ confidence: 'verified' });
+    const after = captureFactSupport({ confidence: 'suspected' });
+    const event = supersession({ comparison: { before, after, bodyChanged: false, citationAfterVersion: 38 } });
+    const prior = (versionId: number) => citation({ versionId, confidence: 'verified' });
+    expect([38, 39, 41, 42, 43].map(id => citesChangedFact(prior(id), event))).toEqual([false, true, true, true, false]);
+    expect(citesChangedFact(citation({ versionId: 41, confidence: 'suspected' }), event)).toBe(false);
+    expect(buildFlag(event, prior(39), NOW().toISOString())).toMatchObject({ citedVersionId: 39, versionId: 42 });
+    const unknown = supersession({ comparison: { before, after, bodyChanged: false, citationAfterVersion: null } });
+    expect(citesChangedFact(prior(38), unknown)).toBe(true);
+    expect(buildFlag(unknown, prior(38), NOW().toISOString()).reason).toContain('history is unavailable');
+  });
+
   it('a different key, scope or scopeRef never matches', () => {
     expect(citesChangedFact(citation({ key: 'other' }), retraction())).toBe(false);
     expect(citesChangedFact(citation({ scope: 'owner' }), retraction())).toBe(false);

@@ -1089,6 +1089,7 @@ const searchTranscripts = defineTool({
     // needs the hit set, and that runs post-hoc below for JUST the matched
     // entries (same safety condition as the WI-3924 `thinkingFor` gate: an
     // unmatched entry is never surfaced by this endpoint).
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:b8eb4c1868b595fa5bcc:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const rosterP = mergeRosterWithAssignments({ workspaceId: null, thinkingFor: () => false });
     rosterP.catch(() => {}); // re-awaited below; never an unhandled rejection
     /* Fired NOW, alongside the roster and the search, for the same reason the
@@ -1697,6 +1698,7 @@ function codexHomeRepairReceiptResponse(stored: HomeRepairStoredResult | null, e
 /** Reuse the existing pending-result ledger. An uncertain HTTP response is
  * observed by attempt identity; it never authorizes a second home mutation. */
 async function withCodexHomeRepairReceipt(req: Request, execute: () => Promise<Response>): Promise<Response> {
+  // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/withCodexHomeRepairReceipt:b6e742bd4ae15b328adf:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   if (req.headers.get('x-papercusp-repair-receipt') !== '1') return execute();
   const text = await req.clone().text();
   let body: { owner?: unknown; advSessionId?: unknown };
@@ -1716,6 +1718,7 @@ async function withCodexHomeRepairReceipt(req: Request, execute: () => Promise<R
     structuredContent: receipt, _meta: { state: 'pending' } } });
   if (!claim.claimed) return codexHomeRepairReceiptResponse(claim.result, receipt, false);
   try {
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/withCodexHomeRepairReceipt:b6e742bd4ae15b328adf:2","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const response = await execute();
     const result = { ...receipt, pending: false,
       response: { status: response.status, body: await response.clone().json() } };
@@ -1752,6 +1755,7 @@ const ensureCodexHome = defineTool({
   path: '/adv/sessions/ensure-codex-home',
   auth: 'loopback',
   async handler(req, ctx) {
+    // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:e76d34090262bd394723:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     return withCodexHomeRepairReceipt(req, async () => {
     const measure = <T>(phase: string, work: () => T | PromiseLike<T>): Promise<T> =>
       ctx?.routeDiagnostics ? ctx.routeDiagnostics.measure(phase, work) : Promise.resolve().then(work);
@@ -1906,6 +1910,7 @@ const ensureCodexHome = defineTool({
     if (sessionRow?.role && sessionRow.role !== 'su') {
       const { repairRoleCodexHome } = await import('../../../role-codex-home-repair');
       // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:6483ea8b879cf9f5f870:1","classification":"durable","reason":"Restricted-role repair reaches lifecycle notification paths; preserve their terminal delivery obligation through this shared wrapper.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler/<callback>:6483ea8b879cf9f5f870:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       const result = await repairRoleCodexHome({
         advSessionId, owner, sessionRow, rawRecord,
         operatorBaseUrl: new URL(req.url).origin, body, measure,
@@ -2271,6 +2276,7 @@ const roster = defineTool({
     const endedLimit = Number.isFinite(endedLimitRaw) && endedLimitRaw > 0 ? endedLimitRaw : 50;
 
     const [{ active, orphanedClaims }, endedAll, pendingRows, startingRows] = await Promise.all([
+      // notify-classification: {"id":"packages/operator-core/lib/endpoint-route/routes/adv/sessions.ts#<module>/handler:ae1d2ace166a93902628:1","classification":"durable","reason":"Unresolved callback branches reach notification roots at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the delivery requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       mergeRosterWithAssignments({ workspaceId }),
       listEndedAdvSessions({ workspaceId, limit: endedLimit }),
       listPendingWorkbenchLaunches({ workspaceId }),

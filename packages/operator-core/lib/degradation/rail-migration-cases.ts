@@ -3975,6 +3975,7 @@ const alarmCases: Array<{ id: string; rowId: string; run: (deps: AlarmCapture) =
       try {
         initAgentGovernorObserver({ ...attention, status: async () => {}, recentlyEscalated: async () => true });
         const governor = getGovernor('anthropic', 'condition-rail', { now: () => clock });
+        // notify-classification: {"id":"packages/operator-core/lib/degradation/rail-migration-cases.ts#<module>/run:2499b5c321b28e199577:1","classification":"durable","reason":"The native source census reaches notifyPauseIfExtended at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         governor.penalize({ retryAfterMs: 100_000 });
         await flushAgentGovernorAlarms();
         clock = governor.snapshot().pausedUntil;

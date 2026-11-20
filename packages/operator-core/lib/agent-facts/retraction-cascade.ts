@@ -76,7 +76,13 @@ export interface FactChangeEvent {
   /** Who retracted / re-asserted. */
   by: string | null;
   /** Present when both immutable versions were read for this supersession. */
-  comparison?: { bodyChanged: boolean; before: FactSupport; after: FactSupport };
+  comparison?: {
+    bodyChanged: boolean;
+    before: FactSupport;
+    after: FactSupport;
+    /** Exclusive lower bound for this statement. Null means the old history is incomplete. */
+    citationAfterVersion?: number | null;
+  };
 }
 
 export interface FactSupport {
@@ -171,16 +177,21 @@ const sameIdentity = (a: CitedAssumption, e: FactChangeEvent): boolean =>
 /**
  * Does this citation rest on the changed fact?
  *  - retraction: the whole identity is gone, so ANY version of it matches;
- *  - supersession: only a close that pinned exactly the superseded version
- *    (a close pinned to an older version was flagged when THAT version moved;
- *    a close with no pin cannot be tied to a version and is left to retraction).
+ *  - supersession: compare the evidence consumed by a close pinned to the
+ *    uninterrupted statement. A legacy event only establishes its exact pin.
  */
 export function citesChangedFact(a: CitedAssumption, e: FactChangeEvent): boolean {
   if (!a || typeof a !== 'object') return false;
   if (!sameIdentity(a, e)) return false;
   if (e.kind === 'retracted') return true;
-  if (e.versionId == null || a.versionId == null || String(a.versionId) !== String(e.versionId)) return false;
+  if (e.versionId == null || a.versionId == null) return false;
   const change = e.comparison;
+  if (String(a.versionId) !== String(e.versionId)) {
+    const pin = Number(a.versionId);
+    const floor = change?.citationAfterVersion;
+    if (floor === undefined || !Number.isSafeInteger(pin) || String(pin) !== String(a.versionId) ||
+        pin <= 0 || pin > e.versionId || (floor !== null && pin <= floor)) return false;
+  }
   if (!change || change.bodyChanged) return true;
   const citedStrength = confidenceStrength.get(a.confidence ?? '') ?? 0;
   const oldStrength = confidenceStrength.get(change.before.confidence ?? '') ?? 0;
@@ -213,7 +224,8 @@ export function buildFlag(e: FactChangeEvent, citation: CitedAssumption, atIso: 
     citedVersionId: citation.versionId != null ? Number(citation.versionId) : null,
     versionId: e.versionId,
     supersededBy: e.kind === 'superseded' ? (e.supersededBy ?? null) : null,
-    reason,
+    reason: e.comparison?.citationAfterVersion === null && String(citation.versionId) !== String(e.versionId)
+      ? reason + '. Earlier version history is unavailable. Recheck the original citation.' : reason,
     by: e.by,
     at: atIso,
   };
@@ -398,7 +410,8 @@ export async function flagMatchingItems(
     // Containment narrows on the indexed population (migration 1506's predicate is
     // repeated verbatim so the partial index applies); the JS matcher then applies
     // the exact rule, including the null-vs-'' scopeRef equivalence SQL cannot.
-    const probe = e.kind === 'retracted' ? [{ scope: e.scope, key: e.key }] : [{ versionId: e.versionId }];
+    const probe = e.kind === 'retracted' || e.comparison?.citationAfterVersion !== undefined
+      ? [{ scope: e.scope, key: e.key }] : [{ versionId: e.versionId }];
     const rows = await sql<CandidateRow[]>`
       SELECT feature_id, harness_slug, title, status, terminal_owner, taken_by,
              count(*) OVER () AS candidate_count,
