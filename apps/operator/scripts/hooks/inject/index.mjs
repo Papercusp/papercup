@@ -40,6 +40,8 @@ import { fileURLToPath } from 'node:url';
 
 import { runInjection, sessionId } from './core.mjs';
 import { openDeliveryLedger } from './delivery-ledger.mjs';
+import { killSwitchState } from './ports.mjs';
+import { evaluateStop } from './toolless-mcp-recovery.mjs';
 
 /**
  * ── A NESTED CLI MUST NOT SPEND THE SU'S PER-SESSION STATE (WI-10004953) ──
@@ -207,6 +209,15 @@ export async function dispatch(opts = {}) {
       return null;
     }
 
+    // Identity transport recovery must work before an operator request: the
+    // local MCP list can be gone while the operator is healthy or unreachable.
+    // It shares this Stop seat and the nested-session fence, never a separate
+    // installed context hook. Preserve Claude's one-bounce block protocol.
+    if (client === 'claude' && port === 'stop' && !killSwitchState(port, env).off &&
+        event && typeof event === 'object' && !Array.isArray(event)) {
+      const reason = evaluateStop({ hook: event, env });
+      if (reason) return JSON.stringify({ decision: 'block', reason });
+    }
     return await runInjection({ adapter, nativeEvent, event, env, fetchImpl, openDeliveryLedger });
   } catch {
     return null;

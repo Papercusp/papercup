@@ -1011,12 +1011,6 @@ export const CC_HOOK_FILES = [
   // check — Stop blocks once to ask done-or-still-open about a directive the session
   // replied to, and until an over-cap directive addressed to it has a summary.
   'stop-owner-directive-check.mjs',
-  // WI-6554700010048155 (layer C of WI-6554700010048116): the connected-but-TOOLLESS
-  // self-heal hint — Stop reads the transcript tail and, when papercusp calls answered
-  // "No such tool available" for a reachability-floor tool (or >=2 distinct tools), blocks
-  // once with the mcp-reconnect recovery. Claude never fires PostToolUseFailure for an
-  // unknown tool, so Stop is the only seat that sees it. Advisory, not a safety rail.
-  'stop-toolless-mcp-hint.mjs',
   // owner-inbox-single-pane-2026-07-17 P-001: the owner-gate CAPTURE + MIRROR layer —
   // PreToolUse/PostToolUse around AskUserQuestion/ExitPlanMode, a Notification
   // permission-wait capture, and a Stop `<ask>`-tag mirror + question-shaped-ending
@@ -3444,13 +3438,11 @@ export function mergeClaudeHookSettings(
     hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-owner-directive-check.mjs'), {
       hooks: cmd('stop-owner-directive-check.mjs'),
     });
-  // merge_stop_toolless_mcp_hint_hook — Stop, no matcher. WI-6554700010048155: the
-  // toolless-MCP self-heal hint; `stop_hook_active` + a per-owner miss-id marker bound it
-  // to one bounce per miss episode. Purely local (reads the transcript tail).
-  if (has('stop-toolless-mcp-hint.mjs'))
-    hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-toolless-mcp-hint.mjs'), {
-      hooks: cmd('stop-toolless-mcp-hint.mjs'),
-    });
+  // WI-6554700010064315: local recovery now runs through stop-identity-context.
+  // Retire old enrollment even on a partial install; preserve foreign commands
+  // in the same entry and make repeated upgrades idempotent.
+  if (Array.isArray(hooks.Stop))
+    hooks.Stop = replaceOurHookEntries(ev('Stop'), ours('stop-toolless-mcp-hint.mjs'));
   // merge_ask_gate_hook — PreToolUse + PostToolUse (matcher 'AskUserQuestion|ExitPlanMode')
   // + matcher-less Notification + Stop. owner-inbox-single-pane-2026-07-17 P-001: the
   // owner-gate CAPTURE + MIRROR layer (see the script's own header for the four branches).

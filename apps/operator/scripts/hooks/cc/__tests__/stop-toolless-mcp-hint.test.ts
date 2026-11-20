@@ -16,7 +16,7 @@ import {
   evaluateStop,
   readTranscriptTail,
   scanTranscript,
-} from '../stop-toolless-mcp-hint.mjs';
+} from '../../inject/toolless-mcp-recovery.mjs';
 
 const env = { PAPERCUSP_SID: 'su-abc' } as NodeJS.ProcessEnv;
 const notNested = () => false;

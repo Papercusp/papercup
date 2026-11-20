@@ -1,6 +1,5 @@
-#!/usr/bin/env node
 /**
- * stop-toolless-mcp-hint — the in-session self-heal hint for a connected-but-TOOLLESS
+ * Identity Stop transport recovery — the local self-heal hint for a connected-but-TOOLLESS
  * papercusp MCP connection (layer C of WI-6554700010048116; WI-6554700010048155).
  *
  * THE FAILURE: a psu Claude session's MCP client keeps the server "connected" while its
@@ -39,12 +38,9 @@
 import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { sessionId } from '../inject/core.mjs';
-// WI-10004945: a CLI nested inside another agent inherits its PAPERCUSP_SID; its
-// transcript is not the su's, and its Stop must not be bounced on the su's behalf.
-import { nestedCliCached } from './pc_nested_cli.mjs';
-
-export { nestedCliCached };
+import { sessionId } from './core.mjs';
+// The shared identity dispatcher checks nested CLI ownership before invoking
+// this library. Keep the injectable predicate for the focused recovery tests.
 
 /** How much of the transcript end is scanned. */
 export const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
@@ -211,7 +207,7 @@ function markerName(owner) {
  * @param {{ hook: Record<string, unknown>, env?: NodeJS.ProcessEnv, isNested?: () => boolean, cacheDir?: string, readTail?: (path: string) => string }} input
  * @returns {string | null}
  */
-export function evaluateStop({ hook, env = process.env, isNested = nestedCliCached, cacheDir, readTail = readTranscriptTail }) {
+export function evaluateStop({ hook, env = process.env, isNested = () => false, cacheDir, readTail = readTranscriptTail }) {
   if (truthy(hook.stop_hook_active ?? hook.stopHookActive)) return null;
   const owner = sessionId(env);
   if (!owner) return null;
@@ -238,47 +234,3 @@ export function evaluateStop({ hook, env = process.env, isNested = nestedCliCach
   return formatReason(verdict);
 }
 
-/**
- * @param {number} timeoutMs
- * @returns {Promise<string>}
- */
-function readStdin(timeoutMs) {
-  return new Promise((done) => {
-    if (process.stdin.isTTY) return done('');
-    let data = '';
-    let settled = false;
-    const finish = () => {
-      if (!settled) {
-        settled = true;
-        done(data);
-      }
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    process.stdin.on('data', (c) => {
-      data += c;
-    });
-    process.stdin.on('end', () => {
-      clearTimeout(timer);
-      finish();
-    });
-    process.stdin.on('error', () => {
-      clearTimeout(timer);
-      finish();
-    });
-  });
-}
-
-async function main() {
-  try {
-    const raw = await readStdin(250);
-    const hook = raw.trim() ? JSON.parse(raw) : {};
-    const reason = evaluateStop({ hook });
-    if (reason) process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
-  } catch {
-    // Fail silent: a broken check degrades to no check, never to a blocked agent.
-  }
-  process.exit(0);
-}
-
-const invokedDirectly = process.argv[1] && process.argv[1].endsWith('stop-toolless-mcp-hint.mjs');
-if (invokedDirectly) main();
