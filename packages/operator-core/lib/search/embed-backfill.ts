@@ -243,6 +243,7 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
     // it as an error and skips, so a runaway can't drain the key. A bench-lane SHED (null slot)
     // likewise skips the row; the next sweep retries.
     const adm = embedAdmission();
+    // notify-classification: {"id":"packages/operator-core/lib/search/embed-backfill.ts#<module>/buildAdmissionGovernedOpenAiEmbedder/<callback>:74400d1fce8c20794ddf:1","classification":"durable","reason":"The native source census reaches notify, notifyPauseIfExtended, notifyResumed at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     const slot = await adm.acquire(text, 'bench'); // throws EmbedBudgetExhaustedError when over the daily cap
     if (slot === null) throw new Error('openai_embed_admission_shed');
     try {
@@ -258,8 +259,10 @@ function buildAdmissionGovernedOpenAiEmbedder(key: string): EmbedFn {
           dimensions: modeTargetDims('openai'),
         }),
       });
+      // notify-classification: {"id":"packages/operator-core/lib/search/embed-backfill.ts#<module>/buildAdmissionGovernedOpenAiEmbedder/<callback>:1073e41a0617f135cfa9:1","classification":"durable","reason":"The native source census reaches notifyPauseIfExtended at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       adm.recordResponse(headersToRecord(r.headers));
       if (!r.ok) {
+        // notify-classification: {"id":"packages/operator-core/lib/search/embed-backfill.ts#<module>/buildAdmissionGovernedOpenAiEmbedder/<callback>:71fbfe13420b0b86a50b:1","classification":"durable","reason":"The native source census reaches notifyPauseIfExtended at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
         if (r.status === 429) adm.penalize({ retryAfterMs: retryAfterMs(headersToRecord(r.headers)) });
         throw new Error(`openai_embed_${r.status}`);
       }
