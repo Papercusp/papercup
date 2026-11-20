@@ -74,6 +74,7 @@ import { readFile, statfs } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { getSystemErrorMap } from 'node:util';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 import { SCORECARD_EMIT_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-tools/scorecards/emit-timeout-budget.mjs';
@@ -628,6 +629,51 @@ function emitPtoolConnectionTrace(trace, event, extra = {}) {
   })}`);
 }
 
+// Error properties are untrusted. This security allowlist accepts Node's
+// system-code census and public transport codes, never arbitrary error text.
+const PTOOL_TRACE_ERROR_CODES = new Set([
+  ...Array.from(getSystemErrorMap().values(), ([name]) => name),
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET', 'UND_ERR_ABORTED', 'UND_ERR_DESTROYED', 'UND_ERR_CLOSED',
+  'PTOOL_TOOLS_LIST_DEADLINE', 'PTOOL_CONNECTION_BOOTSTRAP_NOT_PREPARED',
+  'serving_generation_missing',
+]);
+
+function ptoolConnectionErrorFields(error) {
+  // Capture the whole cause/aggregate graph without a depth cap or recursion.
+  // Index references retain shared/cyclic causes. Private values stay in the
+  // original error; a redacted/unreadable status makes their omission explicit.
+  const pending = [error];
+  const indexes = new Map([[error, 0]]);
+  const errors = [];
+  const reference = (value) => {
+    if (!indexes.has(value)) { indexes.set(value, pending.length); pending.push(value); }
+    return indexes.get(value);
+  };
+  for (let index = 0; index < pending.length; index += 1) {
+    const current = pending[index];
+    const evidence = { code: null, codeStatus: 'unavailable', cause: null, errors: [] };
+    try {
+      const code = current?.code;
+      if (PTOOL_TRACE_ERROR_CODES.has(code) || (typeof code === 'number' && Number.isSafeInteger(code))) {
+        evidence.code = code;
+        evidence.codeStatus = 'available';
+      } else if (code != null) evidence.codeStatus = 'redacted';
+    } catch { evidence.codeStatus = 'unreadable'; }
+    try {
+      const cause = current?.cause;
+      if (cause != null) evidence.cause = reference(cause);
+    } catch { evidence.causeStatus = 'unreadable'; }
+    try {
+      if (current instanceof AggregateError) evidence.errors = Array.from(current.errors, reference);
+    } catch { evidence.errorsStatus = 'unreadable'; }
+    errors.push(evidence);
+  }
+  let failureKind = 'other';
+  try { failureKind = classifyConnectFailure(error); } catch { /* diagnostics cannot replace an error */ }
+  return { failureKind, errorCode: errors[0].code, errorEvidence: errors };
+}
+
 export async function withPtoolConnectionPhaseTrace(
   trace,
   phase,
@@ -672,7 +718,7 @@ export async function withPtoolConnectionPhaseTrace(
         route,
         phaseStartedAt,
         elapsedMs: durationMs,
-        ...(catalogError ? { failureKind: classifyConnectFailure(catalogError) } : {}),
+        ...(catalogError ? ptoolConnectionErrorFields(catalogError) : {}),
         ...resultFields,
       });
     }
@@ -686,7 +732,7 @@ export async function withPtoolConnectionPhaseTrace(
         route,
         phaseStartedAt,
         elapsedMs: durationMs,
-        failureKind: classifyConnectFailure(error),
+        ...ptoolConnectionErrorFields(error),
       });
     }
     throw error;
@@ -4315,10 +4361,7 @@ export async function listToolsWithLocalRetry(
         progressKind: 'attempt-failed',
         attempt,
         attemptElapsedMs: Date.now() - attemptStartedAt,
-        failureKind: classifyConnectFailure(error),
-        errorCode: typeof error?.code === 'string' || typeof error?.code === 'number'
-          ? error.code
-          : null,
+        ...ptoolConnectionErrorFields(error),
       });
       if (remainingAfterFailure !== null && remainingAfterFailure <= 0) {
         const deadlineError = ptoolCatalogDeadlineError(totalTimeoutMs, Date.now() - startedAt, error);
@@ -4878,12 +4921,10 @@ export async function listAllTools(
       reportProgress({
         progressKind: 'page-failed',
         page: pageNumber,
+        ...ptoolConnectionErrorFields(error),
         failureKind: error?.code === 'PTOOL_TOOLS_LIST_DEADLINE'
           ? 'catalog-deadline'
           : classifyConnectFailure(error),
-        errorCode: typeof error?.code === 'string' || typeof error?.code === 'number'
-          ? error.code
-          : null,
       });
       throw error;
     }
@@ -5465,10 +5506,7 @@ async function main() {
         route: activeRoute,
         phaseStartedAt: operatorConnectStartedAt,
         elapsedMs: Date.now() - operatorConnectStartedAtMs,
-        failureKind: classifyConnectFailure(error),
-        errorCode: typeof error?.code === 'string' || typeof error?.code === 'number'
-          ? error.code
-          : null,
+        ...ptoolConnectionErrorFields(error),
       });
       throw error;
     }

@@ -267,6 +267,8 @@ describe('ptool post-connect phase diagnostics', () => {
         stage: 'tools-list', elapsedMs: PTOOL_CONNECT_DIAGNOSTIC_PENDING_MS });
       if (failed) expect(events[1].failureKind).toBe('transport');
       else expect(events[1]).not.toHaveProperty('failureKind');
+      if (failed) expect(events[1]).toMatchObject({ errorCode: -32001,
+        errorEvidence: [{ code: -32001, codeStatus: 'available' }] });
       expect(JSON.stringify(events)).not.toMatch(/private-/);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -358,6 +360,105 @@ describe('ptool HTTP request correlation', () => {
         failureKind: 'transport', requestTraceId: events[0].requestTraceId });
       expect(JSON.stringify(events)).not.toContain(failure.message);
     } finally { log.mockRestore(); }
+  });
+
+  it.each(['ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'])(
+    'retains a distinct %s cause without logging private connection details', async code => {
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const failure = new TypeError('fetch failed: private-token', {
+        cause: Object.assign(new Error('private-socket'), { code, address: 'private-address' }),
+      });
+      const send = createPtoolHttpTraceFetch(trace, { fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(failure) });
+      try {
+        await expect(send('http://127.0.0.1:3271/api/mcp?token=private-token')).rejects.toBe(failure);
+        const event = JSON.parse(String(log.mock.calls[1][0]).replace('ptool: connection trace ', ''));
+        expect(event).toMatchObject({ event: 'phase-attempt-failed', failureKind: 'transport',
+          errorCode: null, errorEvidence: [
+            { code: null, codeStatus: 'unavailable', cause: 1 },
+            { code, codeStatus: 'available', cause: null },
+          ] });
+        expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
+      } finally { log.mockRestore(); }
+    },
+  );
+
+  it.each([99, 100, 101])('retains %s-deep aggregate/cyclic causes and explicitly redacts unsafe codes', async depth => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const socket = Object.assign(new Error('private-socket'), { code: 'ECONNREFUSED' });
+    const unsafe = Object.assign(new Error('private-message'), { code: 'private-token' });
+    const aggregate = new AggregateError([socket, unsafe, socket], 'private-aggregate');
+    socket.cause = aggregate;
+    let failure: Error = aggregate;
+    for (let index = 0; index < depth; index += 1) failure = new Error('private-wrapper', { cause: failure });
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(failure) });
+    try {
+      await expect(send('http://127.0.0.1:3271/api/mcp')).rejects.toBe(failure);
+      const event = JSON.parse(String(log.mock.calls[1][0]).replace('ptool: connection trace ', ''));
+      expect(event.errorEvidence).toHaveLength(depth + 3);
+      expect(event.errorEvidence[depth].errors).toEqual([depth + 1, depth + 2, depth + 1]);
+      expect(event.errorEvidence[depth + 1]).toMatchObject({ code: 'ECONNREFUSED', cause: depth });
+      expect(event.errorEvidence[depth + 2]).toMatchObject({ code: null, codeStatus: 'redacted' });
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
+    } finally { log.mockRestore(); }
+  });
+
+  it('keeps an unreadable diagnostic code from replacing the original rejection', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cause = Object.defineProperty(new Error('private-cause'), 'code', {
+      get() { throw new Error('private-getter'); },
+    });
+    const failure = new TypeError('fetch failed', { cause });
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl: vi.fn<typeof fetch>().mockRejectedValue(failure) });
+    try {
+      await expect(send('http://127.0.0.1:3271/api/mcp')).rejects.toBe(failure);
+      const event = JSON.parse(String(log.mock.calls[1][0]).replace('ptool: connection trace ', ''));
+      expect(event.errorEvidence[1]).toMatchObject({ code: null, codeStatus: 'unreadable' });
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
+    } finally { log.mockRestore(); }
+  });
+
+  it('records listener availability and dispatches once when the same-vintage worker recovers', async () => {
+    vi.useFakeTimers();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const response = new Response('private-response', { status: 200 });
+    const unavailable = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('private-socket'), { code: 'ECONNREFUSED' }),
+    });
+    let listening = false;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      if (!listening) throw unavailable;
+      return response;
+    });
+    const send = createPtoolHttpTraceFetch(trace, { fetchImpl });
+    const dispatch = vi.fn().mockResolvedValue('done');
+    const connectOnce = vi.fn(async (operatorUrl: string) => {
+      await send(operatorUrl + '/api/mcp');
+      return { callTool: dispatch };
+    });
+    try {
+      const connection = connectWithOperatorCandidates(connectOnce,
+        ['http://127.0.0.1:9271', 'http://127.0.0.1:3271'], {}, {
+          maxAttempts: 3, retryDelayMs: 10, retryJitterMs: 0,
+          primaryAttemptOptions: { maxAttempts: 1 },
+        });
+      setTimeout(() => { listening = true; }, 5);
+      await vi.advanceTimersByTimeAsync(10);
+      const connected = await connection;
+      await expect(connected.client.callTool()).resolves.toBe('done');
+      expect(connected.operatorUrl).toBe('http://127.0.0.1:3271');
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      const events = log.mock.calls.map(([line]) => JSON.parse(String(line).replace('ptool: connection trace ', '')));
+      expect(events.filter(event => event.event === 'phase-attempt-failed')).toEqual([
+        expect.objectContaining({ route: expect.objectContaining({ port: 9271 }),
+          errorEvidence: expect.arrayContaining([expect.objectContaining({ code: 'ECONNREFUSED' })]) }),
+        expect.objectContaining({ route: expect.objectContaining({ port: 3271 }),
+          errorEvidence: expect.arrayContaining([expect.objectContaining({ code: 'ECONNREFUSED' })]) }),
+      ]);
+      expect(events.at(-1)).toMatchObject({ event: 'phase-complete', httpStatus: 200, route: { port: 3271 } });
+      expect(events.at(-1)).not.toHaveProperty('errorEvidence');
+      expect(JSON.stringify(log.mock.calls)).not.toMatch(/private-/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { log.mockRestore(); vi.useRealTimers(); }
   });
 });
 
