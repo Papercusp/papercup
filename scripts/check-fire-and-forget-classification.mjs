@@ -301,14 +301,19 @@ export function censusSources(sources) {
     if (outermost) { targetMemo = new WeakMap(); targetCycles = 0; }
     try {
       if (!r) return [];
-      // One resolution observes a stable graph. Reuse complete context-free
-      // subgraphs across return diamonds, but never cache a cycle-dependent cut
-      // or a mutable invocation binding. Injection mutates aliases between
-      // resolutions, so no memo survives the outermost call.
-      if (context === null && targetMemo.has(r)) return targetMemo.get(r);
+      // One resolution observes a stable graph and completed invocation bindings.
+      // Keep contexts separate: refinement also starts with a context, and must
+      // reuse shared return subgraphs just as discovery does. Cycle-dependent
+      // cuts are never cached. Injection/binding changes between resolutions
+      // cannot leak through a memo that ends with the outermost call.
+      const contexts = targetMemo.get(r);
+      if (contexts?.has(context)) return contexts.get(context);
       const cyclesBefore = targetCycles;
       const result = [...new Set(resolveTargets(r, seen, context, trail))];
-      if (context === null && cyclesBefore === targetCycles) targetMemo.set(r, result);
+      if (cyclesBefore === targetCycles) {
+        if (!contexts) targetMemo.set(r, new Map([[context, result]]));
+        else contexts.set(context, result);
+      }
       return result;
     } finally {
       if (--targetDepth === 0) targetMemo = null;

@@ -508,21 +508,17 @@ console.log(JSON.stringify({ sites: censusSources({ 'src/app.ts': 'void notifyOw
   });
 
   it('resolves shared return diamonds without expanding every path', () => {
-    const scanner = new URL('../../../scripts/check-fire-and-forget-classification.mjs', import.meta.url).href;
     const factories = Array.from({ length: 22 }, (_, i) =>
       `function state${i + 1}(){ if (again) return state${i}(); return state${i}(); }`,
     );
     const source = `function state0(){ return { run: notifyOwner }; }
       ${factories.join('\n')} const bus = state22(); bus.run();`;
-    // Keep a pathological traversal bounded without abandoning a hung Vitest worker.
-    // The subprocess invokes the real scanner, and its full result must retain delivery.
-    const output = execFileSync(process.execPath, ['--input-type=module', '--eval', `
-      import { censusSources } from ${JSON.stringify(scanner)};
-      const census = censusSources({ 'src/app.ts': ${JSON.stringify(source)} });
-      console.log(JSON.stringify({ sites: census.sites.map(s => [s.expression, s.roots]), gaps: census.gaps }));
-    `], { encoding: 'utf8', timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] });
-    expect(JSON.parse(output)).toEqual({ sites: [['bus . run ( )', ['notifyOwner']]], gaps: [] });
-  }, 15_000);
+    // Exercise both discovery and invocation refinement in the canonical worker.
+    // The test-file router bounds/reaps the worker if traversal stops progressing.
+    const census = scan(source);
+    expect({ sites: census.sites.map(s => [s.expression, s.roots]), gaps: census.gaps })
+      .toEqual({ sites: [['bus . run ( )', ['notifyOwner']]], gaps: [] });
+  });
 
   it('preserves computed bind aliases when following call results', () => {
     const c = scan(`const key = 'bind';
