@@ -2783,7 +2783,8 @@ describe('secret census producer adapters', () => {
     });
   });
   describe('native router retained census evidence', () => {
-    const fixture = async (runtimeHome: string, partial = false, sourceFamily = false, large = false) => {
+    const fixture = async (runtimeHome: string, partial = false, sourceFamily = false, large = false,
+      processCount = 1, reverse = false) => {
       const container = join(runtimeHome, 'test-artifacts', 'arbitrary-run-name');
       await mkdir(container, { recursive: true, mode: 0o700 });
       const packet = await mkdtemp(join(container, 'native-router-'));
@@ -2795,9 +2796,14 @@ describe('secret census producer adapters', () => {
         for (const suffix of ['.modules', '.native-processes', '.processes']) {
           const directory = `${out}${suffix}`;
           await mkdir(directory, { mode: 0o700 });
-          const path = join(directory, 'writer-output');
-          await writeFile(path, `retained ${suffix}`, { mode: 0o600 });
-          sourceFiles.push(path);
+          const count = suffix === '.native-processes' ? processCount : 1;
+          const indices = Array.from({ length: count }, (_, index) => index);
+          if (reverse) indices.reverse();
+          for (const index of indices) {
+            const path = join(directory, count === 1 ? 'writer-output' : `writer-output-${String(index).padStart(6, '0')}`);
+            await writeFile(path, `retained ${suffix} ${index}`, { mode: 0o600 });
+            sourceFiles.push(path);
+          }
         }
       }
       const identity = { workspace: 'fixture-workspace', harness: 'fixture', runId: 'fixture-run' };
@@ -2943,6 +2949,67 @@ describe('secret census producer adapters', () => {
         expect(f.saved.manifest.verdicts.acceptance).toBe('unmeasured');
       } finally { await rm(home, { recursive: true, force: true }); }
     });
+    it.each([-1, 0, 1, 'many', 'many-reversed'] as const)('recovers every process original across inventory pages: %s', async boundary => {
+      const home = await mkdtemp(join(tmpdir(), 'paged-process-census-'));
+      try {
+        const seed = await fixture(join(home, 'seed'), false, true);
+        const limit = seed.saved.manifest.limits.families!.C.objects;
+        const count = typeof boundary === 'string' ? 3 * limit + 1 : limit + boundary;
+        const runtimeHome = join(home, '.papercusp');
+        const f = await fixture(runtimeHome, false, true, false, count, boundary === 'many-reversed');
+        const family = f.saved.manifest.groups[0].families.find(entry => entry.family === 'C')!;
+        expect(family.inventory).toMatchObject({ total: count, completed: count, omittedCount: 0, nextCursor: null });
+        expect(family.entries).toHaveLength(Math.ceil(count / limit));
+        const expected = f.sourceFiles.filter(path => dirname(path) === `${f.out}.native-processes`).sort();
+        expect(expected).toHaveLength(count);
+        const unknown = join(`${f.out}.native-processes`, 'unproven-after-capture');
+        await writeFile(unknown, 'unknown neighbor', { mode: 0o600 });
+        const result = await native(home);
+        const recovered = (value: typeof result) => value.declarations
+          .filter(entry => dirname(entry.name) === relative(runtimeHome, `${f.out}.native-processes`))
+          .map(entry => entry.name).sort();
+        expect(recovered(result)).toEqual(expected.map(path => relative(runtimeHome, path)));
+        // A new consumer invocation reconstructs ownership from retained pages,
+        // including the decisive record after the page boundary, without a cursor cache.
+        expect(recovered(await native(home))).toEqual(recovered(result));
+        if (typeof boundary === 'string') {
+          vi.resetModules();
+          const fresh = await import('./state-census-producers');
+          expect(recovered(await fresh.runtimeSidefileCensusProducer(home, {}))).toEqual(recovered(result));
+        }
+        const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+        const owned = new Set(census.inventory.filter(entry => entry.classification === 'state').map(entry => entry.name));
+        for (const path of expected) expect(owned.has(relative(runtimeHome, path))).toBe(true);
+        expect(census.residue.some(entry => entry.name === relative(runtimeHome, unknown))).toBe(true);
+        expect(result.declarations.every(entry => !entry.descendants && !entry.prune)).toBe(true);
+        expect(f.saved.manifest.verdicts.acceptance).toBe('unmeasured');
+      } finally { await rm(home, { recursive: true, force: true }); }
+    }, 60_000);
+    it.each(['changed', 'linked-file', 'linked-directory', 'missing'])(
+      'leaves %s paged process originals unknown while preserving independently proven records', async corruption => {
+        const home = await mkdtemp(join(tmpdir(), 'invalid-paged-process-census-'));
+        try {
+          const runtimeHome = join(home, '.papercusp');
+          const f = await fixture(runtimeHome, false, true, false, 2);
+          const paths = f.sourceFiles.filter(path => dirname(path) === `${f.out}.native-processes`);
+          if (corruption === 'changed') await writeFile(paths[0], 'changed after capture');
+          if (corruption === 'missing') await rm(paths[0]);
+          if (corruption.startsWith('linked')) {
+            const target = corruption === 'linked-file' ? paths[0] : dirname(paths[0]);
+            await rename(target, `${target}-target`); await symlink(`${target}-target`, target);
+          }
+          const result = await native(home);
+          const declared = (path: string) => result.declarations.some(entry => entry.name === relative(runtimeHome, path));
+          expect(declared(paths[0])).toBe(false);
+          expect(declared(paths[1])).toBe(corruption !== 'linked-directory');
+          expect(declared(f.sourceFiles[0])).toBe(true);
+          expect(declared(join(f.packet, 'locator.json'))).toBe(true);
+          const census = await collectStateCensus({ ...result, readCatalogs: async () => [] });
+          if (corruption !== 'missing') expect(census.residue.some(entry => entry.name === relative(runtimeHome,
+            corruption === 'linked-directory' ? dirname(paths[0]) : paths[0]))).toBe(true);
+          expect(f.saved.manifest.verdicts.acceptance).toBe('unmeasured');
+        } finally { await rm(home, { recursive: true, force: true }); }
+      });
     it.each(['changed', 'linked-file', 'linked-directory', 'missing', 'foreign-container', 'foreign-out'])(
       'leaves %s source originals unresolved while retaining independent custody', async corruption => {
         const home = await mkdtemp(join(tmpdir(), 'invalid-source-family-census-'));

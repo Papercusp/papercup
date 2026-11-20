@@ -34,7 +34,7 @@ import { resolveFsMutexLockRoot } from '../../../../scripts/lib/fs-mutex.mjs';
 import { closureDigestManifestPath } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 import { PARTIAL_TASK_CHECKPOINT_SCHEMA } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { defaultTestRunArtifactBase } from '../agent-tools/testing/run-artifacts';
-import { hashNativeArtifactBytes, readNativeArtifactBytes, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+import { hashNativeArtifactBytes, readNativeArtifactBytes, readNativeProofInventoryPage, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import { BUILD_VM_ENV_HOME_RELATIVE_PATH } from '../admin-commands';
 import { OAUTH_APPS_FILE } from '../integrations/oauth-client-registration';
 import { sourceShellOperations, sourceShellOperationEvidence, type OperationAdapterEvidence, type SourceShellOperation } from '../orchestration-trace';
@@ -218,7 +218,7 @@ async function nativeRouterCensusDeclarations(home: string, root: string): Promi
       for (const group of manifest.groups) {
         const contract = expected.value.expected.find((entry: { id: string }) => entry.id === group.id);
         const out = contract?.out;
-        // The router writes one OUT and three flat sibling families. Custody
+        // The router writes one OUT and three sibling families. Custody
         // preserves arbitrary captured paths too; those are not local ownership.
         const localOut = contract?.armed && contract.runner === 'vitest' && typeof out === 'string'
           && isAbsolute(out) && resolve(out) === out && [base, container].includes(dirname(out));
@@ -228,6 +228,20 @@ async function nativeRouterCensusDeclarations(home: string, root: string): Promi
           if (!localOut || family.producer !== group.id || !['produced', 'partial'].includes(family.state)) continue;
           const suffix = { A: '', B: '.modules', C: '.native-processes', D: '.processes' }[family.family];
           const directory = `${out}${suffix}`;
+          if (captured.paged) {
+            // Packet verification proves the ordered, complete page chain (or
+            // its explicit partial prefix). A page pins the family directory;
+            // ownership belongs to each verified record, never its neighbors.
+            if (family.family !== 'C' || captured.original !== directory) continue;
+            const page = readNativeProofInventoryPage(packet, captured.artifact);
+            if (page.sourceRoot !== directory) continue;
+            for (const record of page.records) {
+              if (resolve(record.original) !== record.original || dirname(record.original) !== directory) continue;
+              originals.push({ path: record.original, directory,
+                artifact: { sha256: record.sha256, byteLength: record.bytes.length } });
+            }
+            continue;
+          }
           if (family.family === 'A' ? captured.original !== out
             : typeof captured.original !== 'string' || resolve(captured.original) !== captured.original
               || dirname(captured.original) !== directory) continue;
