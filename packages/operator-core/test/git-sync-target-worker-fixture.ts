@@ -363,15 +363,38 @@ export async function runGitSyncTargetWorkerFixture() {
       assert.deepEqual(readFileSync(join(repository, 'package-lock.json')), pendingLock);
       phase('stale-pending-refused');
     }
-    const mutationStartedAt = Date.now();
-    const restartBarrierWait = restartBarrierScenario ? await registerAwait({
-      subscriberId: 'friction-private-restart-barrier', eventKey: 'resource:released:git-sync',
-      policy: 'notify', once: true, timeoutSec: 60, timeoutBehavior: 'expire',
-      payloadFilter: { all: [
-        { resource: { equals: 'git-sync' } }, { workspaceId: { equals: workspace } },
-        { releasedAtMs: { gte: mutationStartedAt } },
-      ] },
-    }) : undefined;
+    const restartBarrierResource = 'git-sync';
+    const acquireRestartBarrier = async (reason: string) => {
+      const lease = parse(await client.callTool({ name: 'locks:acquire_resource', arguments: {
+        resource: restartBarrierResource, mode: 'exclusive', reason, ttl_sec: 120,
+        wait: { max_drain_sec: 0 },
+      } }, undefined, requestOptions));
+      assert.equal(lease.ok, true, JSON.stringify(lease));
+      assert.ok(lease.lock_id, JSON.stringify(lease));
+      return lease.lock_id as string;
+    };
+    const releaseRestartBarrier = async (lockId: string) => {
+      const dropped = parse(await client.callTool({ name: 'locks:release_resource', arguments: {
+        lock_id: lockId,
+      } }, undefined, requestOptions));
+      assert.equal(dropped.ok, true, JSON.stringify(dropped));
+      assert.equal(dropped.results[0]?.released, 1, JSON.stringify(dropped));
+    };
+    if (restartBarrierScenario) {
+      const lockId = await acquireRestartBarrier('hold the private restart barrier before git-sync');
+      try {
+        const blocked = parse(await client.callTool({ name: 'git-sync:run', arguments: {
+          ...mutation, target: ready.target,
+        } }, undefined, requestOptions));
+        assert.equal(blocked.outcome?.reason, 'held_exclusive', JSON.stringify(blocked));
+        assert.equal(blocked.outcome.blockedOn, restartBarrierResource, JSON.stringify(blocked));
+        assert.ok(blocked.outcome.holders.some((holder: { lock_id: string }) => holder.lock_id === lockId));
+        assert.equal(git('rev-parse', 'HEAD'), before, 'git-sync must respect the exclusive restart barrier');
+      } finally {
+        await releaseRestartBarrier(lockId);
+      }
+      phase('restart-barrier-exclusive-holder-verified');
+    }
     phase('mutation-start');
     const result = parse(await client.callTool({ name: 'git-sync:run', arguments: { ...mutation, target: ready.target } }, undefined,
       { timeout: 60_000, maxTotalTimeout: 60_000, resetTimeoutOnProgress: false }));
@@ -383,35 +406,16 @@ export async function runGitSyncTargetWorkerFixture() {
     assert.notEqual(after, before, JSON.stringify(result));
     assert.equal(git('rev-list', '--count', `${before}..${after}`), '1', 'one request creates exactly one expected commit');
     let restartBarrier: Record<string, unknown> | undefined;
-    if (restartBarrierWait) {
+    if (restartBarrierScenario) {
       assert.deepEqual(git('diff', '--diff-filter=D', '--name-only', before, after).split('\n').sort(),
         [...deletedPaths].sort(), 'the expected missing index entries must be committed as deletions');
       const trace = measureMissingIndexReads(gitTracePath, deletedPaths);
-      const deadline = Date.now() + 10_000;
-      type Release = { fired_reason: string; fired_payload: { resource: string; releasedAtMs: number } };
-      let release: Release | undefined;
-      while (Date.now() < deadline) {
-        [release] = await getOrgPg().sql<Release[]>`
-          SELECT fired_reason, fired_payload FROM harness_shared.event_awaits WHERE id = ${restartBarrierWait.id}
-            AND fired_at IS NOT NULL
-        `;
-        if (release) break;
-        await delay(25);
-      }
-      assert.equal(release?.fired_reason, 'event');
-      assert.equal(release.fired_payload.resource, 'git-sync');
-      assert.ok(release.fired_payload.releasedAtMs >= mutationStartedAt);
-      const exclusive = parse(await client.callTool({ name: 'locks:acquire_resource', arguments: {
-        resource: 'git-sync', mode: 'exclusive', reason: 'observe private restart admission after git-sync',
-        ttl_sec: 60, wait: { max_drain_sec: 0 },
-      } }, undefined, requestOptions));
-      assert.equal(exclusive.ok, true, JSON.stringify(exclusive));
-      const dropped = parse(await client.callTool({ name: 'locks:release_resource', arguments: {
-        lock_id: exclusive.lock_id,
-      } }, undefined, requestOptions));
-      assert.equal(dropped.results[0]?.released, 1, JSON.stringify(dropped));
-      restartBarrier = { resource: 'git-sync', deletedCount: deletedPaths.length, ...trace,
-        releasedAtMs: release.fired_payload.releasedAtMs, exclusiveAcquiredAfterRelease: true };
+      // The exact-resource release event describes exclusive holders. Measure
+      // release of the shared lease by attempting real exclusive admission.
+      const lockId = await acquireRestartBarrier('verify private restart admission after git-sync');
+      await releaseRestartBarrier(lockId);
+      restartBarrier = { resource: restartBarrierResource, deletedCount: deletedPaths.length, ...trace,
+        blockedByExclusive: true, exclusiveAcquiredAfterRelease: true };
       phase('restart-barrier-release-verified');
     }
     let metadataRepair: Record<string, unknown> | undefined;

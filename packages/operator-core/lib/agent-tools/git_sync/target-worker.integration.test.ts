@@ -88,7 +88,8 @@ async function verifyPrivateWorker(context: TestContext, scenario?: 'release-con
       }
       if (scenario === 'restart-barrier') {
         expect(receipt.restartBarrier).toMatchObject({
-          resource: 'git-sync', deletedCount: 12, failedMissingReads: 0, exclusiveAcquiredAfterRelease: true,
+          resource: 'git-sync', deletedCount: 12, failedMissingReads: 0,
+          blockedByExclusive: true, exclusiveAcquiredAfterRelease: true,
         });
         expect(receipt.restartBarrier.censusedCount).toBe(receipt.restartBarrier.deletedCount);
       }
