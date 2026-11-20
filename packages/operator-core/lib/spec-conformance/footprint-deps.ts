@@ -2,7 +2,7 @@
  * Production adapters for footprint reconciliation (R-5, P-019).
  *
  * - commits: `git log --name-only` over the harness checkout, from the plan's
- *   watermark to HEAD (or a bounded window since the plan was created when no
+ *   watermark to HEAD (or the complete range since the plan was created when no
  *   watermark is stored yet). Paths are superproject-relative: a change INSIDE a
  *   submodule shows up as the gitlink path, so a footprint glob that names files
  *   inside a submodule is matched only when the gitlink itself moves — a known
@@ -22,30 +22,11 @@ import { acquireWithContentionRetry } from '../agent-tools/locks/contention-retr
 import { TERMINAL_WORK_ITEM_STATES } from '../work-items';
 import { normalizeTakenBy } from '../sync/hyperbee/projections/harness-features';
 import { SPEC_CONFORMANCE_ACTOR } from './conformance-run-deps';
-import type { FootprintCommit, FootprintCommitWindow, FootprintDeps, PlanFootprintCoverage } from './footprint';
+import type { FootprintCommitWindow, FootprintDeps, PlanFootprintCoverage } from './footprint';
+import { readFootprintCommitWindow } from './footprint-log';
 
 type Sql = ReturnType<typeof getOrgPg>['sql'];
 const sql = (): Sql => getOrgPg().sql;
-
-/** Upper bound on commits read when the plan has no watermark yet. */
-export const FOOTPRINT_DEFAULT_MAX_COMMITS = 500;
-const RECORD_SEPARATOR = '\u001e';
-
-/** Parse `git log --format=%x1e%H --name-only` output into commits (oldest first). */
-export function parseNameOnlyLog(stdout: string): FootprintCommit[] {
-  const commits: FootprintCommit[] = [];
-  for (const record of stdout.split(RECORD_SEPARATOR)) {
-    const lines = record
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (lines.length === 0) continue;
-    const [sha, ...paths] = lines;
-    if (!/^[0-9a-f]{7,64}$/i.test(sha!)) continue;
-    commits.push({ sha: sha!, paths });
-  }
-  return commits.reverse();
-}
 
 export interface FootprintDepsInput {
   workspaceId: string;
@@ -70,16 +51,10 @@ export function createFootprintDeps(input: FootprintDepsInput): FootprintDeps {
            LIMIT 1
         `) as Array<{ created_at: Date | string | null }>;
         const since = created[0]?.created_at ? new Date(created[0].created_at).toISOString() : null;
-        range.push(`--max-count=${FOOTPRINT_DEFAULT_MAX_COMMITS}`);
         if (since) range.push(`--since=${since}`);
         range.push(headSha);
       }
-      const log = await runGit(['log', '--no-renames', '--format=%x1e%H', '--name-only', ...range], root);
-      if (log.code !== 0) {
-        // A watermark sha git no longer knows (rewritten history) must surface, never read as "no commits".
-        throw new Error(`spec-conformance footprint: git log failed (${log.code}): ${log.stderr.trim().slice(0, 300)}`);
-      }
-      return { headSha, commits: parseNameOnlyLog(log.stdout) };
+      return readFootprintCommitWindow({ root, headSha, range }, runGit);
     },
 
     async readPlanCoverage(): Promise<PlanFootprintCoverage> {
