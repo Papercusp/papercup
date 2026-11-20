@@ -25,6 +25,8 @@ let workspace: string;
 const ctx = { isSuperuser: true, uiClientId: 'su-fact-recovery' } as never;
 const recipient = resolveAgentIdentity(ctx).ownerId;
 const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1652-fact-change-cascade-progress.sql', import.meta.url));
+const legacyLayout = fileURLToPath(new URL('../../test/fixtures/fact-cascade-legacy-layout.sql', import.meta.url));
+const legacyRefreshes = new Map<boolean, { subject: Awaited<ReturnType<typeof seed>>; current: Awaited<ReturnType<typeof assertFact>> }>();
 const fact = (key: string) => ({ scope: 'workspace' as const, key, body: 'The supporting observation.', ttlSec: 3600,
   confidence: 'verified' as const });
 
@@ -34,8 +36,13 @@ beforeAll(async () => {
   workspace = activeWorkspaceId();
   const [target] = await getOrgPg().sql`SELECT current_database() AS name`;
   expect(target.name).toBe(db.dbName);
-  await applyMigrationForTest(db.adminSql, existsSync(migration) ? migration : migration + '.DRAFT');
   configureCoordLog(new PgCoordLog({ getSql: () => db.adminSql, workspaceId: workspace, ensureSchema: async () => {} }));
+  for (const missing of [false, true]) {
+    const subject = await seed('legacy-refresh-' + String(missing), 1);
+    const current = await assertFact({ ...fact(subject.key), createdBy: recipient });
+    legacyRefreshes.set(missing, { subject, current });
+  }
+  await applyMigrationForTest(db.adminSql, existsSync(migration) ? migration : migration + '.DRAFT');
 }, 180_000);
 afterAll(async () => {
   resetCoordLog();
@@ -131,6 +138,57 @@ async function interruptSweep(boundary: 'before-commit' | 'after-commit') {
 }
 
 describe('fact-change recovery through the normal writers and maintenance', () => {
+  it.each(['no queue', 'no deliveries', 'no fact boundary', 'no generation boundary', 'neither boundary', 'no lineage writers'] as const)(
+    'keeps the ordinary fact writer usable and recovers pending work with %s', async layout => {
+      const key = 'schema-transition-' + layout.replaceAll(' ', '-');
+      const subject = await seed(key, 1);
+      const rollback = new Error('restore private schema and data');
+      await db.adminSql.begin(async tx => {
+        const sql = tx as unknown as Sql;
+        await tx`SELECT set_config('fixture.fact_cascade_layout', ${layout}, true),
+                        set_config('fixture.database_name', ${db.dbName}, true)`;
+        await applyMigrationForTest(sql, legacyLayout);
+
+        const refreshed = await assertFact({ ...fact(key), createdBy: recipient }, sql);
+        const changed = await assertFact({ ...fact(key), body: 'Changed on the old layout.', createdBy: recipient }, sql);
+        expect(changed.supersedesId).toBe(refreshed.id);
+        const ref: FactChangeRef = { scope: 'workspace', scopeRef: null, key, kind: 'superseded', versionId: String(refreshed.id) };
+        expect(await readFactCascade(sql, workspace, ref)).toMatchObject({
+          state: 'unknown', reason: 'migration-unavailable', recovery: { args: { key, cascade: { versionId: ref.versionId } } },
+        });
+        const retired = await retractFact({ scope: 'workspace', key, retractedBy: recipient }, sql);
+        expect(retired).toBe(true);
+        if (layout !== 'no queue') {
+          expect(changed.cascades?.[0]).toMatchObject({ state: 'unknown', recovery: { args: { key } } });
+          await tx`UPDATE harness_shared.agent_facts SET superseded_at = now() - interval '31 days'
+            WHERE workspace_id = ${workspace} AND id IN (${subject.versionId}::bigint, ${refreshed.id!}::bigint)`;
+          await sweepExpiredFacts(sql);
+          const pending = await tx`SELECT version_id::text, kind, completed_at FROM harness_shared.fact_change_cascades g
+            WHERE workspace_id = ${workspace} AND fact_key = ${key} ORDER BY g.version_id`;
+          expect(pending.map(row => [row.version_id, row.kind, row.completed_at])).toEqual([
+            [ref.versionId, 'superseded', null], [String(changed.id), 'retracted', null],
+          ]);
+          const originals = await tx`SELECT id FROM harness_shared.agent_facts WHERE workspace_id = ${workspace}
+            AND key = ${key}`;
+          expect(originals).toHaveLength(3);
+
+          await applyMigrationForTest(sql, existsSync(migration) ? migration : migration + '.DRAFT');
+          await sweepExpiredFacts(sql);
+          await sweepExpiredFacts(sql);
+          expect(await readFactCascade(sql, workspace, ref)).toMatchObject({ state: 'complete', matched: 1 });
+          expect(await readFactCascade(sql, workspace, { ...ref, kind: 'retracted', versionId: String(changed.id) }))
+            .toMatchObject({ state: 'complete', matched: 1 });
+          const [item] = await tx`SELECT payload FROM harness_shared.work_items
+            WHERE workspace_id = ${workspace} AND harness_slug = ${key + '-a'} AND feature_id = ${subject.expected[0][1]}`;
+          expect(readAssumptionFlags(item.payload).find(flag => flag.condition === 'superseded'))
+            .toMatchObject({ citedVersionId: Number(subject.versionId), versionId: refreshed.id });
+        } else {
+          expect(changed.cascades).toBeUndefined();
+        }
+        throw rollback;
+      }).catch(error => { if (error !== rollback) throw error; });
+    }, 90_000);
+
   it.each(['confidence', 'body'] as const)('keeps the original citation applicable across exact refreshes before a %s change', async (field) => {
     const subject = await seed('refresh-then-' + field, 1);
     const input = { ...fact(subject.key), createdBy: recipient };
@@ -207,12 +265,7 @@ describe('fact-change recovery through the normal writers and maintenance', () =
   }, 120_000);
 
   it.each([false, true])('recovers a legacy statement with missing predecessor = %s', async (missing) => {
-    const subject = await seed('legacy-refresh-' + String(missing), 1);
-    const input = { ...fact(subject.key), createdBy: recipient };
-    const current = await assertFact(input);
-    // Versions written before migration 1652 have no cached statement boundary.
-    await db.adminSql`UPDATE harness_shared.agent_facts SET citation_after_version = NULL
-      WHERE workspace_id = ${workspace} AND id = ${current.id!}`;
+    const { subject, current } = legacyRefreshes.get(missing)!;
     if (missing) {
       await db.adminSql`DELETE FROM harness_shared.agent_facts WHERE workspace_id = ${workspace} AND id = ${subject.versionId}`;
     }

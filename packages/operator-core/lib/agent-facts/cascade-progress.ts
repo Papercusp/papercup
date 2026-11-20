@@ -50,13 +50,24 @@ function unknownProgress(ref: FactChangeRef, reason: string) {
     resync: factCascadeHistoryRef(ref.scope, ref.scopeRef, ref.key) } as const;
 }
 
-export async function hasFactCascadeProgress(sql: Sql): Promise<boolean> {
-  const [row] = await sql<{ installed: boolean }[]>`SELECT to_regclass('harness_shared.fact_change_cascades') IS NOT NULL AS installed`;
-  return row?.installed === true;
+export async function factCascadeSchema(sql: Sql): Promise<'absent' | 'pending' | 'ready'> {
+  const [row] = await sql<{ queued: boolean; ready: boolean }[]>`
+    WITH relations AS (SELECT to_regclass('harness_shared.agent_facts') AS facts,
+                              to_regclass('harness_shared.fact_change_cascades') AS jobs,
+                              to_regclass('harness_shared.fact_change_cascade_deliveries') AS deliveries)
+    SELECT jobs IS NOT NULL AS queued, deliveries IS NOT NULL AND NOT EXISTS (
+      SELECT FROM (VALUES (facts, 'stamp_fact_citation_floor'), (jobs, 'stamp_cascade_citation_floor')) AS required(rel, trigger_name)
+       WHERE NOT EXISTS (SELECT FROM pg_attribute WHERE attrelid = required.rel
+         AND attname = 'citation_after_version' AND atttypid = 'bigint'::regtype AND NOT attisdropped)
+          OR NOT EXISTS (SELECT FROM pg_trigger WHERE tgrelid = required.rel
+         AND tgname = required.trigger_name AND tgenabled IN ('O','A'))
+    ) AS ready FROM relations`;
+  if (!row?.queued) return 'absent';
+  return row.ready ? 'ready' : 'pending';
 }
 
 export async function readFactCascade(sql: Sql, ws: string, ref: FactChangeRef) {
-  if (!await hasFactCascadeProgress(sql)) return unknownProgress(ref, 'migration-unavailable');
+  if (await factCascadeSchema(sql) !== 'ready') return unknownProgress(ref, 'migration-unavailable');
   const [row] = await sql<(Generation & { pending: string; unresolved: string })[]>`
     SELECT g.*, d.pending, d.unresolved
       FROM harness_shared.fact_change_cascades g
@@ -80,7 +91,7 @@ export type FactCascadeProgress = Awaited<ReturnType<typeof readFactCascade>>;
 /** Exact-key resynchronization when the first writer reply or its version was lost. */
 export async function readFactCascadeHistory(sql: Sql, ws: string, scope: FactScope, scopeRef: string | null,
   key: string, after?: { versionId: string; kind: FactChangeKind }) {
-  if (!await hasFactCascadeProgress(sql)) return { state: 'unknown', reason: 'migration-unavailable' } as const;
+  if (await factCascadeSchema(sql) === 'absent') return { state: 'unknown', reason: 'migration-unavailable' } as const;
   const rows = await sql<(Generation & { total: string })[]>`SELECT g.*, count(*) OVER () AS total
     FROM harness_shared.fact_change_cascades g
     WHERE workspace_id = ${ws} AND scope = ${scope} AND scope_ref = ${scopeRef ?? ''} AND fact_key = ${key}

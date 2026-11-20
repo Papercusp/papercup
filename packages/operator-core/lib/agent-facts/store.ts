@@ -37,7 +37,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
-import { hasFactCascadeProgress, readFactCascade, resumeFactCascade, type FactCascadeProgress,
+import { factCascadeSchema, readFactCascade, resumeFactCascade, type FactCascadeProgress,
   type FactChangeRef } from './cascade-progress';
 import { SEALED_FIELD_STUB, sealSharedTextInTxOrRefuse } from '../personal-vault/shared-store-seal';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
@@ -2130,7 +2130,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // direction, reporting FRESH because the digest it compares against was never
   // re-observed. A re-assert re-declares its dependencies or has none.
   const retractionReason = `superseded by ${key}`;
-  const durableCascade = await hasFactCascadeProgress(sql);
+  const cascadeSchema = await factCascadeSchema(sql);
+  const durableCascade = cascadeSchema !== 'absent';
   const rows = await sql<(AgentFactRow & { retired_keys: string[] | null; changes?: FactChangeRef[] })[]>`
     WITH superseded AS (
       UPDATE harness_shared.agent_facts
@@ -2139,30 +2140,12 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
          AND coalesce(scope_ref, '') = ${ref ?? ''} AND key = ${key}
          AND source_hive IS NULL
          AND superseded_at IS NULL
-      RETURNING id, harness_slug, body, confidence, source_ref, source_provenance, depends_on
-        ${durableCascade ? sql`, supersedes_id, retracted_at, citation_after_version` : sql``}
-    ) ${durableCascade ? sql`, statement_history AS (
-      -- Follow local predecessors until a known boundary, changed statement, or retraction.
-      -- New versions carry the boundary forward even after the original expires.
-      WITH RECURSIVE lineage AS (
-        SELECT id, supersedes_id, body, citation_after_version FROM superseded
-        UNION ALL
-        SELECT p.id, p.supersedes_id, p.body, p.citation_after_version
-          FROM lineage l JOIN harness_shared.agent_facts p ON p.id = l.supersedes_id
-         WHERE l.citation_after_version IS NULL AND p.id < l.id AND p.retracted_at IS NULL
-           AND p.workspace_id = ${ws} AND p.scope = ${input.scope} AND coalesce(p.scope_ref,'') = ${ref ?? ''}
-           AND p.key = ${key} AND p.source_hive IS NULL AND p.body = l.body
-      )
-      SELECT coalesce(l.citation_after_version, CASE WHEN l.supersedes_id IS NULL THEN l.id - 1 ELSE boundary.id END) AS after_version
-        FROM lineage l LEFT JOIN harness_shared.agent_facts boundary ON boundary.id = l.supersedes_id
-         AND boundary.id < l.id AND boundary.workspace_id = ${ws} AND boundary.scope = ${input.scope}
-         AND coalesce(boundary.scope_ref,'') = ${ref ?? ''} AND boundary.key = ${key} AND boundary.source_hive IS NULL
-       ORDER BY l.id LIMIT 1
-    )` : sql``}, inserted AS (
+      RETURNING id, harness_slug, body, confidence, source_ref, source_provenance, depends_on, retracted_at
+    ), inserted AS (
       INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
        audience_scope, source_provenance, confidence, measurement, recheck, supersedes_id, kind, depends_on, claim,
-       enforcement, settled_by ${durableCascade ? sql`, citation_after_version` : sql``})
+       enforcement, settled_by)
     VALUES
       (${ws},
        -- keep an already-stamped federation identity when a later assert omits
@@ -2183,8 +2166,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
        ${storedClaim ? JSON.stringify(storedClaim) : null}::text::jsonb,
        ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb,
-       ${storedSettledBy} ${durableCascade ? sql`, (SELECT CASE WHEN s.retracted_at IS NULL AND s.body = ${storedBody}
-          THEN h.after_version ELSE s.id END FROM superseded s CROSS JOIN statement_history h)` : sql``})
+       ${storedSettledBy})
       RETURNING id, superseded_at::text, supersedes_id,
                 scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
                 confidence, measurement, recheck, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
@@ -2202,15 +2184,15 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       RETURNING key, id
     ) ${durableCascade ? sql`, queued AS (
       INSERT INTO harness_shared.fact_change_cascades
-        (workspace_id, version_id, kind, scope, scope_ref, fact_key, successor_id, actor, reason, citation_after_version)
+        (workspace_id, version_id, kind, scope, scope_ref, fact_key, successor_id, actor, reason)
       SELECT ${ws}, s.id, 'superseded', i.scope, coalesce(i.scope_ref,''), i.key, i.id, i.created_by,
-             'superseded by version ' || i.id::text, h.after_version
-        FROM superseded s CROSS JOIN inserted i CROSS JOIN statement_history h
+             'superseded by version ' || i.id::text
+        FROM superseded s CROSS JOIN inserted i
        WHERE s.retracted_at IS NULL AND (s.body, s.confidence, s.source_ref, s.source_provenance, s.depends_on)
              IS DISTINCT FROM (i.body, i.confidence, i.source_ref, i.source_provenance, i.depends_on)
       UNION ALL
       SELECT ${ws}, r.id, 'retracted', i.scope, coalesce(i.scope_ref,''), r.key, NULL::bigint,
-             i.created_by, ${retractionReason}, NULL::bigint FROM retired r CROSS JOIN inserted i
+             i.created_by, ${retractionReason} FROM retired r CROSS JOIN inserted i
       RETURNING kind, scope, scope_ref, fact_key, version_id
     )` : sql``}
     SELECT inserted.*,
@@ -2613,7 +2595,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // refresh, not a supersession (see retraction-cascade.ts). Never throws.
   if (durableCascade) {
     const cascades: FactCascadeProgress[] = [];
-    for (const change of row.changes ?? []) cascades.push(await advanceFactChange(sql, ws, change));
+    for (const change of row.changes ?? []) cascades.push(await advanceFactChange(sql, ws, change, cascadeSchema === 'ready'));
     if (cascades.length) fact.cascades = cascades;
   } else await cascadeAssertSupersession(sql, {
     workspaceId: ws,
@@ -2629,8 +2611,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   return fact;
 }
 
-async function advanceFactChange(sql: Sql, ws: string, ref: FactChangeRef): Promise<FactCascadeProgress> {
-  const failure = await resumeFactCascade(sql, { ws, ref });
+async function advanceFactChange(sql: Sql, ws: string, ref: FactChangeRef, ready: boolean): Promise<FactCascadeProgress> {
+  const failure = ready ? await resumeFactCascade(sql, { ws, ref }) : undefined;
   return failure ?? await readFactCascade(sql, ws, ref);
 }
 
@@ -2712,7 +2694,8 @@ export async function retractFact(
   // P-008 (a): retract the CURRENT version. A retraction is a state change on
   // the live value, not a new version — it does not fork the chain, and the
   // superseded tail must stay untouched or history would be rewritten by it.
-  const durableCascade = await hasFactCascadeProgress(sql);
+  const cascadeSchema = await factCascadeSchema(sql);
+  const durableCascade = cascadeSchema !== 'absent';
   const rows = await sql<{ key: string; id: string | number }[]>`
     WITH retracted AS (UPDATE harness_shared.agent_facts
        SET retracted_at = now(), retracted_by = ${retractedBy}, retraction_reason = ${reason}
@@ -2732,7 +2715,7 @@ export async function retractFact(
   if (rows.length === 0) return false;
   if (durableCascade) {
     const progress = await advanceFactChange(sql, ws, { scope: args.scope, scopeRef: ref || null, key: rows[0].key,
-      kind: 'retracted', versionId: String(rows[0].id) });
+      kind: 'retracted', versionId: String(rows[0].id) }, cascadeSchema === 'ready');
     args.onCascade?.(progress);
     return true;
   }
@@ -4123,8 +4106,8 @@ export async function supersededVersionsForKeys(
  *  retracted > 30d ago — keeps the audit trail bounded. Fail-soft at call site. */
 export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
   const sql = sqlOf(inject);
-  const durableCascade = await hasFactCascadeProgress(sql);
-  if (durableCascade) await resumeFactCascade(sql);
+  const cascadeSchema = await factCascadeSchema(sql);
+  if (cascadeSchema === 'ready') await resumeFactCascade(sql);
   const rows = await sql<{ key: string }[]>`
     DELETE FROM harness_shared.agent_facts
      WHERE (expires_at < now() - interval '30 days'
@@ -4139,9 +4122,11 @@ export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
        -- newer version retires the blocker and allows history cleanup.
        AND NOT (key LIKE ${`${WALL_KEY_PREFIX}%`}
                 AND retracted_at IS NULL AND superseded_at IS NULL)
-       ${durableCascade ? sql`AND NOT EXISTS (SELECT FROM harness_shared.fact_change_cascades g
+       ${cascadeSchema !== 'absent' ? sql`AND NOT EXISTS (SELECT FROM harness_shared.fact_change_cascades g
            WHERE g.workspace_id = agent_facts.workspace_id AND g.completed_at IS NULL
-             AND (g.version_id = agent_facts.id OR g.successor_id = agent_facts.id))` : sql``}
+             AND (g.version_id = agent_facts.id OR g.successor_id = agent_facts.id
+               ${cascadeSchema === 'pending' ? sql`OR (agent_facts.source_hive IS NULL AND g.scope = agent_facts.scope
+                 AND g.scope_ref = coalesce(agent_facts.scope_ref,'') AND g.fact_key = agent_facts.key)` : sql``}))` : sql``}
     RETURNING key`;
   return rows.length;
 }
