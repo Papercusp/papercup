@@ -84,6 +84,21 @@ function writeJournal(path, data) {
   }
 }
 
+// Scheduling state never supplies byte proof. Advance before an attempted batch
+// so a timeout, metadata interruption or process death cannot pin every restart
+// to the same prefix. A complete pass still visits every batch in its census.
+function resumeBatchIndex(path, binding, batches) {
+  const saved = readJournal(path);
+  if (saved && (!Number.isSafeInteger(saved.batches) || saved.batches < 1 ||
+      !Number.isSafeInteger(saved.nextIndex) || saved.nextIndex < 0 || saved.nextIndex >= saved.batches))
+    fail('invalid batch scheduling cursor');
+  return saved?.binding === binding && saved.batches === batches ? saved.nextIndex : 0;
+}
+
+function advanceBatchIndex(path, binding, batches, index) {
+  writeJournal(path, { schemaVersion, binding, batches, nextIndex: (index + 1) % batches });
+}
+
 function directoryIdentity(path) {
   const stat = lstatSync(path, { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink()) fail('dependency root must be physical: ' + path);
@@ -194,8 +209,12 @@ async function copyBytesMatch(helper, source, partial, work, deadline, environme
   // Reuse the verifier's private batch-journal contract. A large COPY chunk
   // must not lose its entire checksum prefix when the enclosing budget ends.
   // These entries never replace whole-chunk recaptures or final verification.
-  for (let offset = 0, index = 0; offset < sources.length; offset += batchSize, index++) {
+  const batches = Math.ceil(sources.length / batchSize);
+  const cursor = join(dirname(receipt), 'copy-cursor-' + digest(receipt) + '.json');
+  const start = resumeBatchIndex(cursor, binding, batches);
+  for (let step = 0; step < batches; step++) {
     if (Date.now() >= deadline) throw new Incomplete();
+    const index = (start + step) % batches, offset = index * batchSize;
     const batch = sources.slice(offset, offset + batchSize).map((record, position) =>
       [record, targets[offset + position]]);
     const metadata = digest(JSON.stringify(batch.map(records => records.map(record => record.raw))));
@@ -213,6 +232,7 @@ async function copyBytesMatch(helper, source, partial, work, deadline, environme
       first: batch[0][0].path, last: batch.at(-1)[0].path };
     if (trusted) progress.reusedCopyComparisonBatches = (progress.reusedCopyComparisonBatches ?? 0) + 1;
     else {
+      advanceBatchIndex(cursor, binding, batches, index);
       const directory = mkdtempSync(join(work, 'batch-'));
       try {
         for (const [side, name] of ['unmatched', 'predecessor'].entries())
@@ -245,6 +265,7 @@ async function copyBytesMatch(helper, source, partial, work, deadline, environme
       reusedCopyComparisonBatches: progress.reusedCopyComparisonBatches ?? 0,
       currentCopyComparisonBatch: progress.currentCopyComparisonBatch }));
   }
+  rmSync(cursor, { force: true });
   return true;
 }
 
@@ -514,6 +535,23 @@ async function* pairs(scan, donor, destination, deadline) {
   }
 }
 
+async function* batchesFrom(scan, donor, destination, deadline, batchSize, start) {
+  // Census records stay on disk. Rotate by streaming the suffix then prefix;
+  // retaining the whole dependency population in memory is unnecessary.
+  for (let pass = 0; pass < (start ? 2 : 1); pass++) {
+    let batch = [], index = 0;
+    for await (const pair of pairs(scan, donor, destination, deadline)) {
+      batch.push(pair);
+      if (batch.length !== batchSize) continue;
+      if (pass === 0 ? index >= start : index < start) yield { batch, index };
+      batch = [];
+      index++;
+      if (pass === 1 && index === start) break;
+    }
+    if (batch.length && (pass === 0 ? index >= start : index < start)) yield { batch, index };
+  }
+}
+
 async function inspect(scan, donor, destination, deadline) {
   const semantic = createHash('sha256'), sourceRaw = createHash('sha256'), targetRaw = createHash('sha256');
   const donorInodes = new Set(), targetInodes = new Set(), sourceGroups = new Map(), targetGroups = new Map();
@@ -679,11 +717,14 @@ export async function verifyRetainedDependencies(donor, destination, options, co
         }
         if (!manifest) writeJournal(manifestPath, { schemaVersion, binding, scope, bindingComponents });
         progress.phase = 'hash-batches';
-        let batch = [], index = 0, newBatches = 0;
-        const finishBatch = async () => {
+        const batches = Math.ceil(population.entries / batchSize);
+        const cursor = join(checkpoint, 'verification-cursor.json');
+        const start = resumeBatchIndex(cursor, binding, batches);
+        let newBatches = 0;
+        const finishBatch = async (batch, index) => {
           const metadata = digest(JSON.stringify(batch.map(pair =>
             [pair.path, pair.source.raw, pair.target.raw])));
-          const path = join(checkpoint, 'batch-' + String(index++).padStart(8, '0') + '.json');
+          const path = join(checkpoint, 'batch-' + String(index).padStart(8, '0') + '.json');
           const cached = readJournal(path);
           if (cached && (!Array.isArray(cached.proofs) || cached.proofs.length !== cached.files ||
               !cached.proofs.every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))))
@@ -697,6 +738,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
           if (trusted) progress.reusedBatches++;
           else {
             if (newBatches >= maxBatches || Date.now() >= deadline) throw new Incomplete();
+            advanceBatchIndex(cursor, binding, batches, index);
             // Digests follow the batch's regular-file order, bound by metadata.
             const proofs = await verifyBatch(batch, donor, destination, deadline);
             writeJournal(path, { schemaVersion, binding, metadata, capturedAtMs: Date.now(),
@@ -707,14 +749,11 @@ export async function verifyRetainedDependencies(donor, destination, options, co
           progress.verifiedEntries += batch.length;
           progress.verifiedBatches++;
           console.error('COMMITTED_DEPENDENCY_VERIFICATION ' + JSON.stringify(progress));
-          batch = [];
         };
-        for await (const pair of pairs(scan, donor, destination, deadline)) {
+        for await (const { batch, index } of batchesFrom(scan, donor, destination, deadline, batchSize, start)) {
           if (Date.now() >= deadline) throw new Incomplete();
-          batch.push(pair);
-          if (batch.length === batchSize) await finishBatch();
+          await finishBatch(batch, index);
         }
-        if (batch.length) await finishBatch();
         const finalDirectory = join(scratch, 'final');
         mkdirSync(finalDirectory, { mode: 0o700 });
         progress.phase = 'final-census';
@@ -729,6 +768,7 @@ export async function verifyRetainedDependencies(donor, destination, options, co
             JSON.stringify(finalPopulation) !== JSON.stringify(population))
           fail('dependency census changed during verification');
         context.verifySource();
+        rmSync(cursor, { force: true });
         progress.phase = 'complete';
         return { status: 'complete', sourceRoot: donor, paths: scan.trees.map(tree => tree.path), scope, progress };
       } catch (error) {
