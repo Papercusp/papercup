@@ -1,6 +1,7 @@
 import type { ParsedPlan, PlanDecision, PlanItem } from './parser';
 import { splitPlanSections } from './plan-sections';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
+import { requirementSectionsSchema } from './rubric-template';
 
 /**
  * One clause that made the guard fire, attributed to where it was read. The guard
@@ -244,6 +245,41 @@ interface GateTextSegment {
   text: string;
 }
 
+function acceptanceGateSegments(heading: string, body: string, item: PlanItem): GateTextSegment[] {
+  const source = `acceptance section "${heading.trim()}"`;
+  const requirements: GateTextSegment[] = [];
+  const prose = body.replace(/^```requirement[ \t]*\r?\n([\s\S]*?)^```[ \t]*$/gm, (block, json: string) => {
+    let parsed;
+    try {
+      parsed = requirementSectionsSchema.safeParse(JSON.parse(json));
+    } catch {
+      return block;
+    }
+    // Malformed or unfamiliar contracts retain the existing conservative scan.
+    if (!parsed.success) return block;
+    if (!itemRefPattern(item.id).test(block)) return '';
+    const { intent, acceptance, verification } = parsed.data;
+    const fields: Array<[string, string | undefined]> = [
+      ['intent.request', intent?.request],
+      ['intent.rationale', intent?.rationale],
+      ['acceptance.condition', acceptance.condition],
+      ['acceptance.falsifier', acceptance.falsifier],
+      ['verification.method', verification.method],
+      ['verification.replication', verification.replication],
+      ...(intent?.constraints ?? []).map((text, index): [string, string] => [`intent.constraints[${index}]`, text]),
+      ...(acceptance.requiredScope ?? []).map((text, index): [string, string] => [`acceptance.requiredScope[${index}]`, text]),
+    ];
+    // A test selector, path or planned-case reason identifies proof; it does not
+    // impose a release prerequisite. Keep each actual prose obligation separate
+    // so vocabulary from two independent JSON fields cannot form a new gate.
+    for (const [field, text] of fields) {
+      if (text) requirements.push({ source: `${source} requirement ${field}`, text });
+    }
+    return '';
+  });
+  return [{ source, text: `${heading}\n${itemScopedText(prose, item.id)}` }, ...requirements];
+}
+
 /**
  * The text the gate check reads for one item, kept as attributed segments. Segments
  * were previously joined with `\n`, which is itself a clause boundary, so checking
@@ -255,10 +291,7 @@ function relatedGateSegments(plan: ParsedPlan, item: PlanItem): GateTextSegment[
     plan.now?.raw && ref.test(plan.now.raw) ? [{ source: '## Now', text: itemScopedText(plan.now.raw, item.id) }] : [];
   const acceptanceClauses: GateTextSegment[] = splitPlanSections(plan.raw)
     .filter((section) => ACCEPTANCE_SECTION_RE.test(section.heading) && ref.test(section.body))
-    .map((section) => ({
-      source: `acceptance section "${section.heading.trim()}"`,
-      text: `${section.heading}\n${itemScopedText(section.body, item.id)}`,
-    }));
+    .flatMap((section) => acceptanceGateSegments(section.heading, section.body, item));
   return [
     { source: `${item.id} item text`, text: item.text },
     ...applicableDecisions(item, plan.decisions).map((decision) => ({

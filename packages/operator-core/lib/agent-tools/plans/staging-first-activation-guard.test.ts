@@ -28,6 +28,71 @@ ${decisions}
 `);
 
 describe('staging-first activation guard', () => {
+  describe('typed requirement metadata (EI-24787677967034419)', () => {
+    const requirement = () => ({
+      acceptance: {
+        condition: 'P-005 clears the M5 marker on the next preflight dispatch.',
+        falsifier: 'The M5 marker survives the next preflight dispatch.',
+        evidencePlane: 'tree',
+        requiredTestLayers: ['unit'],
+        passRatings: ['healthy'],
+      },
+      verification: {
+        method: 'P-005 runs the exact named marker regression on current-build.',
+        check: {
+          kind: 'tests',
+          files: ['apps/operator/lib/release/green-checkpoint.test.ts'],
+          cases: [{
+            file: 'apps/operator/lib/release/green-checkpoint.test.ts',
+            testName: 'M5 clears on the next preflight dispatch',
+            plannedReason: 'Existing R-5 marker and P-005 require this exact named regression before acceptance',
+          }],
+        },
+      },
+    });
+    const typedPlan = (bar: ReturnType<typeof requirement>, space?: number, prose = '') => plan(
+      ['- **P-005** `todo` Add and verify the marker regression on current-build.'],
+      '',
+      '## Requirements\n\n**R-5 — Marker cleanup.**\n\n```requirement\n' +
+        JSON.stringify(bar, null, space) + '\n```\n' + prose,
+    );
+
+    it.each([undefined, 2])('allows tree/unit test paths and plannedReason with JSON spacing %s', (space) => {
+      expect(stagingFirstActivationProblems(typedPlan(requirement(), space))).toEqual([]);
+    });
+
+    it.each(['condition', 'method'] as const)('retains a real release prerequisite in %s beside test metadata', (field) => {
+      const bar = requirement();
+      if (field === 'condition') bar.acceptance.condition = 'P-005 must wait for main before implementation.';
+      else bar.verification.method = 'P-005 must wait for :3070 before implementation.';
+      expect(stagingFirstActivationProblems(typedPlan(bar))).toEqual([
+        expect.objectContaining({ itemId: 'P-005', code: 'non_final_deployed_main_wait' }),
+      ]);
+    });
+
+    it('retains a prose deployment wait beside a typed tree/unit requirement', () => {
+      expect(stagingFirstActivationProblems(typedPlan(requirement(), 2,
+        'P-005 must wait for main before implementation.'))).toEqual([
+        expect.objectContaining({ itemId: 'P-005', code: 'non_final_deployed_main_wait' }),
+      ]);
+    });
+
+    it('does not combine deployment vocabulary and prerequisite language from separate typed fields', () => {
+      const bar = requirement();
+      bar.acceptance.condition = 'P-005 checks a deployment marker in a local unit fixture.';
+      bar.verification.method = 'P-005 requires the focused regression before acceptance.';
+      expect(stagingFirstActivationProblems(typedPlan(bar))).toEqual([]);
+    });
+
+    it('retains a release prerequisite when requirement JSON cannot be parsed', () => {
+      const parsed = plan(['- **P-005** `todo` Add source regression.'], '',
+        '## Requirements\n```requirement\nP-005 must wait for main before implementation.\n```');
+      expect(stagingFirstActivationProblems(parsed)).toEqual([
+        expect.objectContaining({ itemId: 'P-005', code: 'non_final_deployed_main_wait' }),
+      ]);
+    });
+  });
+
   describe('receipt provenance and downstream inventory (EI-28686759817053778)', () => {
     const receiptMetadata = 'Its receipt must name the actual prerequisite WI and returned/machine-derived completion event, exact source/schema/runtime and maintained regression-ledger evidence, independent acceptance and any genuinely required promotion/deploy receipt.';
 
