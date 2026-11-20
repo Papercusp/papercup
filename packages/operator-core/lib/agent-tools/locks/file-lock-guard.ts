@@ -368,6 +368,7 @@ async function guardFileLockWithinSourceCustody<T>(
   // P-025: push the ACQUIRE to the plan lock banner. Emitted after the txn has
   // committed, never inside it — a notify fired mid-transaction can be observed
   // before the row it announces is visible. No-ops for non-plan paths.
+  // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:fa6f5e45bdffcca2ec59:1","classification":"safe-to-lose","reason":"Post-commit plan-lock banner invalidation only; acquisition/enforcement remains in the lock store. usePlanLock refreshes planLock.byPath from that store on focus/visibility, recovering a missed banner update."}
   notifyPlanLockChange(paths);
   let bodyReturned = false;
   let bodySucceeded = false;
@@ -402,6 +403,7 @@ async function guardFileLockWithinSourceCustody<T>(
     const finished = await finish(succeeded ? 'completed' : 'cancelled');
     if (!finished.ok) throw new Error(`file-lock completion refused: ${finished.reason}`);
     completionConfirmed = true;
+    // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:8b7e7a8410ef5f01f67f:1","classification":"safe-to-lose","reason":"Banner invalidation after confirmed hook completion; capture and lock release are already recorded by finish. usePlanLock re-reads planLock.byPath on focus/visibility, so this best-effort UI update carries no custody receipt."}
     notifyPlanLockChange(releasePaths);
     return { acquired: true, result, coordinated: true };
   } catch (err) {
@@ -431,6 +433,7 @@ async function guardFileLockWithinSourceCustody<T>(
       await finish('cancelled').catch((cleanupError) => {
         ctx.log?.(`[file-lock] cancellation faulted: ${String(cleanupError)}`);
       });
+      // notify-classification: {"id":"packages/operator-core/lib/agent-tools/locks/file-lock-guard.ts#<module>/guardFileLockWithinSourceCustody:8b7e7a8410ef5f01f67f:2","classification":"safe-to-lose","reason":"Best-effort banner refresh after cancellation cleanup; it neither confirms cleanup nor changes lock enforcement. usePlanLock re-reads actual planLock.byPath rows on focus/visibility if this invalidation is dropped."}
       notifyPlanLockChange(releasePaths);
     }
     throw err;
