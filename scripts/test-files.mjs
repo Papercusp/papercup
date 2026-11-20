@@ -551,6 +551,54 @@ export function discoverTestRoute(file, root = REPO_ROOT) {
   return nonWorkspaceNodeRoute(rootRelative, absolute, root) ?? discoverVitestRoute(file, root);
 }
 
+/** Read-only discovery protocol. It neither collects nor executes tests/configs.
+ * Every selected identity gets a result; no prefix or count limit is applied. */
+export function readScopedFeasibilityRoutes(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).some(key => !['repositoryRoot', 'testPaths'].includes(key))) {
+    throw new Error('feasibility_routes_invalid_request');
+  }
+  const { repositoryRoot, testPaths } = input;
+  if (typeof repositoryRoot !== 'string' || !isAbsolute(repositoryRoot)
+    || resolve(repositoryRoot) !== repositoryRoot) {
+    throw new Error('feasibility_routes_invalid_repositoryRoot:' + JSON.stringify(repositoryRoot));
+  }
+  if (!Array.isArray(testPaths) || !testPaths.length) throw new Error('feasibility_routes_testPaths_required');
+  const seen = new Set();
+  for (const path of testPaths) {
+    if (typeof path !== 'string' || !path || path !== path.trim() || !/\.test\.tsx?$/.test(path)
+      || isAbsolute(path) || path.includes('\\') || path.split('/').some(part => !part || part === '.' || part === '..')) {
+      throw new Error('feasibility_routes_invalid_testPath:' + JSON.stringify(path));
+    }
+    if (seen.has(path)) throw new Error('feasibility_routes_duplicate_testPath:' + JSON.stringify(path));
+    seen.add(path);
+  }
+  return {
+    schema: 'scoped-feasibility-routes-v1', complete: true, repositoryRoot,
+    results: testPaths.map(path => {
+      try { return { path, ok: true, route: discoverVitestRoute(path, repositoryRoot) }; }
+      catch (error) { return { path, ok: false, error: error instanceof Error ? error.message : String(error) }; }
+    }),
+  };
+}
+
+/** Fixed argv --scoped-feasibility-routes, complete JSON stdin, one JSON stdout.
+ * Read to EOF before validation; never interpret a command or load a test body. */
+export async function runScopedFeasibilityRouteReader(input = process.stdin, output = process.stdout) {
+  try {
+    input.setEncoding('utf8');
+    let text = '';
+    for await (const chunk of input) text += chunk;
+    const result = readScopedFeasibilityRoutes(JSON.parse(text));
+    output.write(JSON.stringify(result) + '\n');
+    return 0;
+  } catch (error) {
+    output.write(JSON.stringify({ schema: 'scoped-feasibility-routes-v1', complete: false,
+      error: error instanceof Error ? error.message : String(error) }) + '\n');
+    return TEST_FILE_EXIT_NOT_MEASURED;
+  }
+}
+
 // `test:file` accepts exact test files, not the production modules those tests import. Keep this
 // check filename-based and runner-neutral so a source path is filtered before route discovery (a
 // source file under a config-less tree may not have any test runner route at all).
@@ -5363,6 +5411,10 @@ export async function runTestFilesCli(
     diagnoseStartupImpl = diagnoseVitestStartup,
   } = {},
 ) {
+  if (args[0] === '--scoped-feasibility-routes') {
+    if (args.length !== 1) throw new Error('feasibility_routes_exact_argv_required');
+    return runScopedFeasibilityRouteReader();
+  }
   const runUnderLease = async () => {
     if (args[0] !== '--startup-only-child') return run(args);
     await diagnoseStartupImpl(args.slice(1),

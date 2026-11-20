@@ -119,6 +119,8 @@ import {
   runTestFilesCli,
   runVitestList,
   readTestChildDiagnostic,
+  readScopedFeasibilityRoutes,
+  runScopedFeasibilityRouteReader,
   stopTestScope,
   testScopeRuntimeMaxSec,
   suppressInjectedJsonReportNotice,
@@ -154,6 +156,96 @@ import {
 import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 import { retainNativeProofPacketAsync, verifyNativeProofPacket } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+
+describe('feasibility route reader foundation', () => {
+  let root: string;
+  beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'feasibility-router-')); });
+  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  const request = (testPaths: string[]) => ({ repositoryRoot: root, testPaths });
+  function seed(path = 'baseline.test.ts') {
+    writeFileSync(join(root, 'vitest.config.ts'), 'throw new Error("config must never execute");');
+    writeFileSync(join(root, path), 'throw new Error("test must never execute");');
+    return path;
+  }
+  it('uses canonical Vitest discovery without loading configs or test bodies', () => {
+    const path = seed();
+    expect(readScopedFeasibilityRoutes(request([path]))).toEqual({
+      schema: 'scoped-feasibility-routes-v1', complete: true, repositoryRoot: root,
+      results: [{ path, ok: true, route: discoverVitestRoute(path, root) }],
+    });
+  });
+  it('returns every identity and route error after a missing selected test', () => {
+    const path = seed();
+    expect(readScopedFeasibilityRoutes(request(['missing.test.ts', path])).results).toEqual([
+      { path: 'missing.test.ts', ok: false, error: 'requested test file does not exist: missing.test.ts' },
+      { path, ok: true, route: discoverVitestRoute(path, root) },
+    ]);
+    rmSync(join(root, 'vitest.config.ts'));
+    expect(readScopedFeasibilityRoutes(request([path])).results[0]).toMatchObject({
+      path, ok: false, error: expect.stringContaining('no Vitest config owns baseline.test.ts'),
+    });
+  });
+  it.each([0, 1, 2])('validates the entire %i-file population', size => {
+    seed();
+    const paths = Array.from({ length: size }, (_, index) => 'missing-' + index + '.test.ts');
+    if (!size) expect(() => readScopedFeasibilityRoutes(request(paths))).toThrow('testPaths_required');
+    else expect(readScopedFeasibilityRoutes(request(paths)).results.map((row: { path: string }) => row.path)).toEqual(paths);
+  });
+  it('preserves a decisive result after many failures across reordered fresh reads', () => {
+    const path = seed();
+    const paths = [...Array.from({ length: 130 }, (_, index) => 'missing-' + index + '.test.ts'), path];
+    for (const selected of [paths, [...paths].reverse()]) {
+      const result = readScopedFeasibilityRoutes(request(selected));
+      expect(result.results.map((row: { path: string }) => row.path)).toEqual(selected);
+      expect(result.results.find((row: { path: string }) => row.path === path)).toMatchObject({ ok: true });
+    }
+  });
+  it.each(['../escape.test.ts', 'nested/../escape.test.ts', '/absolute.test.ts',
+    'baseline.spec.ts', 'fixture.json', ' baseline.test.ts', 'nested//file.test.ts'])('rejects the whole invalid selection intact: %s', path => {
+    expect(() => readScopedFeasibilityRoutes(request([seed(), path]))).toThrow(JSON.stringify(path));
+  });
+  it('rejects duplicate identities and caller protocol overrides', () => {
+    expect(() => readScopedFeasibilityRoutes(request([seed(), 'baseline.test.ts']))).toThrow('duplicate_testPath');
+    expect(() => readScopedFeasibilityRoutes({ ...request(['baseline.test.ts']), execute: true })).toThrow('invalid_request');
+    expect(() => readScopedFeasibilityRoutes({ ...request(['baseline.test.ts']), repositoryRoot: '.' })).toThrow('invalid_repositoryRoot');
+  });
+  it('consumes complete chunked JSON and emits a complete machine-readable result', async () => {
+    const path = seed("literal space's.test.ts"), input = new PassThrough(), output = new PassThrough();
+    let response = '';
+    output.setEncoding('utf8').on('data', chunk => { response += chunk; });
+    const run = runScopedFeasibilityRouteReader(input, output);
+    const json = JSON.stringify(request([path]));
+    input.write(json.slice(0, 20));
+    input.end(json.slice(20));
+    expect(await run).toBe(0);
+    expect(JSON.parse(response)).toMatchObject({ complete: true, results: [{ path, ok: true }] });
+  });
+  it('fails closed for malformed, trailing or truncated JSON input', async () => {
+    for (const text of ['{', '{}{}', 'null']) {
+      const input = new PassThrough(), output = new PassThrough();
+      let response = '';
+      output.setEncoding('utf8').on('data', chunk => { response += chunk; });
+      const run = runScopedFeasibilityRouteReader(input, output);
+      input.end(text);
+      expect(await run).not.toBe(0);
+      expect(JSON.parse(response)).toMatchObject({ schema: 'scoped-feasibility-routes-v1', complete: false,
+        error: expect.any(String) });
+    }
+  });
+  it('exposes only the fixed argv stdin reader in a real plain-Node child', () => {
+    const path = seed();
+    const run = (args: string[]) => spawnSync(process.execPath,
+      [join(REPO_ROOT, 'scripts/test-files.mjs'), ...args], { cwd: root, encoding: 'utf8', timeout: 30_000,
+        input: JSON.stringify(request([path])), env: { ...process.env, NODE_OPTIONS: '' } });
+    const child = run(['--scoped-feasibility-routes']);
+    expect(child.status, child.stderr).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject({ complete: true, results: [{ path, ok: true }] });
+    const extra = run(['--scoped-feasibility-routes', '--run']);
+    expect(extra.status).not.toBe(0);
+    expect(extra.stderr).toContain('feasibility_routes_exact_argv_required');
+    expect(extra.stdout).toBe('');
+  });
+});
 
 describe('router native custody population (P002)', () => {
   it('does not load the scheduler mutation subject when router custody was not requested', () => {
