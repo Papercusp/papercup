@@ -111,6 +111,8 @@ export function isTrackedScratchPath(path) {
     return true;
   }
 
+  if (path.startsWith('packages/operator-core/.tmp-test/node-compile-cache/')) return true;
+
   // Host bundles are generated beneath the operator app. A relative outfile
   // can accidentally duplicate that app prefix (for example
   // `apps/operator/apps/operator/dist-host-native-fixture-*`), so match the

@@ -88,6 +88,39 @@ test('detects generated Papercusp temp files and caches', () => {
   assert.equal(isTrackedScratchPath('apps/operator/.papercusp/tsx-1000/output.js'), true);
 });
 
+test('detects the operator-core test compile cache without hiding authored neighbors', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'check-tracked-ignored-'));
+  const output = 'packages/operator-core/.tmp-test/node-compile-cache/v25/1234abcd';
+  const authored = [
+    'packages/operator-core/.tmp-test/fixture.ts',
+    'packages/operator-core/.tmp-test/node-compile-cache-fixture/sample.ts',
+    'packages/other/.tmp-test/node-compile-cache/sample.ts',
+  ];
+
+  try {
+    execFileSync('git', ['init', '--quiet'], { cwd: repo });
+    execFileSync('git', ['config', 'core.excludesFile', '/dev/null'], { cwd: repo });
+    for (const path of [output, ...authored]) {
+      mkdirSync(join(repo, path, '..'), { recursive: true });
+      writeFileSync(join(repo, path), 'fixture\n');
+    }
+    execFileSync('git', ['add', '--', output, ...authored], { cwd: repo });
+    assert.deepEqual(listTrackedScratchPaths(repo), [output]);
+
+    writeFileSync(join(repo, '.gitignore'), readFileSync(new URL('../.gitignore', import.meta.url)));
+    assert.deepEqual(listTrackedIgnored(repo).offenders.map(row => row.path), [output]);
+
+    execFileSync('git', ['rm', '--cached', '--', output], { cwd: repo });
+    assert.equal(readFileSync(join(repo, output), 'utf8'), 'fixture\n');
+    assert.deepEqual(listTrackedScratchPaths(repo), []);
+    assert.equal(listTrackedIgnored(repo).listed, 0);
+    assert.equal(execFileSync('git', ['check-ignore', '--', output],
+      { cwd: repo, encoding: 'utf8' }).trim(), output);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('detects generated operator host output even when a relative outfile nests the app path', () => {
   const outputs = [
     'apps/operator/dist-host/hono-host.mjs',

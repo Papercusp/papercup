@@ -52,6 +52,8 @@ apps/operator/scripts/hooks/cc/*.tmp*
 # not sweep it into commits or guarded-build source fingerprints.
 .papercusp-tmp/
 **/.papercusp-tmp/
+# Operator-core test runs have also written Node's cache under this exact temp root.
+/packages/operator-core/.tmp-test/node-compile-cache/
 
 # These repository-root names are reserved for agent/test scratch. Keep the
 # rules root-anchored so legitimate nested source directories with similar
