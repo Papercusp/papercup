@@ -467,6 +467,44 @@ describe('canonical readiness evidence and coordination remain available before 
     'JSON',
   ].join('\n');
 
+  it.each([32_767, 32_768, 32_769, 60_000])(
+    'classifies the complete canonical draft edit at %i characters', async size => {
+      for (const wrapped of [false, true]) {
+        const args = { slug: 'review-plan', old_string: 'Original Discovery', new_string: '', expectedHash: 'a'.repeat(64) };
+        args.new_string = 'x'.repeat(size - ptool('plans:edit', args, wrapped).length);
+        const cmd = ptool('plans:edit', args, wrapped);
+        expect(cmd).toHaveLength(size);
+        const readBindings = vi.fn(async () => [binding]);
+        const checkPlan = vi.fn(async () => ['plan_not_started']);
+        expect(isPlanImplementationCall('functions.exec_command', { cmd })).toBe(false);
+        expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan })).toBeNull();
+        expect(readBindings).not.toHaveBeenCalled();
+        expect(checkPlan).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('inspects the tail of large canonical calls before admitting planning work', async () => {
+    const args = { slug: 'review-plan', old_string: 'a'.repeat(28_328), new_string: 'b'.repeat(28_328), expectedHash: 'a'.repeat(64) };
+    const valid = ptool('plans:edit', args);
+    expect(valid.length).toBeGreaterThan(32_768);
+    expect(isPlanImplementationCall('exec_command', { cmd: valid })).toBe(false);
+    const unsafe = [
+      valid + '\ntouch source.ts',
+      valid.replace("<<'JSON'", '<<JSON'),
+      valid.replace(/JSON$/, 'JSON\ntouch source.ts'),
+      ptool('capability:write', { content: args.new_string.repeat(2), file_path: 'source.ts' }, true),
+    ];
+    for (const cmd of unsafe) {
+      const readBindings = vi.fn(async () => [binding]);
+      const checkPlan = vi.fn(async () => ['plan_not_started']);
+      expect(isPlanImplementationCall('exec_command', { cmd })).toBe(true);
+      expect(await checkPlanExecutionGuard(call('exec_command', { cmd }), { readBindings, checkPlan }))
+        .toMatchObject({ code: 'plan_execution_not_ready', blockers: ['plan_not_started'] });
+      expect(checkPlan).toHaveBeenCalledOnce();
+    }
+  });
+
   it.each([
     ['sessions:read', { ref: 'session_turn:codex:source:0' }],
     ['sessions:search', { session: 'self', mode: 'verbatim', query: 'original requirement' }],
