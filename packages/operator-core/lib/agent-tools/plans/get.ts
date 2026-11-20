@@ -111,6 +111,16 @@ const PLANS_GET_SOFT_TTL_MS = 45_000;
 // ../../release/release-fixer-tool-contract.test.ts.
 const ALL_ROLES = [...SU_ROLES, 'promote', 'kettle', 'worker', 'cup', 'judge', 'release-fixer'] as const;
 
+const revisionWindowTime = z.string().datetime({ offset: true }).refine(
+  // The reader compares epoch milliseconds. Additional trailing zeroes describe the same instant.
+  value => !/\.\d{3}0*[1-9]/.test(value),
+  'Revision window boundaries must be representable in whole milliseconds.',
+);
+const revisionWindow = z.object({ from: revisionWindowTime, until: revisionWindowTime }).strict().refine(
+  value => Date.parse(value.from) < Date.parse(value.until),
+  { path: ['until'], message: 'The end of a revision window must be later than its start.' },
+);
+
 const argsSchema = z
   .object({
     harness: harnessArg,
@@ -281,11 +291,10 @@ const argsSchema = z
       .describe(
         'Read-only preview of the live plan-item todo-to-wip start gate used by plan_items:claim and coord:declare-intent. Requires one current plan slug and a P-NNN itemId. It does not grant execution authority; executionReadiness remains continuation-scoped.',
       ),
-    efficiency: z
-      .boolean()
+    efficiency: z.union([z.boolean(), z.object({ revisionWindow }).strict()])
       .optional()
       .describe(
-        "Add `efficiency`: the plan's agent MCP calls (goal_ref in its work items) by purpose, failed calls by class, calls on dropped items, holder changes, and holders' active/idle wall-clock. Counts are floors (native tools write no row).",
+        "Add efficiency. Use true for full history or {revisionWindow:{from,until}} for revisions and audits between an inclusive start and exclusive end. Supply ISO timestamps with a timezone at millisecond precision. Agent MCP calls by purpose, failures by class, dropped-item calls, holder changes and active/idle time retain their plan-wide scope. MCP counts are floors.",
       ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
@@ -296,6 +305,9 @@ const argsSchema = z
   })
   .refine((v) => v.discoveryAudit === undefined || (!!v.slug && !v.slugs?.length && v.revision === undefined), {
     message: 'discoveryAudit requires one slug, without slugs or revision.',
+  })
+  .refine((v) => v.discoveryAudit === undefined || typeof v.efficiency !== 'object', {
+    message: 'discoveryAudit selects one stored audit. Request the efficiency window in a plan read.',
   })
   .refine((v) => v.planItemStartReadiness === undefined || (!!v.slug && !v.slugs?.length && v.revision === undefined), {
     message: 'planItemStartReadiness requires one current plan slug, without slugs or revision.',
@@ -1924,7 +1936,10 @@ export default defineTool({
           const scope = await resolvePlanScope({
             harnessSlug: typeof result.harness === 'string' ? result.harness : undefined,
           });
-          result.efficiency = await readPlanEfficiency({ ...scope, planSlug: slug });
+          result.efficiency = await readPlanEfficiency({
+            ...scope, planSlug: slug,
+            ...(typeof args.efficiency === 'object' ? { revisionWindow: args.efficiency.revisionWindow } : {}),
+          });
         } catch (error) {
           result.efficiency = {
             planSlug: slug,

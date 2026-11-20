@@ -179,6 +179,66 @@ describe('plans:get immutable revision reader', () => {
     } });
   });
 
+  it('replays the efficiency window through plans:get and preserves an episode recovered at the exclusive end', async () => {
+    const slug = 'dated-efficiency';
+    const from = '2026-11-05T00:00:00.000Z';
+    const until = '2026-11-19T00:00:00.000Z';
+    const opened = '2026-11-18T23:59:59.999Z';
+    const plan = original.replace(SLUG, slug);
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, slug, plan);
+    for (const [index, time] of [from, opened, until].entries()) {
+      const seq = index + 1;
+      const content = plan + '\nEdition ' + seq;
+      const hash = hashPlanContent(content);
+      const ready = time !== opened;
+      const discovery = { schemaVersion: 1, requestKey: slug + '-' + seq, readiness: {
+        ready, blockers: ready ? [] : [{
+          code: 'discovery_change_unsupported', detail: 'F-1: reconcile the affected conclusion/disposition after changes to R-1',
+        }],
+      } };
+      const [row] = await fx.admin<{ id: string }[]>`
+        INSERT INTO harness_shared.plan_revisions
+          (workspace_id,harness_slug,plan_slug,seq,content_hash,content_snapshot,author_kind,author_id,created_at)
+        VALUES (${fx.workspaceId},${HARNESS},${slug},${seq},${hash},${content},'agent','fixture',${Date.parse(time)})
+        RETURNING id::text`;
+      await fx.admin`INSERT INTO harness_shared.plan_audits
+        (workspace_id,harness_slug,plan_slug,audit_seq,created_by,created_at,audit_kind,
+         audited_plan_revision_id,audited_plan_revision_seq,audited_plan_content_hash,discovery)
+        VALUES (${fx.workspaceId},${HARNESS},${slug},${seq},'fixture',${time},'discovery',
+                ${row!.id},${seq},${hash},${JSON.stringify(discovery)}::jsonb)`;
+    }
+    const args = { slug, mode: 'meta', includeEnrichments: false };
+    expect(await read({ ...args, efficiency: { revisionWindow: { from, until } } }, fx.workspaceId))
+      .toMatchObject({ ok: true, efficiency: { revisionMeasurement: {
+        window: { from, until }, revisionCount: 2, discoveryAudits: 2,
+        episodes: [{ prior: { auditSeq: 1 }, opened: { auditSeq: 2 }, restored: null }],
+        delay: { episodes: 1, measuredEpisodes: 0, unavailableMs: null, soleBlockerMs: null },
+      } } });
+    expect(await read({ ...args, efficiency: true }, fx.workspaceId))
+      .toMatchObject({ ok: true, efficiency: { revisionMeasurement: {
+        window: null, revisionCount: 3, discoveryAudits: 3,
+        episodes: [{ opened: { auditSeq: 2 }, restored: { auditSeq: 3 } }],
+        delay: { episodes: 1, measuredEpisodes: 1, unavailableMs: 1, soleBlockerMs: null },
+      } } });
+    expect(await read({ ...args, efficiency: false }, fx.workspaceId)).not.toHaveProperty('efficiency');
+  });
+
+  it('refuses incomplete, reversed and unrepresentable efficiency windows', () => {
+    const from = '2026-11-05T00:00:00Z', until = '2026-11-19T00:00:00Z';
+    for (const window of [{ from }, { until }, { from, until: from }, { from: until, until: from },
+      { from: '2026-11-05T00:00:00.0001Z', until }, { from: '2026-11-05T00:00:00', until }]) {
+      expect(tool.args.safeParse({ slug: SLUG, efficiency: { revisionWindow: window } }).success).toBe(false);
+    }
+    expect(tool.args.safeParse({ slug: SLUG, efficiency: { revisionWindow: { from: '2026-11-04T19:00:00-05:00', until } } }).success)
+      .toBe(true);
+    expect(tool.args.safeParse({ slug: SLUG, efficiency: { revisionWindow: { from: '2026-11-05T00:00:00.000000Z', until } } }).success)
+      .toBe(true);
+    expect(tool.args.safeParse({ slug: SLUG, revision: 1, efficiency: { revisionWindow: { from, until } } }).success)
+      .toBe(false);
+    expect(tool.args.safeParse({ slug: SLUG, discoveryAudit: true, efficiency: { revisionWindow: { from, until } } }).success)
+      .toBe(false);
+  });
+
   it('rejects ambiguous or live-state options instead of mixing current evidence into a snapshot', () => {
     for (const input of [
       { revision: 0 }, { revision: -1 }, { revision: 1.5 }, { revision: 'latest' },
