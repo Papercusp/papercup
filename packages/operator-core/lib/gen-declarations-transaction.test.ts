@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { transformSync } from 'esbuild';
 import { describe, expect, it, vi } from 'vitest';
 import { check, compileDeclarationsIncrementally, generate, includeEnrolledImporters, runDeclarationCli } from '../../../scripts/gen-declarations.ts';
+import { scopedFilesArg } from '../../../scripts/lib/tsc-baseline-gate.mjs';
 import * as ts from 'typescript';
 
 type Compile = (repoRoot: string, config: string, outDir: string) => void;
@@ -378,6 +379,40 @@ describe('gen:declarations transactional publish', () => {
 });
 
 describe('gen:declarations CLI validation', () => {
+  it.each([-1, 0, 1])('consumes the complete routed selection at the response-file boundary (%i)', (delta) => {
+    const files = Array.from({ length: 300 }, (_, index) => `src/module-${index}.mjs`);
+    const inlineLength = `--files=${files.join(',')}`.length;
+    const selection = scopedFilesArg(files, { maxInlineChars: inlineLength + delta });
+    try {
+      const checkImpl = vi.fn();
+      runDeclarationCli(['--check', selection.arg], { checkImpl });
+      expect(checkImpl).toHaveBeenCalledExactlyOnceWith(files);
+      if (selection.responseFile) {
+        const spacedCheck = vi.fn();
+        runDeclarationCli(['--check', '--files-from', selection.responseFile], { checkImpl: spacedCheck });
+        expect(spacedCheck).toHaveBeenCalledExactlyOnceWith(files);
+      }
+    } finally {
+      selection.cleanup();
+    }
+  });
+
+  it.each([[], ['input.mjs', ''], ['input.mjs', 42], { files: ['input.mjs'] }])(
+    'refuses malformed response selections without invoking a compiler: %j', (payload) => {
+      const root = mkdtempSync(join(tmpdir(), 'declaration-selection-'));
+      try {
+        const response = join(root, 'files.json');
+        writeFileSync(response, JSON.stringify(payload));
+        const checkImpl = vi.fn();
+        expect(() => runDeclarationCli(['--check', `--files-from=${response}`], { checkImpl }))
+          .toThrow(/non-empty JSON array/);
+        expect(checkImpl).not.toHaveBeenCalled();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     { args: ['--files'], error: /requires a non-empty/ },
     { args: ['--files='], error: /requires a non-empty/ },

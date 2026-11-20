@@ -2076,14 +2076,14 @@ export function coveragePrefixesFromGateModule(mod, { onCoverageError } = {}) {
  *
  * @param {string} root Absolute repo root.
  * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
- * @returns {Promise<{gates: {npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[], files?: string[], scriptPath: string, tscCommand: string | null}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
  *   `scriptPath` is the repo-relative entrypoint; `tscCommand` is the gate's single-project
  *   command, or null for a multi-project GATE_COVERAGE gate that cannot act as a cross-leg consumer.
  *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
  *   entirely unknown, so NO absence claim of any strength is available.
  */
 export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {}) {
-  /** @type {{npmScript: string, prefixes: string[], scriptPath: string, tscCommand: string | null, loadableExtensions?: () => string[] | null}[]} */
+  /** @type {{npmScript: string, prefixes: string[], files?: string[], scriptPath: string, tscCommand: string | null, loadableExtensions?: () => string[] | null}[]} */
   const gates = [];
   /** @type {{npmScript: string, reason: string}[]} */
   const unresolved = [];
@@ -2093,6 +2093,24 @@ export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {})
     pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf-8'));
   } catch (err) {
     return { gates, unresolved, rosterReadable: false };
+  }
+
+  // Enrollment is exact compiler ownership. Directory ancestry can route these MJS
+  // inputs to a workspace whose TypeScript program excludes JavaScript entirely.
+  const declarationGate = 'gen:declarations:check';
+  if (pkg?.scripts?.[declarationGate] && !exclude.includes(declarationGate)) {
+    try {
+      gates.push({
+        npmScript: declarationGate,
+        prefixes: [],
+        files: declarationFilesFromConfig(root, { strict: true })
+          .map((file) => file.replace(/\.d\.mts$/, '.mjs')),
+        scriptPath: 'scripts/gen-declarations.ts',
+        tscCommand: null,
+      });
+    } catch (error) {
+      unresolved.push({ npmScript: declarationGate, reason: `unreadable declaration enrollment: ${String(error?.message ?? error)}` });
+    }
   }
 
   for (const [npmScript, command] of Object.entries(pkg?.scripts ?? {})) {
@@ -2219,12 +2237,15 @@ function gateCannotLoadFile(gate, file) {
  * `lint:tsc:orchestrator` rather than the broader `lint:tsc:papercusp-libs` fan-out that also
  * contains it — the narrower gate is the faster, more attributable answer.
  *
- * @param {{npmScript: string, prefixes: string[], loadableExtensions?: () => string[] | null}[]} gates
+ * @param {{npmScript: string, prefixes: string[], files?: string[], loadableExtensions?: () => string[] | null}[]} gates
  * @param {string} file Repo-relative path.
  * @returns {{npmScript: string, prefix: string} | null}
  */
 export function gateCoveringFile(gates, file) {
   const target = String(file).replace(/^\.\//, '');
+  // An enrolled input outranks every directory prefix, regardless of roster order.
+  const exact = gates?.find((gate) => gate.files?.includes(target));
+  if (exact) return { npmScript: exact.npmScript, prefix: target };
   /** @type {{npmScript: string, prefix: string} | null} */
   let best = null;
   for (const gate of gates ?? []) {
@@ -2918,7 +2939,7 @@ export function formatUncoveredFilesBanner({
       for (const g of unresolvedGates) lines.push(`       · ${g.npmScript} — ${g.reason}`);
     } else {
       lines.push(
-        `     Searched: every \`lint:tsc*\` gate in package.json, plus each file's own workspace \`typecheck\` script.`,
+        `     Searched: every \`lint:tsc*\` gate in package.json, declaration compiler enrollment, plus each file's own workspace \`typecheck\` script.`,
       );
     }
     lines.push(

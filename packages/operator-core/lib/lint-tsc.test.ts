@@ -4321,15 +4321,70 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
     });
 
     describe('discoverSiblingTypecheckGates (against the REAL repo)', () => {
+      it('routes enrolled hook MJS to the declaration compiler instead of an excluding workspace program', async () => {
+        const files = [
+          'apps/operator/scripts/hooks/inject/index.mjs',
+          'apps/operator/scripts/hooks/inject/toolless-mcp-recovery.mjs',
+        ];
+        const configPath = join(REPO_ROOT, 'apps/operator/tsconfig.json');
+        const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
+        expect(loaded.error).toBeUndefined();
+        const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, dirname(configPath));
+        expect(parsed.errors).toEqual([]);
+        for (const file of files) expect(parsed.fileNames).not.toContain(join(REPO_ROOT, file));
+
+        const { gates } = await discoverSiblingTypecheckGates(REPO_ROOT);
+        for (const file of files) {
+          expect(gateCoveringFile(gates, file)?.npmScript).toBe('gen:declarations:check');
+        }
+        const planned = collectAutoTypecheckRoutes({ files, suggestions: new Map(), siblingGates: gates });
+        expect(planned.unknown).toEqual([]);
+        expect(planned.routes).toEqual([expect.objectContaining({
+          files,
+          args: ['run', 'gen:declarations:check', '--', `--files=${files.join(',')}`],
+        })]);
+        const banner = formatUncoveredFilesBanner({
+          label: 'operator-core', uncovered: files, suggestions: new Map(), fatal: true,
+          siblingGates: gates,
+        }).join('\n');
+        expect(banner).toContain(`npm run gen:declarations:check -- --files=${files.join(',')}`);
+        expect(banner).not.toContain('npm run lint:tsc:workspaces');
+      });
+
+      it('derives declaration ownership from exact enrollment and reports unreadable enrollment', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'tsc-declaration-owner-'));
+        try {
+          writeFileSync(join(root, 'package.json'), JSON.stringify({
+            scripts: { 'gen:declarations:check': 'tsx scripts/gen-declarations.ts --check' },
+          }));
+          const config = join(root, 'tsconfig.declarations.json');
+          writeFileSync(config, JSON.stringify({ files: ['src/enrolled.mjs'] }));
+          const { gates, unresolved } = await discoverSiblingTypecheckGates(root);
+          expect(unresolved).toEqual([]);
+          expect(gateCoveringFile(gates, 'src/enrolled.mjs')?.npmScript).toBe('gen:declarations:check');
+          for (const file of ['src/other.mjs', 'src/enrolled.mjs.backup', 'src/enrolled.d.mts']) {
+            expect(gateCoveringFile(gates, file)).toBeNull();
+          }
+          writeFileSync(config, '{ broken');
+          const broken = await discoverSiblingTypecheckGates(root);
+          expect(broken.gates).toEqual([]);
+          expect(broken.unresolved).toEqual([expect.objectContaining({
+            npmScript: 'gen:declarations:check', reason: expect.any(String),
+          })]);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+
       it('does not recommend the scripts gate for an mjs file outside its compiler inputs', async () => {
         const { gates } = await discoverSiblingTypecheckGates(REPO_ROOT);
         const file = 'scripts/lib/related-tests.mjs';
         expect(gateCoveringFile(gates, 'scripts/gen-declarations.ts')?.npmScript)
           .toBe('lint:tsc:scripts');
-        expect(gateCoveringFile(gates, file)).toBeNull();
+        expect(gateCoveringFile(gates, file)?.npmScript).toBe('gen:declarations:check');
         expect(collectAutoTypecheckRoutes({
           files: [file], suggestions: new Map(), siblingGates: gates,
-        })).toEqual({ routes: [], unknown: [file] });
+        })).toEqual({ routes: [expect.objectContaining({ npmScript: 'gen:declarations:check', files: [file] })], unknown: [] });
         expect(formatUncoveredFilesBanner({
           label: 'fixture', uncovered: [file], suggestions: new Map(), fatal: true,
           siblingGates: gates,
@@ -4391,11 +4446,11 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         // unsafe. It must arrive as evidence, not as silence.
         return discoverSiblingTypecheckGates(REPO_ROOT).then((res) => {
           for (const u of res.unresolved) {
-            expect(u.npmScript).toMatch(/^lint:tsc/);
+            expect(u.npmScript).toMatch(/^(lint:tsc|gen:declarations:check)/);
             expect(u.reason.length).toBeGreaterThan(0);
           }
-          // Every discovered gate carries at least one usable prefix.
-          for (const g of res.gates) expect(g.prefixes.length).toBeGreaterThan(0);
+          // Each gate declares directory coverage or exact config-owned inputs.
+          for (const g of res.gates) expect(g.prefixes.length + (g.files?.length ?? 0)).toBeGreaterThan(0);
         });
       });
 

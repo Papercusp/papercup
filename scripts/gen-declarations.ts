@@ -8,6 +8,7 @@
  *   npm run gen:declarations -- --files a.mjs,b.mjs # the same selection, spaced form
  *   npm run gen:declarations:check                   # verify every committed output
  *   npm run gen:declarations:check -- --files=a.mjs # verify selected enrolled outputs
+ *   npm run gen:declarations:check -- --files-from=inputs.json # JSON array selection
  *
  * Both modes compile into an isolated temp directory. `--check` compares that
  * output without publishing it; normal generation publishes only after the
@@ -505,6 +506,18 @@ export function runDeclarationCli(
     }
     if (arg === '--include-importers') {
       includeImporters = true;
+      continue;
+    }
+    if (arg === '--files-from' || arg.startsWith('--files-from=')) {
+      const path = arg === '--files-from' ? args[++index] : arg.slice('--files-from='.length);
+      if (!path || path.startsWith('--')) throw new Error('`--files-from` requires a JSON response-file path');
+      const files: unknown = JSON.parse(readFileSync(path, 'utf8'));
+      if (!Array.isArray(files) || files.length === 0 ||
+          files.some((file) => typeof file !== 'string' || !file.trim())) {
+        throw new Error('`--files-from` requires a non-empty JSON array of input paths');
+      }
+      hasSelection = true;
+      requestedInputs.push(...files);
       continue;
     }
     let value: string | undefined;
