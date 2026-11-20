@@ -42,14 +42,16 @@
  * in that module's header: a categorised message is default-excluded from
  * `coord:inbox`.
  */
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@papercusp/hash-chain';
 import type { Sql } from 'postgres';
-import type { FactScope } from './store';
+import type { FactDependency, FactScope, FactSourceProvenance } from './store';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 /** Payload key holding the flags. Read by `work_items:get` (`assumptionFlags`). */
 export const ASSUMPTION_FLAGS_KEY = '_assumptionFlags';
 
-/** Hard bound on the items one event may flag; the result says when it was hit. */
+/** Maximum candidates processed by one page. */
 export const CASCADE_ITEM_LIMIT = 500;
 
 export type FactChangeKind = 'retracted' | 'superseded';
@@ -73,7 +75,43 @@ export interface FactChangeEvent {
   reason: string | null;
   /** Who retracted / re-asserted. */
   by: string | null;
+  /** Present when both immutable versions were read for this supersession. */
+  comparison?: { bodyChanged: boolean; before: FactSupport; after: FactSupport };
 }
+
+export interface FactSupport {
+  confidence: string | null;
+  supportHashes: string[];
+}
+
+/** Store evidence identities on the judgment without copying source quotes or
+ * cell values into its public payload. Re-observation time is immaterial. */
+export function captureFactSupport(row: {
+  confidence?: string | null;
+  source_ref?: string | null;
+  source_provenance?: FactSourceProvenance | null;
+  depends_on?: FactDependency[] | null;
+}): FactSupport {
+  const hashes = new Set<string>();
+  const add = (value: unknown) => hashes.add(createHash('sha256').update(canonicalJson(value)).digest('hex'));
+  if (row.source_ref) {
+    add(['source', row.source_ref]);
+    if (row.source_provenance?.verified) {
+      add(['verified-source', row.source_ref]);
+      if (row.source_provenance.quote) add(['source-quote', row.source_ref, row.source_provenance.quote]);
+    }
+  }
+  for (const origin of row.source_provenance?.promotedFrom ?? []) add(['promoted-from', origin.kind, origin.ref]);
+  for (const dependency of row.depends_on ?? []) {
+    if (dependency.digest) {
+      add(['dependency', dependency.cell, dependency.subject ?? null, dependency.target ?? null,
+        dependency.semanticAnchor ?? null, dependency.digest]);
+    }
+  }
+  return { confidence: row.confidence ?? null, supportHashes: [...hashes].sort() };
+}
+
+const confidenceStrength = new Map([['verified', 3], ['provisional', 2], ['suspected', 1]]);
 
 /** The minimal citation shape read from `payload._assumptions.declared[]`. */
 export interface CitedAssumption {
@@ -83,6 +121,8 @@ export interface CitedAssumption {
   scope?: string | null;
   scopeRef?: string | null;
   versionId?: number | null;
+  confidence?: string | null;
+  supportHashes?: string[];
 }
 
 /** One flag as stored on a work item. */
@@ -139,7 +179,15 @@ export function citesChangedFact(a: CitedAssumption, e: FactChangeEvent): boolea
   if (!a || typeof a !== 'object') return false;
   if (!sameIdentity(a, e)) return false;
   if (e.kind === 'retracted') return true;
-  return e.versionId != null && a.versionId != null && Number(a.versionId) === Number(e.versionId);
+  if (e.versionId == null || a.versionId == null || String(a.versionId) !== String(e.versionId)) return false;
+  const change = e.comparison;
+  if (!change || change.bodyChanged) return true;
+  const citedStrength = confidenceStrength.get(a.confidence ?? '') ?? 0;
+  const oldStrength = confidenceStrength.get(change.before.confidence ?? '') ?? 0;
+  const newStrength = confidenceStrength.get(change.after.confidence ?? '') ?? 0;
+  if (newStrength < Math.min(citedStrength, oldStrength)) return true;
+  return (a.supportHashes ?? []).some(hash =>
+    change.before.supportHashes.includes(hash) && !change.after.supportHashes.includes(hash));
 }
 
 /** The citations in a stored declaration that rest on the changed fact. */
@@ -221,11 +269,11 @@ export interface FlaggedItem {
 }
 
 /** The owner notice: one message per recipient, listing every flagged item. */
-export function renderCascadeNotice(e: FactChangeEvent, items: readonly FlaggedItem[]): { summary: string; body: string } {
+export function renderCascadeNotice(e: FactChangeEvent, items: readonly FlaggedItem[], total = items.length): { summary: string; body: string } {
   const ref = factRefOf(e.scope, e.scopeRef, e.key, e.versionId);
   const verb = e.kind === 'retracted' ? 'retracted' : 'superseded';
   const reason = norm(e.reason) || (e.kind === 'superseded' ? `superseded by version ${e.supersededBy ?? '?'}` : 'no reason given');
-  const n = items.length;
+  const n = total;
   const summary = `Fact ${ref} was ${verb} — ${n} of your closed work item${n === 1 ? '' : 's'} cited it as a completion assumption`;
   const lines = [
     `The fact ${ref} was ${verb}${e.by ? ` by ${e.by}` : ''}. Reason: ${reason}.`,
@@ -256,6 +304,7 @@ export interface CascadeResult {
 }
 
 interface CandidateRow {
+  candidate_count: number | string;
   feature_id: string;
   harness_slug: string | null;
   title: string | null;
@@ -331,13 +380,20 @@ export async function cascadeFactChange(
   }
 }
 
+export interface CascadeCursor { harness: string; item: string }
+
 interface FlagOutcome {
   matched: number;
   flagged: FlaggedItem[];
   truncated: boolean;
+  scanned: number;
+  remaining: number;
+  cursor: CascadeCursor | null;
 }
 
-async function flagMatchingItems(sql: Sql, e: FactChangeEvent, opts: { now?: () => Date }): Promise<FlagOutcome> {
+export async function flagMatchingItems(
+  sql: Sql, e: FactChangeEvent, opts: { now?: () => Date }, cursor: CascadeCursor | null = null,
+): Promise<FlagOutcome> {
   {
     // Containment narrows on the indexed population (migration 1506's predicate is
     // repeated verbatim so the partial index applies); the JS matcher then applies
@@ -345,16 +401,19 @@ async function flagMatchingItems(sql: Sql, e: FactChangeEvent, opts: { now?: () 
     const probe = e.kind === 'retracted' ? [{ scope: e.scope, key: e.key }] : [{ versionId: e.versionId }];
     const rows = await sql<CandidateRow[]>`
       SELECT feature_id, harness_slug, title, status, terminal_owner, taken_by,
+             count(*) OVER () AS candidate_count,
              payload -> '_assumptions' -> 'declared' AS declared
         FROM harness_shared.work_items
        WHERE workspace_id = ${e.workspaceId}
          AND jsonb_typeof((payload -> '_assumptions') -> 'declared') = 'array'
-         AND (payload -> '_assumptions' -> 'declared') @> ${JSON.stringify(probe)}::jsonb
+         AND (payload -> '_assumptions' -> 'declared') @> ${JSON.stringify(probe)}::text::jsonb
          AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
-       ORDER BY feature_id
-       LIMIT ${CASCADE_ITEM_LIMIT + 1}`;
-    const truncated = rows.length > CASCADE_ITEM_LIMIT;
-    const candidates = rows.slice(0, CASCADE_ITEM_LIMIT);
+         AND (${cursor?.harness ?? null}::text IS NULL OR
+              (coalesce(harness_slug, ''), feature_id) > (${cursor?.harness ?? ''}, ${cursor?.item ?? ''}))
+       ORDER BY coalesce(harness_slug, ''), feature_id
+       LIMIT ${CASCADE_ITEM_LIMIT}`;
+    const candidates = rows;
+    const remaining = rows.length ? Number(rows[0].candidate_count) - rows.length : 0;
     const at = (opts.now ?? (() => new Date()))().toISOString();
     const flagged: FlaggedItem[] = [];
     let matched = 0;
@@ -370,12 +429,14 @@ async function flagMatchingItems(sql: Sql, e: FactChangeEvent, opts: { now?: () 
            SET payload = jsonb_set(
                  COALESCE(payload, '{}'::jsonb),
                  '{_assumptionFlags}',
-                 COALESCE(payload -> '_assumptionFlags', '[]'::jsonb) || ${JSON.stringify([flag])}::jsonb,
+                 COALESCE(payload -> '_assumptionFlags', '[]'::jsonb) || ${JSON.stringify([flag])}::text::jsonb,
                  true)
          WHERE workspace_id = ${e.workspaceId}
            AND feature_id = ${row.feature_id}
            AND harness_slug IS NOT DISTINCT FROM ${row.harness_slug}
-           AND NOT (COALESCE(payload -> '_assumptionFlags', '[]'::jsonb) @> ${JSON.stringify([{ dedupeKey: flag.dedupeKey }])}::jsonb)
+           AND NOT (COALESCE(payload -> '_assumptionFlags', '[]'::jsonb) @> ${JSON.stringify([{ dedupeKey: flag.dedupeKey }])}::text::jsonb)
+           AND status = ${row.status}
+           AND payload -> '_assumptions' -> 'declared' = ${JSON.stringify(row.declared)}::text::jsonb
         RETURNING feature_id`;
       if (updated.length === 0) continue;
       flagged.push({
@@ -386,7 +447,9 @@ async function flagMatchingItems(sql: Sql, e: FactChangeEvent, opts: { now?: () 
         recipient: norm(row.terminal_owner) || norm(row.taken_by) || null,
       });
     }
-    return { matched, flagged, truncated };
+    const last = candidates.at(-1);
+    return { matched, flagged, truncated: remaining > 0, scanned: candidates.length, remaining,
+      cursor: last ? { harness: last.harness_slug ?? '', item: last.feature_id } : cursor };
   }
 }
 

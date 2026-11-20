@@ -19,10 +19,12 @@ vi.mock('../agent-tools/coordination/messages', () => ({
 import {
   ASSUMPTION_FLAGS_KEY,
   buildFlag,
+  captureFactSupport,
   cascadeFactChange,
   citesChangedFact,
   dedupeKeyOf,
   factRefOf,
+  flagMatchingItems,
   mergeFlags,
   readAssumptionFlags,
   renderCascadeNotice,
@@ -113,16 +115,22 @@ function fakeSql(items: Item[], opts: { failSelect?: boolean; bodies?: Record<nu
     }
     if (text.includes('SELECT feature_id')) {
       if (opts.failSelect) throw new Error('relation "harness_shared.work_items" does not exist');
-      const [ws, probeJson, states, limit] = values as [string, string, string[], number];
+      const [ws, probeJson, states, hasCursor, harness, id, limit] =
+        values as [string, string, string[], string | null, string, string, number];
       const probe = JSON.parse(probeJson) as Record<string, unknown>[];
-      return items
+      const candidates = items
         .filter((i) => ws === WS)
         .filter((i) => {
           const declared = (i.payload._assumptions as { declared?: unknown } | undefined)?.declared;
           return Array.isArray(declared) && contains(declared, probe) && states.includes(i.status);
         })
-        .slice(0, limit)
+        .filter(i => hasCursor === null || (i.harness_slug ?? '') > harness ||
+          ((i.harness_slug ?? '') === harness && i.feature_id > id))
+        .sort((left, right) => (left.harness_slug ?? '').localeCompare(right.harness_slug ?? '') ||
+          left.feature_id.localeCompare(right.feature_id));
+      return candidates.slice(0, limit)
         .map((i) => ({
+          candidate_count: candidates.length,
           feature_id: i.feature_id,
           harness_slug: i.harness_slug,
           title: i.title,
@@ -209,6 +217,56 @@ describe('flag construction and merge', () => {
 });
 
 describe('cascadeFactChange', () => {
+  it('distinguishes scanned candidates, eligible matches and outstanding cascade work', async () => {
+    const distractors = Array.from({ length: 500 }, (_, i) =>
+      item(String(i).padStart(3, '0'), [citation({ scopeRef: 'other' })]));
+    const final = item('last', [citation()]);
+    const { sql } = fakeSql([final, ...distractors.reverse()]);
+    const first = await flagMatchingItems(sql, retraction(), { now: NOW });
+    expect(first).toMatchObject({ scanned: 500, matched: 0, remaining: 1, truncated: true });
+    const second = await flagMatchingItems(sql, retraction(), { now: NOW }, first.cursor);
+    expect(second).toMatchObject({ scanned: 1, matched: 1, remaining: 0, truncated: false });
+    expect(second.flagged.map(row => row.id)).toEqual(['last']);
+  });
+
+  it('flags a weakened supporting input without reopening unrelated completions', async () => {
+    const before = captureFactSupport({ confidence: 'verified', source_ref: 'wi:original' });
+    const after = captureFactSupport({ confidence: 'suspected', source_ref: 'wi:original' });
+    const items = [
+      item('WI-1', [citation({ confidence: 'verified' })]),
+      item('WI-2', [citation({ confidence: 'suspected' })]),
+      item('WI-3', [citation({ supportHashes: before.supportHashes })]),
+    ];
+    const { sql } = fakeSql(items);
+    const result = await cascadeFactChange(sql, supersession({ comparison: { before, after, bodyChanged: false } }), { now: NOW });
+    expect(result.flagged.map(i => i.id)).toEqual(['WI-1']);
+    expect(items.map(i => i.status)).toEqual(['done', 'done', 'done']);
+  });
+
+  it('deduplicates retraction notices without rewriting historical judgments', async () => {
+    const dependency = { cell: 'build.current', observedAt: '2026-01-01T00:00:00Z', digest: 'a1' };
+    const fromSource = captureFactSupport({ source_ref: 'wi:original' });
+    const fromDependency = captureFactSupport({ depends_on: [dependency] });
+    const before = captureFactSupport({ source_ref: 'wi:original', depends_on: [dependency] });
+    const observe = (after: typeof before) => supersession({ comparison: { before, after, bodyChanged: false } });
+    const a = citation({ supportHashes: fromSource.supportHashes });
+    const b = citation({ supportHashes: fromDependency.supportHashes });
+    expect(citesChangedFact(a, observe(fromDependency))).toBe(true);
+    expect(citesChangedFact(b, observe(fromDependency))).toBe(false);
+    expect(citesChangedFact(a, observe(fromSource))).toBe(false);
+    expect(citesChangedFact(b, observe(fromSource))).toBe(true);
+    expect(citesChangedFact(b, observe(captureFactSupport({ depends_on: [{ ...dependency, observedAt: 'later' }] })))).toBe(false);
+    const original = [a];
+    const rows = [item('WI-1', original)];
+    const { sql } = fakeSql(rows);
+    await cascadeFactChange(sql, observe(fromDependency), { now: NOW });
+    const replay = await cascadeFactChange(sql, observe(fromDependency), { now: NOW });
+    expect(replay.notified).toEqual([]);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(rows[0].payload._assumptions).toMatchObject({ declared: original });
+    expect(readAssumptionFlags(rows[0].payload)).toHaveLength(1);
+  });
+
   it('flags EVERY closed item citing a retracted fact, naming the fact and reason', async () => {
     const items = [
       item('WI-1', [citation()]),

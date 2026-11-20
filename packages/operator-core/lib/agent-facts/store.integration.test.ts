@@ -37,7 +37,8 @@ vi.mock('./notify-evicted', () => ({
 // is covered by retraction-cascade.test.ts — record the store's calls instead, so
 // this suite still pins that the hooks fire with the right fact identity.
 const cascadeCalls = vi.hoisted(() => [] as Array<Record<string, unknown>>);
-vi.mock('./retraction-cascade', () => ({
+vi.mock('./retraction-cascade', async original => ({
+  ...await original<typeof import('./retraction-cascade')>(),
   cascadeFactChange: async (_sql: unknown, e: Record<string, unknown>) => {
     cascadeCalls.push(e);
     return { ok: true, kind: e.kind, factRef: '', matched: 0, flagged: [], notified: [], failedRecipients: [], unnotifiable: [], truncated: false };

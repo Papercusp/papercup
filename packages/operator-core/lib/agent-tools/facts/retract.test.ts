@@ -39,6 +39,7 @@ describe('facts:retract audit metadata', () => {
       key: 'stale',
       retractedBy: 'su-retractor',
       reason: 'new evidence disproved it',
+      onCascade: expect.any(Function),
     });
   });
 
@@ -57,6 +58,7 @@ describe('facts:retract audit metadata', () => {
       key: 'release-trace-c89b17b1-20260812',
       retractedBy: 'su-retractor',
       reason: 'release trace is stale',
+      onCascade: expect.any(Function),
     });
   });
 

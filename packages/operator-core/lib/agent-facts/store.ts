@@ -37,6 +37,8 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
+import { hasFactCascadeProgress, readFactCascade, resumeFactCascade, type FactCascadeProgress,
+  type FactChangeRef } from './cascade-progress';
 import { SEALED_FIELD_STUB, sealSharedTextInTxOrRefuse } from '../personal-vault/shared-store-seal';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
 // never re-declared — cell-contract.ts declares itself the canonical home and
@@ -852,6 +854,8 @@ export function excerptEvictedBody(body: string | null | undefined): {
  * `assertFact: typeof assertFact` dependency stubs keep compiling untouched.
  */
 export type AssertFactResult = AgentFact & {
+  /** Progress on the committed original versions affected by this write. */
+  cascades?: FactCascadeProgress[];
   /**
    * CURRENT local sibling keys this write actually retired via `supersedes`.
    * Absent when none matched — missing, wrong-scope, expired-only-history, and
@@ -2126,7 +2130,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // direction, reporting FRESH because the digest it compares against was never
   // re-observed. A re-assert re-declares its dependencies or has none.
   const retractionReason = `superseded by ${key}`;
-  const rows = await sql<(AgentFactRow & { retired_keys: string[] | null })[]>`
+  const durableCascade = await hasFactCascadeProgress(sql);
+  const rows = await sql<(AgentFactRow & { retired_keys: string[] | null; changes?: FactChangeRef[] })[]>`
     WITH superseded AS (
       UPDATE harness_shared.agent_facts
          SET superseded_at = now()
@@ -2134,7 +2139,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
          AND coalesce(scope_ref, '') = ${ref ?? ''} AND key = ${key}
          AND source_hive IS NULL
          AND superseded_at IS NULL
-      RETURNING id, harness_slug
+      RETURNING id, harness_slug, body, confidence, source_ref, source_provenance, depends_on
     ), inserted AS (
       INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
@@ -2175,9 +2180,24 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
          AND source_hive IS NULL
          AND superseded_at IS NULL
          AND retracted_at IS NULL
-      RETURNING key
-    )
+      RETURNING key, id
+    ) ${durableCascade ? sql`, queued AS (
+      INSERT INTO harness_shared.fact_change_cascades
+        (workspace_id, version_id, kind, scope, scope_ref, fact_key, successor_id, actor, reason)
+      SELECT ${ws}, s.id, 'superseded', i.scope, coalesce(i.scope_ref,''), i.key, i.id, i.created_by,
+             'superseded by version ' || i.id::text
+        FROM superseded s CROSS JOIN inserted i
+       WHERE (s.body, s.confidence, s.source_ref, s.source_provenance, s.depends_on)
+             IS DISTINCT FROM (i.body, i.confidence, i.source_ref, i.source_provenance, i.depends_on)
+      UNION ALL
+      SELECT ${ws}, r.id, 'retracted', i.scope, coalesce(i.scope_ref,''), r.key, NULL::bigint,
+             i.created_by, ${retractionReason} FROM retired r CROSS JOIN inserted i
+      RETURNING kind, scope, scope_ref, fact_key, version_id
+    )` : sql``}
     SELECT inserted.*,
+           ${durableCascade ? sql`(SELECT coalesce(jsonb_agg(jsonb_build_object(
+             'kind', kind, 'scope', scope, 'scopeRef', nullif(scope_ref,''), 'key', fact_key, 'versionId', version_id::text)
+             ORDER BY version_id, kind), '[]'::jsonb) FROM queued)` : sql`'[]'::jsonb`} AS changes,
            COALESCE((SELECT array_agg(key ORDER BY key) FROM retired), ARRAY[]::text[]) AS retired_keys
       FROM inserted`;
   // Cap enforcement — evict the LOWEST-RANKED live incumbents past the cap for
@@ -2572,7 +2592,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // work item whose completion assumptions pinned that version; keys this write
   // retired are retractions of their own. A re-assert of an unchanged body is a
   // refresh, not a supersession (see retraction-cascade.ts). Never throws.
-  await cascadeAssertSupersession(sql, {
+  if (durableCascade) {
+    const cascades: FactCascadeProgress[] = [];
+    for (const change of row.changes ?? []) cascades.push(await advanceFactChange(sql, ws, change));
+    if (cascades.length) fact.cascades = cascades;
+  } else await cascadeAssertSupersession(sql, {
     workspaceId: ws,
     scope: input.scope,
     scopeRef: ref,
@@ -2584,6 +2608,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     by: input.createdBy ?? null,
   });
   return fact;
+}
+
+async function advanceFactChange(sql: Sql, ws: string, ref: FactChangeRef): Promise<FactCascadeProgress> {
+  const failure = await resumeFactCascade(sql, { ws, ref });
+  return failure ?? await readFactCascade(sql, ws, ref);
 }
 
 async function cascadeAssertSupersession(
@@ -2646,6 +2675,7 @@ export async function retractFact(
     workspaceId?: string;
     retractedBy?: string;
     reason?: string;
+    onCascade?: (progress: FactCascadeProgress) => void;
   },
   inject?: Sql,
 ): Promise<boolean> {
@@ -2663,16 +2693,30 @@ export async function retractFact(
   // P-008 (a): retract the CURRENT version. A retraction is a state change on
   // the live value, not a new version — it does not fork the chain, and the
   // superseded tail must stay untouched or history would be rewritten by it.
+  const durableCascade = await hasFactCascadeProgress(sql);
   const rows = await sql<{ key: string; id: string | number }[]>`
-    UPDATE harness_shared.agent_facts
+    WITH retracted AS (UPDATE harness_shared.agent_facts
        SET retracted_at = now(), retracted_by = ${retractedBy}, retraction_reason = ${reason}
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${args.key.trim()}
        AND source_hive IS NULL
        AND superseded_at IS NULL
        AND retracted_at IS NULL
-    RETURNING key, id`;
+    RETURNING key, id)
+    ${durableCascade ? sql`, queued AS (
+      INSERT INTO harness_shared.fact_change_cascades
+        (workspace_id, version_id, kind, scope, scope_ref, fact_key, actor, reason)
+      SELECT ${ws}, id, 'retracted', ${args.scope}, ${ref}, key, ${retractedBy}, ${reason}
+        FROM retracted
+    )` : sql``}
+    SELECT key, id::text AS id FROM retracted`;
   if (rows.length === 0) return false;
+  if (durableCascade) {
+    const progress = await advanceFactChange(sql, ws, { scope: args.scope, scopeRef: ref || null, key: rows[0].key,
+      kind: 'retracted', versionId: String(rows[0].id) });
+    args.onCascade?.(progress);
+    return true;
+  }
   // P-003 (R-3): flag every closed work item whose completion assumptions cited
   // this fact, and tell its terminal owner. Awaited (deterministic delivery) and
   // never throws — a cascade failure cannot fail the retraction it follows.
@@ -4060,6 +4104,8 @@ export async function supersededVersionsForKeys(
  *  retracted > 30d ago — keeps the audit trail bounded. Fail-soft at call site. */
 export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
   const sql = sqlOf(inject);
+  const durableCascade = await hasFactCascadeProgress(sql);
+  if (durableCascade) await resumeFactCascade(sql);
   const rows = await sql<{ key: string }[]>`
     DELETE FROM harness_shared.agent_facts
      WHERE (expires_at < now() - interval '30 days'
@@ -4074,6 +4120,9 @@ export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
        -- newer version retires the blocker and allows history cleanup.
        AND NOT (key LIKE ${`${WALL_KEY_PREFIX}%`}
                 AND retracted_at IS NULL AND superseded_at IS NULL)
+       ${durableCascade ? sql`AND NOT EXISTS (SELECT FROM harness_shared.fact_change_cascades g
+           WHERE g.workspace_id = agent_facts.workspace_id AND g.completed_at IS NULL
+             AND (g.version_id = agent_facts.id OR g.successor_id = agent_facts.id))` : sql``}
     RETURNING key`;
   return rows.length;
 }

@@ -4,6 +4,7 @@
  * A stale fact delivered verbatim is worse than no fact — retract promptly.
  */
 import { z } from 'zod';
+import { factCascadeHistoryRef, type FactCascadeProgress } from '../../agent-facts/cascade-progress';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { retractFact, findFactKeyElsewhere, findFactKeyMatches, findFactKeyState, FACT_SCOPES } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias, foldScopeRefAliases } from './scope-ctx';
@@ -81,14 +82,16 @@ export default defineTool({
     // harness = this harness, role = my role) so a fact asserted self-scoped
     // without a ref can be retracted the same way — symmetry with facts:assert.
     const scopeRef = await resolveScopeRefFromCtx(scope, scopeRefInput, ctx);
+    let cascade: FactCascadeProgress | undefined;
     const retracted = await retractFact({
       scope,
       scopeRef: scopeRef ?? null,
       key: args.key,
       retractedBy: identity.ownerId,
       reason: args.reason,
+      onCascade: progress => { cascade = progress; },
     });
-    if (retracted) return { data: { ok: true, retracted } };
+    if (retracted) return { data: { ok: true, retracted, ...(cascade ? { cascade } : {}) } };
 
     // EI-19328780288425209: a miss here is ambiguous — "never existed" vs "exists at a
     // DIFFERENT scope" — and the latter left a wrong fact live and believed-retracted for
@@ -109,6 +112,8 @@ export default defineTool({
           ok: true,
           retracted: false,
           reason: state === 'already-retracted' || state === 'already-superseded' ? state : 'not-found',
+          ...(state === 'already-retracted' || state === 'already-superseded'
+            ? { cascadeHistory: factCascadeHistoryRef(scope, scopeRef ?? null, args.key) } : {}),
         },
       };
     }

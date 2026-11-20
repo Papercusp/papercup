@@ -6,6 +6,9 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { InvalidInputError } from '@papercusp/tooldef';
+import { getOrgPg } from '@papercusp/db-org';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { factCascadeHistoryRef, readFactCascade, readFactCascadeHistory, readFactCascadeItems } from '../../agent-facts/cascade-progress';
 import {
   listFactsPage,
   countLiveFacts,
@@ -28,6 +31,10 @@ import {
   OPERATIVE_CLAUSE_CHARS_DEFAULT,
   OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT,
 } from '../../operative-clause';
+
+const cascadeVersion = z.string().regex(/^[1-9][0-9]*$/).refine(id => id.length < 19 ||
+  (id.length === 19 && id <= '9223372036854775807'), 'Expected a positive PostgreSQL bigint version ID');
+const cascadeIdentity = z.object({ kind: z.enum(['retracted', 'superseded']), versionId: cascadeVersion });
 
 /**
  * Keep the default projection honest about typed source anchors that failed
@@ -353,6 +360,12 @@ export default defineTool({
         `Widen one page to ${FACTS_LIST_ALL_LIMIT} rows, not a guarantee of completeness. Check truncatedByLimit/total and follow nextCursor until null. Orthogonal to full:true.`,
       ),
     cursor: z.string().optional().describe('Opaque nextCursor from a previous page of this scope. Omit to restart a live identity-ordered scan.'),
+    cascadeHistory: z.union([z.literal(true), cascadeIdentity.strict()]).optional()
+      .describe('Recover the original fact-change generations for this exact key, using the returned cursor for later pages.'),
+    cascade: cascadeIdentity.extend({
+      items: z.boolean().optional(),
+      after: z.object({ harness: z.string(), item: z.string() }).optional(),
+    }).strict().optional().describe('Original generation from the fact writer. Request items to page your own affected work items.'),
     key: z
       .string()
       .max(200)
@@ -390,6 +403,26 @@ export default defineTool({
     // projection, same aliases; a second tool would be a bespoke state-read
     // surface for a question this one already answers ("what does this fact
     // say"), just along the time axis.
+    if (args.cascade || args.cascadeHistory) {
+      const key = args.key?.trim();
+      if (!key) throw new InvalidInputError('A cascade read requires the original fact key');
+      const { resolveAgentIdentity } = await import('../coordination/identity');
+      const caller = resolveAgentIdentity(ctx);
+      const ws = resolveConcreteWorkspaceId(caller.workspaceId);
+      const sql = getOrgPg().sql;
+      if (args.cascadeHistory) {
+        if (args.cascade) throw new InvalidInputError('Choose a generation or its history');
+        const history = await readFactCascadeHistory(sql, ws, args.scope, scopeRef ?? null, key,
+          args.cascadeHistory === true ? undefined : args.cascadeHistory);
+        return { data: { ok: true, mode: 'cascade-history', history } };
+      }
+      if (!args.cascade) throw new InvalidInputError('Expected a cascade generation');
+      const ref = { scope: args.scope, scopeRef: scopeRef ?? null, key, kind: args.cascade.kind, versionId: args.cascade.versionId };
+      const progress = await readFactCascade(sql, ws, ref);
+      const delivery = args.cascade.items && progress.state !== 'unknown'
+        ? await readFactCascadeItems(sql, ws, ref, caller.ownerId, args.cascade.after) : undefined;
+      return { data: { ok: true, mode: 'cascade', progress, ...(delivery ? { delivery } : {}) } };
+    }
     if (args.versions === true) {
       const key = (args.key ?? '').trim();
       if (!key) {
@@ -412,6 +445,7 @@ export default defineTool({
         data: {
           ok: true,
           mode: 'versions',
+          cascadeHistory: factCascadeHistoryRef(args.scope, scopeRef ?? null, key),
           key,
           count: versions.length,
           ...(limitDisclosure ?? {}),

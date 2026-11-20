@@ -56,6 +56,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { captureFactSupport } from './retraction-cascade';
 import {
   FACT_CONFIDENCE_LEVELS,
   FACT_KINDS,
@@ -64,9 +65,11 @@ import {
   isAssumptionFact,
   WALL_KEY_PREFIX,
   type FactConfidence,
+  type FactDependency,
   type FactKind,
   type FactScope,
   type FactSelector,
+  type FactSourceProvenance,
 } from './store';
 
 function parseKindColumn(raw: string | null): FactKind | null {
@@ -210,6 +213,8 @@ export interface ResolvedAssumption {
    *  assumption test {@link isAssumptionFact} uses (`kind` absent, confidence
    *  `'suspected'`) — see `isAssumption` below. */
   confidence: FactConfidence | null;
+  /** Source and dependency evidence recorded on this close. Older closes omit it. */
+  supportHashes?: string[];
   /**
    * Was this citation actually an ASSUMPTION (the unverified premise the field
    * exists to capture), per {@link isAssumptionFact}? `null` when there is no
@@ -291,6 +296,9 @@ interface RawRow {
   expired: boolean;
   kind: string | null;
   confidence: string | null;
+  source_ref?: string | null;
+  source_provenance?: FactSourceProvenance | null;
+  depends_on?: FactDependency[] | null;
 }
 
 function excerptOf(body: string): string {
@@ -353,7 +361,7 @@ export async function resolveAssumptions(
              retracted_at::text AS retracted_at,
              superseded_at::text AS superseded_at,
              (expires_at <= now()) AS expired,
-             kind, confidence
+             kind, confidence, source_ref, source_provenance, depends_on
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws}
          AND source_hive IS NULL
@@ -441,10 +449,12 @@ function malformedOrDangling(declared: string, parsed: ParsedAssumptionRef | nul
 /** Build the `kind`/`confidence`/`isAssumption` triple for a resolved row — the
  *  one place that reads {@link isAssumptionFact}, so every construction site below
  *  agrees with the ledger's canonical predicate. */
-function assumptionFieldsOf(row: RawRow): Pick<ResolvedAssumption, 'kind' | 'confidence' | 'isAssumption'> {
+function assumptionFieldsOf(row: RawRow): Pick<ResolvedAssumption, 'kind' | 'confidence' | 'isAssumption' | 'supportHashes'> {
   const kind = parseKindColumn(row.kind);
   const confidence = parseConfidenceColumn(row.confidence);
-  return { kind, confidence, isAssumption: isAssumptionFact({ kind, confidence }) };
+  const { supportHashes } = captureFactSupport(row);
+  return { kind, confidence, isAssumption: isAssumptionFact({ kind, confidence }),
+    ...(supportHashes.length ? { supportHashes } : {}) };
 }
 
 function conditionOfRow(r: RawRow): AssumptionCondition {

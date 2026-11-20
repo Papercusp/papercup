@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { InvalidInputError } from '@papercusp/tooldef';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
+import { factCascadeHistoryRef } from '../../agent-facts/cascade-progress';
 import {
   assertFact,
   resolveFactScopeRef,
@@ -1439,7 +1440,7 @@ export default defineTool({
     //
     // Stripped off the nested `fact` so the wire shape of a fact stays exactly an
     // AgentFact: the eviction report is a property of the WRITE, not of the fact.
-    const { evicted: evictedFacts, survival, retiredKeys, ...factForWire } = fact;
+    const { evicted: evictedFacts, survival, retiredKeys, cascades, ...factForWire } = fact;
     return {
       content: [
         {
@@ -1447,6 +1448,9 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             fact: factForWire,
+            ...(cascades?.length ? { cascades } : {}),
+            ...(fact.supersedesId != null || args.supersedes?.length ? { cascadeHistory:
+              [...new Set([fact.key, ...(args.supersedes ?? [])])].map(key => factCascadeHistoryRef(fact.scope, fact.scopeRef, key)) } : {}),
             ...(retiredKeys?.length
               ? {
                   retired: {
