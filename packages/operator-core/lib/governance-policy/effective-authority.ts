@@ -282,7 +282,7 @@ export function evaluateEffectivePermission(
   }
   return decidingAuthority
     ? { allowed: false, code: 'denied', request: trustedRequest, revisions, trace, decidingAuthority,
-      liftsWhen: 'Retry with a request permitted by every required authority, or have the authorized policy owner change the denying policy; the host must load the current policy and context revisions.' }
+      liftsWhen: 'Retry with a request permitted by every required authority, or ask the authorized policy owner to change the denying policy; the host must load the current policy and context revisions.' }
     : { allowed: true, code: 'allowed', request: trustedRequest, revisions, trace };
 }
 
