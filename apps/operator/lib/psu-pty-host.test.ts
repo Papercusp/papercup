@@ -642,6 +642,7 @@ const {
   mcpDialogShowsServerDetail,
   headlessRoleMcpVerifyWorstCaseMs,
   headlessRoleMcpKickoffBudgetMs,
+  headlessRoleMcpPaintBudgetMs,
   unreportedKickoffRefusalStrandsHost,
   terminalKickoffQuotaRefusalEndsHost,
 } = host;
@@ -6576,6 +6577,19 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
         ok: false, step: 'await-connected', detail: 'still unavailable',
       }));
       expect(unavailable).toMatchObject({ ok: false, attempts: 2 });
+    });
+
+    it('gives a fresh role catalog the unused kickoff budget without starving its retry', async () => {
+      const now = 1_000_000;
+      const deadline = now + headlessRoleMcpKickoffBudgetMs();
+      const first = headlessRoleMcpPaintBudgetMs({ deadline, now, attempt: 0, attempts: 2 });
+      const second = headlessRoleMcpPaintBudgetMs({ deadline, now: deadline - 35_000, attempt: 1, attempts: 2 });
+
+      expect(first).toBeGreaterThan(20_000);
+      expect(first).toBeLessThan(deadline - now);
+      expect(second).toBeGreaterThan(0);
+      expect(second).toBeLessThan(8_000);
+      expect(headlessRoleMcpPaintBudgetMs({ deadline, now: deadline, attempt: 1, attempts: 2 })).toBe(0);
     });
   });
 

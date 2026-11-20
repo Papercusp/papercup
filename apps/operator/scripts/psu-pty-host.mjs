@@ -9736,6 +9736,36 @@ export function headlessRoleMcpVerifyWorstCaseMs() {
     mcpReconnectMacroWorstCaseMs({ maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS });
 }
 
+/** Allocate the launch-kickoff deadline to the current MCP dialog attempt.
+ *
+ * The generic 8s paint wait is appropriate for an already-running interactive
+ * session, but a fresh headless Claude process can still be loading its MCP
+ * catalog when `/mcp` is submitted. Two fixed 8s waits used to declare the
+ * server unavailable and terminate the child even when Claude printed its
+ * successful reconnect a few seconds later (EI-28879489449911573). Spend the
+ * otherwise-idle kickoff budget on the first paint while reserving the complete
+ * non-paint worst case and the ordinary paint wait for every later attempt.
+ * Recompute on every attempt so an early first failure gives the retry the
+ * unused time; never extend the parent deadline.
+ */
+export function headlessRoleMcpPaintBudgetMs({
+  deadline,
+  now = Date.now(),
+  attempt = 0,
+  attempts = HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS,
+}) {
+  const remainingAttempts = Math.max(1, attempts - attempt);
+  const nonPaintWorstCase = mcpReconnectMacroWorstCaseMs({
+    maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
+    paintBudgetMs: 0,
+  });
+  const laterPaintReserve = Math.max(0, remainingAttempts - 1) *
+    MCP_RECONNECT_MACRO_DEFAULTS.paintBudgetMs;
+  return Math.max(0, Math.floor(
+    Number(deadline) - Number(now) - remainingAttempts * nonPaintWorstCase - laterPaintReserve,
+  ));
+}
+
 /**
  * Bound the fresh headless role kickoff long enough for its required MCP
  * reconnect and the prompt to settle afterward. The ordinary Claude startup
@@ -14245,12 +14275,13 @@ export function hostThroughPty(o) {
             if (!requireRoleMcp) return { ok: true };
             const tap = makeOutputTap();
             try {
-              const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
+              const result = await verifyHeadlessRoleMcp((attempt, attempts) => runMcpReconnectMacro({
                 serverName: 'papercusp',
                 write: (bytes) => kickoffChild.write(bytes),
                 readTap: tap.read,
                 resetTap: tap.reset,
                 maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
+                paintBudgetMs: headlessRoleMcpPaintBudgetMs({ deadline, attempt, attempts }),
               }), HEADLESS_ROLE_MCP_VERIFY_ATTEMPTS);
               appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
                 step: result.step,
