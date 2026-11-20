@@ -10,9 +10,9 @@
  * TARGETS entry (bench admission lane, space-aware re-embed on mode flips).
  *
  * Change detection: page_sha = sha256(title\0body) stamped on every section
- * row of a page. Unchanged page ⇒ no PG writes at all; changed page ⇒ its
- * section rows are replaced (DELETE + INSERT with embedding NULL — the sweep
- * re-embeds within one tick). Sections are split on heading depth 1–3
+ * row of a page. A changed page publishes its ordered sections together and
+ * retains vectors for exact inputs in the same page and active embedding space.
+ * The sweep embeds the remaining inputs. Sections are split on heading depth 1–3
  * (fence-aware: a `# line` inside a code block never splits), so an
  * agent-insights runbook lands as several focused vectors instead of one
  * 20k-char soup. A section still longer than the per-row cap is CHUNKED across
@@ -52,6 +52,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { splitMarkdown, type MarkdownSplitOptions } from '@papercusp/search';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import type { HarnessRegistry } from '../harness-registry';
+import { resolveActiveProseSpace, type ActiveProseSpace } from './doc-vector-seed';
 
 /** Per-ROW text cap — mirrors the 2k-char embed-input convention
  *  (session_turns / work_items bodySql `left(…, 2000)`). A section longer than
@@ -176,13 +177,50 @@ async function upsertPageSections(
   page: { slug: string; title: string; url: string },
   body: string,
   knownSha?: string,
+  resolveSpace: () => Promise<ActiveProseSpace | null> = resolveActiveProseSpace,
 ): Promise<number | null> {
   const sha = pageSha(page.title, body);
   if (knownSha === sha) return null;
   const sections = splitDocSections(page.title, body);
-  // One page replacement is atomic. Complete bodies may exceed PG's bind
-  // parameter limit, so insert bounded batches inside the same transaction.
+  // Some installations only have the text columns. Keep the same lexical
+  // publication path there and resolve the model only for an existing page.
+  const [prior] = await sql.unsafe<Array<{ page_sha: string | null; vector_ready: boolean }>>(
+    `SELECT CASE WHEN min(page_sha) = max(page_sha) THEN min(page_sha) END AS page_sha,
+            count(*) > 0 AND (SELECT count(*) = 3 FROM pg_attribute
+              WHERE attrelid = 'harness_shared.doc_sections'::regclass AND NOT attisdropped
+                AND attname IN ('embedding','embedding_mode','embedding_profile')) AS vector_ready
+       FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [sourceKey, page.slug]);
+  if (prior?.page_sha === sha) return null;
+  const space = prior?.vector_ready ? await resolveSpace() : null;
   await sql.begin(async tx => {
+    await tx.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      [JSON.stringify(['doc_sections', sourceKey, page.slug])]);
+    if (space) {
+      // DELETE RETURNING supplies the original tuples to the same statement
+      // that publishes the replacement. Vectors stay in PG. Array parameters
+      // carry the complete manifest without a bind parameter per section.
+      await tx.unsafe(`
+        WITH previous AS (
+          DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2
+          RETURNING anchor, title, content, embedding, embedding_mode, embedding_profile
+        ), reusable AS (
+          SELECT DISTINCT ON (title COLLATE "C", content COLLATE "C")
+                 title, content, embedding, embedding_mode, embedding_profile
+            FROM previous
+           WHERE embedding IS NOT NULL AND embedding_mode = $8
+             AND (embedding_profile = $9 OR (embedding_profile IS NULL AND embedding_mode = $10))
+           ORDER BY title COLLATE "C", content COLLATE "C", anchor COLLATE "C"
+        )
+        INSERT INTO harness_shared.doc_sections
+          (source_key, slug, anchor, title, url, content, page_sha, section_idx, embedding, embedding_mode, embedding_profile)
+        SELECT $1, $2, s.anchor, s.title, $3, s.content, $4, s.ordinal - 1,
+               r.embedding, r.embedding_mode, r.embedding_profile
+          FROM unnest($5::text[], $6::text[], $7::text[]) WITH ORDINALITY AS s(anchor,title,content,ordinal)
+          LEFT JOIN reusable r ON r.title COLLATE "C" = s.title AND r.content COLLATE "C" = s.content`,
+      [sourceKey, page.slug, page.url, sha, sections.map(s => s.anchor), sections.map(s => s.title),
+        sections.map(s => s.content), space.mode, space.selection.profileId, space.selection.legacyMode]);
+      return;
+    }
     await tx.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [sourceKey,page.slug]);
     for (let offset = 0; offset < sections.length; offset += 1_000) {
       const params: Array<string | number> = [];
@@ -192,8 +230,7 @@ async function upsertPageSections(
         return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8})`;
       }).join(', ');
       await tx.unsafe(`INSERT INTO harness_shared.doc_sections
-        (source_key,slug,anchor,title,url,content,page_sha,section_idx) VALUES ${values}
-        ON CONFLICT (source_key,slug,anchor) DO NOTHING`,params);
+        (source_key,slug,anchor,title,url,content,page_sha,section_idx) VALUES ${values}`,params);
     }
   });
   return sections.length;
@@ -232,12 +269,13 @@ export async function refreshDocPageSectionsWithSql(
   sql: Sql,
   source: DocSource,
   slug: string,
+  resolveSpace?: () => Promise<ActiveProseSpace | null>,
 ): Promise<DocPageRefresh> {
   try {
     const page = await source.getPage(slug);
     if (!page) return { ok: false, reason: `page_not_found:${slug}` };
     const body = await source.getContent(page);
-    const written = await upsertPageSections(sql, source.name, page, body);
+    const written = await upsertPageSections(sql, source.name, page, body, undefined, resolveSpace);
     return { ok: true, sections: written ?? 0, unchanged: written === null };
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
@@ -257,7 +295,7 @@ export async function refreshDocPageSections(source: DocSource, slug: string): P
 export async function syncDocSourceSections(
   sql: Sql,
   source: DocSource,
-  opts: { prune?: boolean } = {},
+  opts: { prune?: boolean; resolveSpace?: () => Promise<ActiveProseSpace | null> } = {},
 ): Promise<DocSyncStats> {
   const stats: DocSyncStats = { source: source.name, pages: 0, changed: 0, sections: 0, pruned: 0, errors: 0 };
   const pages = await source.listPages();
@@ -268,6 +306,8 @@ export async function syncDocSourceSections(
     [source.name],
   );
   const existing = new Map(existingRows.map((r) => [r.slug, r.page_sha]));
+  let space: Promise<ActiveProseSpace | null> | undefined;
+  const resolveSpace = () => space ??= (opts.resolveSpace ?? resolveActiveProseSpace)();
 
   // WI-2146645: a cold engineering adapter renders 600+ MDX pages here. Most
   // pages are SHA-identical, so their async getContent/upsert continuations
@@ -280,7 +320,7 @@ export async function syncDocSourceSections(
   for (const page of pages) {
     try {
       const body = await source.getContent(page);
-      const written = await upsertPageSections(sql, source.name, page, body, existing.get(page.slug));
+      const written = await upsertPageSections(sql, source.name, page, body, existing.get(page.slug), resolveSpace);
       if (written !== null) {
         stats.sections += written;
         stats.changed += 1;

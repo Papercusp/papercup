@@ -697,7 +697,8 @@ export const TARGETS: SweepTarget[] = [
     table: 'harness_shared.doc_sections',
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
-    keyCols: ['source_key', 'slug', 'anchor'],
+    // A model request can finish after the page has been replaced at the same anchor.
+    keyCols: ['source_key', 'slug', 'anchor', 'page_sha'],
     // No index on updated_at, but the table is ~6.4k rows — the sort is trivial.
     orderBySql: 'updated_at DESC',
     // doc_sections carries no created_at; rows are sha-keyed and re-synced, so

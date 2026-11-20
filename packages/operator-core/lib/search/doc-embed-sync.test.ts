@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { DocSource, DocPage } from '@papercusp/docs-engine';
+import { resolveCurrentProseProfileSelection } from './prose-vector-dims';
 import {
   splitDocSections,
   pageSha,
@@ -102,6 +103,61 @@ describe('splitDocSections', () => {
 });
 
 describe('syncDocSourceSections', () => {
+  function indexedPageSql() {
+    const calls: Array<{ q: string; params: unknown[] }> = [];
+    let interrupt = false;
+    const sql = {
+      begin: async (fn: (tx: unknown) => Promise<unknown>) => fn(sql),
+      unsafe: async (q: string, params: unknown[] = []) => {
+        calls.push({ q, params });
+        if (q.includes('AS vector_ready')) return [{ page_sha: 'previous', vector_ready: true }];
+        if (interrupt && q.includes('WITH previous AS')) throw new Error('interrupted section publication');
+        return [];
+      },
+    };
+    return { sql: sql as unknown as Sql, publications: () => calls.filter(c => c.q.includes('WITH previous AS')),
+      interrupt: (value: boolean) => { interrupt = value; } };
+  }
+  const active = async () => ({ mode: 'gemma', selection: resolveCurrentProseProfileSelection('gemma')! });
+
+  it('reuses unchanged section inputs across a page amendment', async () => {
+    const db = indexedPageSql();
+    const body = '## One\nFirst retained input.\n\n## Two\nSecond changed input.';
+    const src = fakeSource([{ page: page('guide', 'Guide'), body }]);
+    expect(await refreshDocPageSectionsWithSql(db.sql, src, 'guide', active)).toMatchObject({ ok: true, sections: 2 });
+    const [write] = db.publications();
+    expect(write.params).toEqual(['test-src', 'guide', '/docs/guide', pageSha('Guide', body), ['one', 'two'],
+      ['Guide › One', 'Guide › Two'], ['First retained input.', 'Second changed input.'],
+      'gemma', (await active()).selection.profileId, (await active()).selection.legacyMode]);
+  });
+
+  it('removes deleted doc chunks and recomputes moved sections whose full model input changed', async () => {
+    const db = indexedPageSql();
+    const body = '## Two\nSame body.\n\n## One\nSecond body.';
+    const src = fakeSource([{ page: page('guide', 'Renamed'), body }], 'harness:second');
+    await refreshDocPageSectionsWithSql(db.sql, src, 'guide', active);
+    const [write] = db.publications();
+    expect(write.params.slice(0, 7)).toEqual(['harness:second', 'guide', '/docs/guide', pageSha('Renamed', body),
+      ['two', 'one'], ['Renamed › Two', 'Renamed › One'], ['Same body.', 'Second body.']]);
+    const unavailable = indexedPageSql();
+    expect(await refreshDocPageSectionsWithSql(unavailable.sql, src, 'guide', async () => null))
+      .toMatchObject({ ok: true, sections: 2 });
+    expect(unavailable.publications()).toHaveLength(0);
+  });
+
+  it('recovers an interrupted section refresh without publishing a partial manifest', async () => {
+    const db = indexedPageSql();
+    const src = fakeSource([{ page: page('guide', 'Guide'), body: '## A\nFirst.\n\n## B\nLast.' }]);
+    db.interrupt(true);
+    expect(await refreshDocPageSectionsWithSql(db.sql, src, 'guide', active))
+      .toMatchObject({ ok: false, reason: 'interrupted section publication' });
+    db.interrupt(false);
+    expect(await refreshDocPageSectionsWithSql(db.sql, src, 'guide', active)).toMatchObject({ ok: true, sections: 2 });
+    const [attempt, retry] = db.publications();
+    expect(retry.params).toEqual(attempt.params);
+    expect(retry.params[4]).toEqual(['a', 'b']);
+  });
+
   it('inserts sections for new pages and stamps the page sha', async () => {
     const { calls, sql } = fakeSql();
     const src = fakeSource([
