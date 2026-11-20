@@ -177,7 +177,7 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     // provenance can never link, so the whole suite rated falsifiability `unknown`. Both the
     // test binding and counterexampleEvidence() (which spreads this) share one file.
     testRunProvenance: { filePath: RECONNECT_TEST_PATH, framework: 'vitest', source: 'local',
-      mutationPhase: null, commitSha: 'abc123', worktreeDirty: false },
+      attribution: null, mutationPhase: null, commitSha: 'abc123', worktreeDirty: false },
     ...over,
   };
 }
@@ -198,7 +198,7 @@ function counterexampleEvidence(over: Partial<ListedEvidence> = {}): ListedEvide
     testRunExecution: { ...passingExecution(), status: 'fail', passed: 0, failed: 1,
       passedCaseTitles: [] },
     testRunProvenance: { filePath: RECONNECT_TEST_PATH, framework: 'vitest',
-      source: 'mutation-probe', mutationPhase: 'mutant', commitSha: 'abc123', worktreeDirty: false,
+      source: 'mutation-probe', attribution: null, mutationPhase: 'mutant', commitSha: 'abc123', worktreeDirty: false,
       mutationFailureLines: ['acknowledged events are not replayed: measured assertion failure'],
       mutationFailedCaseTitles: ['acknowledged events are not replayed'] },
     details: {

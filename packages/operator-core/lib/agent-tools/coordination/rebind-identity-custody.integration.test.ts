@@ -42,12 +42,12 @@ async function row(id: string) {
 }
 
 async function receipts(id: string) {
-  return sql<{ details: {
+  return [...await sql<{ details: {
     eventId: string; before: { taken_by: string | null } | null;
     after: { taken_by: string | null } | null;
   } }[]>`SELECT details FROM harness_shared.audit_log
     WHERE workspace_id = ${WS} AND subject = ${id}
-      AND action = 'work_items:custody:capture' ORDER BY ts, id`;
+      AND action = 'work_items:custody:capture' ORDER BY ts, id`];
 }
 
 function edges(rows: Awaited<ReturnType<typeof receipts>>) {

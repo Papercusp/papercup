@@ -24,6 +24,7 @@ import { listRuntimeVintage } from '../../runtime-vintage';
 import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
 import { defaultEvidenceRoot, legacyEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
+import { executionForTestRunRow } from '../../testing-run-original-reference';
 import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
 import { planItemRef } from '../../issue-blocks-merge';
 import { planItemProvenanceFromRow } from '../../plan-item-provenance';
@@ -3265,6 +3266,7 @@ interface EvidenceRow extends CurrentnessRow {
   retracted_by: string | null;
   retraction_reason: string | null;
   test_run_file_path: string | null;
+  test_run_group_id?: string | null;
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
   test_run_status?: string | null;
@@ -3363,6 +3365,7 @@ export function projectSpecCriterionApplicability(clause: SpecClauseRevision,
       testRunId: row.testRunId, observedAt: row.observedAt, state, reasons,
       recordedRun: row.testRunId == null ? null : {
         id: row.testRunId, source: row.testRunProvenance?.source ?? null,
+        attribution: row.testRunProvenance?.attribution ?? null,
         startedAt: row.testRunProvenance?.startedAt ?? null, finishedAt: row.testRunProvenance?.finishedAt ?? null,
       },
       target: subject ?? null, window,
@@ -5209,6 +5212,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
            b.retracted_at, b.retracted_by, b.retraction_reason,
            tr.file_path AS test_run_file_path,
+           tr.run_group_id AS test_run_group_id,
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
            tr.status AS test_run_status,
@@ -5890,6 +5894,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             filePath: row.test_run_file_path,
             framework: row.test_run_framework ?? null,
             source: row.test_run_source ?? null,
+            attribution: executionForTestRunRow(parsedTestRunExecution, {
+              file_path: row.test_run_file_path, run_group_id: row.test_run_group_id,
+              commit_sha: row.test_run_commit_sha, worktree_dirty: row.test_run_worktree_dirty,
+              workspace_id: scope.workspaceId, harness_slug: scope.harnessSlug,
+            })?.attribution ?? null,
             ...(row.test_run_started_at == null ? {} : { startedAt: pgTimestampToIso(row.test_run_started_at) }),
             ...(row.test_run_finished_at == null ? {} : { finishedAt: pgTimestampToIso(row.test_run_finished_at) }),
             mutationPhase: parsedTestRunExecution?.mutationPhase ?? null,

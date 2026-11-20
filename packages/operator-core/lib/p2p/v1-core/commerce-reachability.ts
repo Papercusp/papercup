@@ -87,7 +87,7 @@ export function readCommittedCommerceRoots(file: string, text: string): string[]
       const value = declaration.initializer;
       const array = value && ts.isAsExpression(value) ? value.expression : value;
       if (array && ts.isArrayLiteralExpression(array) && array.elements.length > 0 && array.elements.every(ts.isStringLiteral)) {
-        const roots = array.elements.map(element => element.text);
+        const roots = array.elements.map(element => (element as ts.StringLiteral).text);
         if (new Set(roots).size === roots.length) return roots;
       }
       throw new Error(`invalid V1_COMMERCE_ROOTS in ${file}`);

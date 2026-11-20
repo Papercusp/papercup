@@ -42,7 +42,7 @@ import { parseTestRunExecutionDetails, RECORDED_TEST_LAYERS,
   testRunExecutionDetailsReaderContract } from '@papercusp/test-config/execution-details';
 import { getServingHostIdentity } from '../../serving-host-identity';
 import { runtimeObservabilityHealth } from '../../observability/runtime';
-import { originalTestRunReference as originalResultReference } from '../../testing-run-original-reference';
+import { executionForTestRunRow, originalTestRunReference as originalResultReference } from '../../testing-run-original-reference';
 import { readConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
 import { toIso } from '../_pg-timestamp';
@@ -1140,10 +1140,7 @@ export default defineTool({
           // A valid nested digest is not a join to this original ledger row.
           // Keep every producer-stamped identity bound, including dirty/null
           // source observations; never inherit a tenant or candidate label.
-          const executionDetails = parsedDetails?.filePath === r.file_path && parsedDetails.runGroupId === r.run_group_id
-            && parsedDetails.commitSha === r.commit_sha && parsedDetails.worktreeDirty === r.worktree_dirty
-            && parsedDetails.workspaceId === r.workspace_id && parsedDetails.harnessSlug === r.harness_slug
-            ? parsedDetails : null;
+          const executionDetails = executionForTestRunRow(parsedDetails, r);
           const executionDetailsUnavailableReason = r.execution_details == null
             ? 'not-recorded' : !parsedDetails ? 'invalid-or-unsupported' : 'row-mismatch';
           const run = {

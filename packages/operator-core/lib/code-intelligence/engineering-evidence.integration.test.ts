@@ -6,6 +6,7 @@ import { getHarnessAdminUrl } from '../embedded-pg-discovery';
 import { ensureBootstrap } from '../agent-tools/locks/su-lock-store';
 import { setupPlanPgFixture } from '../agent-tools/plans/__tests__/_pg-tool-fixture';
 import { setupEngineeringEvidenceFixture } from './_engineering-evidence-fixture';
+import { listSpecEvidence } from '../agent-tools/plans/spec-evidence-store';
 // R5's canonical entrypoint also runs the existing real-PG task-context scenarios.
 import './task-brief-engineering.integration.test';
 
@@ -44,6 +45,35 @@ describe('native engineering evidence canonical PG adapters', () => {
     expect(graph.execution.status).toBe('unobserved');
     expect(JSON.stringify(graph)).not.toContain('foreign-plan');
   }, 60_000);
+  it('reads the original run observer independently of its binder and rejects mismatched reporter metadata', async () => {
+    const { db, scope, runId, bindingId, plan, harness, store, root } = state;
+    const attribution = { ownerId: 'su-original-runner', workItemId: 'WI-original-run' };
+    const details = { schemaVersion: 1, root, filePath: 'evidence-feature.integration.test.ts',
+      runGroupId: 'original-observation', workspaceId: scope.workspaceId, harnessSlug: harness,
+      commitSha: 'c'.repeat(40), worktreeDirty: false, passed: 1, failed: 0, skipped: 0,
+      testNamePattern: null, collectionFailed: false, mutationPhase: null, attribution };
+    const [prior] = await db`SELECT run_group_id, execution_details FROM harness_shared.test_runs WHERE id=${runId}`;
+    try {
+      for (const group of [details.runGroupId, 'different-observation']) {
+        await db`UPDATE harness_shared.test_runs SET run_group_id=${group}, execution_details=${db.json(details)}
+          WHERE id=${runId} AND workspace_id=${scope.workspaceId} AND harness_slug=${harness}`;
+        const expected = group === details.runGroupId ? attribution : null;
+        const graph = await readEngineeringEvidence({ item: { plan, id: 'P-001' } }, scope, store());
+        expect(graph.nodes.find(node => node.kind === 'test-run')?.data).toMatchObject({ id: runId, attribution: expected });
+        expect(graph.nodes.find(node => node.kind === 'work-item')?.data).toMatchObject({
+          links: { tool: 'work_items:links', args: { id: 'WI-ee-proof', direction: 'out', harness } },
+        });
+        const [proof] = await listSpecEvidence({ workspaceId: scope.workspaceId, harnessSlug: harness,
+          planSlugs: [plan], bindingIds: [bindingId] });
+        expect(proof).toMatchObject({ createdBy: 'su-ee-author', workItemId: 'WI-ee-proof',
+          testRunId: runId, testRunProvenance: { attribution: expected } });
+      }
+    } finally {
+      await db`UPDATE harness_shared.test_runs SET run_group_id=${prior!.run_group_id},
+        execution_details=${prior!.execution_details} WHERE id=${runId} AND workspace_id=${scope.workspaceId}`;
+    }
+  }, 60_000);
+
   it('ee.tenant-repo: refuses an unregistered root and bounds actual SQL ownership results', async () => {
     const { scope, runId, plan, harness, store, query } = state;
     await expect(readEngineeringEvidence(query, { ...scope, root: '/' }, store())).rejects.toThrow('scope_forbidden');

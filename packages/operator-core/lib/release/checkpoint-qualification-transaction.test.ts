@@ -80,7 +80,8 @@ describe('lossless qualification populations', () => {
   it.each([0, 31, 32, 33])('keeps legacy completeness unknown through writes and recovers with a fresh attempt (%i runs)', count => {
     const original = begin();
     const legacy = { ...original, consumedPhysicalRuns: Array.from({ length: count }, (_, index) => ({
-      id: `old-${index}`, candidate: original.candidate, reservedAtMs: 100, endedAtMs: 101,
+      id: `old-${index}`, candidate: original.candidate, reservedAtMs: 100,
+      leaseExpiresAtMs: 101, endedAtMs: 101,
       evidenceRefs: [`checkpoint-run:old-${index}`], outcome: { kind: 'pre-suite-no-verdict' as const,
         reason: 'dependency-generation' as const },
     })) };
@@ -105,7 +106,7 @@ describe('lossless qualification populations', () => {
     const successorInput = { attemptId: 'fresh-lossless-attempt', declaredPaths: ['last.ts'], nowMs: 220 };
     expect(beginQualificationTransaction(restarted, successorInput).status).toBe('conflict');
     const terminal = settleQualificationTransaction(restarted, {
-      attemptId: restarted.attemptId, verdict: 'red', reason: 'fresh-measurement-required', nowMs: 230,
+      attemptId: restarted.attemptId, green: false, reason: 'fresh-measurement-required', nowMs: 230,
     }).transaction;
     const fresh = beginQualificationTransaction(terminal, { ...successorInput, nowMs: 240 }).transaction;
     const freshState = projectCheckpointQualificationState(parseCheckpointQualificationTransaction(JSON.parse(JSON.stringify(fresh))));

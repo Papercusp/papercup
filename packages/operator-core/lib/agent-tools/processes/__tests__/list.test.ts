@@ -1331,7 +1331,7 @@ describe('processes:list confinement (P-023/D-111)', () => {
   it.each([false, true])('uses the same-request alternate slice observation (degraded=%s)', async (degraded) => {
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
     const path = '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-release123.service';
-    mockResolvedOnceTyped(reconcileTick, tickResult({
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult({
       degraded,
       scannedProcesses: [{ pid: 123, cgroupPath: `${path}/worker`, owned: true, scope: 'owned', processIdentity: 'linux:boot:123', cmdline: 'release', exemptReason: null }],
     }));
@@ -1349,7 +1349,7 @@ describe('processes:list confinement (P-023/D-111)', () => {
     const observedPath =
       `/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-sidecar.slice/${scopeUnit}`;
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
-    mockResolvedOnceTyped(reconcileTick, tickResult({ scannedProcesses: [{
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult({ scannedProcesses: [{
       pid: 123, cgroupPath: observedPath, owned: true, scope: 'owned', processIdentity: null, cmdline: 'residue', exemptReason: null,
     }] }));
     const [task] = await tasksFor(

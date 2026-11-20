@@ -2819,15 +2819,26 @@ export async function dispatchPendingGradingAudits(
       phase = next;
     };
     const card = pendingById.get(issueId);
-    // Readiness failure is actionable even when this host cannot admit the old
-    // evaluator. Do not hide its exact locator behind a generic drift skip.
+    // Historical preparation can throw an ordinary Error without a typed
+    // diagnostic. Preserve that reason even when drift excludes the pending card.
     const runtimeFailure = runtimeFailures.get(issueId);
-    if (runtimeFailure && (card || runtimeFailure.runtimeReadiness || runtimeFailure.sourcePreparation)) return {
-      issueId, rubricRef: card?.rubricRef ?? runtimeCandidates.find(candidate => candidate.issueId === issueId)?.rubricRef,
-      state: 'failed', reason: `exact audit endpoint unavailable: ${runtimeFailure.reason}`,
-      ...(runtimeFailure.runtimeReadiness ? { runtimeReadiness: runtimeFailure.runtimeReadiness } : {}),
-      ...(runtimeFailure.sourcePreparation ? { sourcePreparation: runtimeFailure.sourcePreparation } : {}),
-    };
+    if (runtimeFailure) {
+      // Reason-only drift failures previously reached terminal-task recovery
+      // below. Keep that cleanup without replacing the preparation error.
+      const cleanup = !card && evaluatorBuildDriftIds.has(issueId) &&
+        !runtimeFailure.runtimeReadiness && !runtimeFailure.sourcePreparation
+        ? await retireProvenTerminalAuditTasks(issueId) : null;
+      return {
+        issueId, rubricRef: card?.rubricRef ?? runtimeCandidatesById.get(issueId)?.rubricRef,
+        state: 'failed',
+        reason: [`exact audit endpoint unavailable: ${runtimeFailure.reason}`, ...(cleanup?.errors ?? [])].join('; '),
+        ...(runtimeFailure.runtimeReadiness ? { runtimeReadiness: runtimeFailure.runtimeReadiness } : {}),
+        ...(runtimeFailure.sourcePreparation ? { sourcePreparation: runtimeFailure.sourcePreparation } : {}),
+        ...(cleanup?.retiredTaskIds.length
+          ? { terminalRecovery: { retiredTaskIds: cleanup.retiredTaskIds, attempts: 0, codes: cleanup.codes } }
+          : {}),
+      };
+    }
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);

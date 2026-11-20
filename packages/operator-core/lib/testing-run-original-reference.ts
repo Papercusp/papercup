@@ -1,5 +1,18 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson } from '@papercusp/hash-chain';
+import type { TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+
+/** A valid reporter payload belongs to this ledger row only when its recorded identity agrees. */
+export function executionForTestRunRow(details: TestRunExecutionDetails | undefined, row: {
+  file_path: string | null; run_group_id: string | null | undefined;
+  commit_sha: string | null; worktree_dirty: boolean | null;
+  workspace_id: string | null; harness_slug: string | null;
+}): TestRunExecutionDetails | null {
+  if (details && details.filePath === row.file_path && details.runGroupId === row.run_group_id
+    && details.commitSha === row.commit_sha && details.worktreeDirty === row.worktree_dirty
+    && details.workspaceId === row.workspace_id && details.harnessSlug === row.harness_slug) return details;
+  return null;
+}
 
 /** Content address of a complete original outcome, before diagnostic shaping.
  * A reference identifies bytes; it grants no manifest, reset or reuse authority. */

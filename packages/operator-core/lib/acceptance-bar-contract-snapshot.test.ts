@@ -571,7 +571,8 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
     // them by testRunProvenance.filePath). The counterexamples below spread this row, so each
     // pairs with its own positive proof, as a real binding would (WI-10006871).
     evidence.testRunProvenance = { filePath: proofTestPath,
-      framework: 'vitest', source: 'local', mutationPhase: null, commitSha: 'abc123', worktreeDirty: false };
+      framework: 'vitest', source: 'local', attribution: null,
+      mutationPhase: null, commitSha: 'abc123', worktreeDirty: false };
     evidence.testRunExecution = { status: 'pass', passed: 1, failed: 0, skipped: 0,
       filePath: proofTestPath, collectionFailed: false, testLayer: 'integration', passedCaseTitles: [caseTitle] };
   });

@@ -193,6 +193,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
           failed: kind === 'test' ? 0 : 1, skipped: 0, collectionFailed: false, filePath: file },
         testRunProvenance: { filePath: file, framework: 'vitest',
           source: kind === 'test' ? 'local' : 'mutation-probe',
+          attribution: null,
           mutationPhase: kind === 'mutation' ? 'mutant' : null, mutationFailedCaseTitles: [],
           commitSha: 'e'.repeat(40), worktreeDirty: false,
           ...(kind === 'mutation' ? { mutationPhase: 'mutant', mutation,

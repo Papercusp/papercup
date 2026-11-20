@@ -283,7 +283,7 @@ describe('claim invocation identity', () => {
     // Isolate writer wiring from unrelated post-claim advisory DB reads. The
     // real-PG suite separately proves successful mutation/correlation atomicity.
     claimM.mockResolvedValue(null);
-    classifyM.mockReturnValue({ reason: 'not_found' });
+    mockReturnTyped(classifyM, { reason: 'not_found', holder: null });
     await body({ id: 'WI-correlated', assignee: 'agent-recipient' }, { dispatchCallId: 'caller-forged-id' });
     const [id, holder, options] = claimM.mock.calls[0];
     expect(id).toBe('WI-correlated');

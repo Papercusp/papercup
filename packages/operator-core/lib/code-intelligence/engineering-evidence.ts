@@ -5,6 +5,7 @@ import type { HarnessRegistry } from '../harness-registry';
 import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import type { EngineeringExecution } from '../observability/engineering-execution';
 import type { ExecutionBoundaryReceipt } from '@papercusp/test-config/execution-details';
+import type { TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 
 export const ENGINEERING_EVIDENCE_LIMITS = Object.freeze({
   nodes: 128, edges: 256, depth: 6, items: 8, specs: 16, proofs: 8, decisions: 16, cases: 20,
@@ -44,6 +45,7 @@ export interface EngineeringProof {
 export interface EngineeringRun {
   id: number; file: string; status: string; commit: string | null;
   source?: string | null; startedAt?: string | null; finishedAt?: string | null;
+  attribution?: TestRunExecutionDetails['attribution'] | null;
 }
 export interface EngineeringCase { runId: number; key: string; occurrence: number; status: string }
 export interface EngineeringEvidenceDeps {
@@ -289,7 +291,8 @@ export async function readEngineeringEvidence(
         if (proof.workItem) {
           const wref: EngineeringRef = { tool: 'work_items:get', args: { harness: scope.harness, id: proof.workItem } };
           const workNode = add({ id: id('work-item', scope.workspaceId, proof.workItem), kind: 'work-item', state: 'unknown',
-            ref: wref, data: { id: proof.workItem } });
+            ref: wref, data: { id: proof.workItem,
+              links: { tool: 'work_items:links', args: { harness: scope.harness, id: proof.workItem, direction: 'out' } } } });
           edge(workNode, owningSpec, 'work-item-coverage', state, pref);
         }
         if (state !== 'current') gap(`proof-${state}`, pref);

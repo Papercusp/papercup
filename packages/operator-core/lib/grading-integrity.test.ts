@@ -1019,7 +1019,7 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
-  it('defers a foreign evaluator build without invalidating its card or retiring its auditor', async () => {
+  it('reports a foreign runtime failure without invalidating its card or retiring its auditor', async () => {
     const d = deps();
     const issueId = 'EI-evaluator-build-drift';
     const reservation = {
@@ -1081,8 +1081,8 @@ describe('dispatchPendingGradingAudits', () => {
     expect(result.receipts).toEqual([
       expect.objectContaining({
         issueId,
-        state: 'skipped',
-        reason: expect.stringContaining('requires a dispatcher running the recorded evaluator build'),
+        state: 'failed',
+        reason: 'exact audit endpoint unavailable: No retained source',
       }),
     ]);
   });
@@ -1131,7 +1131,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
     expect(result.receipts[0]).toMatchObject({
-      issueId, state: 'skipped',
+      issueId, state: 'failed', reason: 'exact audit endpoint unavailable: No retained source',
       terminalRecovery: { retiredTaskIds: ['task-drifted-terminal-role'], codes: ['inference_gateway_error'] },
     });
   });
@@ -1179,7 +1179,9 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
-    expect(result.receipts[0]).toMatchObject({ issueId, state: 'skipped' });
+    expect(result.receipts[0]).toMatchObject({
+      issueId, state: 'failed', reason: 'exact audit endpoint unavailable: No retained source',
+    });
   });
 
   it('defers a foreign evaluator build pinned only in executable recipe args', async () => {
@@ -1775,6 +1777,44 @@ describe('dispatchPendingGradingAudits', () => {
     d.ensureRuntime.mockRejectedValue(new Error('bundle digest changed'));
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-runtime-refused'], ctx }, d);
     expect(result.receipts[0]).toMatchObject({ state: 'failed', reason: expect.stringContaining('bundle digest changed') });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'Error', error: new Error('historical source receipt unavailable') },
+    { label: 'thrown string', error: 'historical source receipt unavailable' },
+  ])('preserves an untyped historical source-preparation failure ($label)', async ({ error }) => {
+    const d = deps();
+    const issueId = 'EI-historical-source-error';
+    const evaluatorBuild = { sha: '096f80bde32', version: '0.0.0' };
+    const sourcePreparation = { exportFrom: '/canonical', sourceRoot: '/frozen',
+      receiptPath: '/original.json', outputDir: '/external-output' };
+    const target = card(issueId, {
+      rubricRef: 'spec-quality', subject: { kind: 'plan', ref: 'historical-plan' },
+      evidenceFingerprint: 'f'.repeat(64),
+      rerunRecipe: {
+        schemaVersion: 1, evaluator: 'plans:evaluate-spec-quality', evaluatorBuild,
+        specSetHashVersion: 2,
+        args: { harness: 'papercusp', slug: 'historical-plan', classRef: 'plan-class-feature-ship',
+          expectedSpecSetHash: 'a'.repeat(64), specSetHashVersion: 2, evaluatorBuild,
+          replaySnapshot: { planContentHash: 'b'.repeat(64), clausesAsOf: '2026-11-17T21:38:09.744Z' } },
+      },
+    });
+    const original = structuredClone(target);
+    d.listScorecards.mockResolvedValue([target]);
+    d.ensureRuntime.mockRejectedValueOnce(error);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx, sourcePreparation }, d);
+
+    expect(d.ensureRuntime).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      issueId, evaluatorBuild, allowSeed: false, sourcePreparation,
+    }));
+    expect(result.receipts).toEqual([expect.objectContaining({
+      issueId, rubricRef: 'spec-quality', state: 'failed',
+      reason: 'exact audit endpoint unavailable: historical source receipt unavailable',
+    })]);
+    expect(target).toEqual(original);
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
   });

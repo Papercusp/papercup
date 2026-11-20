@@ -23,7 +23,12 @@ import {
 } from './admission-jobs';
 import { ADMISSION_TEST_ENVIRONMENT, runAdmissionPrecheckWorker } from './admission-fix-precheck-managed';
 import { admissionOffthreadStats, resetAdmissionOffthread, runAdmissionJob } from './admission-offthread';
-import { createFrozenCandidateRepairQueue, parseFrozenCandidateRepairQueue, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
+import {
+  createFrozenCandidateRepairQueue,
+  parseFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueue,
+  type FrozenRepairAdmissionPrecheck,
+} from './frozen-candidate-repair-queue';
 import { edgeCacheKey } from '../../../../scripts/lib/related-tests.mjs';
 import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
@@ -555,13 +560,16 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
             expect(discovery.population.radius?.unmeasuredFiles).toEqual(census);
             const initial = { ...createFrozenCandidateRepairQueue({ candidate: frozen, base: null,
               failingTests: ['signature.test.ts'], nowMs: 10 }), signature: producerSignature };
-            let persisted: FrozenCandidateRepairQueue = { ...initial, admissionPrecheck: {
+            const admissionPrecheck: FrozenRepairAdmissionPrecheck = {
               schemaVersion: 1, operationId: 'bootstrap-radius-operation', runnerTaskId: 'bootstrap-radius-task',
               status: 'running', candidate: frozen, repairHead: frozen, builtCommit: frozen,
               builtTree: git(fixture, 'rev-parse', `${frozen}^{tree}`), testEnvironment: ADMISSION_TEST_ENVIRONMENT,
               actor: 'su-test', files: discovery.population.files, radius: discovery.population.radius,
               startedAtMs: 10, updatedAtMs: 10, expiresAtMs: 60_000,
-            } };
+            };
+            let persisted = parseFrozenCandidateRepairQueue(
+              JSON.parse(JSON.stringify({ ...initial, admissionPrecheck })),
+            )!;
             // Recovery is a queue read after restart, independent of source
             // retention or a mutable checkout. The decisive consumer test is
             // beyond the 40-file boundary in both signature partitions.

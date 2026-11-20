@@ -9,7 +9,7 @@ const criterion = (refs?: string[], key = 'export'): SourceCitationCriterion => 
 const deps = (): RubricSourceCitationDeps => ({
   plan: vi.fn(async slug => slug === 'source' ? '## Decisions\n\n### D-001 — Preserve source intent\n\nKeep all records.\n' : null),
   requirements: vi.fn(async () => ['R-1']),
-  turns: vi.fn(async refs => refs.map(ref => ({ ref, ok: !ref.includes('missing'),
+  turns: vi.fn(async (refs: readonly string[]): ReturnType<RubricSourceCitationDeps['turns']> => refs.map(ref => ({ ref, ok: !ref.includes('missing'),
     evidence: { fingerprint: 'measured', speaker: 'user', origin: {
       verdict: ref.includes('injected') ? 'agent-injected' : ref.includes('dialog') ? 'owner-dialog'
         : ref.includes('unknown') ? 'unknown' : 'owner-typed', origin: null,

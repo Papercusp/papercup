@@ -1930,7 +1930,7 @@ describe('IDOP D-043 applied stack source population', () => {
   const populationComparison = async () => {
     const sources = await comparisonInputs();
     return { inventory: joinIdopP001ComparisonPopulation(sources), sources,
-      readSources: async () => {
+      readSources: async (): Promise<Parameters<typeof runIdopP001PopulationPermissionComparison>[0]['sources']> => {
         const { builtin, library } = await comparisonInputs();
         return { builtin, library };
       },
@@ -2020,7 +2020,7 @@ describe('IDOP D-043 applied stack source population', () => {
       capture: async () => {
         if (source === 'builtin') current.builtin.sources[0].sha256 = 'c'.repeat(64);
         if (source === 'library') current.library.unreadable[0].error = 'changed refusal';
-        if (source === 'coverage') current.builtin.directoriesWithoutBlueprint.push('/new-directory');
+        if (source === 'coverage') current.builtin.directoriesWithoutBlueprint = ['/new-directory'];
         return capture();
       },
     })).rejects.toThrow('IDOP comparison source registries changed during original-input capture');

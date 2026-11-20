@@ -1852,7 +1852,8 @@ export async function readIdopP001AppliedStackPopulation(
 
 type AppliedStackPopulation = Awaited<ReturnType<typeof readIdopP001AppliedStackPopulation>>;
 
-function idopAppliedComparisonSource(row: AppliedStackPopulation['stacks'][number] | AppliedStackPopulation['refused'][number]) {
+function idopAppliedComparisonSource(row: AppliedStackCapture |
+  AppliedStackPopulation['stacks'][number] | AppliedStackPopulation['refused'][number]) {
   const common = { applied: row.applied, recordSha256: row.recordSha256 };
   if ('resolution' in row) {
     return { status: 'refused' as const, data: {
