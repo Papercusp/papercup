@@ -1611,6 +1611,136 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('retains tracked Wrangler SQLite state exclusions only for matching producer paths and headers', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-wrangler-state-'));
+    const state = 'apps/operator-public/.wrangler/state/v3';
+    const cache = state + '/cache/miniflare-CacheObject';
+    const d1 = state + '/d1/miniflare-D1DatabaseObject';
+    const kv = state + '/kv/miniflare-KVNamespaceObject';
+    const r2 = state + '/r2/miniflare-R2BucketObject';
+    const sqlite = Buffer.from('SQLite format 3\0');
+    const wal = Buffer.from('377f0682', 'hex');
+    const shmLittleEndian = Buffer.alloc(4);
+    const shmBigEndian = Buffer.alloc(4);
+    shmLittleEndian.writeUInt32LE(3_007_000);
+    shmBigEndian.writeUInt32BE(3_007_000);
+    const generated = [
+      [cache + '/metadata.sqlite-wal', wal],
+      [d1 + '/metadata.sqlite-wal', Buffer.from('377f0683ff', 'hex')],
+      [d1 + '/' + 'a'.repeat(64) + '.sqlite', sqlite],
+      [kv + '/metadata.sqlite-shm', shmLittleEndian],
+      [r2 + '/metadata.sqlite-shm', shmBigEndian],
+      [r2 + '/' + 'b'.repeat(64) + '.sqlite', Buffer.concat([sqlite, Buffer.from([0xff])])],
+    ] as const;
+    const shortDb = d1 + '/metadata.sqlite';
+    const shortWal = kv + '/metadata.sqlite-wal';
+    const invalidHeader = cache + '/metadata.sqlite-shm';
+    const differentObject = r2 + '-source/metadata.sqlite';
+    const differentApp = 'apps/other/.wrangler/state/v3/cache/miniflare-CacheObject/metadata.sqlite';
+    const authored = kv + '/metadata.sqlite.ts';
+    const files = [
+      ...generated,
+      [shortDb, sqlite.subarray(0, sqlite.length - 1)],
+      [shortWal, wal.subarray(0, wal.length - 1)],
+      [invalidHeader, Buffer.from([0xff, 0xff, 0xff, 0xff])],
+      [differentObject, sqlite],
+      [differentApp, sqlite],
+      [authored, write],
+    ] as const;
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      for (const [path, content] of files) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), content);
+      }
+      execFileSync('git', ['add', '--', ...files.map(([path]) => path)], { cwd: root });
+
+      const inventory = inventoryPhaseWriterTree(root);
+      const reason = 'generated-wrangler-local-state:apps/operator-public/package.json#scripts.dev';
+      const generatedPaths = generated.map(([path]) => path).sort();
+      expect(inventory.excluded).toEqual(generatedPaths.map(path => ({ path, reason })));
+      expect(inventory.gaps).toEqual([{ id: 'source:' + invalidHeader, reason: 'source-not-utf8' }]);
+      expect(inventory.sources.map(source => source.path)).toEqual(
+        [shortDb, shortWal, differentObject, differentApp, authored].sort());
+      expect(inventory.sites.filter(site => site.kind === 'sql').map(site => site.path)).toEqual([authored]);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.notApplicable).toEqual(
+        generatedPaths.map(path => 'excluded:' + path));
+
+      writeFileSync(join(root, shortWal), wal);
+      const comparison = verifyPhaseWriterTreeSnapshot(inventory);
+      expect(comparison.ready).toBe(false);
+      expect(comparison.differences).toContainEqual({
+        id: 'excluded:' + shortWal, reason: 'added', expected: null, actual: reason,
+      });
+      expect(comparison.differences.map(difference => difference.id).sort()).toEqual(
+        ['excluded:' + shortWal, 'source:' + shortWal]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('accounts for Lost Pixel PNGs under the exact destinations declared by the current producer', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-lost-pixel-'));
+    const project = 'apps/operator';
+    const configPath = project + '/lostpixel.config.ts';
+    const config = `import type { CustomProjectConfig } from 'lost-pixel';
+    export const config: CustomProjectConfig = {
+      storybookShots: { storybookUrl: './storybook-static' },
+      imagePathBaseline: './lostpixel-baseline',
+      imagePathCurrent: './lostpixel-current',
+    };`;
+    const png = Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex');
+    const baseline = project + '/lostpixel-baseline/story--default.png';
+    const current = project + '/lostpixel-current/story--default.png';
+    const authored = project + '/lostpixel-baseline/writer.ts';
+    const invalidPaths = [
+      [project + '/lostpixel-baseline/story--malformed.png', png.subarray(0, png.length - 1)],
+      [project + '/lostpixel-baseline/nested/story--default.png', png],
+      [project + '/lostpixel-baseline/raw-name.png', png],
+      [project + '/lostpixel-baseline-source/story--default.png', png],
+      ['libs/agent-chat/lostpixel-baseline/story--without-config.png', png],
+    ] as const;
+    const files = [[configPath, config], [baseline, png], [current, png], [authored, write], ...invalidPaths] as const;
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      for (const [path, content] of files) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), content);
+      }
+      execFileSync('git', ['add', '--', configPath, baseline], { cwd: root });
+      const snapshot = inventoryPhaseWriterTree(root);
+      const producer = `generated-lost-pixel-output:${configPath}`;
+      expect(snapshot.excluded).toEqual([
+        { path: baseline, reason: producer + '#imagePathBaseline' },
+        { path: current, reason: producer + '#imagePathCurrent' },
+      ]);
+      expect(snapshot.gaps.filter(gap => gap.reason === 'source-not-utf8').map(gap => gap.id)).toEqual(
+        invalidPaths.map(([path]) => 'source:' + path).sort());
+      expect(snapshot.sources.map(source => source.path)).toEqual([authored, configPath]);
+      expect(snapshot.sites.filter(site => site.kind === 'sql').map(site => site.path)).toEqual([authored]);
+      const rows: string[] = [];
+      const footer = await writePhaseWriterCensus(snapshot, [], row => { rows.push(row); });
+      expect(await readPhaseWriterCensus(rows)).toEqual(footer);
+      expect(rows.map(row => JSON.parse(row)).filter(row => row.kind === 'excluded').map(row => row.value))
+        .toEqual(snapshot.excluded);
+
+      writeFileSync(join(root, configPath), config.replace("'./lostpixel-current'", "'./different-current'"));
+      const comparison = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(comparison.ready).toBe(false);
+      expect(comparison.coverage.notApplicable).toEqual(['excluded:' + baseline]);
+      expect(comparison.differences.map(row => row.id)).toEqual([
+        'excluded:' + current, 'gap:source:' + current, 'source:' + configPath,
+      ]);
+
+      writeFileSync(join(root, configPath), config + "\nconfig.imagePathCurrent = './different-current';");
+      const overridden = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(overridden.ready).toBe(false);
+      expect(overridden.coverage.notApplicable).toEqual([]);
+      expect(overridden.differences.map(row => row.id)).toEqual([
+        'excluded:' + baseline, 'excluded:' + current, 'gap:source:' + baseline,
+        'gap:source:' + current, 'source:' + configPath,
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it.each(['git checkout', 'archive'])('retains authored build directory writers in a %s', (tree) => {
     const root = mkdtempSync(join(tmpdir(), 'phase-build-source-'));
     const path = 'packages/operator-core/lib/agent-tools/build/writer.ts';

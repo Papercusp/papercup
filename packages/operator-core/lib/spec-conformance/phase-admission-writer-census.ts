@@ -10,6 +10,7 @@ import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
 import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
 import { buildSymbolSnapshot, relativeSymbolModule, type SymbolDeclaration } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
+import { readPngDimensionsSafe } from '../design-compare/png-header.js';
 
 export const PHASE_WRITER_ROOTS = ['packages/', 'apps/', 'libs/', 'scripts/'] as const;
 const generatedOutputPrefixes = [
@@ -18,6 +19,19 @@ const generatedOutputPrefixes = [
   ['libs/generic/papergrid/grid-core/storybook-static/',
     'generated-storybook-output:libs/generic/papergrid/grid-core/package.json#scripts.build-storybook'],
 ] as const;
+const wranglerLocalStateRoot = 'apps/operator-public/.wrangler/state/v3/';
+const wranglerLocalStateReason = 'generated-wrangler-local-state:apps/operator-public/package.json#scripts.dev';
+const miniflareSqlitePath = /^(?:cache\/miniflare-CacheObject|d1\/miniflare-D1DatabaseObject|kv\/miniflare-KVNamespaceObject|r2\/miniflare-R2BucketObject)\/(?:metadata|[0-9a-f]{64})\.sqlite(?:-(shm|wal))?$/;
+const sqliteHeader = Buffer.from('SQLite format 3\0');
+const lostPixelProjects = new Set([
+  'apps/operator', 'libs/agent-chat', 'libs/generic/papergrid/grid-core',
+  'libs/generic/ui-primitives', 'libs/marketplace-public-ui',
+]);
+const lostPixelPngPath = /^(.+)\/(lostpixel-(?:baseline|current))\/[a-z0-9][a-z0-9_-]*--[a-z0-9][a-z0-9_-]*\.png$/;
+const lostPixelOutputFields = {
+  'lostpixel-baseline': 'imagePathBaseline',
+  'lostpixel-current': 'imagePathCurrent',
+} as const;
 export const PHASE_WRITER_RELATIONS = new Set([
   'plan_item_claims', 'work_items', 'engineer_issues', 'harness_features',
   'harness_features_consolidated', 'harness_plans', 'feature_claims',
@@ -719,6 +733,56 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
     gaps: retainedGaps.sort((a, b) => compare(a.id, b.id)) };
 }
 
+function isWranglerLocalSqliteState(path: string, bytes: Buffer): boolean {
+  if (!path.startsWith(wranglerLocalStateRoot)) return false;
+  const match = miniflareSqlitePath.exec(path.slice(wranglerLocalStateRoot.length));
+  if (!match) return false;
+  const sidecar = match[1];
+  if (!sidecar) return bytes.subarray(0, sqliteHeader.length).equals(sqliteHeader);
+  if (bytes.length < 4) return false;
+  const header = bytes.readUInt32BE(0);
+  if (sidecar === 'wal') return header === 0x377f0682 || header === 0x377f0683;
+  // The WAL index stores its format version in native byte order.
+  return header === 3_007_000 || bytes.readUInt32LE(0) === 3_007_000;
+}
+
+function lostPixelOutputCandidate(path: string, bytes: Buffer) {
+  if (!path.endsWith('.png')) return null;
+  const match = lostPixelPngPath.exec(path);
+  if (!match || !lostPixelProjects.has(match[1]!) || !readPngDimensionsSafe(bytes).ok) return null;
+  const directory = match[2] as keyof typeof lostPixelOutputFields;
+  return { path, directory, configPath: `${match[1]}/lostpixel.config.ts` };
+}
+
+function lostPixelConfiguredOutputs(source: PhaseWriterSource): Set<string> {
+  const file = ts.createSourceFile(source.path, source.content, ts.ScriptTarget.Latest);
+  const statements = file.statements.filter(statement =>
+    !(ts.isImportDeclaration(statement) && statement.importClause?.isTypeOnly));
+  const [statement] = statements;
+  if (statements.length !== 1 || !statement || !ts.isVariableStatement(statement)
+    || !statement.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)
+    || !(statement.declarationList.flags & ts.NodeFlags.Const)) return new Set();
+  const declarations = statement.declarationList.declarations;
+  const [config] = declarations;
+  if (declarations.length !== 1 || !config || !ts.isIdentifier(config.name) || config.name.text !== 'config'
+    || !config.initializer || !ts.isObjectLiteralExpression(config.initializer)) return new Set();
+  const properties = new Map<string, ts.Expression>();
+  for (const property of config.initializer.properties) {
+    if (!ts.isPropertyAssignment(property)
+      || !(ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))
+      || properties.has(property.name.text)) return new Set();
+    properties.set(property.name.text, property.initializer);
+  }
+  const storybookShots = properties.get('storybookShots');
+  if (!storybookShots || !ts.isObjectLiteralExpression(storybookShots)) return new Set();
+  const outputs = new Set<string>();
+  for (const [directory, field] of Object.entries(lostPixelOutputFields)) {
+    const path = properties.get(field);
+    if (path && ts.isStringLiteral(path) && path.text === `./${directory}`) outputs.add(directory);
+  }
+  return outputs;
+}
+
 /** Complete maintained tree enumeration, including checked-out submodules and
  * new source files. Missing submodules, unreadable files and symlinks are gaps.
  * Named exclusions retain every path; no page/file cap selects the truth.
@@ -729,6 +793,7 @@ function readPhaseWriterTree(root: string) {
   const input: PhaseWriterSource[] = [];
   const gaps: PhaseWriterInventory['gaps'] = [];
   const excluded: Array<{ path: string; reason: string }> = [];
+  const lostPixelPngs: NonNullable<ReturnType<typeof lostPixelOutputCandidate>>[] = [];
   const files: string[] = [];
   for (const path of enumeration.files) {
     if (typeof path !== 'string' || !canonicalPath(path)) {
@@ -763,17 +828,41 @@ function readPhaseWriterTree(root: string) {
         continue;
       }
       if (!stat.isFile()) { gaps.push({ id: `source:${path}`, reason: 'non-regular-source' }); continue; }
-      const bytes = readFileSync(fullPath), content = bytes.toString('utf8');
-      if (!Buffer.from(content).equals(bytes)) { gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' }); continue; }
+      const bytes = readFileSync(fullPath);
+      if (isWranglerLocalSqliteState(path, bytes)) {
+        excluded.push({ path, reason: wranglerLocalStateReason }); continue;
+      }
+      const content = bytes.toString('utf8');
+      if (!Buffer.from(content).equals(bytes)) {
+        const output = lostPixelOutputCandidate(path, bytes);
+        if (output) lostPixelPngs.push(output);
+        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' });
+        continue;
+      }
       input.push({ path, content });
     } catch { gaps.push({ id: `source:${path}`, reason: 'source-read-failed' }); }
+  }
+  // Use the producer source in this same snapshot. A directory name alone
+  // cannot establish that its contents came from Lost Pixel.
+  if (lostPixelPngs.length > 0) {
+    const configPaths = new Set(lostPixelPngs.map(output => output.configPath));
+    const configured = new Map(input.filter(source => configPaths.has(source.path))
+      .map(source => [source.path, lostPixelConfiguredOutputs(source)]));
+    for (const { path, directory, configPath } of lostPixelPngs) {
+      if (configured.get(configPath)?.has(directory)) {
+        excluded.push({ path, reason: `generated-lost-pixel-output:${configPath}#${lostPixelOutputFields[directory]}` });
+      } else {
+        gaps.push({ id: `source:${path}`, reason: 'source-not-utf8' });
+      }
+    }
   }
   for (const path of enumeration.unscanned) {
     if (PHASE_WRITER_ROOTS.some(prefix => path.startsWith(prefix))) {
       gaps.push({ id: `submodule:${path}`, reason: 'declared-submodule-not-enumerated' });
     }
   }
-  return { input, gaps, scope: { kind: 'repository' as const, root: resolve(root) }, excluded,
+  return { input, gaps, scope: { kind: 'repository' as const, root: resolve(root) },
+    excluded: excluded.sort((a, b) => compare(a.path, b.path)),
     enumeration: { scanned: enumeration.scanned, unscanned: enumeration.unscanned } };
 }
 
