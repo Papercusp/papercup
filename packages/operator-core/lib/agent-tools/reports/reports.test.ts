@@ -422,6 +422,33 @@ describe('reports:publish — side effects are reported, never fatal', () => {
     expect(body(await getTool.handler({ id: 'rpt_1' } as never, CTX as never) as Out).results[0].report.report_id).toBe('rpt_1');
   });
 
+  it('preserves publication order when an older correction finishes indexing last', async () => {
+    const first = record({ reportId: 'rpt_2', supersedesReportId: 'rpt_1' });
+    const latest = record({ reportId: 'rpt_3', supersedesReportId: 'rpt_1' });
+    publishReportM.mockResolvedValueOnce(first).mockResolvedValueOnce(latest);
+    let finishFirst!: () => void;
+    const slow = new Promise<void>(resolve => { finishFirst = resolve; });
+    const finished: string[] = [];
+    indexReportM.mockImplementation(async (_sql, edition) => {
+      if (edition.reportId === first.reportId) await slow;
+      finished.push(edition.reportId);
+    });
+    const publish = (title: string) => publishTool.handler({ title, supersedes: 'rpt_1' } as never, CTX as never);
+    const earlier = publish(first.reportId);
+    try {
+      await vi.waitFor(() => expect(indexReportM).toHaveBeenCalledWith({}, first));
+      const out = body(await publish(latest.reportId) as Out);
+      expect(out).toMatchObject({ report_id: latest.reportId, path: `/reports?sel=${latest.reportId}`, lineage_id: 'rpt_1' });
+      await vi.waitFor(() => expect(finished).toEqual([latest.reportId]));
+    } finally {
+      finishFirst();
+    }
+    expect(body(await earlier as Out).report_id).toBe(first.reportId);
+    await vi.waitFor(() => expect(finished).toEqual([latest.reportId, first.reportId]));
+    expect(emitAwaitedEventM.mock.calls.map(([event]) => event.payload.report_id)).toEqual([first.reportId, latest.reportId]);
+    expect(publishReportM).toHaveBeenCalledTimes(2);
+  });
+
   it('emits report:published:<id> carrying the id, lineage and path', async () => {
     await publishTool.handler({ title: 'A' } as never, CTX as never);
     expect(emitAwaitedEventM).toHaveBeenCalledTimes(1);
