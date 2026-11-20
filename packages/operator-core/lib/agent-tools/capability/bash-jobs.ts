@@ -26,6 +26,8 @@ import { createWriteStream, mkdirSync, readdirSync, readFileSync, type WriteStre
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { parse as parseShellArguments } from 'shell-quote';
+import { atomizePipeline } from '../../bash-substitution/atomize';
 import { augmentedSpawnPath, resolveBin } from '../../plugin-spawn-impl';
 import {
   assertCapabilitySandboxAvailable,
@@ -186,6 +188,41 @@ const MAINTAINED_VERIFIER_RE = new RegExp(
   'i',
 );
 
+const TEST_LEADING_ASSIGNMENTS_RE = new RegExp(`^(?:${TEST_ENV_ASSIGNMENT})*`);
+
+/** Compare argv, never the contents of one quoted argument. The command itself
+ * is still passed to bash unchanged. The shared atomizer excludes heredoc
+ * bodies; shell-quote supplies quote removal and comment/redirect boundaries.
+ * Unknown variables stay symbolic directories, without reading host env or
+ * executing expansions. Only a literal maintained suffix can then match. */
+function testCommandArgv(raw: string): { command: string; comment: boolean } | null {
+  const source = raw.replace(TEST_LEADING_ASSIGNMENTS_RE, '');
+  // shell-quote tolerates unfinished quotes. Validate complete lexical chunks
+  // first, with disjoint alternatives so malformed long words remain bounded.
+  const chunks = /[^\s"'\\]+|\\[^\r\n]|"(?:[^"\\]|\\.)*"|'[^']*'|\s+/gy;
+  while (chunks.lastIndex < source.length) {
+    if (!chunks.exec(source)) return null;
+  }
+  let tokens: ReturnType<typeof parseShellArguments>;
+  try {
+    tokens = parseShellArguments(source, (name) =>
+      /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? `/__shell_variable_${name}` : '\0');
+  } catch { return null; }
+  const words: string[] = [];
+  for (const token of tokens) {
+    if (typeof token !== 'string') break;
+    // Percent escapes are comparison-only: spaces/operators inside an argument
+    // must never become command separators or several executable words.
+    const word = token.replace(/[\s"'\\;&|<>`()$\0]/g,
+      (char) => `%${char.charCodeAt(0).toString(16)}`);
+    // Real shell assignments were removed above. A quoted NAME=value left in
+    // executable position is a command name, not another assignment prefix.
+    words.push(words.length === 0 ? word.replace('=', '%3d') : word);
+  }
+  return { command: words.join(' '), comment: tokens.some((token) =>
+    typeof token !== 'string' && 'comment' in token) };
+}
+
 /** Conservative shell-segment classifier for the test budget above.
  *
  * It intentionally requires the runner at the start of a shell segment.  A
@@ -194,10 +231,19 @@ const MAINTAINED_VERIFIER_RE = new RegExp(
  * policy classification only; the command is still executed byte-for-byte.
  */
 export function isBackgroundTestCommand(command: string): boolean {
-  const withoutTimeout = command.replace(TIMEOUT_WRAPPER_RE, '$1$2');
-  return [command, withoutTimeout].some((candidate) =>
-    DIRECT_TEST_RUNNER_RE.test(candidate) || PACKAGE_TEST_SCRIPT_RE.test(candidate) || MAINTAINED_VERIFIER_RE.test(candidate),
-  );
+  let commented = false;
+  for (const { raw, sepBefore } of atomizePipeline(command)) {
+    if (sepBefore === '\n') commented = false;
+    if (commented) continue;
+    const argv = testCommandArgv(raw);
+    if (!argv) continue;
+    commented = argv.comment;
+    const withoutTimeout = argv.command.replace(TIMEOUT_WRAPPER_RE, '$1$2');
+    if ([argv.command, withoutTimeout].some((candidate) =>
+      DIRECT_TEST_RUNNER_RE.test(candidate) || PACKAGE_TEST_SCRIPT_RE.test(candidate) || MAINTAINED_VERIFIER_RE.test(candidate),
+    )) return true;
+  }
+  return false;
 }
 
 /** Reserved child-env provenance for long-running physical drills. Only the

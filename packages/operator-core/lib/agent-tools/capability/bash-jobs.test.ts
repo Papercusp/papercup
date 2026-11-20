@@ -2249,6 +2249,76 @@ describe('background job deadlines (WI-6677)', () => {
     expect(isBackgroundTestCommand('printf "npx vitest run"')).toBe(false);
   });
 
+  it.each([
+    ['quoted variable verifier', '"$C/scripts/verify-tauri-headless.sh" -- true', true],
+    ['braced variable and assignment', 'VERIFY_TAURI_ISOLATED_DB=1 "${C}/scripts/verify-tauri-headless.sh" -- true', true],
+    ['bare variable verifier', '$C/scripts/verify-tauri-headless.sh -- true', true],
+    ['quoted bash script', 'bash -- "$C/scripts/verify-tauri-headless.sh" --boot-only-i-accept-task-lifetime', true],
+    ['checkout containing spaces', 'env -- LABEL="two words" bash "/workspace/my checkout/scripts/verify-tauri-headless.sh" -- true', true],
+    ['quoted immutable script', 'node --import=tsx "${R}/scripts/lint-as-committed.mjs" --any test:file -- example.test.ts', true],
+    ['quoted source-preview operation', 'node "$R/scripts/source-preview.mjs" "verifier-run" -- true', true],
+    ['quoted npm argv', "'npm' 'run' 'lint:as-committed' -- --materialize-only", true],
+    ['quoted npm prefix', '"npm" "--prefix=$R" "run" "test:e2e:isolated" -- example.spec.ts', true],
+    ['quoted runner under timeout', 'timeout 2h "node" "$C/scripts/lint-as-committed.mjs" --any test:file', true],
+    ['quoted direct runner', "'npx' 'vitest' run", true],
+    ['quoted diagnostic argv', "printf \"'npm' 'run' 'lint:as-committed'\"", false],
+    ['separator inside diagnostic text', 'printf "metadata; npm run lint:as-committed"', false],
+    ['heredoc contents', "cat <<'EOF'\nnpm run lint:as-committed\nEOF", false],
+    ['inline program contents', 'node -e "npm run test:file"', false],
+    ['comment contents', '# diagnostic; npm run lint:as-committed', false],
+    ['one executable word', "'npm run test:file'", false],
+    ['one argument word', '"npm" "run lint:as-committed"', false],
+    ['quoted assignment is an executable', '"LABEL=value" npm run test:file', false],
+    ['literal variable path', "'$C/scripts/verify-tauri-headless.sh' -- true", false],
+    ['other package script', '"npm" run "lint:as-committed-other"', false],
+    ['other source-preview operation', 'node "$R/scripts/source-preview.mjs" "verifier-prepare"', false],
+    ['other verifier filename', '"$C/scripts/verify-tauri-headless.sh.backup" -- true', false],
+    ['unfinished quoting', 'npm run test:file "', false],
+  ])('classifies execution argv for %s', (_label, command, expected) => {
+    expect(isBackgroundTestCommand(command)).toBe(expected);
+  });
+
+  it.each([
+    ['quoted maintained verifier', '"$C/scripts/verify-tauri-headless.sh" -- true', true],
+    ['quoted npm verification', "'npm' 'run' 'lint:as-committed' -- --materialize-only", true],
+    ['diagnostic text', 'printf "metadata; npm run lint:as-committed"', false],
+    ['opaque heredoc', "node <<'JS'\nnpm run lint:as-committed\nJS", false],
+  ])('enforces budget and verification attribution for %s', async (_label, originalCommand, expected) => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment').mockReturnValue({
+      taskId: 'quoted-verification-task', enrolled: true, confined: false,
+      unconfinedReason: 'no-scope-support', unitKind: 'scope', scopeUnit: null,
+      registrationReady: null, wrap: (binary: string, argv: string[]) => ({ binary, argv }),
+      releaseEnvironmentTransport: () => {},
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      // Exercise the actual enrollment seam without booting a verifier.
+      const job = startBackground({ command: 'printf quoted-verification', originalCommand,
+        cwd: STATE, stateDir: STATE, workItemId: 'WI-quoted-verification',
+      }, 5_000);
+      await waitForStatus(job.id);
+      expect(job.status).toBe('completed');
+      expect(begin).toHaveBeenLastCalledWith({ class: 'bash-job', runtimeMaxSec: 5,
+        ...(expected ? { memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX } : {}),
+      });
+      const recorded = complete.mock.calls[0]![1];
+      expect(recorded.workItemId).toBe('WI-quoted-verification');
+      expect(recorded.detail).toMatchObject({
+        workloadClass: expected ? 'test-run' : 'other',
+        budgetPolicy: expected ? 'capability-bash-test-v1' : 'deadline-only-v1',
+      });
+      if (expected) {
+        expect(recorded).toMatchObject({ memoryMaxBytes: BASH_TEST_MEMORY_MAX_BYTES, tasksMax: BASH_TEST_TASKS_MAX });
+        expect(recorded.detail).toHaveProperty('verificationPurpose', 'work-item-verification');
+      } else {
+        expect(recorded).not.toHaveProperty('memoryMaxBytes');
+        expect(recorded).not.toHaveProperty('tasksMax');
+        expect(recorded.detail).not.toHaveProperty('verificationPurpose');
+      }
+    } finally { begin.mockRestore(); complete.mockRestore(); finish.mockRestore(); }
+  });
+
   it('peels supported timeout wrappers before classifying the actual test or verifier command', () => {
     for (const command of [
       'timeout --signal=TERM --kill-after=60s 2700s scripts/verify-tauri-headless.sh -- true',
