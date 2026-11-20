@@ -46,7 +46,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
-import type { DocSource } from '@papercusp/docs-engine';
+import type { DocPage, DocSource } from '@papercusp/docs-engine';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { splitMarkdown, type MarkdownSplitOptions } from '@papercusp/search';
@@ -156,31 +156,25 @@ export function splitDocSections(pageTitle: string, body: string): DocSection[] 
   }));
 }
 
-/**
- * Sync one DocSource's sections into doc_sections. Per-page fail-open: a page
- * whose render throws is counted as an error and skipped, never poisoning the
- * source. Prune (default on) removes rows for pages no longer listed — guarded
- * to never run off an empty listing (an adapter that failed to list must not
- * wipe its surface).
- */
-/**
- * Replace ONE page's section rows. The single write path shared by the
- * whole-source sweep and the single-page refresh below, so the two can never
- * disagree about section splitting, sha stamping, or row shape.
- *
- * Returns the number of section rows written, or `null` when `knownSha` already
- * matches (unchanged page ⇒ no PG writes at all, the sweep's short-circuit).
- */
+/** Read every edition present in the stored page, including legacy mixed rows. */
+async function readPageHashes(sql: Pick<Sql, 'unsafe'>, sourceKey: string, slug: string): Promise<string[]> {
+  const rows = await sql.unsafe<Array<{ page_sha: string }>>(
+    `SELECT page_sha FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2
+       GROUP BY page_sha ORDER BY page_sha`, [sourceKey, slug]);
+  return rows.map(row => row.page_sha);
+}
+
+/** Both writers use the same atomic publication after comparing the observed editions. */
 async function upsertPageSections(
   sql: Sql,
   sourceKey: string,
   page: { slug: string; title: string; url: string },
   body: string,
-  knownSha?: string,
+  observed: string[],
   resolveSpace: () => Promise<ActiveProseSpace | null> = resolveActiveProseSpace,
-): Promise<number | null> {
+): Promise<number | null | 'retry'> {
   const sha = pageSha(page.title, body);
-  if (knownSha === sha) return null;
+  if (observed.length === 1 && observed[0] === sha) return null;
   const sections = splitDocSections(page.title, body);
   // Some installations only have the text columns. Keep the same lexical
   // publication path there and resolve the model only for an existing page.
@@ -192,9 +186,12 @@ async function upsertPageSections(
        FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [sourceKey, page.slug]);
   if (prior?.page_sha === sha) return null;
   const space = prior?.vector_ready ? await resolveSpace() : null;
-  await sql.begin(async tx => {
+  return sql.begin(async tx => {
     await tx.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
       [JSON.stringify(['doc_sections', sourceKey, page.slug])]);
+    const stored = await readPageHashes(tx, sourceKey, page.slug);
+    if (stored.length === 1 && stored[0] === sha) return null;
+    if (stored.length !== observed.length || stored.some((hash, i) => hash !== observed[i])) return 'retry' as const;
     if (space) {
       // DELETE RETURNING supplies the original tuples to the same statement
       // that publishes the replacement. Vectors stay in PG. Array parameters
@@ -219,7 +216,7 @@ async function upsertPageSections(
           LEFT JOIN reusable r ON r.title COLLATE "C" = s.title AND r.content COLLATE "C" = s.content`,
       [sourceKey, page.slug, page.url, sha, sections.map(s => s.anchor), sections.map(s => s.title),
         sections.map(s => s.content), space.mode, space.selection.profileId, space.selection.legacyMode]);
-      return;
+      return sections.length;
     }
     await tx.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [sourceKey,page.slug]);
     for (let offset = 0; offset < sections.length; offset += 1_000) {
@@ -232,8 +229,25 @@ async function upsertPageSections(
       await tx.unsafe(`INSERT INTO harness_shared.doc_sections
         (source_key,slug,anchor,title,url,content,page_sha,section_idx) VALUES ${values}`,params);
     }
+    return sections.length;
   });
-  return sections.length;
+}
+
+/** A concurrent publication invalidates the render. Read the source again outside
+ * the transaction, so a slow adapter holds neither a page lock nor a DB connection. */
+async function syncPageFromSource(sql: Sql, source: DocSource, slug: string,
+  resolveSpace: (() => Promise<ActiveProseSpace | null>) | undefined,
+  initial?: { page: DocPage; hashes: string[] }): Promise<number | null> {
+  let snapshot = initial;
+  for (;;) {
+    const hashes = snapshot?.hashes ?? await readPageHashes(sql, source.name, slug);
+    const page = snapshot?.page ?? await source.getPage(slug);
+    if (!page) throw new Error(`page_not_found:${slug}`);
+    const body = await source.getContent(page);
+    const result = await upsertPageSections(sql, source.name, page, body, hashes, resolveSpace);
+    if (result !== 'retry') return result;
+    snapshot = undefined;
+  }
 }
 
 /**
@@ -272,10 +286,7 @@ export async function refreshDocPageSectionsWithSql(
   resolveSpace?: () => Promise<ActiveProseSpace | null>,
 ): Promise<DocPageRefresh> {
   try {
-    const page = await source.getPage(slug);
-    if (!page) return { ok: false, reason: `page_not_found:${slug}` };
-    const body = await source.getContent(page);
-    const written = await upsertPageSections(sql, source.name, page, body, undefined, resolveSpace);
+    const written = await syncPageFromSource(sql, source, slug, resolveSpace);
     return { ok: true, sections: written ?? 0, unchanged: written === null };
   } catch (e) {
     return { ok: false, reason: (e as Error).message };
@@ -305,7 +316,12 @@ export async function syncDocSourceSections(
     `SELECT DISTINCT slug, page_sha FROM harness_shared.doc_sections WHERE source_key = $1`,
     [source.name],
   );
-  const existing = new Map(existingRows.map((r) => [r.slug, r.page_sha]));
+  const existing = new Map<string, string[]>();
+  for (const row of existingRows) {
+    const hashes = existing.get(row.slug) ?? [];
+    hashes.push(row.page_sha);
+    existing.set(row.slug, hashes);
+  }
   let space: Promise<ActiveProseSpace | null> | undefined;
   const resolveSpace = () => space ??= (opts.resolveSpace ?? resolveActiveProseSpace)();
 
@@ -319,8 +335,9 @@ export async function syncDocSourceSections(
   let yieldedPages = 0;
   for (const page of pages) {
     try {
-      const body = await source.getContent(page);
-      const written = await upsertPageSections(sql, source.name, page, body, existing.get(page.slug), resolveSpace);
+      const written = await syncPageFromSource(sql, source, page.slug, resolveSpace, {
+        page, hashes: existing.get(page.slug)?.sort() ?? [],
+      });
       if (written !== null) {
         stats.sections += written;
         stats.changed += 1;

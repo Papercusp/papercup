@@ -33,6 +33,7 @@ function fakeSql(existing: Array<{ slug: string; page_sha: string }> = []) {
     unsafe: async (q: string, params: unknown[] = []) => {
       calls.push({ q, params });
       if (q.includes('SELECT DISTINCT')) return existing;
+      if (q.includes('GROUP BY page_sha')) return existing.filter(row => row.slug === params[1]);
       if (q.trimStart().startsWith('DELETE') && q.includes('RETURNING')) return [];
       return [];
     },
@@ -110,6 +111,7 @@ describe('syncDocSourceSections', () => {
       begin: async (fn: (tx: unknown) => Promise<unknown>) => fn(sql),
       unsafe: async (q: string, params: unknown[] = []) => {
         calls.push({ q, params });
+        if (q.includes('GROUP BY page_sha')) return [{ page_sha: 'previous' }];
         if (q.includes('AS vector_ready')) return [{ page_sha: 'previous', vector_ready: true }];
         if (interrupt && q.includes('WITH previous AS')) throw new Error('interrupted section publication');
         return [];
@@ -442,13 +444,8 @@ describe('refreshDocPageSections (single-page repair after a write)', () => {
     const { calls, sql } = fakeSql([{ slug: 'agent-insights/x', page_sha: pageSha('X', body) }]);
     const src = fakeSource([{ page: page('agent-insights/x', 'X'), body }]);
 
-    // NOTE: the single-page path does not read the existing-sha map (that is the
-    // sweep's batch optimization), so it rewrites rather than short-circuits.
-    // Asserting the ROWS it writes are correct is what matters for the read leg.
     const res = await refreshDocPageSectionsWithSql(sql, src, 'agent-insights/x');
-    expect(res).toMatchObject({ ok: true });
-    const inserts = calls.filter((c) => c.q.includes('INSERT INTO harness_shared.doc_sections'));
-    expect(inserts).toHaveLength(1);
-    expect(inserts[0].params[6]).toBe(pageSha('X', body));
+    expect(res).toEqual({ ok: true, sections: 0, unchanged: true });
+    expect(calls.filter(c => /\b(?:INSERT|UPDATE|DELETE)\b/i.test(c.q))).toEqual([]);
   });
 });

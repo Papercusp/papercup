@@ -282,4 +282,33 @@ describe('documentation section publication and background embedding', () => {
     expect(fresh).toHaveBeenCalledTimes(2);
     expect((await rows()).every(r => r.vector !== null)).toBe(true);
   }, 90_000);
+
+  it('re-reads the canonical document when its first render loses a publication race', async () => {
+    const name = 'harness:doc-race';
+    expect(await publish('Guide', '## A\nBaseline.', name)).toMatchObject({ ok: true });
+    let body = '## A\nFirst amendment.';
+    let started!: () => void;
+    let finish!: () => void;
+    const rendering = new Promise<void>(resolve => { started = resolve; });
+    const release = new Promise<void>(resolve => { finish = resolve; });
+    const page = { slug, slugs: [slug], title: 'Guide', url: '/guide', toc: [] };
+    const getContent = vi.fn(async () => body).mockImplementationOnce(async () => {
+      const captured = body;
+      started();
+      await release;
+      return captured;
+    });
+    const src: DocSource = { name, listPages: async () => [page], getPage: async () => page, getContent };
+    const old = refreshDocPageSectionsWithSql(db.adminSql, src, slug, activeSpace);
+    await rendering;
+    try {
+      body = '## A\nCurrent amendment.';
+      expect(await publish('Guide', body, name)).toMatchObject({ ok: true });
+    } finally {
+      finish();
+    }
+    expect(await old).toMatchObject({ ok: true, unchanged: true });
+    expect(getContent).toHaveBeenCalledTimes(2);
+    expect((await rows(name)).map(r => r.content)).toEqual(['Current amendment.']);
+  }, 90_000);
 });
