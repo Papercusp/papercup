@@ -11660,20 +11660,24 @@ async function mutateAgentBlockingRelation(
       }
       const correction = fresh.record.decision.disposition !== 'absorb' ? fresh.record.decision.bindingCorrection : undefined;
       const edgeAuthor = incoming.find(edge => String(edge.id) === correction?.edgeId)?.created_by;
-      let terminalAuthorId: string | undefined;
-      if (edgeAuthor && edgeAuthor !== opts.by && opts.by === row.taken_by) {
+      const unbound = row.source_plan_slug == null && !(row.source_plan_item_ids?.length) &&
+        row.plan_slug == null && row.plan_line_id == null && payload.plan_item == null && payload.planItem == null;
+      const predecessorAuthors = [...new Set([edgeAuthor, ...fresh.state.history.map(record => record.authorId)])]
+        .filter((author): author is string => Boolean(author) && author !== opts.by);
+      let terminalAuthorIds: readonly string[] = [];
+      if (unbound && predecessorAuthors.length && opts.by === row.taken_by) {
         try {
           const { resolveSessionStates } = await import('./agent-tools/coordination/liveness-oracle');
-          const states = await resolveSessionStates([{ ownerId: edgeAuthor }], { hydratePerId: true });
+          const states = await resolveSessionStates(predecessorAuthors.map(ownerId => ({ ownerId })), { hydratePerId: true });
           // `recorded` is alive but not wakeable. Only positive terminal evidence
-          // admits a successor; missing, unknown and failed reads stay refused.
-          if (states.get(edgeAuthor)?.sessionState === 'ended') terminalAuthorId = edgeAuthor;
+          // for EVERY predecessor admits a successor; incomplete reads refuse.
+          if (predecessorAuthors.every(author => states.get(author)?.sessionState === 'ended')) {
+            terminalAuthorIds = predecessorAuthors;
+          }
         } catch {
           // The admission guard below refuses without the terminal witness.
         }
       }
-      const unbound = row.source_plan_slug == null && !(row.source_plan_item_ids?.length) &&
-        row.plan_slug == null && row.plan_line_id == null && payload.plan_item == null && payload.planItem == null;
       let planBinding: { planSlug: string; itemIds: string[] } | undefined;
       if (!unbound) {
         const currentItem = { ...dependent, payload, state: row.status, assignee: row.taken_by,
@@ -11713,7 +11717,7 @@ async function mutateAgentBlockingRelation(
         unbound, planBinding,
         noExternalConditions: payload.externalBlockers == null || (Array.isArray(payload.externalBlockers) &&
           payload.externalBlockers.every(value => value && typeof value === 'object' && value.status === 'cleared')),
-        provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming, terminalAuthorId,
+        provider: { id: source.id, harness: source.harness, ...blocker }, blocked, effect, edges: incoming, terminalAuthorIds,
       });
       if ('ok' in admission) throw Object.assign(new Error(admission.nextAction), admission);
       const checked = await preflightBlockerDecision({ ...dependent, payload, state: row.status, assignee: row.taken_by },

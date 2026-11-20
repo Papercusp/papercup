@@ -184,7 +184,7 @@ describe('administrative binding correction', () => {
     history[0].authorId = formerAuthor;
     scope.edges[0].created_by = formerAuthor;
     const prior = structuredClone(history);
-    const admission = admitBindingCorrection(prepared, { ...scope, terminalAuthorId: formerAuthor });
+    const admission = admitBindingCorrection(prepared, { ...scope, terminalAuthorIds: [formerAuthor] });
     expect('ok' in admission).toBe(false);
     if ('ok' in admission) throw new Error('confirmed-ended author refused');
     expect(await validateBlockerDecisionEvidence(prepared.record.decision, {
@@ -201,10 +201,45 @@ describe('administrative binding correction', () => {
         variant === 'third-party-history' ? 'su-unrelated' : 'su-ended';
       expect(admitBindingCorrection(prepared, { ...scope,
         custodianId: variant === 'non-custodian' ? 'su-other' : scope.custodianId,
-        terminalAuthorId: variant === 'missing-terminal-proof' ? undefined :
-          variant === 'different-terminal-author' ? 'su-other-ended' : 'su-ended',
+        terminalAuthorIds: variant === 'missing-terminal-proof' ? undefined :
+          [variant === 'different-terminal-author' ? 'su-other-ended' : 'su-ended'],
       })).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
     });
+  it.each(['exact', 'unrelated', 'qualified', 'prefix', 'suffix', 'missing-author', 'planned'])(
+    'checks complete predecessor history and exact provider completion recheck: %s', async variant => {
+      const { initial, input, scope } = fixture();
+      const authors = ['su-first-ended', 'su-second-ended'];
+      const original = initial.record.decision;
+      if (original.disposition !== 'defer') throw new Error('invalid prior deferral');
+      const history = authors.map((authorId, index) => ({ ...structuredClone(initial.record),
+        authorId, revision: index + 1, decision: { ...structuredClone(initial.record.decision),
+          deferral: { ...original.deferral, recheckRef: { kind: 'event', ref:
+            variant === 'unrelated' ? 'work-item:done:WI-other' :
+            variant === 'qualified' ? 'work-item:done:h#WI-2' :
+            variant === 'prefix' ? 'prefix:work-item:done:WI-2' :
+            variant === 'suffix' ? 'work-item:done:WI-2:extra' : 'work-item:done:WI-2' } } } }));
+      const prepared = success(prepareBlockerDecision({ blockerResolution: { schemaVersion: 1, history } },
+        { ...input, priorRevision: 2 }, actor, { ...options, effect }));
+      scope.edges[0].created_by = authors[0];
+      const prior = structuredClone(prepared.expectedState);
+      const admission = admitBindingCorrection(prepared, { ...scope, unbound: variant !== 'planned',
+        terminalAuthorIds: variant === 'missing-author' ? authors.slice(0, 1) : authors });
+      expect('ok' in admission).toBe(variant !== 'exact');
+      expect(prepared.expectedState).toEqual(prior);
+      if (!('ok' in admission)) {
+        expect(await validateBlockerDecisionEvidence(prepared.record.decision, {
+          ...context(prepared.record.requestHash), bindingCorrectionAdmission: admission,
+          obligationRefs: [provider, { kind: 'event', ref: 'work-item:done:WI-2' }],
+        })).toEqual({ ok: true });
+      }
+    });
+  it('does not admit measured-ended predecessors for a plan-bound correction', () => {
+    const { prepared, scope } = plannedFixture();
+    (prepared.expectedState as typeof prepared.state).history[0].authorId = 'su-ended';
+    scope.edges[0].created_by = 'su-ended';
+    expect(admitBindingCorrection(prepared, { ...scope, terminalAuthorIds: ['su-ended'] }))
+      .toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+  });
   it.each(['foreign-history', 'null-creator', 'lineage-alias', 'wrong-tenant', 'wrong-provider', 'wrong-kind',
     'wrong-harness', 'wrong-edge', 'recreated-edge', 'changed-satisfaction', 'moved-custody', 'plan-bound',
     'external-condition', 'missing-defer', 'unrelated-recheck', 'incomplete-census', 'incomplete-history',

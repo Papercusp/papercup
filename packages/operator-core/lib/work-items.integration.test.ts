@@ -325,6 +325,44 @@ describe('atomic blocker decision lifecycle', () => {
     expect(after.row.taken_by).toBe('agA');
     expect(await wi.getWorkItem(f.blocker.id, 'papercup')).toEqual(provider);
   });
+  it.each([24, 25, 26])('binding correction retains every satisfied sibling in a %i-edge census', async count => {
+    const f = await correctionSetup();
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, origin)
+      SELECT 'default', 'papercup', 'WI-0-sibling-' || ordinal, 'task', 'Settled sibling', 'done', 'local'
+      FROM generate_series(1, ${count - 1}::int) AS ordinal`;
+    await db.sql`INSERT INTO harness_shared.work_item_deps
+      (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+      SELECT 'default', 'issue', ${f.item.id}, 'issue', feature_id, 'blocks', 'settled', 'agA'
+      FROM harness_shared.work_items WHERE feature_id LIKE 'WI-0-sibling-%'`;
+    const before = await bindingSnapshot(f.item.id);
+    const census = await wi.readUnresolvedDepBlockers(f.item.id, 'papercup', { includeSatisfied: true });
+    expect(census).toHaveLength(count);
+    expect(census.at(-1)?.ref).toBe(f.blocker.id);
+    expect(await correctBinding(f)).toMatchObject({ ok: true });
+    const after = await bindingSnapshot(f.item.id);
+    expect(after.edges).toEqual(before.edges.filter(edge => edge.blocker_ref !== f.blocker.id));
+    expect(after.row.taken_by).toBe(before.row.taken_by);
+    expect(after.row.payload.blockerResolution.history[0]).toEqual(before.row.payload.blockerResolution.history[0]);
+  });
+  it.each([false, true])('a pending obligation after 25 edges is retained regardless of insertion order: %s', async reverse => {
+    const f = await correctionSetup();
+    const refs = Array.from({ length: 25 }, (_, index) => `WI-Z-pending-${String(index).padStart(2, '0')}`);
+    for (const ref of reverse ? [...refs].reverse() : refs) {
+      await db.sql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, origin)
+        VALUES ('default', 'papercup', ${ref}, 'task', 'Independent pending obligation', 'open', 'local')`;
+      await db.sql`INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction, created_by)
+        VALUES ('default', 'issue', ${f.item.id}, 'issue', ${ref}, 'blocks', 'success', 'agB')`;
+    }
+    const before = await bindingSnapshot(f.item.id);
+    const census = await wi.readUnresolvedDepBlockers(f.item.id, 'papercup');
+    expect(census).toHaveLength(26);
+    expect(census.at(-1)?.ref).toBe(refs.at(-1));
+    await expect(correctBinding(f)).rejects.toMatchObject({ code: 'blocker_decision_evidence' });
+    expect(await bindingSnapshot(f.item.id)).toEqual(before);
+  });
   async function successorCorrectionSetup() {
     const f = await correctionSetup();
     await db.sql`UPDATE harness_shared.work_items SET taken_by = 'agC' WHERE feature_id = ${f.item.id}`;
@@ -334,6 +372,74 @@ describe('atomic blocker decision lifecycle', () => {
     f.opts.blockerEvidenceContext.sessionId = 'authenticated-session-c';
     return f;
   }
+  async function multiPredecessorCorrectionSetup(count = 2, unrelatedEvent = false) {
+    const f = await successorCorrectionSetup();
+    const { prepareBlockerDecision } = await import('./blocker-resolution-decision');
+    const before = await bindingSnapshot(f.item.id);
+    const initial = before.row.payload.blockerResolution.history[0].decision;
+    const authors = Array.from({ length: count }, (_, index) => index ? `ag-predecessor-${index}` : 'agA');
+    let payload: Record<string, unknown> = {};
+    for (const [index, ownerId] of authors.entries()) {
+      const prepared = prepareBlockerDecision(payload, { ...initial, idempotencyKey: `predecessor-${index}`,
+        ...(index ? { priorRevision: index } : {}), deferral: { ...initial.deferral,
+          recheckRef: { kind: 'event', ref: `work-item:done:${unrelatedEvent ? 'WI-unrelated' : f.blocker.id}` } } },
+      { ownerId, sessionId: `session-${ownerId}`, workItemId: f.item.id, custodianId: ownerId });
+      if (!prepared.ok) throw new Error(JSON.stringify(prepared));
+      payload = prepared.patch;
+    }
+    await db.sql`UPDATE harness_shared.work_items SET payload = payload || ${db.sql.json(payload)}
+      WHERE workspace_id = 'default' AND harness_slug = 'papercup' AND feature_id = ${f.item.id}`;
+    f.input.priorRevision = count;
+    return { ...f, authors };
+  }
+  it.each(['ended', 'live', 'recorded', 'unknown', 'missing', 'reader-error', 'unrelated-event'] as const)(
+    'binding correction measures every predecessor and the exact provider completion event: %s', async state => {
+      const f = await multiPredecessorCorrectionSetup(2, state === 'unrelated-event');
+      const before = await bindingSnapshot(f.item.id);
+      const provider = await wi.getWorkItem(f.blocker.id, 'papercup');
+      const oracle = await import('./agent-tools/coordination/liveness-oracle');
+      const verdicts = new Map(f.authors.map(owner => [owner, { sessionState: 'ended' }]));
+      if (state === 'missing') verdicts.delete(f.authors[1]);
+      else if (!['ended', 'reader-error', 'unrelated-event'].includes(state)) verdicts.set(f.authors[1], { sessionState: state });
+      const spy = vi.spyOn(oracle, 'resolveSessionStates');
+      if (state === 'reader-error') spy.mockRejectedValue(new Error('predecessor liveness unavailable'));
+      else spy.mockResolvedValue(verdicts as Awaited<ReturnType<typeof oracle.resolveSessionStates>>);
+      try {
+        if (state === 'ended') {
+          expect(await correctBinding(f)).toMatchObject({ ok: true });
+          const after = await bindingSnapshot(f.item.id);
+          expect(after.edges).toHaveLength(0);
+          expect(after.row.taken_by).toBe(before.row.taken_by);
+          expect(after.row.status).toBe(before.row.status);
+          expect(after.row.payload.blockerResolution.history).toEqual([
+            ...before.row.payload.blockerResolution.history, expect.objectContaining({ authorId: 'agC', revision: 3 })]);
+          expect(await checkpointStore.getWorkItemCheckpoint(checkpointRef(f.item.id))).toBe('original checkpoint');
+          expect(await correctBinding(f)).toMatchObject({ ok: true, replayed: true });
+        } else {
+          await expect(correctBinding(f)).rejects.toMatchObject({ code: 'blocker_decision_evidence' });
+          expect(await bindingSnapshot(f.item.id)).toEqual(before);
+        }
+        expect(spy).toHaveBeenCalledWith(f.authors.map(ownerId => ({ ownerId })), { hydratePerId: true });
+        expect(await wi.getWorkItem(f.blocker.id, 'papercup')).toEqual(provider);
+      } finally { spy.mockRestore(); }
+    });
+  it.each([24, 25, 26, 57])('binding correction never omits the final predecessor in a %i-author history', async count => {
+    const f = await multiPredecessorCorrectionSetup(count);
+    const before = await bindingSnapshot(f.item.id);
+    const oracle = await import('./agent-tools/coordination/liveness-oracle');
+    const verdicts = new Map(f.authors.map(owner => [owner, { sessionState: 'ended' }]));
+    const last = f.authors[count - 1];
+    verdicts.set(last, { sessionState: 'recorded' });
+    const spy = vi.spyOn(oracle, 'resolveSessionStates').mockImplementation(async () =>
+      verdicts as Awaited<ReturnType<typeof oracle.resolveSessionStates>>);
+    try {
+      await expect(correctBinding(f)).rejects.toMatchObject({ code: 'blocker_decision_evidence' });
+      expect(await bindingSnapshot(f.item.id)).toEqual(before);
+      verdicts.set(last, { sessionState: 'ended' });
+      expect(await correctBinding(f)).toMatchObject({ ok: true });
+      expect(spy).toHaveBeenCalledWith(f.authors.map(ownerId => ({ ownerId })), { hydratePerId: true });
+    } finally { spy.mockRestore(); }
+  });
   it.each(['ended', 'live', 'parked', 'draining', 'suspect', 'recorded', null, 'missing', 'reader-error'] as const)(
     'binding correction by successor custodian requires confirmed terminal author: %s', async state => {
       const f = await successorCorrectionSetup();

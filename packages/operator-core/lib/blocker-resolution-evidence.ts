@@ -6,6 +6,7 @@ import { parsePlan } from '@papercusp/plan-parser';
 import type { CellReadEnv } from './cell-read';
 import type { ExternalBlockerRecord } from './external-blockers';
 import { activeWorkspaceId } from './workspace-registry';
+import { redactSensitiveText } from './sensitive-text';
 import { readGitFilePublicationCondition, type GitFilePublicationBinding } from './git-file-publication-condition';
 import { BLOCKER_EVIDENCE_REF_GRAMMAR, hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
   validateBlockerDecisionEvidence, type BlockerEvidenceMeasurement, type BlockerEvidenceRef,
@@ -164,9 +165,6 @@ export async function preflightBlockerDecision(
     if (activeWorkspaceId() !== context.workspaceId) return boundaryProblem(['canonical tenant context']);
     const { readUnresolvedDepBlockers } = await import('./work-items');
     const dependencies = await readUnresolvedDepBlockers(item.id, item.harness ?? undefined);
-    // This reporting reader is capped at 25. A full page is not a complete
-    // census, so it cannot authorize clearing all remaining obligations.
-    if (dependencies.length >= 25) return boundaryProblem(['complete dependency census (reporting page reached its limit)']);
     const required = options.enteringDeferral || hasUnresolvedBlockerObligation(item.payload, item.state) ||
       dependencies.length > 0 || (options.additionalBlockers?.length ?? 0) > 0 ||
       (options.additionalDependencyRefs?.length ?? 0) > 0;
@@ -211,7 +209,6 @@ export async function preflightBlockerDecision(
     let relatedConditionRefs: BlockerEvidenceRef[] = [];
     if (prepared.record.decision.disposition === 'self_resolve') {
       const related = await readUnresolvedDepBlockers(item.id, item.harness ?? undefined, { includeSatisfied: true });
-      if (related.length >= 25) return boundaryProblem(['complete dependency census (related reporting page reached its limit)']);
       relatedConditionRefs = await dependencyRefs(related.map(dep => dep.ref));
     }
     for (const blocker of blockers) {
@@ -242,7 +239,11 @@ export async function preflightBlockerDecision(
     const blockerRetainingLinkScope = custodyScope &&
       blockerAddingLink(options.effect, options.additionalDependencyRefs, item.id)
       ? custodyScope : undefined;
-    const parkedPlanLaneScope = plainReleaseScope ?? blockerRetainingLinkScope;
+    // An admitted partial removal preserves the park and every sibling edge.
+    // Its transaction witness never authorizes a reopen or global clearance.
+    const partialCorrectionScope = custodyScope && options.bindingCorrectionAdmission &&
+      prepared.record.decision.disposition === 'defer' ? custodyScope : undefined;
+    const parkedPlanLaneScope = plainReleaseScope ?? blockerRetainingLinkScope ?? partialCorrectionScope;
     const planLaneReopen = custodyScope && prepared.record.decision.disposition === 'self_resolve'
       ? explicitPlanLaneReopen(options.effect) : undefined;
     const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
@@ -609,6 +610,20 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
   // still measures current tenant-scoped rows rather than caching a verdict.
   let auditHeader: Promise<typeof import('./scorecards').readScorecardRecipeHeader> | undefined;
   const loadAuditHeader = () => auditHeader ??= import('./scorecards').then(module => module.readScorecardRecipeHeader);
+  // Parallel references share module loading, never tenant or row values. In
+  // particular, every reference still rechecks the current workspace below.
+  let workItemReaders: Promise<readonly [
+    typeof import('./workspace-registry'), typeof import('./work-items'), typeof import('./work-item-blocking'),
+  ]> | undefined;
+  const loadWorkItemReaders = () => workItemReaders ??= (async () => {
+    // Establish each namespace before a sibling's circular imports can start
+    // evaluating it. Row/evidence reads still run in parallel after this one
+    // request-local initialization; no tenant value or verdict is cached.
+    const workspace = await import('./workspace-registry');
+    const items = await import('./work-items');
+    const blocking = await import('./work-item-blocking');
+    return [workspace, items, blocking] as const;
+  })();
 
   async function repositoryRoot(): Promise<string | null> {
     return context.root ?? (context.harnessSlug
@@ -616,7 +631,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
   }
 
   async function workItem(ref: string): Promise<BlockerEvidenceMeasurement> {
-    const { activeWorkspaceId } = await import('./workspace-registry');
+    const [{ activeWorkspaceId }, { getWorkItem }, { ALL_TERMINAL_STATUSES }] = await loadWorkItemReaders();
     // The work reader resolves the request's active tenant. A mismatch is not
     // permission to read an unscoped fallback row from another workspace.
     const activeWorkspace = activeWorkspaceId();
@@ -630,10 +645,8 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
     if (!match) return absent(`expected work-item:${BLOCKER_EVIDENCE_REF_GRAMMAR['work-item'].ref}`);
     const harness = match[1] ?? context.harnessSlug;
     if (!harness) return unknown('canonical work-item harness is required');
-    const { getWorkItem } = await import('./work-items');
     const item = await getWorkItem(match[2], harness);
     if (!item || item.harness !== harness) return absent('no canonical work-item in the named harness');
-    const { ALL_TERMINAL_STATUSES } = await import('./work-item-blocking');
     const settled = ALL_TERMINAL_STATUSES.has(item.state);
     let liveOwnerId: string | undefined;
     if (!settled && item.assignee) {
@@ -756,10 +769,8 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
               laneHuman.length === 1 && declaredHuman.length === 1 &&
               isDeepStrictEqual(laneHuman[0], declaredHuman[0]) && context.authorizeAuthorityClear &&
               await context.authorizeAuthorityClear(laneHuman[0], clear?.ownerTurnRef);
-            if (!payload || (!['open', 'todo', 'wip'].includes(String(payload.planLaneParkedFrom)) &&
-                !(payload.planLaneParkedFrom === 'blocked' && (reopeningBlockedPark || clearingBlockedPark)))) {
-              return unknown('generated lane lacks actionable pre-park provenance');
-            }
+            if (!payload) return unknown('generated lane lacks actionable pre-park provenance');
+            const actionablePrePark = ['open', 'todo', 'wip'].includes(String(payload.planLaneParkedFrom));
             const hold = readWorkItemClaimHoldProvenance(current.payload);
             const release = context.retainedReservationRelease;
             const preservesOwnReservation = release && release.workspaceId === context.workspaceId &&
@@ -777,9 +788,17 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
             const retainsExactPark = retainedPark && retainedPark.workspaceId === context.workspaceId &&
               retainedPark.harnessSlug === context.harnessSlug && retainedPark.workItemId === current.id &&
               retainedPark.custodianId === context.ownerId;
-            if (exactSystemPlanLinePark && retainsExactPark) {
+            // Retaining this exact system park neither measures nor clears it.
+            // Its original state may already have been blocked by an independent
+            // condition; only clearance still requires actionable provenance.
+            if (exactSystemPlanLinePark && retainsExactPark &&
+                (actionablePrePark || payload.planLaneParkedFrom === 'blocked')) {
               return { status: 'unmeasured-parked-plan-lane', ref: ref.ref, scope: retainedPark,
                 detail: 'system plan-line transition park is retained by the host-validated write' };
+            }
+            if (!actionablePrePark && !(payload.planLaneParkedFrom === 'blocked' &&
+                (reopeningBlockedPark || clearingBlockedPark))) {
+              return unknown('generated lane lacks actionable pre-park provenance');
             }
             if (hold.parked || ((isClaimHoldParked(current.payload) || hold.heldOpen) && !preservesOwnReservation)) {
               return unknown('independent park or lease must be resolved through its own authority');
@@ -965,7 +984,7 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
       if (error instanceof SyntaxError || (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) {
         return absent('reference does not resolve');
       }
-      return unknown('canonical evidence reader failed');
+      return unknown(`canonical evidence reader failed: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`);
     }
   };
 }
