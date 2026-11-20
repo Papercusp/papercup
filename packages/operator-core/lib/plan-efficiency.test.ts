@@ -5,6 +5,7 @@
  * plan-efficiency.integration.test.ts.
  */
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { PLAN_EFFICIENCY_CATEGORIES, categorizePlanToolCall, foldPlanCallGroups,
   collectRevisionReopenings, measurePlanRevisionDelay, type RevisionDiscoveryAudit,
@@ -76,6 +77,39 @@ describe('revision-induced reopening costs', () => {
     expect(groups.reduce((count, group) => count + group.record_count, 0)).toBe(2619);
     expect(replay).toHaveLength(461);
     expect(replay.filter(row => row[3] === null)).toHaveLength(1);
+  });
+
+  it('replays retained invocation pages including the empty day and unresolved plan identities', () => {
+    type Event = [string, string, string, string, string, string | null, string | null,
+      string, string | null, string | null, string | null];
+    const fixture = JSON.parse(readFileSync(new URL('../test/fixtures/plan-revision-baseline.json', import.meta.url), 'utf8'));
+    const activity = fixture.historicalActivity;
+    const pages: { from: string; until: string; count: number; eventsSha256: string; events: Event[] }[] = activity.pages;
+    const ids = new Set<string>();
+    const subjects: Record<string, number> = {};
+    let nextStart = Date.parse(fixture.history.scope.from);
+    for (const page of pages) {
+      expect(Date.parse(page.from)).toBe(nextStart);
+      nextStart += 24 * 60 * 60 * 1000;
+      expect(Date.parse(page.until)).toBe(nextStart);
+      expect(page.events).toHaveLength(page.count);
+      // The extraction query hashed PostgreSQL's UTF-8 jsonb text of the ordered tuples.
+      const originalText = '[' + page.events.map(row => '[' + row.map(value => JSON.stringify(value)).join(', ') + ']').join(', ') + ']';
+      expect(createHash('sha256').update(originalText).digest('hex')).toBe(page.eventsSha256);
+      for (const [id, , , , , , , match] of page.events) {
+        ids.add(id);
+        subjects[match] = (subjects[match] ?? 0) + 1;
+      }
+    }
+    expect(nextStart).toBe(Date.parse(fixture.history.scope.until));
+    expect(pages.reduce((n, page) => n + page.count, 0)).toBe(ids.size);
+    expect(ids.size).toBe(activity.retainedCount);
+    expect(subjects).toEqual(activity.subjectCounts);
+    expect(subjects['unresolved-subject']).toBeGreaterThan(0);
+    expect(pages.find(page => page.from.startsWith(activity.emptyDayControl.date))?.events).toEqual([]);
+    expect(ids.has(activity.emptyDayControl.positiveControl.id)).toBe(true);
+    expect(activity.planRuns.map((r: { run_id: string; matching_audits: unknown[] }) => [r.run_id, r.matching_audits]))
+      .toEqual([['1359', [['discovery', 2, '87290']]], ['1360', []]]);
   });
 });
 
