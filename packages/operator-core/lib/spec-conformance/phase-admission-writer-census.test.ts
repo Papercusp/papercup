@@ -1528,13 +1528,19 @@ describe('phase binding writer census', () => {
 
   it('retains each generated docs mirror exclusion without exempting source or lookalike paths', async () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-generated-docs-'));
+    const internalPublisher = 'apps/operator-docs/scripts/postbuild-copy.sh';
+    const publicPublisher = 'apps/papercusp-docs/scripts/postbuild-copy.sh';
     const generated = [
-      ['apps/operator/public/internal/docs/index.html', '<html>built docs</html>'],
-      ['apps/operator/public/internal/docs/pagefind/chunk.js', write],
-      ['apps/operator/public/internal/docs/pagefind/shard.pf_fragment', Buffer.from([0xff, 0xfe])],
+      ['apps/operator/public/internal/docs/index.html', '<html>built docs</html>', internalPublisher],
+      ['apps/operator/public/internal/docs/pagefind/chunk.js', write, internalPublisher],
+      ['apps/operator/public/internal/docs/pagefind/shard.pf_fragment', Buffer.from([0xff, 0xfe]), internalPublisher],
+      ['apps/operator/public/docs/pagefind/chunk.js', write, publicPublisher],
+      ['apps/operator/public/docs/pagefind/shard.pf_fragment', Buffer.from([0xfe, 0xff]), publicPublisher],
     ] as const;
     const sources = [
       'apps/operator-docs/src/renderer.ts',
+      'apps/papercusp-docs/src/renderer.ts',
+      'apps/operator/public/docs-source/renderer.ts',
       'apps/operator/public/internal/docs-source/renderer.ts',
       'apps/operator/public/internal/docs.old.notes/renderer.ts',
     ];
@@ -1544,8 +1550,8 @@ describe('phase binding writer census', () => {
         writeFileSync(join(root, path), content);
       }
       const inventory = inventoryPhaseWriterTree(root);
-      const excluded = generated.map(([path]) => ({
-        path, reason: 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh',
+      const excluded = generated.map(([path, , publisher]) => ({
+        path, reason: `generated-docs-mirror:${publisher}`,
       })).sort((a, b) => a.path.localeCompare(b.path));
       expect(inventory.excluded).toEqual(excluded);
       expect(inventory.gaps).toEqual([]);
@@ -1566,12 +1572,42 @@ describe('phase binding writer census', () => {
       expect(await readPhaseWriterCensus(lines)).toEqual(footer);
       expect(lines.map(line => JSON.parse(line)).filter(row => row.kind === 'excluded').map(row => row.value))
         .toEqual(excluded);
-      const added = 'apps/operator/public/internal/docs/pagefind/new-shard.pf_fragment';
-      writeFileSync(join(root, added), Buffer.from([0xff]));
-      expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual([
-        { id: `excluded:${added}`, reason: 'added', expected: null,
-          actual: 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh' },
-      ]);
+      const added = [
+        ['apps/operator/public/docs/pagefind/new-shard.pf_fragment', publicPublisher],
+        ['apps/operator/public/internal/docs/pagefind/new-shard.pf_fragment', internalPublisher],
+      ] as const;
+      for (const [path] of added) writeFileSync(join(root, path), Buffer.from([0xff]));
+      expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual(added.map(([path, publisher]) => ({
+        id: `excluded:${path}`, reason: 'added', expected: null, actual: `generated-docs-mirror:${publisher}`,
+      })));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains declared Papergrid Storybook outputs separately from authored inputs', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-generated-storybook-'));
+    const packageRoot = 'libs/generic/papergrid/grid-core';
+    const font = `${packageRoot}/storybook-static/font.woff2`;
+    const bundle = `${packageRoot}/storybook-static/assets/index.js`;
+    const inputs = [
+      `${packageRoot}/.storybook/main.ts`,
+      `${packageRoot}/storybook-static-source/main.ts`,
+      'libs/other/storybook-static/writer.ts',
+    ];
+    try {
+      const files = [[font, Buffer.from([0xff])], [bundle, write],
+        ...inputs.map(path => [path, write] as const)] as const;
+      for (const [path, content] of files) {
+        mkdirSync(join(root, path, '..'), { recursive: true });
+        writeFileSync(join(root, path), content);
+      }
+      const inventory = inventoryPhaseWriterTree(root);
+      const reason = `generated-storybook-output:${packageRoot}/package.json#scripts.build-storybook`;
+      expect(inventory.excluded).toEqual([bundle, font].map(path => ({ path, reason })));
+      expect(inventory.gaps).toEqual([]);
+      expect(inventory.sources.map(source => source.path)).toEqual(inputs);
+      expect(inventory.sites.filter(site => site.kind === 'sql').map(site => site.path)).toEqual(inputs);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.notApplicable).toEqual(
+        [bundle, font].map(path => `excluded:${path}`));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

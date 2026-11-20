@@ -3,6 +3,45 @@ import { boundedFrontier, censusSites, changedSites, compareSourcePopulation, cr
   selectSourcePath, verifyPreparationCitation } from './lib/source-path-census.mjs';
 
 describe('source-only call-site preparation', () => {
+  it.each([1023, 1024, 1025])('preserves exact UTF-8 spans around a block boundary at %i', boundary => {
+    const prefix = '/* é' + 'a'.repeat(boundary - '/* é'.length);
+    const text = prefix + '😀\ud800 */\r\nif (check()) { outer("β", inner()); }\n'
+      + ' '.repeat(2048) + 'late();';
+    const unit = censusSites('unicode.ts', text);
+    expect(unit.sites.map(site => site.expression)).toEqual(['check', 'outer', 'inner', 'late']);
+    for (const site of unit.sites) {
+      expect(site.source).toBe(text.slice(site.start, site.end));
+      expect(site.byteStart).toBe(Buffer.byteLength(text.slice(0, site.start)));
+      expect(site.byteEnd).toBe(Buffer.byteLength(text.slice(0, site.end)));
+    }
+    expect(unit.sites[3]).toMatchObject({ line: 3, column: 2049 });
+  });
+
+  it('does not re-encode whole UTF-8 prefixes for each source span', () => {
+    const marker = '/* census work budget */';
+    const calls = 2048;
+    const text = `${marker}\n${'effect("é");\n'.repeat(calls)}`;
+    const byteLength = Buffer.byteLength;
+    let encodedLargePrefixes = 0;
+    const spy = vi.spyOn(Buffer, 'byteLength').mockImplementation((value, encoding) => {
+      if (typeof value === 'string' && value.length > text.length / 4 && value.startsWith(marker)) {
+        encodedLargePrefixes += value.length;
+      }
+      return byteLength(value, encoding);
+    });
+    let unit: ReturnType<typeof censusSites>;
+    try {
+      unit = censusSites('wide-unicode.ts', text);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(unit.sites).toHaveLength(calls);
+    const last = unit.sites.at(-1)!;
+    expect(last.byteEnd).toBe(byteLength(text.slice(0, last.end)));
+    expect(encodedLargePrefixes).toBeLessThanOrEqual(text.length);
+  });
+
   it('does not attribute a shadowed parameter call to an imported process primitive', () => {
     const unit = censusSites('unit.ts', `import { spawn } from 'node:child_process';
       function handler(spawn) { spawn('local callback'); }`);

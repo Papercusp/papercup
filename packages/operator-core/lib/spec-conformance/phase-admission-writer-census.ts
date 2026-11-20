@@ -12,6 +12,12 @@ import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-fil
 import { buildSymbolSnapshot, relativeSymbolModule, type SymbolDeclaration } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 
 export const PHASE_WRITER_ROOTS = ['packages/', 'apps/', 'libs/', 'scripts/'] as const;
+const generatedOutputPrefixes = [
+  ['apps/operator/public/internal/docs/', 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh'],
+  ['apps/operator/public/docs/', 'generated-docs-mirror:apps/papercusp-docs/scripts/postbuild-copy.sh'],
+  ['libs/generic/papergrid/grid-core/storybook-static/',
+    'generated-storybook-output:libs/generic/papergrid/grid-core/package.json#scripts.build-storybook'],
+] as const;
 export const PHASE_WRITER_RELATIONS = new Set([
   'plan_item_claims', 'work_items', 'engineer_issues', 'harness_features',
   'harness_features_consolidated', 'harness_plans', 'feature_claims',
@@ -738,11 +744,11 @@ function readPhaseWriterTree(root: string) {
     if (path.split('/').some(part => generated.has(part))) {
       excluded.push({ path, reason: 'generated-or-vendor-output' }); continue;
     }
-    // astro.config.mjs emits dist/, then this maintained publisher copies the
-    // complete build into this exact served mirror. Keep the authored docs,
-    // publisher and similarly named sibling paths in the source population.
-    if (path.startsWith('apps/operator/public/internal/docs/')) {
-      excluded.push({ path, reason: 'generated-docs-mirror:apps/operator-docs/scripts/postbuild-copy.sh' }); continue;
+    // Keep each output identity and its producer. Authored inputs, producer
+    // scripts and similarly named sibling paths remain in the source census.
+    const output = generatedOutputPrefixes.find(([prefix]) => path.startsWith(prefix));
+    if (output) {
+      excluded.push({ path, reason: output[1] }); continue;
     }
     // File extensions do not establish whether a runtime-root file can execute
     // or configure a writer. Keep unfamiliar and extensionless text for review;

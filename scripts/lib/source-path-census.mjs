@@ -15,6 +15,25 @@ const label = node => {
   return '<anonymous>';
 };
 
+function utf8Offsets(text) {
+  const stride = 1024;
+  const starts = new Uint32Array(Math.floor(text.length / stride) + 1);
+  const bytes = new Uint32Array(starts.length);
+  for (let block = 1; block < starts.length; block++) {
+    let start = block * stride;
+    const left = text.charCodeAt(start - 1), right = text.charCodeAt(start);
+    // Keep a surrogate pair in the same block. A queried offset between its
+    // two code units still counts exactly as encoding the original prefix.
+    if (left >= 0xd800 && left <= 0xdbff && right >= 0xdc00 && right <= 0xdfff) start--;
+    starts[block] = start;
+    bytes[block] = bytes[block - 1] + Buffer.byteLength(text.slice(starts[block - 1], start));
+  }
+  return offset => {
+    const block = Math.floor(offset / stride);
+    return bytes[block] + Buffer.byteLength(text.slice(starts[block], offset));
+  };
+}
+
 /** Retain every call/import occurrence, its source span, function and predicate context.
  * includeDefinitions also retains syntactic surface candidates whose changes need
  * no call: type fields, prompt literals, adapters and gate bodies. These are source
@@ -43,11 +62,13 @@ export function censusSites(path, text, { includeDefinitions = false } = {}) {
     else if (ts.isSpreadElement(target)) written(target.expression);
     else if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.EqualsToken) written(target.left);
   };
+  let byteOffset;
   const span = node => {
     const start = node.getStart(ast), end = node.end;
     const point = ast.getLineAndCharacterOfPosition(start);
-    return { start, end, byteStart: Buffer.byteLength(text.slice(0, start)),
-      byteEnd: Buffer.byteLength(text.slice(0, end)), line: point.line + 1, column: point.character + 1 };
+    byteOffset ??= utf8Offsets(text);
+    return { start, end, byteStart: byteOffset(start), byteEnd: byteOffset(end),
+      line: point.line + 1, column: point.character + 1 };
   };
   const bind = (pattern, expression) => {
     if (!pattern || !expression) return;
