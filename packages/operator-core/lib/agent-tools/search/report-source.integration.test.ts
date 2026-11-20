@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { runFullTextSearch, runHybridSearch } from '@papercusp/search';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { createReportSearchSource, revalidateReportSourceVersions } from './report-source';
-import { publishReport, retireReport } from '../../report-library';
+import { publishReport, retireReport, type PublishReportInput, type ReportOrigin, type ReportViewer } from '../../report-library';
 import { publishReportWithEffects } from '../../report-publication';
 import { indexReport } from '../../search/report-index';
 import { SEARCH_SOURCES } from './sources';
@@ -63,6 +64,118 @@ describe('Reports shared search (migrated PostgreSQL)', () => {
     });
     return report;
   }
+
+  function editionFixture() {
+    const workspace = 'report-editions-' + randomUUID();
+    const body = Array.from({ length: 140 }, (_, i) => `Observation ${i} contains zephyrquartz and a numbered result.\n`).join('') + 'End A';
+    const edition = (input: Partial<Omit<PublishReportInput, 'workspaceId'>> = {}, origin: ReportOrigin = author) =>
+      publishReport(db.adminSql, { workspaceId: workspace, visibility: 'workspace', title: 'Reviewed findings', bodyMd: body, ...input }, origin);
+    const hits = async (viewer: ReportViewer = {}) => (await createReportSearchSource(viewer).embedding!({
+      ...context(), workspaceId: workspace, qVec: JSON.stringify(vector('zephyrquartz')),
+      embeddingProfile: { profileId, legacyMode: 'gemma' },
+    })).map(hit => hit.row.source_id);
+    onTestFinished(async () => {
+      await db.adminSql.begin(async tx => {
+        await tx`DELETE FROM harness_shared.text_chunks WHERE surface='report' AND parent_key[1]=${workspace}`;
+        await tx`DELETE FROM harness_shared.report_library WHERE workspace_id=${workspace}`;
+      });
+    });
+    return { workspace, body, edition, hits };
+  }
+
+  it('reuses compatible chunks across authorized successor editions', async () => {
+    const { body, edition, hits } = editionFixture();
+    const original = await edition();
+    await indexReport(db.adminSql, original, documentEmbedder);
+    const correction = await edition({ supersedes: original.reportId, bodyMd: body.replace('End A', 'End B') },
+      { authorOwnerId: 'second-writer', harnessSlug: 'pot-b' });
+    const counting = { ...documentEmbedder, embed: vi.fn(embed) };
+    const result = await indexReport(db.adminSql, correction, counting);
+    expect(result.chunks).toBeGreaterThan(3);
+    expect(result.embedded).toBe(1);
+    expect(counting.embed).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('End B'));
+    expect(await hits()).toEqual([correction.reportId]);
+    counting.embed.mockClear();
+    expect((await indexReport(db.adminSql, correction, counting)).embedded).toBe(0);
+    expect(counting.embed).not.toHaveBeenCalled();
+  });
+
+  it('excludes restricted predecessor chunks from successor reuse', async () => {
+    for (const scenario of ['wider audience', 'different pot', 'different private author', 'retired source']) {
+      const { workspace, edition, hits } = editionFixture();
+      const visibility = scenario === 'different pot' ? 'pot' : scenario === 'retired source' ? 'workspace' : 'owner';
+      const before = await edition({ visibility });
+      await indexReport(db.adminSql, before, documentEmbedder);
+      if (scenario === 'retired source') await retireReport(db.adminSql, workspace, before.reportId);
+      const origin = { authorOwnerId: 'another-writer', harnessSlug: 'pot-b' };
+      const after = await edition({ supersedes: before.reportId, visibility: scenario === 'wider audience' ? 'workspace' : visibility }, origin);
+      const counting = { ...documentEmbedder, embed: vi.fn(embed) };
+      const result = await indexReport(db.adminSql, after, counting);
+      expect(counting.embed, scenario).toHaveBeenCalledTimes(result.chunks);
+      expect(await hits({ ownerId: origin.authorOwnerId, potSlug: origin.harnessSlug })).toEqual([after.reportId]);
+    }
+  });
+
+  it('reembeds successor chunks when the embedding profile or model changes', async () => {
+    for (const space of [{ profileId: 'next-profile', mode: 'gemma' }, { profileId, mode: 'different-space' }]) {
+      const { workspace, edition } = editionFixture();
+      const original = await edition();
+      await indexReport(db.adminSql, original, documentEmbedder);
+      const successor = await edition({ supersedes: original.reportId });
+      const counting = { ...space, embed: vi.fn(embed) };
+      const result = await indexReport(db.adminSql, successor, counting);
+      expect(counting.embed).toHaveBeenCalledTimes(result.chunks);
+      const spaces = await db.adminSql`SELECT DISTINCT embedding_profile, embedding_mode FROM harness_shared.text_chunks
+        WHERE surface='report' AND parent_key=${[workspace, successor.reportId]}::text[]`;
+      expect(Array.from(spaces)).toEqual([{ embedding_profile: space.profileId, embedding_mode: space.mode }]);
+    }
+  });
+
+  it('resumes interrupted successor indexing without exposing a partial manifest', async () => {
+    const { workspace, edition, hits } = editionFixture();
+    const original = await edition();
+    await indexReport(db.adminSql, original, documentEmbedder);
+    const next = await edition({ supersedes: original.reportId, title: 'Changed header for every model input' });
+    const stopped = vi.fn(embed).mockImplementationOnce(embed).mockRejectedValueOnce(new Error('fixture interruption'));
+    await expect(indexReport(db.adminSql, next, { ...documentEmbedder, embed: stopped })).rejects.toThrow('fixture interruption');
+    const [manifest] = await db.adminSql`SELECT count(*)::int AS chunks, count(embedding)::int AS completed
+      FROM harness_shared.text_chunks WHERE surface='report' AND parent_key=${[workspace, next.reportId]}::text[]`;
+    expect(manifest!.chunks).toBeGreaterThan(2);
+    expect(manifest!.completed).toBe(1);
+    expect(await hits()).toEqual([]);
+    const lexical = await createReportSearchSource().lexical({ ...context(), workspaceId: workspace });
+    expect(lexical.map(hit => hit.row.source_id)).toEqual([next.reportId]);
+    const resume = vi.fn(embed);
+    await indexReport(db.adminSql, next, { ...documentEmbedder, embed: resume });
+    expect(resume).toHaveBeenCalledTimes(manifest!.chunks - 1);
+    expect(await hits()).toEqual([next.reportId]);
+  });
+
+  it('publishes only the current successor when two corrections finish out of order', async () => {
+    const { edition, body, hits } = editionFixture();
+    const original = await edition();
+    await indexReport(db.adminSql, original, documentEmbedder);
+    const first = await edition({ supersedes: original.reportId, title: 'First correction' });
+    let release!: () => void;
+    let entered!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const slow = vi.fn(embed).mockImplementationOnce(async text => { entered(); await wait; return embed(text); });
+    const indexing = indexReport(db.adminSql, first, { ...documentEmbedder, embed: slow });
+    try {
+      await Promise.race([started, indexing.then(() => { throw new Error('first correction did not request an embedding'); })]);
+      const latest = await edition({ supersedes: original.reportId, bodyMd: body.replace('End A', 'End C') });
+      const counting = { ...documentEmbedder, embed: vi.fn(embed) };
+      await indexReport(db.adminSql, latest, counting);
+      expect(counting.embed).toHaveBeenCalledTimes(1);
+      expect(await hits()).toEqual([latest.reportId]);
+      release();
+      await indexing;
+      expect(await hits()).toEqual([latest.reportId]);
+      await indexReport(db.adminSql, latest, counting);
+      expect(counting.embed).toHaveBeenCalledTimes(1);
+    } finally { release(); await indexing; }
+  });
 
   it('retries an indexed report without invoking the embedder', async () => {
     const report = await publishProfileFixture('multi-chunk report '.repeat(400));

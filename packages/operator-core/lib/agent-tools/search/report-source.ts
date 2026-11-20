@@ -144,6 +144,13 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
         WHERE r.workspace_id = ${p.workspaceId} AND r.report_id IN (${latest(p)})
           AND c.embedding IS NOT NULL
           AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'c.embedding_profile', 'c.embedding_mode')}
+          AND (r.supersedes_report_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM harness_shared.text_chunks sibling
+            WHERE sibling.surface = 'report' AND sibling.parent_key = c.parent_key
+              AND (sibling.embedding IS NULL OR sibling.parent_sha IS DISTINCT FROM c.parent_sha
+                OR sibling.splitter_version IS DISTINCT FROM c.splitter_version
+                OR (${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 'sibling.embedding_profile', 'sibling.embedding_mode')}) IS NOT TRUE)
+          ))
         GROUP BY r.workspace_id, r.report_id ORDER BY distance, r.report_id LIMIT ${p.limit}
       ) SELECT r.workspace_id, r.report_id, r.title, r.summary, r.body_md, r.lineage_id, r.origin_harness_slug, r.published_at,
         1 - b.distance AS rank, c.content AS match_content, c.content AS highlight,
