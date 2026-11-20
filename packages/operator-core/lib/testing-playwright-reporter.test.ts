@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { verifierGitCheckoutSync, verifierSourceFiles } from '@papercusp/test-config/verifier-source';
 
 const { sql, pg } = vi.hoisted(() => {
   const sql = vi.fn();
@@ -116,10 +117,20 @@ describe('portable Playwright ledger reporter', () => {
       vi.useFakeTimers();
       try {
         let acknowledge!: (rows: { id: string }[]) => void;
-        sql.mockReset().mockImplementation(() => new Promise(resolve => { acknowledge = resolve; }));
+        let submitted!: () => void;
+        const insertionStarted = new Promise<void>(resolve => { submitted = resolve; });
+        sql.mockReset().mockImplementation(() => new Promise(resolve => {
+          acknowledge = resolve;
+          submitted();
+        }));
         const path = join(dir, 'receipts.jsonl');
-        const recording = recordPassingRun(path);
-        await vi.advanceTimersByTimeAsync(15_001);
+        let finished = false;
+        const recording = recordPassingRun(path).finally(() => { finished = true; });
+        await insertionStarted;
+        const budget = reporterWriteBudget(process.env);
+        await vi.advanceTimersByTimeAsync(budget.flushBudgetMs);
+        expect(finished).toBe(false);
+        await vi.advanceTimersByTimeAsync(budget.insertTimeoutMs - budget.flushBudgetMs + 1);
         expect(sql).toHaveBeenCalledOnce();
         expect(JSON.parse(readFileSync(path, 'utf8').trim())).toMatchObject({
           attempt: 0, outcome: 'timeout', replayable: false,
@@ -323,6 +334,73 @@ describe('portable Playwright ledger reporter', () => {
   it('keeps operator profiles on the same maintained implementation', () => {
     expect(OperatorReporter).toBe(Reporter);
   });
+
+  it.each(['stable', 'changed application', 'changed definition', 'unselected file', 'wrong definition ref', 'same receipt'])(
+    'checks the historical application and the separately committed native case (%s)', async condition => {
+      const parent = mkdtempSync(join(tmpdir(), 'native-comparison-'));
+      function archive(name: string, path: string) {
+        const root = join(parent, name);
+        mkdirSync(root);
+        const git = (...args: string[]) => execFileSync('git', ['-C', root, '-c', 'user.name=Test',
+          '-c', 'user.email=test@example.invalid', ...args], { encoding: 'utf8' }).trim();
+        git('init', '--quiet');
+        git('commit', '--quiet', '--allow-empty', '-m', 'fixture parent');
+        writeFileSync(join(root, path), name);
+        git('add', path);
+        git('commit', '--quiet', '-m', 'fixture source');
+        const commit = git('rev-parse', 'HEAD');
+        const files = verifierSourceFiles(root, { gitMetadataPaths: ['.git'] });
+        const receipt = JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: commit,
+          testedInputs: files.map(({ path, sha256 }) => ({ path, sha256 })), files,
+          gitCheckout: verifierGitCheckoutSync(root, commit) });
+        const receiptPath = join(parent, name + '.json');
+        writeFileSync(receiptPath, receipt);
+        writeFileSync(join(root, '.verifier-source.json'), receipt);
+        return { root, commit, receiptPath, path };
+      }
+      try {
+        const app = archive('application', 'editor.js');
+        const definition = archive('definition', 'plans.spec.mts');
+        expect(app.commit).not.toBe(definition.commit);
+        source.root = definition.root;
+        for (const [key, value] of Object.entries({
+          PAPERCUSP_WORKSPACE: 'verify-tauri-isolated-90', PAPERCUSP_WORKSPACE_ID: 'verify-tauri-isolated-90',
+          PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', PAPERCUSP_SKIP_PG_DISCOVERY: '1', VERIFY_TAURI_ISOLATED_DB: '1',
+          VERIFY_TAURI_PID: String(process.pid), VERIFY_TAURI_SOURCE_REF: app.commit,
+          VERIFY_TAURI_SOURCE_RECEIPT: app.receiptPath, OPERATOR_SOURCE_ROOT: app.root,
+          PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: '', PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '',
+        })) vi.stubEnv(key, value);
+        sql.mockReset().mockResolvedValue([{ id: '6789' }]);
+        const reporter = new Reporter({ definitionSource: {
+          commit: condition === 'wrong definition ref' ? app.commit : definition.commit,
+          receiptPath: condition === 'same receipt' ? app.receiptPath : definition.receiptPath,
+        } });
+        if (condition === 'wrong definition ref' || condition === 'same receipt') {
+          expect(() => reporter.onBegin()).toThrow(/receipt/);
+        } else {
+          reporter.onBegin();
+        }
+        if (condition === 'changed application') writeFileSync(join(app.root, app.path), 'another application');
+        if (condition === 'changed definition') writeFileSync(join(definition.root, definition.path), 'another case');
+        const path = condition === 'unselected file' ? 'unselected.spec.mts' : definition.path;
+        reporter.onTestEnd({ title: 'native comparison', location: { file: join(source.root, path) } } as never,
+          { status: 'passed', startTime: new Date(), duration: 2, errors: [] } as never);
+        const end = await reporter.onEnd();
+        await reporter.onExit();
+        const row = sql.mock.calls[0]!;
+        if (condition === 'stable') {
+          expect(end).toBeUndefined();
+          expect(row[2]).toBe('pass');
+          expect(row[6]).toContain(`application=${app.commit} verifier=${definition.commit}`);
+          expect(row.at(-1)).toMatchObject({ commitSha: definition.commit,
+            runtimeEnvironmentBefore: { fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) },
+            runtimeEnvironmentAfter: { fingerprint: (row.at(-1) as any).runtimeEnvironmentBefore.fingerprint } });
+        } else {
+          expect(end).toEqual({ status: 'failed' });
+          expect(row[2]).toBe('error');
+        }
+      } finally { rmSync(parent, { recursive: true, force: true }); }
+    });
 
   it('refuses native tests before execution when source custody cannot be prepared', () => {
     vi.stubEnv('VERIFY_TAURI_PID', String(process.pid));

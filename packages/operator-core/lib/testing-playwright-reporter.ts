@@ -51,8 +51,11 @@ import {
   type MutationDescriptor,
   type MutationInvocationDescriptor,
 } from '@papercusp/test-config/mutation-descriptor';
-import { posix, relative } from 'node:path';
-import { prepareNativeRuntimeReader } from './testing-native-runtime';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
+import { posix, relative, sep } from 'node:path';
+import { assertNativeIsolatedWorkspace, prepareNativeRuntimeReader } from './testing-native-runtime';
+import { readVerifierSourceReceiptSync, verifyVerifierSourceSync, type VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
 export { prepareNativeRuntimeReader } from './testing-native-runtime';
 import {
   isRecordedCaseTitle,
@@ -233,6 +236,12 @@ function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boo
   });
 }
 
+// Playwright can call onExit while INSERTs are pending. In receipt mode the
+// first INSERT deadline alone is longer than the ordinary five-second flush.
+function settlementWindow(budget: ReturnType<typeof reporterWriteBudget>): number {
+  return Math.max(budget.totalInsertMs, budget.flushBudgetMs);
+}
+
 async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, root: string, runStartedAt: string | null): Promise<void> {
   let branch: string | null = null;
   try {
@@ -319,7 +328,7 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
     // The query may still commit after the first deadline. Keep the reporter
     // alive through its bounded flush window so its late RETURNING id can
     // supersede this timeout receipt in the mutation probe's collector.
-    const remainingMs = Math.max(0, budget.flushBudgetMs - (Date.now() - startedAt));
+    const remainingMs = Math.max(0, settlementWindow(budget) - (Date.now() - startedAt));
     if (remainingMs > 0) await settleWithin(query, remainingMs);
   }
 }
@@ -339,9 +348,40 @@ interface PerFile {
   passedCaseTitlesTruncated: boolean;
 }
 
+type DefinitionSource = { commit: string; receiptPath: string };
+
+/** The historical app and the later test definition have independent archives.
+ * Keep the actual app process as the subject of the runtime observations. */
+function readComparisonSources(definitionRoot: string, definition: DefinitionSource) {
+  assertNativeIsolatedWorkspace();
+  if (!process.env.VERIFY_TAURI_PID || process.env.VERIFY_TAURI_ISOLATED_DB !== '1'
+    || !process.env.VERIFY_TAURI_SOURCE_REF || !process.env.OPERATOR_SOURCE_ROOT)
+    throw new Error('separate test definition requires the owned isolated native runner');
+  const applicationRoot = realpathSync(process.env.OPERATOR_SOURCE_ROOT);
+  const roots = [applicationRoot, realpathSync(definitionRoot)];
+  if (roots[0] === roots[1]) throw new Error('expected distinct frozen source roots');
+  if (!process.env.VERIFY_TAURI_SOURCE_RECEIPT || !definition.receiptPath)
+    throw new Error('both external source receipts are required');
+  const receipts = [realpathSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT), realpathSync(definition.receiptPath)];
+  if (receipts[0] === receipts[1] || receipts.some(path => roots.some(root => path === root || path.startsWith(root + sep))))
+    throw new Error('the two source receipts must be independent and outside both archives');
+  const application = readVerifierSourceReceiptSync(applicationRoot);
+  const manifest: VerifierSourceReceipt = JSON.parse(readFileSync(definition.receiptPath, 'utf8'));
+  if (!/^[0-9a-f]{40}$/.test(definition.commit) || manifest.sourceCommit !== definition.commit)
+    throw new Error('test definition receipt differs from the selected verifier commit');
+  if (!application.gitCheckout || !manifest.gitCheckout)
+    throw new Error('native comparison requires Git custody in both source receipts');
+  const verifier = verifyVerifierSourceSync(definitionRoot, manifest, { runtimeArtifacts: true });
+  const digest = createHash('sha256')
+    .update(JSON.stringify(application)).update('\0').update(JSON.stringify(verifier)).digest('hex');
+  return { applicationRoot, applicationCommit: application.sourceCommit, definitionCommit: verifier.sourceCommit, digest,
+    inputs: new Set(verifier.testedInputs.map(input => input.path)) };
+}
+
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private byFile = new Map<string, PerFile>();
   private pending: Promise<void>[] = [];
+  private flushWindowMs = 0;
   /** Captured before Playwright begins executing tests. */
   private worktreeBefore: WorktreeGitSnapshot | null = null;
   private runStartedAt: string | null = null;
@@ -350,9 +390,12 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private runtimePreparationFailed = false;
   private runtimeBefore?: RuntimeCapture;
   private mutationInvocation: MutationInvocationDescriptor | null = null;
+  private readonly definitionSource?: DefinitionSource;
+  private comparison?: ReturnType<typeof readComparisonSources>;
 
-  constructor(options: { readRuntimeEnvironment?: RuntimeReader } = {}) {
+  constructor(options: { readRuntimeEnvironment?: RuntimeReader; definitionSource?: DefinitionSource } = {}) {
     this.runtimeReader = options.readRuntimeEnvironment;
+    this.definitionSource = options.definitionSource;
   }
 
   onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
@@ -360,17 +403,23 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     // rather than to a file's first completed test or the later ledger write.
     this.runStartedAt = new Date().toISOString();
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
-    this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
     this.mutationInvocation = readMutationInvocationDescriptor();
     let preparationError: unknown;
     try {
-      this.runtimeReader ??= prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
+      if (this.definitionSource) {
+        this.comparison = readComparisonSources(this.runRoot, this.definitionSource);
+        this.worktreeBefore = { commit: this.comparison.definitionCommit, porcelain: '' };
+        this.runtimeReader = prepareNativeRuntimeReader(this.comparison.applicationRoot, this.comparison.applicationCommit);
+      } else {
+        this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
+        this.runtimeReader ??= prepareNativeRuntimeReader(this.runRoot, this.worktreeBefore?.commit ?? null);
+      }
     } catch (error) {
       this.runtimePreparationFailed = true;
       preparationError = error;
     }
     this.runtimeBefore = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
-    if (process.env.VERIFY_TAURI_PID && this.runtimePreparationFailed) {
+    if ((process.env.VERIFY_TAURI_PID || this.definitionSource) && this.runtimePreparationFailed) {
       // A null snapshot commit carries its census reason (for example the
       // archive path a nested build added); the native check cannot see it.
       const provenance = this.worktreeBefore?.provenanceError;
@@ -448,10 +497,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   async onEnd(): Promise<void | { status: 'failed' }> {
     // Playwright logs onBegin exceptions but can still run and pass the tests.
     // Its awaited onEnd return is the supported way to fail this verification.
-    let nativeRuntimeFailed = Boolean(process.env.VERIFY_TAURI_PID);
+    let nativeRuntimeFailed = Boolean(process.env.VERIFY_TAURI_PID || this.definitionSource);
     try {
       const runtimeAfter = captureRuntimeEnvironment(this.runtimeReader, this.runtimePreparationFailed);
-      nativeRuntimeFailed = Boolean(process.env.VERIFY_TAURI_PID)
+      nativeRuntimeFailed = Boolean(process.env.VERIFY_TAURI_PID || this.definitionSource)
         && !stableRecordedRuntimeEnvironment(this.runtimeBefore?.witness, runtimeAfter.witness);
       const runtimeFailure = nativeRuntimeFailed
         ? `[native runtime witness] missing or changed: before=${this.runtimeBefore?.status ?? 'unavailable'} after=${runtimeAfter.status}`
@@ -461,9 +510,24 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         // onBegin must finish synchronously before any test executes. onEnd is
         // awaited by Playwright, so final custody can use the bounded async
         // runner instead of mistaking a two-second sync budget for dirty source.
-        worktreeAfter = await captureTestSourceSnapshotAsync(this.runRoot);
-      } catch {
+        if (this.definitionSource) {
+          const after = readComparisonSources(this.runRoot, this.definitionSource);
+          if (!this.comparison || after.digest !== this.comparison.digest || after.applicationRoot !== this.comparison.applicationRoot)
+            throw new Error('native application or test definition changed during execution');
+          for (const file of this.byFile.keys()) {
+            if (!after.inputs.has(toWorkspaceRel(file, this.runRoot)))
+              throw new Error(`executed file is absent from the test definition receipt: ${file}`);
+          }
+          worktreeAfter = { commit: after.definitionCommit, porcelain: '' };
+        } else {
+          worktreeAfter = await captureTestSourceSnapshotAsync(this.runRoot);
+        }
+      } catch (error) {
         // D-007: missing proof of stability is dirty, never a false clean.
+        if (this.definitionSource) {
+          nativeRuntimeFailed = true;
+          worktreeAfter.provenanceError = String(error);
+        }
       }
       const worktreeDirty = computeWorktreeDirty(
         this.worktreeBefore ?? { commit: null, porcelain: null },
@@ -475,6 +539,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
       ].filter(Boolean).join('; ').slice(0, 500);
       for (const [file, agg] of this.byFile) {
         try {
+          this.flushWindowMs = settlementWindow(reporterWriteBudget(process.env));
           const filePath = toWorkspaceRel(file, this.runRoot);
           const status: TestRunRow['status'] = nativeRuntimeFailed ? 'error' : agg.anyFail
             ? 'fail'
@@ -484,7 +549,10 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           const durationMs = Math.max(0, agg.finishedAt - agg.startedAt);
           // Preserve diagnostics in the existing text column while deployed
           // strict execution_details readers await the expanded reason field.
-          const output = [...agg.errors, ...(dirtReason ? [`[worktree provenance] ${dirtReason}`] : []),
+          const sources = this.comparison
+            ? [`[native sources] application=${this.comparison.applicationCommit} verifier=${this.comparison.definitionCommit}`]
+            : [];
+          const output = [...agg.errors, ...sources, ...(dirtReason ? [`[worktree provenance] ${dirtReason}`] : []),
             ...(runtimeFailure ? [runtimeFailure] : [])].join('\n');
           const outputTail = output ? output.slice(-4000) : null;
           this.pending.push(
@@ -521,7 +589,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   async onExit(): Promise<void> {
     try {
-      await settleWithin(Promise.allSettled(this.pending), reporterWriteBudget(process.env).flushBudgetMs);
+      await settleWithin(Promise.allSettled(this.pending), this.flushWindowMs);
     } catch {
       /* swallow */
     }
