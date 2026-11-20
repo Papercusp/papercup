@@ -2314,11 +2314,13 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
   }
 
   it.each([
-    { side: 'donor', phase: 'before-hash', statCall: 1 },
-    { side: 'donor', phase: 'after-hash', statCall: 2 },
-    { side: 'destination', phase: 'before-hash', statCall: 1 },
-    { side: 'destination', phase: 'after-hash', statCall: 2 },
-  ])('retains exact metadata failure evidence for $side $phase', async ({ side, phase, statCall }) => {
+    { side: 'donor', phase: 'before-hash', statCall: 1, change: 'mode' },
+    { side: 'donor', phase: 'after-hash', statCall: 2, change: 'mode' },
+    { side: 'destination', phase: 'before-hash', statCall: 1, change: 'mode' },
+    { side: 'destination', phase: 'after-hash', statCall: 2, change: 'mode' },
+    { side: 'destination', phase: 'before-hash', statCall: 1, change: 'ctime' },
+    { side: 'destination', phase: 'after-hash', statCall: 2, change: 'ctime' },
+  ])('retains exact metadata failure evidence for $side $phase $change', async ({ side, phase, statCall, change }) => {
     const f = retainedFixture();
     const path = 'node_modules/alpha.txt';
     const target = join(side === 'donor' ? f.root : f.workRoot, path);
@@ -2331,43 +2333,12 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
     // Change the real file at the descriptor-check boundary. GNU find's census
     // and the verifier's before/after reads still use actual filesystem state.
     const stat = vi.spyOn(prototype, 'stat').mockImplementation(async function (this: { fd: number }, options) {
-      if (readlinkSync('/proc/self/fd/' + this.fd) === target && ++targetStats === statCall)
-        chmodSync(target, mode ^ 0o100);
-      return originalStat.call(this, options);
-    });
-    const build = vi.fn();
-    try {
-      await expect(mod.materializeIndependentDependencies(f.root, f.workRoot, {
-        ...f.options(), prepareWorkspace: build,
-      })).rejects.toMatchObject({
-        code: 'DEPENDENCY_METADATA_CHANGED',
-        dependencyMetadata: { side, phase, path, differences: expect.objectContaining({
-          mode: { expected: mode.toString(8), actual: (mode ^ 0o100).toString(8) },
-        }) },
-      });
-      expect(targetStats).toBe(statCall);
-      expect(build).not.toHaveBeenCalled();
-      expectUnpreparedRetainedMarker(f);
-    } finally { stat.mockRestore(); f.cleanup(); }
-  }, 60_000);
-
-  it('refuses donor ctime churn from another install reader without publishing a prepared copy', async () => {
-    const f = retainedFixture();
-    const target = join(f.root, 'node_modules/alpha.txt');
-    const original = statSync(target, { bigint: true });
-    const { withFsMutexRead } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href);
-    const { installLockNameForRoot } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
-    const handle = await openFile(target, 'r');
-    const prototype = Object.getPrototypeOf(handle);
-    await handle.close();
-    const originalStat = prototype.stat;
-    let linked = false;
-    const stat = vi.spyOn(prototype, 'stat').mockImplementation(async function (this: { fd: number }, options) {
-      if (!linked && readlinkSync('/proc/self/fd/' + this.fd) === target) {
-        await withFsMutexRead(installLockNameForRoot(f.root), async () => {
-          linkSync(target, join(f.parent, 'reader-snapshot.txt'));
-          linked = true;
-        });
+      if (readlinkSync('/proc/self/fd/' + this.fd) === target && ++targetStats === statCall) {
+        if (change === 'ctime') {
+          const sibling = join(f.parent, 'unexpected-destination-link');
+          linkSync(target, sibling);
+          rmSync(sibling);
+        } else chmodSync(target, mode ^ 0o100);
       }
       return originalStat.call(this, options);
     });
@@ -2377,15 +2348,123 @@ console.log('WRITER_RELEASED elapsedMs=' + (performance.now() - startedAt));`;
         ...f.options(), prepareWorkspace: build,
       })).rejects.toMatchObject({
         code: 'DEPENDENCY_METADATA_CHANGED',
-        dependencyMetadata: { side: 'donor', phase: 'before-hash', path: 'node_modules/alpha.txt',
-          differences: { ctimeNs: { expected: String(original.ctimeNs), actual: expect.any(String) } } },
+        dependencyMetadata: { side, phase, path, differences: expect.objectContaining(change === 'ctime' ? {
+          ctimeNs: { expected: expect.any(String), actual: expect.any(String) },
+        } : { mode: { expected: mode.toString(8), actual: (mode ^ 0o100).toString(8) } }) },
+      });
+      expect(targetStats).toBe(statCall);
+      expect(build).not.toHaveBeenCalled();
+      expectUnpreparedRetainedMarker(f);
+    } finally { stat.mockRestore(); f.cleanup(); }
+  }, 60_000);
+
+  it.each([
+    { phase: 'before-hash', statCall: 1 },
+    { phase: 'after-hash', statCall: 2 },
+  ])('resumes donor ctime churn from another install reader at $phase', async ({ phase, statCall }) => {
+    const f = retainedFixture();
+    const target = join(f.root, 'node_modules/alpha.txt');
+    const original = statSync(target, { bigint: true });
+    const { withFsMutexRead } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/fs-mutex.mjs')).href);
+    const { installLockNameForRoot } = await import(pathToFileURL(join(repoRoot, 'scripts/lib/install-lock-name.mjs')).href);
+    const handle = await openFile(target, 'r');
+    const prototype = Object.getPrototypeOf(handle);
+    await handle.close();
+    const originalStat = prototype.stat;
+    let linked = false, targetStats = 0;
+    const stat = vi.spyOn(prototype, 'stat').mockImplementation(async function (this: { fd: number }, options) {
+      if (!linked && readlinkSync('/proc/self/fd/' + this.fd) === target && ++targetStats === statCall) {
+        await withFsMutexRead(installLockNameForRoot(f.root), async () => {
+          linkSync(target, join(f.parent, 'reader-snapshot.txt'));
+          linked = true;
+        });
+      }
+      return originalStat.call(this, options);
+    });
+    const build = vi.fn((snapshot: { workspacePaths: Set<string> }) =>
+      mod.prepareWorkspaceExports(f.workRoot, snapshot.workspacePaths));
+    try {
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: build,
+      });
+      expect(paused).toMatchObject({
+        status: 'incomplete',
+        progress: { invalidated: { reason: 'donor-ctime-changed', side: 'donor', phase,
+          path: 'node_modules/alpha.txt',
+          differences: { ctimeNs: { expected: String(original.ctimeNs), actual: expect.any(String) } } } },
       });
       expect(linked).toBe(true);
       expect(statSync(target, { bigint: true }).mtimeNs).toBe(original.mtimeNs);
       expect(readFileSync(target)).toEqual(readFileSync(join(f.workRoot, 'node_modules/alpha.txt')));
       expect(build).not.toHaveBeenCalled();
       expectUnpreparedRetainedMarker(f);
+      stat.mockRestore();
+      const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: build,
+      });
+      expect(complete.status).toBe('complete');
+      expect(complete.verification.hashedFiles).toBeGreaterThan(0);
+      expect(build).toHaveBeenCalledOnce();
+      expect(JSON.parse(readFileSync(f.markerPath, 'utf8')).dependencyMode).toBe('independent-copy-v1');
     } finally { stat.mockRestore(); f.cleanup(); }
+  }, 60_000);
+
+  it.each([5, 6, 7])('retains prior proof across donor ctime invalidation after %i prefix files', async count => {
+    const f = retainedFixture();
+    const path = 'node_modules/zzzz-ctime.txt';
+    const target = join(f.root, path);
+    // Exercise both creation orders around the six-entry batch boundary.
+    const names = Array.from({ length: count }, (_, index) => 'prefix-' + index + '.txt');
+    if (count % 2) names.reverse();
+    for (const name of [...names, 'zzzz-ctime.txt']) {
+      writeFileSync(join(f.root, 'node_modules', name), name);
+      writeFileSync(join(f.workRoot, 'node_modules', name), name);
+    }
+    const handle = await openFile(target, 'r');
+    const prototype = Object.getPrototypeOf(handle);
+    await handle.close();
+    const originalStat = prototype.stat;
+    const build = vi.fn((snapshot: { workspacePaths: Set<string> }) =>
+      mod.prepareWorkspaceExports(f.workRoot, snapshot.workspacePaths));
+    let stat: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const first = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(1), prepareWorkspace: build,
+      });
+      expect(first.status).toBe('incomplete');
+      expect(first.progress.verifiedBatches).toBe(1);
+      const receipt = join(f.checkpointDir, 'batch-00000000.json');
+      const priorProof = readFileSync(receipt);
+      let targetStats = 0;
+      stat = vi.spyOn(prototype, 'stat').mockImplementation(async function (this: { fd: number }, options) {
+        if (readlinkSync('/proc/self/fd/' + this.fd) === target && ++targetStats === 2) {
+          const sibling = join(f.parent, 'reader-snapshot.txt');
+          linkSync(target, sibling);
+          rmSync(sibling);
+        }
+        return originalStat.call(this, options);
+      });
+      const paused = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(), prepareWorkspace: build,
+      });
+      expect(paused).toMatchObject({
+        status: 'incomplete',
+        progress: { invalidated: { reason: 'donor-ctime-changed', side: 'donor', phase: 'after-hash', path } },
+      });
+      expect(paused.progress.reusedBatches).toBeGreaterThan(0);
+      expect(readFileSync(receipt)).toEqual(priorProof);
+      expect(build).not.toHaveBeenCalled();
+      expectUnpreparedRetainedMarker(f);
+      stat.mockRestore();
+      const complete = await mod.materializeIndependentDependencies(f.root, f.workRoot, {
+        ...f.options(1), prepareWorkspace: build,
+      });
+      expect(complete.status).toBe('complete');
+      expect(complete.verification.reusedBatches).toBeGreaterThan(0);
+      expect(complete.verification.hashedFiles).toBeGreaterThan(0);
+      expect(build).toHaveBeenCalledOnce();
+      expect(readFileSync(join(f.workRoot, path), 'utf8')).toBe('zzzz-ctime.txt');
+    } finally { stat?.mockRestore(); f.cleanup(); }
   }, 60_000);
 
   it('keeps nested CLI Git objects readable after its disposable source reader is retired', () => {
@@ -3208,7 +3287,7 @@ fs.writeFileSync('public/runtime-ready', asset);
     } finally { f.cleanup(); }
   }, 60_000);
 
-  it.each(['unchanged', 'source', 'stage', 'source-ctime', 'stage-ctime', 'future', 'corrupt'])
+  it.each(['unchanged', 'source', 'stage', 'source-ctime', 'stage-ctime', 'future', 'corrupt', 'during-compare-ctime'])
     ('resumes COPY checksum batches after interruption and checks %s evidence', async changed => {
       const f = retainedFixture();
       const { verifyRetainedDependencies } = await import(resolve(repoRoot, 'scripts/lib/committed-dependency-verification.mjs'));
@@ -3216,6 +3295,7 @@ fs.writeFileSync('public/runtime-ready', asset);
       const firstCopy = join(f.parent, 'first-copy');
       const copyInterrupted = join(f.parent, 'copy-interrupted');
       const compareInterrupted = join(f.parent, 'compare-interrupted');
+      const comparisonChurn = join(f.parent, 'comparison-churn');
       const comparisons = join(f.parent, 'comparisons');
       const partialParent = join(f.workRoot, '.git/committed-dependency-partials',
         createHash('sha256').update('node_modules').digest('hex'));
@@ -3231,7 +3311,15 @@ fs.writeFileSync('public/runtime-ready', asset);
         '    touch ' + JSON.stringify(compareInterrupted),
         '    return 124',
         '  fi',
-        '  original_incremental_verify "$@"',
+        '  original_incremental_verify "$@" || return $?',
+        ...(changed === 'during-compare-ctime' ? [
+          '  if [ -f ' + JSON.stringify(compareInterrupted) + ' ] && [ ! -f ' + JSON.stringify(comparisonChurn) + ' ]; then',
+          '    local first; first="$(awk -F "\\t" \'$2 == "f" { print $1; exit }\' "$3/unmatched")"',
+          '    ln "$1/$first" ' + JSON.stringify(comparisonChurn),
+          '    rm ' + JSON.stringify(comparisonChurn),
+          '    touch ' + JSON.stringify(comparisonChurn),
+          '  fi',
+        ] : []),
         '}',
         'rsync() {',
         '  if [ -f ' + JSON.stringify(firstCopy) + ' ] && [ ! -f ' + JSON.stringify(copyInterrupted) + ' ]; then',
@@ -3271,7 +3359,7 @@ fs.writeFileSync('public/runtime-ready', asset);
           else saved.data.proofs[0] = 'not-a-byte-proof';
           saved.sha256 = createHash('sha256').update(JSON.stringify(saved.data)).digest('hex');
           writeFileSync(journalPath, JSON.stringify(saved));
-        } else if (changed !== 'unchanged') {
+        } else if (changed !== 'unchanged' && changed !== 'during-compare-ctime') {
           const target = join(changed.startsWith('source') ? join(f.root, 'node_modules') : join(partialParent, 'tree'), 'alpha.txt');
           const before = statSync(target, { bigint: true });
           if (changed.endsWith('-ctime')) {
@@ -3290,13 +3378,26 @@ fs.writeFileSync('public/runtime-ready', asset);
           expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
           expectUnpreparedRetainedMarker(f);
         } else {
+          if (changed === 'during-compare-ctime') {
+            const priorProof = readFileSync(journalPath);
+            const invalidated = await verify();
+            expect(invalidated).toMatchObject({
+              status: 'incomplete',
+              progress: { copyStage: 'compare-bytes',
+                invalidated: { reason: 'donor-ctime-changed', side: 'donor', phase: 'after-hash' } },
+            });
+            expect(readFileSync(journalPath)).toEqual(priorProof);
+            expect(existsSync(join(f.workRoot, 'node_modules'))).toBe(false);
+            expectUnpreparedRetainedMarker(f);
+          }
           const complete = await verify();
           expect(complete.status).toBe('complete');
           expect(complete.progress.hashedFiles).toBeGreaterThan(0);
-          expect(complete.progress.reusedCopyComparisonBatches ?? 0).toBe(changed === 'unchanged' ? 1 : 0);
+          const reused = changed === 'unchanged' || changed === 'during-compare-ctime';
+          expect(complete.progress.reusedCopyComparisonBatches ?? 0).toBe(reused ? 1 : 0);
           const firstBatchCalls = readFileSync(comparisons, 'utf8').trim().split('\n')
             .filter(path => path === firstBatchPath);
-          expect(firstBatchCalls).toHaveLength(changed === 'unchanged' ? 1 : 2);
+          expect(firstBatchCalls).toHaveLength(reused ? 1 : 2);
           expect(readFileSync(join(f.workRoot, 'node_modules/alpha.txt'), 'utf8'))
             .toBe(changed === 'source' ? 'payload-v2' : 'payload-v1');
           expect(existsSync(join(partialParent, 'tree'))).toBe(false);
