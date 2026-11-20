@@ -988,6 +988,27 @@ describe('tool-guard request acquisition diagnostics', () => {
     } finally { timing.restore(); }
   });
 
+  it('records the oldest pending plan stage separately from a completed stage on refusal', async () => {
+    const timing = timingHarness();
+    const diagnostics = createRouteDiagnostics();
+    planExecutionGuard.mockImplementation(async ({ observeTiming }) => {
+      observeTiming({ stage: 'lane', durationMs: 20 });
+      observeTiming.trackPending('lane_recheck', 100);
+      observeTiming.trackPending('lane_recheck', 250);
+      const clearFence = observeTiming.trackPending('readiness_fence', 80);
+      clearFence();
+      timing.setNow(600);
+      return { code: 'plan_execution_not_ready', reason: 'readiness pending' };
+    });
+    try {
+      const res = await route('/agent-mcp/tool-guard').handler(request('builder'), { routeDiagnostics: diagnostics });
+      const verdict = await res.json();
+      expect(verdict.text).toMatch(/^plan_execution_not_ready: readiness pending/);
+      expect(diagnostics.snapshot()).toMatchObject({ guard_plan_lane: 20, guard_plan_pending_lane_recheck: 500 });
+      expect(diagnostics.snapshot()).not.toHaveProperty('guard_plan_pending_readiness_fence');
+    } finally { timing.restore(); }
+  });
+
   it.each(['allow', 'refuse', 'throw'] as const)('a throwing snapshot preserves the original %s result', async outcome => {
     const timing = timingHarness();
     const originalError = new Error('original authority read failed');

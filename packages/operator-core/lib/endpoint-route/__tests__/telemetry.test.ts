@@ -282,15 +282,19 @@ describe('recordRouteInvocation — native guard route correlation', () => {
         snapshot: () => ({ auth: 0, input: 0, invoke: 1037,
           guard_plan_total: 1032, guard_plan_binding: 996,
           guard_plan_readiness: 995.736, guard_plan_readiness_fence: 12.4,
-          [marker]: 0, guard_plan_readiness_private_marker: 99 }) };
+          guard_plan_canonical_binding_preflight: 9, guard_plan_lane: 50,
+          guard_plan_pending_lane_recheck: 801,
+          [marker]: 0, guard_plan_readiness_private_marker: 99, guard_plan_pending_private_marker: 99 }) };
       recordRouteInvocation(exec);
-      await vi.waitFor(() => expect(findInsertCall().params[11]).toEqual(JSON.stringify({
+      await vi.waitFor(() => expect(JSON.parse(String(findInsertCall().params[11]))).toEqual({
         guardRequestId: requestId, routePhaseTimingsMs: {
           auth: 0, input: 0, invoke: 1037, guard_plan_total: 1032,
           guard_plan_binding: 996, guard_plan_readiness: 996,
+          guard_plan_canonical_binding_preflight: 9, guard_plan_lane: 50,
+          guard_plan_pending_lane_recheck: 801,
           guard_plan_readiness_fence: 12, [marker]: 0,
         },
-      })));
+      }));
     },
   );
 

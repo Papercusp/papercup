@@ -42,6 +42,9 @@ const GUARD_AUTH_PHASES = new Set(['auth_remote', 'auth_tier_modules', 'auth_tie
 const GUARD_SUMMARY_PHASES = new Set(['guard_setup', 'guard_plan_total', 'guard_identity_total']);
 const GUARD_PLAN_PHASES = new Set([
   'guard_plan_bindings', 'guard_plan_goal_module', 'guard_plan_goal_read', 'guard_plan_goal',
+  'guard_plan_goal_selector', 'guard_plan_goal_pool_acquire_links',
+  'guard_plan_canonical_binding_preflight', 'guard_plan_canonical_binding_recheck',
+  'guard_plan_lane', 'guard_plan_lane_recheck',
   'guard_plan_start_proof', 'guard_plan_scope', 'guard_plan_plan_row', 'guard_plan_audit',
   'guard_plan_readiness', 'guard_plan_readiness_fence', 'guard_plan_readiness_pending',
   'guard_plan_readiness_reused', 'guard_plan_readiness_settled_refusal',
@@ -64,6 +67,8 @@ const GUARD_ROUTE_PHASE_LIMIT = 80;
 
 function isGuardDiagnosticPhase(phase: string): boolean {
   return GUARD_AUTH_PHASES.has(phase) || GUARD_SUMMARY_PHASES.has(phase) || GUARD_PLAN_PHASES.has(phase) ||
+    (phase.startsWith('guard_plan_pending_') &&
+      GUARD_PLAN_PHASES.has('guard_plan_' + phase.slice('guard_plan_pending_'.length))) ||
     GUARD_IDENTITY_PHASE_RE.test(phase) || GUARD_ACQUISITION_PHASE_RE.test(phase);
 }
 

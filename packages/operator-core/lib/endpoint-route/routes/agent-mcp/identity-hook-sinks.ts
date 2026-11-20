@@ -415,6 +415,15 @@ const toolGuard = defineTool({
         if (phases.identity !== undefined) recordRoutePhase('guard_identity_total', phases.identity);
         for (const [stage, durationMs] of Object.entries(planStages))
           recordRoutePhase('guard_plan_' + stage, durationMs);
+        // Keep pending ages distinct from completed durations. If a phase is
+        // in flight more than once, record only the oldest outstanding span.
+        const pendingAges = new Map<string, number>();
+        for (const { stage, startedAtMs } of pendingPlanStages.values()) {
+          const elapsedMs = observedAtMs - startedAtMs;
+          pendingAges.set(stage, Math.max(pendingAges.get(stage) ?? 0, elapsedMs));
+        }
+        for (const [stage, elapsedMs] of pendingAges)
+          recordRoutePhase('guard_plan_pending_' + stage, elapsedMs);
         for (const [stage, durationMs] of Object.entries(identityStages))
           recordRoutePhase('guard_identity_' + stage, durationMs);
         try { recordToolGuardAcquisitionTimings(readAcquireSnapshot(), recordRoutePhase); }
