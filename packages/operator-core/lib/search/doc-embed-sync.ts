@@ -53,6 +53,7 @@ import { splitMarkdown, type MarkdownSplitOptions } from '@papercusp/search';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 import type { HarnessRegistry } from '../harness-registry';
 import { resolveActiveProseSpace, type ActiveProseSpace } from './doc-vector-seed';
+import { PROSE_EMBEDDING_SPACE } from './prose-vector-dims';
 
 /** Per-ROW text cap — mirrors the 2k-char embed-input convention
  *  (session_turns / work_items bodySql `left(…, 2000)`). A section longer than
@@ -164,6 +165,49 @@ async function readPageHashes(sql: Pick<Sql, 'unsafe'>, sourceKey: string, slug:
   return rows.map(row => row.page_sha);
 }
 
+/** Save the actual preceding edition under its successor's FK. The row locks
+ * serialize this observation with a backfill already writing the old edition.
+ * A second edit during backfill carries the original complete set forward. */
+async function retainCompletePage(
+  tx: Pick<Sql, 'unsafe'>, sourceKey: string, slug: string, successorSha: string, firstAnchor: string,
+): Promise<void> {
+  const legacy = PROSE_EMBEDDING_SPACE.legacyModes.flatMap(mode => {
+    const selection = PROSE_EMBEDDING_SPACE.resolveCurrentSelection(mode);
+    return selection ? [{ mode, profileId: selection.profileId }] : [];
+  });
+  await tx.unsafe(`
+    WITH previous AS MATERIALIZED (
+      SELECT d.*, d.embedding IS NOT NULL AS embedded,
+             coalesce(d.embedding_profile, legacy.profile_id) AS profile_id,
+             CASE WHEN d.embedding_profile IS NULL THEN d.embedding_mode END AS required_legacy_mode
+        FROM harness_shared.doc_sections d
+        LEFT JOIN unnest($5::text[], $6::text[]) legacy(mode, profile_id) ON legacy.mode = d.embedding_mode
+       WHERE d.source_key = $1 AND d.slug = $2
+       FOR UPDATE OF d
+    ), complete AS (
+      SELECT min(profile_id) AS profile_id, max(required_legacy_mode) AS required_legacy_mode
+        FROM previous
+      HAVING count(*) > 0 AND bool_and(embedded) AND min(page_sha) = max(page_sha)
+         AND count(profile_id) = count(*) AND min(profile_id) = max(profile_id)
+         AND count(embedding_mode) = count(*) AND min(embedding_mode) = max(embedding_mode)
+    ), retained AS (
+      SELECT p.anchor, p.title, p.url, p.content, p.page_sha, p.section_idx, p.embedding,
+             c.profile_id, c.required_legacy_mode FROM previous p CROSS JOIN complete c
+      UNION ALL
+      SELECT p.anchor, p.title, p.url, p.content, p.page_sha, p.section_idx, p.embedding,
+             p.profile_id, p.required_legacy_mode
+        FROM harness_shared.doc_section_predecessors p
+       WHERE p.source_key = $1 AND p.slug = $2 AND NOT EXISTS (SELECT 1 FROM complete)
+         AND p.successor_sha = (SELECT min(page_sha) FROM previous HAVING min(page_sha) = max(page_sha))
+    )
+    INSERT INTO harness_shared.doc_section_predecessors
+      (source_key, slug, successor_anchor, successor_sha, anchor, title, url, content,
+       page_sha, section_idx, embedding, profile_id, required_legacy_mode)
+    SELECT $1, $2, $4, $3, r.*
+      FROM retained r`, [sourceKey, slug, successorSha, firstAnchor,
+    legacy.map(entry => entry.mode), legacy.map(entry => entry.profileId)]);
+}
+
 /** Both writers use the same atomic publication after comparing the observed editions. */
 async function upsertPageSections(
   sql: Sql,
@@ -178,11 +222,12 @@ async function upsertPageSections(
   const sections = splitDocSections(page.title, body);
   // Some installations only have the text columns. Keep the same lexical
   // publication path there and resolve the model only for an existing page.
-  const [prior] = await sql.unsafe<Array<{ page_sha: string | null; vector_ready: boolean }>>(
+  const [prior] = await sql.unsafe<Array<{ page_sha: string | null; vector_ready: boolean; publication_ready: boolean }>>(
     `SELECT CASE WHEN min(page_sha) = max(page_sha) THEN min(page_sha) END AS page_sha,
             count(*) > 0 AND (SELECT count(*) = 3 FROM pg_attribute
               WHERE attrelid = 'harness_shared.doc_sections'::regclass AND NOT attisdropped
-                AND attname IN ('embedding','embedding_mode','embedding_profile')) AS vector_ready
+                AND attname IN ('embedding','embedding_mode','embedding_profile')) AS vector_ready,
+            to_regclass('harness_shared.doc_section_predecessors') IS NOT NULL AS publication_ready
        FROM harness_shared.doc_sections WHERE source_key = $1 AND slug = $2`, [sourceKey, page.slug]);
   if (prior?.page_sha === sha) return null;
   const space = prior?.vector_ready ? await resolveSpace() : null;
@@ -192,6 +237,9 @@ async function upsertPageSections(
     const stored = await readPageHashes(tx, sourceKey, page.slug);
     if (stored.length === 1 && stored[0] === sha) return null;
     if (stored.length !== observed.length || stored.some((hash, i) => hash !== observed[i])) return 'retry' as const;
+    if (prior?.publication_ready && prior.vector_ready && sections.length > 0) {
+      await retainCompletePage(tx, sourceKey, page.slug, sha, sections[0].anchor);
+    }
     if (space) {
       // DELETE RETURNING supplies the original tuples to the same statement
       // that publishes the replacement. Vectors stay in PG. Array parameters

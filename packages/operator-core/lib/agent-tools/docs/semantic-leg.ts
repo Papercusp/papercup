@@ -61,7 +61,7 @@ export interface DocSemanticDeps {
 
 async function querySectionsReal(
   vec: number[],
-  mode: string,
+  _mode: string,
   sourceKey: string,
   limit: number,
   identity?: SearchSourceParams['embeddingProfile'],
@@ -87,13 +87,8 @@ async function querySectionsReal(
   >`
     SELECT slug, anchor, title, url, left(content, 240) AS excerpt,
            1 - (embedding <=> ${vecLit}::vector) AS similarity
-      FROM harness_shared.doc_sections
+      FROM harness_shared.doc_sections_visible(${selection.profileId}, ${selection.legacyMode})
      WHERE source_key = ${sourceKey}
-       AND embedding IS NOT NULL
-       AND (embedding_profile = ${selection.profileId}
-            OR (${selection.legacyMode !== null}
-                AND embedding_profile IS NULL
-                AND embedding_mode = ${selection.legacyMode ?? mode}))
      ORDER BY embedding <=> ${vecLit}::vector
      LIMIT ${limit}`, {
     runReadOnlyTransaction: <T>(body: (tx: PgHandle) => Promise<T>) =>

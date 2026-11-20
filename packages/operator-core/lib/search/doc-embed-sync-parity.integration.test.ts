@@ -19,7 +19,7 @@
  *      so the zero in (2) comes from an instrument that can report non-zero.
  */
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import postgres from 'postgres';
 import type { DocPage, DocSource } from '@papercusp/docs-engine';
@@ -29,6 +29,15 @@ import { PROSE_VECTOR_DIMS, resolveCurrentProseProfileSelection } from './prose-
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { backfillTable, TARGETS } from './embed-backfill';
+import { applyMigrationForTest } from '../../test/_pg-helpers';
+import { realDocSemanticDeps } from '../agent-tools/docs/semantic-leg';
+import { createDocSearchSource } from '../agent-tools/search/knowledge-sources';
+
+let searchDb: OrgTestDb;
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: searchDb.adminSql }),
+}));
 
 type Part = string | { s: string; n: number };
 interface GoldenPage {
@@ -211,7 +220,12 @@ describe('documentation section publication and background embedding', () => {
   const slug = 'guide';
   const scope = 'harness:doc-test';
   const target = TARGETS.find(t => t.table === 'harness_shared.doc_sections')!;
-  beforeAll(async () => { db = await createOrgTestDb(); }, 180_000);
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    searchDb = db;
+    const path = new URL('../../../../libs/papercusp/libs/db/sql/1649-doc-section-publication.sql', import.meta.url).pathname;
+    await applyMigrationForTest(db.adminSql, existsSync(path) ? path : path + '.DRAFT');
+  }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
   async function publish(title: string, body: string, name = scope) {
@@ -225,6 +239,68 @@ describe('documentation section publication and background embedding', () => {
   const fill = (embed: (text: string) => Promise<number[]>, maxRows = 20) => backfillTable(db.adminSql, target, {
     embed, maxRows, mode: 'gemma', spaceAware: true, profileColPresent: true, profile: EMBEDDER_DIM_SPECS.gemma,
   });
+
+  it('reads the last complete edition throughout interrupted and superseded vector backfills', async ({ onTestFinished }) => {
+    const name = 'harness:edition-read';
+    const profile = resolveCurrentProseProfileSelection('gemma')!;
+    const vector = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
+    const otherVector = vector.map((v, i) => i % 2 === 0 ? v : -v);
+    const embed = vi.fn(async (input: string) => input.includes('only.') ? vector : otherVector);
+    const visible = async (source = name, selection = profile) => {
+      const hits = await realDocSemanticDeps.querySections(vector, 'gemma', source, 30, selection);
+      return hits.map(hit => hit.excerpt).sort();
+    };
+    const write = async (body: string) => expect(await publish('Guide', body, name)).toMatchObject({ ok: true });
+    const old = ['Keep me.', 'Predecessor only.'];
+    const initial = '## Kept\nKeep me.\n\n## Removed\nPredecessor only.';
+    const next = '## First\nFirst change.\n\n## Second\nSecond change.\n\n## Kept\nKeep me.';
+    const workspaceId = 'edition-read-workspace';
+    onTestFinished(async () => {
+      await db.adminSql`DELETE FROM harness_shared.doc_sections WHERE source_key = ${name}`;
+      await db.adminSql`DELETE FROM harness_shared.harness_registry WHERE workspace_id = ${workspaceId}`;
+    });
+    const source = createDocSearchSource({ harnessSlugs: ['edition-read'] });
+    const search = (ws: string) => source.embedding!({ sql: db.adminSql, workspaceId: ws,
+      scopeFilter: 'edition-read', query: 'Predecessor', limit: 1,
+      qVec: JSON.stringify(vector), embeddingProfile: profile });
+    await db.adminSql`INSERT INTO harness_shared.harness_registry (workspace_id, payload)
+      VALUES (${workspaceId}, ${db.adminSql.json({ projects: [{ slug: 'edition-read' }] })})`;
+
+    await write(initial);
+    await fill(embed, 1);
+    expect(await visible()).toEqual([]);
+    await fill(embed);
+    expect(await visible()).toEqual(old);
+    await db.adminSql`UPDATE harness_shared.doc_sections SET embedding_profile = NULL
+      WHERE source_key = ${name} AND anchor = 'kept'`;
+    await write(next);
+    expect(await visible()).toEqual(old);
+    await fill(embed, 1);
+    expect(await visible()).toEqual(old);
+    const knowledgeHits = await search(workspaceId);
+    expect(knowledgeHits).toHaveLength(1);
+    expect(knowledgeHits[0].row.excerpt).toContain('Keep me.\nPredecessor only.');
+    expect(await search('different-workspace')).toEqual([]);
+    expect(await visible('harness:other-edition-read')).toEqual([]);
+    expect(await visible(name, resolveCurrentProseProfileSelection('openai')!)).toEqual([]);
+
+    await write(next + '\n\n## Last\nFinal change.');
+    expect(await visible()).toEqual(old);
+    await fill(embed, 1);
+    expect(await visible()).toEqual(old);
+    await fill(embed, 1);
+    expect(await visible()).toEqual(['Final change.', 'First change.', 'Keep me.', 'Second change.']);
+    const currentHits = await search(workspaceId);
+    expect(currentHits).toHaveLength(1);
+    expect(currentHits[0].row.excerpt).not.toContain('Predecessor only.');
+    expect(embed).toHaveBeenCalledTimes(5);
+
+    await write(initial);
+    await write('');
+    expect(await visible()).toEqual([]);
+    const copies = await db.adminSql`SELECT anchor FROM harness_shared.doc_section_predecessors WHERE source_key = ${name}`;
+    expect(copies).toHaveLength(0);
+  }, 90_000);
 
   it('counts inference for changed inputs, preserves order and refuses other scopes or model spaces', async () => {
     const embed = vi.fn(async (text: string) => Array(PROSE_VECTOR_DIMS).fill(text.length / 100));

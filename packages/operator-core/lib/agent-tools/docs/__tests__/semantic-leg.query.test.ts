@@ -74,7 +74,8 @@ describe('docs semantic leg: real doc_sections query', () => {
     // The query that ran is the source-filtered, distance-ordered read.
     const [strings, ...values] = mocks.txSql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     const text = strings.join('?');
-    expect(text).toMatch(/FROM harness_shared\.doc_sections/);
+    expect(text).toContain('FROM harness_shared.doc_sections_visible(?, ?)');
+    expect(values).toContain(GEMMA.profileId);
     expect(text).toMatch(/WHERE source_key = \?/);
     expect(text).toMatch(/ORDER BY embedding <=> \?::vector/);
     expect(values).toContain('harness:papercusp');

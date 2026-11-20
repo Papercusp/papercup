@@ -6,7 +6,7 @@ import { chunkAwareVectorLegSql, sectionAnchorBase, withIterativeScan } from '@p
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { PLANS_CHUNK_SURFACE } from '../../search/chunks/registry';
 import { boundedExactTopK, headlineTsQuery, lexicalLeg, mergeExactAndBm25 } from '../../search/lexical/rank';
-import { PROSE_EMBEDDING_SPACE } from '../../search/prose-vector-dims';
+import { PROSE_EMBEDDING_SPACE, resolveProseProfileIdSelection } from '../../search/prose-vector-dims';
 import { lastMarkdownHeading, planWindowMidpoint } from '../plans/semantic-leg';
 import { contextSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
 import type { HarnessRegistry } from '../../harness-registry';
@@ -406,12 +406,14 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
     },
     async embedding(p) {
       if (!p.embeddingProfile) return [];
+      const selection = resolveProseProfileIdSelection(p.embeddingProfile.profileId, p.embeddingProfile.legacyMode);
+      if (!selection) return [];
       const candidateLimit = embeddingCandidateLimit(p.limit);
+      const visible = p.sql`harness_shared.doc_sections_visible(${selection.profileId}, ${selection.legacyMode})`;
       const rows = await p.sql`WITH candidates AS MATERIALIZED (
           SELECT s.*, s.embedding <=> ${p.qVec}::vector AS distance
-          FROM harness_shared.doc_sections s
-          WHERE ${filter(p)} AND s.embedding IS NOT NULL
-            AND ${PROSE_EMBEDDING_SPACE.sourceFilterSql(p, 's.embedding_profile', 's.embedding_mode')}
+          FROM ${visible} s
+          WHERE ${filter(p)}
           ORDER BY s.embedding <=> ${p.qVec}::vector
           LIMIT ${candidateLimit}
         ), best AS (
@@ -421,8 +423,9 @@ export function createDocSearchSource(audience: KnowledgeAudience = {}): SearchS
           ORDER BY source_key,slug,distance,anchor
         )
         SELECT best.*,
-          (SELECT right(prev.content,250) FROM harness_shared.doc_sections prev
+          (SELECT right(prev.content,250) FROM ${visible} prev
             WHERE prev.source_key = best.source_key AND prev.slug = best.slug
+              AND prev.page_sha = best.page_sha
               AND best.section_idx > 0 AND prev.section_idx = best.section_idx - 1 LIMIT 1) AS previous_context
         FROM best
         ORDER BY rank DESC,source_key,slug LIMIT ${p.limit}`;
