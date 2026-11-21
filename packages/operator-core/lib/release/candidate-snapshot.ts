@@ -300,10 +300,10 @@ export function parseCandidateSnapshot(raw: unknown): CandidateSnapshot | null {
     typeof value.selectedAtMs === 'number' && Number.isFinite(value.selectedAtMs)
       ? value.selectedAtMs
       : null;
-  const failureSignature = boundedText(value.failureSignature, CANDIDATE_SNAPSHOT_MAX_TEXT);
   const failingTests = Array.isArray(value.failingTests)
     ? boundedFailureList(value.failingTests.filter((entry): entry is string => typeof entry === 'string'))
     : null;
+  const failureSignature = candidateSnapshotFailureSignature(failingTests, candidate);
   const postSuiteLegs = parsePostSuiteLegs(value.postSuiteLegs);
   const ownershipRaw = value.ownership;
   const supersessionRaw = value.supersession;
@@ -312,6 +312,7 @@ export function parseCandidateSnapshot(raw: unknown): CandidateSnapshot | null {
     !source ||
     observedAtMs == null ||
     !failureSignature ||
+    value.failureSignature !== failureSignature ||
     !failingTests ||
     !postSuiteLegs ||
     !ownershipRaw ||

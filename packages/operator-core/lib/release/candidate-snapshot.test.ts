@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CANDIDATE_SNAPSHOT_MAX_AGE_MS,
   CANDIDATE_SNAPSHOT_MAX_FAILURES,
+  CANDIDATE_SNAPSHOT_MAX_TEXT,
   buildCandidateSnapshot,
   candidateSnapshotFailureSignature,
   candidateSnapshotMatchesDispatch,
@@ -70,6 +71,23 @@ describe('candidate snapshot', () => {
     });
     expect(snapshot?.identity).toEqual(expect.any(String));
     expect(parseCandidateSnapshot(snapshot)).toEqual(snapshot);
+  });
+
+  it.each([
+    CANDIDATE_SNAPSHOT_MAX_TEXT - 1,
+    CANDIDATE_SNAPSHOT_MAX_TEXT,
+    CANDIDATE_SNAPSHOT_MAX_TEXT + 1,
+  ])('round-trips a %i-character failure signature through frozen repair dispatch', (length) => {
+    const first = 'a'.repeat(Math.floor(length / 2));
+    const second = 'b'.repeat(length - first.length - 1);
+    const repairQueue = { candidate, repairHead: base, phase: 'awaiting-fixer', failingTests: [first, second] };
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: [second, first], repairQueue }, 1_000);
+    expect(snapshot?.failureSignature).toHaveLength(length);
+
+    const restored = parseCandidateSnapshot(JSON.parse(JSON.stringify(snapshot)));
+    expect(restored).toEqual(snapshot);
+    expect(candidateSnapshotMatchesDispatch(restored, { candidate: base, repairQueue, nowMs: 2_000 })).toBe(true);
+    expect(parseCandidateSnapshot({ ...snapshot, failureSignature: `${first},${second.slice(0, -1)}z` })).toBeNull();
   });
 
   it('fails closed when the persisted identity or schema is tampered', () => {
