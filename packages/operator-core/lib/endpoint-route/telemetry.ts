@@ -52,6 +52,8 @@ const GUARD_PLAN_PHASES = new Set([
   'guard_plan_spec_quality_clauses', 'guard_plan_spec_quality_rubric',
   'guard_plan_spec_quality_cards', 'guard_plan_spec_quality_auditor',
   'guard_plan_critique', 'guard_plan_recheck', 'guard_plan_binding',
+  ...['current_clauses', 'authors', 'consults', 'archive_origin', 'lineage',
+    'clause_history', 'close_snapshot', 'owner_review'].map(stage => 'guard_plan_critique_' + stage),
   'guard_plan_goal_leg_work_items', 'guard_plan_goal_leg_plan_items', 'guard_plan_goal_leg_fleet',
   'guard_plan_goal_leg_override', 'guard_plan_goal_leg_links',
   'guard_plan_goal_pool_acquire_work_items', 'guard_plan_goal_pool_acquire_plan_items',

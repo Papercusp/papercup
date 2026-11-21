@@ -273,15 +273,21 @@ describe('recordRouteInvocation — native guard route correlation', () => {
     }
   });
 
-  it.each(['clauses', 'rubric', 'cards', 'auditor'])(
-    'retains completed and pending spec-quality %s timing', async (stage) => {
+  it.each([
+    ['spec_quality', 'clauses'], ['spec_quality', 'rubric'],
+    ['spec_quality', 'cards'], ['spec_quality', 'auditor'],
+    ['critique', 'current_clauses'], ['critique', 'authors'], ['critique', 'consults'],
+    ['critique', 'archive_origin'], ['critique', 'lineage'], ['critique', 'clause_history'],
+    ['critique', 'close_snapshot'], ['critique', 'owner_review'],
+  ])(
+    'retains completed and pending %s %s timing', async (phase, stage) => {
       const exec = execWith({ method: 'POST', path, status: 'timeout',
         headers: { 'x-papercusp-guard-request-id': requestId } });
-      const completed = `guard_plan_spec_quality_${stage}`;
-      const pending = `guard_plan_pending_spec_quality_${stage}`;
+      const completed = `guard_plan_${phase}_${stage}`;
+      const pending = `guard_plan_pending_${phase}_${stage}`;
       exec.routeDiagnostics = { measure: async (_phase, work) => work(),
         snapshot: () => ({ invoke: 1000, [completed]: 40, [pending]: 75,
-          guard_plan_spec_quality_private: 90, guard_plan_pending_spec_quality_private: 91 }) };
+          [`guard_plan_${phase}_private`]: 90, [`guard_plan_pending_${phase}_private`]: 91 }) };
       recordRouteInvocation(exec);
 
       await vi.waitFor(() => expect(JSON.parse(String(findInsertCall().params[11]))).toEqual({
