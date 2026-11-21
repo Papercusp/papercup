@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Consult routing on the November 21 staging build a9fa2bf0683",
+  "framework": "operational",
+  "command": [
+    "testing:run on staging with the three original nativeConsult questions and source/target constraints",
+    "conversations:get and the workspace-scoped consult, post, session-port and source-observation ledgers",
+    "consult:close by the requester after reading the verified Codex answer"
+  ],
+  "startedAt": "2026-11-21T08:30:49.111Z",
+  "finishedAt": "2026-11-21T08:48:14.746Z",
+  "exitCode": 1,
+  "summary": "One live Codex source reached an isolated Codex answerer. Claude provider capacity blocked the fork. The Claude-to-Codex request returned no qualified source. The native matrix remains incomplete.",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010046171",
+  "requesterId": "su-40c37918-3d17-43e0-ab0e-e3ff709f1776",
+  "runtime": {
+    "route": "http://127.0.0.1:3170",
+    "service": "papercup-staging-api.service",
+    "pid": 2610654,
+    "physicalRoot": "~/papercupai-workspace/papercusp-staging.generations/.candidate-a9fa2bf0683b.mmN7CP/checkout",
+    "build": "a9fa2bf0683be90794f69a1823bd537656d794f2",
+    "canonicalComparisonCommit": "dba1d46f4e70531ff87e9f09f9d65d55eef0b090",
+    "launcherSha256": "3838c7046bff503f21f95f0feb8fdb5bb3d791dd0f38daf59723d8e7824e0466",
+    "matchingFiles": [
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+        "blob": "7407368d12a081e46bc55c89ea7673beeebb1426"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+        "blob": "6df5b7a7af87a7985703c0af0043806f25d1513f"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.ts",
+        "blob": "f49c1cd81b8a388105dd386bfce737c22dc70561"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.integration.test.ts",
+        "blob": "cefa01250d7fba83774f0a1f8a82a3701fbc2cbf"
+      },
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "blob": "37d970ac5f5391f7231477621da42ec840f97dd8"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "blob": "9694cce5ce84aed364bf583daa322f90ce6cdc4e"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/native-consult.ts",
+        "blob": "f3d6bb610af049a79b89b39bf22c314f2333c90b"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult.ts",
+        "blob": "e40b00fc79f0a554e6ca7ae7f3e34d3e4b0a9016"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult-contract.ts",
+        "blob": "9ea4c8254147cf2959de7e38a2e48f261eaaf0f1"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+        "blob": "1ea5c4d6df3a268e839a25e46685de6cb256dc7b"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
+        "blob": "2342c6ad14b0986c3a5bdea1ee77636468fd2985"
+      }
+    ]
+  },
+  "matrix": {
+    "partition": {
+      "checked": [
+        "codex-live-to-codex-session-port"
+      ],
+      "unavailable": [
+        "claude-ended-to-claude-fork"
+      ],
+      "residual": [
+        "claude-ended-to-codex-conversion"
+      ]
+    },
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "mode": "fork",
+        "requestKey": "wi6171-r6-20261121-a9fa2bf0683-claude-fork-v1",
+        "conversationId": "conv-request-b13113b54bbd64e0c9abce909045faa3742ddd3e8f885090f85bd664579d4d4b",
+        "threadId": "thr-conv-request-b13113b54bbd64e0c9abce909045faa3742ddd3e8f885090f85bd664579d4d4b",
+        "originalConversation": "conv-request-92ac59fd0775fa13ff16469b0c7de5c4acd6b57347e549991c1fb0ced3a94415",
+        "constraints": {
+          "sourceBackend": "claude",
+          "targetBackend": "claude",
+          "sourceState": "ended"
+        },
+        "state": "expired",
+        "servingBuild": "a9fa2bf0683",
+        "dispatchWalks": 2,
+        "answerPosts": 0,
+        "status": "unavailable",
+        "passed": false,
+        "sourceOwnerId": "su-880a1084-7f21-4f62-840a-782389834070",
+        "answeringOwnerId": null,
+        "reason": "native target claude capacity unavailable: every claude provider account reads full or paused; automatic launch was not attempted",
+        "nativeKickoff": null,
+        "tracking": "EI-28117756199478310"
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "mode": "port",
+        "requestKey": "wi6171-r6-20261121-a9fa2bf0683-claude-codex-v1",
+        "conversationId": "conv-request-6cdb1aae991da9c0b26f12dfa9fe11599c2ca3595e121bd93a60a3792cec7f27",
+        "threadId": "thr-conv-request-6cdb1aae991da9c0b26f12dfa9fe11599c2ca3595e121bd93a60a3792cec7f27",
+        "originalConversation": "conv-request-f470fbd322eeae0208cf7dc448bf33c255e41c45b1a0793bd115cde4f260f4cf",
+        "constraints": {
+          "sourceBackend": "claude",
+          "targetBackend": "codex",
+          "sourceState": "ended"
+        },
+        "state": "no_qualified_responder",
+        "servingBuild": "a9fa2bf0683",
+        "dispatchWalks": 0,
+        "answerPosts": 0,
+        "status": "residual",
+        "passed": false,
+        "sourceOwnerId": null,
+        "answeringOwnerId": null,
+        "reason": "The route returned below_floor before launch. Its eight selected owners had no accepted exact historical Claude source. All 17 evidence session IDs were indexed as Claude. None had an exact same-owner advanced-session row for that session in the measured workspace. The resolver reported a different backend.",
+        "sourceObservations": 8,
+        "inspectedSessionIdentities": 17,
+        "nativeKickoff": null
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "mode": "port",
+        "requestKey": "wi6171-r6-20261121-a9fa2bf0683-codex-port-v1",
+        "conversationId": "conv-request-7c3fe828278aeedae59ad28e2e187b40d81fdfb2a61ed9f4b2b94bb60015bd2d",
+        "threadId": "thr-conv-request-7c3fe828278aeedae59ad28e2e187b40d81fdfb2a61ed9f4b2b94bb60015bd2d",
+        "originalConversation": "conv-request-116c5685d1ce3b33aeb0ca69591265dbad91c607b29ed60a46a5c191b7b260de",
+        "constraints": {
+          "sourceBackend": "codex",
+          "targetBackend": "codex",
+          "sourceState": "live"
+        },
+        "state": "closed_answered",
+        "servingBuild": "a9fa2bf0683",
+        "dispatchWalks": 4,
+        "answerPosts": 1,
+        "status": "checked",
+        "passed": true,
+        "sourceOwnerId": "su-dabbef36-7a38-41b6-87d4-a329c6b29a5a",
+        "answeringOwnerId": "su-43438574-eb89-4902-81c5-fd13d4a193ba",
+        "portId": "537eea34-36c6-4476-a388-d69d20faeb20",
+        "sourceAdvSessionId": "59754",
+        "targetAdvSessionId": "63879",
+        "sourceNativeSessionId": "01a1f1f7-122d-7892-89b2-1dadf9696ce6",
+        "targetNativeSessionId": "01a1fd40-8b8d-7000-b406-a259c0858176",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": "2026-11-21T08:37:14.448Z",
+        "deliveredAt": "2026-11-21 08:37:14.452304+00",
+        "portStatus": "delivered",
+        "sourceSha256": "ea698c9d31f66a98d317b73807c7485b98ddd99127ce18db03c88379e489a151",
+        "sourceCompleteBytes": 1472678,
+        "answerPostId": 1240263,
+        "answerChars": 3084,
+        "closePostId": 1240268,
+        "requesterUse": "The answer confirmed whole-file freshness. The requester retained the source manifest for the next native remeasurement.",
+        "previousState": "The cascade expired after an answer arrived. The requester used the supported late close.",
+        "earlierRefusal": "A different selected Codex source failed preflight on its developer tool catalog. WI-6554700010066674 covers that compatibility defect.",
+        "sourceIsolation": {
+          "before": "2026-11-21T08:32:30.779Z",
+          "atPreparationSha256": "ea698c9d31f66a98d317b73807c7485b98ddd99127ce18db03c88379e489a151",
+          "after": "2026-11-21 08:48:14.746569+00",
+          "workItemClaimsBefore": 0,
+          "workItemClaimsAfter": 0,
+          "planClaimsBefore": 0,
+          "planClaimsAfter": 0,
+          "scope": "Endpoint observations establish the same source hash at selection and port preparation and equal claim counts. They do not measure intervening actions or attribute wakes."
+        }
+      }
+    ]
+  },
+  "qualityReview": {
+    "originalArtifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24Z",
+    "eligible": 4,
+    "target": 8,
+    "shortfall": 4,
+    "recordedRequesterDecisions": 2,
+    "unknownRequesterDecisions": 2,
+    "scope": "Original fixed cohort. The new controlled trials are excluded."
+  },
+  "assertions": [
+    {
+      "id": "matrix:codex-live-to-codex-session-port",
+      "passed": true,
+      "evidence": "Port 537eea34-36c6-4476-a388-d69d20faeb20 was delivered to a distinct Codex session. Post 1240263 came from the verified answering owner. Requester close 1240268 recorded the answer."
+    },
+    {
+      "id": "matrix:claude-ended-to-claude-fork",
+      "passed": false,
+      "evidence": "The target capacity probe reported all Claude provider accounts full or paused. The fork has no native kickoff or answer."
+    },
+    {
+      "id": "matrix:claude-ended-to-codex-conversion",
+      "passed": false,
+      "evidence": "No selected source met the exact Claude source constraint. The request has zero dispatches and zero answers."
+    },
+    {
+      "id": "cohort:original-quality-review",
+      "passed": false,
+      "evidence": "The immutable original cut contains four of eight target threads and two unknown requester decisions."
+    }
+  ]
+}
