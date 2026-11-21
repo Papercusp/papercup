@@ -12,7 +12,7 @@ import {
 // (as torn-sweep-classification-path.test.ts does) rather than restated as a literal — the whole
 // defect was that the producer's vocabulary and the consumer's class list drifted apart while
 // both suites stayed green.
-import { classifyGateStallStatus } from '@papercusp/operator-core/lib/harness/routines/release-actions';
+import { buildCheckpointDetail, classifyGateStallStatus } from '@papercusp/operator-core/lib/harness/routines/release-actions';
 import {
   classifyGateAbort,
   gateAbortLever,
@@ -67,6 +67,29 @@ describe('EI-21462448110688084: process-level fatal errors await terminal finali
       'skipped',
       'fail',
     ]);
+  });
+
+  it.each([0, 3, 32, 33, 34])('retains %i unfinished commands through verdict adaptation and durable recording', (count) => {
+    const remainingCommands = Array.from({ length: count }, (_, i) => ({
+      key: `workspace:test-${i}`, gateId: 'workspace-tests', script: `test-${i}`, workspace: 'fixture',
+      status: i === 0 ? 'aborted' as const : 'pending' as const,
+    }));
+    const continuation = {
+      complete: count === 0, totalCommandCount: count + 1, completedCommandCount: 1, remainingCommands,
+      recovery: 'Resume the stored progress for this frozen scope and repair head.',
+    };
+    const verdict = checkpointVerdictFromResult({
+      advanced: false, candidate: 'a'.repeat(40), from: null, green: null, reason: 'repair-in-progress',
+      summary: 'repair tick fixture',
+      repairTickLegs: {
+        head: 'b'.repeat(40), atMs: 123, ok: false, failingSignatures: ['lint:failed'],
+        legs: [{ id: 'lint:failed', status: 'fail', durationMs: 2 }], continuation,
+      },
+    });
+
+    expect(verdict.repairTickLegs?.continuation).toEqual(continuation);
+    expect(verdict.repairTickLegs?.continuation?.remainingCommands).not.toBe(remainingCommands);
+    expect(buildCheckpointDetail(verdict)).toMatchObject({ repairTickLegs: { continuation } });
   });
 
   it('records a terminal disposition before its marker and wake are observable', async () => {

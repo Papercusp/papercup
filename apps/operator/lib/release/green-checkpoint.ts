@@ -2099,9 +2099,10 @@ export function checkpointVerdictFromResult(
   const { repairTickLegs, ...verdict } = result;
   if (!repairTickLegs) return verdict;
 
+  const { legs, ...measurement } = repairTickLegs;
   const measuredLegs: NonNullable<CheckpointVerdict["repairTickLegs"]>["legs"] =
     [];
-  for (const leg of repairTickLegs.legs) {
+  for (const leg of legs) {
     // `not-checked` joins `skipped` here for the SAME reason (WI-10000288): the durable verdict
     // contract below holds only legs that actually produced a measurement, and a guard that
     // examined nothing produced none. Dropping it keeps that contract honest — recording it as
@@ -2120,11 +2121,7 @@ export function checkpointVerdictFromResult(
   return {
     ...verdict,
     repairTickLegs: {
-      head: repairTickLegs.head,
-      atMs: repairTickLegs.atMs,
-      ok: repairTickLegs.ok,
-      ...(repairTickLegs.populationEvidence ? { populationEvidence: repairTickLegs.populationEvidence } : {}),
-      failingSignatures: [...repairTickLegs.failingSignatures],
+      ...structuredClone(measurement),
       legs: measuredLegs,
     },
   };

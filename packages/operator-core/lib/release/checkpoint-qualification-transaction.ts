@@ -1125,9 +1125,11 @@ export function authenticateQualificationNativeOriginals(
       || selectedManifestHash !== undefined && selectedManifestHash !== producingRun.selectedManifestHash
       || !isDeepStrictEqual(proof.population, population) || !isDeepStrictEqual(proof.workerExecution, worker)
       || !isDeepStrictEqual(proof.workerRuntime, details.workerRuntime)
+      || !isDeepStrictEqual(proof.workerCompilerInputs, details.workerCompilerInputs)
       || !isDeepStrictEqual(proof.workerTestConfiguration, details.workerTestConfiguration)
       || !isDeepStrictEqual(proof.workerDatabaseReset, details.workerDatabaseReset)
       || !isDeepStrictEqual(proof.sourceSubmodules, details.sourceSubmodules)
+      || !isDeepStrictEqual(proof.sourceBytes, details.sourceBytes)
       || !isDeepStrictEqual(proof.proofContext, details.proofContext))
       return unknown('original-native-worker-population-or-context-mismatch');
     const reference = originalTestRunReference({ id, workspaceId: row.workspace_id, harnessSlug: row.harness_slug,

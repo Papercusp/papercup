@@ -641,6 +641,10 @@ export function readPartialNativeCompletion(file, expected, options = {}) {
     const proofContext = readProofContextIdentity(file.proofContext);
     const workerRuntime = parseRecordedWorkerRuntime(file.proof?.inputs?.runtime);
     const workerExecution = parseRecordedWorkerExecution(file.proof?.inputs?.workerExecution);
+    const capabilities = workerRuntime?.capabilities;
+    if (file.proof?.inputs?.runtime !== undefined && (!workerRuntime || (capabilities &&
+        (capabilities.captureId !== workerExecution?.captureId || capabilities.testFile !== resolve(expected.root, file.testFile)))))
+      return refused("native-worker-runtime-mismatch");
     const workerCompilerInputs = parseRecordedWorkerCompilerInputs(file.proof?.inputs?.compilerInputs);
     if (file.proof?.inputs?.compilerInputs !== undefined && (!workerCompilerInputs || !workerExecution
       || workerCompilerInputs.captureId !== workerExecution.captureId

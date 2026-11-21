@@ -1166,11 +1166,37 @@ describe('native durable continuation outcomes', () => {
     }
   });
 
+  const processIdentity = { pid: 123, threadId: 0, bootId: '01234567-89ab-cdef-0123-456789abcdef', startTicks: '456' };
+  const workerExecution = { schemaVersion: 'worker-execution-v1',
+    captureId: '12345678-9abc-def0-1234-56789abcdef0', testFile: '/repo/lib/a.test.ts',
+    before: processIdentity, after: processIdentity };
+
+  it('binds native runtime capability observations to the worker and selected file', () => {
+    const capabilities = { schemaVersion: 'worker-runtime-capabilities-v1', captureId: workerExecution.captureId,
+      testFile: workerExecution.testFile, before: null, after: null };
+    const runtime = { before: null, after: null, capabilities };
+    const readInputs = (inputs: Record<string, unknown>) => {
+      const value = snapshot();
+      Object.assign(value.nativeRun.files[0]!.proof, { inputs });
+      return read(value);
+    };
+    expect(readInputs({ workerExecution, runtime })).toMatchObject({ status: 'ready',
+      receipts: [{ proof: { workerRuntime: runtime } }] });
+    const legacyRuntime = { before: null, after: null };
+    expect(readInputs({ runtime: legacyRuntime })).toMatchObject({ status: 'ready',
+      receipts: [{ proof: { workerRuntime: legacyRuntime } }] });
+    for (const inputs of [
+      { runtime },
+      { workerExecution, runtime: { ...runtime, capabilities: { ...capabilities, captureId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' } } },
+      { workerExecution, runtime: { ...runtime, capabilities: { ...capabilities, testFile: '/repo/lib/b.test.ts' } } },
+      { workerExecution, runtime: { ...runtime, capabilities: null } },
+    ]) {
+      expect(readInputs(inputs)).toMatchObject({ status: 'refused', reason: 'native-worker-runtime-mismatch',
+        receipts: [], currentEvidence: [] });
+    }
+  });
+
   it('retains the original worker incarnation and refuses replacement, missing or malformed process observations', () => {
-    const processIdentity = { pid: 123, threadId: 0, bootId: '01234567-89ab-cdef-0123-456789abcdef', startTicks: '456' };
-    const workerExecution = { schemaVersion: 'worker-execution-v1',
-      captureId: '12345678-9abc-def0-1234-56789abcdef0', testFile: '/repo/lib/a.test.ts',
-      before: processIdentity, after: processIdentity };
     const run = (execution: unknown, compilerInputs?: unknown) => {
       const value = snapshot();
       Object.assign(value.nativeRun.files[0]!.proof, { inputs: { workerExecution: execution,

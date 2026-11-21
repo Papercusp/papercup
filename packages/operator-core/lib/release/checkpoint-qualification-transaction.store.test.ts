@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import { TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, captureRecordedProofContext,
-  createRecordedTestPopulation, type RecordedPopulationIdentity } from '@papercusp/test-config/execution-details';
+  createRecordedTestPopulation, createSourceByteSnapshot, type RecordedPopulationIdentity } from '@papercusp/test-config/execution-details';
 import type { readPartialNativeCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
 
 const h = vi.hoisted(() => ({ boundedOrgTxn: vi.fn(), appendPipelineEvent: vi.fn() }));
@@ -130,6 +130,33 @@ describe('native qualification authenticates original ledger rows', () => {
     expect(read([{ ...rows[0]!, execution_details: { ...details,
       workerExecution: { ...details.workerExecution, captureId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' } } }, rows[1]!]))
       .toMatchObject({ status: 'unknown', reason: 'original-native-worker-population-or-context-mismatch' });
+  });
+
+  it('compares compiler and source observations from the native receipt with the original row', () => {
+    const { rows, observed, read } = fixture();
+    const [first, second] = rows;
+    const details = first!.execution_details;
+    const workerCompilerInputs = { schemaVersion: 'worker-compiler-inputs-v1', scope: 'vitest-inlined-vm-calls',
+      populationStatus: 'unknown', captureId: details.workerExecution.captureId, testFile: details.workerExecution.testFile,
+      inputSha256: '1'.repeat(64), vmCallCount: 1, missing: ['transform-pipeline-unobserved', 'vm-options-partially-observed'] };
+    const sourceBytes = { schemaVersion: 'source-byte-observation-v1',
+      before: createSourceByteSnapshot([{ path: 'a.test.ts', sha256: '2'.repeat(64) }]), after: null };
+    expect(sourceBytes.before).not.toBeNull();
+    const proofContext = captureRecordedProofContext({ ...details, sourceBytes });
+    const observations = { workerCompilerInputs, sourceBytes, proofContext };
+    const originals = [{ ...first!, execution_details: { ...details, ...observations } }, second!];
+    const proof = observed.receipts[0]!.proof;
+    Object.assign(proof, observations);
+    expect(read(originals)).toMatchObject({ status: 'known' });
+    for (const change of [
+      { workerCompilerInputs: { ...workerCompilerInputs, inputSha256: '3'.repeat(64) } },
+      { sourceBytes: { ...sourceBytes, before: null } },
+      { workerCompilerInputs: undefined },
+      { sourceBytes: undefined },
+    ]) {
+      Object.assign(proof, observations, change);
+      expect(read(originals)).toMatchObject({ status: 'unknown', reason: 'original-native-worker-population-or-context-mismatch' });
+    }
   });
 
   it.each([{ started_at: '2026-10-31T23:59:59.000Z' },
