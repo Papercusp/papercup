@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const readLaunchSpecMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+const readSessionOutsidePlanRefMock = vi.hoisted(() => vi.fn(async (): Promise<string | null> => null));
 const requestSessionIdentityActivationMock = vi.hoisted(() =>
   vi.fn(async (_input: unknown) => ({ generation: 1 })),
 );
@@ -77,6 +78,12 @@ vi.mock('../../../adv-sessions', async (importOriginal) => ({ ...(await importOr
 vi.mock('../../../role-launch-spec', () => ({
   buildLaunchSpec: buildLaunchSpecMock,
   compileLaunchSpecificationArtifact: compileLaunchSpecificationArtifactMock,
+}));
+// The rebuild also reads outside-plan state through a separate PG-backed leaf.
+// Keep its pure reference validation real and isolate only the persisted read.
+vi.mock('../../../session-outside-plan', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../session-outside-plan')>()),
+  readSessionOutsidePlanRef: readSessionOutsidePlanRefMock,
 }));
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   requestSessionIdentityActivation: (input: unknown) => requestSessionIdentityActivationMock(input),
@@ -145,6 +152,7 @@ async function refresh(body: unknown): Promise<Response> {
 beforeEach(() => {
   vi.clearAllMocks();
   readLaunchSpecMock.mockResolvedValue(null);
+  readSessionOutsidePlanRefMock.mockResolvedValue(null);
   admitMock.mockResolvedValue({ ok: true, charged: [] });
 });
 afterEach(() => {
@@ -167,6 +175,7 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
     expect(j.stateRevision).toHaveLength(24);
     // Rendered from CURRENT sources, which is the entire point.
     expect(buildLaunchSpecMock).toHaveBeenCalledTimes(1);
+    expect(readSessionOutsidePlanRefMock).toHaveBeenCalledWith(OWNER, 'papercusp-workspace');
     expect(requestSessionIdentityActivationMock).toHaveBeenCalledWith(
       expect.objectContaining({ ownerId: OWNER, source: 'restart', restart: true }),
     );
@@ -245,9 +254,11 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
       writeFileSync(join(domainPromptDir, 'agent-base-overlay.md'), '# Refresh domain fixture\n');
       const componentPath = join(domainDir, 'blueprint.yaml');
       writeFileSync(componentPath,
-        'id: refresh-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
+        'id: refresh-domain\nextends: identity-root\nversion: 1.0.0\nslots:\n  - slot: domain\n');
       writeFileSync(join(rootDir, 'blueprint.yaml'),
-        'id: refresh-suite\nextends: refresh-domain\nslots: []\nroles:\n  - id: su\n    stack:\n      - domain:refresh-domain\n');
+        'id: refresh-suite\nextends: refresh-domain\nslots: []\n');
+      const source = await getIdentitySource('refresh-suite', { repoDir: sourceDir });
+      expect(source.ok, JSON.stringify(source)).toBe(true);
       const selected = await resolveNamedIdentityCompositionSelection('refresh-suite', sourceDir);
       const pin = { ref: 'composition:refresh-suite', sourceRevision: selected.sourceRevision };
       readLaunchSpecMock.mockResolvedValue(spec({ stack: selected.stack, selectedIdentity: pin }));
@@ -272,7 +283,7 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
         expect.objectContaining({ selectedIdentity: pin }));
 
       writeFileSync(componentPath,
-        'id: refresh-domain\nextends: base\nversion: 1.0.1\nslots:\n  - slot: domain\n');
+        'id: refresh-domain\nextends: identity-root\nversion: 1.0.1\nslots:\n  - slot: domain\n');
       expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({
         ok: false, reason: 'render-failed',
         error: expect.stringMatching(/source revision or component stack changed/),
@@ -293,11 +304,12 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
       mkdirSync(parentDir, { recursive: true });
       mkdirSync(childDir, { recursive: true });
       const parentPath = join(parentDir, 'blueprint.yaml');
-      writeFileSync(parentPath, 'id: refresh-parent\nextends: base\nversion: 1.0.0\n');
+      // Each source declares its own kind; even an abstract identity needs slots.
+      writeFileSync(parentPath, 'id: refresh-parent\nextends: identity-root\nversion: 1.0.0\nslots: []\n');
       writeFileSync(join(childDir, 'blueprint.yaml'),
         'id: refresh-child\nextends: refresh-parent\nversion: 1.0.0\nslots:\n  - slot: domain\n');
       const selected = await getIdentitySource('refresh-child', { repoDir: sourceDir });
-      expect(selected.ok).toBe(true);
+      expect(selected.ok, JSON.stringify(selected)).toBe(true);
       if (!selected.ok) throw new Error('fixture identity did not resolve');
       const pin = { ref: 'domain:refresh-child', sourceRevision: selected.contentHash };
       const artifactInputs = selected.layers.map((layer) => ({
@@ -320,7 +332,7 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
       expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({ ok: true });
       const v1Render = readFileSync(join(dir, `session-refresh-${OWNER}.md`), 'utf8');
 
-      writeFileSync(parentPath, 'id: refresh-parent\nextends: base\nversion: 1.0.1\n');
+      writeFileSync(parentPath, 'id: refresh-parent\nextends: identity-root\nversion: 1.0.1\nslots: []\n');
       const changed = await getIdentitySource('refresh-child', { repoDir: sourceDir });
       expect(changed.ok).toBe(true);
       if (!changed.ok) throw new Error('changed fixture identity did not resolve');
@@ -336,7 +348,7 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
 
       // Rollback has a different current artifact. Its prior selected closure
       // must be checked against the matching history receipt instead.
-      writeFileSync(parentPath, 'id: refresh-parent\nextends: base\nversion: 1.0.0\n');
+      writeFileSync(parentPath, 'id: refresh-parent\nextends: identity-root\nversion: 1.0.0\nslots: []\n');
       const { parseSuLaunchSpecRecord, rebuildSuLaunchArtifact } = await import('../../../su-persona-render');
       const rollbackRecord = parseSuLaunchSpecRecord(spec({
         stack: ['practice:other'], selectedIdentity: null,
