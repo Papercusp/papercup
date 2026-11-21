@@ -1600,6 +1600,8 @@ export interface CheckpointDeps {
     capacitySummary?: string | null;
     heldMs: number;
     convergenceHoldMs: number;
+    queue?: FrozenCandidateRepairQueue | null;
+    reason?: string;
   }): Promise<void>;
   /**
    * P-013 (green-main-cycle-time-2026-10-08, D-028/D-029): one claimable item per failing
@@ -14413,6 +14415,8 @@ async function runGreenCheckpointInner(
                 candidate: repairQueue.candidate,
                 repairHead: repairQueue.repairHead,
                 failingTests: repairQueue.failingTests,
+                queue: repairQueue,
+                reason: "dispatch-capacity-held",
                 capacityRetryAtMs: dispatchInfeasible.capacityRetryAtMs,
                 capacitySummary: dispatch.capacityHold.summary,
                 heldMs: dispatchInfeasible.ageMs,
@@ -19380,6 +19384,21 @@ export async function runGreenCheckpoint(
   // lost-run sweep can flag a live run parked here (its heartbeat stays fresh through a hang).
   // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:3676c6aedf8a9c086d43:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:finalizing");
+  // D-015: every measured frozen round reaches ONE lead, including exhausted/dead-fixer
+  // early returns. Native per-file records below remain coverage, never worker fan-out.
+  if (deps.routeFrozenRepairToAgents && finalResult.repairQueueRead?.status !== "unreadable") {
+    const intake = finalResult.green ? null : (finalResult.repairQueue ?? null);
+    await runPostVerdictStepWithDeadline(
+      "frozen-repair lead handoff",
+      () => deps.routeFrozenRepairToAgents!({
+        pipeline: pipelineName(cfg.integrationRoot), candidate: intake?.candidate ?? finalResult.candidate ?? "",
+        repairHead: intake?.repairHead ?? finalResult.candidate ?? "", failingTests: intake?.failingTests ?? [], queue: intake,
+        reason: intake?.blockedReason ?? finalResult.reason,
+        heldMs: intake ? Math.max(0, Date.now() - intake.openedAtMs) : 0, convergenceHoldMs: 0,
+      }),
+      deps.log, FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS, onPostVerdictDeadline,
+    );
+  }
   try {
     deps.enterPostVerdictPhase?.(finalResult);
   } catch (e) {
@@ -23257,6 +23276,23 @@ export function realCheckpointDeps(
       // hold holds, so the condition-staleness sweep closing it on absence is the correct
       // recovery path. See the contract note in frozen-repair-agent-routing.ts.
       try {
+        if (input.queue === null) {
+          const { releaseConditionOwner } = await import("@papercusp/operator-core/lib/coord/condition-bridge");
+          const { frozenRepairConvergenceConditionKey } =
+            await import("@papercusp/operator-core/lib/release/frozen-repair-agent-routing");
+          await releaseConditionOwner(frozenRepairConvergenceConditionKey(input.pipeline), {
+            harness: input.pipeline, workspaceId: repairTarget.workspaceId, settle: true,
+            reason: "The frozen queue cleared; its complete handoff history remains on this incident.",
+          });
+          return;
+        }
+        if (input.queue) {
+          const { routeFrozenRepairToLead } =
+            await import("@papercusp/operator-core/lib/release/frozen-repair-lead-handoff");
+          await routeFrozenRepairToLead({ workspaceId: repairTarget.workspaceId,
+            pipeline: input.pipeline, queue: input.queue, reason: input.reason ?? "held-repair" });
+          return;
+        }
         const { buildFrozenRepairConvergenceBroadcast } =
           await import("@papercusp/operator-core/lib/release/frozen-repair-agent-routing");
         const { broadcastSevereEvent } =

@@ -470,6 +470,20 @@ const argsSchema = z.preprocess(
         release: z.boolean().optional(),
       }),
       z.object({
+        op: z.literal('repair-group'),
+        action: z.enum(['assign', 'record-verification']),
+        groupId: z.string().min(1),
+        worker: z.string().min(1).optional(),
+        members: z.array(z.string().min(1)).optional(),
+        sourcePaths: z.array(z.string().min(1)).optional(),
+        causeEvidence: z.array(z.string().min(1)).optional(),
+        independentOf: z.array(z.object({ groupId: z.string().min(1), evidenceRefs: z.array(z.string().min(1)).min(1) })).optional(),
+        sourceWorkItem: z.string().min(1).optional(),
+        strategy: z.string().min(1).optional(),
+        attemptId: z.string().min(1).optional(),
+        evidenceRefs: z.array(z.string().min(1)).optional(),
+      }),
+      z.object({
         /**
          * P-019 (D-008 layer 1) — HOOK PLUMBING, never called by hand. The PostToolUse
          * edit hook records the exact hunk of one Edit/Write made while a candidate is frozen,
@@ -1137,7 +1151,7 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean().optional(),
-      op: z.enum(['get', 'admit', 'heal-generated', 'claim-leg', 'record-edit', 'retire']).optional(),
+      op: z.enum(['get', 'admit', 'heal-generated', 'claim-leg', 'repair-group', 'record-edit', 'retire']).optional(),
       recorded: z.boolean().optional(),
       target: z.unknown().optional(),
       repairQueue: z.unknown().nullable().optional(),
@@ -1372,12 +1386,32 @@ export default defineTool({
       callerAuthorization.callerSpawnId === callerAuthorization.queueFixerSpawnId &&
       inspected.queue?.phase === 'awaiting-fixer';
     stampActionEffect({ status: 'unknown', reason: 'no-settled-effect-receipt' });
-    if (args.op !== 'record-edit' && callerAuthorization.status !== 'authorized-delegate' &&
+    if (args.op !== 'record-edit' && !(args.op === 'repair-group' && args.action === 'record-verification') &&
+        callerAuthorization.status !== 'authorized-delegate' &&
         !exactFallbackFixerAdmission &&
         ownership && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
       stampActionEffect({ status: 'refused-live-peer' });
       return json({ ok: false, op: args.op, refused: true, verdict: 'refused',
         reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnershipReceipt });
+    }
+    if (args.op === 'repair-group') {
+      const queue = inspected.queue;
+      if (!queue || !callerOwnerId) return json({ ok: false, op: args.op, refused: true, reason: 'repair-context-unavailable' });
+      if (args.action === 'assign' && (!ownership || ownership.assessment !== 'held-live' || ownership.takenBy !== callerOwnerId)) {
+        return json({ ok: false, op: args.op, refused: true, reason: 'only-verified-gate-lead-may-delegate' });
+      }
+      const { routeFrozenRepairToLead } = await import('../../release/frozen-repair-lead-handoff');
+      const result = await routeFrozenRepairToLead({ workspaceId: inspected.target.workspaceId,
+        pipeline: inspected.target.installSlug, queue, reason: 'explicit-causal-group',
+        ...(args.action === 'assign' ? { assignment: {
+          id: args.groupId, caller: callerOwnerId, worker: args.worker ?? '', members: args.members ?? [],
+          sourcePaths: args.sourcePaths ?? [], causeEvidence: args.causeEvidence ?? [], independentOf: args.independentOf ?? [],
+          sourceWorkItem: args.sourceWorkItem ?? '', strategy: args.strategy ?? '', attemptId: args.attemptId ?? '', atMs: Date.now(),
+        } } : { verification: { groupId: args.groupId, caller: callerOwnerId, evidenceRefs: args.evidenceRefs ?? [] } }),
+      });
+      stampActionEffect({ status: 'repair-group-recorded', workItem: result.workItem, pickup: result.pickup });
+      return json({ ok: true, op: args.op, groupId: args.groupId, ...result,
+        read: { tool: 'work_items:get', args: { id: result.workItem, payloadTier: 'full' } } });
     }
     if (args.op === 'heal-generated') {
       const queue = inspected.queue;

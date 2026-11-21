@@ -6819,6 +6819,12 @@ export function buildReleaseFixerKickoff(input: {
       `run artifact was unavailable.`;
   return (
     kickoff +
+    (queue ? `\n\nCOMPLETE RECORDED REPAIR INTAKE: ${JSON.stringify({ failingTests: queue.failingTests,
+      signature: queue.signature, admissions: queue.admissions, convergenceRounds: queue.convergenceRounds })}. ` +
+      `Start with one repair lead and shared-cause triage across this entire set. Per-file records are coverage, never a worker-count policy. ` +
+      `Delegate only evidence-backed independent causal groups with disjoint source edits, using release:repair-queue op:'repair-group'. ` +
+      `Record every group's membership, strategy attempts and verification; on exit return its open work and evidence to the gate lead. ` +
+      `The existing gate lead retains admission and final verification. A wake count is not pickup; never reset a strategy's three-launch limit on a head advance.` : '') +
     contradictionNote +
     typecheckNote +
     checkpointNote +
@@ -7908,7 +7914,7 @@ export async function measureCandidateStaleness(
  */
 export interface ReleaseFixerDispatchSkip {
   code: 'scope' | 'stale-candidate' | 'snapshot-mismatch' | 'no-measured-failures' |
-    'covered' | 'reservation-changed' | 'launch-failed';
+    'covered' | 'reservation-changed' | 'launch-failed' | 'lead-handoff';
   reason: string;
   /** False only when another dispatch cannot help until the queue's verdict or head changes. */
   retryable: boolean;
@@ -7925,6 +7931,7 @@ export async function dispatchReleaseFixer(
     alarm?: import('../../alarm-attention').AlarmAttentionDeps;
     onSkip?: (skip: ReleaseFixerDispatchSkip) => void;
     typecheckPreflight?: CheckpointTypecheckPreflight | null;
+    routeLead?: typeof import('../../release/frozen-repair-lead-handoff').routeFrozenRepairToLead;
   } = {},
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
   const skip = (code: ReleaseFixerDispatchSkip['code'], reason: string, retryable = true): null => {
@@ -8133,6 +8140,16 @@ export async function dispatchReleaseFixer(
     }
   }
 
+  // D-015: preserve scope, green-candidate and measured-snapshot guards before handing off.
+  if (repairQueue) {
+    const route = deps.routeLead ?? (await import('../../release/frozen-repair-lead-handoff')).routeFrozenRepairToLead;
+    const handoff = await route({ workspaceId: ctx.workspaceId, pipeline: ctx.installSlug,
+      queue: repairQueue, reason: repairQueue.attempts > 0 ? 'fixer-return' : 'shared-cause-triage' });
+    if (handoff.lead || repairQueue.attempts > 0) {
+      return skip('lead-handoff', `Complete repair inventory retained on ${handoff.workItem}; ` +
+        `lead ${handoff.lead ?? 'awaiting a verified successor'}, pickup ${handoff.pickup}. No duplicate fixer launched.`, false);
+    }
+  }
   // P-012: dedup by the FAILURE SIGNATURE (the failing test files / workspaces), not the
   // candidate sha. While the gate stays red, staging advances hourly so every checkpoint
   // is a NEW candidate — keying on sha re-notified the human + re-spawned a fixer every
@@ -8233,8 +8250,8 @@ export async function dispatchReleaseFixer(
         account: 'auto',
         releaseFixerContext: {
           candidate: candidate.slice(0, 12),
-          failingTests: (fixerTargets ?? []).slice(0, 20),
-          ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
+          failingTests: [...(fixerTargets ?? [])],
+          ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: [...sameHeadContradicted] } : {}),
           ...(repairQueue
             ? {
                 frozenCandidate: repairQueue.candidate,

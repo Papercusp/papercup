@@ -3989,6 +3989,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
+    const leadHandoffs: Array<Parameters<NonNullable<CheckpointDeps["routeFrozenRepairToAgents"]>>[0]> = [];
+    deps.routeFrozenRepairToAgents = async (input) => { leadHandoffs.push(input); };
     deps.dispatchFrozenRepairFixer = async () => {
       throw new Error("an exhausted queue must not dispatch another fixer");
     };
@@ -4043,6 +4045,11 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     });
     expect(writes).toHaveLength(2);
     expect(calls).not.toContain("runGreen");
+    expect(leadHandoffs).toHaveLength(2);
+    for (const handoff of leadHandoffs) expect(handoff).toMatchObject({
+      candidate: frozen, repairHead: frozen, failingTests: ["lib/still-broken.test.ts"],
+      queue: { phase: "blocked", attempts: 3 }, reason: "attempts-exhausted",
+    });
   });
 
   /** P-008 (WI-1961441): the shared exhausted-pin fixture for the escape-hatch tests below. */

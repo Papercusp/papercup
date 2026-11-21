@@ -150,7 +150,9 @@ function hoursText(ms: number): string {
 /** The single concrete step that moves a queue in this phase. Named in every rung's message. */
 export function namedNextAction(s: IdleQueueSnapshot, episode?: IdleQueueEpisode): string {
   if (episode?.dispatchRefusal) {
-    return `Fire release:checkpoint-run for a fresh measured verdict on repairHead ${short(s.repairHead)} before dispatching another fixer.`;
+    return `Read the complete repair-lead handoff on the existing convergence condition; triage the recorded causes, ` +
+      `recover open causal groups and admit a verified source fix to repairHead ${short(s.repairHead)}. ` +
+      `A dispatcher refusal does not authorize a fresh verdict or reset an attempt budget.`;
   }
   switch (s.phase) {
     case 'awaiting-fixer':
@@ -165,7 +167,7 @@ export function namedNextAction(s: IdleQueueSnapshot, episode?: IdleQueueEpisode
     case 'blocked':
       return (
         `Read release:repair-queue { op:'status' } (blocked: ${s.blockedReason ?? 'reason not recorded'}); ` +
-        `retire only per the documented unreachable-green test.`
+        `the repair lead retains the complete failure set and must converge a verified source fix; keep the frozen candidate.`
       );
     default:
       return `Read release:repair-queue { op:'status' } for the per-leg picture.`;
@@ -1074,6 +1076,13 @@ export async function checkIdleRepairQueue(
         });
       },
       wakeGateOwner: async (holder, msg) => {
+        if (queue) {
+          const { routeFrozenRepairToLead } = await import('./frozen-repair-lead-handoff');
+          const handoff = await routeFrozenRepairToLead({ workspaceId, pipeline: installSlug, queue,
+            reason: queue.blockedReason ?? 'idle-repair-handoff' });
+          return { ok: handoff.pickup === 'confirmed',
+            detail: `repair group retained on ${handoff.workItem}; lead ${handoff.lead ?? 'unassigned'}, pickup ${handoff.pickup}` };
+        }
         const { sendMessage } = await import('../agent-tools/coordination/messages');
         const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
         const env = await sendMessage(IDLE_ACTUATOR_IDENTITY, {

@@ -6034,6 +6034,10 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
   });
 });
 
+vi.mock('../../release/frozen-repair-lead-handoff', () => ({
+  routeFrozenRepairToLead: vi.fn(async () => ({ workItem: 'WI-HANDOFF', lead: null, pickup: 'unassigned' })),
+}));
+
 describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (not just the routine)', () => {
   beforeEach(() => {
     appendPipelineEvent.mockClear();
@@ -6330,7 +6334,7 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       base: 'b'.repeat(40),
       repairHead: 'c'.repeat(40),
       affectedTestProofGroup: 'proof-1',
-      attempts: 1,
+      attempts: 0,
       openedAtMs: 1,
       updatedAtMs: 2,
       fixerSpawnId: null,
