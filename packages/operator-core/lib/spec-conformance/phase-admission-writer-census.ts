@@ -60,7 +60,13 @@ const nonCoerciveBinaryOperators = new Set([
 ]);
 const implicitDispatchReview = 'implicit-dispatch-requires-review';
 const numericLiteralUnary = 'numeric-literal-unary';
+const numericLiteralArithmetic = 'numeric-literal-arithmetic';
+type NumericLiteralWitness = typeof numericLiteralUnary | typeof numericLiteralArithmetic;
 const numericUnaryOperators = new Set<ts.SyntaxKind>([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.TildeToken]);
+const numericArithmeticOperators = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+]);
 
 export interface PhaseWriterSource { path: string; content: string }
 /** Syntax evidence only. Tag arguments are the substitution expressions; the
@@ -114,7 +120,7 @@ export interface PhaseWriterSite {
   helperDeclaration?: SymbolDeclaration;
   invocation?: PhaseWriterInvocation;
   argumentFlow?: PhaseWriterArgumentFlow;
-  syntaxWitness?: typeof numericLiteralUnary;
+  syntaxWitness?: NumericLiteralWitness;
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
@@ -477,12 +483,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       // witness for source-bound disposition.
       // Append after explicit sites so duplicate syntax cannot renumber any
       // existing reviewed occurrence or discard an earlier opaque frontier.
-      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[]; syntaxWitness?: typeof numericLiteralUnary }> = [];
+      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[]; syntaxWitness?: NumericLiteralWitness }> = [];
       const isAsync = (node: ts.Node): boolean => ts.canHaveModifiers(node)
         && !!ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword);
       const captureImplicitEffect = (node: ts.Node): void => {
         let expression = node, operands: ts.Node[] | undefined;
-        let syntaxWitness: typeof numericLiteralUnary | undefined;
+        let syntaxWitness: NumericLiteralWitness | undefined;
         if (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) {
           expression = node.parent;
           const declaration = node.parent;
@@ -504,6 +510,9 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const destructuring = operator === ts.SyntaxKind.EqualsToken
             && (ts.isObjectLiteralExpression(node.left) || ts.isArrayLiteralExpression(node.left));
           if (destructuring || !nonCoerciveBinaryOperators.has(operator)) operands = [node.left, node.right];
+          if (numericArithmeticOperators.has(operator) && ts.isNumericLiteral(node.left) && ts.isNumericLiteral(node.right)) {
+            syntaxWitness = numericLiteralArithmetic;
+          }
         } else if (ts.isPrefixUnaryExpression(node) && node.operator !== ts.SyntaxKind.ExclamationToken
           || ts.isPostfixUnaryExpression(node)) {
           operands = [node.operand];
@@ -977,18 +986,31 @@ const dispositions = new Set<PhaseWriterDisposition>([
   'advancing', 'safe-retreat', 'metadata-only', 'isolated-fixture', 'historical/unreachable',
 ]);
 
-function reviewNumericLiteralUnary(site: PhaseWriterSite): PhaseWriterReview | undefined {
-  if (site.syntaxWitness !== numericLiteralUnary || site.kind !== 'unresolved' || site.invocation
-    || site.callees.length || site.relations.length || site.columns.length || site.dynamicEdges.length !== 1
+function reviewNumericLiteral(site: PhaseWriterSite): PhaseWriterReview | undefined {
+  const unary = site.syntaxWitness === numericLiteralUnary;
+  const arithmetic = site.syntaxWitness === numericLiteralArithmetic;
+  if ((!unary && !arithmetic) || site.kind !== 'unresolved' || site.invocation
+    || site.callees.length || site.relations.length || site.columns.length
     || site.unresolved.length !== 1 || site.unresolved[0] !== implicitDispatchReview
     || digest(site.statement) !== site.statementSha256) return;
-  // Check the serialized statement and operand before using its AST witness.
+  // Recheck the complete token sequence and the collector's exact operand edges.
   const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, site.statement);
-  if (!numericUnaryOperators.has(scanner.scan()) || scanner.scan() !== ts.SyntaxKind.NumericLiteral
-    || scanner.getTokenText() !== site.dynamicEdges[0] || scanner.scan() !== ts.SyntaxKind.EndOfFileToken) return;
+  const operands = new Set<string>();
+  if (arithmetic) {
+    if (scanner.scan() !== ts.SyntaxKind.NumericLiteral) return;
+    operands.add(scanner.getTokenText());
+  }
+  const operators = unary ? numericUnaryOperators : numericArithmeticOperators;
+  if (!operators.has(scanner.scan()) || scanner.scan() !== ts.SyntaxKind.NumericLiteral) return;
+  operands.add(scanner.getTokenText());
+  if (scanner.scan() !== ts.SyntaxKind.EndOfFileToken || operands.size !== site.dynamicEdges.length
+    || [...operands].some((operand, index) => site.dynamicEdges[index] !== operand)) return;
 
-  const reason = 'This unary expression directly consumes a numeric literal. Evaluating it and coercing its primitive Number cannot dispatch user code.';
-  const evidenceRefs = [`source:${site.path}#${site.sourceSha256}`, 'https://tc39.es/ecma262/#sec-unary-operators'];
+  const reason = unary
+    ? 'This unary expression directly consumes a numeric literal. Evaluating it and coercing its primitive Number cannot dispatch user code.'
+    : 'Both operands are Number literals. This arithmetic operation evaluates and combines primitive numbers without dispatching user code.';
+  const semantics = unary ? 'sec-unary-operators' : 'sec-applystringornumericbinaryoperator';
+  const evidenceRefs = [`source:${site.path}#${site.sourceSha256}`, `https://tc39.es/ecma262/#${semantics}`];
   return { siteId: site.id, sourceSha256: site.sourceSha256, statementSha256: site.statementSha256,
     sourceProofs: [{ path: site.path, sha256: site.sourceSha256 }], disposition: 'metadata-only', reason, evidenceRefs,
     resolvedEdges: [...site.dynamicEdges, implicitDispatchReview].map(edge => ({ edge, reason, evidenceRefs })) };
@@ -1008,7 +1030,7 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
   for (const site of inventory.sites) {
     coverage.population.push(site.id);
     const candidates = byId.get(site.id) ?? [];
-    const syntaxReview = candidates.length === 0 ? reviewNumericLiteralUnary(site) : undefined;
+    const syntaxReview = candidates.length === 0 ? reviewNumericLiteral(site) : undefined;
     const review = candidates.length === 1 ? candidates[0] : syntaxReview;
     const reasons: string[] = [];
     if (!review) reasons.push(candidates.length ? 'duplicate-review' : 'unclassified-writer');

@@ -393,9 +393,16 @@ describe('phase binding writer census', () => {
     const inventory = inventoryPhaseWriters(sources);
     const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
     const accepted = reviewed.reviews.map(row => row.siteId).sort();
-    const literalPaths = ['libs/generic/resource-profile/src/index.ts', 'libs/papercusp/libs/db/src/operator-db-env.ts'];
-    const literals = inventory.sites.filter(site => site.statement === '-1' && literalPaths.includes(site.path));
-    expect(literals.map(site => site.path).sort()).toEqual(literalPaths);
+    const expectedLiterals = new Map([
+      ['libs/generic/resource-profile/src/index.ts', ['-1', '0.5 * 1024', '1024 * 1024', '1024 * 1024']],
+      ['libs/papercusp/libs/db/src/acquire-registry.ts', ['16 * 1024']],
+      ['libs/papercusp/libs/db/src/connection.ts', ['8 /* admin-pg-cache */ +\n    6']],
+      ['libs/papercusp/libs/db/src/operator-db-env.ts', ['-1']],
+    ]);
+    const literals = inventory.sites.filter(site => expectedLiterals.get(site.path)?.includes(site.statement));
+    expect(literals.map(site => JSON.stringify([site.path, site.statement])).sort()).toEqual(
+      [...expectedLiterals].flatMap(([path, statements]) =>
+        statements.map(statement => JSON.stringify([path, statement]))).sort());
     expect(report.syntaxReviews.map(row => row.siteId).sort()).toEqual(literals.map(site => site.id).sort());
     const checked = [...accepted, ...literals.map(site => site.id)].sort();
     expect(report.ready).toBe(false);
@@ -2291,9 +2298,60 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('recovers literal unary proofs and a decisive trailing dispatch identity across stream batches', async () => {
+  it('checks direct Number arithmetic while retaining getter, coercion and adjacent syntax identities', () => {
+    const effects: string[] = [];
+    const transport = {
+      get value() {
+        effects.push('getter');
+        return { [Symbol.toPrimitive]() { effects.push('coercion'); return 2; } } as unknown as number;
+      },
+    };
+    const withDispatch = () => 10 + transport.value;
+    expect(withDispatch()).toBe(12);
+    expect(effects).toEqual(['getter', 'coercion']);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-literal-arithmetic-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/arithmetic.ts';
+      const literals = ['10 + 2', '0x10 - 1', '2 * 2', '1 /* numerator */ / 0', '5 % 3'];
+      const exact = 'const results = [' + literals.join(', ') + '];';
+      writeFileSync(join(root, path), exact);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      expect(inert.inventory.sites.map(site => site.statement).sort()).toEqual([...literals].sort());
+      expect(inert.census.coverage.checked).toEqual(inert.inventory.sites.map(site => site.id));
+      for (const row of inert.census.syntaxReviews) {
+        const site = inert.inventory.sites.find(candidate => candidate.id === row.siteId)!;
+        expect(row).toMatchObject({ disposition: 'metadata-only', sourceSha256: site.sourceSha256,
+          statementSha256: site.statementSha256, sourceProofs: [{ path, sha256: site.sourceSha256 }] });
+        expect(row.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+      expect(inert.inventory.sites.find(site => site.statement === '2 * 2')?.dynamicEdges).toEqual(['2']);
+
+      const controls = ['(2) + 2', '1n + 2n', '2 ** 3', '2 + "2"'];
+      writeFileSync(join(root, path), exact + 'const dispatch = ' + withDispatch.toString()
+        + '; const adjacent = [' + controls.join(', ') + ']; const returned = async () => 10 + 2;');
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const report = reconcilePhaseWriterCensus(current, []);
+      const remaining = current.sites.filter(site => report.coverage.residue.includes(site.id));
+      expect(remaining.map(site => site.statement).sort()).toEqual(
+        [...controls, '10 + 2', '10 + transport.value', 'transport.value'].sort());
+      expect(report.coverage.checked).toHaveLength(literals.length + 1);
+      expect(report.coverage.population).toEqual(current.sites.map(site => site.id));
+      expect(report.coverage.notApplicable).toEqual([]);
+
+      const dispatch = remaining.find(site => site.statement === '10 + transport.value')!;
+      const malformed = { ...current, sites: current.sites.map(site => site.id === dispatch.id
+        ? { ...site, syntaxWitness: 'numeric-literal-arithmetic' as const } : site) };
+      expect(reconcilePhaseWriterCensus(malformed, [])).toEqual(report);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('recovers literal unary and arithmetic proofs and a decisive trailing dispatch identity across stream batches', async () => {
     for (const size of [3, 4, 5, 81]) {
-      const literals = source('const values = [' + '-7,'.repeat(size) + '];', 'packages/literals.ts');
+      const terms = Array.from({ length: size }, (_, index) => index % 2 === 0 ? '-7' : '2 * 2');
+      const literals = source('const values = [' + terms.join(', ') + '];', 'packages/literals.ts');
       const tail = source('const read = () => +subject;', 'packages/tail.ts');
       const inventory = inventoryPhaseWriters([tail, literals]);
       const result = reconcilePhaseWriterCensus(inventory, []);
