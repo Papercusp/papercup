@@ -63,12 +63,19 @@ async function shardArgsFor(options: Parameters<typeof runPureLaneShards>[0]) {
 describe('operator-core test-lane admission', () => {
   it.each([
     ['test:lane-pure', 'PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs'],
-    ['test:lane-stateful', 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests'],
-  ])('%s routes the full lane through pc-heavy', (scriptName, expected) => {
+    ['test:lane-stateful', 'PC_TEST_LANE=stateful ../../scripts/pc-heavy.sh -- vitest run --passWithNoTests && npm run test:node-maintenance'],
+  ])('%s routes its Vitest lane through pc-heavy', (scriptName, expected) => {
     const command = scripts[scriptName];
 
     expect(command, `${scriptName} must remain declared`).toBeTruthy();
     expect(command).toBe(expected);
+  });
+
+  it('routes stateful maintenance tests through the governed Node file runner', () => {
+    expect(scripts['test:node-maintenance']?.split(/\s+/)).toEqual([
+      'node', '../../scripts/test-files.mjs', 'scripts/npm-install-safe.test.mjs',
+      'scripts/tauri-ticket-integrations-output.test.mjs', 'scripts/tauri-surface-output.test.mjs',
+    ]);
   });
 
   it('keeps the shared wrapper executable from the workspace package directory', () => {
@@ -162,10 +169,19 @@ describe('operator-core test-lane admission', () => {
 
     it('reads the skip list through the same validating reader vitest-config applies', async () => {
       const files = laneFiles(1600);
+      const measured = executedSourceRunnerIdentity();
       const list = writeSkipList(files.slice(0, 1000));
       try {
-        const { calls } = await shardArgsFor({ env: { PC_TEST_REUSE_SKIP_LIST: list.path }, pureFiles: files });
-        expect(calls).toEqual([['run', '--passWithNoTests']]);
+        const { calls, lines } = await shardArgsFor({ env: { PC_TEST_REUSE_SKIP_LIST: list.path }, pureFiles: files });
+        if (measured) {
+          expect(calls).toEqual([['run', '--passWithNoTests']]);
+          expect(lines.join('')).toContain('skipping 1000 file(s)');
+        } else {
+          // The genuine published-install case also checks this reader in
+          // dependency-generation-verifier.test.ts. An unpinned checkout runs every shard.
+          expect(calls.map(args => args.at(-1))).toEqual(['--shard=1/3', '--shard=2/3', '--shard=3/3']);
+          expect(lines.join('')).toContain('[test-pass-reuse] UNREADABLE');
+        }
       } finally {
         list.cleanup();
       }
