@@ -512,7 +512,7 @@ describe('phase binding writer census', () => {
     expect(report.coverage.checked).toEqual(inventory.sites.filter(site => accepted.has(site.id)).map(site => site.id));
     for (const site of later) expect(report.coverage.residue).toContain(site.id);
     for (const statement of ['args.targetPlanItem.slug.trim()', 'args.targetPlanItem.itemId.trim()',
-      'registerPlanItemStatusIdentity(targetPlanItem)']) {
+      'registerPlanItemStatusIdentity(targetPlanItem)', 'args.externalPlanRef']) {
       const site = inventory.sites.find(row => row.statement === statement);
       expect(site, statement).toBeDefined();
       expect(report.coverage.residue).toContain(site!.id);
@@ -2021,55 +2021,93 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('keeps the static hero image excluded only while its bytes and every role source match', () => {
-    const root = mkdtempSync(join(tmpdir(), 'phase-static-hero-'));
-    const app = 'apps/the-swarm-site/';
-    const hero = app + 'public/brand/swarm-hero.png';
-    const lookalike = app + 'public/brand/swarm-hero-copy.png';
-    const roles = ['app/page.tsx', 'app/globals.css', 'app/layout.tsx', 'next.config.js', 'package.json']
-      .map(path => app + path);
+  const docsDiagramRoles = ['scripts/postbuild-copy.sh', 'astro.config.mjs', 'package.json']
+    .map(path => 'apps/operator-docs/' + path);
+  it.each([
+    {
+      assetPath: 'apps/the-swarm-site/public/brand/swarm-hero.png',
+      kind: 'static-site-image',
+      roles: ['app/page.tsx', 'app/globals.css', 'app/layout.tsx', 'next.config.js', 'package.json']
+        .map(path => 'apps/the-swarm-site/' + path),
+    },
+    {
+      assetPath: 'apps/operator-docs/public/diagrams/blueprint-operation-durability.png',
+      kind: 'static-docs-diagram', roles: docsDiagramRoles,
+    },
+    {
+      assetPath: 'apps/operator-docs/public/diagrams/blueprint-operation-lifecycle.png',
+      kind: 'static-docs-diagram', roles: docsDiagramRoles,
+    },
+    {
+      assetPath: 'apps/operator/public/favicon.ico',
+      kind: 'static-spa-favicon',
+      roles: ['apps/operator/bin/host-spa.ts', 'apps/operator-vite/vite.config.ts', 'apps/operator-vite/public-assets.ts'],
+    },
+    {
+      assetPath: 'packages/operator-core/lib/__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br',
+      format: 'binary', kind: 'brotli-json-test-fixture',
+      roles: ['packages/operator-core/lib/projected-tool-deps.kernel-resolver.test.ts'],
+    },
+    {
+      assetPath: 'packages/operator-core/lib/dao-hr/fonts/NotoSans-Regular.ttf',
+      format: 'binary', kind: 'contract-pdf-font',
+      roles: ['packages/operator-core/lib/dao-hr/contracts-esign.ts'],
+    },
+  ])('keeps $assetPath excluded only while its bytes and every role source match', ({ assetPath, format = 'raster', kind, roles }) => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-reviewed-binary-'));
+    const prefix = `reviewed-${format}`;
+    const lookalike = assetPath.replace(/\.[^.]+$/, '-copy$&');
     const fixture = (path: string) => readFileSync(new URL('../../../../' + path, import.meta.url));
     const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
     const put = (path: string, bytes: Buffer) => {
       mkdirSync(dirname(join(root, path)), { recursive: true });
       writeFileSync(join(root, path), bytes);
     };
-    const asset = fixture(hero);
+    const asset = fixture(assetPath);
     const proof = roles.map(path => `${path}#${hash(fixture(path))}`).join(':');
     try {
       execFileSync('git', ['init', '-q'], { cwd: root });
       for (const path of roles) put(path, fixture(path));
-      put(hero, asset);
+      put(assetPath, asset);
       const inventory = inventoryPhaseWriterTree(root);
       expect(inventory.excluded).toEqual([{
-        path: hero, reason: `reviewed-raster:static-site-image:${proof}:asset-sha256:${hash(asset)}`,
+        path: assetPath, reason: `${prefix}:${kind}:${proof}:asset-sha256:${hash(asset)}`,
       }]);
-      expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.notApplicable).toEqual(['excluded:' + hero]);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.notApplicable).toEqual(['excluded:' + assetPath]);
 
       for (const path of roles) {
         put(path, Buffer.concat([fixture(path), Buffer.from('\n')]));
         const current = verifyPhaseWriterTreeSnapshot(inventory);
         expect(current.ready).toBe(false);
         expect(current.coverage.notApplicable).toEqual([]);
-        expect(current.coverage.residue).toEqual(['excluded:' + hero, 'gap:source:' + hero, 'source:' + path].sort());
+        expect(current.coverage.residue).toEqual(['excluded:' + assetPath, 'gap:source:' + assetPath, 'source:' + path].sort());
         expect(inventoryPhaseWriterTree(root).gaps).toEqual([{
-          id: 'source:' + hero, reason: 'reviewed-raster-role-unverified', sha256: hash(asset),
+          id: 'source:' + assetPath, reason: `${prefix}-role-unverified`, sha256: hash(asset),
         }]);
         put(path, fixture(path));
       }
 
       const altered = Buffer.concat([asset, Buffer.from([0xff])]);
-      put(hero, altered);
+      put(assetPath, altered);
       put(lookalike, asset);
       const current = inventoryPhaseWriterTree(root);
       expect(current.excluded).toEqual([]);
       expect(current.gaps).toEqual([
         { id: 'source:' + lookalike, reason: 'source-not-utf8', sha256: hash(asset) },
-        { id: 'source:' + hero, reason: 'source-not-utf8', sha256: hash(altered) },
+        { id: 'source:' + assetPath, reason: 'source-not-utf8', sha256: hash(altered) },
       ]);
       expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.residue).toEqual([
-        'excluded:' + hero, 'gap:source:' + lookalike, 'gap:source:' + hero,
+        'excluded:' + assetPath, 'gap:source:' + lookalike, 'gap:source:' + assetPath,
       ].sort());
+
+      const textReplacement = Buffer.from('dispatchWriter();');
+      put(assetPath, textReplacement);
+      const replaced = inventoryPhaseWriterTree(root);
+      expect(replaced.excluded).toEqual([]);
+      expect(replaced.gaps).toContainEqual({
+        id: `${prefix}:${assetPath}`, reason: `${prefix}-bytes-changed`, sha256: hash(textReplacement),
+      });
+      expect(replaced.sites.some(site => site.path === assetPath && site.statement === 'dispatchWriter();')).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

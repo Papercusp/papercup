@@ -61,16 +61,67 @@ const swarmBrandRasterRole = {
   kind: 'documented-brand-asset',
 };
 const swarmDesktopRasterRoot = 'libs/papercusp/apps/desktop/src-tauri/icons/the-hive/';
-type RasterRoleSource = { path: string; sha256: string };
-// The reviewed PNGs end at IEND and can contain a fixed-size bKGD color field.
-// The reviewed ICO and ICNS containers contain only raster records and their
-// masks. Keep the asset and every source needed to establish its role pinned
-// to the same snapshot.
-const reviewedRasterArtifacts = new Map<string, {
+type ArtifactRoleSource = { path: string; sha256: string };
+// The docs build copies public assets into dist and mirrors them into the
+// operator's static docs directory. These PNGs remain in that mirror.
+const docsDiagramRaster = {
+  role: {
+    path: 'apps/operator-docs/scripts/postbuild-copy.sh',
+    sha256: '1b86d7d79872d9f913f23c5bc8096c7dcf7e62ff21089094ae744534f1a75826',
+    kind: 'static-docs-diagram',
+  },
+  additionalRoleSources: [
+    { path: 'apps/operator-docs/astro.config.mjs', sha256: '6993472fdbf21ab9bbcda9345a33613dc545263ac1a495a468dbd41fd3b33f61' },
+    { path: 'apps/operator-docs/package.json', sha256: '12b11ef288855eda499eb22d0ecbb173e9dd76a71bf4f757397887f6fdbb739a' },
+  ],
+};
+// Keep each reviewed binary and every source needed to establish its role
+// pinned to the same snapshot. The PNGs end at IEND, and the ICO and ICNS
+// containers hold raster records and their masks.
+const reviewedBinaryArtifacts = new Map<string, {
   sha256: string;
-  role: RasterRoleSource & { kind: string };
-  additionalRoleSources?: readonly RasterRoleSource[];
+  format?: 'binary';
+  role: ArtifactRoleSource & { kind: string };
+  additionalRoleSources?: readonly ArtifactRoleSource[];
 }>([
+  ['packages/operator-core/lib/__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br', {
+    format: 'binary',
+    sha256: 'c184f14f95f4fd51c1dd56ae7283b81556dab1515c64d8889d8112ca9dd18e56',
+    role: {
+      path: 'packages/operator-core/lib/projected-tool-deps.kernel-resolver.test.ts',
+      sha256: '3bd97e193734ea9509d6ae03ead816710ceff19bb87e1c696914e0fcdaf3640a',
+      kind: 'brotli-json-test-fixture',
+    },
+  }],
+  ['packages/operator-core/lib/dao-hr/fonts/NotoSans-Regular.ttf', {
+    format: 'binary',
+    sha256: 'b85c38ecea8a7cfb39c24e395a4007474fa5a4fc864f6ee33309eb4948d232d5',
+    role: {
+      path: 'packages/operator-core/lib/dao-hr/contracts-esign.ts',
+      sha256: '6990f30e40b9132ac470cb2a7c4460970e26b6427d44b34da0cb3519c85a702a',
+      kind: 'contract-pdf-font',
+    },
+  }],
+  ['apps/operator-docs/public/diagrams/blueprint-operation-durability.png', {
+    ...docsDiagramRaster,
+    sha256: 'a3b5871f87d1d1caf35f52c7d5d67e7975d219b53c250335b1db7ffa7fd0ca73',
+  }],
+  ['apps/operator-docs/public/diagrams/blueprint-operation-lifecycle.png', {
+    ...docsDiagramRaster,
+    sha256: '52123ab9742b8eef0519cf77d1e44392308a43d2d1fc198e2c9c8838573e781b',
+  }],
+  ['apps/operator/public/favicon.ico', {
+    sha256: '58cd31c44021676200298e67884af1ae3fcc507a22c45502b63b3b0fd0964051',
+    role: {
+      path: 'apps/operator/bin/host-spa.ts',
+      sha256: '93ee051bd480ac82bcf056367da780bb9f837f60d7d67028eff1240ee0379802',
+      kind: 'static-spa-favicon',
+    },
+    additionalRoleSources: [
+      { path: 'apps/operator-vite/vite.config.ts', sha256: '37724b9ba8dcdbf18f25f96f756473043c4479fa0b1ad6234836c2c837bec094' },
+      { path: 'apps/operator-vite/public-assets.ts', sha256: 'f0fac64555d5fab3b40920ba414e918416a41aa025512ea66ba66adb4d81b533' },
+    ],
+  }],
   ['apps/the-swarm-site/public/brand/swarm-hero.png', {
     // The caBX provenance record includes an SVG containing one path. The
     // pinned display and export sources serve the whole file as a static PNG.
@@ -1019,7 +1070,7 @@ function readPhaseWriterTree(root: string) {
   const gaps: PhaseWriterInventory['gaps'] = [];
   const excluded: Array<{ path: string; reason: string }> = [];
   const lostPixelPngs: LostPixelOutput[] = [];
-  const reviewedRasterPaths: string[] = [];
+  const reviewedBinaryPaths: string[] = [];
   const files: string[] = [];
   for (const path of enumeration.files) {
     if (typeof path !== 'string' || !canonicalPath(path)) {
@@ -1066,10 +1117,10 @@ function readPhaseWriterTree(root: string) {
         else gaps.push(gitObject.gap);
         continue;
       }
-      const reviewedRaster = reviewedRasterArtifacts.get(path);
-      const rasterDigest = reviewedRaster ? digest(bytes) : undefined;
-      if (reviewedRaster && rasterDigest === reviewedRaster.sha256) {
-        reviewedRasterPaths.push(path);
+      const reviewed = reviewedBinaryArtifacts.get(path);
+      const reviewedDigest = reviewed ? digest(bytes) : undefined;
+      if (reviewed && reviewedDigest === reviewed.sha256) {
+        reviewedBinaryPaths.push(path);
         continue;
       }
       const content = bytes.toString('utf8');
@@ -1077,30 +1128,32 @@ function readPhaseWriterTree(root: string) {
         const candidate = lostPixelOutputCandidate(path, bytes);
         if (candidate && 'output' in candidate) lostPixelPngs.push(candidate.output);
         else if (candidate) gaps.push(candidate.gap);
-        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256: rasterDigest ?? digest(bytes) });
+        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256: reviewedDigest ?? digest(bytes) });
         continue;
       }
-      if (rasterDigest) {
-        gaps.push({ id: `reviewed-raster:${path}`, reason: 'reviewed-raster-bytes-changed', sha256: rasterDigest });
+      if (reviewedDigest) {
+        const prefix = `reviewed-${reviewed?.format ?? 'raster'}`;
+        gaps.push({ id: `${prefix}:${path}`, reason: `${prefix}-bytes-changed`, sha256: reviewedDigest });
       }
       input.push({ path, content });
     } catch { gaps.push({ id: `source:${path}`, reason: 'source-read-failed' }); }
   }
-  if (reviewedRasterPaths.length > 0) {
-    const rolePaths = new Set(reviewedRasterPaths.flatMap(path => {
-      const { role, additionalRoleSources = [] } = reviewedRasterArtifacts.get(path)!;
+  if (reviewedBinaryPaths.length > 0) {
+    const rolePaths = new Set(reviewedBinaryPaths.flatMap(path => {
+      const { role, additionalRoleSources = [] } = reviewedBinaryArtifacts.get(path)!;
       return [role.path, ...additionalRoleSources.map(source => source.path)];
     }));
     const roleHashes = new Map(input.filter(source => rolePaths.has(source.path))
       .map(source => [source.path, digest(source.content)]));
-    for (const path of reviewedRasterPaths) {
-      const { sha256, role, additionalRoleSources = [] } = reviewedRasterArtifacts.get(path)!;
+    for (const path of reviewedBinaryPaths) {
+      const { sha256, role, additionalRoleSources = [], format = 'raster' } = reviewedBinaryArtifacts.get(path)!;
+      const prefix = `reviewed-${format}`;
       const sources = [role, ...additionalRoleSources];
       if (sources.every(source => roleHashes.get(source.path) === source.sha256)) {
         const proof = sources.map(source => `${source.path}#${source.sha256}`).join(':');
-        excluded.push({ path, reason: `reviewed-raster:${role.kind}:${proof}:asset-sha256:${sha256}` });
+        excluded.push({ path, reason: `${prefix}:${role.kind}:${proof}:asset-sha256:${sha256}` });
       } else {
-        gaps.push({ id: `source:${path}`, reason: 'reviewed-raster-role-unverified', sha256 });
+        gaps.push({ id: `source:${path}`, reason: `${prefix}-role-unverified`, sha256 });
       }
     }
   }
