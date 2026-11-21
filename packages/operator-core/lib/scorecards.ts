@@ -32,7 +32,7 @@ import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './
 import { acquireWithContentionRetry, isWorkspaceContended } from './agent-tools/locks/contention-retry';
 import {
   BM25_LATENCY_ARTIFACT_IDENTITY, BM25_LATENCY_ARTIFACT_PATH, BM25_LATENCY_INSTRUMENT_KEY,
-  parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
+  parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument, REPAIR_IMPROVEMENT_TIME_KEY,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
 import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT, MANAGED_NATIVE_CUTOVER_PLAN } from './managed-capability-inventory-evidence';
@@ -666,6 +666,25 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    if (key === REPAIR_IMPROVEMENT_TIME_KEY) {
+      const workspaceId = input.rubric.workspaceId;
+      const harnessSlug = subject.kind === 'pot' ? subject.ref
+        : subject.kind === 'plan' && subject.ref === input.rubric.subjectPlan ? input.rubric.subjectHarnessSlug : undefined;
+      const evidenceRef = 'harness_shared.engineer_issues:observation.baselineRef';
+      if (!workspaceId || !harnessSlug || harnessSlug === '*' || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('A source hive and a completed observation window are required.'), evidenceRef };
+        continue;
+      }
+      try {
+        const result = await measureRepairImprovementTime({ workspaceId, harnessSlug,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          window: { ...window, workspaceId, harnessSlug }, value: { ...result, unit: 'min' } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Repair history unavailable: ${String(error)}`), evidenceRef };
+      }
       continue;
     }
     if (key === CARRY_DRILL_LIFECYCLE_INSTRUMENT_KEY) {
@@ -4106,35 +4125,35 @@ function projectRepairRecord(row: RepairHistoryDbRow, scale?: readonly string[])
   };
 }
 
-/** Each baseline retains its own cited remedy. Only baselineRef creates a before/after relation. */
-export async function readCriterionRepairHistory(input: {
-  rubricRef: string; criterionKey: string; ratingScale?: readonly string[];
-  cursor?: RepairHistoryCursor; limit?: number; asOf?: string;
-}): Promise<{ entries: CriterionRepairRecord[]; omittedCount: number; nextCursor: RepairHistoryCursor | null }> {
-  const workspace = issuesScopeWorkspace();
-  const { rubricRef, criterionKey, cursor } = input;
-  const limit = input.limit ?? 10;
-  const asOf = cursor?.asOf ?? input.asOf ?? new Date().toISOString();
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-    throw new RangeError('Repair history page size must be an integer from 1 to 100.');
-  }
-  if (!Number.isFinite(Date.parse(asOf)) || (cursor && (cursor.workspace !== workspace ||
-      cursor.rubricRef !== rubricRef || cursor.criterionKey !== criterionKey || !cursor.baselineId ||
-      typeof cursor.regradeId !== 'string' || (input.asOf !== undefined && input.asOf !== asOf)))) {
-    throw new Error('Invalid repair history cursor or snapshot for the requested workspace, rubric and criterion.');
-  }
-  const rows = await boundedPgReadTxn<RepairHistoryDbRow[]>((tx) => tx<RepairHistoryDbRow[]>`
+/** The public history reader and the duration check compare the same directly linked cards. */
+function repairPairsSql(tx: OrgSql, scope: {
+  workspaceId: string; asOf: string; rubricRef?: string; criterionKey?: string;
+  windowStart?: string; harnessSlug?: string;
+}) {
+  const selectCriterion = scope.criterionKey === undefined
+    ? tx`jsonb_each(CASE WHEN jsonb_typeof(c.obs->'ratings') = 'object' THEN c.obs->'ratings' ELSE '{}'::jsonb END)`
+    : tx`(SELECT ${scope.criterionKey}::text AS key, c.obs->'ratings'->${scope.criterionKey} AS value)`;
+  return tx`
     WITH cards AS MATERIALIZED (
       SELECT issue_id, created_at, payload->'observation' AS obs,
-             payload->'observation'->'ratings'->${criterionKey} AS entry
+             payload->'observation'->>'rubricRef' AS rubric_ref
         FROM harness_shared.engineer_issues
-       WHERE workspace_id = ${workspace} AND created_at <= ${asOf}::timestamptz
-         AND payload->'observation'->>'rubricRef' = ${rubricRef}
+       WHERE workspace_id = ${scope.workspaceId} AND payload->'observation'->>'rubricRef' IS NOT NULL
+         ${scope.windowStart
+           ? tx`AND created_at >= ${scope.windowStart}::timestamptz AND created_at < ${scope.asOf}::timestamptz`
+           : tx`AND created_at <= ${scope.asOf}::timestamptz`}
+         ${scope.rubricRef === undefined ? tx`` : tx`AND payload->'observation'->>'rubricRef' = ${scope.rubricRef}`}
     ), corrections AS (
-      SELECT DISTINCT obs->>'supersedes' AS corrected_id FROM cards
+      SELECT DISTINCT rubric_ref, obs->>'supersedes' AS corrected_id FROM cards
        WHERE obs->>'supersedes' IS NOT NULL AND obs->'retracted' IS NULL
-    ), history AS (
-      SELECT b.issue_id AS baseline_id, b.created_at AS baseline_at,
+    ), baselines AS (
+      SELECT c.*, r.key AS criterion_key, r.value AS entry
+        FROM cards c CROSS JOIN LATERAL ${selectCriterion} AS r
+       WHERE lower(trim(r.value->>'rating')) IN ${tx([...POOR_SCORECARD_RATINGS])}
+         AND nullif(trim(r.value->>'remediation'), '') IS NOT NULL
+         ${scope.harnessSlug === undefined ? tx`` : tx`AND c.obs->>'sourceHive' = ${scope.harnessSlug}`}
+    )
+      SELECT b.criterion_key, b.rubric_ref, b.issue_id AS baseline_id, b.created_at AS baseline_at,
              g.issue_id AS grade_id, g.created_at AS grade_at,
              b.entry->>'remediation' AS remediation, b.entry->>'rating' AS before_rating,
              g.entry->>'rating' AS after_rating, g.entry->>'evidence' AS evidence,
@@ -4157,13 +4176,34 @@ export async function readCriterionRepairHistory(input: {
              END AS incomparable,
              CASE WHEN b.obs->>'purpose' = 'diagnostic' THEN 'passed' ELSE b.obs->'gradingAudit'->>'state' END AS baseline_audit,
              g.obs->'gradingAudit'->>'state' AS grade_audit
-        FROM cards b
-        LEFT JOIN cards g ON g.obs->>'baselineRef' = b.issue_id
-        LEFT JOIN corrections bc ON bc.corrected_id = b.issue_id
-        LEFT JOIN corrections gc ON gc.corrected_id = g.issue_id
-       WHERE lower(trim(b.entry->>'rating')) IN ${tx([...POOR_SCORECARD_RATINGS])}
-         AND nullif(trim(b.entry->>'remediation'), '') IS NOT NULL
-    )
+        FROM baselines b
+        LEFT JOIN LATERAL (
+          SELECT linked.*, linked.obs->'ratings'->b.criterion_key AS entry FROM cards linked
+           WHERE linked.obs->>'baselineRef' = b.issue_id AND linked.rubric_ref = b.rubric_ref
+        ) g ON true
+        LEFT JOIN corrections bc ON bc.corrected_id = b.issue_id AND bc.rubric_ref = b.rubric_ref
+        LEFT JOIN corrections gc ON gc.corrected_id = g.issue_id AND gc.rubric_ref = b.rubric_ref`;
+}
+
+/** Each baseline retains its own cited remedy. Only baselineRef creates a before/after relation. */
+export async function readCriterionRepairHistory(input: {
+  rubricRef: string; criterionKey: string; ratingScale?: readonly string[];
+  cursor?: RepairHistoryCursor; limit?: number; asOf?: string;
+}): Promise<{ entries: CriterionRepairRecord[]; omittedCount: number; nextCursor: RepairHistoryCursor | null }> {
+  const workspace = issuesScopeWorkspace();
+  const { rubricRef, criterionKey, cursor } = input;
+  const limit = input.limit ?? 10;
+  const asOf = cursor?.asOf ?? input.asOf ?? new Date().toISOString();
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError('Repair history page size must be an integer from 1 to 100.');
+  }
+  if (!Number.isFinite(Date.parse(asOf)) || (cursor && (cursor.workspace !== workspace ||
+      cursor.rubricRef !== rubricRef || cursor.criterionKey !== criterionKey || !cursor.baselineId ||
+      typeof cursor.regradeId !== 'string' || (input.asOf !== undefined && input.asOf !== asOf)))) {
+    throw new Error('Invalid repair history cursor or snapshot for the requested workspace, rubric and criterion.');
+  }
+  const rows = await boundedPgReadTxn<RepairHistoryDbRow[]>((tx) => tx<RepairHistoryDbRow[]>`
+    WITH history AS (${repairPairsSql(tx, { workspaceId: workspace, asOf, rubricRef, criterionKey })})
     SELECT history.*, count(*) OVER () AS remaining_count FROM history
      WHERE (baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C") >
            (${cursor?.baselineId ?? ''}::text COLLATE "C", ${cursor?.regradeId ?? ''}::text COLLATE "C")
@@ -4175,6 +4215,44 @@ export async function readCriterionRepairHistory(input: {
   return { entries, omittedCount, nextCursor: omittedCount && last
     ? { workspace, rubricRef, criterionKey, asOf, baselineId: last.baselineId, regradeId: last.regradeId ?? '' }
     : null };
+}
+
+/** Mean elapsed minutes across distinct baseline/criterion pairs in one completed window. */
+export async function measureRepairImprovementTime(input: {
+  workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string;
+}) {
+  if (!input.workspaceId.trim() || !input.harnessSlug?.trim() ||
+      !Number.isFinite(Date.parse(input.windowStart)) || !Number.isFinite(Date.parse(input.windowEnd)) ||
+      Date.parse(input.windowStart) >= Date.parse(input.windowEnd)) {
+    throw new Error('Time to improvement requires a workspace, a source hive and a nonempty window.');
+  }
+  return boundedPgReadTxn(async tx => {
+    const pairs = repairPairsSql(tx, { ...input, asOf: input.windowEnd });
+    const query = tx<(RepairHistoryDbRow & { criterion_key: string })[]>`
+      SELECT * FROM (${pairs}) AS repairs
+       WHERE incomparable IS NULL AND baseline_audit = 'passed' AND grade_audit = 'passed'
+       ORDER BY baseline_id COLLATE "C", criterion_key COLLATE "C", grade_at, grade_id COLLATE "C"`;
+    let previousBaseline: string | undefined;
+    let previousCriterion: string | undefined;
+    let totalMs = 0;
+    let sampleCount = 0;
+    for await (const batch of query.cursor(128)) {
+      for (const row of batch) {
+        if (row.baseline_id === previousBaseline && row.criterion_key === previousCriterion) continue;
+        const record = projectRepairRecord(row, [row.before_rating, row.after_rating ?? '']);
+        if (record.verification !== 'verified' || record.outcome !== 'improved' || !record.regradedAt) continue;
+        totalMs += Date.parse(record.regradedAt) - Date.parse(record.baselineAt);
+        sampleCount++;
+        previousBaseline = row.baseline_id;
+        previousCriterion = row.criterion_key;
+      }
+    }
+    if (sampleCount === 0) {
+      return { verdict: 'unknown' as const, sampleCount, detail: 'No qualifying verified improvements in this window.' };
+    }
+    return { verdict: 'pass' as const, value: totalMs / sampleCount / 60_000, sampleCount,
+      detail: `Mean minutes to the first verified improvement across ${sampleCount} baseline/criterion pairs.` };
+  });
 }
 
 /**

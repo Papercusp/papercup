@@ -13,6 +13,7 @@ import { REUSE_MEASUREMENT_INSTRUMENT_KEYS } from './code-intelligence/reuse-mea
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { BUG_SCOREBOARD_INSTRUMENT } from './harness/improvements/bug-scoreboard-instrument';
 import { RATCHET_METRICS_INSTRUMENT_KEY } from './release/ratchet-metrics';
 import { SILENT_HALT_STRANDED_INSTRUMENT_KEY } from './system-health/silent-halt-instrument';
 import { PLAN_PORTFOLIO_INSTRUMENT_KEYS } from './plan-portfolio/census-instruments';
@@ -38,6 +39,7 @@ import { MANAGED_INVENTORY_EVIDENCE_INSTRUMENT } from './managed-capability-inve
 import { retainMeasurementProvenance } from './measurement-provenance';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
+  REPAIR_IMPROVEMENT_TIME_KEY,
   P544_QUALIFICATION_COMMAND,
   P544_QUALIFICATION_INSTRUMENT_KEYS,
   p544QualificationInstruments,
@@ -217,6 +219,13 @@ describe('live sentinel deployment instrument (R-3)', () => {
 });
 
 describe('the registry seed set', () => {
+  it('registers first verified improvement as an executable hive-scoped duration check', () => {
+    expect(getRegisteredInstrument(REPAIR_IMPROVEMENT_TIME_KEY)).toMatchObject({
+      evaluator: 'platform',
+      rescore: { scope: 'harness', unit: 'min', resolve: expect.any(Function) },
+    });
+  });
+
   it('registers the operational BM25 artifact without claiming a platform measurement', async () => {
     expect(getRegisteredInstrument(BM25_LATENCY_INSTRUMENT_KEY)?.evaluator).toBe('artifact');
     expect(platformComputedInstrumentKeys()).not.toContain(BM25_LATENCY_INSTRUMENT_KEY);
@@ -253,8 +262,10 @@ describe('the registry seed set', () => {
     }
   });
 
-  it('registers exactly the keys scorecards resolves as platform-computed', () => {
+  it('registers exactly the expected platform instrument keys', () => {
     const expected = [
+      REPAIR_IMPROVEMENT_TIME_KEY,
+      BUG_SCOREBOARD_INSTRUMENT,
       FLEET_PRODUCTIVITY_KEY,
       FLEET_COMMS_KEY,
       MANAGED_INVENTORY_EVIDENCE_INSTRUMENT,
@@ -311,6 +322,14 @@ describe('the registry seed set', () => {
         if (instrument?.evaluator !== 'platform') throw new Error('expected platform instrument');
         const criterion = nativeAdoption.nativeAdoptionCriterionForInstrument(key);
         if (!criterion) {
+          if (key === REPAIR_IMPROVEMENT_TIME_KEY) {
+            expect(instrument.rescore).toMatchObject({ windowMs: 30 * 86_400_000, scope: 'harness', unit: 'min' });
+            continue;
+          }
+          if (key === BUG_SCOREBOARD_INSTRUMENT) {
+            expect(instrument.rescore).toMatchObject({ windowMs: 86_400_000, scope: 'harness', unit: 'count' });
+            continue;
+          }
           if (Object.values(REUSE_MEASUREMENT_INSTRUMENT_KEYS).some(value => value === key)) {
             expect(instrument.rescore?.windowMs).toBe(28 * 86_400_000);
             expect(instrument.rescore?.scope).toBe('harness');

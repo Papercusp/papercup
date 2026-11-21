@@ -4301,7 +4301,19 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
     const before = await graphRows();
     expect(before.map(row => row.plan_line_id)).toEqual(['P-001', 'P-002']);
-    expect((await readPlanBySlug(seeded.subject, scope))!.parsed.items.map(item => item.id)).toEqual(['P-001', 'P-002']);
+    let incompleteRead: unknown;
+    try {
+      await readPlanBySlug(seeded.subject, scope);
+    } catch (error) {
+      incompleteRead = error;
+    }
+    expect(incompleteRead).toBeInstanceOf(Error);
+    expect(JSON.parse((incompleteRead as Error).message)).toMatchObject({
+      code: 'plan_line_graph_incomplete',
+      planSlug: seeded.subject,
+      missingItemIds: ['P-027'],
+      recovery: { tool: 'plans:backfill-dependency-edges', args: { dryRun: true } },
+    });
     const amendment = {
       rubricId: seeded.rubricSlug, actorId: 'graph-repair-author', reason: 'Synchronize the accepted source and its graph projection.',
       expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision,

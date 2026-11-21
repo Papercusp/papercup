@@ -234,7 +234,8 @@ export function parseBm25LatencyArtifact(artifact: unknown): {
     versions: { bake_pgts: artifact.versions.bake_pgts }, loadavg: { ...load } };
 }
 
-export type InstrumentUnit = '%' | 'cores' | 's' | 'ms' | 'count';
+export const REPAIR_IMPROVEMENT_TIME_KEY = 'rubric:time-to-first-verified-improvement';
+export type InstrumentUnit = '%' | 'cores' | 's' | 'ms' | 'min' | 'count';
 
 export interface InstrumentParseContext {
   /** Epoch ms at which the sample was taken (for age-style instruments). */
@@ -810,6 +811,7 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
  */
 export function platformComputedInstrumentKeys(): string[] {
   return [
+    REPAIR_IMPROVEMENT_TIME_KEY,
     FLEET_PRODUCTIVITY_KEY,
     FLEET_COMMS_KEY,
     BUG_SCOREBOARD_INSTRUMENT,
@@ -863,6 +865,19 @@ export function platformComputedInstrumentKeys(): string[] {
 /** The full registry, keyed by instrumentKey. */
 export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> {
   const registry = new Map<string, RegisteredInstrument>();
+  registry.set(REPAIR_IMPROVEMENT_TIME_KEY, {
+    key: REPAIR_IMPROVEMENT_TIME_KEY,
+    evaluator: 'platform',
+    resolvedBy: 'scorecards:instrument-snapshots',
+    description: 'Mean minutes from a poor criterion rating to its first directly linked, verified improvement in the same hive and observation window.',
+    rescore: {
+      scope: 'harness', windowMs: 30 * 24 * 60 * 60_000, unit: 'min',
+      async resolve(window) {
+        const { measureRepairImprovementTime } = await import('./scorecards');
+        return measureRepairImprovementTime(window);
+      },
+    },
+  });
   for (const instrument of COMMAND_INSTRUMENTS) registry.set(instrument.key, instrument);
   const liveForkserver = liveForkserverInstrument(resolveAgentWorkspaceRoot({}));
   registry.set(liveForkserver.key, liveForkserver);

@@ -18,7 +18,9 @@ import type { OrgSql } from './work-items';
 import { readCriterionRepairHistory, type RepairHistoryCursor, type ScorecardEvidenceCriterion } from './scorecards';
 import { composeCompanionSummary } from '@papercusp/facets';
 import type { StructuredObservation } from './harness/improvements/observation-types';
-import { recordRubricCheckResults, readLatestRubricCheckResults } from './check-results-ledger';
+import { instrumentCheckId, recordRubricCheckResults, readLatestRubricCheckResults, runInstrumentChecks } from './check-results-ledger';
+import { REPAIR_IMPROVEMENT_TIME_KEY } from './rubric-instrument-registry';
+import { rescoreRubric } from './harness/routines/rubric-rescore-action';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { retainMeasurementProvenance } from './measurement-provenance';
 import { SQL_PROBE_TOOL, continuityProbeRevision } from './continuity-probes';
@@ -1772,6 +1774,93 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('records unknown for an empty window and minutes to the first verified repair per baseline and criterion', async () => {
+    const scope = { workspaceId: issuesScopeWorkspace(), harnessSlug: 'duration-fixture' };
+    const rubricRef = 'duration-source';
+    const subject = { kind: 'work-item', ref: 'WI-472', windowStart: '2026-02-01', windowEnd: '2026-02-02' };
+    const start = Date.parse('2026-02-02T00:00:00Z');
+    const now = start + 24 * 60 * 60_000;
+    const audit = { state: 'passed' };
+    const measurementRef = 'duration-check';
+    const criterionKey = 'first-improvement';
+    await proposeRubric({ rubricId: measurementRef, characteristic: 'repair-effectiveness',
+      title: 'Observed repair time', status: 'active', by: 'su-duration-fixture',
+      criteria: [{ key: criterionKey, title: 'First verified improvement', model: 'Mean elapsed minutes.',
+        method: 'Compare the original baseline and its earliest verified improvement.',
+        driftMarkers: 'Repeating the same grade changes the count.',
+        check: { kind: 'instrument', instrumentKey: REPAIR_IMPROVEMENT_TIME_KEY } }] });
+    async function write(id: string, minutes: number, rating: string, extra: Record<string, unknown> = {}) {
+      const obs = { rubricRef, subject, sourceHive: scope.harnessSlug, criteriaHash: 'd'.repeat(64),
+        gradingAudit: audit, ratings: { speed: { rating, evidence: id, remediation: 'WI-472' } }, ...extra };
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source, state, payload, created_by, signal_origin, created_at)
+        VALUES (${scope.workspaceId}, ${id}, 'change', 'harness:duration-fixture', ${id}, '', 'minor', 'test',
+          'done', ${JSON.stringify({ observation: obs })}::text::jsonb, 'su-test', 'organic', ${new Date(start + minutes * 60_000)})`;
+    }
+    async function measure() {
+      const result = await rescoreRubric({ ...scope, rubricRef: measurementRef }, {
+        runInstruments: input => runInstrumentChecks({ ...input, now: () => now }),
+      });
+      expect(result.testRunIds).toHaveLength(1);
+      const latest = await readLatestRubricCheckResults({ ...scope, rubricRef: measurementRef,
+        testRunIds: result.testRunIds, asOf: new Date(now).toISOString() }, db.adminSql);
+      const row = latest.get(instrumentCheckId(criterionKey));
+      expect(row, result.instrumentError).toBeDefined();
+      return row!;
+    }
+    function expectSample(row: Awaited<ReturnType<typeof measure>>, value: number | null, count: number) {
+      expect(row.check, JSON.stringify(row.check.provenance?.diagnostics)).toMatchObject({ value, unit: 'min' });
+      expect(row.check.provenance?.diagnostics).toContainEqual({ path: '$["sampleCount"]', value: count });
+    }
+    expectSample(await measure(), null, 0);
+    await write('EI-duration-a', 0, 'partial', { purpose: 'diagnostic' });
+    await write('EI-duration-b', 2, 'broken');
+    await write('EI-duration-c', 0, 'degraded');
+    const linkedA = { baselineRef: 'EI-duration-a' };
+    await write('EI-duration-late', 28, 'pass', linkedA);
+    await write('EI-duration-pending', 1, 'pass', { ...linkedA, gradingAudit: { state: 'pending' } });
+    await write('EI-duration-foreign', 2, 'pass', { ...linkedA, subject: { ...subject, windowEnd: '2026-02-03' } });
+    await write('EI-duration-corrected', 3, 'pass', linkedA);
+    await write('EI-duration-correction', 4, 'pass', { ...linkedA, supersedes: 'EI-duration-corrected' });
+    await write('EI-duration-other-hive', 1, 'pass', { ...linkedA, sourceHive: 'another-hive' });
+    await write('EI-duration-other-rubric', 1, 'pass', { ...linkedA, rubricRef: 'another-rubric' });
+    await write('EI-duration-other-meaning', 1, 'pass', { ...linkedA, criteriaHash: 'e'.repeat(64) });
+    await write('EI-duration-window-end', 24 * 60, 'pass', { baselineRef: 'EI-duration-c' });
+    await write('EI-duration-first-z', 8, 'pass', linkedA);
+    await write('EI-duration-first-a', 8, 'pass', linkedA);
+    await write('EI-duration-unchanged', 10, 'degraded', { baselineRef: 'EI-duration-c' });
+    expectSample(await measure(), 8, 1);
+    await write('EI-duration-second', 18, 'partial', { baselineRef: 'EI-duration-b' });
+    expectSample(await measure(), 12, 2);
+
+    await write('EI-duration-two-criteria', 20, 'fail', { ratings: {
+      cost: { rating: 'partial', remediation: 'WI-472' }, speed: { rating: 'fail', remediation: 'WI-473' } } });
+    await write('EI-duration-both-improved', 26, 'pass', { baselineRef: 'EI-duration-two-criteria',
+      ratings: { cost: { rating: 'pass' }, speed: { rating: 'partial' } } });
+    expectSample(await measure(), 9, 4);
+    // The seven eligible comparisons above include repeated and unchanged grades.
+    // Fill the first baseline to 127, 128, 129, then 385 total comparison rows.
+    // In each fresh rescore the last baseline must still contribute both of its criteria.
+    const comparisonRows = 7;
+    let repeats = 0;
+    for (const total of [127, 128, 129, 385]) {
+      const nextRepeats = total - comparisonRows;
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source, state, payload, created_by, signal_origin, created_at)
+        SELECT workspace_id, 'EI-duration-repeat-' || n, kind, scope, title, body, severity, source, state, payload,
+               created_by, signal_origin, created_at
+          FROM harness_shared.engineer_issues CROSS JOIN generate_series(${repeats + 1}::int, ${nextRepeats}::int) n
+         WHERE workspace_id = ${scope.workspaceId} AND issue_id = 'EI-duration-late'`;
+      expectSample(await measure(), 9, 4);
+      repeats = nextRepeats;
+    }
+    await write('EI-duration-instant', 30, 'fail');
+    await write('EI-duration-instant-grade', 30, 'pass', { baselineRef: 'EI-duration-instant' });
+    expectSample(await measure(), 7.2, 5);
   });
 
   it('recovers explicitly linked repairs across tied timestamps, page boundaries, and a reader restart', async () => {
