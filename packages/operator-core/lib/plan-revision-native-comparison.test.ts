@@ -165,9 +165,9 @@ describe('the isolated native Plans comparison', () => {
     }
     expect(readComparisonCoverage(dir, request, runtime).unmeasured).toEqual(['worker/desktop/resumed']);
     const last = { ...desktop, scenario: 'resumed', roleViews: { worker: { userId: 'worker', workspace: 'test', revisionId: '4' } } };
-    writeFileSync(join(dir, 'citation-role-views-final.json'), JSON.stringify(last));
+    writeFileSync(join(dir, 'plan-role-views-final.json'), JSON.stringify(last));
     expect(readComparisonCoverage(dir, request, runtime)).toMatchObject({ status: 'covered', unmeasured: [] });
-    writeFileSync(join(dir, 'citation-role-views-final-repeat.json'), JSON.stringify(last));
+    writeFileSync(join(dir, 'plan-role-views-final-repeat.json'), JSON.stringify(last));
     const repeated = readComparisonCoverage(dir, request, runtime);
     expect(repeated.cells).toHaveLength(45);
     expect(repeated.cells.find(row => row.role === 'worker' && row.door === 'desktop' && row.scenario === 'resumed')?.observations)

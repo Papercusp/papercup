@@ -42,7 +42,7 @@ type CapturedTrace = { group: string; applicationCommit: string; definitionCommi
     roleReads: { role: string; scenario: string; actorId: string; savedHash: string; revisionId: string }[] });
 export const applicationInputs = Object.freeze(['apps/operator/app/admin/plans/PlansClient.tsx', 'apps/operator/scripts/ptool.mjs']);
 export const definitionInputs = Object.freeze([entry, adapter, spec, config, 'packages/operator-core/test/plan-revision-ptool.ts',
-  'apps/operator/e2e/_fake-llm-fixture.ts', 'apps/operator/e2e/_native-bridge-json.ts',
+  'apps/operator/e2e/_fake-llm-fixture.ts', 'apps/operator/e2e/_native-bridge-json.ts', 'apps/operator/e2e/_plan-revision-edits.ts',
   'apps/operator/test/reporters/admin-test-runs-reporter-playwright.ts',
   'packages/operator-core/lib/testing-playwright-reporter.ts', 'packages/operator-core/lib/testing-native-runtime.ts']);
 
@@ -156,7 +156,7 @@ export function readComparisonCoverage(directory: string, request: ComparisonReq
       for (const scenario of ['cosmetic', 'citation', 'retry', 'resumed', 'material'])
         cells.set([role, door, scenario].join('/'), { role, door, scenario, observations: [] });
   for (const file of readdirSync(directory).sort()) {
-    const desktop = /^citation-role-views-.*\.json$/.test(file);
+    const desktop = /^(?:citation|plan)-role-views-.*\.json$/.test(file);
     if (!desktop && !/^draft-author-.*\.json$/.test(file)) continue;
     const bytes = readFileSync(join(directory, file));
     const row: CapturedTrace = JSON.parse(bytes.toString('utf8'));

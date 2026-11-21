@@ -7,14 +7,16 @@ import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
+import { citationEdit, nativePlanComparisonTimeoutMs, nativePlanEdits, type NativePlanEdit } from './_plan-revision-edits';
 
 const run = promisify(execFile);
-const previousCitation = 'packages/operator-core/lib/plan-efficiency.ts:1';
-const correctedCitation = 'packages/operator-core/lib/plan-efficiency.ts:2';
+
+type UiAction = { operation: 'navigate' | 'click' | 'edit'; target: string; outcome: 'unknown' | 'completed' | 'refused' };
 
 test.describe.configure({ mode: 'default' });
 
-async function captureNativeCitation(request: APIRequestContext, info: TestInfo, compareRoles = false) {
+async function captureNativeEdit(request: APIRequestContext, info: TestInfo, editCase: NativePlanEdit, compareRoles = false) {
+  const { scenario, originalText, replacementText } = editCase;
   const { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } = await import('@papercusp/operator-core/lib/testing-native-runtime');
   const workspace = assertNativeIsolatedWorkspace();
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
@@ -30,30 +32,42 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
   expect(database.port).toBe(process.env.PAPERCUSP_PG_PORT);
   expect(['', '5432']).not.toContain(database.port);
   const sql = postgres(database.href, { max: 1, onnotice: () => {} });
-  const slug = 'revision-citation-' + randomUUID() + '-' + new Date().toISOString().slice(0, 10);
+  const slug = 'revision-' + scenario + '-' + randomUUID() + '-' + new Date().toISOString().slice(0, 10);
   const headers = { 'x-papercusp-workspace': workspace };
   const editor = '.pc-plan-editor .vditor-ir [contenteditable="true"]';
   const edit = 'button[aria-label="Edit the raw markdown"]';
   const save = '.pc-editbar__btn--primary';
   const detail = '[aria-label="Plan ' + slug + '"]';
+  const handles = { author: 'author-' + randomUUID(), reviewer: 'reviewer-' + randomUUID(), worker: 'worker-' + randomUUID() };
+  let activeRole: keyof typeof handles | undefined;
+  const roleViews: Record<string, { userId: string; workspace: string; action: string; revisionId?: string; uiActions: UiAction[] }> = {};
+
+  function beginAction(operation: UiAction['operation'], target: string) {
+    if (!activeRole) return;
+    const action: UiAction = { operation, target, outcome: 'unknown' };
+    roleViews[activeRole]!.uiActions.push(action);
+    return action;
+  }
 
   async function native(command: string, ...args: string[]) {
     await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 15_000 });
+    const action = command === 'navigate' || command === 'click' ? beginAction(command, args[0]!) : undefined;
     const { stdout } = await run(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!,
       [command, '--pid', process.env.VERIFY_TAURI_PID!, ...(command === 'eval' ? ['--json'] : []), ...args],
       { timeout: 25_000 });
-    return decodeNativeBridgeJson(stdout, command);
+    const value = decodeNativeBridgeJson(stdout, command);
+    if (action) action.outcome = 'completed';
+    return value;
   }
   const measure = (expression: string) => native('eval', expression);
   const visible = (expression: string) => expect.poll(() => measure(expression),
     { timeout: 60_000, intervals: [300, 750, 1500] }).toBe(true);
-  const trace: Record<string, unknown> = { workspace, slug, applicationCommit: appCommit, runtimeBefore,
+  const trace: Record<string, unknown> = { workspace, slug, scenario, applicationCommit: appCommit, runtimeBefore,
     definitionCommit: process.env.VERIFY_TAURI_TEST_SOURCE_REF, group: process.env.PAPERCUSP_TEST_RUN_GROUP };
-  const handles = { author: 'author-' + randomUUID(), reviewer: 'reviewer-' + randomUUID(), worker: 'worker-' + randomUUID() };
-  const roleViews: Record<string, { userId: string; workspace: string; action: string; revisionId?: string }> = {};
   // Each account belongs only to the disposable workspace. The webview creates
   // and consumes the password locally and returns only the authenticated identity.
   async function enterRole(role: keyof typeof handles, action: string) {
+    activeRole = undefined;
     const identity = await measure(`(async () => {
       if (location.origin !== ${JSON.stringify(origin.origin)}) throw new Error('Unexpected native origin');
       const username = ${JSON.stringify(handles[role])};
@@ -77,7 +91,8 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
     })()`);
     expect(identity.workspace).toBe(workspace);
     expect(identity.userId).toBeTruthy();
-    roleViews[role] = { userId: identity.userId, workspace, action };
+    roleViews[role] = { userId: identity.userId, workspace, action, uiActions: [] };
+    activeRole = role;
   }
   try {
     // Only the registry setup is used. The plan and both writes go through the real operator.
@@ -101,28 +116,47 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
       expect(response.ok()).toBe(true);
       assertFixtureApiSuccess(verb, await response.json());
     }
-    await writePlan('new', { title: 'Native plan citation', status: 'draft' });
-    const workerTask = 'Apply the saved Reference for ' + handles.worker;
+    await writePlan('new', { title: 'Native plan ' + scenario, status: 'draft' });
+    const workerTask = 'Read the saved ' + editCase.heading + ' for ' + handles.worker;
     if (compareRoles) {
       await writePlan('add-item', { phase: 'Phase 1 — Reference check', importance: 'normal', text: workerTask });
     }
     const draft = await readPlan();
-    const roles = compareRoles ? '\nReview the Reference change: ' + handles.reviewer + '\n' : '';
-    await writePlan('set-content', { content: draft.raw.trimEnd() + '\n\n## Reference\n\n' + previousCitation + '\n' + roles,
+    const roles = compareRoles ? '\nReview the saved change for ' + handles.reviewer + '\n' : '';
+    await writePlan('set-content', { content: draft.raw.trimEnd() + '\n\n## ' + editCase.heading + '\n\n' + originalText + '\n' + roles,
       expectedVersion: draft.version, expectedHash: draft.contentHash });
     const before = await readPlan();
-    expect(before.raw.split(previousCitation)).toHaveLength(2);
+    expect(before.raw.split(originalText)).toHaveLength(2);
     const view = new URL('/adv', origin);
     view.search = new URLSearchParams({ tab: 'plans', view: 'plans', scope: 'all', welcome: '0', ws: workspace, plan: slug }).toString();
     await native('navigate', view.href, '--json');
     await visible(`location.origin === ${JSON.stringify(origin.origin)} && new URL(location.href).searchParams.get('plan') === ${JSON.stringify(slug)}`);
     if (compareRoles) {
-      await enterRole('author', 'save citation');
+      await enterRole('author', 'save the ' + scenario + ' edit');
       await native('navigate', view.href, '--json');
     }
     await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit + ':enabled')})`);
+    if (scenario === 'resumed') {
+      const initialDocument = await measure('performance.timeOrigin');
+      const inbox = new URL('/adv', origin);
+      inbox.search = new URLSearchParams({ tab: 'inbox', ws: workspace, welcome: '0' }).toString();
+      await native('navigate', inbox.href, '--json');
+      await visible(`location.origin === ${JSON.stringify(origin.origin)} && new URL(location.href).searchParams.get('tab') === 'inbox' && !document.querySelector(${JSON.stringify(detail)})`);
+      await native('navigate', view.href, '--json');
+      await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit + ':enabled')})`);
+      const resumed = await measure(`(async () => {
+        const response = await fetch('/api/auth/me', { credentials: 'same-origin', redirect: 'error' });
+        if (!response.ok) throw new Error('Could not read the resumed account');
+        const account = await response.json();
+        return { userId: account.user?.id, workspace: account.user?.workspace_id, autoLogin: account.autoLogin,
+          documentStartedAt: performance.timeOrigin };
+      })()`);
+      expect(resumed).toMatchObject({ userId: roleViews.author!.userId, workspace, autoLogin: false });
+      expect(resumed.documentStartedAt).toBeGreaterThan(initialDocument);
+      trace.resumption = { initialDocument, resumed, version: before.version, contentHash: before.contentHash };
+    }
     await native('click', detail + ' ' + edit, '--json');
-    await visible(`document.querySelector(${JSON.stringify(editor)})?.textContent.includes(${JSON.stringify(previousCitation)}) === true`);
+    await visible(`document.querySelector(${JSON.stringify(editor)})?.textContent.includes(${JSON.stringify(originalText)}) === true`);
     trace.requiredFields = await measure(`Array.from(document.querySelectorAll(${JSON.stringify(detail + ' [required], ' + detail + ' [aria-required="true"]')}), e => e.getAttribute('name') || e.getAttribute('aria-label') || e.tagName)`);
     // Observe completed requests without modifying fetch, response bodies, or the editor's save handler.
     await native('eval', `(() => {
@@ -137,11 +171,12 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
       window.__planCitationRequests = () => { collect(observer.takeRecords()); observer.disconnect(); return requests };
       return true;
     })()`);
+    const textEdit = beginAction('edit', editCase.heading);
     const edited = await measure(`(() => {
       const element = document.querySelector(${JSON.stringify(editor)});
       element.focus();
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-      const oldText = ${JSON.stringify(previousCitation)};
+      const oldText = ${JSON.stringify(originalText)};
       let node;
       while ((node = walker.nextNode())) {
         const offset = node.data.indexOf(oldText);
@@ -152,19 +187,20 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
-        return document.execCommand('insertText', false, ${JSON.stringify(correctedCitation)});
+        return document.execCommand('insertText', false, ${JSON.stringify(replacementText)});
       }
       return false;
     })()`);
+    if (textEdit) textEdit.outcome = edited === true ? 'completed' : 'refused';
     expect(edited).toBe(true);
     await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + save + ':enabled')})`);
     await native('click', detail + ' ' + save, '--json');
-    await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit)}) && document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(correctedCitation)})`);
+    await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit)}) && document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(replacementText)})`);
     trace.requests = await measure('window.__planCitationRequests()');
     const requests = trace.requests as Array<{ path: string }>;
     expect(requests.filter(row => row.path === '/api/admin/plans/set-content')).toHaveLength(1);
     const after = await readPlan();
-    expect(after.raw).toBe(before.raw.replace(previousCitation, correctedCitation));
+    expect(after.raw).toBe(before.raw.replace(originalText, replacementText));
     expect(after.contentHash).toBe(createHash('sha256').update(after.raw).digest('hex'));
     const revision = await sql.begin('isolation level repeatable read read only', async tx => {
       const rows = await tx`SELECT id::text, seq, content_hash, author_kind, author_id, created_at::text
@@ -186,7 +222,7 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
     if (compareRoles) {
       const saved = revision.rows[1]!;
       roleViews.author!.revisionId = saved.id;
-      await enterRole('reviewer', 'inspect the saved citation diff');
+      await enterRole('reviewer', 'inspect the saved ' + scenario + ' diff');
       const review = new URL(view);
       review.searchParams.set('ptab', 'revisions');
       await native('navigate', review.href, '--json');
@@ -194,13 +230,13 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
       await visible(`!!document.querySelector(${JSON.stringify(diffButton)})`);
       await native('click', diffButton, '--json');
       await visible(`new URL(location.href).searchParams.get('rev') === ${JSON.stringify(saved.id)}
-        && document.querySelector('.pc-git-diff__body')?.textContent.includes(${JSON.stringify(correctedCitation)}) === true`);
+        && document.querySelector('.pc-git-diff__body')?.textContent.includes(${JSON.stringify(replacementText)}) === true`);
       roleViews.reviewer!.revisionId = saved.id;
-      await enterRole('worker', 'read the assigned item and updated reference');
+      await enterRole('worker', 'read the named plan item and its updated text');
       await native('navigate', view.href, '--json');
       await visible(`(() => { const selected = document.querySelector(${JSON.stringify(detail)});
         return !!selected && selected.innerText.includes(${JSON.stringify(workerTask)})
-          && selected.innerText.includes(${JSON.stringify(correctedCitation)});
+          && selected.innerText.includes(${JSON.stringify(replacementText)});
       })()`);
       expect((await readPlan()).contentHash).toBe(after.contentHash);
       roleViews.worker!.revisionId = saved.id;
@@ -214,10 +250,10 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
     try {
       if (compareRoles) trace.roleViews = roleViews;
       const body = JSON.stringify(trace);
-      await info.attach(compareRoles ? 'native-citation-role-views' : 'native-author-citation',
+      await info.attach(compareRoles ? 'native-' + scenario + '-role-views' : 'native-author-citation',
         { body, contentType: 'application/json' });
       if (compareRoles && process.env.PLAN_REVISION_EVIDENCE)
-        await writeFile(join(process.env.PLAN_REVISION_EVIDENCE, 'citation-role-views-' + slug + '.json'), body, { flag: 'wx', mode: 0o600 });
+        await writeFile(join(process.env.PLAN_REVISION_EVIDENCE, 'plan-role-views-' + slug + '.json'), body, { flag: 'wx', mode: 0o600 });
     }
     finally { await sql.end({ timeout: 5 }); }
   }
@@ -226,11 +262,19 @@ async function captureNativeCitation(request: APIRequestContext, info: TestInfo,
 test('records the native author citation edit and reads the exact saved revision', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the isolated native Plans runner');
   test.setTimeout(240_000);
-  await captureNativeCitation(request, info);
+  await captureNativeEdit(request, info, citationEdit);
 });
 
 test('saves a citation in native Plans and correlates author reviewer and worker outcomes', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID || !process.env.VERIFY_TAURI_TEST_SOURCE_REF, 'Requires the pinned native comparison');
-  test.setTimeout(360_000);
-  await captureNativeCitation(request, info, true);
+  test.setTimeout(nativePlanComparisonTimeoutMs);
+  const failures: unknown[] = [];
+  for (const editCase of nativePlanEdits) {
+    try {
+      await test.step(editCase.scenario, () => captureNativeEdit(request, info, editCase, true));
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length) throw new AggregateError(failures, 'Native Plans edits failed. See the individual scenario steps.');
 });

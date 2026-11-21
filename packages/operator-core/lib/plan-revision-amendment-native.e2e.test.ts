@@ -11,6 +11,7 @@ import { describe, expect, inject, it } from 'vitest';
 import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
 import { seedFakeLlmHarness } from '../../../apps/operator/e2e/_fake-llm-fixture';
 import { readPlanPtoolReply } from '../test/plan-revision-ptool';
+import { nativePlanComparisonTimeoutMs } from '../../../apps/operator/e2e/_plan-revision-edits';
 import { readComparisonCoverage } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 
 const execute = promisify(execFile);
@@ -224,7 +225,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
         '--config', resolve(definitionRoot, 'apps/operator/playwright.config.mts'), spec.split('/').at(-1)!,
         '--grep', comparisonCase + '$', '--workers=1', '--retries=0', '--output=' + output], {
         cwd: definitionRoot, env: { ...process.env, PAPERCUSP_TEST_RUN_GROUP: group },
-        timeout: 420_000, maxBuffer: 2_000_000,
+        timeout: nativePlanComparisonTimeoutMs + 60_000, maxBuffer: 2_000_000,
       });
       const rows = await ledger`SELECT id::text, commit_sha, status, worktree_dirty, finished_at, execution_details
         FROM harness_shared.test_runs WHERE workspace_id=${process.env.PAPERCUSP_TEST_RUN_WORKSPACE!}
@@ -251,5 +252,5 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
       }, app.runtime);
       expect(coverage.unmeasured, 'Required role/client observations still missing').toEqual([]);
     } finally { await ledger.end({ timeout: 5 }); }
-  }, 450_000);
+  }, nativePlanComparisonTimeoutMs + 90_000);
 });
