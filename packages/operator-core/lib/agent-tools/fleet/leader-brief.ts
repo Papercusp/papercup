@@ -5187,6 +5187,7 @@ export async function buildLeaderBrief(
         });
   const summary = {
     fleet,
+    ...(fleetRecord?.lastLaunchTransaction?.planRef ? { planRef: fleetRecord.lastLaunchTransaction.planRef } : {}),
     members: members.length,
     ...(policyParked ? { policyParked } : {}),
     // P-010: what `members` (and every count below it, all of which are filters

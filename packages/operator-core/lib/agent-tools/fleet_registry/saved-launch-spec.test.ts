@@ -320,14 +320,29 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
     });
   });
 
-  it('recovers an opaque outside label from a recorded member launch without inventing a plan', () => {
-    const planRef = '  tracker:item with spaces  ';
+  it.each(['  tracker:item with spaces  ', 'tracker:it\'s "quoted" \\ item', 'r'.repeat(199), 'r'.repeat(200)])('recovers the complete opaque outside label %j without inventing a plan', (planRef) => {
     const record = { ...legacyRecord,
       launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), planSlug: null },
       launchArgv: [...(legacyRecord.launchArgv as string[]).filter(token => !token.startsWith('--plan=')), `--plan-ref=${planRef}`] };
     const parsed = savedFleetLaunchSpecFromLegacyRecord(record, 'ws-test', 'byoc');
     expect(parsed).toMatchObject({ ok: true, config: { planRef }, saved: { planRef } });
     if (parsed.ok) expect(parsed.config.plan).toBeUndefined();
+  });
+
+  it.each(["exec psu --plan-ref='tracker:it'\\''s item'", 'exec psu --plan-ref="  tracker:item  "', 'exec psu --plan-ref=tracker:item'])('refuses shell command reference recovery rather than returning a partial label: %s', (command) => {
+    const record = { ...legacyRecord,
+      launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), planSlug: null },
+      launchArgv: ['gnome-terminal', [...(legacyRecord.launchArgv as string[]).filter(token => !token.startsWith('--plan=')), command].join(' ')] };
+    expect(savedFleetLaunchSpecFromLegacyRecord(record, 'ws-test', 'byoc')).toMatchObject({
+      ok: false, message: expect.stringContaining('cannot be recovered losslessly'),
+    });
+  });
+
+  it('rejects an overlong legacy reference intact instead of shortening it', () => {
+    const record = { ...legacyRecord,
+      launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), planSlug: null },
+      launchArgv: [...(legacyRecord.launchArgv as string[]).filter(token => !token.startsWith('--plan=')), `--plan-ref=${'r'.repeat(201)}`] };
+    expect(savedFleetLaunchSpecFromLegacyRecord(record, 'ws-test', 'byoc')).toMatchObject({ ok: false });
   });
 
   it('normalizes the legacy fleet membership label without changing explicit personas', () => {

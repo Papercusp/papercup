@@ -26,6 +26,15 @@ import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/sp
 import { admissionPendingExplanation } from '../../../work-items-admission';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
+const outsidePlanMocks = vi.hoisted(() => ({ read: vi.fn(), preflight: vi.fn() }));
+vi.mock('../../../session-outside-plan', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../../session-outside-plan')>()),
+  readSessionOutsidePlanRef: (...args: unknown[]) => outsidePlanMocks.read(...args),
+}));
+vi.mock('../../../scheduler/fleet-work-items', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../../scheduler/fleet-work-items')>()),
+  preflightFleetWorkItems: (...args: unknown[]) => outsidePlanMocks.preflight(...args),
+}));
 
 const spawnConsoleMock = vi.fn();
 const spawnHeadlessMock = vi.fn();
@@ -608,6 +617,10 @@ describe('headless host-memory admission', () => {
 
 beforeEach(() => {
   admissionMocks.preflight.mockReset();
+  outsidePlanMocks.read.mockReset();
+  outsidePlanMocks.read.mockResolvedValue(null);
+  outsidePlanMocks.preflight.mockReset();
+  outsidePlanMocks.preflight.mockResolvedValue({ ready: true, reason: 'ready', executableWidth: 2 });
   admissionMocks.preflight.mockResolvedValue({
     ready: true,
     status: 'ready',
@@ -5042,6 +5055,51 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     previewSpecPoolEffectMock.mockResolvedValue({ matched: 5, pool: 10, states: ['open'], harness: 'papercusp' });
     evaluateCollapseGuardMock.mockReset();
     evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [] });
+  });
+
+  it('launches an exact outside-plan set with its ID policy installed before every member', async () => {
+    const order: string[] = [];
+    outsidePlanMocks.read.mockResolvedValue('tracker:ABC-123');
+    setClaimSpecMock.mockImplementation(async () => { order.push('policy'); return { ok: true, revision: 1 }; });
+    spawnConsoleMock.mockImplementation(() => { order.push('spawn'); return { status: 'ok', terminal: 'term-1', pid: 123 }; });
+    const res = await invokeLaunchHandler({ name: 'Outside', harness: 'papercusp',
+      workItems: ['WI-1', 'WI-2', 'WI-3'], count: 2 } as never, {} as never);
+    const payload = parseHandlerPayload(res);
+    expect(payload.ok).toBe(true);
+    expect(order[0]).toBe('policy');
+    expect(order.filter(value => value === 'spawn')).toHaveLength(2);
+    expect(setClaimSpecMock.mock.calls[0][0].spec.view.filter).toEqual({ field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-3'] });
+    const command = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
+    expect(command).toContain('--plan-ref=');
+    expect(command).not.toContain('--plan=');
+    expect(payload.launchTransaction.planRef).toBe('tracker:ABC-123');
+    expect(setFleetHeadcountTargetMock.mock.calls[0][0].config.planRef).toBe('tracker:ABC-123');
+  });
+
+  it('refuses an over-wide exact frontier before fleet creation or member spawn', async () => {
+    outsidePlanMocks.preflight.mockResolvedValue({ ready: false, reason: 'insufficient-executable-width',
+      requestedSeats: 3, executableWidth: 2, seatShortfall: 1 });
+    const result = parseHandlerPayload(await invokeLaunchHandler({ name: 'Outside', harness: 'papercusp',
+      workItems: ['WI-1', 'WI-2', 'WI-3'], planRef: 'X', count: 3 } as never, {} as never));
+    expect(result).toMatchObject({ ok: false, error: 'admission_refused', executableWidth: 2, seatShortfall: 1 });
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when exact admission cannot be persisted', async () => {
+    setClaimSpecMock.mockResolvedValue({ ok: false, errors: ['database refused write'] });
+    const result = await invokeLaunchHandler({ name: 'Outside', harness: 'papercusp',
+      workItems: ['WI-1'], planRef: 'X', count: 1 } as never, {} as never);
+    expect(result.isError).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects plan plus outside reference and overlapping lane selectors', async () => {
+    for (const args of [{ plan: 'my-plan', planRef: 'X' },
+      { workItems: ['WI-1'], plan: 'my-plan' }, { workItems: ['WI-1'], claimKinds: ['bug'] }]) {
+      expect((await invokeLaunchHandler({ name: 'Outside', harness: 'papercusp', ...args } as never, {} as never)).isError).toBe(true);
+    }
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
   it('EI-21148090110387275: COMPOSES claimKinds with the plan predicate (never replaces it) when a plan is given, BEFORE any member terminal opens', async () => {

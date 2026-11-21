@@ -1311,7 +1311,14 @@ export async function getClaimSpecRecord(
   // which is indistinguishable from a per-member override to callers.
   const directFleetSlug = args.cupId.startsWith('fleet:') ? args.cupId.slice('fleet:'.length) || undefined : undefined;
   const rows = (await sql`
-    SELECT spec, revision, updated_by, updated_at, harness_slug
+    SELECT spec, revision, updated_by, updated_at, harness_slug,
+           (SELECT parent.spec FROM
+              (SELECT fleet_slug, fleet_role FROM harness_shared.fleet_membership_events
+                WHERE workspace_id = ${ws} AND owner_id = ${args.cupId}
+                ORDER BY id DESC LIMIT 1) membership
+              JOIN harness_shared.cup_claim_specs parent
+                ON parent.workspace_id = ${ws} AND parent.bee_id = 'fleet:' || membership.fleet_slug
+             WHERE membership.fleet_role = 'member') AS work_items_fence
       FROM harness_shared.cup_claim_specs
      WHERE workspace_id = ${ws} AND bee_id = ${args.cupId} LIMIT 1`) as Array<{
     spec: unknown;
@@ -1319,6 +1326,7 @@ export async function getClaimSpecRecord(
     updated_by: string | null;
     updated_at: string;
     harness_slug: string | null;
+    work_items_fence?: unknown;
   }>;
   if (rows.length > 0) {
     const row = rows[0]!;
@@ -1331,9 +1339,16 @@ export async function getClaimSpecRecord(
         { code: 'invalid_claim_spec' },
       );
     }
+    let resolvedSpec = withColumnRevision(v.spec, row.revision);
+    if (!directFleetSlug && row.work_items_fence != null) {
+      const parent = validateClaimSpecForRead(row.work_items_fence);
+      if (!parent.ok || !parent.spec) throw new Error('Fleet claim policy is invalid; member pull refused.');
+      const { fenceMemberWorkItems } = await import('./fleet-work-items');
+      resolvedSpec = fenceMemberWorkItems(resolvedSpec, parent.spec);
+    }
     return {
       source: directFleetSlug ? 'fleet' : 'cup',
-      spec: withColumnRevision(v.spec, row.revision),
+      spec: resolvedSpec,
       revision: row.revision,
       updatedBy: row.updated_by,
       updatedAt: row.updated_at,

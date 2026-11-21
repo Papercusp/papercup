@@ -23,7 +23,8 @@
  * remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
-import { externalPlanRefSchema } from '../../work-item-external-plan';
+import { externalPlanRefSchema, resolveWorkItemOutsidePlanRef, workItemPlanRefSchema } from '../../work-item-external-plan';
+import { readSessionOutsidePlanRef } from '../../session-outside-plan';
 import { WorkItemDefinitionSchema } from '../../work-item-definition';
 import { itemClassOfPayload } from '../../scout/ideation-origin';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -105,7 +106,7 @@ const stateOnCreate = z
       "a work-item cannot be CREATED in state 'blocked' — a blocked item must name its blocker. Create it (open), then: work_items:set_blocker { id, kind, capability, ref, summary, nextVerb } for an external event/gate/runtime/human blocker (it parks the item), or work_items:link { id: '<blocker-id>', target_id: '<new-id>', rel: 'blocks' } for another work-item, or plans:set-status for a plan item.",
   })
   .describe(
-    "Initial state; default kind entry (todo). Use wip with assign_to:'self' to start now. Terminal/blocked rejected: use work_items:complete or create then work_items:set_blocker.",
+    "Initial state. Use wip + assign_to:'self'; terminal/blocked require complete/set_blocker.",
   );
 
 /**
@@ -218,6 +219,7 @@ function createAdmissionSubject(spec: CreateOneWorkItemArgs): ClaimSpecSubject {
     tags: spec.topics ?? [],
     paths: Array.isArray(payload.paths) ? payload.paths.filter((p): p is string => typeof p === 'string') : [],
     plan: spec.targetPlanItem?.slug ?? null,
+    externalPlanRef: spec.externalPlanRef ?? null,
     planItem: spec.targetPlanItem ? [spec.targetPlanItem.itemId] : [],
     // Match the stored-item subject and SQL fleet predicate before persistence.
     // The stamp is filter input, not a grant: the existing full spec still gates assignment.
@@ -255,20 +257,20 @@ const itemSpec = z.object({
   definition: WorkItemDefinitionSchema.optional().describe('Acceptance, scope, verification target, first unit; independent of body headings.'),
   // Built-in kind OR a workspace-registered generic-kind datatype (P-001) — validated
   // per item in createOneWorkItem; an unregistered kind is rejected there as `unknown_kind`.
-  kind: z.string().min(1).max(80).describe('feature/bug/change/task or workspace generic-kind from meta:define-datatype. chunk deprecated; historical rows readable.'),
+  kind: z.string().min(1).max(80).describe('feature/bug/change/task or registered generic kind; chunk retired.'),
   title: hardText(LIMITS.SHORT_TITLE),
   summary: hardText(8000).optional().describe('body / summary text'),
   // WI-4492: `body` is an ACCEPTED ALIAS for `summary` (the SAME field). work_items:update
   // names it `body`, so a caller who learned that name used to have it silently dropped here.
-  body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.')
+  body: hardText(8000).optional().describe('summary alias; differing values for both rejected.')
     .meta({ 'x-papercusp-aliases': ['summary'] }),
-  harness: z.string().max(80).optional().describe('Required for feature/chunk; bug/change scope. Defaults to batch harness.'),
+  harness: z.string().max(80).optional().describe('Feature requires it; defaults to batch harness.'),
   pot: potArg,
   severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
   parent: z.string().max(80).optional().describe('parent work-item id (feature-family; required-shape for a chunk)'),
   topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
-  payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
-  routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('Explicit papercusp-way intent; body/summary never classified. schedule-recurrence requires cadence.'),
+  payload: z.record(z.string(), z.unknown()).optional().describe('Item data.'),
+  routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('Explicit intent; schedule-recurrence requires cadence.'),
   cadence: hardText(200).optional().describe('schedule-recurrence cadence: e.g. daily at 09:00 or cron.'),
   urgent: z.boolean().optional().describe('Wake brain immediately (floor-debounced); production fires only.'),
   force: z.boolean().optional().describe('Override mirror, semantic cosine and exact-identity dupe guards for this item.'),
@@ -282,12 +284,13 @@ const itemSpec = z.object({
   // unteach. Terminal states are refused on purpose (see stateOnCreate below).
   state: stateOnCreate.optional(),
   external_plan_ref: externalPlanRefSchema.optional().describe('Opaque system and item reference for work planned externally.'),
+  planRef: workItemPlanRefSchema.optional().describe('Outside reference; overrides session/batch; excludes plan_item.'),
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()
-    .describe('Implemented plan item {slug,item:"P-003"}; adds work→plan_item coverage/rollup and enables residue auto-resolution on completion. Discovered bugs go unlinked.'),
-  links: z.array(linkSpec).max(20).optional().describe('Links from new item to targets at create. Best-effort: bad targets skipped; create still succeeds.'),
-  conditionKey: hardText(200).optional().describe('Single-host system filers only: refresh/return existing OPEN item with this identity (result.conditionUpsert), avoiding a sibling.'),
+    .describe('Implemented {slug,item:"P-003"}; coverage/completion rollup. Link discovered bugs separately.'),
+  links: z.array(linkSpec).max(20).optional().describe('Best-effort links from new item; invalid targets skipped.'),
+  conditionKey: hardText(200).optional().describe('System filer identity: refresh existing OPEN item; returns conditionUpsert.'),
   conditionReplay: z.literal('include-terminal').optional().describe('Immutable revision identities only: reuse closed conditionKey filing without reopening/rewriting disposition. Requires conditionKey and concrete workspace; omit for recurring alarms.'),
   directiveRef: directiveRefArg,
 })
@@ -387,18 +390,18 @@ export default defineTool({
       // Built-in kind OR a workspace-registered generic-kind datatype — validated in
       // createOneWorkItem (P-001). Relaxed from z.enum so a registered kind passes; an
       // unregistered one is rejected there with `unknown_kind` (was a zod enum error).
-      kind: z.string().min(1).max(80).optional().describe('feature/bug/change/task or workspace generic-kind from meta:define-datatype. chunk deprecated; historical rows readable.'),
+      kind: z.string().min(1).max(80).optional().describe('feature/bug/change/task or registered generic kind; chunk retired.'),
       title: hardText(LIMITS.SHORT_TITLE).optional(),
       summary: hardText(8000).optional().describe('body / summary text'),
-      body: hardText(8000).optional().describe('summary alias (work_items:update uses body). Different values for both rejected.')
+      body: hardText(8000).optional().describe('summary alias; differing values for both rejected.')
         .meta({ 'x-papercusp-aliases': ['summary'] }),
       harness: z.string().max(80).optional().describe('Required for feature; bug/change scope. Default for items omitting harness.'),
       pot: potArg,
       severity: z.enum(['critical', 'major', 'minor', 'nit']).optional().describe('issue-family (bug/change) only'),
       parent: z.string().max(80).optional().describe('parent work-item id (historical feature-family compatibility)'),
       topics: z.array(z.string().min(1)).max(8).optional().describe('topic slugs to tag (topics:list)'),
-      payload: z.record(z.string(), z.unknown()).optional().describe('kind-specific data (feature-family)'),
-      routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('Explicit papercusp-way intent; body/summary never classified. schedule-recurrence requires cadence.'),
+      payload: z.record(z.string(), z.unknown()).optional().describe('Item data.'),
+      routing_intent: z.enum(ROUTING_GATE_INTENTS).optional().describe('Explicit intent; schedule-recurrence requires cadence.'),
       cadence: hardText(200).optional().describe('schedule-recurrence cadence: e.g. daily at 09:00 or cron.'),
       urgent: z.boolean().optional().describe('Wake brain immediately (floor-debounced); production fires only.'),
       force: z.boolean().optional().describe('Override mirror, semantic cosine and exact-identity dupe guards.'),
@@ -409,18 +412,19 @@ export default defineTool({
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
-        .describe('Implemented plan item {slug,item:"P-003"}; adds work→plan_item coverage/rollup and enables residue auto-resolution on completion. Discovered bugs go unlinked.'),
+        .describe('Implemented {slug,item:"P-003"}; coverage/completion rollup. Link discovered bugs separately.'),
       external_plan_ref: externalPlanRefSchema.optional().describe('Opaque system and item reference for work planned externally.'),
-      links: z.array(linkSpec).max(20).optional().describe('Links from new item to targets at create. Best-effort: bad targets skipped; create still succeeds.'),
-      conditionKey: hardText(200).optional().describe('Single-host system filers only: refresh/return existing OPEN item with this identity (result.conditionUpsert), avoiding a sibling.'),
+      planRef: workItemPlanRefSchema.optional().describe('Outside reference; defaults to authenticated session; items override.'),
+      links: z.array(linkSpec).max(20).optional().describe('Best-effort links from new item; invalid targets skipped.'),
+      conditionKey: hardText(200).optional().describe('System filer identity: refresh existing OPEN item; returns conditionUpsert.'),
       directiveRef: directiveRefArg,
       // ── bulk-create (n≥1) ──
       items: z.array(itemSpec).min(1).max(100).optional().describe('Batch create; each item is a full create spec.'),
       assign_all_to_self: z.boolean().optional().describe('Claim every item for caller; per-item assign_to overrides.'),
       // batch-level routing default for all items
-      workspace: z.string().max(120).optional().describe('Target workspace id for single/batch create; defaults to request workspace (MCP ?workspace=).'),
+      workspace: z.string().max(120).optional().describe('Target workspace id; defaults to request workspace.'),
       phone_producer: z.object({ roomName: z.string().trim().min(1).max(200).regex(/^[^\u0000-\u001f\u007f]+$/) }).strict()
-        .optional().describe('Phone voice producer from configured authenticated host. Room selector only; host supplies identity/binding. Exclusive with ordinary create metadata.'),
+        .optional().describe('Host-authenticated Phone room selector; exclusive with ordinary create metadata.'),
     })
     // WI-4492: strict so an unknown field name (e.g. a stripped `body`) is a LOUD error.
     .strict()
@@ -468,6 +472,12 @@ export default defineTool({
         data: { ok: true, results: [{ ok: true, id: binding.workItemId, producerBinding: binding }], counts: { ok: 1, failed: 0 } } };
     }
     const ident = resolveAgentIdentity(ctx);
+    // Resolve the authenticated CREATOR, never the requested assignee, target
+    // workspace argument or a process-global launch environment.
+    const sessionPlanRef = await readSessionOutsidePlanRef(ident.ownerId, ident.workspaceId ?? ctx.workspaceId);
+    const defaultPlanRef = resolveWorkItemOutsidePlanRef({
+      planRef: args.planRef, external_plan_ref: args.external_plan_ref,
+    }, sessionPlanRef);
     const createCtx = {
       ownerId: ident.ownerId,
       workspaceId: ctx.workspaceId,
@@ -478,15 +488,18 @@ export default defineTool({
     // createOneWorkItem never sees it. Keyed by the spec object, which the loop below mutates
     // in place (assign_to canonicalization / downgrade), so the lookup sees the FINAL assignee.
     const declaredKinds = new WeakMap<CreateOneWorkItemArgs, { kinds: ChangeKind[]; reason?: string }>();
-    const withDeclaration = (spec: CreateOneWorkItemArgs, kinds: ChangeKind[] | undefined, reason: string | undefined) => {
+    const referenceInputs = new WeakMap<CreateOneWorkItemArgs, Parameters<typeof resolveWorkItemOutsidePlanRef>[0]>();
+    const withDeclaration = (spec: CreateOneWorkItemArgs, kinds: ChangeKind[] | undefined, reason: string | undefined,
+      referenceInput: Parameters<typeof resolveWorkItemOutsidePlanRef>[0]) => {
       if (kinds?.length) declaredKinds.set(spec, { kinds, reason });
+      referenceInputs.set(spec, referenceInput);
       return spec;
     };
     const list: CreateOneWorkItemArgs[] = args.items?.length
       ? args.items.map((it) => {
           // WI-4492: `body` is an accepted alias for `summary`. Drop the raw `body` key
           // (createOneWorkItem takes `summary`) and resolve the single value from either.
-          const { body: _body, changeKinds: itKinds, changeKindReason: itKindReason, ...rest } = it;
+          const { body: _body, planRef: _planRef, changeKinds: itKinds, changeKindReason: itKindReason, ...rest } = it;
           return withDeclaration({
             ...rest,
             summary: resolveBodyAlias(it),
@@ -496,7 +509,7 @@ export default defineTool({
             ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
             externalPlanRef: it.external_plan_ref,
             ...(it.links ? { links: it.links } : {}),
-          }, itKinds, itKindReason);
+          }, itKinds, itKindReason, it);
         })
       : [
           withDeclaration({
@@ -522,7 +535,7 @@ export default defineTool({
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
             externalPlanRef: args.external_plan_ref,
             ...(args.links ? { links: args.links } : {}),
-          }, args.changeKinds, args.changeKindReason),
+          }, args.changeKinds, args.changeKindReason, args),
         ];
     const drainMode = list.some((spec) => spec.kind === 'bug')
       ? (await getModes(ident.workspaceId ?? ctx.workspaceId ?? 'default', ident.ownerId)).find(
@@ -551,6 +564,24 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (spec) => {
+        // Conflicts refuse only this item, before admission or persistence. A
+        // mixed batch still returns a keyed outcome for every valid sibling.
+        spec.externalPlanRef = resolveWorkItemOutsidePlanRef(referenceInputs.get(spec)!, defaultPlanRef);
+        const creatorWorkspace = ident.workspaceId ?? ctx.workspaceId;
+        if (sessionPlanRef !== null && spec.externalPlanRef === sessionPlanRef && creatorWorkspace &&
+            (!args.workspace || args.workspace === creatorWorkspace)) {
+          // INSERT and exact-set admission commit together. The creator's durable
+          // membership is read in that transaction; an unrelated explicit override
+          // cannot join the creator's fleet.
+          spec.onCreatedInTransaction = async (id, tx) => {
+            const { latestFleetMembership } = await import('../../fleet-membership-store');
+            const membership = await latestFleetMembership(creatorWorkspace, ident.ownerId, tx);
+            if (!membership?.fleetSlug) return;
+            const { enrollFleetWorkItems } = await import('../../scheduler/fleet-work-items');
+            await enrollFleetWorkItems({ workspaceId: creatorWorkspace, fleetSlug: membership.fleetSlug,
+              workItemIds: [id], updatedBy: ident.ownerId }, tx);
+          };
+        }
         spec.requireCompleteDedupCoverage = Boolean(drainMode) && spec.kind === 'bug';
         // P-004 gates code-work kinds, but `task` is explicitly NON-CODE (WI-2874)
         // and is also the kind used for plan-audit/ops filings. Keep those filings
@@ -869,7 +900,7 @@ export default defineTool({
           Boolean((spec.payload as { plan_item?: unknown } | undefined)?.plan_item) ||
           (spec.links ?? []).some((link) => link.target_kind === PLAN_ITEM_KIND);
         let planItemBlockerNudge: Record<string, never> | { planItemBlockerNudge: string } = {};
-        if ((spec.severity === 'critical' || spec.severity === 'major') && !hasPlanItemEdge) {
+        if ((spec.severity === 'critical' || spec.severity === 'major') && !hasPlanItemEdge && !spec.externalPlanRef) {
           // ⚠ DYNAMIC IMPORT, DELIBERATELY (EI-19281789650149592) — a STATIC import of
           // the presence module from a hot tool path transitively reaches
           // `presence-wakeability`, whose module-scope constant makes any suite that

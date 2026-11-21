@@ -579,6 +579,9 @@ export function flagValueFromArgv(argv: unknown, flag: string, options?: { opaqu
       if (v) return unquoteArgValue(v);
     }
   }
+  // Shell text is not a token stream. The legacy regex below can consume only
+  // one quoted fragment, so opaque callers must refuse that shape explicitly.
+  if (options?.opaque) return null;
   // PASS 2 — argv as a recorded SHELL COMMAND. `adv_sessions.launch_argv` has a
   // SECOND shape, and it is the one this control's own writes produce: the
   // console-launch route records `[terminal, greetingCmd]` (console-launch.ts),

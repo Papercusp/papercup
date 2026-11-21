@@ -8,6 +8,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const outsidePlan = vi.hoisted(() => ({ ref: null as string | null, read: vi.fn() }));
+vi.mock('../../session-outside-plan', async original => ({
+  ...await original<typeof import('../../session-outside-plan')>(), readSessionOutsidePlanRef: outsidePlan.read,
+}));
+const outsideFleet = vi.hoisted(() => ({ membership: vi.fn(), enroll: vi.fn() }));
+vi.mock('../../fleet-membership-store', () => ({ latestFleetMembership: outsideFleet.membership }));
+vi.mock('../../scheduler/fleet-work-items', () => ({ enrollFleetWorkItems: outsideFleet.enroll }));
+
 const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   admit: vi.fn(async (_args: { subject: ClaimSpecSubject }) => fleetAdmission.decision),
@@ -132,6 +140,10 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 
 beforeEach(() => {
   vi.clearAllMocks();
+  outsidePlan.ref = null;
+  outsidePlan.read.mockImplementation(async () => outsidePlan.ref);
+  outsideFleet.membership.mockResolvedValue({ fleetSlug: 'outside', fleetRole: 'member' });
+  outsideFleet.enroll.mockResolvedValue({ enrolled: true, workItems: ['WI-child'] });
   OWNER_REGISTRY.ids = [];
   modeState.rows = [];
   drainAdmission.blocked = false;
@@ -148,6 +160,136 @@ beforeEach(() => {
   fleetAdmission.decision = { allowed: true, scoped: false };
   workScope.decision = { allowed: true, reason: 'no-policy' };
   createM.mockImplementation(async (spec) => okCore(spec.title));
+});
+
+describe('outside-plan creation (R2)', () => {
+  it.each(['   ', '\t\n', '😀'.repeat(200)])('inherits an opaque reference intact: %j', async ref => {
+    outsidePlan.ref = ref;
+    await body({ kind: 'change', title: 'opaque' });
+    expect(createM.mock.calls[0][0].externalPlanRef).toBe(ref);
+    expect(parse({ kind: 'change', title: 'explicit opaque', planRef: ref })).toMatchObject({ planRef: ref });
+  });
+
+  it.each([199, 200, 201])('counts astral planRef characters at %i', length => {
+    const input = { kind: 'change', title: 'astral', planRef: '😀'.repeat(length) };
+    if (length <= 200) expect(parse(input)).toEqual(input);
+    else expect(() => parse(input)).toThrow();
+  });
+
+  it('enrolls same-reference children using creator membership and the INSERT transaction', async () => {
+    outsidePlan.ref = 'tracker:creator';
+    await body({ kind: 'change', title: 'child' });
+    const onCreated = createM.mock.calls[0][0].onCreatedInTransaction!;
+    expect(onCreated).toBeTypeOf('function');
+    const tx = {} as Parameters<typeof onCreated>[1];
+    await onCreated('WI-child', tx);
+    expect(outsideFleet.membership).toHaveBeenCalledExactlyOnceWith('default', 'me', tx);
+    expect(outsideFleet.enroll).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'default', fleetSlug: 'outside',
+      workItemIds: ['WI-child'], updatedBy: 'me' }, tx);
+  });
+
+  it('does not enroll unrelated overrides, cross-workspace targets, or unreferenced sessions', async () => {
+    outsidePlan.ref = 'tracker:creator';
+    await body({ kind: 'change', title: 'override', planRef: 'tracker:other' });
+    await body({ kind: 'change', title: 'cross workspace', workspace: 'another' });
+    outsidePlan.ref = null;
+    await body({ kind: 'change', title: 'explicit only', planRef: 'tracker:creator' });
+    expect(createM.mock.calls.map(([spec]) => spec.onCreatedInTransaction)).toEqual([undefined, undefined, undefined]);
+    expect(outsideFleet.enroll).not.toHaveBeenCalled();
+  });
+
+  it('leaves nonfleet work alone and propagates enrollment failure to the insert transaction', async () => {
+    outsidePlan.ref = 'tracker:creator';
+    await body({ kind: 'change', title: 'child' });
+    const onCreated = createM.mock.calls[0][0].onCreatedInTransaction!;
+    const tx = {} as Parameters<typeof onCreated>[1];
+    outsideFleet.membership.mockResolvedValueOnce(null);
+    await onCreated('WI-child', tx);
+    expect(outsideFleet.enroll).not.toHaveBeenCalled();
+    outsideFleet.enroll.mockRejectedValueOnce(new Error('enrollment failed'));
+    await expect(onCreated('WI-child', tx)).rejects.toThrow('enrollment failed');
+  });
+
+  it('inherits the authenticated creator reference once for every batch item', async () => {
+    outsidePlan.ref = 'tracker:creator';
+    await body({ workspace: 'target-workspace', assign_all_to_self: true,
+      items: [{ kind: 'change', title: 'a' }, { kind: 'feature', title: 'b', assign_to: 'another-agent' }] });
+    expect(outsidePlan.read).toHaveBeenCalledExactlyOnceWith('me', 'default');
+    expect(createM.mock.calls.map(([spec]) => spec.externalPlanRef)).toEqual(['tracker:creator', 'tracker:creator']);
+  });
+
+  it('inherits on single create and suppresses plan-link nudges', async () => {
+    outsidePlan.ref = 'tracker:creator';
+    presenceState.currentPlanSlug = 'ordinary-plan';
+    const result = await body({ kind: 'bug', severity: 'major', title: 'Residual acceptance criterion remains unmet' });
+    expect(createM.mock.calls[0][0].externalPlanRef).toBe('tracker:creator');
+    expect(result.results[0]).not.toHaveProperty('residualLinkNudge');
+    expect(result.results[0]).not.toHaveProperty('planItemBlockerNudge');
+  });
+
+  it('supports batch defaults, per-item overrides, both spellings and payload references', async () => {
+    outsidePlan.ref = 'tracker:session';
+    await body({ planRef: 'tracker:batch', items: [
+      { kind: 'change', title: 'default' },
+      { kind: 'change', title: 'new', planRef: 'tracker:item' },
+      { kind: 'change', title: 'legacy', external_plan_ref: 'tracker:legacy' },
+      { kind: 'change', title: 'payload', payload: { externalPlanRef: 'tracker:payload' } },
+    ] });
+    expect(createM.mock.calls.map(([spec]) => spec.externalPlanRef)).toEqual([
+      'tracker:batch', 'tracker:item', 'tracker:legacy', 'tracker:payload',
+    ]);
+  });
+
+  it('keeps same-spelling aliases and legacy identities longer than 200 intact', async () => {
+    const ref = `  tracker/組織\n${'segment/'.repeat(40)}  `;
+    await body({ kind: 'change', title: 'legacy', external_plan_ref: ref });
+    expect(createM.mock.calls[0][0].externalPlanRef).toBe(ref);
+    await body({ kind: 'change', title: 'aliases', external_plan_ref: 'X', planRef: 'X' });
+    expect(createM.mock.calls[1][0].externalPlanRef).toBe('X');
+  });
+
+  it.each([199, 200, 201])('validates new planRef length %i without cutting the identity', length => {
+    const ref = 'X'.repeat(length);
+    for (const input of [{ kind: 'change', title: 'x', planRef: ref },
+      { items: [{ kind: 'change', title: 'x', planRef: ref }] }]) {
+      if (length > 200) expect(() => parse(input)).toThrow();
+      else expect(parse(input)).toEqual(input);
+    }
+  });
+
+  it('refuses conflicting effective references per item before core writes, retaining valid siblings', async () => {
+    outsidePlan.ref = 'tracker:session';
+    const result = await body({ items: [
+      { kind: 'change', title: 'plan conflict', plan_item: { slug: 'native', item: 'P-001' } },
+      { kind: 'change', title: 'alias conflict', planRef: 'X', external_plan_ref: 'Y' },
+      { kind: 'change', title: 'payload conflict', planRef: 'X', payload: { externalPlanRef: 'Y' } },
+      { kind: 'change', title: 'payload plan', payload: { plan_item: { plan_slug: 'native', item_id: 'P-001' } } },
+      { kind: 'change', title: 'valid' },
+    ] });
+    expect(result.counts).toEqual({ ok: 1, failed: 4 });
+    expect(createM).toHaveBeenCalledTimes(1);
+    expect(createM.mock.calls[0][0].title).toBe('valid');
+    expect(JSON.stringify(result.results[0])).toMatch(/plan_item.*planRef/);
+  });
+
+  it('refuses an explicit outside reference plus plan_item without a session default', async () => {
+    const result = await body({ kind: 'change', title: 'conflict', planRef: 'X',
+      plan_item: { slug: 'native', item: 'P-001' } });
+    expect(result.counts).toEqual({ ok: 0, failed: 1 });
+    expect(createM).not.toHaveBeenCalled();
+  });
+
+  it('retains ordinary plan bindings when the authenticated session has no reference', async () => {
+    await body({ kind: 'change', title: 'native', plan_item: { slug: 'native', item: 'P-001' } });
+    expect(createM.mock.calls[0][0]).toMatchObject({ targetPlanItem: { slug: 'native', itemId: 'P-001' } });
+    expect(createM.mock.calls[0][0].externalPlanRef).toBeUndefined();
+  });
+
+  it('fails closed on an unavailable session read without creating unbound work', async () => {
+    outsidePlan.read.mockRejectedValueOnce(new Error('session store unavailable'));
+    await expect(body({ kind: 'change', title: 'must remain bound' })).rejects.toThrow('session store unavailable');
+    expect(createM).not.toHaveBeenCalled();
+  });
 });
 
 describe('Phone producer admission', () => {

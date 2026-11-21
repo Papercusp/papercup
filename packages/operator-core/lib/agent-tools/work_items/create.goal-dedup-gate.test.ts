@@ -25,6 +25,9 @@ vi.mock('../coordination/identity', () => ({
   resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
+vi.mock('../../session-outside-plan', async original => ({
+  ...await original<typeof import('../../session-outside-plan')>(), readSessionOutsidePlanRef: vi.fn(async () => null),
+}));
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
 vi.mock('./drain-flow', () => ({ withDrainBugAdmission: vi.fn() }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({

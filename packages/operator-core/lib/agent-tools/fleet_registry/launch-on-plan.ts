@@ -92,7 +92,9 @@ import {
 } from './pair-launch-options';
 import { directedImplementerConfinement } from '../../capability-envelope/session-confinement';
 import { declareSessionConfinement } from '../../capability-envelope/session-confinement-store';
-import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
+import { buildFleetWorkItemsClaimSpec, preflightFleetWorkItems } from '../../scheduler/fleet-work-items';
+import { readSessionOutsidePlanRef, sessionOutsidePlanRefSchema } from '../../session-outside-plan';
 import { seedMemberLaunchClaimSpecs } from '../../scheduler/member-launch-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
@@ -1998,13 +2000,13 @@ export function resolveSuperviseGrant(args: {
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
-    "Launch N su members on an existing plan — visible or headless. Ensures fleet, leadership, plan binding and first-turn request; do not assemble them with capability:launch-agent/terminal. Process open is not proof of registration, a verified first turn, or a claimed task; read `launchTransaction`. `carry` picks warm/cold; `placement:'remote'` uses delegated-seat machines.",
+    "Launch su members on a plan, exact workItems set, or claimKinds lane. Persists admission before member boot. Process open is not proof of registration, a verified first turn, or a claimed task; read launchTransaction. Visible/headless and warm/cold carry are supported.",
   guidance: {
-    when: 'ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR: members auto-join and receive the plan as their first-turn request. Prefer over capability:launch-agent or capability:terminal. Queue duplicate screening governs work-item claims; it is not a reason to delay opening the fleet.',
+    when: 'ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR: also accepts a registered workItems set. Prefer over capability:launch-agent or capability:terminal. Members self-pull through scheduler:get_next. Queue duplicate screening governs claims; it is not a reason to delay opening the fleet.',
     notWhen:
-      'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
+      'Resume/fork one agent with capability:launch-agent; arbitrary commands use capability:terminal. See /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
-      'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake.',
+      'For a Papercusp plan, plans:start precedes launch. For outside work, create work-items then pass workItems and planRef. Add later items with scheduler:set_claim_spec {fleet,appendIds:[id]}; no relaunch required.',
   },
   // Desktop-spawn is the privileged action — gate it exactly like capability:terminal.
   capability: 'capability:terminal',
@@ -2024,8 +2026,12 @@ export default defineTool({
       .min(1)
       .optional()
       .describe(
-        'Plan slug without .md; omit only for a self-pulling claim-spec fleet, requiring `claimKinds`.',
+        'Plan slug without .md. Omit with workItems or claimKinds; incompatible with planRef.',
       ),
+    workItems: z.array(z.string().min(1).max(80)).min(1).optional()
+      .describe('Exact registered item set; incompatible with plan and claimKinds. Persisted before any member opens. Later additions: scheduler:set_claim_spec {fleet,appendIds:[id]}.'),
+    planRef: sessionOutsidePlanRefSchema.optional()
+      .describe('Opaque outside plan reference; inherits from the launching session. Incompatible with plan.'),
     harness: z
       .string()
       .optional()
@@ -2305,6 +2311,9 @@ export default defineTool({
     const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
     const fleetSlug = fleetSlugFromName(args.name);
     const requestedPlan = args.plan?.trim() || null;
+    if (args.workItems && (args.plan || args.claimKinds)) {
+      return err('workItems cannot be combined with plan or claimKinds.');
+    }
     const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
 
     // EI-21577352340987493: an existing fleet's live claim spec is the lane its
@@ -2478,6 +2487,7 @@ export default defineTool({
       fleetSlug,
       requested: {
         plan: args.plan,
+        planRef: args.planRef,
         harness: args.harness,
         agent: args.agent,
         model: args.model,
@@ -2584,7 +2594,8 @@ export default defineTool({
       // is the authority. Inheriting the profile's plan here can resurrect a stale
       // lane and make exact-plan admission reject a valid top-up. New fleets and
       // explicit plan requests retain the established profile behavior.
-      if (!existingFleet || requestedPlan) args.plan ??= profile.plan;
+      if ((!existingFleet || requestedPlan) && !args.workItems) args.plan ??= profile.plan;
+      args.planRef ??= profile.planRef;
       args.harness ??= profile.harness;
       args.agent ??= profile.agent;
       args.model ??= profileModel;
@@ -2653,9 +2664,23 @@ export default defineTool({
     // members self-pull by `claimKinds`, so require a lane when no plan is given (else
     // the fleet would drain the whole harness backlog under the empty DEFAULT_CLAIM_SPEC).
     const planSlug = args.plan?.trim() || null;
-    if (!planSlug && !args.claimKinds?.length && !existingFleetHasLiveClaimLane) {
+    args.planRef ??= existingFleet?.lastLaunchTransaction?.planRef ??
+      await readSessionOutsidePlanRef(ownerId, workspaceId) ?? undefined;
+    const planRef = args.planRef;
+    if (planSlug && planRef) return err('plan and planRef are mutually exclusive; outside work must not bind a Papercusp plan.');
+    if (existingFleet?.lastLaunchTransaction?.planRef && planRef !== existingFleet.lastLaunchTransaction.planRef) {
+      return err('planRef cannot replace an existing fleet outside plan binding.');
+    }
+    const workItems = args.workItems ?? (existingFleetClaimSpec?.specId === `fleet-launch-${fleetSlug}-work-items`
+      ? positiveIdCohortIds(existingFleetClaimSpec.view.filter) ?? undefined : undefined);
+    const leaderStandingJob = planRef ? [
+      'Use fleet:leader-brief and work-item evidence to drive the enrolled set to completion.',
+      'Record rulings as comments on the work-item concerned. Register and hold each split piece.',
+      'Finish when every enrolled work-item and your own work-item is complete; then stop the fleet loop.',
+    ] : LEADER_STANDING_JOB;
+    if (!planSlug && !workItems?.length && !args.claimKinds?.length && !existingFleetHasLiveClaimLane) {
       return err(
-        'Give the fleet a lane: pass a `plan` (members self-pull that plan\'s items) OR `claimKinds` for a pure claim-spec fleet (e.g. claimKinds:["bug"]). Without either, members would drain the entire harness backlog under the default claim spec.',
+        'Give the fleet a lane: pass workItems, plan, or claimKinds. An unscoped fleet would drain unrelated harness work.',
       );
     }
 
@@ -3071,6 +3096,17 @@ export default defineTool({
         admissionRequestedSeats = count;
       }
     }
+    if (workItems && admissionRequestedSeats > 0) {
+      try {
+        const workItemAdmission = await preflightFleetWorkItems({ workspaceId: planWorkspaceId,
+          harness: planHarnessSlug, fleetSlug, workItems, requestedSeats: admissionRequestedSeats });
+        if (!workItemAdmission.ready) return json({ ok: false, error: 'admission_refused',
+          fleet: fleetSlug, planRef, workItems, ...workItemAdmission,
+          message: 'The exact work-item set cannot feed the requested ready frontier. No members were opened.' });
+      } catch (error) {
+        return err(`workItems admission could not be verified; no members opened: ${String(error)}`);
+      }
+    }
     if (planSlug && admissionRequestedSeats > 0) {
       try {
         const { preflightExactPlanAdmission } = await import('../plans/plan-admission-preflight');
@@ -3357,7 +3393,7 @@ export default defineTool({
           ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
           : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
       ];
-      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      leaderStandingJob.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       return json({
         ok: true,
         fleet: fleetSlug,
@@ -3469,7 +3505,9 @@ export default defineTool({
           // any non-default live lane, including a tool-generated fleet spec. The
           // old authored-only branch treated generated lanes as disposable and
           // then tried to build a kind spec from undefined args.
-          if (
+          if (args.workItems) {
+            specToApply = buildFleetWorkItemsClaimSpec(fleetSlug, args.workItems);
+          } else if (
             existingFleet &&
             !planSlug &&
             !args.claimKinds?.length &&
@@ -3660,6 +3698,9 @@ export default defineTool({
         } catch (e: any) {
           claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
         }
+      }
+      if (workItems && !claimSpecApplied?.ok && !claimCollapseRefusal) {
+        claimCollapseRefusal = { errors: claimSpecApplied?.errors ?? ['Exact workItems claim policy was not persisted.'], poolEffect: null };
       }
       return { claimSpecApplied, claimCollapseRefusal };
     };
@@ -3936,7 +3977,7 @@ export default defineTool({
           "NOTE: the fleet claim spec set here is MACHINE-LOCAL — remote members pull work-items under their own machine's spec (default order, scoped by the pot floor). The plan's promoted work-items federate, so they still land on this plan.",
         );
         lines.push(LEADER_AUTO_MODE_DIRECTIVE);
-        LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+        leaderStandingJob.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       }
 
       return json(
@@ -4078,7 +4119,7 @@ export default defineTool({
           ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
           : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
       ];
-      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      leaderStandingJob.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       return json({
         ok: true,
         fleet: fleetSlug,
@@ -4293,7 +4334,7 @@ export default defineTool({
           ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
           : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
       ];
-      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      leaderStandingJob.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       lines.push(
         'Those members were launched with this MEMBER OPERATING BASELINE (do NOT re-issue or contradict it; a later custom brief still layers below it):',
       );
@@ -4708,6 +4749,7 @@ export default defineTool({
       // `default`), so its first warm wake loses the harness it was launched to
       // drain even though the fleet/claim rows live in the correct workspace.
       workspace: workspaceId,
+      planRef,
       role: args.role?.trim() || undefined,
       stack: args.stack,
       model: effModel,
@@ -4846,7 +4888,7 @@ export default defineTool({
     // claim scope itself stays in the claim-spec store, which top-ups read.
     if (
       freshFleetCreated &&
-      (Boolean(planSlug) || Boolean(args.claimKinds?.length)) &&
+      (Boolean(planSlug) || Boolean(workItems?.length) || Boolean(args.claimKinds?.length)) &&
       launchFleetType !== 'paired' &&
       memberSpecs.length === 0 &&
       !(args.perMemberLaunchContext && args.perMemberLaunchContext.length > 0)
@@ -4877,6 +4919,7 @@ export default defineTool({
       const split = splitModelSpec(modelSpec);
       const config = normalizePersistedFleetLaunchConfig({
         ...(planSlug ? { plan: planSlug } : {}),
+        ...(planRef ? { planRef } : {}),
         harness,
         agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
         ...(split.model ? { model: split.model } : {}),
@@ -5044,6 +5087,7 @@ export default defineTool({
         }
       : null;
     const launchTransaction: FleetLaunchTransaction = {
+      ...(planRef ? { planRef } : {}),
       ...(resumedLaunchTransaction
         ? {
             ...resumedLaunchTransaction,
@@ -5127,7 +5171,7 @@ export default defineTool({
         const claimFilter = member?.claimFilter ?? (ownBrief && planSlug
           ? { field: 'plan' as const, op: '=' as const, value: planSlug }
           : undefined);
-        if (ownBrief && !claimFilter) {
+        if (ownBrief && !claimFilter && !workItems) {
           throw new Error(`members[${memberSpecIndex(i)}].claimFilter is required for a dedicated brief without a shared plan; declare the lane before kickoff`);
         }
         return claimFilter || member?.claimKinds?.length
@@ -5137,7 +5181,10 @@ export default defineTool({
       if (scopedMembers.length) {
         // Identities are already pinned. No registration or post-kickoff steer is needed.
         const parent = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId });
-        await seedMemberLaunchClaimSpecs({ workspaceId, harness, updatedBy: ownerId, parent, members: scopedMembers });
+        // The store applies the LIVE fleet ID fence to overrides. Copying its
+        // current IDs here would strand children and later explicit additions.
+        const seedParent = workItems ? { ...parent, view: { ...parent.view, filter: undefined } } : parent;
+        await seedMemberLaunchClaimSpecs({ workspaceId, harness, updatedBy: ownerId, parent: seedParent, members: scopedMembers });
       }
       await persistLaunchTransaction();
     } catch (e: any) {
@@ -5210,7 +5257,8 @@ export default defineTool({
           'you and retains responsibility for portfolio priorities and resource allocation.',
           `Your assigned target is ${count} member seats. Work within the supplied fleet size and model configuration.`,
           ...(goalAllocation ? [renderGoalFleetAllocation({ ...goalAllocation, fleetMemberTarget: count })] : []),
-          'The GOAL steward chooses the plans, fleet size and role models using the whole portfolio.',
+          ...(planRef ? ['Work follows the outside plan binding. Read its opaque label via coord:whoami outsidePlanRef. Work only the enrolled set; do not create a Papercusp plan.']
+            : ['The GOAL steward chooses the plans, fleet size and role models using the whole portfolio.']),
           'Request allocation changes from that steward; do not unilaterally widen the fleet or replace its model choices.',
           'Proceed with execution and member supervision under this assignment.',
           ...leaderRegistryNote,
@@ -5220,7 +5268,7 @@ export default defineTool({
           ...delegatedRecoveryAction,
           '',
           LEADER_AUTO_MODE_DIRECTIVE,
-          ...LEADER_STANDING_JOB.map((point, i) => `  ${i + 1}. ${point}`),
+          ...leaderStandingJob.map((point, i) => `  ${i + 1}. ${point}`),
         ].join('\n');
         const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
         mkdirSync(ctxDir, { recursive: true });
@@ -5241,6 +5289,7 @@ export default defineTool({
           fleetRole: 'leader',
           harness,
           plan: planSlug ?? undefined,
+          planRef,
           // The pre-pin. This is what makes the fleet row written above name a REAL agent.
           ownerId: spawnedLeaderOwnerId,
           launchContext: leaderCtxPath,
@@ -6001,7 +6050,7 @@ export default defineTool({
         lines.push(LEADER_AUTO_MODE_DIRECTIVE);
         // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
         // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
-        LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+        leaderStandingJob.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
       }
       if (goalLeaderCoupling?.status === 'coupled') {
         lines.push(`  ↳ GOAL holder automatically coupled to delegated leader \`${goalLeaderCoupling.peerOwnerId}\`.`);

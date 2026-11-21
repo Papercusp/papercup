@@ -635,8 +635,13 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   }
 
   const plan = matchingValue('plan', launch.planSlug, argFlag(argv, 'plan'));
+  const argvPlanRef = flagValueFromArgv(argv, 'plan-ref', { opaque: true });
+  if (argvPlanRef === null && Array.isArray(argv) && argv.some(value =>
+    typeof value === 'string' && /--plan-ref(?:=|\s|$)/.test(value))) {
+    return { ok: false, message: 'Legacy planRef in shell command text cannot be recovered losslessly; use a structured saved launch spec or tokenized launch argv.' };
+  }
   const planRef = matchingValue('planRef', typeof rawLaunchSpec.planRef === 'string' ? rawLaunchSpec.planRef : null,
-    flagValueFromArgv(argv, 'plan-ref', { opaque: true }));
+    argvPlanRef);
   if (planRef.error || (planRef.value !== null && (!sessionOutsidePlanRefSchema.safeParse(planRef.value).success || plan.value))) {
     return { ok: false, message: planRef.error ?? 'Legacy planRef is invalid or conflicts with plan.' };
   }
