@@ -224,6 +224,20 @@ export function guardCall(tool: unknown, input: unknown): {
  * @returns {string}
  */
 export function clampPrompt(prompt: unknown): string;
+/** Prove what the native submit event contained, before the topical-query clamp.
+ * The server holds the recipient, epoch, source versions and expected fragment hashes.
+ * @param {unknown} prompt
+ * @returns {{token: string, submittedPrompt: true, fragments: {id: string, bodyBytes: number, bodySha256: string}[]}[]}
+ */
+export function submittedGoalReportDeliveries(prompt: unknown): {
+    token: string;
+    submittedPrompt: true;
+    fragments: {
+        id: string;
+        bodyBytes: number;
+        bodySha256: string;
+    }[];
+}[];
 /**
  * The whole pipeline for one event, minus the client specifics.
  *
