@@ -452,6 +452,85 @@ describe('phase binding writer census', () => {
     ].sort());
   });
 
+  it('pins the two work-item creation condition reads before the receiver escapes', () => {
+    const root = new URL('../../../../', import.meta.url);
+    const path = 'packages/operator-core/lib/agent-tools/work_items/_create-core.ts';
+    const { reviews } = JSON.parse(readFileSync(new URL(
+      'docs/evidence/phase-admission-claim-source-reviews-20261117.json', root), 'utf8')) as {
+        reviews: PhaseWriterReview[];
+      };
+    const pinned = reviews.filter(row => row.sourceProofs.length === 1 && row.sourceProofs[0]?.path === path);
+    const content = readFileSync(new URL(path, root), 'utf8');
+    const inventory = inventoryPhaseWriters([source(content, path)]);
+    const conditionReads = inventory.sites.filter(site => site.operation === 'createOneWorkItemCore'
+      && ['targetPlanItem.planSlug', 'targetPlanItem.itemId'].includes(site.statement));
+    const earlier = conditionReads.filter(site => site.id.endsWith('#1'));
+    const later = conditionReads.filter(site => site.id.endsWith('#2'));
+    expect(earlier.map(site => site.statement).sort()).toEqual(['targetPlanItem.itemId', 'targetPlanItem.planSlug']);
+    expect(later.map(site => site.statement).sort()).toEqual(['targetPlanItem.itemId', 'targetPlanItem.planSlug']);
+    expect(pinned.map(row => row.siteId).sort()).toEqual(earlier.map(site => site.id).sort());
+    const report = reconcilePhaseWriterCensus(inventory, pinned);
+    const accepted = new Set([...earlier.map(site => site.id), ...report.syntaxReviews.map(row => row.siteId)]);
+    expect(report.coverage.checked).toEqual(inventory.sites.filter(site => accepted.has(site.id)).map(site => site.id));
+    for (const site of later) expect(report.coverage.residue).toContain(site.id);
+    for (const statement of ['args.targetPlanItem.slug.trim()', 'args.targetPlanItem.itemId.trim()',
+      'registerPlanItemStatusIdentity(targetPlanItem)']) {
+      const site = inventory.sites.find(row => row.statement === statement);
+      expect(site, statement).toBeDefined();
+      expect(report.coverage.residue).toContain(site!.id);
+    }
+
+    const escaped = content.replace('      if (targetPlanItem.planSlug && targetPlanItem.itemId) {',
+      '      registerPlanItemStatusIdentity(targetPlanItem);\n      if (targetPlanItem.planSlug && targetPlanItem.itemId) {');
+    expect(escaped).not.toBe(content);
+    const changed = inventoryPhaseWriters([source(escaped, path)]);
+    const refused = reconcilePhaseWriterCensus(changed, pinned);
+    for (const site of earlier) {
+      expect(refused.coverage.residue).toContain(site.id);
+      expect(refused.problems.find(row => row.id === site.id)?.reasons)
+        .toEqual(['stale-review', 'stale-source-proof:' + path]);
+    }
+  });
+
+  it('observes live getter, proxy and aliased receiver effects outside the pinned condition', () => {
+    type Candidate = { planSlug: string; itemId: string };
+    function readTarget(make: () => Candidate, prepare?: (alias: Candidate) => void) {
+      const targetPlanItem = make();
+      const alias = targetPlanItem;
+      if (prepare) prepare(alias);
+      return targetPlanItem.planSlug && targetPlanItem.itemId;
+    }
+    const effects: string[] = [];
+    expect(readTarget(() => ({
+      get planSlug() { effects.push('getter'); return 'plan'; },
+      itemId: 'P-001',
+    }))).toBe('P-001');
+    expect(readTarget(() => new Proxy({ planSlug: 'plan', itemId: 'P-002' }, {
+      get(target, key, receiver) {
+        effects.push(String(key));
+        return Reflect.get(target, key, receiver);
+      },
+    }))).toBe('P-002');
+    expect(readTarget(() => ({ planSlug: 'plan', itemId: 'P-003' }), alias => {
+      Object.defineProperty(alias, 'itemId', { get: () => { effects.push('intervening alias'); return 'P-004'; } });
+    })).toBe('P-004');
+    expect(effects).toEqual(['getter', 'planSlug', 'itemId', 'intervening alias']);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-live-property-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      writeFileSync(join(root, 'packages/property.js'), readTarget.toString());
+      let refused: ReturnType<typeof assertPhaseWriterTreeCensus> | undefined;
+      try { assertPhaseWriterTreeCensus(root, []); }
+      catch (error) { refused = (error as { report: typeof refused }).report; }
+      expect(refused?.ready).toBe(false);
+      const reads = refused?.inventory.sites.filter(site => site.operation === 'readTarget'
+        && site.unresolved.includes('property-dispatch-requires-review')) ?? [];
+      expect(reads.map(site => site.statement).sort()).toEqual(['targetPlanItem.itemId', 'targetPlanItem.planSlug']);
+      for (const site of reads) expect(refused?.census.coverage.residue).toContain(site.id);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('pins clock and notification SQL reviews without accepting append or lifecycle closure', () => {
     const root = new URL('../../../../', import.meta.url);
     const reviewed = JSON.parse(readFileSync(new URL(

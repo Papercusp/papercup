@@ -6,6 +6,7 @@
     "packages/operator-core/lib/plan-items/claims.ts",
     "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
     "packages/operator-core/lib/agent-tools/plan-items/index.ts",
+    "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
     "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
     "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
     "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
@@ -212,6 +213,88 @@
     ]
   },
   "reviews": [
+    {
+      "siteId": "[\"packages/operator-core/lib/agent-tools/work_items/_create-core.ts\",\"createOneWorkItemCore\",\"unresolved\",\"9d218b7dbf89afd4cf530336daefccd96ff31e2a6461796f8b5c95bdcbed2ed2\"]#1",
+      "sourceSha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6",
+      "statementSha256": "9d218b7dbf89afd4cf530336daefccd96ff31e2a6461796f8b5c95bdcbed2ed2",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
+          "sha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The first targetPlanItem.planSlug read is in the condition immediately after constructing a fresh local object. The literal defines planSlug and itemId as own data properties. Before this read the object has no aliases or escape, and evaluating && adds only a truthiness check. This proof covers that read. The argument property reads, trim calls, registration helper and same-spelled later reads have their own effects.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#pins the two work-item creation condition reads before the receiver escapes"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "targetPlanItem",
+          "reason": "The identifier resolves to the immediately preceding block-local const. The literal never publishes the receiver during construction, and no code runs on that receiver before the condition.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore"
+          ]
+        },
+        {
+          "edge": "planSlug",
+          "reason": "The literal defines planSlug directly as an ordinary own data property, with no computed key, getter, setter or spread.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "The exact occurrence reads the newly constructed ordinary object before registration or any other call that can receive it. ToBoolean during && invokes no user code.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore"
+          ]
+        }
+      ]
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/agent-tools/work_items/_create-core.ts\",\"createOneWorkItemCore\",\"unresolved\",\"c50c58ede913c919945767c695854a480aece7d7db6f07120a28348bf650c78d\"]#1",
+      "sourceSha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6",
+      "statementSha256": "c50c58ede913c919945767c695854a480aece7d7db6f07120a28348bf650c78d",
+      "sourceProofs": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
+          "sha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6"
+        }
+      ],
+      "disposition": "metadata-only",
+      "reason": "The first targetPlanItem.itemId read is in the condition immediately after constructing a fresh local object. The literal defines planSlug and itemId as own data properties. Before this read the object has no aliases or escape, and evaluating && adds only a truthiness check. This proof covers that read. The argument property reads, trim calls, registration helper and same-spelled later reads have their own effects.",
+      "evidenceRefs": [
+        "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore",
+        "work-item:WI-6554700010050108",
+        "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#pins the two work-item creation condition reads before the receiver escapes"
+      ],
+      "resolvedEdges": [
+        {
+          "edge": "targetPlanItem",
+          "reason": "The identifier resolves to the immediately preceding block-local const. The literal never publishes the receiver during construction, and no code runs on that receiver before the condition.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore"
+          ]
+        },
+        {
+          "edge": "itemId",
+          "reason": "The literal defines itemId directly as an ordinary own data property, with no computed key, getter, setter or spread.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore"
+          ]
+        },
+        {
+          "edge": "property-dispatch-requires-review",
+          "reason": "The exact occurrence reads the newly constructed ordinary object before registration or any other call that can receive it. ToBoolean during && invokes no user code.",
+          "evidenceRefs": [
+            "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore"
+          ]
+        }
+      ]
+    },
     {
       "siteId": "[\"libs/papercusp/libs/db/sql/840-hlc-advisory-lock-cancel-safe.sql\",\"<sql-module>\",\"sql\",\"3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5\"]#1",
       "sourceSha256": "3dc52a199a0ee8936dcd2faa4da8d402cde137bf5debea138f071ae4eb314be5",
