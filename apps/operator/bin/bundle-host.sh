@@ -140,11 +140,13 @@ COMMITTED_NODE=(node --import "$REPO_ROOT/scripts/lib/committed-source-loader.mj
 
 # Resolve the documented output target before lock admission so both it and the
 # package-cache mutex root can be checked on their actual filesystems.
+# >>> host bundle paths
 ENTRY="${1:-bin/hono-host.ts}"
 OUTFILE="${2:-dist-host/hono-host.mjs}"
 [[ "$ENTRY" = /* ]] || ENTRY="$OPERATOR_DIR/$ENTRY"
 [[ "$OUTFILE" = /* ]] || OUTFILE="$OPERATOR_DIR/$OUTFILE"
 OUTDIR="$(dirname "$OUTFILE")"
+# <<< host bundle paths
 
 # EI-21252421327077269: install:safe serializes WRITERS, but a systemd restart
 # could still run this dependency reader while npm was replacing node_modules.
@@ -386,6 +388,7 @@ done <<< "$VIEM_ALIAS_OUTPUT"
 # bundle (EI-21647996938145436).
 # A verifier export has no .git directory and may live inside another checkout.
 # Reuse its source receipt and archive validator; never borrow a parent's HEAD.
+# >>> host bundle source identity
 bundle_host_set_source_sha() { # <sha> — the label and its compile-time define move together
   SOURCE_SHA="$1"
   BUNDLED_SOURCE_SHA_DEFINE=()
@@ -397,6 +400,7 @@ bundle_host_set_source_sha() { # <sha> — the label and its compile-time define
 }
 SOURCE_SHA="$(bundle_host_source_sha "$REPO_ROOT" "${COMMITTED_NODE[@]}")" || exit $?
 bundle_host_set_source_sha "$SOURCE_SHA"
+# <<< host bundle source identity
 # WI-6554700010048234: a working-tree snapshot label (PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY=1) names
 # the tree as it was when minted, but peers keep editing the shared tree and esbuild starts a
 # minute or more later (2026-11-14: a peer edit 50 s before esbuild read its bytes under an older
