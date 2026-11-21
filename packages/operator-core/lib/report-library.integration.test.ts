@@ -21,7 +21,7 @@
  *   SPEC-P-002-store-integration-test · this file, against migration-applied PG
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ReservedSql, Sql } from 'postgres';
+import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -93,7 +93,7 @@ describe('report_library store (real PG)', () => {
     const workspaceId = nextWs();
     const goalId = `goal-${workspaceId}`;
     const plan = 'related-plan';
-    const item = 'WI-42';
+    const item = `WI-${workspaceId}`;
     const recipient = { workspaceId, viewer: { ownerId: 'receiving-holder', potSlug: 'pot-a' } };
     await db.adminSql`INSERT INTO harness_shared.goals (workspace_id, id, install_slug, title)
       VALUES (${workspaceId}, ${goalId}, 'pot-a', 'Report context fixture')`;
@@ -140,6 +140,79 @@ describe('report_library store (real PG)', () => {
     expect(JSON.stringify(entries)).not.toContain(hidden.reportId);
     const outsider = await followGoalReports({ ...f, recipient: { ...f.recipient, viewer: { ownerId: 'other', potSlug: 'other' } } });
     expect(outsider.map(entry => entry.reportId)).toEqual([item.reportId, plan.reportId, goal.reportId]);
+  });
+
+  it('recovers every visible report through the returned continuation at N−1, N and N+1', async () => {
+    for (const count of [GOAL_REPORT_PAGE_SIZE - 1, GOAL_REPORT_PAGE_SIZE, GOAL_REPORT_PAGE_SIZE + 1]) {
+      const f = await goalReportFixture();
+      const subject = { kind: 'goal' as const, ref: f.goalId };
+      const ids: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const report = await publishReport(db.adminSql, {
+          workspaceId: f.workspaceId, title: `Finding ${i}`, subject,
+        }, AGENT_1);
+        ids.push(report.reportId);
+      }
+      const denied = await publishReport(db.adminSql, {
+        workspaceId: f.workspaceId, title: 'Restricted finding', subject, visibility: 'owner',
+      }, AGENT_1);
+      const first = await readGoalReportPage(db.adminSql, f.goalId, f.recipient);
+      expect(first).toMatchObject({ status: 'available', total: count, omitted: Math.max(0, count - GOAL_REPORT_PAGE_SIZE) });
+      expect(JSON.stringify(first)).not.toContain(denied.reportId);
+      if (!first.entries) throw new Error(`Missing preview: ${first.status}`);
+      const recovered = first.entries.map(entry => entry.reportId);
+      if (count > GOAL_REPORT_PAGE_SIZE) {
+        expect(first.next).toMatchObject({ tool: 'goals:get', args: { id: f.goalId, detail: 'full' } });
+        const call = first.next!.args;
+        const last = await readGoalReportPage(db.adminSql, call.id, f.recipient, call.reportCursor);
+        expect(last).toMatchObject({ status: 'available', total: count, omitted: 0, next: null });
+        recovered.push(...last.entries!.map(entry => entry.reportId));
+      } else {
+        expect(first.next).toBeNull();
+      }
+      expect(recovered.sort()).toEqual(ids.sort());
+    }
+  });
+
+  it('reaches the decisive tail after tied and reordered subjects and a reader restart', async () => {
+    const f = await goalReportFixture();
+    const ids: string[] = [];
+    for (let i = 0; i < GOAL_REPORT_PAGE_SIZE * 3 + 1; i++) {
+      ids.push((await publishReport(db.adminSql, {
+        workspaceId: f.workspaceId, title: `Evidence ${i}`, visibility: 'pot',
+      }, AGENT_1)).reportId);
+    }
+    await db.adminSql`UPDATE harness_shared.report_library SET published_at = '2026-10-01T12:00:00Z'
+      WHERE workspace_id = ${f.workspaceId}`;
+    const cite = (ordered: string[]) => db.adminSql`UPDATE harness_shared.work_items SET summary = ${ordered.join(' ')}
+      WHERE workspace_id = ${f.workspaceId} AND feature_id = ${f.item}`;
+    await cite(ids);
+    const expected = [...ids].sort().reverse();
+    const first = await readGoalReportPage(db.adminSql, f.goalId, f.recipient);
+    expect(first.omitted).toBe(ids.length - GOAL_REPORT_PAGE_SIZE);
+    const delivered = first.entries!.map(entry => entry.reportId);
+    await cite([...ids].reverse());
+    const restarted = postgres(db.adminDsn, { max: 1 });
+    try {
+      let next = first.next;
+      while (next) {
+        expect(delivered.length).toBeLessThan(ids.length);
+        const call = JSON.parse(JSON.stringify(next)) as typeof next;
+        expect(call.tool).toBe('goals:get');
+        expect(call.args.reportCursor).toEqual(expect.any(String));
+        const page = await readGoalReportPage(restarted, call.args.id, f.recipient, call.args.reportCursor);
+        expect(page.status).toBe('available');
+        const pageIds = page.entries!.map(entry => entry.reportId);
+        expect(pageIds).toEqual(expected.slice(delivered.length, delivered.length + GOAL_REPORT_PAGE_SIZE));
+        delivered.push(...pageIds);
+        expect(page.omitted).toBe(ids.length - delivered.length);
+        next = page.next;
+      }
+      expect(delivered).toEqual(expected);
+      expect(delivered.at(-1)).toBe(expected.at(-1));
+    } finally {
+      await restarted.end();
+    }
   });
 
   it('current-edition evidence refuses a private successor while historical exact-ID reads still resolve', async () => {
