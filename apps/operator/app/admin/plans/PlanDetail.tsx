@@ -30,6 +30,7 @@ import {
   writeErrorOf,
 } from './plans-api';
 import PlanEditor from './PlanEditor';
+import { applyPlanMarkdownEdit } from './plan-markdown-edit';
 import { buildFeatureSummary, scrollPlanTarget, stripFrontmatter, type PromotedFeature } from './plan-renderers';
 import PlanJumpToItem from './PlanJumpToItem';
 import LockBanner from './LockBanner';
@@ -153,6 +154,9 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
   const [openConvo, setOpenConvo] = useQueryState('convo', parseAsInteger);
   const [jump, setJump] = useQueryState('jump', parseAsString);
   const [draft, setDraft] = useState<string | null>(null);
+  const editBaseline = useRef<{
+    slug: string; source: string; rendered: string; version?: number; hash?: string;
+  } | null>(null);
   // P-025 (D-009): the "what changed & why" the editor's Save
   // surfaces. Carried into setPlanContent → recorded on the new
   // plan_revisions row → seeded into the next agent's launch bundle.
@@ -196,13 +200,17 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
   const displayRaw = data?.items?.some(item => item.anchors?.length) ? data.prose ?? raw : raw;
   const strippedRaw = data?.legacy ? raw : stripFrontmatter(displayRaw);
   const editing = pane === 'edit';
-  const dirty = editing && draft !== null && draft !== raw;
+  const baseline = editBaseline.current?.slug === slug ? editBaseline.current : null;
+  const dirty = editing && draft !== null && draft !== raw && draft !== baseline?.rendered;
   const locked = !!lock;
   const enrichmentsPending = data?.enrichmentsDeferred === true;
 
   // A plan freshly (re)loaded while not editing: clear any stale draft.
   useEffect(() => {
-    if (!editing) setDraft(null);
+    if (!editing) {
+      setDraft(null);
+      editBaseline.current = null;
+    }
   }, [editing, slug]);
 
   // Report dirty state up so PlansClient can guard navigation away
@@ -280,6 +288,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
 
   const enterEdit = () => {
     if (enrichmentsPending) return;
+    editBaseline.current = null;
     setDraft(raw);
     setRationale('');
     setSaveError(null);
@@ -308,11 +317,11 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
     try {
       const res = await setPlanContent({
         slug: data.slug,
-        content: draft,
+        content: baseline ? applyPlanMarkdownEdit(baseline.source, baseline.rendered, draft) : draft,
         // Optimistic version CAS (plans-pg-canonical D-005); expectedHash kept
         // as an equivalent fallback for an older server.
-        expectedVersion: data.version,
-        expectedHash: data.contentHash,
+        expectedVersion: baseline?.version ?? data.version,
+        expectedHash: baseline?.hash ?? data.contentHash,
         rationale: rationale.trim() || undefined,
         ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
       } as Parameters<typeof setPlanContent>[0] & { harness?: string; harness_slug?: string });
@@ -556,6 +565,11 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
               <div ref={editorScopeRef} className="pc-plan-editor-scope">
                 <PlanEditor
                   value={editing ? (draft ?? raw) : strippedRaw}
+                  onEditBaseline={(source, rendered) => {
+                    if (editBaseline.current?.slug !== slug) {
+                      editBaseline.current = { slug, source, rendered, version: data.version, hash: data.contentHash };
+                    }
+                  }}
                   slug={slug}
                   items={data.items}
                   promotedFeatures={

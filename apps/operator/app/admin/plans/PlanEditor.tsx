@@ -42,6 +42,8 @@ export interface PlanEditorProps {
   value: string;
   /** Fired on every edit when not read-only. */
   onChange?: (next: string) => void;
+  /** Original source and its initial Vditor serialization for this edit session. */
+  onEditBaseline?: (source: string, rendered: string) => void;
   /** Read mode (default, D-007) vs raw-prose Edit mode. */
   readOnly?: boolean;
   /** Outline panel position, or `false` to omit it. Defaults to 'left'.
@@ -78,6 +80,7 @@ const PLAN_TOOLBAR: MarkdownEditorToolbar = [
 export default function PlanEditor({
   value,
   onChange,
+  onEditBaseline,
   readOnly = true,
   outline = 'left',
   slug,
@@ -201,7 +204,10 @@ export default function PlanEditor({
         readOnly={false}
         outline={outline}
         toolbar={PLAN_TOOLBAR}
-        onInstance={handleInstance}
+        onInstance={(inst) => {
+          handleInstance(inst);
+          if (inst) onEditBaseline?.(value, inst.getValue());
+        }}
       />
     </div>
   );

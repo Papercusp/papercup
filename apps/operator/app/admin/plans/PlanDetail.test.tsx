@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactElement } from 'react';
+import { applyPlanMarkdownEdit } from './plan-markdown-edit';
+import { setPlanContent } from './plans-api';
 
 const phaseSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/app/_components/perf/perf-marks', () => ({
@@ -61,14 +63,25 @@ vi.mock('@papercusp/sync', () => ({
 vi.mock("./PlanEditor", () => ({
   default: ({
     onFeatureClick,
+    onChange,
+    onEditBaseline,
     readOnly,
     value,
   }: {
     onFeatureClick?: (id: string) => void;
+    onChange?: (draft: string) => void;
+    onEditBaseline?: (source: string, rendered: string) => void;
     readOnly?: boolean;
     value?: string;
   }) => (
     <div data-testid="plan-editor" data-read-only={String(readOnly)} data-value={value}>
+      {!readOnly && value && (
+        <button type="button" onClick={() => {
+          const rendered = value.replace('---\n\n#', '---\n#').trimEnd() + '\n';
+          onEditBaseline?.(value, rendered);
+          onChange?.(rendered.replace('source.ts:1', 'source.ts:2'));
+        }}>Edit citation</button>
+      )}
       {onFeatureClick ? (
         <button type="button" onClick={() => onFeatureClick("F-1")}>
           open feature
@@ -278,6 +291,27 @@ describe('PlanDetail (plan-detail main pane)', () => {
     }), loading: false, error: null };
     renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />, search);
     expect(screen.getByTestId('plan-editor').getAttribute('data-value')).toBe(search ? canonical : displayed);
+  });
+
+  it('saves only the citation when the rich editor normalizes blank lines', () => {
+    const raw = '---\ntitle: Plan\n---\n\n# Plan\n\nSee source.ts:1\n\n';
+    planResult = { data: mkPlan({ raw, version: 2, contentHash: 'original' }), loading: false, error: null };
+    renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />, '?pane=edit');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit citation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(setPlanContent).toHaveBeenCalledWith(expect.objectContaining({
+      content: raw.replace('source.ts:1', 'source.ts:2'), expectedVersion: 2, expectedHash: 'original',
+    }));
+  });
+
+  it('retains untouched source across disjoint edits, undo, and full deletion', () => {
+    const raw = 'One\r\n\r\n\r\n**same**\r\n\r\nTwo\r\n';
+    const rendered = 'One\n\n**same**\n\nTwo\n';
+    expect(applyPlanMarkdownEdit(raw, rendered, rendered.replace('One', 'First').replace('Two', 'Last')))
+      .toBe(raw.replace('One', 'First').replace('Two', 'Last'));
+    expect(applyPlanMarkdownEdit(raw, rendered, rendered)).toBe(raw);
+    expect(applyPlanMarkdownEdit(raw, rendered, '')).toBe('');
+    expect(applyPlanMarkdownEdit('x\n', 'x\n', 'x🪶\n')).toBe('x🪶\n');
   });
 
   it('deep-links to the per-plan Triggers tab through the ptab key', () => {
