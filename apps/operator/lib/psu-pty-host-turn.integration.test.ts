@@ -96,6 +96,13 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
+function readEvents(ownerId: string): Array<Record<string, unknown>> {
+  const path = eventLogPathForOwner(ownerId);
+  return existsSync(path)
+    ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+    : [];
+}
+
 /** Preserve the host's refusal reason before fixture teardown removes its log. */
 function hostTestDiagnostics(ownerId: string, captured: () => string): string {
   const log = eventLogPathForOwner(ownerId);
@@ -167,6 +174,11 @@ it('serializes a resumed launch kickoff before a concurrent wake', async () => {
     await vi.waitFor(() => expect(existsSync(nativeFile)).toBe(true), { timeout: 5000 });
     expect(prompts()[0], hostTestDiagnostics(ownerId, captured)).toBe(kickoff);
     await vi.waitFor(() => expect(prompts()).toEqual([kickoff, wake]), { timeout: 6000 });
+    await vi.waitFor(() => {
+      expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
+        kind: 'turn-delivered', confirmed: 'native', resubmits: 0, attempts: 1,
+      }));
+    }, { timeout: 2000 });
   } finally {
     signalSource.emit('SIGTERM');
     await done;
@@ -1399,11 +1411,6 @@ describe('Codex recycle reanchors its fresh native session before carry delivery
 });
 
 describe('unbound Codex successor is replaced or refused, never stranded (P-005 / D-003)', () => {
-  const readEvents = (ownerId: string): Array<Record<string, unknown>> =>
-    existsSync(eventLogPathForOwner(ownerId))
-      ? readFileSync(eventLogPathForOwner(ownerId), 'utf8')
-        .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
-      : [];
   const cleanupHost = async (ownerId: string, root: string, done: Promise<unknown>) => {
     await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
     await done;
@@ -2000,27 +2007,22 @@ it.each([0, 3150])('leaves a later Codex model menu to the agent after a turn wa
     await sleep(submitDelayMs);
     await injectIntoHost(socketPathFor(ownerId), { mode: 'turn', data: 'first turn', ownerId });
     expect(await waitForOutput(captured, 'LATER_MENU_UNANSWERED', 2500), captured()).toBe(true);
-    const eventPath = eventLogPathForOwner(ownerId);
-    if (existsSync(eventPath)) {
-      expect(readFileSync(eventPath, 'utf8')).not.toContain('"kind":"headless-codex-model-choice-kept-existing"');
-    }
-    // WI-10002543: the successful submit row must carry a non-vacuous
-    // attempts count (initial submit + verifier resubmits).
-    const deadline = Date.now() + 2_000;
-    let delivered: Record<string, unknown> | undefined;
-    while (Date.now() < deadline && !delivered) {
-      const lines = existsSync(eventPath) ? readFileSync(eventPath, 'utf8').trim().split('\n') : [];
-      delivered = lines.filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
-        .find((event) => event.kind === 'turn-delivered');
-      if (!delivered) await sleep(25);
-    }
-    expect(delivered).toMatchObject({ kind: 'turn-delivered', resubmits: 0, attempts: 1 });
+    // This child repaints the menu without persisting a native user turn.
+    await vi.waitFor(() => {
+      expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
+        kind: 'submit-verify-unconfirmed', reason: 'native-submission-unconfirmed', resubmits: 0,
+      }));
+    }, { timeout: 2000 });
   } finally {
     writeFileSync(releaseFile, 'release\n');
     await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
     await done;
     rmSync(root, { recursive: true, force: true });
   }
+  const kinds = readEvents(ownerId).map(event => event.kind);
+  expect(kinds).toContain('submit-verify-unconfirmed');
+  expect(kinds).not.toContain('headless-codex-model-choice-kept-existing');
+  expect(kinds).not.toContain('turn-delivered');
 }, 10_000);
 
 it('records a sanitized Codex provider and endpoint after a successful PTY spawn', async () => {
