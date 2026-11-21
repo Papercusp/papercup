@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readGitFilePublicationCondition } from './git-file-publication-condition';
 import { prepareRuntimeBlockerBinding, readRuntimeBlockerCondition } from './runtime-blocker-condition';
 import { blockerBoundaryContext, createBlockerEvidenceReader } from './blocker-resolution-evidence';
 import { validateBlockerDecisionEvidence, type BlockerDecisionInput } from './blocker-resolution-decision';
@@ -90,6 +91,40 @@ describe('legacy file-publication condition over real Git objects', () => {
     git(repository, 'add', 'src/value.ts'); const newer = commit(repository);
     git(root, 'update-index', '--cacheinfo', `160000,${newer},deps/lib`); parentCommit = commit(root);
     expect(await readRuntimeBlockerCondition(bound(), root)).toMatchObject({ status: 'available', condition: 'pending' });
+  });
+  it('checks the current parent gitlink when the working copy still shows the accepted bytes', async () => {
+    const original = binding();
+    expect(await readGitFilePublicationCondition(original, root))
+      .toMatchObject({ status: 'available', condition: 'satisfied' });
+    const subject = join(repository, 'src/value.ts');
+    writeFileSync(subject, 'changed in the published submodule');
+    git(repository, 'add', 'src/value.ts');
+    const changed = commit(repository);
+    git(root, 'update-index', '--cacheinfo', `160000,${changed},deps/lib`);
+    commit(root);
+    writeFileSync(subject, 'export const value = "accepted";\n');
+    expect(git(repository, 'hash-object', '--', 'src/value.ts')).toBe(expectedBlob);
+    expect(await readGitFilePublicationCondition(original, root))
+      .toMatchObject({ status: 'available', condition: 'pending' });
+  });
+  it('checks the current parent tree for a directly tracked file after an unstaged restoration', async () => {
+    const direct = { ...binding(), repositoryPath: undefined, filePath: 'root.txt',
+      sourceCommit: oldParent, parentCommit: oldParent, expectedBlob: git(root, 'rev-parse', oldParent + ':root.txt') };
+    expect(await readGitFilePublicationCondition(direct, root)).toMatchObject({ condition: 'satisfied' });
+    writeFileSync(join(root, 'root.txt'), 'new committed value');
+    git(root, 'add', 'root.txt');
+    commit(root);
+    writeFileSync(join(root, 'root.txt'), 'root');
+    expect(await readGitFilePublicationCondition(direct, root)).toMatchObject({ condition: 'pending' });
+  });
+  it('requires the current submodule commit to retain the accepted lineage even when its blob matches', async () => {
+    const original = binding();
+    const unrelated = git(repository, '-c', 'user.name=papercusp-git-sync', '-c', 'user.email=fixture@example.invalid',
+      'commit-tree', git(repository, 'rev-parse', 'HEAD^{tree}'), '-m', 'separate history');
+    expect(git(repository, 'rev-parse', unrelated + ':src/value.ts')).toBe(expectedBlob);
+    git(root, 'update-index', '--cacheinfo', `160000,${unrelated},deps/lib`);
+    commit(root);
+    expect(await readGitFilePublicationCondition(original, root)).toMatchObject({ condition: 'pending' });
   });
   it('requires sync acceptance rather than an arbitrary manually authored commit', async () => {
     sourceCommit = commit(repository, 'manual-author');

@@ -44,31 +44,47 @@ Promise<BlockerEvidenceMeasurement> {
     if (top.code !== 0 || await realpath(top.output) !== repository) return unknown('named source repository is unavailable');
     const parentTop = await git(canonicalRoot, ['rev-parse', '--show-toplevel']);
     if (parentTop.code !== 0 || await realpath(parentTop.output) !== canonicalRoot) return unknown('canonical parent repository is unavailable');
-    const parentAncestry = await git(canonicalRoot, ['merge-base', '--is-ancestor', binding.parentCommit, 'HEAD']);
+    const parentHead = await git(canonicalRoot, ['rev-parse', '--verify', 'HEAD']);
+    if (parentHead.code !== 0) return unknown('current containing parent is unavailable');
+    const parentAncestry = await git(canonicalRoot, ['merge-base', '--is-ancestor', binding.parentCommit, parentHead.output]);
     if (parentAncestry.code === 1) return measured(false);
     if (parentAncestry.code !== 0) return unknown('containing parent history is unavailable');
-    let containedCommit = binding.parentCommit;
-    if (binding.repositoryPath) {
-      const link = await git(canonicalRoot, ['ls-tree', binding.parentCommit, '--', binding.repositoryPath]);
-      if (link.code !== 0) return unknown('containing parent commit is unavailable');
-      const match = /^160000 commit ([a-f0-9]{40})\t/.exec(link.output);
-      if (!match) return measured(false);
-      containedCommit = match[1];
-    }
     const sourceFile = binding.repositoryPath ? binding.filePath.slice(binding.repositoryPath.length + 1) : binding.filePath;
-    const [author, accepted, contained, working, ancestry] = await Promise.all([
-      git(repository, ['show', '-s', '--format=%an', binding.sourceCommit]),
-      git(repository, ['ls-tree', binding.sourceCommit, '--', sourceFile]),
-      git(repository, ['ls-tree', containedCommit, '--', sourceFile]),
-      git(repository, ['hash-object', '--', sourceFile]),
-      git(repository, ['merge-base', '--is-ancestor', binding.sourceCommit, containedCommit]),
-    ]);
-    if ([author, accepted, contained, working].some(result => result.code !== 0) ||
-        (ancestry.code !== 0 && ancestry.code !== 1)) return unknown('committed file evidence could not be measured');
+    const treeEntry = (cwd: string, commit: string, path: string) => git(cwd, ['--literal-pathspecs', 'ls-tree', commit, '--', path]);
     const blob = (entry: string) => /^100(?:644|755) blob ([a-f0-9]{40})\t/.exec(entry)?.[1];
-    return measured(author.output === 'papercusp-git-sync' && ancestry.code === 0 &&
-      blob(accepted.output) === binding.expectedBlob && blob(contained.output) === binding.expectedBlob &&
-      working.output === binding.expectedBlob);
+    const [author, accepted] = await Promise.all([
+      git(repository, ['show', '-s', '--format=%an', binding.sourceCommit]),
+      treeEntry(repository, binding.sourceCommit, sourceFile),
+    ]);
+    if (author.code !== 0 || accepted.code !== 0) return unknown('accepted source commit is unavailable');
+    if (author.output !== 'papercusp-git-sync' || blob(accepted.output) !== binding.expectedBlob) return measured(false);
+
+    // An old parent can remain in history while a later parent publishes different bytes.
+    // The local submodule or an unstaged edit can still show the original file in that case.
+    for (const parent of new Set([binding.parentCommit, parentHead.output])) {
+      let containedCommit = parent;
+      if (binding.repositoryPath) {
+        const link = await treeEntry(canonicalRoot, parent, binding.repositoryPath);
+        if (link.code !== 0) return unknown('containing parent commit is unavailable');
+        const match = /^160000 commit ([a-f0-9]{40})\t/.exec(link.output);
+        if (!match) return measured(false);
+        containedCommit = match[1];
+      }
+      const [contained, ancestry] = await Promise.all([
+        treeEntry(repository, containedCommit, sourceFile),
+        git(repository, ['merge-base', '--is-ancestor', binding.sourceCommit, containedCommit]),
+      ]);
+      if (contained.code !== 0 || (ancestry.code !== 0 && ancestry.code !== 1))
+        return unknown('committed file evidence could not be measured');
+      if (ancestry.code !== 0 || blob(contained.output) !== binding.expectedBlob) return measured(false);
+    }
+    const [working, finalHead] = await Promise.all([
+      git(repository, ['hash-object', '--', sourceFile]),
+      git(canonicalRoot, ['rev-parse', '--verify', 'HEAD']),
+    ]);
+    if (working.code !== 0 || finalHead.code !== 0 || finalHead.output !== parentHead.output)
+      return unknown('current publication changed or could not be measured');
+    return measured(working.output === binding.expectedBlob);
   } catch {
     return unknown('canonical publication repository or file is unavailable');
   }
