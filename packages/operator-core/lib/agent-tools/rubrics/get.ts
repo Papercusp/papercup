@@ -27,10 +27,11 @@ import { COORD_ROLES } from '../coordination/roles';
 import { getAcceptanceRubricVettingStatus } from '../../acceptance-rubric-vetting';
 import { readGradingAuditDispatchSuppression } from '../../grading-integrity';
 import { getRubric, readRubricPlanRevision } from '../../rubrics';
-import { listScorecards } from '../../scorecards';
+import { listScorecards, readCriterionRepairHistory } from '../../scorecards';
+import { readLatestRubricCheckResults } from '../../check-results-ledger';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
-import { fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
+import { criterionRepairRead, fullBodyRef, isFullDetail, reviewReadDetailArg } from '../_review-read-detail';
 import type { Rubric } from '../../rubrics';
 import { resolveLiveAcceptanceRubric } from '../../acceptance-live-requirements';
 import { resolveRubricSourceCitations, rubricSourceCitationDeps } from '../../rubrics-source-citations';
@@ -73,6 +74,48 @@ export function summaryRubric(rubric: Rubric) {
 }
 
 const RUBRIC_SUMMARY_OMITS = ['rubric.description', 'rubric.criteria[].model', 'rubric.criteria[].method', 'rubric.criteria[].replication', 'rubric.criteria[].check', 'rubric.criteria[].window', 'rubric.criteria[].driftMarkers', 'rubric.barContract'];
+
+const repairHistoryCursorSchema = z.object({
+  workspace: z.string().min(1), rubricRef: z.string().min(1), criterionKey: z.string().min(1),
+  asOf: z.string().datetime({ offset: true }), baselineId: z.string().min(1), regradeId: z.string(),
+}).strict();
+
+async function rubricRepairGuidance(rubric: Rubric, args: {
+  criterionKey?: string; revision?: number; failureTestRunId?: number;
+  repairHistoryCursor?: z.infer<typeof repairHistoryCursorSchema>;
+}) {
+  const revision = args.revision === undefined ? {} : { revision: args.revision };
+  if (!args.criterionKey) {
+    return { reads: rubric.criteria.map(c => criterionRepairRead(rubric.rubricId, c.key, revision)) };
+  }
+  const criterion = rubric.criteria.find(c => c.key === args.criterionKey);
+  if (!criterion) throw new Error(`Criterion '${args.criterionKey}' does not exist on rubric '${rubric.rubricId}'.`);
+  const { entries, omittedCount, nextCursor, guidance } = await readCriterionRepairHistory({
+    rubricRef: rubric.rubricId, criterionKey: criterion.key, ratingScale: rubric.ratingScale,
+    levers: criterion.levers ?? [], cursor: args.repairHistoryCursor,
+  });
+  if (!guidance) throw new Error(`Repair guidance is unavailable for '${rubric.rubricId}/${criterion.key}'.`);
+  const failure = args.failureTestRunId === undefined ? {} : { failureTestRunId: args.failureTestRunId };
+  let failureEvidence;
+  if (args.failureTestRunId !== undefined) {
+    const rows = await readLatestRubricCheckResults({ rubricRef: rubric.rubricId,
+      workspaceId: rubric.workspaceId, testRunIds: [args.failureTestRunId] });
+    failureEvidence = [...rows.values()].find(row => row.testRunId === args.failureTestRunId && row.check.criterionKey === criterion.key);
+    if (!failureEvidence) throw new Error(`Check result ${args.failureTestRunId} is unavailable for '${rubric.rubricId}/${criterion.key}'.`);
+  }
+  return {
+    criterionKey: criterion.key,
+    ...(failureEvidence && { failureEvidence }),
+    entries, omittedCount,
+    nextRead: nextCursor && criterionRepairRead(rubric.rubricId, criterion.key,
+      { ...revision, ...failure, repairHistoryCursor: nextCursor }),
+    levers: guidance.levers.map(lever => ({ ...lever,
+      trackRecord: lever.verifiedOutcomes.improved ? 'observed-improvement'
+        : lever.verifiedOutcomes.unchanged + lever.verifiedOutcomes.worsened ? 'no-verified-improvement' : 'untested',
+    })),
+    exhausted: guidance.exhausted, alternatives: guidance.alternatives,
+  };
+}
 
 /**
  * `coord:send` provenance uses the typed dependency ref `plan:<slug>` for a
@@ -160,9 +203,18 @@ export default defineTool({
         .optional()
         .describe('Optional caller scope hint accepted for compatibility; rubric reads remain workspace/template scoped and are not filtered by harness.'),
       detail: reviewReadDetailArg,
+      criterionKey: z.string().min(1).optional().describe('With full detail, read repair evidence and authored levers for this criterion.'),
+      failureTestRunId: z.number().int().positive().optional().describe('The exact failing check row cited by a regression.'),
+      repairHistoryCursor: repairHistoryCursorSchema.optional().describe('Use the nextRead from the previous page.'),
     })
     .refine((a) => Boolean(a.rubricRef ?? a.ref ?? a.slug ?? a.id) || (a.rubricRefs?.length ?? 0) > 0, {
       message: 'pass `rubricRef`/`ref`/`slug`/`id` (one) or `rubricRefs` (many)',
+    })
+    .refine(a => !a.criterionKey || isFullDetail(a.detail), {
+      message: 'criterionKey requires full detail',
+    })
+    .refine(a => a.criterionKey !== undefined || (!a.repairHistoryCursor && a.failureTestRunId === undefined), {
+      message: 'A repair history cursor or failing check row requires a criterionKey',
     }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -186,7 +238,7 @@ export default defineTool({
           if (rubric) {
             const full = isFullDetail(args.detail);
             const shaped = full
-              ? { rubric }
+              ? { rubric, repairGuidance: await rubricRepairGuidance(rubric, args) }
               : {
                   detail: 'summary' as const,
                   rubric: summaryRubric(rubric),
@@ -223,7 +275,7 @@ export default defineTool({
               // explicit `revision` read stays an immutable snapshot and is never overlaid.
               if (args.revision === undefined) {
                 const live = await resolveLiveAcceptanceRubric(rubric, identity.workspaceId);
-                const liveShaped = full ? { rubric: live.rubric } : shaped;
+                const liveShaped = full ? { ...shaped, rubric: live.rubric } : shaped;
                 return { ok: true as const, rubricRef, ...liveShaped, vetting, liveRequirements: live.status };
               }
               return { ok: true as const, rubricRef, ...shaped, vetting };

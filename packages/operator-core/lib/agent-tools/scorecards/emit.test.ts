@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
 import { lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
 import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import scorecardEmitTool, {
@@ -7,6 +8,7 @@ import scorecardEmitTool, {
   cleanupAcceptanceGraderTasks,
   resolveDeterministicCheckScope,
   resolveHarnessTargetHive,
+  scorecardRatingResponse,
   scorecardAbortCompletionReceipt,
 } from './emit';
 import {
@@ -29,6 +31,18 @@ import {
   currentProofBindingsByCriterion,
   type AcceptanceBarContractSnapshot,
 } from '../../acceptance-bar-contract-snapshot';
+
+it('returns the measured ratings before exact repair reads for poor criteria', () => {
+  const ratings = { latency: { rating: 'partial', evidence: '470 ms', remediation: 'WI-431' },
+    count: { rating: 'pass', evidence: 'All records returned.' } };
+  const response = scorecardRatingResponse('reader-health', ratings);
+  expect(Object.keys(response)).toEqual(['canonicalRatings', 'repairGuidance']);
+  expect(response.canonicalRatings).toEqual(ratings);
+  expect(response.repairGuidance).toEqual([{ tool: 'rubrics:get', args: {
+    rubricRef: 'reader-health', criterionKey: 'latency', detail: 'full',
+  } }]);
+  expect(scorecardRatingResponse('reader-health', { count: ratings.count })).toEqual({ canonicalRatings: { count: ratings.count } });
+});
 
 describe('per-criterion grade records at save (per-requirement-acceptance-grading-2026-11-14 R-1)', () => {
   const criterion = (key: string, method: string): RubricCriterion => {
@@ -107,10 +121,19 @@ describe('per-criterion grade records at save (per-requirement-acceptance-gradin
     }
   });
 
-  it('leaves the scorecards:emit argument schema exactly as it was before this change', async () => {
+  it('preserves the pre-R1 argument contract with optional repair attribution for manual and ledger ratings', async () => {
+    const snapshot = new URL('./__fixtures__/scorecards-emit-args.pre-r1.schema.json', import.meta.url);
+    const expected = JSON.parse(await readFile(snapshot, 'utf8'));
+    for (const variant of expected.oneOf) {
+      for (const field of ['ratings', 'ledgerDispositions']) {
+        variant.properties[field].additionalProperties.properties.appliedLever = {
+          type: 'string', pattern: '\\S',
+          description: 'Optional key for the repair actually tried. Listed and unlisted repairs are equally valid.',
+        };
+      }
+    }
     const schema = z.toJSONSchema(scorecardEmitArgs, { io: 'input', unrepresentable: 'any' });
-    await expect(`${JSON.stringify(schema, null, 2)}\n`)
-      .toMatchFileSnapshot('./__fixtures__/scorecards-emit-args.pre-r1.schema.json');
+    expect(schema).toEqual(expected);
   });
 });
 

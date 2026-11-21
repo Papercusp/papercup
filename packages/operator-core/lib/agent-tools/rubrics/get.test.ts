@@ -3,6 +3,13 @@ import getRubricTool, { summaryRubric } from './get';
 import type { Rubric } from '../../rubrics';
 
 describe('rubrics:get workspace transaction boundary', () => {
+  it('requires the full criterion read for paging and regression evidence', () => {
+    const args = { rubricRef: 'reader-health', criterionKey: 'latency', detail: 'full', failureTestRunId: 3 };
+    expect(getRubricTool.args.safeParse(args).success).toBe(true);
+    expect(getRubricTool.args.safeParse({ ...args, detail: 'summary' }).success).toBe(false);
+    expect(getRubricTool.args.safeParse({ ...args, criterionKey: undefined }).success).toBe(false);
+  });
+
   it('does not retain an ambient workspace transaction during its independent reads', () => {
     expect((getRubricTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });

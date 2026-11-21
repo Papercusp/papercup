@@ -1877,6 +1877,49 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       key, action: `Repair the ${key}`, where: 'the reader', expectedEffect: 'Reduce latency',
     }));
     const input = { rubricRef, criterionKey, levers, limit: 2 };
+    const { default: rubricGet } = await import('./agent-tools/rubrics/get');
+    const { emitScorecard } = await import('./agent-tools/scorecards/emit');
+    const workspaceId = issuesScopeWorkspace();
+    const ctx = { isSuperuser: true, uiClientId: 'su-criterion-repair-reader', workspaceId };
+    await proposeRubric({ rubricId: rubricRef, characteristic: 'reader-latency', title: 'Reader latency',
+      status: 'active', by: 'su-criterion-repair-reader', ratingScale: ['pass', 'partial', 'fail'], criteria: [{
+        key: criterionKey, title: 'Latency', model: 'The reader returns promptly.', method: 'Time the read.',
+        driftMarkers: 'Reads exceed the expected duration.', levers,
+        check: { kind: 'instrument', instrumentKey: REPAIR_IMPROVEMENT_TIME_KEY },
+      }] });
+    const emitResult = await emitScorecard({ rubricRef, purpose: 'diagnostic', subject: scope.subject,
+      sourceHive: scope.sourceHive, ratings: { [criterionKey]: { rating: 'partial', evidence: 'Read took 470 ms.', remediation: 'WI-823' } } },
+    { createdBy: 'su-criterion-repair-reader', workspaceId, ctxHarness: scope.sourceHive, previewOnly: true });
+    expect(emitResult).toMatchObject({ ok: true, canonicalRatings: { latency: { evidence: 'Read took 470 ms.' } },
+      repairGuidance: [{ tool: 'rubrics:get', args: { rubricRef, criterionKey, detail: 'full' } }] });
+    if (!('repairGuidance' in emitResult) || !emitResult.repairGuidance?.[0]) throw new Error('Missing poor rating guidance');
+    type RepairRead = { rubricRef: string; criterionKey: string; detail: 'full'; repairHistoryCursor?: RepairHistoryCursor; failureTestRunId?: number };
+    async function open(args: RepairRead) {
+      const result = await rubricGet.handler(args, ctx as never) as { data: { results: Array<{ ok: boolean;
+        repairGuidance: { entries: Array<{ regradeId: string | null }>; omittedCount: number;
+          nextRead: { args: RepairRead } | null; exhausted: boolean; alternatives: string[] } }> } };
+      expect(result.data.results[0]).toMatchObject({ ok: true });
+      return result.data.results[0]!.repairGuidance;
+    }
+    const poorRead = emitResult.repairGuidance[0].args;
+    expect(await open(poorRead)).toMatchObject({ entries: [], levers: [
+      { key: 'cache', trackRecord: 'untested' }, { key: 'index', trackRecord: 'untested' },
+    ], exhausted: false });
+    const compact = await rubricGet.handler({ rubricRef }, ctx as never) as { data: { results: unknown[] } };
+    expect(compact.data.results[0]).not.toHaveProperty('repairGuidance');
+    const at = new Date().toISOString();
+    const check = { id: instrumentCheckId(criterionKey), rubricRef, criterionKey, kind: 'instrument' as const, value: 1, unit: 'min' };
+    await recordRubricCheckResults([{ check, verdict: 'pass', measuredAt: at, durationMs: 1 }],
+      { workspaceId, harnessSlug: scope.sourceHive }, db.adminSql);
+    const notify = vi.fn();
+    const rescore = await rescoreRubric({ rubricRef, workspaceId, harnessSlug: scope.sourceHive }, {
+      runInstruments: async () => [{ check: { ...check, value: 9 }, verdict: 'fail', measuredAt: new Date().toISOString(), durationMs: 1 }], emit: notify,
+    });
+    const crossing = rescore.crossings[0]!;
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ payload: crossing }));
+    expect(await open(crossing.repairGuidance.args)).toMatchObject({ failureEvidence: {
+      testRunId: crossing.testRunId, check: { criterionKey, value: 9 },
+    } });
     const baseline = await fileScorecard(db, { ...scope, id: 'slow read', observationExtra: { purpose: 'diagnostic' },
       ratings: { [criterionKey]: { rating: 'partial', evidence: 'Fixture timed a slow read.', remediation: 'WI-823' } } });
     function regrade(id: string, rating: string, appliedLever?: string, audit: 'passed' | 'pending' | 'failed' = 'passed') {
@@ -1938,6 +1981,17 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       expect.stringMatching(/recheck.*measurement/i), expect.stringMatching(/larger change/i),
       expect.stringMatching(/reasoned disregard/i),
     ]);
+    let publicPage = await open(crossing.repairGuidance.args);
+    expect(publicPage).toMatchObject({ exhausted: true, alternatives: exhausted!.alternatives });
+    const firstCount = publicPage.entries.length + publicPage.omittedCount;
+    const seen = new Set(publicPage.entries.map(row => row.regradeId));
+    while (publicPage.nextRead) {
+      publicPage = await open(publicPage.nextRead.args);
+      for (const entry of publicPage.entries) seen.add(entry.regradeId);
+      expect(seen.size + publicPage.omittedCount).toBe(firstCount);
+    }
+    expect(seen.has(offList)).toBe(true);
+    expect(seen.size).toBe(firstCount);
     await db.adminSql`UPDATE harness_shared.engineer_issues
       SET payload = payload #- ARRAY['observation', 'ratings', ${criterionKey}::text, 'appliedLever']
       WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${index}`;

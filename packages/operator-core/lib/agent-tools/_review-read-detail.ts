@@ -15,6 +15,7 @@
  * tool's own schema rather than learn a reserved dispatch key.
  */
 import { z } from 'zod';
+import type { RepairHistoryCursor } from '../scorecards';
 
 export const REVIEW_READ_DETAILS = ['summary', 'full'] as const;
 export type ReviewReadDetail = (typeof REVIEW_READ_DETAILS)[number] | boolean;
@@ -40,4 +41,12 @@ export function fullBodyRef(tool: string, args: Record<string, unknown>, omitted
 
 export function isFullDetail(detail: ReviewReadDetail | undefined): boolean {
   return detail === 'full' || detail === true;
+}
+
+export function criterionRepairRead(rubricRef: string, criterionKey: string, options: {
+  revision?: number;
+  failureTestRunId?: number;
+  repairHistoryCursor?: RepairHistoryCursor;
+} = {}) {
+  return { tool: 'rubrics:get', args: { rubricRef, criterionKey, detail: 'full', ...options } } as const;
 }

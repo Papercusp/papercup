@@ -55,6 +55,7 @@ import {
   validateScorecardCompleteness,
   validateScorecardRatingValues,
   validateScorecardPoorRatingDisposition,
+  POOR_SCORECARD_RATINGS,
   ObservationEvidenceError,
   type ObservationRatings,
   type ScorecardVetting,
@@ -135,6 +136,8 @@ import {
   type GradingAuditLaunchContext,
 } from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
+import { criterionRepairRead } from '../_review-read-detail';
+
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
@@ -228,6 +231,15 @@ import type { SessionState } from '../coordination/presence-wakeability';
  */
 export { SCORECARD_EMIT_TIMEOUT_SEC };
 export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 25 * 60_000;
+
+const poorGuidanceRatings = new Set<string>(POOR_SCORECARD_RATINGS);
+
+export function scorecardRatingResponse<T extends ObservationRatings>(rubricRef: string, ratings: T) {
+  const repairGuidance = Object.entries(ratings)
+    .filter(([, entry]) => poorGuidanceRatings.has(entry.rating.trim().toLowerCase()))
+    .map(([key]) => criterionRepairRead(rubricRef, key));
+  return repairGuidance.length ? { canonicalRatings: ratings, repairGuidance } : { canonicalRatings: ratings };
+}
 
 /**
  * A scorecard check process can survive an API restart while its caller cannot.
@@ -1944,7 +1956,7 @@ export async function emitScorecard(
       ...(args.supersedes ? { supersedes: args.supersedes } : {}), ratings };
     const evidenceFingerprint = createHash('sha256').update(JSON.stringify(diagnostic)).digest('hex');
     const response = { purpose: 'diagnostic' as const, acceptanceEligible: false, ...identity,
-      evidenceFingerprint, canonicalRatings: ratings, nextAction: evaluated.nextAction };
+      evidenceFingerprint, ...scorecardRatingResponse(rubric.rubricId, ratings), nextAction: evaluated.nextAction };
     if (input.previewOnly) return { ok: true as const, created: false as const, previewOnly: true as const, ...response };
     const prior = await listScorecards({ rubricRef: rubric.rubricId, subjectRef: args.subject.ref,
       subjectKind: args.subject.kind, sourceHive, includeDiagnostics: true, limit: 100 });
@@ -2735,7 +2747,7 @@ export async function emitScorecard(
       return {
         ok: false as const,
         error: error instanceof Error ? error.message : String(error),
-        canonicalRatings: ratings,
+        ...scorecardRatingResponse(rubric.rubricId, ratings),
       };
     }
     const rollup =
@@ -2852,7 +2864,7 @@ export async function emitScorecard(
           `release-gating pass blocked for '${args.rubricRef}' — ${releaseGateBinding.reason}. ` +
           'Re-run the drill at the current staging commit after that same commit has a fresh green gate verdict, then pass testedSha.',
         releaseGateBinding,
-        canonicalRatings: ratings,
+        ...scorecardRatingResponse(rubric.rubricId, ratings),
       };
     }
     const boundTestedSha =
@@ -3924,7 +3936,7 @@ export async function emitScorecard(
         reason: 'unchanged-evidence' as const,
         evidenceFingerprint,
         previousIssueId: latest?.issueId ?? null,
-        canonicalRatings: ratings,
+        ...scorecardRatingResponse(rubric.rubricId, ratings),
         ...(vettingWarning ? { warning: vettingWarning } : {}),
         ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
         ...(recoveredAudit ? {
@@ -3991,7 +4003,7 @@ export async function emitScorecard(
         reason: 'would-file' as const,
         evidenceFingerprint,
         previousIssueId: latest?.issueId ?? null,
-        canonicalRatings: ratings,
+        ...scorecardRatingResponse(rubric.rubricId, ratings),
       };
     }
 
@@ -4591,7 +4603,7 @@ export async function emitScorecard(
           }
         : {}),
       ...(effectiveSupersedes ? { supersedes: effectiveSupersedes } : {}),
-      canonicalRatings: ratings,
+      ...scorecardRatingResponse(rubric.rubricId, ratings),
       ...(releaseGateBinding ? { releaseGateBinding } : {}),
       ...(acceptanceRecord ? { acceptance: acceptanceRecord } : {}),
       // P-008: surfaced loudly so the emitter knows this card is a working note — a

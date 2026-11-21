@@ -26,6 +26,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { getRubric } from '../../rubrics';
+import { criterionRepairRead } from '../../agent-tools/_review-read-detail';
 import { parseRequirementBars } from '../../acceptance-bar-seed';
 import { readLiveAcceptanceCriteria } from '../../acceptance-live-requirements';
 import {
@@ -97,6 +98,7 @@ export interface RubricCriterionRegressedPayload {
   after: 'fail';
   /** The results-ledger row that decided the failing verdict. */
   testRunId: number;
+  repairGuidance: ReturnType<typeof criterionRepairRead>;
 }
 
 type RescoreCriterion = LedgerFillCriterion & CheckedCriterion;
@@ -288,7 +290,9 @@ export async function rescoreRubric(
     const was = before.get(criterion.key);
     const now = criterionLedgerVerdict(criterion, latestAfter);
     if (was?.verdict === 'pass' && now?.verdict === 'fail') {
-      crossings.push({ rubricRef, criterionKey: criterion.key, before: 'pass', after: 'fail', testRunId: now.testRunId });
+      crossings.push({ rubricRef, criterionKey: criterion.key, before: 'pass', after: 'fail', testRunId: now.testRunId,
+        repairGuidance: criterionRepairRead(rubricRef, criterion.key, { failureTestRunId: now.testRunId }),
+      });
     }
   }
   const emit = deps.emit ?? emitAwaitedEvent;

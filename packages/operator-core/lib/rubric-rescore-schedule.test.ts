@@ -213,6 +213,7 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     expect(deps.runInstruments).toHaveBeenCalledWith({ rubricRef: RUBRIC, criteria: [criterion], workspaceId: 'ws-test', harnessSlug: 'papercusp' });
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ payload: {
       rubricRef: RUBRIC, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: 2,
+      repairGuidance: { tool: 'rubrics:get', args: { rubricRef: RUBRIC, criterionKey: 'r-31', detail: 'full', failureTestRunId: 2 } },
     } }));
   });
   it.each([
@@ -255,13 +256,13 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
       [row('p95-latency', 0, 200, 'fail'), row('error-rate', 7, 201)],
     );
     const out = await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'ws-test', harnessSlug: 'papercusp' }, deps);
-    expect(out.crossings).toEqual([
-      { rubricRef: RUBRIC, criterionKey: 'p95-latency', before: 'pass', after: 'fail', testRunId: 200 },
-    ]);
+    const crossing = { rubricRef: RUBRIC, criterionKey: 'p95-latency', before: 'pass', after: 'fail', testRunId: 200,
+      repairGuidance: { tool: 'rubrics:get', args: { rubricRef: RUBRIC, criterionKey: 'p95-latency', detail: 'full', failureTestRunId: 200 } } };
+    expect(out.crossings).toEqual([crossing]);
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({
       key: WATCH_PATTERN,
-      payload: { rubricRef: RUBRIC, criterionKey: 'p95-latency', before: 'pass', after: 'fail', testRunId: 200 },
+      payload: crossing,
       source: `system:${RUBRIC_RESCORE_ACTION}`,
       workspaceId: 'ws-test',
     }));
