@@ -820,7 +820,7 @@
         },
         {
           "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
-          "sha256": "594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166"
+          "sha256": "18fd2af76df80050f383bb5463dc8460ff78afb3e2e72175bafbf1c010981dab"
         },
         {
           "path": "libs/papercusp/libs/db/src/build-stamp.ts",
@@ -877,8 +877,8 @@
           ]
         },
         {
-          "edge": "source:libs/papercusp/libs/db/src/acquire-registry.ts#594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166",
-          "reason": "Resolved by inspection of the exact diagnostic construction/result/context/build closure above, with every inspected dependency pinned in sourceProofs.",
+          "edge": "source:libs/papercusp/libs/db/src/acquire-registry.ts#18fd2af76df80050f383bb5463dc8460ff78afb3e2e72175bafbf1c010981dab",
+          "reason": "Re-reviewed the exact acquire-registry change in 92fc950da16fe694a71a5880f6e1f8bd3b0507e2. It adds plan-binding-census and plan-readiness-fence to the fixed query-leg allowlist. The existing normalizer copies a matching label into the frozen diagnostic context. The change adds no query, timer, or lifecycle write to this callback closure.",
           "evidenceRefs": [
             "source:libs/papercusp/libs/db/src/connection.ts",
             "source:libs/papercusp/libs/db/src/acquire-registry.ts",
@@ -904,7 +904,7 @@
         },
         {
           "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
-          "sha256": "594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166"
+          "sha256": "18fd2af76df80050f383bb5463dc8460ff78afb3e2e72175bafbf1c010981dab"
         },
         {
           "path": "libs/papercusp/libs/db/src/build-stamp.ts",
@@ -961,8 +961,8 @@
           ]
         },
         {
-          "edge": "source:libs/papercusp/libs/db/src/acquire-registry.ts#594c981112be0f66fadd812cbb9afe50e459b3829872786e6297756220920166",
-          "reason": "Resolved by inspection of the exact diagnostic construction/result/context/build closure above, with every inspected dependency pinned in sourceProofs.",
+          "edge": "source:libs/papercusp/libs/db/src/acquire-registry.ts#18fd2af76df80050f383bb5463dc8460ff78afb3e2e72175bafbf1c010981dab",
+          "reason": "Re-reviewed the exact acquire-registry change in 92fc950da16fe694a71a5880f6e1f8bd3b0507e2. It adds plan-binding-census and plan-readiness-fence to the fixed query-leg allowlist. The existing normalizer copies a matching label into the frozen diagnostic context. The change adds no query, timer, or lifecycle write to this callback closure.",
           "evidenceRefs": [
             "source:libs/papercusp/libs/db/src/connection.ts",
             "source:libs/papercusp/libs/db/src/acquire-registry.ts",
