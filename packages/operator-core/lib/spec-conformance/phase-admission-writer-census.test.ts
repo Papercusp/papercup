@@ -1910,6 +1910,57 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('requires exact raster bytes, paths and same-snapshot producer or bundle role evidence', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-reviewed-raster-'));
+    const e2eRoot = 'apps/operator/e2e/';
+    const desktopRoot = 'libs/papercusp/apps/desktop/src-tauri/';
+    const producer = e2eRoot + 'adv-contributors-panel.spec.ts';
+    const config = desktopRoot + 'tauri.conf.json';
+    const screenshot = e2eRoot + '__artifacts__/adv-contributors-panel.png';
+    const icons = ['32x32.png', '128x128.png', '128x128@2x.png'].map(name => desktopRoot + 'icons/' + name);
+    const moved = desktopRoot + 'icons/other/32x32.png';
+    const fixture = (path: string) => readFileSync(new URL('../../../../' + path, import.meta.url));
+    const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    const put = (path: string, bytes: Buffer) => {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), bytes);
+    };
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      for (const path of [producer, config, screenshot, ...icons]) put(path, fixture(path));
+      const inventory = inventoryPhaseWriterTree(root);
+      const proof = (path: string, kind: string, role: string) => ({
+        path, reason: `reviewed-raster:${kind}:${role}#${hash(fixture(role))}:asset-sha256:${hash(fixture(path))}`,
+      });
+      expect(inventory.excluded).toEqual([
+        proof(screenshot, 'playwright-screenshot', producer),
+        ...[...icons].sort().map(path => proof(path, 'tauri-bundle-icon', config)),
+      ]);
+      expect(inventory.gaps).toEqual([]);
+      const initial = verifyPhaseWriterTreeSnapshot(inventory);
+      expect(initial.ready).toBe(true);
+      expect(initial.coverage.notApplicable).toEqual([screenshot, ...icons].sort().map(path => 'excluded:' + path));
+
+      put(moved, fixture(icons[0]!));
+      put(icons[0]!, Buffer.concat([fixture(icons[0]!), Buffer.from([0xff])]));
+      put(icons[1]!, Buffer.from('replacement text'));
+      put(config, Buffer.concat([fixture(config), Buffer.from('\n')]));
+      rmSync(join(root, producer));
+      const comparison = verifyPhaseWriterTreeSnapshot(inventory);
+      expect(comparison.ready).toBe(false);
+      expect(comparison.coverage.notApplicable).toEqual([]);
+      expect(comparison.coverage.residue).toEqual([
+        ...[screenshot, ...icons].map(path => 'excluded:' + path),
+        ...[screenshot, icons[0]!, icons[2]!, moved].map(path => 'gap:source:' + path),
+        'gap:reviewed-raster:' + icons[1],
+        ...[producer, config, icons[1]!].map(path => 'source:' + path),
+      ].sort());
+      expect(inventoryPhaseWriterTree(root).gaps).toContainEqual({
+        id: 'source:' + icons[2], reason: 'reviewed-raster-role-unverified', sha256: hash(fixture(icons[2]!)),
+      });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('accounts for Lost Pixel PNGs under the exact destinations declared by the current producer', async () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-lost-pixel-'));
     const project = 'apps/operator';

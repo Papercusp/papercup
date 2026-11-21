@@ -43,6 +43,34 @@ const lostPixelOutputFields = {
   'lostpixel-baseline': 'imagePathBaseline',
   'lostpixel-current': 'imagePathCurrent',
 } as const;
+const desktopIconRole = {
+  path: 'libs/papercusp/apps/desktop/src-tauri/tauri.conf.json',
+  sha256: '97fd4b48ee16d5c9ad758044a29b4228003e74ab611e168d2189343b98bedb72',
+  kind: 'tauri-bundle-icon',
+};
+// Each reviewed PNG ends at IEND and contains only IHDR, IDAT and IEND.
+// The role file pins the Playwright output path or the exact bundle.icon entry.
+const reviewedRasterArtifacts = new Map<string, {
+  sha256: string; role: { path: string; sha256: string; kind: string };
+}>([
+  ['apps/operator/e2e/__artifacts__/adv-contributors-panel.png', {
+    sha256: 'e4af00b5196779d437b244733aded78dc587c04e40c1c4a643bddf5c0dc071fa',
+    role: {
+      path: 'apps/operator/e2e/adv-contributors-panel.spec.ts',
+      sha256: '3e28f0c725ef65c68a53b2e6a1632860bc26767bd4539ffa1f9213cf01b2b615',
+      kind: 'playwright-screenshot',
+    },
+  }],
+  ['libs/papercusp/apps/desktop/src-tauri/icons/32x32.png', {
+    sha256: '86128809f1f572eb24fd23dd248d5a8ab340161390e6cd07686672dcb786891e', role: desktopIconRole,
+  }],
+  ['libs/papercusp/apps/desktop/src-tauri/icons/128x128.png', {
+    sha256: '187641126dc3c01953c8927765886cbf8f2d435114f455ed1280007286d0a4fc', role: desktopIconRole,
+  }],
+  ['libs/papercusp/apps/desktop/src-tauri/icons/128x128@2x.png', {
+    sha256: 'd3a7e6c264795a3e7328d70472efd9c0418ba7354941a47be42b5b35f1668019', role: desktopIconRole,
+  }],
+]);
 export const PHASE_WRITER_RELATIONS = new Set([
   'plan_item_claims', 'work_items', 'engineer_issues', 'harness_features',
   'harness_features_consolidated', 'harness_plans', 'feature_claims',
@@ -862,6 +890,7 @@ function readPhaseWriterTree(root: string) {
   const gaps: PhaseWriterInventory['gaps'] = [];
   const excluded: Array<{ path: string; reason: string }> = [];
   const lostPixelPngs: NonNullable<ReturnType<typeof lostPixelOutputCandidate>>[] = [];
+  const reviewedRasterPaths: string[] = [];
   const files: string[] = [];
   for (const path of enumeration.files) {
     if (typeof path !== 'string' || !canonicalPath(path)) {
@@ -908,15 +937,37 @@ function readPhaseWriterTree(root: string) {
         else gaps.push(gitObject.gap);
         continue;
       }
+      const reviewedRaster = reviewedRasterArtifacts.get(path);
+      const rasterDigest = reviewedRaster ? digest(bytes) : undefined;
+      if (reviewedRaster && rasterDigest === reviewedRaster.sha256) {
+        reviewedRasterPaths.push(path);
+        continue;
+      }
       const content = bytes.toString('utf8');
       if (!Buffer.from(content).equals(bytes)) {
         const output = lostPixelOutputCandidate(path, bytes);
         if (output) lostPixelPngs.push(output);
-        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256: digest(bytes) });
+        else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256: rasterDigest ?? digest(bytes) });
         continue;
+      }
+      if (rasterDigest) {
+        gaps.push({ id: `reviewed-raster:${path}`, reason: 'reviewed-raster-bytes-changed', sha256: rasterDigest });
       }
       input.push({ path, content });
     } catch { gaps.push({ id: `source:${path}`, reason: 'source-read-failed' }); }
+  }
+  if (reviewedRasterPaths.length > 0) {
+    const rolePaths = new Set(reviewedRasterPaths.map(path => reviewedRasterArtifacts.get(path)!.role.path));
+    const roleHashes = new Map(input.filter(source => rolePaths.has(source.path))
+      .map(source => [source.path, digest(source.content)]));
+    for (const path of reviewedRasterPaths) {
+      const { sha256, role } = reviewedRasterArtifacts.get(path)!;
+      if (roleHashes.get(role.path) === role.sha256) {
+        excluded.push({ path, reason: `reviewed-raster:${role.kind}:${role.path}#${role.sha256}:asset-sha256:${sha256}` });
+      } else {
+        gaps.push({ id: `source:${path}`, reason: 'reviewed-raster-role-unverified', sha256 });
+      }
+    }
   }
   // Use the producer source in this same snapshot. A directory name alone
   // cannot establish that its contents came from Lost Pixel.
