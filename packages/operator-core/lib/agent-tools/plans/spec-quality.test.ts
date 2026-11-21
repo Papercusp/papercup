@@ -251,6 +251,39 @@ describe('evaluatePlanSpecQuality', () => {
         .toMatchObject({ disposition: 'evaluated', rating: 'pass', reason: null });
     });
 
+    it('checks falsifiability even when every active clause is a pinned projection', () => {
+      const pinned = projections();
+      const result = evaluate(pinned);
+
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.details.falsifiabilityClauseDiagnostics).toEqual(pinned.map((entry) => ({
+        specId: entry.specId, planItemId: entry.planItemId, behavior: entry.behavior,
+        disposition: 'evaluated', rating: 'pass', reason: null,
+      })));
+    });
+
+    it('reports a vague accepted projection among passing clauses and excludes a draft', () => {
+      const pinned = projections();
+      const vague = clause({ ...pinned[2], specId: 'Z-VAGUE', behavior: 'It works correctly.', lifecycleStatus: 'accepted' });
+      const draft = clause({ ...vague, specId: 'DRAFT', lifecycleStatus: 'draft' });
+      const passing = [...contracts(), ...pinned];
+      const population = [...passing, draft, vague];
+
+      for (const ordered of [population, [...population].reverse()]) {
+        const result = evaluate(ordered);
+        expect(result.ratings.falsifiability.rating).toBe('fail');
+        expect(result.ratings.falsifiability.evidence).toContain(vague.specId);
+        const diagnostics = result.details.falsifiabilityClauseDiagnostics;
+        expect(diagnostics).toHaveLength(population.length);
+        expect(diagnostics.filter((entry) => entry.rating === 'pass').map((entry) => entry.specId).sort())
+          .toEqual(passing.map((entry) => entry.specId).sort());
+        expect(diagnostics.find((entry) => entry.specId === vague.specId))
+          .toMatchObject({ disposition: 'evaluated', rating: 'fail', reason: expect.any(String) });
+        expect(diagnostics.find((entry) => entry.specId === draft.specId))
+          .toMatchObject({ disposition: 'excluded', rating: 'not-applicable' });
+      }
+    });
+
     it('blocks runtime BARs on an explicitly exempt prerequisite when a dependent implementation owns the same BAR', () => {
       const inventoryExemption = clause({
         specId: 'INVENTORY-P-001',

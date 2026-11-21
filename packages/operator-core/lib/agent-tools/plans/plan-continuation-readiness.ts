@@ -41,6 +41,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { cachedRead, stableKey } from '../../cache/cached-read';
+import { withNamedQueryDiagnosticLeg } from '../db-diagnostic-correlation-wiring';
 import type { ExecutionPlanBinding, PlanExecutionTimingObserver } from './plan-execution-guard';
 
 export const READINESS_SOFT_TTL_MS = 30_000;
@@ -114,8 +115,9 @@ export interface ContinuationReadinessDeps {
 /** One indexed row read: the exact revision the cached verdict may be reused for. */
 export async function readReadinessFence(binding: ExecutionPlanBinding, workspaceId: string): Promise<ReadinessFence | null> {
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ harness_slug: string; content_hash: string;
-    execution_start_revision_seq: number | string | null; inputs: string | null }>>`
+  const rows = await withNamedQueryDiagnosticLeg('plan-readiness-fence', () =>
+    sql<Array<{ harness_slug: string; content_hash: string;
+      execution_start_revision_seq: number | string | null; inputs: string | null }>>`
     SELECT p.harness_slug, p.content_hash, p.execution_start_revision_seq,
            concat_ws(':',
              (SELECT concat_ws('/', count(*), max(a.audit_seq)) FROM harness_shared.plan_audits a
@@ -124,7 +126,7 @@ export async function readReadinessFence(binding: ExecutionPlanBinding, workspac
                WHERE c.workspace_id=p.workspace_id AND c.harness_slug=p.harness_slug AND c.plan_slug=p.plan_slug)) AS inputs
       FROM harness_shared.harness_plans p
      WHERE p.workspace_id=${workspaceId} AND p.plan_slug=${binding.planSlug}
-       AND (${binding.harnessSlug}::text IS NULL OR p.harness_slug=${binding.harnessSlug})`;
+       AND (${binding.harnessSlug}::text IS NULL OR p.harness_slug=${binding.harnessSlug})`);
   if (rows.length !== 1) return null;
   const row = rows[0]!;
   if (row.execution_start_revision_seq == null || !row.content_hash) return null;

@@ -144,6 +144,7 @@ export interface PlanSpecQualityResult {
       }>;
     };
     draftSpecIds: string[];
+    falsifiabilityClauseDiagnostics: SpecQualityClauseDiagnostic[];
     atomicityClauseDiagnostics: SpecQualityAtomicityClauseDiagnostic[];
     atomicityDetectorControls: Array<{ behavior: string; expected: 'atomic' | 'compound'; actual: 'atomic' | 'compound'; passed: boolean }>;
     implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[];
@@ -207,6 +208,23 @@ export type SpecQualityClauseDiagnostic =
 
 const CONTRACT_STATUSES = new Set(['active', 'accepted']);
 const CURRENT_SET_STATUSES = new Set(['draft', 'active', 'accepted', 'exempt']);
+
+function diagnoseBehavioralClauses(
+  clauses: readonly SpecClauseRevision[],
+  failureReason: (clause: SpecClauseRevision) => string | null,
+): SpecQualityClauseDiagnostic[] {
+  return clauses.map((clause) => {
+    const identity = { specId: clause.specId, planItemId: clause.planItemId, behavior: clause.behavior };
+    if (!CONTRACT_STATUSES.has(clause.lifecycleStatus)) {
+      return { ...identity, disposition: 'excluded', rating: 'not-applicable',
+        reason: `${clause.lifecycleStatus} clause is outside the active/accepted behavioral population.` };
+    }
+    const reason = failureReason(clause);
+    return reason
+      ? { ...identity, disposition: 'evaluated', rating: 'fail', reason }
+      : { ...identity, disposition: 'evaluated', rating: 'pass', reason: null };
+  });
+}
 
 function pass(evidence: string): SpecQualityRatingEntry {
   return { rating: 'pass', evidence };
@@ -913,9 +931,9 @@ export function evaluatePlanSpecQuality(input: {
   }
   // A sourceBar pin makes this clause a projection of the canonical acceptance
   // BAR, repeated once for each mapped plan item. It is not an independently
-  // authored item contract, so item coverage, atomicity, and falsifiability use
-  // unpinned item clauses. The first-party implementation-independence rubric
-  // applies to active behavior text, so that criterion also checks BAR copies.
+  // authored item contract, so item coverage and atomicity use unpinned item
+  // clauses. Falsifiability and implementation independence apply to active
+  // behavior text, including every projected copy.
   const isProjectedBar = (clause: SpecClauseRevision) => clause.sourceBar != null;
   const isUnpinnedAutoBar = (clause: SpecClauseRevision) =>
     !clause.sourceBar && clause.specId.startsWith('AUTO-BAR-');
@@ -1117,32 +1135,26 @@ export function evaluatePlanSpecQuality(input: {
           )
         : pass(`${itemBehavioral.length} independent item behavior clause(s) passed the supported structural atomicity checks.${projectionEvidence}${atomicityCoverage}${atomicityControlEvidence}`);
 
-  const falsifiabilityFailures = itemBehavioral
-    .map((clause) => ({ clause, reason: specBehaviorNonFalsifiableReason(clause.behavior) }))
-    .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
+  const falsifiabilityClauseDiagnostics = diagnoseBehavioralClauses(currentSet,
+    (clause) => specBehaviorNonFalsifiableReason(clause.behavior));
+  const falsifiabilityFailures = falsifiabilityClauseDiagnostics.filter((entry) => entry.rating === 'fail');
+  const projectedCount = behavioral.length - itemBehavioral.length;
+  const falsifiabilityCoverage = projectedCount
+    ? ` Evaluated ${behavioral.length} active/accepted clause(s), including ${projectedCount} sourceBar-pinned projection(s). See details.falsifiabilityClauseDiagnostics.`
+    : '';
   ratings.falsifiability =
     behavioral.length === 0
       ? notApplicable('0 behavioral clause(s) are available for falsifiability evaluation.')
-      : itemBehavioral.length === 0
-        ? notApplicable('Only AUTO-BAR projections are present; they are not independent item contracts.')
       : falsifiabilityFailures.length
         ? fail(
-            falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            falsifiabilityFailures.map(({ specId, reason }) => `${specId}:${reason}`).join('; ') + falsifiabilityCoverage,
             'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
           )
-        : pass(`${itemBehavioral.length} independent item behavior clause(s) state falsifiable outcomes.${projectionEvidence}`);
+        : pass(projectedCount
+            ? `All active behavioral clauses state falsifiable outcomes.${falsifiabilityCoverage}`
+            : `${behavioral.length} independent item behavior clause(s) state falsifiable outcomes.`);
 
-  const implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[] = currentSet.map((clause) => {
-    const identity = { specId: clause.specId, planItemId: clause.planItemId, behavior: clause.behavior };
-    if (!CONTRACT_STATUSES.has(clause.lifecycleStatus)) {
-      return { ...identity, disposition: 'excluded', rating: 'not-applicable',
-        reason: `${clause.lifecycleStatus} clause is outside the active/accepted behavioral population.` };
-    }
-    const reason = clauseImplementationCouplingReason(clause);
-    return reason
-      ? { ...identity, disposition: 'evaluated', rating: 'fail', reason }
-      : { ...identity, disposition: 'evaluated', rating: 'pass', reason: null };
-  });
+  const implementationIndependenceClauseDiagnostics = diagnoseBehavioralClauses(currentSet, clauseImplementationCouplingReason);
   const couplingFailures = implementationIndependenceClauseDiagnostics.filter(
     (entry) => entry.disposition === 'evaluated' && entry.rating === 'fail',
   );
@@ -1301,6 +1313,7 @@ export function evaluatePlanSpecQuality(input: {
       sourceBarScopeMismatches: barScopeMismatches,
       exemptionCensus,
       draftSpecIds,
+      falsifiabilityClauseDiagnostics,
       atomicityClauseDiagnostics,
       atomicityDetectorControls,
       implementationIndependenceClauseDiagnostics,

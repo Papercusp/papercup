@@ -315,7 +315,15 @@ describe('loadBarCritiqueEvidence (P-007 reader)', () => {
 
   it('reuses only the verified origin snapshot and counts copied receipts as one independent party', async () => {
     const deps = archivedFixture();
-    const evidence = await loadBarCritiqueEvidence({ workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] }, deps);
+    const reads: string[] = [];
+    const evidence = await loadBarCritiqueEvidence({ workspaceId: 'ws', harnessSlug: 'h', planSlug: PLAN, authorIds: [] }, {
+      ...deps,
+      measureRead: (stage, read) => {
+        reads.push(stage);
+        return read();
+      },
+    });
+    expect(reads).toEqual(['consults', 'archive_origin', 'archive_origin', 'lineage', 'clause_history', 'close_snapshot']);
     expect(evidence.critiques.map(c => [c.consultId, c.criticId, c.record.closedAt])).toEqual([
       ['organic', 'real-critic', '2026-10-03T00:00:00.000Z'],
     ]);

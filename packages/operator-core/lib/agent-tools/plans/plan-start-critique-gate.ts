@@ -325,11 +325,15 @@ export function evaluateBarCritiqueGate(input: BarCritiqueGateInput): BarCritiqu
 }
 
 /** Injectable readers so the loader is testable without a clause store. */
+type BarCritiqueRead = 'current_clauses' | 'authors' | 'consults' | 'archive_origin'
+  | 'lineage' | 'clause_history' | 'close_snapshot' | 'owner_review';
+
 export interface LoadBarCritiqueEvidenceDeps {
   sql: Sql;
   listClauses?: typeof listSpecClauses;
   partyKeys?: (ownerIds: readonly string[]) => Promise<Map<string, string>>;
   readArchivedCritique?: typeof readVettingConsultCritique;
+  measureRead?: <T>(stage: BarCritiqueRead, read: () => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -344,7 +348,8 @@ export async function loadBarCritiqueEvidence(
   input: { workspaceId: string; harnessSlug: string; planSlug: string; authorIds: readonly string[] },
   deps: LoadBarCritiqueEvidenceDeps,
 ): Promise<{ critiques: BarCritiqueEvidence[]; authorPartyKeys: Set<string> }> {
-  const rows = (await deps.sql`
+  const measureRead = deps.measureRead ?? ((_stage, read) => read());
+  const rows = (await measureRead('consults', () => deps.sql`
     SELECT cs.conversation_id, cs.closed_at, cs.responder_id, cs.outcome,
            ans.author_id, ans.created_at AS answered_at
       FROM harness_shared.consult_state cs
@@ -359,7 +364,7 @@ export async function loadBarCritiqueEvidence(
        AND cs.state = 'closed_answered'
        AND cs.closed_at IS NOT NULL
      ORDER BY cs.closed_at ASC, cs.conversation_id ASC
-  `) as unknown as Array<{
+  `)) as unknown as Array<{
     conversation_id: string;
     closed_at: Date | string;
     responder_id: string | null;
@@ -381,7 +386,8 @@ export async function loadBarCritiqueEvidence(
     const resolved = await Promise.all(rows.slice(offset, offset + originBatchSize).map(async row => {
       if (!isArchived(row)) return row;
       const read = deps.readArchivedCritique ?? (await import('../../consult/get-feedback-core')).readVettingConsultCritique;
-      const verified = await read(deps.sql, input.workspaceId, row.conversation_id, '', [input.planSlug]);
+      const verified = await measureRead('archive_origin',
+        () => read(deps.sql, input.workspaceId, row.conversation_id, '', [input.planSlug]));
       const origin = verified.originConsultId ? byId.get(verified.originConsultId) : undefined;
       // The origin must itself still be a closed bar critique of this plan, with
       // an attributable answer. Missing scope, disposition or source is ineligible.
@@ -400,12 +406,13 @@ export async function loadBarCritiqueEvidence(
   const authorIds = input.authorIds.map((id) => id.trim()).filter(Boolean);
   const criticOf = (row: (typeof rows)[number]) => row.author_id?.trim() || row.responder_id?.trim() || null;
   // Authors first, so a critic in the author's lineage resolves to the AUTHOR's key.
-  const keys = await partyKeys([...authorIds, ...eligibleRows.map(criticOf).filter((id): id is string => !!id)]);
+  const keys = await measureRead('lineage',
+    () => partyKeys([...authorIds, ...eligibleRows.map(criticOf).filter((id): id is string => !!id)]));
   const authorPartyKeys = new Set(authorIds.map((id) => keys.get(id) ?? id));
   if (eligibleRows.length === 0) return { critiques: [], authorPartyKeys };
   const listClauses = deps.listClauses ?? listSpecClauses;
   const scope = { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug };
-  const history = await listClauses({ ...scope, includeHistory: true });
+  const history = await measureRead('clause_history', () => listClauses({ ...scope, includeHistory: true }));
   const iso = (v: Date | string) => new Date(v).toISOString();
   const critiques: BarCritiqueEvidence[] = [];
   // These immutable close-time snapshots are independent. Bound concurrency so
@@ -417,7 +424,7 @@ export async function loadBarCritiqueEvidence(
     const batch = await Promise.all(attributableRows.slice(offset, offset + snapshotBatchSize).map(async (row) => {
       const criticId = criticOf(row)!;
       const closedAt = iso(row.closed_at);
-      const clausesAsOfClose = await listClauses({ ...scope, asOf: closedAt });
+      const clausesAsOfClose = await measureRead('close_snapshot', () => listClauses({ ...scope, asOf: closedAt }));
       return {
         consultId: row.conversation_id,
         criticId,
@@ -500,12 +507,13 @@ export async function evaluatePlanStartBarCritique(
   },
   deps: Partial<LoadBarCritiqueEvidenceDeps> = {},
 ): Promise<PlanStartBarCritiqueOutcome | null> {
+  const measureRead = deps.measureRead ?? ((_stage, read) => read());
   const listClauses = deps.listClauses ?? listSpecClauses;
   const scope = { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug };
-  const currentClauses = await listClauses(scope);
+  const currentClauses = await measureRead('current_clauses', () => listClauses(scope));
   if (currentClauses.length === 0) return null;
   const sql = deps.sql ?? getOrgPg().sql;
-  const { plan, authorIds } = await loadBarCritiqueAuthors(input, sql);
+  const { plan, authorIds } = await measureRead('authors', () => loadBarCritiqueAuthors(input, sql));
   const live = currentClauses.filter(isLiveBarCritiqueClause);
   const mandatoryOutcomeBarCount = new Set(
     live.map((c) => c.sourceBar?.barKey).filter((k): k is string => Boolean(k)),
@@ -513,7 +521,7 @@ export async function evaluatePlanStartBarCritique(
   const threshold = barCritiqueThreshold({ nonDroppedItemCount: input.nonDroppedItemCount, mandatoryOutcomeBarCount });
   const evidence = await loadBarCritiqueEvidence(
     { ...scope, authorIds },
-    { sql, listClauses, ...(deps.partyKeys ? { partyKeys: deps.partyKeys } : {}) },
+    { sql, listClauses, measureRead, ...(deps.partyKeys ? { partyKeys: deps.partyKeys } : {}) },
   );
   const verdict = evaluateBarCritiqueGate({
     planSlug: input.planSlug,
@@ -523,7 +531,7 @@ export async function evaluatePlanStartBarCritique(
     threshold,
   });
   const { loadOwnerSelectedReview } = await import('./plan-start-owner-review');
-  const ownerSelectedReview = await loadOwnerSelectedReview(scope, authorIds, sql);
+  const ownerSelectedReview = await measureRead('owner_review', () => loadOwnerSelectedReview(scope, authorIds, sql));
   const requiresOwnerSelectedReview = !verdict.satisfied;
   if (ownerSelectedReview?.ok) {
     // Preserve the ordinary threshold, critic identities and shortfalls for audit.

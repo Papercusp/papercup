@@ -124,8 +124,9 @@ function toolGuardPgTimings(requestId: string) {
         return {
           pool, capacity: snapshot.capacity, poolDroppedResults: snapshot.dropped,
           omittedMatched: Math.max(0, matched.length - 8),
-          queries: matched.slice(-8).map(({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status }) =>
-            ({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status })),
+          queries: matched.slice(-8).map(({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs,
+            status, correlation }) => ({ connectionId, queryId, backendPid, queryFamily, elapsedMs, preBuildMs, status,
+            ...(correlation?.queryLeg ? { queryLeg: correlation.queryLeg } : {}) })),
         };
       }),
     };
