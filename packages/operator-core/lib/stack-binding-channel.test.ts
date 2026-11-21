@@ -60,6 +60,11 @@ describe('stackRefsForRoute (P-012)', () => {
     const transition = await renderStackTransitionContext({ stackBefore: [], state: state({ stack: refs }) }, { harnessDir });
     const expected = role === 'leader' ? 'comment on the affected' : 'coord:orient { intent }';
     expect(transition).toContain(expected);
+    if (role === 'leader') {
+      for (const prompt of [rendered.text, transition]) {
+        expect(prompt).toMatch(/`work_items:release`, releasing dependents before their prerequisites\.\s+Launch members/);
+      }
+    }
     expect(transition).not.toMatch(/read the plan.s `## Now`|plans:add-decision/i);
   });
   it('projects the fleet posture from the route and nothing else; the ids are the orchestrator posture layers', () => {
