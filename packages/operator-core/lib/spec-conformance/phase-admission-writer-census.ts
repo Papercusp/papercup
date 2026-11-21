@@ -704,10 +704,11 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         // every positional/spread argument; target identity alone cannot prove
         // which effects a callback or an argument will have. Existing explicit
         // SQL/indirect/append sites already retain their own frontiers.
-        const opaqueCall = includeOpaque && (!target?.declaration || !callableDeclarations.has(target.declaration.id))
-          && !call.hasDirectSite;
+        const opaqueCall = !call.importedCall && !call.hasDirectSite
+          && (!target?.declaration || !callableDeclarations.has(target.declaration.id));
         if ((!writers.has(name) && !call.argumentNames.some(argument => writers.has(argument))
-          && !(target && writerPaths.has(target.path)) && !call.importedCall && !opaqueCall) || added.has(key)) continue;
+          && !(target && writerPaths.has(target.path)) && !call.importedCall && !(includeOpaque && opaqueCall))
+          || added.has(key)) continue;
         added.add(key);
         const source = byPath.get(call.path)!;
         const helperTarget: PhaseWriterSite['helperTarget'] = target ? {
@@ -1116,6 +1117,7 @@ export async function readPhaseWriterCensus(lines: Iterable<string> | AsyncItera
   onRecord: (record: CensusRecord) => void | Promise<void> = () => {}) {
   const hash = createHash('sha256'), counts = streamCounts();
   let seq = 0, footer: CensusFooter | undefined;
+  let hasResidue = false;
   for await (const raw of lines) {
     if (footer) throw new Error('phase_writer_stream_after_footer');
     let row: CensusRecord | CensusFooter;
@@ -1128,6 +1130,9 @@ export async function readPhaseWriterCensus(lines: Iterable<string> | AsyncItera
         || streamKinds.some(kind => row.counts[kind] !== counts[kind])) {
         throw new Error('phase_writer_stream_integrity');
       }
+      // The digest covers the coverage records. Derive readiness from those
+      // records because the footer itself is outside the digest.
+      if (row.ready !== !hasResidue) throw new Error('phase_writer_stream_readiness_mismatch');
       footer = row;
       continue;
     }
@@ -1137,6 +1142,16 @@ export async function readPhaseWriterCensus(lines: Iterable<string> | AsyncItera
     if (row.kind === 'header'
       && (row.value as { schemaVersion?: string } | null)?.schemaVersion !== 'phase-writer-census-stream-v1') {
       throw new Error('phase_writer_stream_version');
+    }
+    if (row.kind === 'coverage') {
+      const coverage = row.value as { partition?: unknown; residue?: unknown } | null;
+      const partition = coverage?.partition;
+      const isUnexamined = partition === 'notChecked';
+      if ((!isUnexamined && partition !== 'checked' && partition !== 'notApplicable')
+        || coverage?.residue !== isUnexamined) {
+        throw new Error('phase_writer_stream_invalid_coverage');
+      }
+      hasResidue ||= isUnexamined;
     }
     hash.update(raw.endsWith('\n') ? raw : raw + '\n');
     counts[row.kind]++; seq++;

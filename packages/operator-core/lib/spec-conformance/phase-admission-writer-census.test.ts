@@ -2047,6 +2047,25 @@ describe('phase binding writer census', () => {
       .toThrow('unresolved-edge');
   });
 
+  it('keeps opaque argument edges when another source happens to seed the same callee name', () => {
+    const consumer = source('function entry() { return exampleWrite(statement, ...parameters); }',
+      'packages/opaque-caller.ts');
+    const writer = source(write, 'packages/unrelated-writer.ts');
+    const local = inventoryPhaseWriters([consumer]);
+    const site = local.sites.find(site => site.kind === 'helper-edge' && site.path === consumer.path)!;
+    expect(site.helperTarget).toBeUndefined();
+    expect(site.dynamicEdges).toEqual(['exampleWrite', 'statement', '...parameters']);
+    expect(site.unresolved).toEqual(['call-target-declaration-unresolved']);
+
+    for (const sources of [[consumer, writer], [writer, consumer]]) {
+      const expanded = inventoryPhaseWriters(sources);
+      expect(expanded.sites.find(candidate => candidate.id === site.id)).toEqual(site);
+      const coverage = reconcilePhaseWriterCensus(expanded, [review(site)]).coverage;
+      expect(coverage.checked).toEqual([site.id]);
+      expect(coverage.residue).toContain(expanded.sites.find(candidate => candidate.kind === 'sql')!.id);
+    }
+  });
+
   it('retains property getter setter and proxy dispatch without an explicit call', () => {
     const variants = [
       { body: 'return actor.status', expression: 'actor.status', edges: ['actor', 'status'] },
@@ -2627,6 +2646,27 @@ describe('phase binding writer census', () => {
     expect(error?.message).toContain('first-reason-preview; complete report on error.report');
     expect(error?.report).toEqual(reconcilePhaseWriterCensus(inventory, []));
     expect(error?.report.coverage.residue.at(-1)).toBe(inventory.sites.at(-1)!.id);
+  });
+
+  it.each([false, true])('rejects a footer that contradicts digest-covered readiness %s', async ready => {
+    const inventory = inventoryPhaseWriters([source(write)]);
+    const reviews = ready ? inventory.sites.map(site => review(site, 'isolated-fixture')) : [];
+    const lines: string[] = [];
+    const footer = await writePhaseWriterCensus(inventory, reviews, line => { lines.push(line); });
+    expect(footer.ready).toBe(ready);
+    await expect(readPhaseWriterCensus(lines)).resolves.toEqual(footer);
+
+    const body = lines.slice(0, -1);
+    await expect(readPhaseWriterCensus([...body, JSON.stringify({ ...footer, ready: !ready })]))
+      .rejects.toThrow('phase_writer_stream_readiness_mismatch');
+
+    const coverageIndex = body.findIndex(line => JSON.parse(line).kind === 'coverage');
+    expect(coverageIndex).toBeGreaterThan(-1);
+    const coverage = JSON.parse(body[coverageIndex]!);
+    body[coverageIndex] = JSON.stringify({ ...coverage, value: { ...coverage.value, residue: ready } }) + '\n';
+    const sha256 = createHash('sha256').update(body.join('')).digest('hex');
+    await expect(readPhaseWriterCensus([...body, JSON.stringify({ ...footer, sha256 })]))
+      .rejects.toThrow('phase_writer_stream_invalid_coverage');
   });
 
   it('revalidates the entire exported source and enumeration snapshot after consumer recovery', async () => {
