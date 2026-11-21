@@ -75,7 +75,10 @@ import {
   type FrozenRepairConvergenceReading,
 } from './gate-verdict-freshness';
 import { fireAwaitsForKey, registerAwait } from '../events/await/store';
-import { writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
+import { trackGateStall, writeFrozenCandidateRepairQueue } from '../harness/routines/release-actions';
+import { runtimeObservabilityHealth } from '../observability/runtime';
+import { captureRatchetInstrument, compactRatchetShadow, parseRatchetShadowHealth,
+  planComposedProofShadow, type RatchetShadowHealth } from './ratchet-shadow';
 import { evaluatePartialTaskContinuation, registerPartialNativeProducer, partialCurrentExecutionFingerprint,
   partialTaskCommandInputs, preparePartialTaskCommandDefinitions, readPartialTaskCommandCompletion } from '../../../../scripts/lib/partial-task-resume.mjs';
 import { nativeProcessTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
@@ -238,6 +241,43 @@ describe(NATIVE_QUALIFICATION_SUITE_NAME, () => {
       else process.env.PAPERCUSP_CHECKPOINT_LOG_DIR = logsBefore;
       rmSync(logs, { recursive: true, force: true });
     }
+  });
+
+  it('preserves stored shadow credit across a quiet round and clears it when the executing instrument is unmeasured', async () => {
+    const repairHead = 'b'.repeat(40);
+    const countedRuns = Array.from({ length: 17 }, (_, index) => index.toString(16).padStart(40, '0') + ':' + repairHead);
+    const prior = { schemaVersion: 'shadow-cohort-v2' as const, instrumentFingerprint: 'c'.repeat(64),
+      qualifiedRuns: countedRuns.length, countedRuns };
+    await seed({ gate_health: { ratchetShadow: { composedProofCohort: prior } } });
+
+    const readShadow = async () => {
+      const [row] = await sql<{ shadow: unknown }[]>`
+        SELECT metadata #> '{gate_health,ratchetShadow}' AS shadow FROM harness_shared.routines
+        WHERE workspace_id = ${target.workspaceId} AND install_slug = ${target.installSlug}
+          AND target_role = 'system:green-checkpoint'`;
+      return row?.shadow;
+    };
+    const recordRound = (ratchetShadow?: RatchetShadowHealth) => trackGateStall(
+      target, 'up-to-date', undefined, undefined, undefined, undefined, undefined, undefined,
+      { ratchetShadow, alarm: { resolve: async () => false } },
+    );
+    await recordRound();
+    expect(await readShadow()).toEqual({ composedProofCohort: prior });
+
+    // Supply the schema and selection inputs so only the private worker's absent boot artifact is at issue.
+    const context = createProofContextIdentity({ ...Object.fromEntries(PROOF_CONTEXT_COMPONENTS.map(key => [key, null])),
+      schema: 'd'.repeat(64), selectionGraph: 'e'.repeat(64) } as ProofContextIdentity['components']);
+    const instrument = captureRatchetInstrument(runtimeObservabilityHealth().artifact, context);
+    expect(instrument).toMatchObject({ status: 'unknown', missing: ['executing-artifact-unmeasured'] });
+    const candidate = 'a'.repeat(40);
+    const round = await planComposedProofShadow({ candidate, repairHead, instrument, changedFiles: [],
+      round1: null, radius: async () => new Set<string>(), nowMs: 400 });
+    await recordRound({ ...compactRatchetShadow({ composedProof: round.record }), composedProofCohort: prior });
+
+    const stored = await readShadow();
+    const cleared = { schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] };
+    expect(stored).toMatchObject({ composedProof: { candidate, repairHead, instrument }, composedProofCohort: cleared });
+    expect(parseRatchetShadowHealth(stored)?.composedProofCohort).toEqual(cleared);
   });
 
   it('P021: persists the derived original-unit context in the existing PG qualification row and refuses a transplant', async () => {
