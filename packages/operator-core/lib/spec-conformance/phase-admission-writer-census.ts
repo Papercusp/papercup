@@ -98,6 +98,22 @@ const swarmBrandRasterRole = {
   kind: 'documented-brand-asset',
 };
 const swarmDesktopRasterRoot = 'libs/papercusp/apps/desktop/src-tauri/icons/the-hive/';
+const overlayDesignRoot = 'apps/operator/docs/design/plans-os-overlay-2026-10-26/';
+const overlayDesignRole = {
+  path: overlayDesignRoot + 'index.html',
+  sha256: '3708fd4e1b019e2d0ee704fb546719e4dc159f753a4b28e7282b410ea7b2d8db',
+  kind: 'design-review-screenshot',
+};
+const overlayAlternativesRole = {
+  path: overlayDesignRoot + 'alternatives.html',
+  sha256: '5ea0e738bdb86eeee2af7afbeb46cdd135b0fbbc0db4daefa69ed41a5f436f7a',
+  kind: 'design-review-screenshot',
+};
+const swarmDesktopArtworkRole = {
+  path: 'libs/papercusp/apps/desktop/src-tauri/icons/_source.svg',
+  sha256: '9af61c0162a7582da513043143b4a83dcc955eb87ad6a002ce3378629248fb90',
+  kind: 'desktop-brand-raster',
+};
 type ArtifactRoleSource = { path: string; sha256: string };
 // The docs build copies public assets into dist and mirrors them into the
 // operator's static docs directory. These PNGs remain in that mirror.
@@ -247,6 +263,28 @@ const reviewedBinaryArtifacts = new Map<string, {
   ['apps/operator/e2e/__artifacts__/frames-tab-panel.png', {
     sha256: 'e775c74a90c88652f68e77f2e1e7761571d3bb9f0a7afe45cba0efc7e8974aa1',
     role: framesScreenshotRole,
+  }],
+  ['apps/operator/e2e/__artifacts__/adv-work-items-filter.png', {
+    sha256: '33b4fd15097c51f23764629053bdd2a81e0d57453a83e3bb7ecd9a6fdd0558c9',
+    role: {
+      path: 'apps/operator/e2e/adv-work-items-filter.spec.ts',
+      sha256: 'f49af1ccc76fdd688099bbf360d32bad1de497224aac5c8dba82953209133602',
+      kind: 'playwright-screenshot',
+    },
+  }],
+  ...([
+    ['alternative-agenda.png', '1812293357cb7317b405746bc09c4fa0c754d5b9f61c25e10307c836a7978d3c', overlayAlternativesRole],
+    ['alternative-board.png', 'fd09507f61673bc9299549cca139421e7ab46282ccd688ebf69c86a53e0c8f7c', overlayAlternativesRole],
+    ['alternative-launcher.png', '36503a175e0a226f9fb19114154be12e228e9e6bb1dba484866c82871d52b76a', overlayAlternativesRole],
+    ['conversation.png', '7a4377e1b1cd9d22a51ed33f641d5330fc1ac4f4cb85b533bb7a012181db143b', overlayDesignRole],
+    ['sidebar.png', '9da6e5768a07b8788a26b8df2b3f1d3efffc9a42ce3cb8be1a4c815f03cdd447', overlayDesignRole],
+    ['workspace.png', '7ae343593e75ab9f861cdb01a05156bb411012eed7d8530ddb92c032ac44d7f7', overlayDesignRole],
+  ] as const).map(([name, sha256, role]) => [overlayDesignRoot + name, { sha256, role }] as const),
+  ['libs/papercusp/apps/desktop/src-tauri/icons/_master.png', {
+    sha256: '43b33ac407e2c2d7d3430fd57924ab47570877da102435a790333887e621ae68', role: swarmDesktopArtworkRole,
+  }],
+  ['libs/papercusp/apps/desktop/src-tauri/icons/icon.png', {
+    sha256: 'c9cb057233e5a1664b4d4a7fc30732d08a5d24e2032800dc688e13a9ddeb2beb', role: swarmDesktopArtworkRole,
   }],
   ['libs/papercusp/apps/desktop/src-tauri/icons/32x32.png', {
     sha256: '86128809f1f572eb24fd23dd248d5a8ab340161390e6cd07686672dcb786891e', role: desktopIconRole,

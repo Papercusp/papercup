@@ -27,6 +27,26 @@ function review(site: PhaseWriterSite, disposition: PhaseWriterReview['dispositi
 }
 const write = 'async function exampleWrite(tx) { await tx`UPDATE harness_shared.work_items SET status=${status} WHERE feature_id=${id}`; }';
 
+let reviewedBaseline: {
+  sources: ReturnType<typeof source>[];
+  inventory: ReturnType<typeof inventoryPhaseWriters>;
+} | undefined;
+
+function inventoryReviewedBaseline(sources: ReturnType<typeof source>[]) {
+  // Reuse analysis only after rereading and comparing the complete source list.
+  // Tests that supply mutated input call the inventory directly.
+  const previous = reviewedBaseline;
+  if (previous && previous.sources.length === sources.length && sources.every((entry, index) => {
+    const baseline = previous.sources[index]!;
+    return entry.path === baseline.path && entry.content === baseline.content;
+  })) {
+    return previous.inventory;
+  }
+  const inventory = inventoryPhaseWriters(sources);
+  reviewedBaseline = { sources, inventory };
+  return inventory;
+}
+
 function testRaster(width: number, height: number, channels: 3 | 4, pixels: Buffer) {
   const chunk = (type: string, data: Buffer) => {
     const bytes = Buffer.alloc(12 + data.length);
@@ -410,7 +430,7 @@ describe('phase binding writer census', () => {
     const sources = reviewed.reviewedSourcePaths.map(path => ({
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
     const accepted = reviewed.reviews.map(row => row.siteId).sort();
     const expectedLiterals = new Map([
@@ -513,7 +533,7 @@ describe('phase binding writer census', () => {
     expect(report.coverage.checked).toEqual(inventory.sites.filter(site => accepted.has(site.id)).map(site => site.id));
     for (const site of later) expect(report.coverage.residue).toContain(site.id);
     for (const statement of ['args.targetPlanItem.slug.trim()', 'args.targetPlanItem.itemId.trim()',
-      'registerPlanItemStatusIdentity(targetPlanItem)', 'args.externalPlanRef']) {
+      'registerPlanItemStatusIdentity(targetPlanItem)', 'args.externalPlanRef', 'args.onCreatedInTransaction']) {
       const site = inventory.sites.find(row => row.statement === statement);
       expect(site, statement).toBeDefined();
       expect(report.coverage.residue).toContain(site!.id);
@@ -827,7 +847,7 @@ describe('phase binding writer census', () => {
     const sources = reviewed.reviewedSourcePaths.map(path => ({
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const installer = inventory.sites.find(site => site.path === connection
       && site.operation === 'buildClient' && site.kind === 'helper-edge'
       && site.statement === 'installNumericArrayTyping(client)')!;
@@ -881,7 +901,7 @@ describe('phase binding writer census', () => {
     }));
     const connection = 'libs/papercusp/libs/db/src/connection.ts';
     const identity = 'libs/papercusp/libs/db/src/store-identity.ts';
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const byId = new Map(reviewed.reviews.map(row => [row.siteId, row]));
     const helpers = inventory.sites.filter(site => [connection, identity].includes(site.path)
       && site.kind === 'helper-edge'
@@ -954,7 +974,7 @@ describe('phase binding writer census', () => {
     const sources = reviewed.reviewedSourcePaths.map(path => ({
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const expected = [
       [connection, 'pgbouncerEnabled', 'getResourceProfile'],
       [connection, 'resolveOrgPoolMax', 'getResourceProfile'],
@@ -1018,7 +1038,7 @@ describe('phase binding writer census', () => {
     const sources = reviewed.reviewedSourcePaths.map(path => ({
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const modules = inventory.sites.filter(site => site.path.endsWith('.sql'));
     expect(modules.map(site => site.path).sort()).toEqual(sources
       .filter(source => source.path.endsWith('.sql')).map(source => source.path).sort());
@@ -1090,7 +1110,7 @@ describe('phase binding writer census', () => {
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
     const claims = 'packages/operator-core/lib/plan-items/claims.ts';
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const helpers = inventory.sites.filter(site => site.path === claims && site.kind === 'helper-edge'
       && ['clampTtl', 'claimFromDb', 'synthMissing'].includes(site.callees[0] ?? ''));
     expect(helpers.length).toBeGreaterThan(0);
@@ -1137,7 +1157,7 @@ describe('phase binding writer census', () => {
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
     const claims = 'packages/operator-core/lib/plan-items/claims.ts';
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const accessors = inventory.sites.filter(site => site.path === claims && site.kind === 'helper-edge'
       && ['getClaimAuthority', 'planItemRef'].includes(site.callees[0] ?? ''));
     expect(accessors.length).toBeGreaterThan(0);
@@ -1180,7 +1200,7 @@ describe('phase binding writer census', () => {
       path, content: readFileSync(new URL(path, root), 'utf8'),
     }));
     const receiver = 'packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts';
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const validators = inventory.sites.filter(site => site.path === receiver && site.kind === 'helper-edge'
       && ['asAcquireOpts', 'asHeartbeatParams', 'asReleaseParams', 'asForceReleaseParams',
         'asForceTakeoverParams'].includes(site.callees[0] ?? ''));
@@ -1229,7 +1249,7 @@ describe('phase binding writer census', () => {
     const publisher = 'packages/operator-core/lib/agent-state-stamp-cluster.ts';
     const host = 'apps/operator/bin/hono-host.ts';
     const transport = 'packages/operator-core/lib/cluster-fork.ts';
-    const inventory = inventoryPhaseWriters(sources);
+    const inventory = inventoryReviewedBaseline(sources);
     const clears = inventory.sites.filter(site => site.path === claims && site.kind === 'helper-edge'
       && site.callees[0] === 'clearGoalClaimedIfMatches');
     expect(clears.map(site => site.operation).sort())
@@ -2041,6 +2061,8 @@ describe('phase binding writer census', () => {
     'apps/operator/public/_mp-dev.png',
     'apps/operator/public/deck-1440.png',
   ];
+  const overlayDesignRoot = 'apps/operator/docs/design/plans-os-overlay-2026-10-26/';
+  const desktopIconRoot = 'libs/papercusp/apps/desktop/src-tauri/icons/';
   it.each([
     {
       assetPath: 'apps/the-swarm-site/public/brand/swarm-hero.png',
@@ -2062,6 +2084,22 @@ describe('phase binding writer census', () => {
       roles: operatorPublicRoles,
     },
     ...operatorPublicRasters.map(assetPath => ({ assetPath, kind: 'static-spa-raster', roles: operatorPublicRoles })),
+    ...['conversation.png', 'sidebar.png', 'workspace.png'].map(name => ({
+      assetPath: overlayDesignRoot + name,
+      kind: 'design-review-screenshot', roles: [overlayDesignRoot + 'index.html'],
+    })),
+    ...['alternative-agenda.png', 'alternative-board.png', 'alternative-launcher.png'].map(name => ({
+      assetPath: overlayDesignRoot + name,
+      kind: 'design-review-screenshot', roles: [overlayDesignRoot + 'alternatives.html'],
+    })),
+    {
+      assetPath: 'apps/operator/e2e/__artifacts__/adv-work-items-filter.png',
+      kind: 'playwright-screenshot', roles: ['apps/operator/e2e/adv-work-items-filter.spec.ts'],
+    },
+    ...['_master.png', 'icon.png'].map(name => ({
+      assetPath: desktopIconRoot + name,
+      kind: 'desktop-brand-raster', roles: [desktopIconRoot + '_source.svg'],
+    })),
     {
       assetPath: 'packages/operator-core/lib/__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br',
       format: 'binary', kind: 'brotli-json-test-fixture',
