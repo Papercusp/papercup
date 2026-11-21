@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveLaneInclude } from "@papercusp/test-config/lane-split";
 import { resolveReuseSkipFiles } from "@papercusp/test-config/test-pass-reuse-skip";
+import { prepareVerifierRuntimeProof } from "./lib/runtime-compatibility.mjs";
 import { reuseSkipCoversRun } from "./lib/empty-suite-guard.mjs";
 import {
   buildGovernedProcessDemand,
@@ -189,10 +190,13 @@ export async function runPureLaneShards({
   stderr = process.stderr,
   wsAbsDir = process.cwd(),
   pureFiles = resolveLaneInclude(wsAbsDir, "pure").include ?? [],
-  reuseSkipFiles = resolveReuseSkipFiles(env, (line) =>
-    stderr.write(`VITEST_PURE_LANE_REUSE ${line}\n`),
-  ),
+  reuseSkipFiles,
 } = {}) {
+  if (reuseSkipFiles === undefined) {
+    if (env.PC_TEST_REUSE_SKIP_LIST && env.PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256 && env.PAPERCUSP_REPO_DIR)
+      await prepareVerifierRuntimeProof({ root: env.PAPERCUSP_REPO_DIR });
+    reuseSkipFiles = resolveReuseSkipFiles(env, line => stderr.write(`VITEST_PURE_LANE_REUSE ${line}\n`));
+  }
   if (pureFiles.length === 0) {
     throw new Error(
       `PC_TEST_LANE=pure found ZERO files under ${wsAbsDir}`,

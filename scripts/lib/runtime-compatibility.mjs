@@ -5,8 +5,10 @@
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { isAbsolute, join, posix, win32 } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -67,12 +69,57 @@ function validInvocationArguments(value) {
     typeof argument === 'string' && argument.length <= 8192 && !argument.includes('\0'));
 }
 
-/**
- * Bind setup-release-checkout.sh's materialized pin (identity/source). The full
- * schema/closure/snapshot manifest lives in the generation store, not node_modules.
- * Mutable/unpublished installs have no pin and must run fresh.
- */
-function proofIdentity(root, environment, readRuntime) {
+/** Bind the original verifier command's receipt and physical copy to this invocation. */
+export function verifierRuntimeHandoffSha256(receiptPath, snapshotSha256, dependenciesSha256, treeRecords, taskSha256) {
+  return digest(JSON.stringify(['verifier-runtime-handoff-v1', receiptPath, snapshotSha256, dependenciesSha256, treeRecords, taskSha256]));
+}
+
+// Each controller or worker qualifies its own original invocation once. Only
+// this module installs the reader. Serialized identities never populate it.
+let preparedVerifier;
+const requireHost = createRequire(import.meta.url);
+
+function verifierInvocation(root, environment) {
+  const receipt = environment?.VERIFY_TAURI_SOURCE_RECEIPT;
+  const ref = environment?.VERIFY_TAURI_SOURCE_REF;
+  const handoff = environment?.PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256;
+  if (!receipt || !isAbsolute(receipt) || !/^[a-f0-9]{40}$/.test(ref ?? '') || !HASH.test(handoff ?? '')) return null;
+  const physicalRoot = realpathSync(root);
+  if (!environment.PAPERCUSP_REPO_DIR || realpathSync(environment.PAPERCUSP_REPO_DIR) !== physicalRoot) return null;
+  return JSON.stringify([physicalRoot, receipt, ref, handoff, environment.PAPERCUSP_DEPENDENCY_GENERATION_ROOT ?? null]);
+}
+
+export async function prepareVerifierRuntimeProof({ root }) {
+  try {
+    const key = verifierInvocation(root, process.env);
+    if (!key) return;
+    if (preparedVerifier?.key === key) {
+      await preparedVerifier.ready;
+      return;
+    }
+    const entry = { key, root: realpathSync(root), read: null, ready: null };
+    preparedVerifier = entry;
+    // Standalone release consumers can load this module without operator-core.
+    const reader = requireHost.resolve('../../packages/operator-core/lib/verifier-runtime-generation.ts');
+    entry.ready = import(pathToFileURL(reader).href)
+      .then(module => module.bindVerifierRuntimeGeneration(realpathSync(root)))
+      .then(read => { entry.read = read; });
+    await entry.ready;
+  } catch { /* An unqualified invocation runs without reusable proof. */ }
+}
+
+function nativeDependencyGeneration(root, environment) {
+  // A verifier copy can contain its donor's release marker. Verify the
+  // original command handoff with this installation's reader and tools.
+  const selectedVerifier = environment?.VERIFY_TAURI_SOURCE_RECEIPT && environment.PAPERCUSP_REPO_DIR
+    && realpathSync(root) === realpathSync(environment.PAPERCUSP_REPO_DIR);
+  if (selectedVerifier || (preparedVerifier && preparedVerifier.root === realpathSync(root))
+      || lstatSync(join(root, '.papercusp-pinned-deps'), { throwIfNoEntry: false })
+      || lstatSync(join(root, '.verifier-source.json'), { throwIfNoEntry: false })) {
+    const key = verifierInvocation(root, environment);
+    return key && preparedVerifier?.key === key ? preparedVerifier.read?.() ?? null : null;
+  }
+  // setup-release-checkout.sh owns the two-field materialized release pin.
   const marker = readFileSync(join(root, 'node_modules/.papercusp-dependency-generation'), 'utf8');
   const records = marker.trim().split(/\r?\n/).map((line) => {
     const index = line.indexOf('=');
@@ -83,15 +130,23 @@ function proofIdentity(root, environment, readRuntime) {
   const fields = Object.fromEntries(records);
   if (records.length !== 2 || !HASH.test(fields.source)
       || fields.identity !== `v1-${fields.source}`) return null;
+  return digest(marker);
+}
+
+function proofIdentity(root, environment, readRuntime) {
+  const generation = nativeDependencyGeneration(root, environment);
+  if (!generation) return null;
   const { invocationArguments, ...runtime } = readRuntime();
   if (!validInvocationArguments(invocationArguments)) return null;
   const identity = { ...runtime,
-    nativeDependencyGeneration: digest(marker),
+    nativeDependencyGeneration: generation,
     lockfileSha256: digest(readFileSync(join(root, 'package-lock.json'))),
     configurationSha256: digest(JSON.stringify(['runtime-invocation-v2',
       ['BUN_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH'].map((key) => [key, environment?.[key] ?? null]),
       invocationArguments])),
   };
+  if (preparedVerifier?.key && preparedVerifier.key === verifierInvocation(root, environment)
+      && preparedVerifier.read?.() !== generation) return null;
   return validRuntimeProofIdentity(identity) ? identity : null;
 }
 

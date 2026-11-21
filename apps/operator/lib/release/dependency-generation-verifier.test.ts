@@ -2,7 +2,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, closeSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync,
   readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildInputs, checkSource, buildWorkspace as buildWorkspaceWithPhaseLogs, captureClosure, copyDependencyTree } from '../../bin/release/dependency-generation-verifier.mjs';
 import { nativeVerifierEnv } from '../../../../scripts/lib/verify-tauri-native-env.mjs';
@@ -1294,6 +1296,19 @@ describe('D012 native generation closure', () => {
   it.each([false, true])('runs the source-preview command from a generation without a physical dependency donor (archive=%s)', async archiveMode => {
     const workspace = 'packages/omp-plugin';
     const f = fixture(workspace);
+    const wrapper = join(repo, 'libs/test-config/src/runtime-proof.ts');
+    const workerResult = join(f.root, 'worker-runtime.json');
+    const nativeCase = 'runtime.identity.test.mjs';
+    if (!archiveMode) write(f.donor, nativeCase, `import { createRequire } from 'node:module';
+      import { writeFileSync } from 'node:fs';
+      const runtime = createRequire(import.meta.url)(${JSON.stringify(wrapper)});
+      it('measures the actual fork', async () => {
+        const root = process.cwd();
+        await runtime.prepareVerifierRuntimeProof(root);
+        const actual = runtime.captureCurrentRuntimeProofIdentity({ root });
+        expect(actual).toBeTruthy();
+        writeFileSync(${JSON.stringify(workerResult)}, JSON.stringify(actual));
+      }, 60000);\n`);
     write(f.donor, '.gitignore', 'node_modules/\ndist/\n/.papercusp/scratch/\n');
     // The fixture CLI has no TypeScript imports. Its private loader package is
     // still resolved through the real --import tsx preparation path.
@@ -1307,7 +1322,8 @@ describe('D012 native generation closure', () => {
     write(f.donor, 'node_modules/tsx/index.mjs', 'export {};\n');
     const runtime = 'papercusp-desktop/src-tauri/resources/workbench-install.js';
     if (archiveMode) write(f.donor, runtime, 'historical generated runtime');
-    execFileSync('git', ['add', '.gitignore', 'package-lock.json', 'scripts/source-preview.mjs'], { cwd: f.donor });
+    execFileSync('git', ['add', '.gitignore', 'package-lock.json', 'scripts/source-preview.mjs',
+      ...(!archiveMode ? [nativeCase] : [])], { cwd: f.donor });
     if (archiveMode) execFileSync('git', ['add', runtime], { cwd: f.donor });
     execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
       'commit', '-qm', 'source-preview generation command inputs'], { cwd: f.donor });
@@ -1329,11 +1345,62 @@ describe('D012 native generation closure', () => {
     for (const path of ['node_modules', workspace + '/dist', 'papercusp-desktop/node_modules'])
       rmSync(join(f.donor, path), { recursive: true });
     const receiptPath = join(f.root, 'command.json');
+    // Exercise the worker and prospective-task readers inside the actual
+    // verifier child, while the checked source and installed copy still exist.
+    const observer = join(f.root, 'read-runtime.mjs');
+    const runtimeModule = pathToFileURL(join(repo, 'scripts/lib/runtime-compatibility.mjs')).href;
+    const taskModule = pathToFileURL(join(repo, 'scripts/lib/passing-task-verdict-cache.mjs')).href;
+    const vitestNode = pathToFileURL(createRequire(import.meta.url).resolve('vitest/node')).href;
+    const otherGroup = join(f.root, 'other-runtime-group.mjs');
+    writeFileSync(otherGroup, `import assert from 'node:assert/strict';
+      import { prepareVerifierRuntimeProof, captureCurrentRuntimeProofIdentity } from ${JSON.stringify(runtimeModule)};
+      const root = process.cwd();
+      await prepareVerifierRuntimeProof({ root });
+      assert.equal(captureCurrentRuntimeProofIdentity({ root }), null);\n`);
+    writeFileSync(observer, `import assert from 'node:assert/strict';
+      import { execFileSync, spawnSync } from 'node:child_process';
+      import { captureCurrentRuntimeProofIdentity, prepareVerifierRuntimeProof } from ${JSON.stringify(runtimeModule)};
+      import { capturePassingTaskRuntimeIdentity } from ${JSON.stringify(taskModule)};
+      const root = process.cwd();
+      await prepareVerifierRuntimeProof({ root });
+      const current = captureCurrentRuntimeProofIdentity({ root });
+      assert.ok(current, 'verified worker identity is missing');
+      const planned = capturePassingTaskRuntimeIdentity({ root, executable: process.execPath, environment: process.env });
+      assert.deepEqual(planned, current);
+      if (${JSON.stringify(!archiveMode)}) {
+        const { createVitest } = await import(${JSON.stringify(vitestNode)});
+        const runtime = await import(${JSON.stringify(pathToFileURL(wrapper).href)});
+        const runner = await createVitest('test', { root, config: false, watch: false,
+          cache: false, pool: 'forks', globals: true, include: [${JSON.stringify(nativeCase)}], reporters: [] },
+          { cacheDir: ${JSON.stringify(join(f.root, 'vite-cache'))} });
+        try {
+          const intended = runtime.captureVitestWorkerProofIdentity({ root, project: runner.projects[0] });
+          assert.ok(intended, 'intended Vitest worker identity is missing');
+          await runner.start([${JSON.stringify(nativeCase)}]);
+          const { readFileSync } = await import('node:fs');
+          assert.deepEqual(JSON.parse(readFileSync(${JSON.stringify(workerResult)}, 'utf8')), intended);
+        } finally { await runner.close(); }
+      }
+      const otherInvocation = { ...process.env, PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256: undefined };
+      assert.equal(captureCurrentRuntimeProofIdentity({ root, environment: otherInvocation }), null);
+      const outside = spawnSync(process.execPath, [${JSON.stringify(otherGroup)}],
+        { cwd: root, detached: true, timeout: 15000, encoding: 'utf8' });
+      assert.equal(outside.status, 0, outside.error?.message ?? outside.stderr);
+      execFileSync(process.execPath, ['node_modules/.bin/probe'], { stdio: 'inherit' });
+      const { readFileSync, writeFileSync, chmodSync, statSync } = await import('node:fs');
+      const file = 'node_modules/pkg/index.js';
+      const original = readFileSync(file), mode = statSync(file).mode;
+      chmodSync(file, 0o600);
+      writeFileSync(file, 'changed dependency');
+      assert.equal(captureCurrentRuntimeProofIdentity({ root }), null);
+      writeFileSync(file, original);
+      chmodSync(file, mode);
+      assert.equal(capturePassingTaskRuntimeIdentity({ root, environment: process.env }), null);\n`);
     const env = { ...f.env, NODE_OPTIONS: '', NODE_PATH: '',
       PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 300_000) };
     const code = await runVerifierCommand({ repo: f.donor, ref: 'HEAD', receiptPath,
       inputs: ['scripts/source-preview.mjs'], env,
-      command: [process.execPath, 'node_modules/.bin/probe'],
+      command: [process.execPath, observer],
       prepareChildEnv: async ({ sourceRoot }) => {
         if (archiveMode) {
           expect(existsSync(join(sourceRoot, '.git'))).toBe(false);

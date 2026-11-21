@@ -301,6 +301,7 @@ import {
   writeBudgetedTaskNativeExecutionReceipt,
   syncBudgetedTaskNativeExecutionReceipt,
 } from "./lib/budgeted-task-scheduler.mjs";
+import { prepareVerifierRuntimeProof } from "./lib/runtime-compatibility.mjs";
 import {
   buildPassingTaskVerdictIdentity,
   captureNpmTaskRuntimeIdentity,
@@ -5509,6 +5510,7 @@ if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
   globalThis.__autoElSuite = true;
 }
 
+if (process.env.PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256) await prepareVerifierRuntimeProof({ root: ROOT });
 const affected = await affectedWorkspaces();
 
 // EI-19454727576364875 — there is DELIBERATELY no `if (!affected.length) exit` here, and it

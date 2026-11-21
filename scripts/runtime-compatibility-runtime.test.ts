@@ -70,6 +70,18 @@ describe('isolated runtime protocol semantics', () => {
       expect(captureRuntimeProofIdentity({ root, environment, executable })).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
   }, 15_000);
+  it.each(['.papercusp-pinned-deps', '.verifier-source.json'])('keeps a copied release marker out of verifier identity (%s)', marker => {
+    const root = mkdtempSync(join(tmpdir(), 'runtime-verifier-copy-'));
+    try {
+      mkdirSync(join(root, 'node_modules'));
+      writeFileSync(join(root, 'package-lock.json'), '{"lockfileVersion":3}');
+      writeFileSync(join(root, 'node_modules/.papercusp-dependency-generation'),
+        `identity=v1-${'a'.repeat(64)}\nsource=${'a'.repeat(64)}\n`);
+      writeFileSync(join(root, marker), marker.endsWith('.json') ? '{}' : 'mode=copy\n');
+      expect(captureCurrentRuntimeProofIdentity({ root })).toBeNull();
+      expect(captureRuntimeProofIdentity({ root, executable: process.execPath })).toBeNull();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('binds interpreter conditions to actual behavior and keeps prospective invocation separate from its parent', () => {
     const root = mkdtempSync(join(tmpdir(), 'runtime-invocation-'));
     try {

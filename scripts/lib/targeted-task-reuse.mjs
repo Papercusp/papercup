@@ -37,7 +37,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { captureRuntimeProofIdentity, runtimeProofFingerprint } from "./runtime-compatibility.mjs";
+import { captureRuntimeProofIdentity, prepareVerifierRuntimeProof, runtimeProofFingerprint } from "./runtime-compatibility.mjs";
 import { captureNpmTaskRuntimeIdentity } from "./passing-task-verdict-cache.mjs";
 import {
   EXECUTED_MAP_NO_PERSIST_ENV,
@@ -467,6 +467,7 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
   if (!isUnitVitestTaskScript(script)) {
     return { env: out, lines, reused: 0, recording: false, finish: () => [] };
   }
+  if (out.PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256) await prepareVerifierRuntimeProof({ root });
 
   let tempDir = null;
   const ensureTempDir = () => (tempDir ??= d.makeTempDir());

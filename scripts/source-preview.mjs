@@ -47,6 +47,7 @@ import assert from 'node:assert/strict';
 import { TAURI_VERIFIER_INPUTS as NATIVE_VERIFIER_INPUTS, normalizeVerifierInputs, validateCommittedVerifierInputs,
   measureVerifierSourceBytesFromGit } from './verifier-source-preflight.mjs';
 import { compilerOptionsFromArgs, createCompilerInputCustody } from './lib/compiler-input-custody.mjs';
+import { verifierRuntimeHandoffSha256 } from './lib/runtime-compatibility.mjs';
 import { captureTestingCoreInputUniverse, qualifyTestingCoreConfigurationClosure, qualifyTestingCoreFinalBytes, retainTestingCoreResolverMetadata,
   createTestingCoreResolverNamespace, spawnTestingCoreCompiler, testingCoreResolverNamespaceIdentity,
   verifyTestingCoreInputs, verifyTestingCoreReceipt } from './lib/testing-core-witness.mjs';
@@ -909,8 +910,9 @@ export function verifierPhaseRunner(path, env, childDiagnosticsPath) {
  * before a fixture can allocate its own worker artifacts. Open exclusively and
  * verify each path still names its original file before publishing the receipt.
  * @param {string} receiptPath
+ * @param {number | undefined} childPid
  */
-function verifierChildDiagnostics(receiptPath) {
+function verifierChildDiagnostics(receiptPath, childPid) {
   const limit = 64 * 1024;
   const files = [];
   const create = path => {
@@ -934,6 +936,7 @@ function verifierChildDiagnostics(receiptPath) {
     stdout = create(`${receiptPath}.stdout.log`);
     stderr = create(`${receiptPath}.stderr.log`);
     write(receipt, Buffer.from(JSON.stringify({ schemaVersion: 'verifier-child-v1', status: 'started',
+      pid: childPid ?? null, processIdentity: childPid ? readProcessIdentity(childPid) : null,
       stdout: { path: stdout.path }, stderr: { path: stderr.path } }) + '\n'));
   } catch (error) { close(); throw error; }
   return {
@@ -3089,6 +3092,9 @@ const VERIFIER_DEPENDENCY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 const VERIFIER_DEPENDENCY_CACHE_MAX_ENTRIES = 64;
 /** @type {Map<string, { fingerprint: string, files: Array<{ path: string, kind: string, executable: boolean, sha256: string }>, bytes: number }>} */
 const verifierDependencyCensusCache = new Map();
+// Keep the original physical observation local to its command. It distinguishes
+// a restored/replaced copy without making inodes part of reusable content identity.
+const verifierDependencyTreeRecords = new WeakMap();
 let verifierDependencyCensusCacheBytes = 0;
 
 /** @param {string} cacheKey @param {string} fingerprint */
@@ -3136,6 +3142,7 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
     sha256: createHash('sha256').update(readFileSync(join(root, policyPath))).digest('hex') };
   const sourceReceiptSha256 = createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
   const trees = [];
+  const treeRecords = [];
   for (const [treeIndex, path] of paths.entries()) {
     assert.ok(!isAbsolute(path) && !path.includes('\\') &&
       !path.split('/').some(part => !part || part === '.' || part === '..') &&
@@ -3163,10 +3170,11 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
     // Include policy and receipt manifests so any of those changes invalidates
     // the byte hashes without trusting size/mtime as content proof.
     const cacheKey = root + '\0' + path;
-    const fingerprint = createHash('sha256').update('verifier-dependency-census-v1\0')
+    const recordsSha256 = createHash('sha256').update(records.stdout).digest('hex');
+    const fingerprint = createHash('sha256').update('verifier-dependency-census-v2\0')
       .update(root).update('\0').update(path).update('\0')
       .update(policy.path).update('\0').update(policy.sha256).update('\0')
-      .update(sourceReceiptSha256).update('\0').update(records.stdout).digest('hex');
+      .update(sourceReceiptSha256).update('\0').update(recordsSha256).digest('hex');
     const cachedFiles = readVerifierDependencyCache(cacheKey, fingerprint);
     const cacheHit = cachedFiles !== null;
     onProgress?.({ completedTrees: treeIndex, totalTrees: paths.length,
@@ -3177,10 +3185,13 @@ function captureVerifierDependencyPopulation({ dest, receipt, env = process.env,
       'Verifier dependency population changed during census');
     if (!cacheHit) rememberVerifierDependencyCache(cacheKey, fingerprint, files);
     trees.push({ path, files });
+    treeRecords.push([path, recordsSha256]);
   }
-  return { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
+  const result = { schemaVersion: 'verifier-dependencies-v1', scope: 'materialized-dependency-files',
     root, sourceCommit: receipt.sourceCommit, policy,
     sourceReceiptSha256, trees };
+  verifierDependencyTreeRecords.set(result, treeRecords);
+  return result;
 }
 
 /** Admit against the caller's disclosure ledger before leaving its checkout.
@@ -3426,6 +3437,7 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
   let finalizationFailure;
   let budget;
   let commandExitCode = null;
+  let generationSnapshotSha256;
   let phaseArchivePath;
   let taskEvidenceRoot;
   let taskEvidenceManifestPath;
@@ -3487,6 +3499,7 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
             assert.equal(createHash('sha256').update(bytes).digest('hex'), identity.sha256,
               'Verifier dependency snapshot receipt changed while retaining it');
             await fs.writeFile(`${receiptPath}.snapshot.txt`, bytes, { flag: 'wx', mode: 0o600 });
+            if (snapshotSelection.command === 'snapshot-generation-locked') generationSnapshotSha256 = identity.sha256;
           }
         }
         return result;
@@ -3585,8 +3598,9 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
     }
     const dependencies = await prepareVerifierDependencies({ donor, runtimeAssetDonor: runtimeDonor, dest: root, receipt, runPhase,
       signal: cancellation.signal, env: sourceEnv, maxMs: preparationMaxMs, cutoffEpochMs: budget.childCutoffEpochMs, now: clock.now, resourceInventory });
+    const dependencyBytes = `${JSON.stringify(dependencies)}\n`;
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
-      `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
+      dependencyBytes, { flag: 'wx', mode: 0o600 }));
     const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs,
       { parentPgRelease: parentPgReleaseEnabled });
     await runPhase('child.admission', () => admitBudget(childEstimate));
@@ -3600,6 +3614,13 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
     const preparedChildEnv = await runPhase('child.environment', async () =>
       (await prepareChildEnv({ sourceRoot: root })) ?? {});
     const finalChildEnv = { ...childEnv, ...preparedChildEnv };
+    delete finalChildEnv.PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256;
+    const originalTrees = verifierDependencyTreeRecords.get(dependencies);
+    if (generationSnapshotSha256 && originalTrees) {
+      finalChildEnv.PAPERCUSP_VERIFIER_RUNTIME_HANDOFF_SHA256 = verifierRuntimeHandoffSha256(
+        realpathSync(receiptPath), generationSnapshotSha256, createHash('sha256').update(dependencyBytes).digest('hex'),
+        originalTrees, createHash('sha256').update(JSON.stringify(ownership) + '\n').digest('hex'));
+    }
     let exitCode;
     let childRunError;
     try { exitCode = await runPhase('child.run', async () => {
@@ -3657,7 +3678,7 @@ export async function runVerifierCommand({ repo, runtimeAssetDonor, ref, receipt
           resourceInventory.record({ id: `process:${child.pid}:${identity}`, kind: 'process',
             pid: child.pid, processIdentity: identity, processGroup: child.pid });
         }
-        diagnostics = verifierChildDiagnostics(receiptPath);
+        diagnostics = verifierChildDiagnostics(receiptPath, child.pid);
         child.stdout.on('data', collect('stdout'));
         child.stderr.on('data', collect('stderr'));
         /** @type {Promise<number>} */
