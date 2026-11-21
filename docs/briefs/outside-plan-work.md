@@ -14,9 +14,11 @@ A Papercusp plan binding and an outside reference are mutually exclusive.
 
 Create and hold a work-item before editing. The work-item inherits the creating session's
 reference. An explicit `planRef` on a single item or batch entry overrides the default.
-The stored work-item field is the existing `external_plan_ref`; older records keep their
-original labels. Session labels are opaque and bounded at launch. Work-item reads and
-claim filters expose the label without looking up the external system.
+Use 1–200 Unicode code points. Whitespace, punctuation and line breaks are significant.
+PostgreSQL text cannot store NUL, so the launcher rejects it. A resumed session keeps
+its saved label and rejects a conflicting replacement. Work-item reads expose
+`externalPlanRef`, and a claim filter can select it with `field: "external_plan_ref"`.
+Historical work-item labels retain their original spelling and length.
 
 For a fleet, the leader holds its own item and creates one item for each piece, recording
 unfinished prerequisites with `blocks` links. For example, with three actual IDs and two
@@ -33,7 +35,9 @@ ready items, issue one launch:
 
 The fleet inherits the leader's reference. The launch checks the ready frontier and
 persists the exact ID filter before opening members. To admit an existing additional
-item, use `scheduler:set_claim_spec` with `fleet` and `appendIds`. Members pull via
+item, use `scheduler:set_claim_spec` with `fleet` and `appendIds`. When a member creates
+a new piece with the fleet's inherited label, creation and admission commit together.
+Members pull via
 `scheduler:get_next` and complete work with evidence. The leader comments on the
 affected work-item when it makes a ruling, checks the entire admitted set, and completes
 its own item before returning the result.
@@ -50,7 +54,7 @@ data. The broad-intent hint directs claims to the appropriate work-item or plan-
 Ordinary sessions continue to select their original planning workflow and fleet
 identities. Their text now explains the exception for a bound outside session. The
 comparison uses the same Codex profile, AUTO mode and harness on both sides.
-[Assembled launch prompt diff](../evidence/outside-plan-prompt.diff)
+[Assembled launch prompt diff](../evidence/outside-plan-prompt.diff) · [Kernel, posture and tool-note source diffs](../evidence/outside-plan-source.diff)
 
 ## Verification
 
@@ -91,3 +95,11 @@ then uses a second process to read the binding, drain the exact set in dependenc
 order, check the unrelated item and complete the leader. The fleet launch-handler
 suite separately checks that the claim spec is stored before either spawn callback
 and that an over-wide launch opens no members.
+
+The separate `HTTP operator` restart case starts the Hono server twice on the same
+private database. Each time, an MCP client lists tools and reads the session label,
+the fleet's exact claim filter and each admitted item's label through the public API.
+The single-session test captures the declaration, creation and completion replies
+for a task whose wording ordinarily triggers the residual-plan hint. The stack test
+renders both single-session variants with AUTO enabled and checks which planning
+rule the agent receives.
