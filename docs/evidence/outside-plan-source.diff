@@ -142,13 +142,15 @@ index 00000000..b71976c7
 +  - slot: fleet-posture
 diff --git a/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/prompts/fleet-posture.md b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/prompts/fleet-posture.md
 new file mode 100644
-index 00000000..ec1093aa
+index 00000000..78c8187b
 --- /dev/null
 +++ b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/prompts/fleet-posture.md
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,13 @@
 +## Leading a fleet on an outside assignment
 +
-+Hold your own work-item. Register each split piece as a work-item with its dependency links.
++Hold your own work-item through completion. Create each piece with `assign_to: 'self'` and
++`state: 'wip'`, then record its dependency links. Hand the pieces to the fleet with
++`work_items:release`, releasing dependents before their prerequisites.
 +Launch members with `fleet:launch-on-plan` and the exact `workItems` set. Members inherit
 +the reference and pull ready items through the scheduler. Keep the set current as work is split.
 +
