@@ -39,22 +39,19 @@ export default defineTool({
     try {
       identity = resolveAgentIdentity(ctx);
     } catch (err) {
+      const payload = {
+        resolved: false,
+        error: err instanceof Error ? err.message : String(err),
+        hint:
+          'No coordination identity resolved. Calling the superuser MCP endpoint ' +
+          'directly (curl/HTTP bridge)? Add ?client=<your-su-id> to the request URL ' +
+          '(and workspace=<id> for scoped reads).',
+        isSuperuser: ctx.isSuperuser ?? false,
+        workspaceId: ctx.workspaceId ?? null,
+      };
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              resolved: false,
-              error: err instanceof Error ? err.message : String(err),
-              hint:
-                'No coordination identity resolved. Calling the superuser MCP endpoint ' +
-                'directly (curl/HTTP bridge)? Add ?client=<your-su-id> to the request URL ' +
-                '(and workspace=<id> for scoped reads).',
-              isSuperuser: ctx.isSuperuser ?? false,
-              workspaceId: ctx.workspaceId ?? null,
-            }),
-          },
-        ],
+        structuredContent: payload,
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
       };
     }
     // Named-fleet membership (P-005/P-015): current presence is authoritative because
@@ -71,19 +68,16 @@ export default defineTool({
     } catch {
       // Preserve the fail-soft identity response and its launch-time fallback.
     }
+    const payload = {
+      ...identity,
+      outsidePlanRef: await readSessionOutsidePlanRef(identity.ownerId, identity.workspaceId ?? undefined),
+      fleetSlug: fleet.fleetSlug,
+      fleetRole: fleet.fleetRole,
+      inbox_wake_key: inboxWakeKey(identity.ownerId),
+    };
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ...identity,
-            outsidePlanRef: await readSessionOutsidePlanRef(identity.ownerId, identity.workspaceId ?? undefined),
-            fleetSlug: fleet.fleetSlug,
-            fleetRole: fleet.fleetRole,
-            inbox_wake_key: inboxWakeKey(identity.ownerId),
-          }),
-        },
-      ],
+      structuredContent: payload,
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
     };
   },
 });
