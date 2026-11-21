@@ -9,6 +9,7 @@ import postgres from 'postgres';
 import { describe, expect, inject, it } from 'vitest';
 import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
 import { seedFakeLlmHarness } from '../../../apps/operator/e2e/_fake-llm-fixture';
+import { readPlanPtoolReply } from '../test/plan-revision-ptool';
 
 const execute = promisify(execFile);
 const definitionRoot = fileURLToPath(new URL('../../../', import.meta.url));
@@ -62,17 +63,12 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
       const tokenFile = join(privateHome, 'superuser-token');
       expect(await realpath(tokenFile)).toBe(tokenFile);
       // Use only the private runner's configured credential and this session's real identity.
-      const ptool = async (verb: string, args: object): Promise<Record<string, unknown>> => {
-        const { stdout } = await execute(process.execPath, [join(app.root, 'apps/operator/scripts/ptool.mjs'),
+      const ptool = (verb: string, args: object, retry?: Save) => {
+        const command = execute(process.execPath, [join(app.root, 'apps/operator/scripts/ptool.mjs'),
           verb, '--url=' + app.origin.origin, '--token-file=' + tokenFile, '--workspace=' + app.workspace,
           '--harness=' + harness, '--raw', '--json', JSON.stringify(args)], { cwd: app.root,
           env: { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' }, maxBuffer: 2_000_000, timeout: 90_000 });
-        const reply = JSON.parse(stdout);
-        if (Array.isArray(reply.results)) {
-          expect(reply.results).toHaveLength(1);
-          return reply.results[0];
-        }
-        return reply;
+        return readPlanPtoolReply(command, retry);
       };
       const identity = door === 'ptool' ? await ptool('coord:whoami', {}) : null;
       if (identity) {
@@ -90,8 +86,8 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
           || typeof doc.contentHash !== 'string') throw new Error('Incomplete old-client document from ' + door);
         return { content: doc.raw, expectedVersion: doc.version, expectedHash: doc.contentHash, slug, harness };
       };
-      const save = (payload: Save) => door === 'api'
-        ? api('set-content', payload) : ptool('plans:set-content', payload);
+      const save = (payload: Save, retry = false) => door === 'api'
+        ? api('set-content', payload) : ptool('plans:set-content', payload, retry ? payload : undefined);
       const first = await read();
       const initial = first.content.trimEnd() + '\n\n## Comparison fixture\n\nCitation text.\nSource file: plan-efficiency.ts:1\nExpected duration: one minute.\n';
       expect((await save({ ...first, content: initial })).ok).toBe(true);
@@ -113,7 +109,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
           expect(doc.content.split(previous)).toHaveLength(2);
           payload = { ...doc, content: doc.content.replace(previous, replacement) };
         }
-        const reply = await save(payload);
+        const reply = await save(payload, scenario === 'retry');
         if (scenario === 'retry' && reply.ok !== true) expect(reply.error ?? reply.code).toBe('stale');
         else expect(reply.ok).toBe(true);
         const expectedHash = createHash('sha256').update(payload.content).digest('hex');

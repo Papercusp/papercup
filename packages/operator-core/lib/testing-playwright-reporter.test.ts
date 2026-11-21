@@ -335,7 +335,9 @@ describe('portable Playwright ledger reporter', () => {
     expect(OperatorReporter).toBe(Reporter);
   });
 
-  it.each(['stable', 'changed application', 'changed definition', 'unselected file', 'wrong definition ref', 'same receipt'])(
+  it.each(['stable', 'changed application', 'changed definition', 'unselected file', 'wrong definition ref', 'same receipt',
+    'missing run group', 'missing ledger', 'changed run group', 'changed ledger workspace', 'changed ledger harness',
+    'changed ledger destination', 'nested definition root', 'changed application receipt path'])(
     'checks the historical application and the separately committed native case (%s)', async condition => {
       const parent = mkdtempSync(join(tmpdir(), 'native-comparison-'));
       function archive(name: string, path: string) {
@@ -360,7 +362,7 @@ describe('portable Playwright ledger reporter', () => {
       }
       try {
         const app = archive('application', 'editor.js');
-        const definition = archive('definition', 'plans.spec.mts');
+        const definition = archive(condition === 'nested definition root' ? 'application/definition' : 'definition', 'plans.spec.mts');
         expect(app.commit).not.toBe(definition.commit);
         source.root = definition.root;
         for (const [key, value] of Object.entries({
@@ -368,6 +370,9 @@ describe('portable Playwright ledger reporter', () => {
           PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', PAPERCUSP_SKIP_PG_DISCOVERY: '1', VERIFY_TAURI_ISOLATED_DB: '1',
           VERIFY_TAURI_PID: String(process.pid), VERIFY_TAURI_SOURCE_REF: app.commit,
           VERIFY_TAURI_SOURCE_RECEIPT: app.receiptPath, OPERATOR_SOURCE_ROOT: app.root,
+          PAPERCUSP_TEST_RUN_GROUP: condition === 'missing run group' ? '' : 'original-comparison-group',
+          PAPERCUSP_TEST_RUN_WORKSPACE: 'original-ledger-workspace', PAPERCUSP_TEST_RUN_HARNESS: 'original-harness',
+          PAPERCUSP_TEST_RUNS_DB_URL: condition === 'missing ledger' ? '' : 'postgres://localhost:32190/original',
           PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET: '', PAPERCUSP_DISABLE_TEST_RUNS_REPORTER: '',
         })) vi.stubEnv(key, value);
         sql.mockReset().mockResolvedValue([{ id: '6789' }]);
@@ -377,17 +382,41 @@ describe('portable Playwright ledger reporter', () => {
         } });
         if (condition === 'wrong definition ref' || condition === 'same receipt') {
           expect(() => reporter.onBegin()).toThrow(/receipt/);
+        } else if (condition === 'nested definition root') {
+          expect(() => reporter.onBegin()).toThrow(/non-overlapping/);
+        } else if (condition === 'missing run group' || condition === 'missing ledger') {
+          expect(() => reporter.onBegin()).toThrow(/run group/);
+          vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'late-group');
         } else {
           reporter.onBegin();
         }
         if (condition === 'changed application') writeFileSync(join(app.root, app.path), 'another application');
         if (condition === 'changed definition') writeFileSync(join(definition.root, definition.path), 'another case');
+        if (condition === 'changed application receipt path') {
+          const otherReceipt = join(parent, 'other-application-receipt.json');
+          writeFileSync(otherReceipt, readFileSync(app.receiptPath));
+          vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', otherReceipt);
+        }
+        if (condition === 'changed run group') vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'other-group');
+        if (condition === 'changed ledger workspace') vi.stubEnv('PAPERCUSP_TEST_RUN_WORKSPACE', 'other-workspace');
+        if (condition === 'changed ledger harness') vi.stubEnv('PAPERCUSP_TEST_RUN_HARNESS', 'other-harness');
+        if (condition === 'changed ledger destination' || condition === 'missing ledger')
+          vi.stubEnv('PAPERCUSP_TEST_RUNS_DB_URL', 'postgres://localhost:32191/other');
         const path = condition === 'unselected file' ? 'unselected.spec.mts' : definition.path;
         reporter.onTestEnd({ title: 'native comparison', location: { file: join(source.root, path) } } as never,
           { status: 'passed', startTime: new Date(), duration: 2, errors: [] } as never);
         const end = await reporter.onEnd();
         await reporter.onExit();
+        if (condition === 'missing ledger') {
+          expect(end).toEqual({ status: 'failed' });
+          expect(sql).not.toHaveBeenCalled();
+          return;
+        }
         const row = sql.mock.calls[0]!;
+        expect(pg).toHaveBeenLastCalledWith('postgres://localhost:32190/original', expect.any(Object));
+        expect(row[7]).toBe(condition === 'missing run group' ? null : 'original-comparison-group');
+        expect(row[11]).toBe('original-harness');
+        expect(row[12]).toBe('original-ledger-workspace');
         if (condition === 'stable') {
           expect(end).toBeUndefined();
           expect(row[2]).toBe('pass');

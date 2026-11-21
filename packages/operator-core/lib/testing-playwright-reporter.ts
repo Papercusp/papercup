@@ -194,7 +194,7 @@ function toWorkspaceRel(absPath: string, root: string): string {
   return rel.split(/[/\\]/).join(posix.sep);
 }
 
-async function tryGetPg(): Promise<{
+async function tryGetPg(originalLedgerUrl?: string): Promise<{
   sql: (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>;
 } | null> {
   try {
@@ -204,7 +204,7 @@ async function tryGetPg(): Promise<{
     // points PAPERCUSP_TEST_RUNS_DB_URL at the shared ledger. Same order as the Vitest
     // reporter and resolveExecutedMapPgUrl.
     const url =
-      process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
+      originalLedgerUrl ?? process.env.PAPERCUSP_TEST_RUNS_DB_URL ??
       process.env.HARNESS_ADMIN_DATABASE_URL ??
       'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
     const sql = pg(url, {
@@ -242,7 +242,18 @@ function settlementWindow(budget: ReturnType<typeof reporterWriteBudget>): numbe
   return Math.max(budget.totalInsertMs, budget.flushBudgetMs);
 }
 
-async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, root: string, runStartedAt: string | null): Promise<void> {
+function ledgerAttribution() {
+  return {
+    runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP ?? null,
+    harnessSlug: resolveTestRunHarnessSlug(),
+    workspaceId: resolveTestRunWorkspaceId(),
+  };
+}
+
+type ComparisonLedger = ReturnType<typeof ledgerAttribution> & { ledgerUrl: string | undefined };
+
+async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, root: string, runStartedAt: string | null,
+  originalAttribution?: ComparisonLedger): Promise<void> {
   let branch: string | null = null;
   try {
     // The ambient resolver describes the agent's tree. It cannot name the
@@ -263,21 +274,19 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   // Late settlement must stay attached to this run's evidence sink.
   const receiptEnv = { PAPERCUSP_TEST_RUN_RECEIPT_FILE: process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE };
 
-  const pg = await tryGetPg();
+  const pg = await tryGetPg(originalAttribution?.ledgerUrl);
   if (!pg) {
     appendTestRunReceipts(receiptEnv, [{ ...receipt, outcome: 'failed', reason: 'pg_unavailable', replayable: false }]);
     return;
   }
 
   const source = resolveTestRunSource();
-  const runGroupId = process.env.PAPERCUSP_TEST_RUN_GROUP ?? null;
   const { loopLagP95Ms, rssMb } = captureReporterSaturationSnapshot();
   // WI-6583: this reporter never wrote harness_slug/workspace_id at all. It now calls the
   // Vitest reporter's resolvers directly instead of an inline copy: the copy had already
   // drifted once (it lacked the PAPERCUSP_TEST_RUN_WORKSPACE override, so isolated e2e rows
   // were stamped with the rig's throwaway workspace — WI-10006804).
-  const harnessSlug = resolveTestRunHarnessSlug();
-  const workspaceId = resolveTestRunWorkspaceId();
+  const { runGroupId, harnessSlug, workspaceId } = originalAttribution ?? ledgerAttribution();
   const budget = reporterWriteBudget(process.env);
   const startedAt = Date.now();
   const deadline = startedAt + budget.totalInsertMs;
@@ -359,7 +368,8 @@ function readComparisonSources(definitionRoot: string, definition: DefinitionSou
     throw new Error('separate test definition requires the owned isolated native runner');
   const applicationRoot = realpathSync(process.env.OPERATOR_SOURCE_ROOT);
   const roots = [applicationRoot, realpathSync(definitionRoot)];
-  if (roots[0] === roots[1]) throw new Error('expected distinct frozen source roots');
+  if (roots[0] === roots[1] || roots[0].startsWith(roots[1] + sep) || roots[1].startsWith(roots[0] + sep))
+    throw new Error('expected distinct, non-overlapping frozen source roots');
   if (!process.env.VERIFY_TAURI_SOURCE_RECEIPT || !definition.receiptPath)
     throw new Error('both external source receipts are required');
   const receipts = [realpathSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT), realpathSync(definition.receiptPath)];
@@ -373,6 +383,7 @@ function readComparisonSources(definitionRoot: string, definition: DefinitionSou
     throw new Error('native comparison requires Git custody in both source receipts');
   const verifier = verifyVerifierSourceSync(definitionRoot, manifest, { runtimeArtifacts: true });
   const digest = createHash('sha256')
+    .update(JSON.stringify([roots, receipts])).update('\0')
     .update(JSON.stringify(application)).update('\0').update(JSON.stringify(verifier)).digest('hex');
   return { applicationRoot, applicationCommit: application.sourceCommit, definitionCommit: verifier.sourceCommit, digest,
     inputs: new Set(verifier.testedInputs.map(input => input.path)) };
@@ -392,6 +403,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private mutationInvocation: MutationInvocationDescriptor | null = null;
   private readonly definitionSource?: DefinitionSource;
   private comparison?: ReturnType<typeof readComparisonSources>;
+  private comparisonAttribution?: ComparisonLedger;
 
   constructor(options: { readRuntimeEnvironment?: RuntimeReader; definitionSource?: DefinitionSource } = {}) {
     this.runtimeReader = options.readRuntimeEnvironment;
@@ -407,6 +419,11 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
     let preparationError: unknown;
     try {
       if (this.definitionSource) {
+        this.comparisonAttribution = { ...ledgerAttribution(), ledgerUrl: process.env.PAPERCUSP_TEST_RUNS_DB_URL };
+        if (!this.comparisonAttribution.runGroupId?.trim()) this.comparisonAttribution.runGroupId = null;
+        const { runGroupId, harnessSlug, workspaceId, ledgerUrl } = this.comparisonAttribution;
+        if (!runGroupId || !harnessSlug || !workspaceId || !ledgerUrl?.trim())
+          throw new Error('native comparison requires a dedicated ledger, run group, harness and workspace before testing');
         this.comparison = readComparisonSources(this.runRoot, this.definitionSource);
         this.worktreeBefore = { commit: this.comparison.definitionCommit, porcelain: '' };
         this.runtimeReader = prepareNativeRuntimeReader(this.comparison.applicationRoot, this.comparison.applicationCommit);
@@ -511,6 +528,11 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         // awaited by Playwright, so final custody can use the bounded async
         // runner instead of mistaking a two-second sync budget for dirty source.
         if (this.definitionSource) {
+          const current = ledgerAttribution();
+          const original = this.comparisonAttribution;
+          if (!original || original.runGroupId !== current.runGroupId || original.harnessSlug !== current.harnessSlug
+            || original.workspaceId !== current.workspaceId || original.ledgerUrl !== process.env.PAPERCUSP_TEST_RUNS_DB_URL)
+            throw new Error('native comparison ledger attribution changed during execution');
           const after = readComparisonSources(this.runRoot, this.definitionSource);
           if (!this.comparison || after.digest !== this.comparison.digest || after.applicationRoot !== this.comparison.applicationRoot)
             throw new Error('native application or test definition changed during execution');
@@ -539,6 +561,8 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
       ].filter(Boolean).join('; ').slice(0, 500);
       for (const [file, agg] of this.byFile) {
         try {
+          // A comparison without its original destination has nowhere to record even an error.
+          if (this.definitionSource && !this.comparisonAttribution?.ledgerUrl?.trim()) continue;
           this.flushWindowMs = settlementWindow(reporterWriteBudget(process.env));
           const filePath = toWorkspaceRel(file, this.runRoot);
           const status: TestRunRow['status'] = nativeRuntimeFailed ? 'error' : agg.anyFail
@@ -575,7 +599,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               ...(agg.passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
               runtimeEnvironmentBefore: this.runtimeBefore,
               runtimeEnvironmentAfter: runtimeAfter,
-            }, worktreeAfter, this.runRoot, this.runStartedAt),
+            }, worktreeAfter, this.runRoot, this.runStartedAt, this.comparisonAttribution),
           );
         } catch {
           /* swallow per-file */
