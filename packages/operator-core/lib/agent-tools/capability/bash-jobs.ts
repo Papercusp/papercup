@@ -190,6 +190,25 @@ const MAINTAINED_VERIFIER_RE = new RegExp(
 
 const TEST_LEADING_ASSIGNMENTS_RE = new RegExp(`^(?:${TEST_ENV_ASSIGNMENT})*`);
 
+/** Bash exec [-cl] [-a name] replaces the shell with the following program. */
+function testProgramIndex(words: string[]): number {
+  if (words[0] !== 'exec') return 0;
+  let index = 1;
+  while (index < words.length) {
+    const option = words[index]!;
+    if (option === '--') return index + 1;
+    if (/^-[cl]+$/.test(option)) {
+      index++;
+    } else if (/^-[cl]*a/.test(option)) {
+      // -a consumes argv[0], either attached or in the following word.
+      index += /^-[cl]*a$/.test(option) ? 2 : 1;
+    } else {
+      break;
+    }
+  }
+  return index;
+}
+
 /** Compare argv, never the contents of one quoted argument. The command itself
  * is still passed to bash unchanged. The shared atomizer excludes heredoc
  * bodies; shell-quote supplies quote removal and comment/redirect boundaries.
@@ -215,11 +234,12 @@ function testCommandArgv(raw: string): { command: string; comment: boolean } | n
     // must never become command separators or several executable words.
     const word = token.replace(/[\s"'\\;&|<>`()$\0]/g,
       (char) => `%${char.charCodeAt(0).toString(16)}`);
-    // Real shell assignments were removed above. A quoted NAME=value left in
-    // executable position is a command name, not another assignment prefix.
-    words.push(words.length === 0 ? word.replace('=', '%3d') : word);
+    words.push(word);
   }
-  return { command: words.join(' '), comment: tokens.some((token) =>
+  const argv = words.slice(testProgramIndex(words));
+  // An assignment-shaped program name after exec or quote removal is literal.
+  if (argv.length) argv[0] = argv[0]!.replace('=', '%3d');
+  return { command: argv.join(' '), comment: tokens.some((token) =>
     typeof token !== 'string' && 'comment' in token) };
 }
 
