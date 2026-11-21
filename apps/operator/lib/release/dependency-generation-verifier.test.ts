@@ -1350,6 +1350,7 @@ describe('D012 native generation closure', () => {
     const observer = join(f.root, 'read-runtime.mjs');
     const runtimeModule = pathToFileURL(join(repo, 'scripts/lib/runtime-compatibility.mjs')).href;
     const taskModule = pathToFileURL(join(repo, 'scripts/lib/passing-task-verdict-cache.mjs')).href;
+    const skipModule = pathToFileURL(join(repo, 'libs/test-config/src/test-pass-reuse-skip.ts')).href;
     const vitestNode = pathToFileURL(createRequire(import.meta.url).resolve('vitest/node')).href;
     const otherGroup = join(f.root, 'other-runtime-group.mjs');
     writeFileSync(otherGroup, `import assert from 'node:assert/strict';
@@ -1359,7 +1360,7 @@ describe('D012 native generation closure', () => {
       assert.equal(captureCurrentRuntimeProofIdentity({ root }), null);\n`);
     writeFileSync(observer, `import assert from 'node:assert/strict';
       import { execFileSync, spawnSync } from 'node:child_process';
-      import { captureCurrentRuntimeProofIdentity, prepareVerifierRuntimeProof } from ${JSON.stringify(runtimeModule)};
+      import { captureCurrentRuntimeProofIdentity, prepareVerifierRuntimeProof, runtimeProofFingerprint } from ${JSON.stringify(runtimeModule)};
       import { capturePassingTaskRuntimeIdentity } from ${JSON.stringify(taskModule)};
       const root = process.cwd();
       await prepareVerifierRuntimeProof({ root });
@@ -1367,6 +1368,8 @@ describe('D012 native generation closure', () => {
       assert.ok(current, 'verified worker identity is missing');
       const planned = capturePassingTaskRuntimeIdentity({ root, executable: process.execPath, environment: process.env });
       assert.deepEqual(planned, current);
+      const skip = await import(${JSON.stringify(skipModule)});
+      assert.equal(skip.executedSourceRunnerIdentity(), skip.REUSE_PROOF_FORMAT + ' ' + runtimeProofFingerprint(current));
       if (${JSON.stringify(!archiveMode)}) {
         const { createVitest } = await import(${JSON.stringify(vitestNode)});
         const runtime = await import(${JSON.stringify(pathToFileURL(wrapper).href)});
