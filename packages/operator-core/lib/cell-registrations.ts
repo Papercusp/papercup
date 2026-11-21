@@ -2549,6 +2549,11 @@ export const GATE_FREEZE_DISPOSITION_CELL: CellSpec = {
         safeAction:
           'Do not infer a state from the null fields beside this. Read release:repair-queue { op: "get" } for the live queue, and treat the freeze as unverified until a tick reports one.',
       },
+      unreadable: {
+        meaning: 'The checkpoint recorded a failed read of the frozen repair queue. Its candidate and phase are unknown.',
+        safeAction:
+          'Read the recorded reason and inspect the queue with release:repair-queue { op: "get" }. Preserve the existing candidate until the queue can be read.',
+      },
       stale: {
         meaning:
           'A disposition exists but was observed longer ago than the freshness window, so it describes HISTORY. The gate has not reported since.',

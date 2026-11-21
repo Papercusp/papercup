@@ -665,6 +665,11 @@ const CONTROLS: Record<string, readonly Control[]> = {
     { label: 'a frozen candidate is being held', expect: FREEZE({ state: 'held' }) },
     { label: 'a frozen candidate was retired this tick', expect: FREEZE({ state: 'retired' }) },
     { label: 'a frozen candidate is being repaired', expect: FREEZE({ state: 'converging' }) },
+    { label: 'the checkpoint could not read the frozen queue', expect: FREEZE({ state: 'unreadable', candidate: null, queuePhase: null }) },
+    {
+      label: 'the queue read failure is older than the freshness window',
+      expect: FREEZE({ state: 'unreadable', candidate: null, queuePhase: null }, FREEZE_OBSERVED + 4 * 60 * 60 * 1_000),
+    },
   ],
   'gate.greenCheckpoint.retriage': [
     { label: 'neither liveness read answered', expect: RETRIAGE(null) },
@@ -1329,6 +1334,8 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'held',
     'retired',
     'converging',
+    'unreadable',
+    'stale',
   ],
   // P-009 truth table. `no-run-reading` is FIRST and is NOT `no-run`: the unmeasured reading
   // is the one that must still hold a caller back, and collapsing it into the measured
