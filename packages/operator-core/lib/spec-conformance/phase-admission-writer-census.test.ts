@@ -97,7 +97,8 @@ describe('phase binding writer census', () => {
     expect(reviews.map(row => row.siteId).sort()).toEqual([...ids].sort());
     expect(reviews.every(row => row.disposition === 'metadata-only')).toBe(true);
     const report = reconcilePhaseWriterCensus(inventory, reviews);
-    expect([...report.coverage.checked].sort()).toEqual([...ids].sort());
+    const literals = report.syntaxReviews.map(row => row.siteId);
+    expect([...report.coverage.checked].sort()).toEqual([...ids, ...literals].sort());
     for (const site of snapshots) {
       expect(reconcilePhaseWriterCensus(inventory, reviews.filter(row => row.siteId !== site.id)).problems)
         .toContainEqual({ id: site.id, reasons: ['unclassified-writer'] });
@@ -105,7 +106,8 @@ describe('phase binding writer census', () => {
     const changed = inventoryPhaseWriters(sources.map(source => source.path === path
       ? { ...source, content: source.content + '\n// snapshot source changed\n' } : source));
     const stale = reconcilePhaseWriterCensus(changed, reviews);
-    expect(stale.coverage.checked).toEqual([]);
+    expect(stale.syntaxReviews).toEqual(report.syntaxReviews);
+    expect(stale.coverage.checked).toEqual(literals);
     for (const id of ids) expect(stale.problems.find(problem => problem.id === id)?.reasons)
       .toContain(`stale-source-proof:${path}`);
     const suppliedSnapshot = inventory.sites.find(site => site.path === path
@@ -391,11 +393,16 @@ describe('phase binding writer census', () => {
     const inventory = inventoryPhaseWriters(sources);
     const report = reconcilePhaseWriterCensus(inventory, reviewed.reviews);
     const accepted = reviewed.reviews.map(row => row.siteId).sort();
+    const literalPaths = ['libs/generic/resource-profile/src/index.ts', 'libs/papercusp/libs/db/src/operator-db-env.ts'];
+    const literals = inventory.sites.filter(site => site.statement === '-1' && literalPaths.includes(site.path));
+    expect(literals.map(site => site.path).sort()).toEqual(literalPaths);
+    expect(report.syntaxReviews.map(row => row.siteId).sort()).toEqual(literals.map(site => site.id).sort());
+    const checked = [...accepted, ...literals.map(site => site.id)].sort();
     expect(report.ready).toBe(false);
     expect([...report.coverage.checked].sort(), JSON.stringify(report.problems.filter(row => accepted.includes(row.id))))
-      .toEqual(accepted);
+      .toEqual(checked);
     expect(report.coverage.notApplicable).toEqual([]);
-    const unreviewed = inventory.sites.filter(site => !accepted.includes(site.id)).map(site => site.id);
+    const unreviewed = inventory.sites.filter(site => !checked.includes(site.id)).map(site => site.id);
     expect([...report.coverage.notChecked].sort()).toEqual([...unreviewed].sort());
     expect([...report.coverage.residue].sort()).toEqual([...unreviewed].sort());
     for (const { siteId } of reviewed.pendingAdvancing) {
@@ -431,9 +438,11 @@ describe('phase binding writer census', () => {
       expect(stale.coverage.notChecked).toContain(id);
       expect(stale.coverage.residue).toContain(id);
     }
-    expect([...stale.coverage.checked].sort()).toEqual(reviewed.reviews
-      .filter(row => !row.sourceProofs.some(proof => proof.path === dependency))
-      .map(row => row.siteId).sort());
+    expect(stale.syntaxReviews).toEqual(report.syntaxReviews);
+    expect([...stale.coverage.checked].sort()).toEqual([
+      ...reviewed.reviews.filter(row => !row.sourceProofs.some(proof => proof.path === dependency)).map(row => row.siteId),
+      ...literals.map(site => site.id),
+    ].sort());
   });
 
   it('pins clock and notification SQL reviews without accepting append or lifecycle closure', () => {
@@ -2227,6 +2236,95 @@ describe('phase binding writer census', () => {
       writeFileSync(path, variants[0][0] + '\n// unchanged expression, changed source');
       expect(() => assertPhaseWriterTreeCensus(root, reviewed)).toThrow('stale-review');
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('checks only direct numeric literal unary effects through the native tree guard', () => {
+    const effects: string[] = [];
+    const transport = {
+      get state() {
+        effects.push('getter');
+        return { [Symbol.toPrimitive]() { effects.push('coercion'); return 7; } };
+      },
+    };
+    const withDispatch = () => +transport.state;
+    expect(withDispatch()).toBe(7);
+    expect(effects).toEqual(['getter', 'coercion']);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-literal-unary-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/operations.ts';
+      const literals = 'const positive = + /* literal */ 0x7; const negative = -7; const complement = ~7;';
+      writeFileSync(join(root, path), literals);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      const expected = inert.inventory.sites.map(site => site.id);
+      expect(expected).toHaveLength(3);
+      expect(inert.census.coverage).toEqual({
+        population: expected, checked: expected, notChecked: [], notApplicable: [], residue: [],
+      });
+      expect(inert.census.syntaxReviews.map(row => row.disposition)).toEqual(Array(3).fill('metadata-only'));
+      for (const row of inert.census.syntaxReviews) {
+        const site = inert.inventory.sites.find(candidate => candidate.id === row.siteId)!;
+        expect(row.sourceProofs).toEqual([{ path, sha256: site.sourceSha256 }]);
+        expect(row.statementSha256).toBe(site.statementSha256);
+        expect(row.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+
+      const controls = '; const wrapped = +(7); const thenable = async () => +7;';
+      writeFileSync(join(root, path), literals + 'const entry = ' + withDispatch.toString() + controls);
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const result = reconcilePhaseWriterCensus(current, []);
+      const unresolved = current.sites.filter(site => !site.syntaxWitness);
+      expect(unresolved.map(site => site.statement).sort()).toEqual(['+(7)', '+7', '+transport.state', 'transport.state'].sort());
+      expect(result.coverage.residue).toEqual(unresolved.map(site => site.id));
+      expect(result.coverage.checked).toHaveLength(4);
+      expect(result.coverage.population).toEqual(current.sites.map(site => site.id));
+      expect(result.syntaxReviews.map(row => row.sourceProofs)).toEqual(
+        Array(4).fill([{ path, sha256: current.sources[0]!.sha256 }]));
+      expect(current.sources[0]!.sha256).not.toBe(inert.inventory.sources[0]!.sha256);
+      const stale = reconcilePhaseWriterCensus(current, inert.census.syntaxReviews);
+      expect(stale.problems.filter(row => row.reasons.includes('stale-review')).map(row => row.id)).toEqual(expected);
+      expect(stale.syntaxReviews).toHaveLength(1);
+      expect(reconcilePhaseWriterCensus(inert.inventory, [inert.census.syntaxReviews[0]!, inert.census.syntaxReviews[0]!])
+        .problems).toEqual([{ id: expected[0], reasons: ['duplicate-review'] }]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('recovers literal unary proofs and a decisive trailing dispatch identity across stream batches', async () => {
+    for (const size of [3, 4, 5, 81]) {
+      const literals = source('const values = [' + '-7,'.repeat(size) + '];', 'packages/literals.ts');
+      const tail = source('const read = () => +subject;', 'packages/tail.ts');
+      const inventory = inventoryPhaseWriters([tail, literals]);
+      const result = reconcilePhaseWriterCensus(inventory, []);
+      const tailId = inventory.sites.at(-1)!.id;
+      expect(inventory.sites.at(-1)!.statement).toBe('+subject');
+      expect(new Set(result.coverage.population).size).toBe(size + 1);
+      expect(result.coverage.checked).toEqual(inventory.sites.slice(0, -1).map(site => site.id));
+      expect(result.coverage.residue).toEqual([tailId]);
+      const lines: string[] = [];
+      const emit = (line: string) => { lines.push(line); };
+      const footer = await writePhaseWriterCensus(inventory, [], emit);
+      const regenerated: string[] = [];
+      await writePhaseWriterCensus(inventoryPhaseWriters([literals, tail]), [], line => { regenerated.push(line); });
+      expect(regenerated).toEqual(lines);
+      async function* batches() {
+        for (let start = 0; start < regenerated.length; start += 4) {
+          await Promise.resolve();
+          yield* regenerated.slice(start, start + 4);
+        }
+      }
+      const recovered: Array<{ kind: string; value: unknown }> = [];
+      expect(await readPhaseWriterCensus(batches(), row => { recovered.push(row); })).toEqual(footer);
+      expect(footer.ready).toBe(false);
+      expect(recovered.filter(row => row.kind === 'source').map(row => row.value)).toEqual(inventory.sources);
+      expect(recovered.filter(row => row.kind === 'site').map(row => row.value)).toEqual(inventory.sites);
+      expect(recovered.filter(row => row.kind === 'review').map(row => row.value)).toEqual(result.syntaxReviews);
+      expect(recovered.filter(row => row.kind === 'coverage').map(row => row.value)).toEqual([
+        ...result.coverage.checked.map(id => ({ id, partition: 'checked', residue: false, reasons: [] })),
+        { id: tailId, partition: 'notChecked', residue: true, reasons: ['unclassified-writer'] },
+      ]);
+    }
   });
 
   it('retains opaque tagged invocations even without SQL text through the native tree guard', () => {

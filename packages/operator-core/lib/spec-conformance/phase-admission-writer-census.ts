@@ -58,6 +58,9 @@ const nonCoerciveBinaryOperators = new Set([
   ts.SyntaxKind.AmpersandAmpersandEqualsToken, ts.SyntaxKind.BarBarEqualsToken,
   ts.SyntaxKind.QuestionQuestionEqualsToken,
 ]);
+const implicitDispatchReview = 'implicit-dispatch-requires-review';
+const numericLiteralUnary = 'numeric-literal-unary';
+const numericUnaryOperators = new Set<ts.SyntaxKind>([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.TildeToken]);
 
 export interface PhaseWriterSource { path: string; content: string }
 /** Syntax evidence only. Tag arguments are the substitution expressions; the
@@ -111,6 +114,7 @@ export interface PhaseWriterSite {
   helperDeclaration?: SymbolDeclaration;
   invocation?: PhaseWriterInvocation;
   argumentFlow?: PhaseWriterArgumentFlow;
+  syntaxWitness?: typeof numericLiteralUnary;
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
@@ -313,7 +317,8 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
   const aliases: Array<{ name: string; target: string }> = [];
   const add = (source: PhaseWriterSource, operation: string, statement: string, line: number,
     kind: PhaseWriterSite['kind'], facts: Partial<Pick<PhaseWriterSite,
-      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget' | 'helperDeclaration' | 'invocation' | 'argumentFlow'>> = {}) => {
+      'relations' | 'columns' | 'dynamicEdges' | 'unresolved' | 'callees' | 'helperTarget'
+      | 'helperDeclaration' | 'invocation' | 'argumentFlow' | 'syntaxWitness'>> = {}) => {
     const statementSha256 = digest(statement), sourceSha256 = sourceHashes.get(source.path)!;
     // Identical statements in the same operation are separate source occurrences.
     const base = JSON.stringify([source.path, operation, kind, statementSha256]);
@@ -468,15 +473,16 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       // These syntax forms can invoke user code without a CallExpression:
       // getters/Proxy traps during binding or spread, iterator methods,
       // ToPrimitive/ToPropertyKey hooks, and thenable assimilation. Retain the
-      // complete operation and operands, never a claim about their runtime
-      // value. Even a literal-looking operand needs source-bound disposition.
+      // complete operation and operands. Recognized AST forms can supply a
+      // witness for source-bound disposition.
       // Append after explicit sites so duplicate syntax cannot renumber any
       // existing reviewed occurrence or discard an earlier opaque frontier.
-      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[] }> = [];
+      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[]; syntaxWitness?: typeof numericLiteralUnary }> = [];
       const isAsync = (node: ts.Node): boolean => ts.canHaveModifiers(node)
         && !!ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword);
       const captureImplicitEffect = (node: ts.Node): void => {
         let expression = node, operands: ts.Node[] | undefined;
+        let syntaxWitness: typeof numericLiteralUnary | undefined;
         if (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) {
           expression = node.parent;
           const declaration = node.parent;
@@ -501,6 +507,8 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         } else if (ts.isPrefixUnaryExpression(node) && node.operator !== ts.SyntaxKind.ExclamationToken
           || ts.isPostfixUnaryExpression(node)) {
           operands = [node.operand];
+          if (ts.isPrefixUnaryExpression(node) && numericUnaryOperators.has(node.operator)
+            && ts.isNumericLiteral(node.operand)) syntaxWitness = numericLiteralUnary;
         } else if (ts.isReturnStatement(node) && node.expression) {
           for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
             if (!ts.isFunctionLike(parent)) continue;
@@ -510,7 +518,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body) && isAsync(node)) {
           expression = node.body; operands = [node.body];
         }
-        if (operands) implicitEffects.push({ node: expression, operands });
+        if (operands) implicitEffects.push({ node: expression, operands, syntaxWitness });
       };
       const visit = (node: ts.Node): void => {
         captureImplicitEffect(node);
@@ -640,7 +648,7 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       for (const effect of implicitEffects) {
         add(source, operation(effect.node), effect.node.getText(unit.ast), unit.span(effect.node).line,
           'unresolved', { dynamicEdges: [...new Set(effect.operands.map(operand => operand.getText(unit.ast)))],
-            unresolved: ['implicit-dispatch-requires-review'] });
+            unresolved: [implicitDispatchReview], ...(effect.syntaxWitness ? { syntaxWitness: effect.syntaxWitness } : {}) });
         deferredEffectSiteIds.add(sites[sites.length - 1]!.id);
       }
     } else if (/\.sql$/.test(source.path)) {
@@ -969,6 +977,23 @@ const dispositions = new Set<PhaseWriterDisposition>([
   'advancing', 'safe-retreat', 'metadata-only', 'isolated-fixture', 'historical/unreachable',
 ]);
 
+function reviewNumericLiteralUnary(site: PhaseWriterSite): PhaseWriterReview | undefined {
+  if (site.syntaxWitness !== numericLiteralUnary || site.kind !== 'unresolved' || site.invocation
+    || site.callees.length || site.relations.length || site.columns.length || site.dynamicEdges.length !== 1
+    || site.unresolved.length !== 1 || site.unresolved[0] !== implicitDispatchReview
+    || digest(site.statement) !== site.statementSha256) return;
+  // Check the serialized statement and operand before using its AST witness.
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, site.statement);
+  if (!numericUnaryOperators.has(scanner.scan()) || scanner.scan() !== ts.SyntaxKind.NumericLiteral
+    || scanner.getTokenText() !== site.dynamicEdges[0] || scanner.scan() !== ts.SyntaxKind.EndOfFileToken) return;
+
+  const reason = 'This unary expression directly consumes a numeric literal. Evaluating it and coercing its primitive Number cannot dispatch user code.';
+  const evidenceRefs = [`source:${site.path}#${site.sourceSha256}`, 'https://tc39.es/ecma262/#sec-unary-operators'];
+  return { siteId: site.id, sourceSha256: site.sourceSha256, statementSha256: site.statementSha256,
+    sourceProofs: [{ path: site.path, sha256: site.sourceSha256 }], disposition: 'metadata-only', reason, evidenceRefs,
+    resolvedEdges: [...site.dynamicEdges, implicitDispatchReview].map(edge => ({ edge, reason, evidenceRefs })) };
+}
+
 /** Reviews are exact source proofs. Neither an exemption nor an advancing seam
  * is accepted after its source/statement changes, even if it never executes.
  */
@@ -976,13 +1001,15 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
   reviews: readonly PhaseWriterReview[]) {
   const coverage: PhaseWriterCoverage = { population: [], checked: [], notChecked: [], notApplicable: [], residue: [] };
   const problems: Array<{ id: string; reasons: string[] }> = [];
+  const syntaxReviews: PhaseWriterReview[] = [];
   const sourceHashes = new Map(inventory.sources.map(source => [source.path, source.sha256]));
   const byId = new Map<string, PhaseWriterReview[]>();
   for (const review of reviews) byId.set(review.siteId, [...(byId.get(review.siteId) ?? []), review]);
   for (const site of inventory.sites) {
     coverage.population.push(site.id);
     const candidates = byId.get(site.id) ?? [];
-    const review = candidates.length === 1 ? candidates[0] : undefined;
+    const syntaxReview = candidates.length === 0 ? reviewNumericLiteralUnary(site) : undefined;
+    const review = candidates.length === 1 ? candidates[0] : syntaxReview;
     const reasons: string[] = [];
     if (!review) reasons.push(candidates.length ? 'duplicate-review' : 'unclassified-writer');
     else {
@@ -1018,7 +1045,10 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
       coverage.notChecked.push(site.id); coverage.residue.push(site.id); problems.push({ id: site.id, reasons });
     } else if (review!.disposition === 'isolated-fixture' || review!.disposition === 'historical/unreachable') {
       coverage.notApplicable.push(site.id);
-    } else coverage.checked.push(site.id);
+    } else {
+      coverage.checked.push(site.id);
+      if (syntaxReview) syntaxReviews.push(syntaxReview);
+    }
     byId.delete(site.id);
   }
   for (const gap of inventory.gaps) {
@@ -1032,7 +1062,7 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
     coverage.population.push(id); coverage.notChecked.push(id); coverage.residue.push(id);
     problems.push({ id, reasons: ['reviewed-writer-missing'] });
   }
-  return { schemaVersion: 1 as const, scope: inventory.scope, ready: problems.length === 0, coverage, problems };
+  return { schemaVersion: 1 as const, scope: inventory.scope, ready: problems.length === 0, coverage, problems, syntaxReviews };
 }
 
 export function assertPhaseWriterCensus(inventory: PhaseWriterInventory, reviews: readonly PhaseWriterReview[]) {
@@ -1098,6 +1128,7 @@ export async function writePhaseWriterCensus(inventory: StreamInventory,
   for (const value of inventory.enumeration?.scanned ?? []) await emit('scanned', value);
   for (const value of inventory.enumeration?.unscanned ?? []) await emit('unscanned', value);
   for (const value of reviews) await emit('review', value);
+  for (const value of report.syntaxReviews) await emit('review', value);
   const checked = new Set(report.coverage.checked), notChecked = new Set(report.coverage.notChecked);
   const residue = new Set(report.coverage.residue), problems = new Map(report.problems.map(row => [row.id, row.reasons]));
   for (const id of report.coverage.population) await emit('coverage', { id,
