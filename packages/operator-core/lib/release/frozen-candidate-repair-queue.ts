@@ -9,6 +9,7 @@
  * filesystem, database, or process work.
  */
 
+import { parsePinnedPrecheckSelection } from './precheck-selection';
 import {
   applyRepairLegMeasurements,
   parseRepairLegEvidence,
@@ -520,6 +521,7 @@ export interface FrozenRepairFixerDispatchReceipt extends RepairLimbExecutor {
  * MCP request boundaries.  The background leg never publishes the lineage ref itself.
  */
 export interface FrozenRepairAdmissionPrecheck {
+  selection?: import('./precheck-selection').PinnedPrecheckSelection;
   schemaVersion: 1;
   operationId: string;
   status: 'running' | 'passed' | 'deferred' | 'failed';
@@ -921,6 +923,7 @@ export interface FrozenRepairAdmission {
    * caller opted out with `skipPrecheck` + `precheckReason`; `nothing-to-run`; `runner-failed`).
    */
   precheck?: {
+    selection?: import('./precheck-selection').PinnedPrecheckSelection;
     ran: boolean;
     reason?: string;
     detail?: string;
@@ -1311,6 +1314,11 @@ export function parseAdmissionPrecheckRecord(
   }
   const radius = parseAdmissionRadiusSummary(v.radius);
   if (radius) out.radius = radius;
+  if (v.selection !== undefined) {
+    const selection = parsePinnedPrecheckSelection(v.selection);
+    if (!selection) throw new Error('invalid pinned admission selection evidence');
+    out.selection = selection;
+  }
   return out;
 }
 
@@ -2423,6 +2431,9 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
   }
   const radius = row.radius === undefined ? undefined : parseAdmissionRadius(row.radius, files);
   if (radius === null) return undefined;
+  const selection = row.selection === undefined ? undefined : parsePinnedPrecheckSelection(row.selection);
+  if (selection === null || (selection && (selection.commit !== row.builtCommit || selection.excluded.some(entry => files.includes(entry.path)))))
+    throw new Error('invalid pinned precheck selection evidence');
   let measurement: FrozenRepairAdmissionPrecheck['measurement'];
   if (row.measurement !== undefined) {
     const value = row.measurement as Record<string, unknown> | null;
@@ -2501,6 +2512,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     ...(progress ?? {}),
     ...(verdict ? { verdict: verdict as FixPrecheckVerdict } : {}),
     ...(radius ? { radius } : {}),
+    ...(selection ? { selection } : {}),
   };
 }
 

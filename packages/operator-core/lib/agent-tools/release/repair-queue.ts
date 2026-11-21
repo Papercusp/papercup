@@ -9,6 +9,7 @@
  * is now only an alias for `admit` so a stale runbook still lands on the right door.
  */
 import { z } from 'zod';
+import { parsePinnedPrecheckSelection, pinnedSelectionPage } from '../../release/precheck-selection';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
@@ -391,6 +392,8 @@ const argsSchema = z.preprocess(
         op: z.literal('get'),
         /** R-1: read the settled verdict of a dry run that returned `previewOperation`. */
         previewOperationId: z.string().min(4).max(80).optional(),
+        selectionPage: z.object({ after: z.string().min(1).optional(), identity: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+          limit: z.number().int().min(1).max(200).optional() }).optional(),
       }),
       z.object({
         op: z.literal('heal-generated'),
@@ -1002,7 +1005,7 @@ export function precheckRecordOf(
   ctx: { skipPrecheck: boolean; precheckReason: string; dryRun: boolean; population: FixPrecheckPopulation },
 ): NonNullable<FrozenRepairAdmission['precheck']> {
   const summary = summarizeAdmissionRadius(ctx.population.radius);
-  const radius = summary ? { radius: summary } : {};
+  const radius = { ...(summary ? { radius: summary } : {}), ...(ctx.population.selection ? { selection: ctx.population.selection } : {}) };
   if (verdict === null) {
     if (ctx.skipPrecheck)
       return { ran: false, reason: 'skipped', precheckReason: ctx.precheckReason, wouldRun: ctx.population.files, ...radius };
@@ -1046,10 +1049,12 @@ function sameAdmissionPrecheck(
     actor: string;
     sourceCommit: string;
     radius: FixPrecheckPopulation['radius'];
+    selection?: FixPrecheckPopulation['selection'];
     signature: FrozenCandidateRepairQueue['signature'];
   },
 ): state is FrozenRepairAdmissionPrecheck {
   if (!state || state.testEnvironment !== ADMISSION_TEST_ENVIRONMENT) return false;
+  if (canonicalJson(state.selection ?? null) !== canonicalJson(input.selection ?? null)) return false;
   // Resume retains the original measured commit. A rebuilt synthetic commit may
   // have a new message/time but must prove the same TREE (checked below).
   // WI-6554700010030176: the source commit is NOT part of that proof. For a path
@@ -1283,10 +1288,26 @@ export default defineTool({
             inspected.queue?.repairHead ?? null,
           )
         : undefined;
+      const previewVerdict = admissionPreview?.verdict as { precheck?: { selection?: unknown } } | undefined;
+      const selection = args.previewOperationId
+        ? parsePinnedPrecheckSelection(previewVerdict?.precheck?.selection)
+        : inspected.queue?.admissionPrecheck?.selection ?? inspected.queue?.admissions?.at(-1)?.precheck?.selection;
+      let precheckSelection: unknown;
+      if (selection) {
+        try {
+          const page = pinnedSelectionPage(selection, { limit: 4, ...args.selectionPage });
+          precheckSelection = { ...page, next: page.next ? { tool: 'release:repair-queue', args: { op: 'get',
+            ...(args.previewOperationId ? { previewOperationId: args.previewOperationId } : {}), selectionPage: page.next } } : null };
+        } catch (error) {
+          return json({ ok: false, op: 'get', reason: 'selection-cursor-invalid', detail: String(error),
+            recovery: { tool: 'release:repair-queue', args: { op: 'get', ...(args.previewOperationId ? { previewOperationId: args.previewOperationId } : {}) } } });
+        }
+      } else if (args.selectionPage) return json({ ok: false, op: 'get', reason: 'selection-not-recorded' });
       return json({
         ok: true,
         op: 'get',
         ...(admissionPreview ? { admissionPreview } : {}),
+        ...(precheckSelection ? { precheckSelection } : {}),
         ...(healGeneratedOperation ? { healGeneratedOperation } : {}),
         target: inspected.target,
         repairQueue: renderedQueue,
@@ -2185,6 +2206,7 @@ export default defineTool({
           actor: identity.ownerId,
           sourceCommit: outcome.entry.source.sha,
           radius: population.radius,
+          selection: population.selection,
           signature: queue.signature,
         })
           ? queue.admissionPrecheck
@@ -2340,6 +2362,7 @@ export default defineTool({
             // P-007 (#D-037): the managed worker rebuilds the population from `files`; the
             // partition keeps report-only radius files from becoming refusable admitted ones.
             ...(population.radius ? { radius: population.radius } : {}),
+            ...(population.selection ? { selection: population.selection } : {}),
           };
           const operation: FrozenRepairAdmissionPrecheck = resume ? {
             ...resume, status: 'running', verdict: undefined, runnerPid: process.pid,

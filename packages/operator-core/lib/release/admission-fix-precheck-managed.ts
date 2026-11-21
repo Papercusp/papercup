@@ -262,6 +262,7 @@ export function admissionPrecheckMeasurementIdentity(operation: FrozenRepairAdmi
     repairHead: operation.repairHead, builtCommit: operation.builtCommit, builtTree: operation.builtTree,
     sourceCommit: operation.sourceCommit, files: operation.files, removedTestFiles: operation.removedTestFiles,
     radius: operation.radius, classification,
+    ...(operation.selection ? { selection: operation.selection } : {}),
     testEnvironment: operation.testEnvironment })).digest('hex');
 }
 
@@ -398,7 +399,7 @@ async function runBoundedAdmissionPrecheck(
   const unavailable = async (detail: string): Promise<AdmissionPrecheckWorkerOutcome> => {
     await finalize();
     const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files,
-      removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
+      removedTestFiles: operation.removedTestFiles, selection: operation.selection, ...(operation.radius ? { radius: operation.radius } : {}) });
     const verdict = evaluateFixPrecheck(population, { ran: false, reason: 'runner-failed', detail });
     await deps.transition(input.queueTarget, fresh => {
       assertFresh(fresh);
@@ -430,7 +431,7 @@ async function runBoundedAdmissionPrecheck(
     try {
       await finalize();
       const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files,
-        removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
+        removedTestFiles: operation.removedTestFiles, selection: operation.selection, ...(operation.radius ? { radius: operation.radius } : {}) });
       const verdict = evaluateFixPrecheck(population, run);
       await deps.transition(input.queueTarget, fresh => {
         assertFresh(fresh);
@@ -532,7 +533,7 @@ async function runBoundedAdmissionPrecheck(
     if (now() >= operation.expiresAtMs) return unavailable('bounded pre-check deadline expired before settlement');
     validateAdmissionPrecheckResults(operation.files, completed, true);
     const population = precheckPopulation({ signature: queue.signature, admittedPaths: operation.files,
-      removedTestFiles: operation.removedTestFiles, ...(operation.radius ? { radius: operation.radius } : {}) });
+      removedTestFiles: operation.removedTestFiles, selection: operation.selection, ...(operation.radius ? { radius: operation.radius } : {}) });
     const ordered = operation.files.map(file => completed.find(result => result.path === file)!);
     // D-004 ruling 1: pair every guarded red with a MEASURED previous-head verdict while the
     // operation's own test environment is still running. Reuse valid paired rows from the same
@@ -687,6 +688,7 @@ export async function runAdmissionPrecheckWorker(
     removedTestFiles: operation.removedTestFiles,
     // P-007 (#D-037): without the persisted partition every radius file would count as admitted.
     ...(operation.radius ? { radius: operation.radius } : {}),
+    ...(operation.selection ? { selection: operation.selection } : {}),
   });
   let environment: Promise<AdmissionTestEnvironment> | undefined;
   let fixture: AdmissionTestEnvironment | undefined;

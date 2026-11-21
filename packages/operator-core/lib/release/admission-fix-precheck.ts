@@ -35,6 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
+import type { PinnedPrecheckSelection } from './pinned-precheck-selection';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-lock';
 import { dependencyGenerationInfraCode } from './checkpoint-log-tags';
 import { evaluateAdmissionRatchet, previousHeadVerdicts, type RatchetNewFailure } from './admission-ratchet';
@@ -89,6 +90,8 @@ export interface AdmissionRadius {
 }
 
 export interface FixPrecheckPopulation {
+  /** Complete pinned disposition of implicit tests excluded by their actual root runner. */
+  selection?: PinnedPrecheckSelection;
   /** Signature `test-file` ids — the reds the admission claims to fix. */
   signatureTestFiles: string[];
   /** Admitted paths that are test files and NOT in the signature — a fresh red here is an import. */
@@ -110,6 +113,7 @@ function normalize(p: string): string {
 }
 
 export function precheckPopulation(input: {
+  selection?: PinnedPrecheckSelection;
   signature: readonly SignatureLike[];
   admittedPaths: readonly string[];
   /** Dependency-selected files from the immutable admission, outside the signature. */
@@ -176,6 +180,7 @@ export function precheckPopulation(input: {
     };
   }
   return {
+    ...(input.selection ? { selection: input.selection } : {}),
     signatureTestFiles,
     admittedTestFiles,
     removedTestFiles,

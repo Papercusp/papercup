@@ -114,6 +114,7 @@ const mocks = vi.hoisted(() => ({
   startPrecheckWorker: vi.fn(),
   transition: vi.fn(),
   gateOwnership: vi.fn(),
+  routeRepairLead: vi.fn(),
   emitAwaitedEvent: vi.fn(),
   // WI-10004151 part 2: the admit door's dependency-generation prediction seam.
   predict: vi.fn(),
@@ -144,6 +145,7 @@ vi.mock('../../release/generated-repair-managed', async importOriginal => ({
   cancelGeneratedRepair: mocks.cancelGeneratedRepair,
 }));
 vi.mock('../../release/repair-auto-verify', () => ({ scheduleRepairAutoVerify: mocks.autoVerify }));
+vi.mock('../../release/frozen-repair-lead-handoff', () => ({ routeFrozenRepairToLead: mocks.routeRepairLead }));
 vi.mock('../../harness/routines/release-actions', () => ({
   applyFrozenCandidateRepairQueueTransition: mocks.transition,
   readFrozenCandidateRepairQueue: mocks.read,
@@ -494,6 +496,8 @@ describe('selected harness repair queue', () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.routeRepairLead.mockReset();
+  mocks.routeRepairLead.mockResolvedValue({ workItem: 'WI-HANDOFF', lead: 'su-test', pickup: 'pending' });
   mocks.gateOwnership.mockResolvedValue({
     assessment: 'unowned', claimState: 'no-object', workItem: null, takenBy: null, unknown: null,
   });
@@ -565,7 +569,86 @@ beforeEach(() => {
   mocks.predict.mockReset();
 });
 
+describe('release:repair-queue causal groups', () => {
+  const leadOwnership = { assessment: 'held-live', claimState: 'held', workItem: 'WI-GATE',
+    takenBy: 'su-test', holderSessionState: 'live', unknown: null };
+  const assign = { op: 'repair-group', action: 'assign', groupId: 'shared-loader', worker: 'worker-1',
+    members: ['lib/red.test.ts'], sourcePaths: ['lib/loader.ts'], causeEvidence: ['test-run:root'],
+    independentOf: [], sourceWorkItem: 'WI-SOURCE', strategy: 'repair-loader', attemptId: 'attempt-1' };
+
+  it('allows only the verified live gate lead to delegate an existing source group', async () => {
+    mocks.gateOwnership.mockResolvedValue(leadOwnership);
+    const result = body(await tool.handler(assign as never, { role: 'su', workspaceId: 'ws-1' } as never));
+    expect(result).toMatchObject({ ok: true, groupId: 'shared-loader', workItem: 'WI-HANDOFF', pickup: 'pending' });
+    expect(mocks.routeRepairLead).toHaveBeenCalledWith({ workspaceId: 'ws-1', pipeline: 'papercusp', queue,
+      reason: 'explicit-causal-group', assignment: { id: 'shared-loader', caller: 'su-test', worker: 'worker-1',
+        members: assign.members, sourcePaths: assign.sourcePaths, causeEvidence: assign.causeEvidence,
+        independentOf: [], sourceWorkItem: 'WI-SOURCE', strategy: 'repair-loader', attemptId: 'attempt-1', atMs: expect.any(Number) } });
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.transition).not.toHaveBeenCalled();
+  });
+
+  it('refuses a peer attempting to delegate on another live gate lead', async () => {
+    mocks.gateOwnership.mockResolvedValue({ ...leadOwnership, takenBy: 'other-lead' });
+    expect(body(await tool.handler(assign as never, { role: 'su' } as never))).toMatchObject({
+      ok: false, refused: true, reason: 'gate_condition_claimed_by_live_peer' });
+    expect(mocks.routeRepairLead).not.toHaveBeenCalled();
+  });
+
+  it.each(['unowned', 'held-unknown'])('refuses delegation with %s ownership', async assessment => {
+    mocks.gateOwnership.mockResolvedValue({ ...leadOwnership, assessment });
+    expect(body(await tool.handler(assign as never, { role: 'su' } as never))).toMatchObject({
+      ok: false, refused: true, reason: 'only-verified-gate-lead-may-delegate' });
+    expect(mocks.routeRepairLead).not.toHaveBeenCalled();
+  });
+
+  it('lets the group worker record evidence while a peer owns live gate operations', async () => {
+    mocks.gateOwnership.mockResolvedValue({ ...leadOwnership, takenBy: 'other-lead' });
+    const result = body(await tool.handler({ op: 'repair-group', action: 'record-verification',
+      groupId: 'shared-loader', evidenceRefs: ['test-run:verified'] } as never, { role: 'su', workspaceId: 'ws-1' } as never));
+    expect(result).toMatchObject({ ok: true, pickup: 'pending' });
+    expect(mocks.routeRepairLead).toHaveBeenCalledWith({ workspaceId: 'ws-1', pipeline: 'papercusp', queue,
+      reason: 'explicit-causal-group', verification: { groupId: 'shared-loader', caller: 'su-test', evidenceRefs: ['test-run:verified'] } });
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.transition).not.toHaveBeenCalled();
+  });
+});
+
 describe('release:repair-queue', () => {
+  it.each([39, 40, 41, 121])('recovers all %i pinned exclusion records through the normal get cursor across fresh reads', async count => {
+    const selection = { schemaVersion: 1 as const, commit: queue.admissionPrecheck.builtCommit,
+      excluded: Array.from({ length: count }, (_, i) => ({ path: `_retired/${String(i).padStart(4, '0')}/decisive.test.ts`,
+        pattern: '**/_retired/**', config: 'vitest.config.ts', evidence: [{ path: 'vitest.config.ts', blob: 'b'.repeat(40) }] })) };
+    mocks.readState.mockImplementation(async () => ({ status: 'value', queue: JSON.parse(JSON.stringify({ ...queue,
+      admissionPrecheck: { ...queue.admissionPrecheck, selection } })) }));
+    type Request = { op: 'get'; selectionPage?: { after?: string; identity?: string; limit?: number } };
+    type Page = { total: number; remaining: number; rows: Array<{ path: string }>; next: { tool: string; args: Request } | null };
+    let request: Request | undefined = { op: 'get', selectionPage: { limit: 40 } };
+    const recovered: string[] = [];
+    let pages = 0;
+    while (request) {
+      if (++pages > Math.ceil(count / 40) + 1) throw new Error('selection cursor did not advance');
+      const result = body(await tool.handler(request as never, { role: 'su' } as never)) as { ok: boolean; precheckSelection: Page };
+      expect(result.ok).toBe(true);
+      expect(result.precheckSelection.total).toBe(count);
+      recovered.push(...result.precheckSelection.rows.map(row => row.path));
+      expect(result.precheckSelection.remaining).toBe(count - recovered.length);
+      if (result.precheckSelection.next) expect(result.precheckSelection.next.tool).toBe('release:repair-queue');
+      request = result.precheckSelection.next?.args;
+    }
+    expect(recovered).toEqual(selection.excluded.map(row => row.path));
+    expect(recovered.at(-1)).toBe(selection.excluded.at(-1)?.path);
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale exclusion cursor with an explicit recovery call', async () => {
+    const selection = { schemaVersion: 1 as const, commit: queue.admissionPrecheck.builtCommit, excluded: [] };
+    mocks.readState.mockResolvedValue({ status: 'value', queue: { ...queue, admissionPrecheck: { ...queue.admissionPrecheck, selection } } });
+    expect(body(await tool.handler({ op: 'get', selectionPage: { identity: '0'.repeat(64) } } as never, { role: 'su' } as never)))
+      .toMatchObject({ ok: false, reason: 'selection-cursor-invalid', recovery: { tool: 'release:repair-queue', args: { op: 'get' } } });
+  });
+
   it.each([
     ['targeted workspace tests', { mode: 'targeted', fileCount: 38,
       gateIds: ['@papercusp/operator-core :: test:lane-stateful'],

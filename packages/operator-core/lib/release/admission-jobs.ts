@@ -51,6 +51,7 @@ import {
   type ParsedEdges,
 } from '../../../../scripts/lib/related-tests.mjs';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { pinnedImplicitTestExclusions, type PinnedSelectionFile } from './pinned-precheck-selection';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
 import { expandAffectedWorkspaceNames, pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
 import { buildMultiSourceAdmissionSource } from './multi-source-admission';
@@ -548,14 +549,20 @@ export async function immutablePrecheckPopulation(input: ImmutablePrecheckInput)
       return { ok: true, population: precheckPopulation({ ...input, radius, removedTestFiles }) };
     }
     const blobs = new Map<string, string | null>();
+    const pinnedFiles = new Map<string, PinnedSelectionFile>();
     const ownRoots = gitlinks.map((entry) => resolve(root, entry.file));
     const collect = (logicalCwd: string, objectCwd: string, commit: string, entries: Entry[], depth: number): void => {
       if (depth > 8) throw new Error('pinned submodule nesting exceeds inventory bound at ' + logicalCwd);
-      const sources = entries.filter((entry) => entry.type === 'blob' && /\.[cm]?[jt]sx?$/.test(entry.file));
+      const sources = entries.filter((entry) => entry.type === 'blob' && (/\.[cm]?[jt]sx?$/.test(entry.file) || /(?:^|\/)package\.json$/.test(entry.file)));
       const batch = readAdmissionBlobBatch(objectCwd, [...new Set(sources.filter((entry) => entry.mode !== '120000').map((entry) => entry.sha))]);
       if (!batch.ok) throw new Error(objectCwd + '@' + commit + ': ' + batch.detail);
       for (const entry of entries) {
-        if (entry.type === 'blob') blobs.set(resolve(logicalCwd, entry.file), entry.mode === '120000' ? null : batch.contents.get(entry.sha) ?? null);
+        if (entry.type === 'blob') {
+          const absolute = resolve(logicalCwd, entry.file);
+          const content = entry.mode === '120000' ? null : batch.contents.get(entry.sha) ?? null;
+          blobs.set(absolute, content);
+          pinnedFiles.set(relative(root, absolute).split(sep).join('/'), { sha: entry.sha, content });
+        }
         else if (entry.type === 'commit') {
           const logicalChild = resolve(logicalCwd, entry.file);
           const objectChild = resolve(objectCwd, entry.file);
@@ -574,12 +581,18 @@ export async function immutablePrecheckPopulation(input: ImmutablePrecheckInput)
     const related = selected.mode === 'full' ? sources.filter(isTestFile) : selected.selected;
     const tests = sources.filter((file) => isTestFilePath(file));
     const own = tests.filter((file) => ownRoots.some((own) => file.startsWith(own + sep)));
-    const unmeasuredRoots = ownRoots.filter((ownRoot) => !own.some((file) => file.startsWith(ownRoot + sep)));
-    if (unmeasuredRoots.length > 0) return unavailable(`admitted gitlink has no discoverable test files: ${unmeasuredRoots.join(', ')}; no test measurement can certify its paired dependencies`);
     // Router spellings absent from the selector's test regex cannot silently disappear.
-    const affectedTestFiles = [...new Set([...related, ...own, ...tests.filter((file) => !isTestFile(file))])]
+    const selectedTests = [...new Set([...related, ...own, ...tests.filter((file) => !isTestFile(file))])]
       .map((file) => relative(root, file).split(sep).join('/')).sort();
-    return { ok: true, population: precheckPopulation({ ...input, affectedTestFiles, removedTestFiles }) };
+    const explicitTests = [...input.admittedPaths.filter(isTestFilePath), ...input.signature.filter(entry => entry.kind === 'test-file').map(entry => entry.id)]
+      .map(file => file.trim().replaceAll('\\', '/').replace(/^\.\//, ''));
+    const selection = pinnedImplicitTestExclusions({ commit: input.commit, files: pinnedFiles, tests: selectedTests, explicitTests });
+    const excluded = new Set(selection.excluded.map(row => row.path));
+    const affectedTestFiles = selectedTests.filter(file => !excluded.has(file));
+    const unmeasuredRoots = ownRoots.filter(ownRoot => !own.some(file => file.startsWith(ownRoot + sep) && !excluded.has(relative(root, file).split(sep).join('/'))));
+    if (unmeasuredRoots.length > 0) return unavailable(`admitted gitlink has no discoverable executable test files: ${unmeasuredRoots.join(', ')}; no test measurement can certify its paired dependencies`);
+    const pinnedRemoved = removedTestFiles.filter(file => !pinnedFiles.has(file) && !input.admittedPaths.some(path => pinnedFiles.has(path) && path.endsWith('/' + file)));
+    return { ok: true, population: precheckPopulation({ ...input, affectedTestFiles, removedTestFiles: pinnedRemoved, selection }) };
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : String(error));
   }

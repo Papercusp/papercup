@@ -26,6 +26,7 @@ import { admissionOffthreadStats, resetAdmissionOffthread, runAdmissionJob } fro
 import {
   createFrozenCandidateRepairQueue,
   parseFrozenCandidateRepairQueue,
+  parseAdmissionPrecheckRecord,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmissionPrecheck,
 } from './frozen-candidate-repair-queue';
@@ -34,6 +35,7 @@ import * as relatedTests from '../../../../scripts/lib/related-tests.mjs';
 import { evaluateFixPrecheck } from './admission-fix-precheck';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
 import { pinnedNonWorkspacePathRoutes } from '../../../../scripts/lib/affected-path-routes.mjs';
+import { pinnedSelectionPage } from './precheck-selection';
 
 let root: string;
 let commit: string;
@@ -720,6 +722,100 @@ describe('ordinaryAdmissionRadius (P-007)', () => {
     const patterns = ['pkg-*', 'packages/*', '!pkg-excluded'];
     const directories = ['pkg-a', 'pkg-b', 'pkg-consumer', 'pkg-excluded', 'packages/operator-core'];
     expect(expandWorkspaces(patterns, root, { directories }).sort()).toEqual(expandWorkspaces(patterns, root).sort());
+  });
+});
+
+describe('pinned gitlink archive dispositions', () => {
+  it.each([39, 40, 41])('retains and recovers all %i excluded paths while keeping executable paired and custom routes', async count => {
+    const fixture = mkdtempSync(join(tmpdir(), 'gitlink-archive-disposition-'));
+    try {
+      init(fixture);
+      const component = join(fixture, 'component');
+      mkdirSync(component);
+      init(component);
+      const archived = Array.from({ length: count }, (_, i) => i === 0 ? '.papercusp/reports/pinned.test.ts'
+        : `component/_retired/pinned-${String(i).padStart(3, '0')}${i % 7 === 0 ? '.integration' : ''}.test.ts`);
+      put(component, {
+        'package.json': JSON.stringify({ name: '@t/pinned-component' }),
+        'src/api.ts': 'export const api = 1;',
+        'src/api.test.ts': "import {api} from './api'; export const t = api;",
+        ...Object.fromEntries(archived.slice(1).map(path => [path.slice('component/'.length), "import {api} from '../src/api'; export const t = api;"])),
+      });
+      git(component, 'add', '.');
+      git(component, 'commit', '-q', '-m', 'private pinned component');
+      const pin = git(component, 'rev-parse', 'HEAD');
+      const policy = ['vitest.config.ts', 'vitest.integration.config.ts', 'scripts/test-files.mjs',
+        'libs/test-config/src/vitest-config.ts', 'libs/test-config/src/execution-details.ts'];
+      put(fixture, {
+        ...Object.fromEntries(policy.map(path => [path, readFileSync(resolve(import.meta.dirname, '../../../..', path), 'utf8')])),
+        'package.json': JSON.stringify({ private: true, workspaces: ['component'] }),
+        [archived[0]!]: "import {api} from '../../component/src/api'; export const t = api;",
+        'zz-active/decisive.test.ts': "import {api} from '../component/src/api'; export const t = api;",
+        'zz-active/retired-reader.test.ts': "import {api} from '../component/src/api'; export const t = api;",
+        'papercusp-desktop/package.json': JSON.stringify({ scripts: { test: 'node --test' } }),
+        'papercusp-desktop/test/_retired/native.test.js': "import {api} from '../../../component/src/api'; export const t = api;",
+        'templates/_retired/checks/runtime.fixture.test.ts': "import {api} from '../../../component/src/api'; export const t = api;",
+        'libs/generic/template-kit/vitest.config.ts': 'export default {test:{include:["../../../templates/**/checks/*.fixture.test.ts"]}};',
+      });
+      git(fixture, 'add', '-f', '.');
+      git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${pin},component`);
+      git(fixture, 'commit', '-q', '-m', 'private pinned router policy');
+      const built = git(fixture, 'rev-parse', 'HEAD');
+      // Both live trees drift. Every subsequent selection and evidence blob must still use the pins.
+      put(fixture, { 'vitest.config.ts': 'export default unsafeMutableConfig();', 'component/_retired/untracked.test.ts': 'export const t=1;' });
+      const input = { root: fixture, commit: built, admittedPaths: ['component'],
+        signature: [{ kind: 'test-file' as const, id: 'zz-active/decisive.test.ts' }] };
+      const result = await immutablePrecheckPopulation(input);
+      if (!result.ok) throw new Error(result.detail);
+      const { population } = result;
+      expect(population.selection?.unavailable).toBeUndefined();
+      expect(population.selection?.excluded.map(row => row.path)).toEqual([...archived].sort());
+      for (const row of population.selection!.excluded) for (const proof of row.evidence)
+        expect(proof.blob).toBe(git(fixture, 'rev-parse', `${built}:${proof.path}`));
+      for (const active of ['component/src/api.test.ts', 'zz-active/decisive.test.ts', 'zz-active/retired-reader.test.ts',
+        'papercusp-desktop/test/_retired/native.test.js', 'templates/_retired/checks/runtime.fixture.test.ts']) expect(population.files).toContain(active);
+      expect(population.files.some(path => archived.includes(path))).toBe(false);
+      expect(population.files).not.toContain('component/_retired/untracked.test.ts');
+
+      const explicitChild = archived.at(-1)!;
+      const explicit = await immutablePrecheckPopulation({ ...input, admittedPaths: ['component', archived[0]!, explicitChild],
+        signature: [{ kind: 'test-file', id: explicitChild }] });
+      if (!explicit.ok) throw new Error(explicit.detail);
+      expect(explicit.population.files).toEqual(expect.arrayContaining([archived[0], explicitChild]));
+      expect(explicit.population.removedTestFiles).not.toContain(explicitChild);
+      expect(explicit.population.selection?.excluded).toHaveLength(count - 2);
+
+      const initial = createFrozenCandidateRepairQueue({ candidate: built, base: null, failingTests: ['zz-active/decisive.test.ts'], nowMs: 10 });
+      let persisted: FrozenCandidateRepairQueue = { ...initial, admissionPrecheck: {
+        schemaVersion: 1, operationId: 'archive-operation', runnerTaskId: 'archive-task', status: 'running',
+        candidate: built, repairHead: built, builtCommit: built, actor: 'su-test', testEnvironment: ADMISSION_TEST_ENVIRONMENT,
+        files: population.files, selection: population.selection, startedAtMs: 10, updatedAtMs: 10, expiresAtMs: 60_000,
+      } };
+      const recovered: string[] = [];
+      let cursor: Parameters<typeof pinnedSelectionPage>[1];
+      do {
+        persisted = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(persisted)))!;
+        const page = pinnedSelectionPage(persisted.admissionPrecheck!.selection!, cursor);
+        recovered.push(...page.rows.map(row => row.path));
+        cursor = page.next ?? undefined;
+      } while (cursor);
+      expect(recovered).toEqual([...archived].sort());
+      expect(parseAdmissionPrecheckRecord(JSON.parse(JSON.stringify({ ran: false, selection: population.selection })))?.selection).toEqual(population.selection);
+      const ran: string[] = [];
+      const outcome = await runAdmissionPrecheckWorker({ operationId: 'archive-operation', taskId: 'archive-task',
+        queueTarget: { workspaceId: 'archive-fixture', installSlug: 'papercusp' }, integrationRoot: fixture,
+        checkpointRoot: join(fixture, 'unused-checkpoint'), expiresAtMs: 60_000 }, {
+        getTask: async () => ({ state: 'running', confined: true }),
+        readQueue: async () => ({ status: 'value', queue: persisted }),
+        transition: async (_target, update) => { persisted = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(update(persisted))))!; },
+        createRunner: () => async run => { ran.push(...run.files); return { ran: true, commit: run.commit,
+          results: run.files.map(path => ({ path, status: 'pass' as const })) }; },
+        now: () => 30,
+      });
+      expect(ran).toEqual(population.files);
+      expect(outcome).toMatchObject({ status: 'settled', verdict: { ok: true } });
+      expect(persisted.admissionPrecheck?.selection).toEqual(population.selection);
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });
 
