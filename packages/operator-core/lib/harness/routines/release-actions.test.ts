@@ -340,6 +340,7 @@ import type { QualificationAdmission } from '../../release-checkpoint-config';
 import type { FlakeSuspect } from '../../dev-data';
 import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+  frozenRepairRoundExecution,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
 import {
@@ -4481,7 +4482,8 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         schemaVersion: 1, phase: 'ready-to-verify', candidate: 'b'.repeat(40), base: 'd'.repeat(40),
         repairHead: sha, attempts: 1, openedAtMs: 1, updatedAtMs: 2, fixerSpawnId: null,
         failingTests: ['lib/red.test.ts'], signature: [],
-        convergenceRounds: [{ round: 1, head: sha, failingCount: 1, atMs: 120 }],
+        convergenceRounds: [{ round: 1, head: sha, failingCount: 1, atMs: 120,
+          executed: frozenRepairRoundExecution({ mode: 'full' }) }],
       } as unknown as FrozenCandidateRepairQueue });
     expect(detail.candidate).toBe('b'.repeat(12));
     expect(detail.testPassReuse).toMatchObject({ audit: { judgedSha: sha } });
@@ -4558,6 +4560,18 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((legs[0].outputTail as string).length).toBe(500);
   });
 
+  it.each([2, 3, 4, 81])('persists %i unfinished leaf identities and recovery in the per-fire diagnostic ledger', (count) => {
+    const continuation = { complete: false, totalCommandCount: count + 1, completedCommandCount: 1,
+      remainingCommands: Array.from({ length: count }, (_, i) => ({ key: `leaf-${i}`, gateId: 'gate', script: `s${i}`,
+        workspace: null, status: 'pending' as const })), recovery: 'next ordinary repair tick resumes repairQueue.repairTickProgress' };
+    const detail = buildCheckpointDetail({ reason: 'repair-in-progress', green: null, repairTickLegs: {
+      head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: [], legs: [],
+      populationEvidence: { status: 'unknown', measuredLegCount: 0, failingSignatureCount: 0 }, continuation,
+    } });
+    expect(JSON.parse(JSON.stringify(detail)).repairTickLegs.continuation).toEqual(continuation);
+    expect(JSON.parse(JSON.stringify(detail)).repairTickLegs.populationEvidence.status).toBe('unknown');
+  });
+
   it('WI-39944: buildCheckpointDetail preserves the bounded repair-queue identity needed by durable readers', () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',
@@ -4607,6 +4621,8 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
         fixerSpawnId: 'fixer-2',
         failingTests: ['lib/red.test.ts'],
     signature: [],
+        convergenceRounds: [{ round: 1, head: 'a'.repeat(40), failingCount: 1, atMs: 1,
+          executed: frozenRepairRoundExecution({ mode: 'full' }) }],
       },
     });
 

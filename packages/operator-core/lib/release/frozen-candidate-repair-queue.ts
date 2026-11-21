@@ -740,6 +740,10 @@ export interface FrozenCandidateRepairQueue {
    * absent, which reads as "no leg measurement recorded" — never as "no legs are failing".
    */
   legs?: readonly FrozenRepairLegState[];
+  /** EI-29227725167693819: exact command receipts + fair restart cursor, in this queue's
+   * existing JSON/CAS store. Preserve unknown bytes; the consumer rejects corrupt history
+   * intact rather than silently forgetting receipts. Historical heads remain recoverable. */
+  repairTickProgress?: unknown;
   /** Sticky legacy/malformed lifecycle uncertainty; unreadable source stays recoverable here. */
   legEvidence?: RepairLegEvidence;
   /**
@@ -2878,6 +2882,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
     ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),
     ...(legs.length > 0 ? { legs } : {}),
+    ...(row.repairTickProgress !== undefined ? { repairTickProgress: row.repairTickProgress } : {}),
     legEvidence,
     ...(admissions.length > 0 ? { admissions } : {}),
     ...(retestRequested ? { retestRequested } : {}),

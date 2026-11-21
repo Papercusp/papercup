@@ -2404,6 +2404,21 @@ describe('P-009: an awaiting-fixer hold tick with a cheap-legs measurement stays
     ],
   };
 
+  it.each([2, 3, 4, 81])('retains all %i unfinished command identities and their recovery path in saved partial diagnostics', async (count) => {
+    const remainingCommands = Array.from({ length: count }, (_, i) => ({ key: `leaf-${i}`, gateId: 'pending-gate',
+      script: `script-${i}`, workspace: '@scope/pkg', status: i === 0 ? 'aborted' as const : 'pending' as const }));
+    const continuation = { complete: false, totalCommandCount: count + 2, completedCommandCount: 2, remainingCommands,
+      recovery: 'next ordinary repair tick resumes repairQueue.repairTickProgress' };
+    seededGh = { failingTests: ['lint:tsc', 'pending-gate'] };
+    await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
+      repairTickLegs: { ...tickLegs, populationEvidence: { status: 'unknown', measuredLegCount: 2, failingSignatureCount: 1 }, continuation },
+    });
+    const persisted = JSON.parse(JSON.stringify(seededGh!.repairTickLegs));
+    expect(persisted.continuation).toEqual(continuation);
+    expect(persisted.populationEvidence.status).toBe('unknown');
+    expect((seededGh!.failingTests as string[])).toContain('pending-gate');
+  });
+
   it('writes failingTestsMeasured TRUE, refreshes the measured entries in SQL, and records provenance', async () => {
     await trackGateStall(ctx, 'repair-in-progress', CANDIDATE, undefined, null, undefined, 'held', undefined, {
       repairTickLegs: tickLegs,

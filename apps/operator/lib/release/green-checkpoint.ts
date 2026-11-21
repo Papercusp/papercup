@@ -73,6 +73,11 @@ import {
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { extractSubjectPathsFromLegOutput, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
+import {
+  prepareRepairTickProgress, pendingRepairTickCommands, startRepairTickCommand,
+  finishRepairTickCommand, storeRepairTickProgress, repairTickProgressSummary,
+  type RepairTickProgress, type RepairTickCommandResult,
+} from "@papercusp/operator-core/lib/release/repair-tick-progress";
 import { npmWorkspaceDirsByName } from "@papercusp/operator-core/lib/release/npm-workspace-dirs";
 import { FLAKY_QUARANTINE_KIND } from "@papercusp/operator-core/lib/release/verdict-flip-quarantine";
 import {
@@ -637,9 +642,18 @@ export interface FrozenReviewClockOptions {
 
 /** WI-6554700010018556: what one repair-tick leg measurement is asked for. `signal` is the
  *  post-verdict deadline ({@link REPAIR_TICK_LEGS_DEADLINE_MS}): once it aborts, the
- *  in-flight leg is killed and the measurement returns `null` (unmeasured). */
+ *  in-flight leg is killed. Durable callers retain explicit partial diagnostics; callers
+ *  without a progress store retain the legacy `null` (unmeasured) result. */
 export interface RepairTickLegsOptions extends FrozenReviewClockOptions {
   signal?: AbortSignal;
+  progress?: RepairTickProgressIo;
+}
+
+interface RepairTickProgressIo {
+  candidate: string;
+  openedAtMs: number;
+  previous?: unknown;
+  save(progress: RepairTickProgress): Promise<void>;
 }
 
 /** A source/test sibling whose newest committed half sits beyond the candidate cut. */
@@ -769,12 +783,15 @@ export interface RepairTickLegs {
    *  mismatch aborts the measurement to `null` rather than mislabeling results). */
   head: string;
   atMs: number;
-  /** True when every measured leg passed. */
+  /** True only when the command manifest is complete and no measured leg failed. */
   ok: boolean;
-  /** Registry ids of every leg that did not pass — complete, not a first-failure floor. */
+  /** Observed failing leg ids. Consult populationEvidence/continuation before treating
+   * this as the complete population; partial results are diagnostic evidence only. */
   failingSignatures: string[];
   legs: RepairTickLegRecord[];
   populationEvidence?: RepairTickLegPopulationEvidence;
+  /** Diagnostic coverage only; unfinished commands never become a complete verdict. */
+  continuation?: ReturnType<typeof repairTickProgressSummary>;
 }
 
 /** P-008: one admitted path whose promoted frozen-lineage entry is not the entry currently
@@ -1026,8 +1043,9 @@ export interface CheckpointDeps {
    *  NON-TEST gate legs ({@link NON_TEST_GATE_SCRIPTS}) at `ref` — the frozen repair queue's
    *  MOVABLE repairHead — on an `awaiting-fixer` HOLD tick that renders no suite verdict.
    *  Like {@link CheckpointDeps.runGateAtRef}, every requested leg is measured; this hold-tick
-   *  variant additionally persists duration/lifecycle records, so `failingSignatures` is the complete fresh non-test
-   *  failing set, not a floor. `null` ⇒ the measurement could not honestly attribute results
+   *  variant additionally persists command receipts and resumes unfinished work. A partial
+   *  population is explicit in `continuation` and never a complete failing set.
+   *  `null` ⇒ the measurement could not honestly attribute results
    *  to `ref` (setup/head mismatch) — callers must treat that as UNMEASURED, never as green.
    *  Optional: absent ⇒ hold ticks behave exactly as before (stubs/older deps unaffected). */
   runRepairTickLegs?(
@@ -18345,10 +18363,11 @@ export async function measureRepairTickLegs(
      *  wall-clock. Production uses a real timer. */
     sleep?: (ms: number) => Promise<void>;
     /** WI-6554700010018556: the caller's deadline. Checked before setup, after setup and
-     *  between every script; once aborted the measurement returns `null` — a partial leg set
-     *  must never be reported as the tick's complete failing set. The real `runScript`
+     *  between every script; aborted durable measurements retain explicit partial coverage,
+     *  while legacy callers return `null`. Neither is a complete failing set. The real `runScript`
      *  forwards the same signal to its child so the in-flight leg is killed, not abandoned. */
     signal?: AbortSignal;
+    progress?: RepairTickProgressIo;
   },
   ref: string,
   registry: Record<string, readonly RepairTickRun[]> = NON_TEST_GATE_SCRIPTS,
@@ -18402,135 +18421,116 @@ export async function measureRepairTickLegs(
     return null;
   }
   if (io.signal?.aborted) return abortedUnmeasured("after setup");
-  const legs: RepairTickLegRecord[] = [];
   const registryEntries = Object.entries(registry);
-  for (const [legIndex, [gateId, runs]] of registryEntries.entries()) {
-    const startedAt = now();
-    let worst: RepairTickLegRecord["status"] = "pass";
-    const tails: string[] = [];
-    const subjectPaths = new Set<string>();
-    let subjectPathsComplete = true;
-    let ranScript = false;
-    // WI-10000288: distinguish "a script ran and declined to answer" from "a script ran and
-    // verified", so a leg is reported `not-checked` only when NOTHING that ran verified.
-    let notCheckedAny = false;
-    let verifiedAny = false;
-    for (const run of runs) {
+  const commands = registryEntries.flatMap(([gateId, runs]) => {
+    const occurrences = new Map<string, number>();
+    return runs.map((run) => {
       const { script, workspace } = normalizeRepairTickRun(run);
-      // The same label `measureTargetedGateRuns` uses, so a workspace run is identifiable in
-      // the tail and is classified by the id `isNotCheckedNonGating` is registered against.
-      const label = workspace ? `${workspace} :: ${script}` : script;
-      let availability: NpmScriptCheck | undefined;
-      try {
-        // WI-10001529: a WORKSPACE run is deliberately NOT pre-checked. `scriptAvailability`
-        // reads ONE package.json — the checkout root's — so asking it about `<ws> :: <script>`
-        // answers about the root manifest and returns "absent" for a script that plainly
-        // exists in the workspace, silently skipping the very signature this path exists to
-        // keep measured. The check earns its keep only for the static ROOT registry, whose
-        // scripts a subject hive legitimately may not declare; a workspace task id came from
-        // a task the gate MEASURED failing, so its script demonstrably existed. If it has
-        // since vanished the run reports a fail — loud and honest, never a silent skip.
-        availability = workspace ? undefined : io.scriptAvailability?.(script);
-      } catch (e) {
-        worst = "errored";
-        subjectPathsComplete = false;
-        tails.push(
-          `${label}: package.json inspection failed: ${e instanceof Error ? e.message : String(e)}`,
-        );
-        continue;
-      }
-      if (availability === "absent") continue;
-      if (availability === "unreadable") {
-        worst = "errored";
-        subjectPathsComplete = false;
-        tails.push(`${label}: package.json unreadable`);
-        continue;
-      }
-      if (io.signal?.aborted) return abortedUnmeasured(`before ${label}`);
-      ranScript = true;
-      // WI-6554700010018556: an entry line per script, so a stall or overrun names the leg
-      // that was running (run fc4e96c0 logged nothing for 58m after setup, then was killed).
-      io.log(
-        `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} started`,
-      );
-      try {
-        io.onLegStart?.({ label, index: legIndex + 1, total: registryEntries.length });
-      } catch {
-        /* best-effort: publishing the leg must never fail the measurement */
-      }
-      const scriptStartedAt = now();
-      try {
-        // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/measureRepairTickLegs:680b37af1960f6d2310b:1","classification":"durable","reason":"The <module>/measureRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-        const r = await io.runScript(script, workspace);
-        io.log(
-          `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} exit ${r.code} ` +
-            `in ${Math.max(0, now() - scriptStartedAt)}ms`,
-        );
-        // WI-10000288: the same three-outcome contract `runGateAtRef` applies, and it matters
-        // MORE here — this is the path that rebuilds `failingSignatures`. A guard registered
-        // `notCheckedIsNonGating` exiting EXIT_NOT_CHECKED examined nothing (empty
-        // working-tree diff in the clean checkout), so collapsing it into `fail` re-entered a
-        // leg into the repair signature every tick that no fix to the subject could ever
-        // retire — the verdict was never about the subject.
-        if (r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label)) {
-          notCheckedAny = true;
-          tails.push(`${label}: NOT CHECKED (examined nothing — not gating)`);
-        } else if (r.code !== 0) {
-          if (worst === "pass") worst = "fail";
-          subjectPathsComplete &&= r.subjectPathsComplete === true && Array.isArray(r.subjectPaths);
-          for (const file of r.subjectPaths ?? extractSubjectPathsFromLegOutput(r.tail)) {
-            subjectPaths.add(file);
-          }
-          tails.push(
-            `${label}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
-          );
-        } else {
-          verifiedAny = true;
-        }
-      } catch (e) {
-        // An abort kills the leg mid-run: its rejection is the deadline, not a leg verdict.
-        if (io.signal?.aborted) return abortedUnmeasured(`during ${label}`);
-        io.log(
-          `repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} errored ` +
-            `in ${Math.max(0, now() - scriptStartedAt)}ms`,
-        );
-        worst = "errored";
-        subjectPathsComplete = false;
-        tails.push(`${label}: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
-    if (!ranScript && worst === "pass") worst = "skipped";
-    // Only when NOTHING that ran actually verified: one passing sibling script is real
-    // coverage, so the leg is a pass that merely notes the declined guard in its tail.
-    else if (worst === "pass" && notCheckedAny && !verifiedAny) worst = "not-checked";
-    legs.push({
-      id: gateId,
-      status: worst,
-      durationMs: Math.max(0, now() - startedAt),
-      // WI-10002075: take the FRONT, not the tail. Each leg's tail is now digest-first
-      // (summarizeLegOutput), so truncating from the end would discard exactly the file
-      // names the digest was built to preserve — and with several legs joined, it dropped
-      // every leg but the last.
-      ...(tails.length ? { outputTail: tails.join(" | ").slice(0, 3000) } : {}),
-      ...(subjectPaths.size || (worst === "fail" && subjectPathsComplete) ? { subjectPaths: [...subjectPaths] } : {}),
-      ...(worst === "fail" && subjectPathsComplete ? { subjectPathsComplete: true } : {}),
+      const identity = JSON.stringify([gateId, script, workspace]);
+      const occurrence = occurrences.get(identity) ?? 0;
+      occurrences.set(identity, occurrence + 1);
+      return { key: JSON.stringify([gateId, script, workspace, occurrence]), gateId, script, workspace };
     });
-  }
-  const failingSignatures = legs
-    .filter((leg) => leg.status === "fail" || leg.status === "errored")
-    .map((leg) => leg.id);
-  return {
-    head: verifiedHead,
-    atMs: now(),
-    ok: failingSignatures.length === 0,
-    failingSignatures,
-    legs,
-    populationEvidence: {
-      status: 'complete',
-      measuredLegCount: legs.filter((leg) => leg.status === 'pass' || leg.status === 'fail' || leg.status === 'errored').length,
-      failingSignatureCount: failingSignatures.length,
-    },
+  });
+  let progress = prepareRepairTickProgress({ candidate: io.progress?.candidate ?? ref,
+    head: verifiedHead, openedAtMs: io.progress?.openedAtMs ?? 0 }, commands, io.progress?.previous);
+  const save = async (next: RepairTickProgress) => {
+    await io.progress?.save(next);
+    progress = next;
   };
+  const snapshot = () => repairTickProgressMeasurement(progress, now(), registryEntries.map(([id]) => id), !!io.progress);
+  const aborted = (where: string) => {
+    abortedUnmeasured(where);
+    return io.progress ? snapshot() : null;
+  };
+  await save(progress);
+  for (const command of pendingRepairTickCommands(progress)) {
+    const { key, gateId, script, workspace } = command;
+    const label = workspace ? `${workspace} :: ${script}` : script;
+    if (io.signal?.aborted) return aborted(`before ${label}`);
+    // Cursor publication is required, not best effort. A failed write launches no command.
+    await save(startRepairTickCommand(progress, key));
+    if (io.signal?.aborted) {
+      await save(finishRepairTickCommand(progress, key));
+      return aborted(`before ${label}`);
+    }
+    const scriptStartedAt = now();
+    let record: RepairTickCommandResult;
+    try {
+      // Root metadata cannot answer availability for a workspace script (WI-10001529).
+      let availability: NpmScriptCheck | undefined;
+      try { availability = workspace ? undefined : io.scriptAvailability?.(script); }
+      catch (e) { throw new Error(`package.json inspection failed: ${e instanceof Error ? e.message : String(e)}`); }
+      if (availability === 'absent') record = { status: 'skipped', durationMs: 0 };
+      else if (availability === 'unreadable') record = { status: 'errored', durationMs: 0, outputTail: `${label}: package.json unreadable` };
+      else {
+        const legIndex = registryEntries.findIndex(([id]) => id === gateId);
+        io.log(`repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} started`);
+        try { io.onLegStart?.({ label, index: legIndex + 1, total: registryEntries.length }); } catch { /* best effort phase telemetry */ }
+        const r = await io.runScript(script, workspace);
+        // A child finishing while abort is delivered has not produced a trustworthy result.
+        if (io.signal?.aborted) {
+          await save(finishRepairTickCommand(progress, key));
+          return aborted(`during ${label}`);
+        }
+        const durationMs = Math.max(0, now() - scriptStartedAt);
+        io.log(`repair-tick leg ${legIndex + 1}/${registryEntries.length} ${label} exit ${r.code} in ${durationMs}ms`);
+        record = r.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label)
+          ? { status: 'not-checked', durationMs, outputTail: `${label}: NOT CHECKED (examined nothing — not gating)` }
+          : r.code === 0 ? { status: 'pass', durationMs }
+          : { status: 'fail', durationMs, outputTail: `${label}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ''}`,
+            subjectPaths: r.subjectPaths ?? extractSubjectPathsFromLegOutput(r.tail),
+            subjectPathsComplete: r.subjectPathsComplete === true && Array.isArray(r.subjectPaths) };
+      }
+    } catch (e) {
+      if (io.signal?.aborted) {
+        await save(finishRepairTickCommand(progress, key));
+        return aborted(`during ${label}`);
+      }
+      record = { status: 'errored', durationMs: Math.max(0, now() - scriptStartedAt),
+        outputTail: `${label}: ${e instanceof Error ? e.message : String(e)}` };
+      io.log(`repair-tick leg ${label} errored in ${record.durationMs}ms`);
+    }
+    // Persist both positive and negative terminal receipts before the next leaf.
+    await save(finishRepairTickCommand(progress, key, record));
+  }
+  return snapshot();
+}
+
+function repairTickProgressMeasurement(
+  progress: RepairTickProgress, atMs: number,
+  gateIds = [...new Set(progress.commands.map((command) => command.gateId))],
+  includeContinuation = true,
+): RepairTickLegs {
+  const continuation = repairTickProgressSummary(progress);
+  const legs: RepairTickLegRecord[] = [];
+  for (const id of gateIds) {
+    const commands = progress.commands.filter((command) => command.gateId === id);
+    const results = commands.flatMap((command) => {
+      const state = progress.states[command.key];
+      return state?.status === 'complete' && state.result ? [state.result] : [];
+    });
+    const complete = results.length === commands.length;
+    const errors = results.filter((record) => record.status === 'fail' || record.status === 'errored');
+    // A partial pass is never a passing gate. A completed failing leaf remains useful evidence.
+    if (!complete && !errors.length) continue;
+    const status = errors.some((record) => record.status === 'errored') ? 'errored'
+      : errors.length ? 'fail' : results.some((record) => record.status === 'pass') ? 'pass'
+      : results.some((record) => record.status === 'not-checked') ? 'not-checked' : 'skipped';
+    const tails = results.flatMap((record) => record.outputTail ? [record.outputTail] : []);
+    const subjects = [...new Set(errors.flatMap((record) => record.subjectPaths ?? []))];
+    const subjectPathsComplete = complete && errors.every((record) => record.subjectPathsComplete === true);
+    legs.push({ id, status, durationMs: results.reduce((sum, record) => sum + record.durationMs, 0),
+      ...(tails.length ? { outputTail: tails.join(' | ') } : {}),
+      ...(subjects.length || (status === 'fail' && subjectPathsComplete) ? { subjectPaths: subjects } : {}),
+      ...(status === 'fail' && subjectPathsComplete ? { subjectPathsComplete: true } : {}) });
+  }
+  const failingSignatures = legs.filter((leg) => leg.status === 'fail' || leg.status === 'errored').map((leg) => leg.id);
+  return { head: progress.head, atMs, ok: continuation.complete && !failingSignatures.length, failingSignatures, legs,
+    populationEvidence: { status: continuation.complete ? 'complete' : 'unknown',
+      measuredLegCount: legs.filter((leg) => ['pass', 'fail', 'errored'].includes(leg.status)).length,
+      failingSignatureCount: failingSignatures.length },
+    ...(includeContinuation ? { continuation } : {}) };
 }
 
 /** WI-10001529: the gate ids ONE repair tick must re-measure — the static registry legs PLUS
@@ -18560,8 +18560,8 @@ export function repairTickGateIds(queue: {
 /**
  * P-009: attach the cheap-legs measurement to an `awaiting-fixer` repair hold result, at
  * the ONE point downstream of every hold-return site (the runGreenCheckpoint boundary).
- * Strictly additive and fail-safe: any other result shape, a missing dep, a `null`
- * measurement, or a thrown measurement leaves the result byte-identical to today.
+ * Other result shapes and missing deps are untouched. Durable command progress is retained
+ * even when the measurement aborts or throws; it never changes the full-suite verdict.
  */
 export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   result: T,
@@ -18656,6 +18656,37 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
   const abortGraceMs = bounds.abortGraceMs ?? REPAIR_TICK_LEGS_ABORT_GRACE_MS;
   const controller = new AbortController();
   const startedAtMs = Date.now();
+  let currentQueue = queue;
+  let savedMeasurement: RepairTickLegs | undefined;
+  let acceptingProgress = true;
+  const progress: RepairTickProgressIo | undefined = deps.transitionFrozenRepairQueue || deps.writeFrozenRepairQueue ? {
+    candidate: queue.candidate, openedAtMs: queue.openedAtMs, previous: queue.repairTickProgress,
+    save: async (next) => {
+      if (!acceptingProgress) throw new Error('repair-tick-progress: deadline cleanup finished');
+      const snapshot = repairTickProgressMeasurement(next, Date.now());
+      const transition = (fresh: FrozenCandidateRepairQueue) => {
+        if (!acceptingProgress || fresh.candidate !== queue.candidate || fresh.repairHead !== queue.repairHead ||
+          fresh.openedAtMs !== queue.openedAtMs || fresh.phase !== 'awaiting-fixer') {
+          throw new Error('repair-tick-progress: frozen scope superseded');
+        }
+        const updated = { ...fresh, repairTickProgress: storeRepairTickProgress(fresh.repairTickProgress, next),
+          updatedAtMs: Math.max(fresh.updatedAtMs + 1, snapshot.atMs) };
+        return withMeasuredLegSubjects(updated, snapshot.head, snapshot.legs, updated.updatedAtMs);
+      };
+      if (deps.transitionFrozenRepairQueue) {
+        const outcome = await deps.transitionFrozenRepairQueue(transition);
+        if (!outcome.queue || outcome.status === 'absent') throw new Error('repair-tick-progress: frozen queue retired');
+        currentQueue = outcome.queue;
+      } else {
+        const updated = transition(currentQueue);
+        await deps.writeFrozenRepairQueue!(updated, { expectedUpdatedAtMs: currentQueue.updatedAtMs });
+        currentQueue = updated;
+      }
+      savedMeasurement = snapshot;
+    },
+  } : undefined;
+  const savedResult = (): T => savedMeasurement
+    ? { ...result, repairQueue: currentQueue, repairTickLegs: savedMeasurement } : result;
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"deadline">((resolve) => {
     deadlineTimer = setTimeout(() => resolve("deadline"), deadlineMs);
@@ -18665,7 +18696,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
     const measurement = deps.runRepairTickLegs(
       queue.repairHead,
       repairTickGateIds(queue),
-      { frozenCandidateOpenedAtMs: queue.openedAtMs, signal: controller.signal },
+      { frozenCandidateOpenedAtMs: queue.openedAtMs, signal: controller.signal, ...(progress ? { progress } : {}) },
     );
     const outcome = await Promise.race([measurement, deadline]);
     if (outcome === "deadline") {
@@ -18683,6 +18714,7 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
         }),
       ]);
       if (graceTimer) clearTimeout(graceTimer);
+      acceptingProgress = false;
       const elapsedMs = Date.now() - startedAtMs;
       // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:0f7ba2dae93b413e6d63:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
       deps.log(
@@ -18699,28 +18731,35 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
           deps.log,
         );
       }
-      return result;
+      if (savedMeasurement?.continuation) deps.log(
+        `P-009 diagnostic progress retained: ${savedMeasurement.continuation.completedCommandCount}/${savedMeasurement.continuation.totalCommandCount} commands; ` +
+        `${savedMeasurement.continuation.remainingCommands.length} unfinished — next ordinary tick resumes the exact scope`,
+      );
+      return savedResult();
     }
     const measured = outcome;
-    if (!measured) return result;
+    if (!measured) return savedResult();
     // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:e70a55dc06b04479b5eb:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `P-009 repair-tick legs at ${measured.head.slice(0, 12)}: ` +
-        (measured.ok
+        (measured.continuation && !measured.continuation.complete
+          ? `PARTIAL ${measured.continuation.completedCommandCount}/${measured.continuation.totalCommandCount} commands; observed failures ${measured.failingSignatures.join(', ')}`
+          : measured.ok
           ? `all ${measured.legs.length} pass`
           : `FAILING ${measured.failingSignatures.join(", ")}`) +
         ` (awaiting-fixer hold stays measured)`,
     );
     // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:635719c37de4b0e95d7d:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-    const repairQueue = await foldRepairTickLegsIntoQueue(queue, measured, deps);
+    const repairQueue = await foldRepairTickLegsIntoQueue(currentQueue, measured, deps);
     return { ...result, repairTickLegs: measured, repairQueue };
   } catch (e) {
     // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/augmentWithRepairTickLegs:c56dffb2ac632ce11d2b:1","classification":"durable","reason":"The <module>/augmentWithRepairTickLegs context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     deps.log(
       `warn: P-009 repair-tick leg measurement failed: ${e instanceof Error ? e.message : e}`,
     );
-    return result;
+    return savedResult();
   } finally {
+    acceptingProgress = false;
     if (deadlineTimer) clearTimeout(deadlineTimer);
   }
 }
@@ -26226,6 +26265,7 @@ export function realCheckpointDeps(
             writeCheckpointRunPhase(tickPhaseLockDir, "suite", { activity: "repair-tick-legs", leg }),
           resolveHead: () => revParse(cfg.checkpointRoot, "HEAD"),
           signal: opts?.signal,
+          progress: opts?.progress,
           runScript: async (script, workspace) => {
             // Same invocation shape runGateAtRef uses above, so a workspace leg re-runs
             // through the standalone-package path when the workspace has one and through

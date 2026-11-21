@@ -1437,6 +1437,7 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
         ok: true,
         failingSignatures: [],
         legs: [{ id: contradicted, status: "pass", durationMs: 1 }],
+        populationEvidence: { status: 'complete', measuredLegCount: 1, failingSignatureCount: 0 },
       },
     );
 
@@ -1458,6 +1459,7 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
           ok: false,
           failingSignatures: [],
           legs: [{ id: contradicted, status: "pass", durationMs: 1 }],
+          populationEvidence: { status: 'complete', measuredLegCount: 1, failingSignatureCount: 0 },
         },
       ),
     ).toEqual([realRed]);
@@ -1494,6 +1496,7 @@ describe("WI-479091: longest-green-prefix salvage reachability", () => {
       ok: true,
       failingSignatures: [],
       legs: [{ id: contradicted, status: "pass" as const, durationMs: 1 }],
+      populationEvidence: { status: 'complete' as const, measuredLegCount: 1, failingSignatureCount: 0 },
     }));
     deps.runRepairTickLegs = tick;
     const route = vi.fn(async (_input: unknown) => undefined);

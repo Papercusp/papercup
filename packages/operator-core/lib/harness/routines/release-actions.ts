@@ -60,6 +60,7 @@ import {
 import { nextStoredRatchetShadow, type RatchetShadowHealth } from '../../release/ratchet-shadow';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import type { RepairTickLegPopulationEvidence } from '../../release/repair-tick-legs-snapshot';
+import type { repairTickProgressSummary } from '../../release/repair-tick-progress';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import {
   composeGateRedOwnership,
@@ -1868,6 +1869,7 @@ export interface CheckpointVerdict {
     failingSignatures: string[];
     legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string; subjectPaths?: string[]; subjectPathsComplete?: boolean }>;
     populationEvidence?: RepairTickLegPopulationEvidence;
+    continuation?: ReturnType<typeof repairTickProgressSummary>;
   };
 }
 
@@ -2495,6 +2497,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       atMs: v.repairTickLegs.atMs,
       ok: v.repairTickLegs.ok,
       ...(v.repairTickLegs.populationEvidence ? { populationEvidence: v.repairTickLegs.populationEvidence } : {}),
+      ...(v.repairTickLegs.continuation ? { continuation: structuredClone(v.repairTickLegs.continuation) } : {}),
       failingSignatures: [...v.repairTickLegs.failingSignatures],
       legs: v.repairTickLegs.legs.map((leg) => ({
         id: leg.id,
@@ -5260,6 +5263,7 @@ export async function trackGateStall(
                 atMs: tickLegs.atMs,
                 ok: tickLegs.ok,
                 ...(tickLegs.populationEvidence ? { populationEvidence: tickLegs.populationEvidence } : {}),
+                ...(tickLegs.continuation ? { continuation: structuredClone(tickLegs.continuation) } : {}),
                 failingSignatures: [...tickLegs.failingSignatures],
                 // WI-10002091: persist the PER-LEG records too. Every consumer already expects
                 // them and this is the only writer that can supply them:

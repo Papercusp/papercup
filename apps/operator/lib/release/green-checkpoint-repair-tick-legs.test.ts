@@ -26,7 +26,9 @@ import {
   createFrozenCandidateRepairQueue,
   frozenRepairRoundExecution,
   selectFrozenRepairAdmissionPaths,
+  parseFrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import { parseRepairTickLegs, partitionSameHeadContradictions } from '@papercusp/operator-core/lib/release/repair-tick-legs-snapshot';
 import {
   augmentWithRepairTickLegs,
   checkNpmScript,
@@ -104,6 +106,95 @@ function holdResult(overrides: Partial<CheckpointResult> = {}): CheckpointResult
 }
 
 describe("measureRepairTickLegs", () => {
+  it.each([2, 3, 4, 10])('resumes %i commands through ordinary bounded ticks and queue-parser restarts, preserving pass and fail receipts', async (count) => {
+    let queue: NonNullable<CheckpointResult['repairQueue']> = awaitingFixerQueue(['lint:tsc']);
+    const completed: string[] = [];
+    const registry = { 'lint:tsc': Array.from({ length: count }, (_, i) => `s${i}`) };
+    let result: CheckpointResult = holdResult({ repairQueue: queue });
+    for (let batch = 0; batch <= count; batch++) {
+      let started = 0;
+      result = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+        log: vi.fn(),
+        transitionFrozenRepairQueue: async (transition) => {
+          queue = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(transition(queue))))!;
+          expect(queue).not.toBeNull();
+          return { status: 'written', queue };
+        },
+        runRepairTickLegs: async (ref, _ids, opts) => {
+          const controller = new AbortController();
+          return measureRepairTickLegs(makeIo({ signal: controller.signal, progress: opts?.progress,
+            runScript: async (script) => {
+              if (++started > 3) { controller.abort(); throw new Error('batch boundary'); }
+              completed.push(script);
+              return { code: script === `s${count - 1}` ? 1 : 0, tail: 'decisive failure after the boundary',
+                subjectPaths: ['last.ts'], subjectPathsComplete: true };
+            },
+          }), ref, batch % 2 ? { 'lint:tsc': [...registry['lint:tsc']].reverse() } : registry);
+        },
+      });
+      expect(result).toMatchObject({ advanced: false, green: null, reason: 'repair-in-progress' });
+      if (result.repairTickLegs?.continuation?.complete) break;
+      expect(result.repairTickLegs?.ok).toBe(false);
+      expect(parseRepairTickLegs(result.repairTickLegs)?.populationEvidence?.status).toBe('unknown');
+      expect(partitionSameHeadContradictions(['lint:tsc'], parseRepairTickLegs(result.repairTickLegs), HEAD).actionable).toEqual(['lint:tsc']);
+    }
+    expect(result.repairTickLegs).toMatchObject({ ok: false, failingSignatures: ['lint:tsc'],
+      continuation: { complete: true, completedCommandCount: count, remainingCommands: [] },
+      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: ['last.ts'], subjectPathsComplete: true }],
+      populationEvidence: { status: 'complete' } });
+    expect([...completed].sort()).toEqual(registry['lint:tsc'].sort());
+  });
+
+  it('retains completed leaf evidence on the real outer deadline and advances past a repeatedly aborted leaf', async () => {
+    let queue: NonNullable<CheckpointResult['repairQueue']> = awaitingFixerQueue(['lint:tsc']);
+    const called: string[] = [];
+    let releaseSlow = false;
+    const runRepairTickLegs: NonNullable<CheckpointDeps['runRepairTickLegs']> = async (ref, _ids, opts) =>
+      measureRepairTickLegs(makeIo({ signal: opts?.signal, progress: opts?.progress,
+        runScript: async (script) => {
+          called.push(script);
+          if (script === 'slow' && !releaseSlow) await new Promise<void>((_resolve, reject) =>
+            opts?.signal?.addEventListener('abort', () => reject(new Error('aborted child')), { once: true }));
+          return { code: script === 'red' ? 1 : 0, tail: 'retained red', subjectPaths: ['red.ts'], subjectPathsComplete: true };
+        },
+      }), ref, { 'lint:tsc': ['green', 'red', 'slow', 'suffix-a', 'suffix-b'] });
+    const deps = { runRepairTickLegs, log: vi.fn(), recordPostVerdictStepDeadline: vi.fn(async () => {}),
+      transitionFrozenRepairQueue: async (transition: (fresh: typeof queue) => typeof queue) => {
+        queue = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(transition(queue))))!;
+        return { status: 'written' as const, queue };
+      } };
+    const first = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), deps, { deadlineMs: 40, abortGraceMs: 1000 });
+    expect(first).toMatchObject({ advanced: false, green: null, repairTickLegs: { ok: false,
+      failingSignatures: ['lint:tsc'], populationEvidence: { status: 'unknown' },
+      continuation: { completedCommandCount: 2, totalCommandCount: 5,
+        remainingCommands: [expect.objectContaining({ script: 'suffix-a', status: 'pending' }),
+          expect.objectContaining({ script: 'suffix-b', status: 'pending' }), expect.objectContaining({ script: 'slow', status: 'aborted' })] } } });
+    expect(first.repairTickLegs?.legs[0]).toMatchObject({ status: 'fail', subjectPaths: ['red.ts'] });
+    expect(first.repairTickLegs?.legs[0].subjectPathsComplete).not.toBe(true);
+    const second = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), deps, { deadlineMs: 40, abortGraceMs: 1000 });
+    expect(called).toEqual(['green', 'red', 'slow', 'suffix-a', 'suffix-b', 'slow']);
+    expect(second.repairTickLegs?.continuation).toMatchObject({ complete: false, completedCommandCount: 4 });
+    releaseSlow = true;
+    const third = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), deps);
+    expect(third.repairTickLegs).toMatchObject({ ok: false, populationEvidence: { status: 'complete' }, continuation: { complete: true } });
+    expect(called).toEqual(['green', 'red', 'slow', 'suffix-a', 'suffix-b', 'slow', 'slow']);
+    expect(deps.recordPostVerdictStepDeadline).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['head', 'candidate', 'openedAtMs', 'retired'])('stops before launch when the durable %s fence moves', async (fence) => {
+    const queue = awaitingFixerQueue();
+    const runScript = vi.fn(async () => ({ code: 0, tail: '' }));
+    const result = await augmentWithRepairTickLegs(holdResult({ repairQueue: queue }), {
+      log: vi.fn(),
+      transitionFrozenRepairQueue: async (transition) => fence === 'retired' ? { status: 'absent', queue: null }
+        : { status: 'written', queue: transition({ ...queue,
+          ...(fence === 'head' ? { repairHead: OTHER } : fence === 'candidate' ? { candidate: HEAD } : { openedAtMs: 2 }) }) },
+      runRepairTickLegs: async (ref, _ids, opts) => measureRepairTickLegs(makeIo({ progress: opts?.progress, runScript }), ref, { a: ['s1'] }),
+    });
+    expect(runScript).not.toHaveBeenCalled();
+    expect(result.repairTickLegs).toBeUndefined();
+  });
+
   it.each([true, false, undefined])("preserves empty subject measurement provenance (%s)", async (subjectPathsComplete) => {
     const measured = await measureRepairTickLegs(makeIo({
       runScript: async () => ({ code: 1, tail: "failure with no named paths", subjectPaths: [], subjectPathsComplete }),
