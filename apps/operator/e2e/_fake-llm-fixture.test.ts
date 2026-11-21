@@ -1,5 +1,55 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { assertFixtureApiSuccess, assertFixturePlanReadback, fixtureChildFailure, fixtureChildWasGateRefusal, seedFakeLlmHarness, seedFakeLlmPlanAcceptance } from './_fake-llm-fixture';
+import { assertFixtureApiSuccess, assertFixturePlanReadback, fixtureChildFailure, fixtureChildWasGateRefusal,
+  seedFakeLlmHarness, seedFakeLlmPlanAcceptance, submitFixturePlanWrite, type FixtureWriteEvidence } from './_fake-llm-fixture';
+
+describe('native Plans fixture writes', () => {
+  const hash = 'a'.repeat(64);
+  const committed = { revisionId: '8', revisionHash: hash, headHash: hash, matchesRequest: true, exactDocument: true };
+  const trace = (): FixtureWriteEvidence => ({
+    verb: 'new', rationale: 'private test creation', outcome: 'submitted', startedAt: new Date().toISOString(),
+  });
+
+  it('uses an acknowledged application response without a recovery read', async () => {
+    const receipt = trace();
+    const recover = vi.fn();
+    await submitFixturePlanWrite(receipt, async () => ({ ok: () => true, status: () => 200, json: async () => ({ ok: true }) }), recover);
+    expect(receipt).toMatchObject({ outcome: 'accepted', httpStatus: 200 });
+    expect(recover).not.toHaveBeenCalled();
+  });
+
+  it('recovers an uncertain POST through its exact original revision without resubmitting', async () => {
+    const receipt = trace();
+    const post = vi.fn().mockRejectedValue(new Error('Timeout waiting for reply\nrequest diagnostics'));
+    await submitFixturePlanWrite(receipt, post, async () => [committed]);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(receipt).toMatchObject({ outcome: 'recovered', transportError: 'Timeout waiting for reply', revisions: [committed] });
+    expect(receipt.httpStatus).toBeUndefined();
+  });
+
+  it.each([
+    { label: 'missing', rows: [] },
+    { label: 'duplicate', rows: [committed, committed] },
+    { label: 'other request', rows: [{ ...committed, matchesRequest: false }] },
+    { label: 'wrong bytes', rows: [{ ...committed, exactDocument: false }] },
+    { label: 'later head', rows: [{ ...committed, headHash: 'b'.repeat(64) }] },
+  ])('retains an unknown result with $label evidence', async ({ rows }) => {
+    const receipt = trace();
+    const post = vi.fn().mockRejectedValue(new Error('Transport closed'));
+    await expect(submitFixturePlanWrite(receipt, post, async () => rows)).rejects.toThrow('Unconfirmed fixture');
+    expect(receipt).toMatchObject({ outcome: 'unknown', revisions: rows });
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an explicit domain refusal even with an independent row available', async () => {
+    const receipt = trace();
+    const recover = vi.fn(async () => [committed]);
+    await expect(submitFixturePlanWrite(receipt,
+      async () => ({ ok: () => true, status: () => 200, json: async () => ({ ok: false, error: 'plan_locked' }) }), recover))
+      .rejects.toThrow('plan_locked');
+    expect(recover).not.toHaveBeenCalled();
+    expect(receipt.outcome).toBe('refused');
+  });
+});
 
 const childCalls = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', () => ({

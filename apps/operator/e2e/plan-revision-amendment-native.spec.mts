@@ -5,7 +5,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import postgres from 'postgres';
-import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture';
+import { assertFixtureApiSuccess, readFixtureWriteRevisions, seedFakeLlmHarness, submitFixturePlanWrite,
+  type FixturePlanWrite, type FixtureWriteEvidence, type FixtureWriteRevision } from './_fake-llm-fixture';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 import { citationEdit, diagnosticCitationCase, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
   type NativePlanEdit } from './_plan-revision-edits';
@@ -126,23 +127,38 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
       expect(typeof plan.raw).toBe('string');
       return plan as typeof plan & { raw: string; contentHash: string; version: number };
     }
-    async function writePlan(verb: string, args: Record<string, unknown>) {
+    const fixtureWrites: FixtureWriteEvidence[] = [];
+    trace.fixtureWrites = fixtureWrites;
+    async function writePlan(write: FixturePlanWrite) {
+      const { verb, ...args } = write;
+      const evidence: FixtureWriteEvidence = {
+        verb, rationale: 'Native Plans fixture ' + verb + ' ' + randomUUID(), outcome: 'submitted', startedAt: new Date().toISOString(),
+      };
+      fixtureWrites.push(evidence);
       mark('fixture Plans ' + verb + ' request');
-      const response = await request.post(new URL('/api/admin/plans/' + verb, origin).href, {
-        data: { ...args, slug, harness }, headers, maxRedirects: 0,
+      await submitFixturePlanWrite(evidence, () => request.post(new URL('/api/admin/plans/' + verb, origin).href, {
+        data: { ...args, slug, harness, rationale: evidence.rationale }, headers, maxRedirects: 0,
+      }), async () => {
+        mark('observe uncertain fixture Plans ' + verb);
+        let rows: FixtureWriteRevision[] = [];
+        await expect.poll(async () => {
+          evidence.revisionReads = (evidence.revisionReads ?? 0) + 1;
+          rows = await readFixtureWriteRevisions(sql, { workspace, harness, slug }, evidence.rationale, write);
+          evidence.revisions = rows;
+          return rows.length;
+        }, { message: 'Observe original fixture revision for ' + verb, timeout: info.project.use.actionTimeout || undefined }).toBeGreaterThan(0);
+        return rows;
       });
-      mark('fixture Plans ' + verb + ' HTTP ' + response.status());
-      expect(response.ok()).toBe(true);
-      assertFixtureApiSuccess(verb, await response.json());
+      mark('fixture Plans ' + verb + ' ' + evidence.outcome);
     }
-    await writePlan('new', { title: 'Native plan ' + scenario, status: 'draft' });
+    await writePlan({ verb: 'new', title: 'Native plan ' + scenario, status: 'draft' });
     const workerTask = 'Read the saved ' + editCase.heading + ' for ' + handles.worker;
     if (rolesToObserve) {
-      await writePlan('add-item', { phase: 'Phase 1 — Reference check', importance: 'normal', text: workerTask });
+      await writePlan({ verb: 'add-item', phase: 'Phase 1 — Reference check', importance: 'normal', text: workerTask });
     }
     const draft = await readPlan();
     const roles = rolesToObserve ? '\nReview the saved change for ' + handles.reviewer + '\n' : '';
-    await writePlan('set-content', { content: draft.raw.trimEnd() + '\n\n## ' + editCase.heading + '\n\n' + originalText + '\n' + roles,
+    await writePlan({ verb: 'set-content', content: draft.raw.trimEnd() + '\n\n## ' + editCase.heading + '\n\n' + originalText + '\n' + roles,
       expectedVersion: draft.version, expectedHash: draft.contentHash });
     const before = await readPlan();
     expect(before.raw.split(originalText)).toHaveLength(2);
@@ -381,6 +397,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
         mark(failedStage);
       }
       if (rolesToObserve) trace.roleViews = roleViews;
+      trace.lastStage = currentStage;
       const body = JSON.stringify(trace);
       await info.attach(rolesToObserve ? 'native-' + scenario + '-role-views' : 'native-author-citation',
         { body, contentType: 'application/json' });
