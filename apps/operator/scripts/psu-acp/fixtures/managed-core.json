@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "defaultMode": "auto",
+    "disableBypassPermissionsMode": "disable",
+    "allow": []
+  },
+  "allowManagedPermissionRulesOnly": true,
+  "allowManagedHooksOnly": true,
+  "strictPluginOnlyCustomization": ["hooks", "mcp", "agents"],
+  "env": { "CLAUDE_CODE_USE_BEDROCK": "1" },
+  "availableModels": ["sonnet", "haiku"],
+  "hooks": {}
+}
