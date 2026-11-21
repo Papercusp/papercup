@@ -12,6 +12,9 @@ import { committedWorkRootDependencyDonor, verifyCommittedWorkRoot } from '../li
 import { runVerifierCommand, verifyVerifierSourceSync } from '../source-preview.mjs';
 import { readTaskDeadlineEpochMs } from './task-deadline.mjs';
 import { resolveExecutedMapPgUrl } from './executed-source-map.mjs';
+import { assertNativePlanRetry, type NativePlanRetryTrace } from '../../apps/operator/e2e/_plan-revision-retry.ts';
+import { planFixtureIdentity } from '../../apps/operator/e2e/_plan-revision-edits.ts';
+import { seedFakeLlmHarness } from '../../apps/operator/e2e/_fake-llm-fixture.ts';
 
 const exec = promisify(execFile);
 const here = fileURLToPath(import.meta.url);
@@ -27,22 +30,26 @@ type RuntimeIdentity = { fingerprint: string; units: string[] };
 type ComparisonRequest = { workspace: string; harness: string; group: string; definitionRef: string; applicationRef: string };
 type CollectedSuite = { title: string; specs?: { file: string; title: string;
   tests: { projectName: string; expectedStatus: string }[] }[]; suites?: CollectedSuite[] };
+type ClientActor = { kind: 'signed-in-user' | 'cli-session'; id: string; workspace: string };
+type AuthorAttribution = { actorSource: ClientActor['kind'] | 'revision-writer'; revisionWriter: string };
 type CoverageCell = { role: string; door: string; scenario: string;
-  observations: { file: string; sha256: string; reference: string; actor: string; revision: string }[] };
+  observations: { file: string; sha256: string; reference: string; actor: string; revision: string; authorAttribution?: AuthorAttribution }[] };
 type ReporterRow = { id: string; workspace_id: string; harness_slug: string; run_group_id: string; framework: string;
   file_path: string; status: string; finished_at: Date | string | null; worktree_dirty: boolean | null;
   commit_sha: string; output_tail: string | null; execution_details: { root: string; testLayer: string;
     collectionFailed: boolean; passed: number; failed: number; skipped: number; passedCaseTitlesTruncated?: boolean;
     passedCaseTitles: string[]; runtimeEnvironmentBefore: RuntimeIdentity; runtimeEnvironmentAfter: RuntimeIdentity } };
-type CapturedSave = { scenario: string; savedHash: string; revisions: { id: string; author_id: string; content_hash: string }[] };
+type CapturedSave = { scenario: string; savedHash: string; clientActor?: ClientActor;
+  revisions: { id: string; author_id: string; session_id?: string | null; content_hash: string }[] };
 type CapturedTrace = { group: string; applicationCommit: string; definitionCommit: string; workspace: string } & (
   { roleViews: Record<string, { userId: string; workspace: string; revisionId?: string }>; scenario?: string;
-    runtimeBefore: RuntimeIdentity; revision: { rows: { id: string }[] } }
+    runtimeBefore: RuntimeIdentity; retry?: NativePlanRetryTrace; revision: { rows: { id: string; content_hash?: string }[] } }
   | { runtime: RuntimeIdentity; door: string; observations: CapturedSave[];
     roleReads: { role: string; scenario: string; actorId: string; savedHash: string; revisionId: string }[] });
 export const applicationInputs = Object.freeze(['apps/operator/app/admin/plans/PlansClient.tsx', 'apps/operator/scripts/ptool.mjs']);
 export const definitionInputs = Object.freeze([entry, adapter, spec, config, 'packages/operator-core/test/plan-revision-ptool.ts',
   'apps/operator/e2e/_fake-llm-fixture.ts', 'apps/operator/e2e/_native-bridge-json.ts', 'apps/operator/e2e/_plan-revision-edits.ts',
+  'apps/operator/e2e/_plan-revision-retry.ts',
   'apps/operator/test/reporters/admin-test-runs-reporter-playwright.ts',
   'packages/operator-core/lib/testing-playwright-reporter.ts', 'packages/operator-core/lib/testing-native-runtime.ts']);
 
@@ -167,13 +174,24 @@ export function readComparisonCoverage(directory: string, request: ComparisonReq
     assert.equal(desktop, 'roleViews' in row, 'capture kind differs from its source');
     assert.equal(('roleViews' in row ? row.runtimeBefore : row.runtime).fingerprint, runtime.fingerprint);
     const sha256 = digest(bytes);
-    function record(role: string, door: string, scenario: string, reference: string, actor: string, revision: string) {
+    function record(role: string, door: string, scenario: string, reference: string, actor: string, revision: string,
+      authorAttribution?: AuthorAttribution) {
       const cell = cells.get([role, door, scenario].join('/'));
       assert(cell && actor && revision, 'original role observation must name its actor, scenario and revision');
-      cell.observations.push({ file, sha256, reference, actor, revision: String(revision) });
+      cell.observations.push({ file, sha256, reference, actor, revision: String(revision),
+        ...(authorAttribution ? { authorAttribution } : {}) });
     }
     if ('roleViews' in row) {
       const views = Object.entries(row.roleViews);
+      if (row.scenario === 'retry') {
+        if (!row.retry || !views.some(([, view]) => view.revisionId)) continue;
+        assertNativePlanRetry(row.retry);
+        assert.deepEqual(row.revision.rows.map(edition => edition.content_hash),
+          [row.retry.before.contentHash, row.retry.afterRetry.contentHash], 'retry does not match the observed revisions');
+        const edition = row.revision.rows[1]!;
+        assert(views.every(([, view]) => !view.revisionId || view.revisionId === edition.id),
+          'a participant observed a different retry revision');
+      }
       const actors = views.map(([, view]) => view.userId);
       assert.equal(new Set(actors).size, actors.length, 'desktop roles share an identity');
       for (const [role, view] of views) {
@@ -187,13 +205,21 @@ export function readComparisonCoverage(directory: string, request: ComparisonReq
       for (const [index, save] of row.observations.entries()) {
         const revision = save.revisions.at(-1);
         assert(revision && save.savedHash === revision.content_hash, 'client observation differs from the saved revision');
-        record('author', row.door, save.scenario, 'observations.' + index, revision.author_id, revision.id);
+        const client = save.clientActor;
+        if (client) {
+          assert.equal(client.workspace, row.workspace);
+          assert.equal(client.kind, row.door === 'api' ? 'signed-in-user' : 'cli-session');
+          if (client.kind === 'cli-session')
+            assert(revision.author_id === client.id || revision.session_id === client.id, 'CLI revision has a different session');
+        }
+        record('author', row.door, save.scenario, 'observations.' + index, client ? client.id : revision.author_id, revision.id,
+          { actorSource: client?.kind ?? 'revision-writer', revisionWriter: revision.author_id });
       }
       for (const [index, read] of row.roleReads.entries()) {
         const save = row.observations.find(save => save.scenario === read.scenario && save.savedHash === read.savedHash);
         const edition = save?.revisions.find(revision => String(revision.id) === read.revisionId);
         assert(edition, 'role read has no matching saved revision');
-        assert(['reviewer', 'worker'].includes(read.role) && read.actorId !== edition.author_id
+        assert(['reviewer', 'worker'].includes(read.role) && read.actorId !== edition.author_id && read.actorId !== save?.clientActor?.id
           && !row.roleReads.some(other => other.scenario === read.scenario && other.role !== read.role && other.actorId === read.actorId),
         'client role reads must have independent authenticated identities');
         record(read.role, row.door, read.scenario, 'roleReads.' + index, read.actorId, read.revisionId);
@@ -301,6 +327,23 @@ async function observe() {
   const before = assertNativeRuntimeLiveness(app.root, app.commit);
   const witness = { request, privateWorkspace, sources, before };
   writeReceipt(join(out, 'before.json'), witness);
+  // The maintained seed writer needs the real launcher's private workspace alias.
+  // Vitest deliberately removes that alias from workers before collecting tests.
+  assert.equal(env.PAPERCUSP_WORKSPACE_ID, privateWorkspace, 'private registry writer has no matching launcher workspace');
+  const harness = await seedFakeLlmHarness({ hive: true });
+  const { default: postgres } = await import('postgres');
+  const privateDb = postgres(env.HARNESS_ADMIN_DATABASE_URL, { max: 1, connect_timeout: 5, onnotice: () => {} });
+  try {
+    const records = await privateDb<{ path: string; kind: string; self_repo: boolean }[]>`
+      SELECT p->>'path' AS path, p->>'harness_kind' AS kind, (p->>'self_repo')::boolean AS self_repo
+      FROM harness_shared.harness_registry r CROSS JOIN LATERAL jsonb_array_elements(r.payload->'projects') p
+      WHERE r.workspace_id=${privateWorkspace} AND p->>'slug'=${harness}`;
+    assert.equal(harness, 'e2e-fake-plan');
+    assert.equal(records.length, 1, 'private harness registration missing or ambiguous');
+    assert.equal(realpathSync(records[0].path), realpathSync(app.root));
+    assert.deepEqual([records[0].kind, records[0].self_repo], ['hive', true]);
+  } finally { await privateDb.end({ timeout: 5 }); }
+  writeReceipt(join(out, 'fixture.json'), { ...planFixtureIdentity(privateWorkspace, before.fingerprint), harness });
   const code = await runChild(process.execPath, ['scripts/test-files.mjs', adapter], { cwd: root, env });
   assert.deepEqual(measureComparisonSources(app, driver), sources, 'tested source changed during the run');
   const after = assertNativeRuntimeLiveness(app.root, app.commit);

@@ -7,7 +7,9 @@ import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
-import { citationEdit, nativePlanComparisonTimeoutMs, nativePlanEdits, type NativePlanEdit } from './_plan-revision-edits';
+import { citationEdit, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness,
+  type NativePlanEdit } from './_plan-revision-edits';
+import { assertNativePlanRetry, installPlanRetryExpression, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
 
 const run = promisify(execFile);
 
@@ -38,7 +40,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
   const edit = 'button[aria-label="Edit the raw markdown"]';
   const save = '.pc-editbar__btn--primary';
   const detail = '[aria-label="Plan ' + slug + '"]';
-  const handles = { author: 'author-' + randomUUID(), reviewer: 'reviewer-' + randomUUID(), worker: 'worker-' + randomUUID() };
+  const handles = { author: privatePlanUsername('author'), reviewer: privatePlanUsername('reviewer'), worker: privatePlanUsername('worker') };
   let activeRole: keyof typeof handles | undefined;
   const roleViews: Record<string, { userId: string; workspace: string; action: string; revisionId?: string; uiActions: UiAction[] }> = {};
 
@@ -96,7 +98,8 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
   }
   try {
     // Only the registry setup is used. The plan and both writes go through the real operator.
-    const harness = await seedFakeLlmHarness({ hive: true });
+    const harness = compareRoles ? readPreparedPlanHarness(workspace, runtimeBefore.fingerprint)
+      : await seedFakeLlmHarness({ hive: true });
     trace.harness = harness;
     async function readPlan() {
       const response = await request.get(new URL('/api/admin/plans/get', origin).href, {
@@ -158,7 +161,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     await native('click', detail + ' ' + edit, '--json');
     await visible(`document.querySelector(${JSON.stringify(editor)})?.textContent.includes(${JSON.stringify(originalText)}) === true`);
     trace.requiredFields = await measure(`Array.from(document.querySelectorAll(${JSON.stringify(detail + ' [required], ' + detail + ' [aria-required="true"]')}), e => e.getAttribute('name') || e.getAttribute('aria-label') || e.tagName)`);
-    // Observe completed requests without modifying fetch, response bodies, or the editor's save handler.
+    // The resource observer counts completed requests independently of the retry fixture.
     await native('eval', `(() => {
       const requests = [];
       const collect = entries => { for (const e of entries) {
@@ -194,11 +197,51 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     if (textEdit) textEdit.outcome = edited === true ? 'completed' : 'refused';
     expect(edited).toBe(true);
     await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + save + ':enabled')})`);
-    await native('click', detail + ' ' + save, '--json');
-    await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit)}) && document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(replacementText)})`);
+    if (scenario === 'retry') {
+      const point = (plan: { version: number; contentHash: string }) => ({ version: plan.version, contentHash: plan.contentHash });
+      const savedText = before.raw.replace(originalText, replacementText);
+      const partial: Record<string, unknown> = { before: point(before), editorObservedLoss: false };
+      trace.retry = partial;
+      await measure(installPlanRetryExpression({ origin: origin.origin, workspace, harness, slug }));
+      try {
+        await native('click', detail + ' ' + save, '--json');
+        await visible(`document.querySelector(${JSON.stringify(detail + ' .pc-editbar__error')})?.textContent.includes(${JSON.stringify(lostAcknowledgement)}) === true &&
+          !!document.querySelector(${JSON.stringify(detail + ' ' + save + ':enabled')})`);
+        partial.editorObservedLoss = true;
+        const firstCommit = await readPlan();
+        partial.afterFirst = point(firstCommit);
+        expect(firstCommit.raw).toBe(savedText);
+        await native('click', detail + ' ' + save, '--json');
+        await visible(`(() => {
+          const reply = window.__planRevisionRetry.attempts[1];
+          if (reply?.acknowledgement !== 'returned') return false;
+          if (reply.result === 'stale')
+            return document.querySelector('.pc-conflict__current')?.textContent.includes(${JSON.stringify(replacementText)}) === true ||
+              /stale/i.test(document.querySelector(${JSON.stringify(detail + ' .pc-editbar__error')})?.textContent ?? '');
+          if (reply.result !== 'accepted') throw new Error('Unexpected plan retry response');
+          return !document.querySelector(${JSON.stringify(detail + ' .pc-editbar')}) &&
+            document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(replacementText)}) === true;
+        })()`);
+        const attempts = await measure('window.__planRevisionRetry.attempts');
+        const recovered = await readPlan();
+        const retry: NativePlanRetryTrace = {
+          before: point(before), afterFirst: point(firstCommit), afterRetry: point(recovered), attempts,
+          editorObservedLoss: true, editorAfterRetry: attempts[1].result === 'stale' ? 'conflict' : 'saved',
+        };
+        trace.retry = retry;
+        expect(recovered.raw).toBe(savedText);
+        assertNativePlanRetry(retry);
+      } finally {
+        // An unsuccessful attempt is still evidence. The next participant gets the normal transport.
+        partial.attempts = await measure('window.__planRevisionRetry.finish()');
+      }
+    } else {
+      await native('click', detail + ' ' + save, '--json');
+      await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit)}) && document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(replacementText)})`);
+    }
     trace.requests = await measure('window.__planCitationRequests()');
     const requests = trace.requests as Array<{ path: string }>;
-    expect(requests.filter(row => row.path === '/api/admin/plans/set-content')).toHaveLength(1);
+    expect(requests.filter(row => row.path === '/api/admin/plans/set-content')).toHaveLength(scenario === 'retry' ? 2 : 1);
     const after = await readPlan();
     expect(after.raw).toBe(before.raw.replace(originalText, replacementText));
     expect(after.contentHash).toBe(createHash('sha256').update(after.raw).digest('hex'));

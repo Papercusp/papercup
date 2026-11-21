@@ -9,6 +9,7 @@ import {
   readComparisonCoverage,
 } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 import { git, write } from './source-preview.fixture';
+import { planFixtureIdentity, privatePlanUsername, readPreparedPlanHarness } from '../../../apps/operator/e2e/_plan-revision-edits';
 
 const title = 'saves a citation in native Plans and correlates author reviewer and worker outcomes';
 const file = 'plan-revision-amendment-native.spec.mts';
@@ -39,6 +40,36 @@ describe('the isolated native Plans comparison', () => {
     driver = await freeze('definition', definitionInputs);
   });
   afterAll(() => { if (scratch) rmSync(scratch, { recursive: true, force: true }); });
+
+  it('generates distinct complete account names accepted by native signup', () => {
+    const names = (['author', 'reviewer', 'worker'] as const).flatMap(role =>
+      [privatePlanUsername(role), privatePlanUsername(role)]);
+    expect(new Set(names).size).toBe(names.length);
+    for (const name of names) expect(name).toMatch(/^[a-z0-9_-]{2,32}$/);
+  });
+
+  it('lets a hermetic client read only the prepared harness from its own private run', () => {
+    const directory = join(scratch, 'prepared-harness');
+    mkdirSync(directory);
+    const workspace = 'verify-tauri-isolated-73';
+    const fingerprint = 'a'.repeat(64);
+    const env = { PLAN_REVISION_EVIDENCE: directory, OPERATOR_SOURCE_ROOT: app.root, PAPERCUSP_WORKSPACE: workspace,
+      VERIFY_TAURI_ISOLATED_DB: '1', PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+      VERIFY_TAURI_SOURCE_REF: app.commit, VERIFY_TAURI_TEST_SOURCE_REF: driver.commit,
+      PAPERCUSP_TEST_RUN_GROUP: 'fixture-group', PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'fixture-task' };
+    const writer = { ...env, PAPERCUSP_WORKSPACE_ID: workspace };
+    const receipt = { ...planFixtureIdentity(workspace, fingerprint, writer), harness: 'e2e-fake-plan' };
+    const path = join(directory, 'fixture.json');
+    expect(() => readPreparedPlanHarness(workspace, fingerprint, env)).toThrow();
+    writeFileSync(path, JSON.stringify(receipt));
+    expect(readPreparedPlanHarness(workspace, fingerprint, env)).toBe('e2e-fake-plan');
+    expect(env).not.toHaveProperty('PAPERCUSP_WORKSPACE_ID');
+    for (const difference of [{ workspace: 'other' }, { fingerprint: 'b'.repeat(64) }, { group: 'other' },
+      { taskId: 'other' }, { applicationCommit: driver.commit }, { definitionCommit: app.commit }, { harness: 'other' }]) {
+      writeFileSync(path, JSON.stringify({ ...receipt, ...difference }));
+      expect(() => readPreparedPlanHarness(workspace, fingerprint, env)).toThrow();
+    }
+  });
 
   it('binds both commits, roots and external receipt byte digests', () => {
     const measured = measureComparisonSources(app, driver);
@@ -126,6 +157,21 @@ describe('the isolated native Plans comparison', () => {
     expect(coverage.status).toBe('partial');
     expect(coverage.cells.find(row => row.role === 'author' && row.door === 'ptool' && row.scenario === 'material')?.observations)
       .toHaveLength(2);
+    const old = coverage.cells.find(row => row.role === 'author' && row.door === 'ptool' && row.scenario === 'material');
+    expect(old?.observations[0]?.authorAttribution).toEqual({ actorSource: 'revision-writer', revisionWriter: 'author' });
+    const signed = { ...observation, door: 'api', observations: observation.observations.map(save => ({
+      ...save, clientActor: { kind: 'signed-in-user', id: 'private-account', workspace: request.privateWorkspace },
+    })) };
+    const signedFile = join(dir, 'draft-author-api.json');
+    writeFileSync(signedFile, JSON.stringify(signed));
+    const measured = readComparisonCoverage(dir, request, runtime).cells.find(row =>
+      row.role === 'author' && row.door === 'api' && row.scenario === 'material');
+    expect(measured?.observations[0]).toMatchObject({ actor: 'private-account',
+      authorAttribution: { actorSource: 'signed-in-user', revisionWriter: 'author' } });
+    writeFileSync(signedFile, JSON.stringify({ ...signed, roleReads: [{ role: 'reviewer', scenario: 'material',
+      actorId: 'private-account', savedHash: 'hash', revisionId: '19' }] }));
+    expect(() => readComparisonCoverage(dir, request, runtime)).toThrow(/independent/);
+    writeFileSync(signedFile, JSON.stringify(signed));
     writeFileSync(join(dir, 'draft-author-foreign.json'), JSON.stringify({ ...observation, group: 'other' }));
     expect(() => readComparisonCoverage(dir, request, runtime)).toThrow();
   });
@@ -163,6 +209,24 @@ describe('the isolated native Plans comparison', () => {
       const roleViews = Object.fromEntries(roles.map(role => [role, { userId: role, workspace: 'test', revisionId: '4' }]));
       writeFileSync(join(dir, 'citation-role-views-' + scenario + '.json'), JSON.stringify({ ...desktop, scenario, roleViews }));
     }
+    expect(readComparisonCoverage(dir, request, runtime).unmeasured).toEqual([
+      'author/desktop/retry', 'reviewer/desktop/retry', 'worker/desktop/retry', 'worker/desktop/resumed',
+    ]);
+    const before = { version: 6, contentHash: 'a'.repeat(64) };
+    const saved = { version: 7, contentHash: 'b'.repeat(64) };
+    const sent = { expectedVersion: before.version, expectedHash: before.contentHash, requestHash: 'f'.repeat(64) };
+    const retry = { before, afterFirst: saved, afterRetry: saved, editorObservedLoss: true, editorAfterRetry: 'conflict',
+      attempts: [{ ...sent, httpStatus: 200, result: 'accepted', acknowledgement: 'withheld' },
+        { ...sent, httpStatus: 409, result: 'stale', acknowledgement: 'returned' }] };
+    const retryViews = Object.fromEntries(['author', 'reviewer', 'worker'].map(role =>
+      [role, { userId: role, workspace: 'test', revisionId: '4' }]));
+    const retryFile = join(dir, 'plan-role-views-observed-retry.json');
+    const observedRetry = { ...desktop, scenario: 'retry', retry, roleViews: retryViews,
+      revision: { rows: [{ id: '3', content_hash: before.contentHash }, { id: '4', content_hash: saved.contentHash }] } };
+    writeFileSync(retryFile, JSON.stringify({ ...observedRetry,
+      revision: { rows: [{ id: '3', content_hash: before.contentHash }, { id: '4', content_hash: before.contentHash }] } }));
+    expect(() => readComparisonCoverage(dir, request, runtime)).toThrow();
+    writeFileSync(retryFile, JSON.stringify(observedRetry));
     expect(readComparisonCoverage(dir, request, runtime).unmeasured).toEqual(['worker/desktop/resumed']);
     const last = { ...desktop, scenario: 'resumed', roleViews: { worker: { userId: 'worker', workspace: 'test', revisionId: '4' } } };
     writeFileSync(join(dir, 'plan-role-views-final.json'), JSON.stringify(last));

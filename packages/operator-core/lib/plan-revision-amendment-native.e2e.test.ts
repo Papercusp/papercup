@@ -11,7 +11,7 @@ import { describe, expect, inject, it } from 'vitest';
 import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
 import { seedFakeLlmHarness } from '../../../apps/operator/e2e/_fake-llm-fixture';
 import { readPlanPtoolReply } from '../test/plan-revision-ptool';
-import { nativePlanComparisonTimeoutMs } from '../../../apps/operator/e2e/_plan-revision-edits';
+import { nativePlanComparisonTimeoutMs, privatePlanUsername, readPreparedPlanHarness } from '../../../apps/operator/e2e/_plan-revision-edits';
 import { readComparisonCoverage } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 
 const execute = promisify(execFile);
@@ -50,23 +50,42 @@ type Save = { slug: string; harness: string; content: string; expectedHash: stri
 type Response = { ok?: boolean; code?: string; error?: string; contentHash?: string; raw?: string; version?: number };
 
 /** Ordinary cookie-authenticated clients of the disposable application. */
-async function createPrivatePlanClient(role: 'reviewer' | 'worker', origin: URL, workspace: string) {
-  const client = await playwrightRequest.newContext({ baseURL: origin.origin,
-    extraHTTPHeaders: { 'x-papercusp-workspace': workspace }, timeout: 45_000 });
-  const username = role + '-' + randomUUID();
+async function createPrivatePlanClient(role: 'author' | 'reviewer' | 'worker', origin: URL, workspace: string) {
+  const options = { baseURL: origin.origin, extraHTTPHeaders: { 'x-papercusp-workspace': workspace }, timeout: 45_000 };
+  let client = await playwrightRequest.newContext(options);
+  const username = privatePlanUsername(role);
   const password = randomUUID();
+  async function signIn(context: APIRequestContext, id: string) {
+    const login = await context.post('/api/auth/login', { maxRedirects: 0, data: { username, password } });
+    expect(login.ok()).toBe(true);
+    expect((await login.json()).user.id).toBe(id);
+    const me = await context.get('/api/auth/me', { maxRedirects: 0 });
+    expect(me.ok()).toBe(true);
+    expect(await me.json()).toMatchObject({ autoLogin: false, user: { id, workspace_id: workspace } });
+  }
   try {
     const created = await client.post('/api/auth/signup', { maxRedirects: 0,
       data: { username, display_name: username, password, auto_login: false } });
     expect(created.ok()).toBe(true);
-    const id = (await created.json()).user.id;
-    const login = await client.post('/api/auth/login', { maxRedirects: 0, data: { username, password } });
-    expect(login.ok()).toBe(true);
-    expect((await login.json()).user.id).toBe(id);
-    const me = await client.get('/api/auth/me', { maxRedirects: 0 });
-    expect(me.ok()).toBe(true);
-    expect(await me.json()).toMatchObject({ autoLogin: false, user: { id, workspace_id: workspace } });
-    return { client, id: String(id) };
+    const id: string = (await created.json()).user.id;
+    expect(typeof id).toBe('string');
+    expect(id).toBeTruthy();
+    await signIn(client, id);
+    return {
+      get client() { return client; },
+      id,
+      async reconnect() {
+        const next = await playwrightRequest.newContext(options);
+        try {
+          await signIn(next, id);
+          await client.dispose();
+          client = next;
+        } catch (error) {
+          await next.dispose();
+          throw error;
+        }
+      },
+    };
   } catch (error) {
     await client.dispose();
     throw error;
@@ -76,32 +95,33 @@ async function createPrivatePlanClient(role: 'reviewer' | 'worker', origin: URL,
 describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plans clients', () => {
   it.each(['api', 'ptool'] as const)('records old author payloads across edits, retry and resumption on %s', async door => {
     const app = await privateApplication();
-    const harness = await seedFakeLlmHarness({ hive: true });
+    const harness = process.env.VERIFY_TAURI_TEST_SOURCE_REF ? readPreparedPlanHarness(app.workspace, app.runtime.fingerprint)
+      : await seedFakeLlmHarness({ hive: true });
     const admin = postgres(app.database.href, { max: 1, onnotice: () => {} });
-    const headers = { 'content-type': 'application/json', 'x-papercusp-workspace': app.workspace };
     const archive = process.env.PLAN_REVISION_EVIDENCE ?? await mkdtemp(join(tmpdir(), 'native-plan-api-'));
     const observations: object[] = [];
-    const roles: Record<string, { client: APIRequestContext; id: string }> = {};
+    const roles: Record<string, Awaited<ReturnType<typeof createPrivatePlanClient>>> = {};
     const roleReads: object[] = [];
     const completed = new Set<string>();
     async function api(verb: string, payload: Record<string, unknown>, read = false): Promise<Response> {
       const url = new URL('/api/admin/plans/' + verb, app.origin);
       if (read) for (const [key, value] of Object.entries(payload)) url.searchParams.set(key, String(value));
-      const result = await fetch(url, { method: read ? 'GET' : 'POST', headers, redirect: 'error',
-        body: read ? undefined : JSON.stringify(payload), signal: AbortSignal.timeout(45_000) });
+      const client = roles.author!.client;
+      const result = read ? await client.get(url.href, { maxRedirects: 0 })
+        : await client.post(url.href, { headers: { 'content-type': 'application/json' }, data: JSON.stringify(payload), maxRedirects: 0 });
       const reply = await result.json() as Response;
-      if (!result.ok && reply.code !== 'stale' && reply.error !== 'stale')
-        throw new Error('Private Plans API refused ' + verb + ' with HTTP ' + result.status);
+      if (!result.ok() && reply.code !== 'stale' && reply.error !== 'stale')
+        throw new Error('Private Plans API refused ' + verb + ' with HTTP ' + result.status());
       return reply;
     }
     try {
-      const privateHome = await realpath(process.env.PAPERCUSP_HOME!);
-      const launchDirectory = dirname(await realpath(process.env.VERIFY_TAURI_LIVENESS_CHECK!));
-      expect(privateHome).toBe(join(launchDirectory, 'papercusp-home'));
-      const tokenFile = join(privateHome, 'superuser-token');
-      expect(await realpath(tokenFile)).toBe(tokenFile);
       // Use only the private runner's configured credential and this session's real identity.
-      const ptool = (verb: string, args: object, retry?: Save) => {
+      const ptool = async (verb: string, args: object, retry?: Save) => {
+        const privateHome = await realpath(process.env.PAPERCUSP_HOME!);
+        const launchDirectory = dirname(await realpath(process.env.VERIFY_TAURI_LIVENESS_CHECK!));
+        expect(privateHome).toBe(join(launchDirectory, 'papercusp-home'));
+        const tokenFile = join(privateHome, 'superuser-token');
+        expect(await realpath(tokenFile)).toBe(tokenFile);
         const command = execute(process.execPath, [join(app.root, 'apps/operator/scripts/ptool.mjs'),
           verb, '--url=' + app.origin.origin, '--token-file=' + tokenFile, '--workspace=' + app.workspace,
           '--harness=' + harness, '--raw', '--json', JSON.stringify(args)], { cwd: app.root,
@@ -116,11 +136,14 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
       }
       const slug = 'draft-revision-' + randomUUID() + '-' + new Date().toISOString().slice(0, 10);
       if (door === 'api') {
-        roles.reviewer = await createPrivatePlanClient('reviewer', app.origin, app.workspace);
-        roles.worker = await createPrivatePlanClient('worker', app.origin, app.workspace);
-        expect(roles.reviewer.id).not.toBe(roles.worker.id);
+        for (const role of ['author', 'reviewer', 'worker'] as const)
+          roles[role] = await createPrivatePlanClient(role, app.origin, app.workspace);
+        expect(new Set(Object.values(roles).map(role => role.id)).size).toBe(3);
       }
-      const created = await api('new', { slug, harness, title: 'Amendment measurement', status: 'draft' });
+      const clientActor = { kind: door === 'api' ? 'signed-in-user' : 'cli-session',
+        id: door === 'api' ? roles.author!.id : identity!.ownerId, workspace: app.workspace };
+      const draft = { slug, harness, title: 'Amendment measurement', status: 'draft' };
+      const created = door === 'api' ? await api('new', draft) : await ptool('plans:new', draft);
       expect(created.ok).toBe(true);
       const read = async () => {
         const args = { slug, harness, mode: 'full', includeEnrichments: false };
@@ -144,13 +167,21 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
         ['resumed', 'plan-efficiency.ts:2', 'plan-efficiency.ts:3'],
         ['material', 'Expected duration: one minute.', 'Expected duration: five minutes.'],
       ] as const) {
-        // A resumed client obtains its new CAS baseline from the saved document. An exact retry resubmits the original bytes.
+        let resumedFrom: string | undefined;
+        if (scenario === 'resumed') {
+          if (!last) throw new Error('The resumed client needs a previously submitted document');
+          resumedFrom = createHash('sha256').update(last.content).digest('hex');
+          if (door === 'api') await roles.author!.reconnect();
+          else expect(await ptool('coord:whoami', {})).toMatchObject({ ownerId: clientActor.id, workspaceId: app.workspace });
+        }
+        // The resumed client reads its previous commit. An exact retry resubmits the original bytes.
         let payload: Save;
         if (scenario === 'retry') {
           if (!last) throw new Error('An exact retry requires its prior submission');
           payload = last;
         } else {
           const doc = await read();
+          if (resumedFrom) expect(doc.expectedHash).toBe(resumedFrom);
           expect(doc.content.split(previous)).toHaveLength(2);
           payload = { ...doc, content: doc.content.replace(previous, replacement) };
         }
@@ -166,7 +197,8 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
         const invocations = await admin`SELECT id::text, status, role, coord_owner_id FROM harness_shared.tool_invocations
           WHERE workspace_id=${app.workspace} AND harness_slug=${harness} AND args_json->>'slug'=${slug}
           AND args_json->>'expectedHash'=${payload.expectedHash} AND tool_name IN ('plans:set-content','plans_set_content') ORDER BY id`;
-        observations.push({ scenario, door, slug, submittedFields: Object.keys(payload).sort(), submissions: 1,
+        observations.push({ scenario, door, slug, clientActor, ...(resumedFrom ? { resumedFrom } : {}),
+          submittedFields: Object.keys(payload).sort(), submissions: 1,
           clientDocumentReads: scenario === 'retry' ? 0 : 1, payloadSha256: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
           expectedHash: payload.expectedHash, savedHash: expectedHash, outcome: reply.ok === true ? 'accepted' : 'stale',
           revisions: saved, matchingInvocationRows: invocations });
