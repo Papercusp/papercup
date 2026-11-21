@@ -1584,14 +1584,14 @@ const originalInvocationObserver: OriginalInvocationObserver = {
       runtime: { pid: process.pid, ...getServingHostIdentity() },
     };
     // No argument/result/error bytes or raw transport headers enter the mandatory
-    // record. Existing telemetry enrichment keeps its own redaction contract.
+    // record. Only the classified origin is needed to verify a governed first turn.
     const row = buildTelemetryRow({ ...request,
       ctx: { ...ctx, requestOrigin: undefined, reactionCause: undefined, sourceMaterialization: undefined },
       windowKey: '', durationMs: 0, status: 'ok', metadataJson: {
         originalInvocation, executionObservation: { state: 'unknown' },
         responseObservation: { state: 'pending', delivery: 'unknown' },
       },
-    });
+    }, classifyCallOrigin({requestOrigin: ctx.requestOrigin, spawnId: ctx.spawnId}));
     if (!row || !callId || !ownerId) throw new Error('Original invocation identity is unavailable');
     row.params[12] = 'pending';
     const { sql } = getOrgPg();
@@ -2153,7 +2153,7 @@ function truncatedTelemetryArgs(toolName: string, args: unknown, size: number): 
  * (only the bearer/MCP path populates a real Principal; migration 076 made the
  * columns nullable so legacy gaps surface as NULL/'unknown' in /dev).
  */
-function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
+function buildTelemetryRow(input: RecordInvocationInput, origin?: ReturnType<typeof classifyCallOrigin>): TelemetryRow | null {
   if (!input.ctx.workspaceId) return null;
   const harnessSlug = input.ctx.harnessSlug ?? '';
   if (
@@ -2253,7 +2253,7 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
   // automation — and directionally, since hooks emit only coordination verbs. `source` says
   // whether the caller DECLARED it or we inferred it, so a wrong guess is never mistakable for a
   // known fact. Pure + inline; see lib/telemetry-call-origin.ts.
-  const callOrigin = classifyCallOrigin({
+  const callOrigin = origin ?? classifyCallOrigin({
     requestOrigin: input.ctx.requestOrigin,
     spawnId: input.ctx.spawnId,
   });

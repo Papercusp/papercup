@@ -29,7 +29,9 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveWakeMode } from '../coordination/wake-mode';
 import { getPresence } from '../coordination/presence';
-import { injectIntoHostWithConfirmation, selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
+import { injectIntoHostWithConfirmation, selfCompactionAvailabilityAsync, type SelfCompactionAvailability, type InjectHostResult } from '../../events/await/psu-pty-discovery';
+import { acpControl } from '../../su-session-acp-members';
+import { getLatestActiveAdvSessionByOwner } from '../../adv-sessions';
 import { hostCarryFenceBindable } from '../../events/await/carry-fence-bindable';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
@@ -384,7 +386,13 @@ export default defineTool({
     // self-compaction — so a recommendation and this refusal cannot drift apart.
     // Loop state can prepare durable carry, but it cannot prove a fresh turn
     // will be delivered without a host. Keep the no-host response explicit.
-    const availability = await selfCompactionAvailabilityAsync(identity.ownerId);
+    const registered = await getLatestActiveAdvSessionByOwner(identity.ownerId,identity.workspaceId);
+    const acp = registered?.launchArgv?.[0] === 'psu-acp' ? registered : null;
+    const probe = acp ? JSON.parse(await acpControl(acp,'probe',{})) : null;
+    const availability: SelfCompactionAvailability = acp && probe
+      ? {available:true,reason:null,host:{ownerId:identity.ownerId,advSessionId:String(acp.id),
+        nativeSessionId:acp.sessionId,pid:probe.pid,ptyPid:null,sock:probe.socket,startedAt:probe.startedAt,
+        caps:['carry-respawn'],command:'psu-acp'}} : await selfCompactionAvailabilityAsync(identity.ownerId);
     if (!availability.available && availability.reason === 'no_live_pty_host') {
       // A saved carry-note and an armed cold loop are registration evidence,
       // not proof that this process can receive a fresh turn. The no-host cold
@@ -811,7 +819,10 @@ export default defineTool({
     // the tool layer never read). Fail-soft by construction: an unreadable log
     // reports `none` and changes nothing.
     const priorRespawn = await readPriorRespawnOutcome(identity.ownerId);
-    const injectResult = await injectIntoHostWithConfirmation(
+    const injectResult: InjectHostResult = acp
+      ? await acpControl(acp,'carry',{nonce:pendingCarryRespawn.nonce,text:firstPrompt,addendum:spec.systemPromptAddendum})
+          .then(()=>({ok:true,confirmation:'acked' as const})).catch((e: Error)=>({ok:false,confirmation:'error' as const,reason:e.message}))
+      : await injectIntoHostWithConfirmation(
       host.sock,
       {
         mode: 'carry-respawn',

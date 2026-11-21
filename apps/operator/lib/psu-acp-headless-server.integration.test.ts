@@ -70,7 +70,7 @@ describe.runIf(process.platform === 'linux')('psu-acp headless server', () => {
       const root = destination + '/papercusp-server';
       const node = root + '/sidecar/bin/node';
       await exec('mkdir', destination);
-      await exec('tar', '-xzf', '/input.tar.gz', '-C', destination);
+      await run('docker', ['--host', dockerHost, 'exec', container, 'tar', '-xzf', '/input.tar.gz', '-C', destination], { timeout: 500_000 });
       const installed = Number((await exec('du', '-sb', root)).stdout.split('\t')[0]);
       expect(installed).toBeLessThan(original);
       expect((await exec('stat', '-c', '%u', root + '/start-server')).stdout.trim()).toBe('65534');
@@ -121,7 +121,10 @@ describe.runIf(process.platform === 'linux')('psu-acp headless server', () => {
     try {
       const embedded = createRequire(import.meta.url).resolve('@papercusp/embedded-postgres-server');
       const nativeName = '@embedded-postgres/linux-' + process.arch;
-      const nativeDir = dirname(dirname(createRequire(embedded).resolve(nativeName)));
+      // Compare the independent SQL probe against the native library shipped in this sidecar.
+      const nativeDir = process.env.PSU_ACP_HEADLESS_SIDECAR
+        ? join(referenceSidecar, 'node_modules/@papercusp/embedded-postgres-server/node_modules', nativeName)
+        : dirname(dirname(createRequire(embedded).resolve(nativeName)));
       await buildSqlProbe(directory);
       await chmod(directory, 0o755);
       await mkdir(join(directory, 'node_modules', nativeName), { recursive: true });

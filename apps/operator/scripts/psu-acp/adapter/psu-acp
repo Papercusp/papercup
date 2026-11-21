@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+dir=$(dirname "$(readlink -f "$0")")
+exec "$dir/supervise" node "$dir/adapter.mjs" "$@"

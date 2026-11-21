@@ -1,0 +1,21 @@
+{
+  "operatorUrl": "http://127.0.0.1:3070",
+  "workspace": "papercusp-workspace",
+  "tools": [
+    "docs:outline",
+    "docs:get",
+    "work_items:list"
+  ],
+  "models": [
+    {
+      "id": "sonnet",
+      "name": "Claude Sonnet 4.6",
+      "model": "us.anthropic.claude-sonnet-4-6",
+      "efforts": [
+        "low",
+        "medium",
+        "high"
+      ]
+    }
+  ]
+}

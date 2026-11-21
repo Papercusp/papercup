@@ -25,6 +25,7 @@ import { isIP } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { provisionNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
+import { acpCensus } from './bootstrap-su-acp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { bindSessionOutsidePlanRef, readSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from '../../../session-outside-plan';
 import { buildConsoleEnvelope } from '../../../console-launcher';
@@ -3940,6 +3941,7 @@ const optionsForSessionEnded = defineTool({
 
 
 export default [
+  acpCensus,
   options,
   optionsForOptions,
   bootstrapSu,

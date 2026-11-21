@@ -183,9 +183,11 @@ import {
 } from '../../../work-item-admission-authority';
 import {
   classifyOwnerNativeSession,
+  getAdvSessionInWorkspace,
   workspaceForCoordOwner,
   type NativeSessionVerificationPhase,
 } from '../../../adv-sessions';
+import { acpKeyedToolSchema } from '../../../su-session-acp-schema';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { findLiveHost } from '../../../events/await/psu-pty-discovery';
 import { PLATFORM_POT_SLUG } from '../../../platform-pot-slug';
@@ -4272,6 +4274,11 @@ export function registerMcpHost(server: McpServer): void {
       );
     }
     const filtered = vis.listings;
+    const caller = vis.spawnRes.kind === 'ok' ? vis.spawnRes.ctx : null;
+    const nativeOwner = caller?.advSessionId && caller.workspaceId
+      ? await getAdvSessionInWorkspace(caller.advSessionId, caller.workspaceId)
+      : null;
+    const isAcp = nativeOwner?.launchArgv?.[0] === 'psu-acp' && nativeOwner.agent === 'claude';
     const listedRegistryRevision =
       filtered.map(listingRegistryRevision).find((revision) => revision !== 'unknown') ??
       projectedToolRegistryRevision();
@@ -4315,8 +4322,8 @@ export function registerMcpHost(server: McpServer): void {
           // (token-efficient-agent-io P-008) so the model emits a positional
           // row; every other tool advertises its real args schema. Applied
           // before sanitize so the swapped schema is objectified too.
-          const advertised =
-            typeof tt.name === 'string'
+          const advertised = isAcp ? acpKeyedToolSchema(tt.inputSchema as Record<string, unknown>)
+            : typeof tt.name === 'string'
               ? advertisedArgsSchema(tt.name, tt.inputSchema as Record<string, unknown>)
               : (tt.inputSchema as Record<string, unknown>);
           // Publish small entity vocabularies as enums (P-004b). The listing
@@ -4339,7 +4346,7 @@ export function registerMcpHost(server: McpServer): void {
             out.inputSchema = sanitizeToolSchema(advertised);
           } else if (listingVariant) {
             out.inputSchema = sanitizeToolSchemaCached(
-              `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
+              `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}${isAcp ? ':psu-acp' : ''}`,
               advertised,
             );
           } else {

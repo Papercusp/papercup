@@ -35,6 +35,7 @@
  * (server-side) AND Windows (WI-3289: relayed to the desktop shell's Tauri
  * console_launch over the sync-bus bridge — the desktop window must be open).
  */
+import { spawnAcpMember } from '../../su-session-acp-members';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { totalmem } from 'node:os';
@@ -5311,14 +5312,16 @@ export default defineTool({
             env: { ...base.env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
           };
           return args.headless
-            ? spawnHeadless({
+            ? spawnAcpMember(workspaceId,ownerId,leaderLabel,{...leaderDefaults,agent:leaderDefaults.agent,
+                fleetSlug,harness,plan:planSlug ?? undefined,ownerId:spawnedLeaderOwnerId,fleetRole:'leader',
+                launchContext:leaderCtxPath},admissionContext,() => spawnHeadless({
                 envelope: { ...governedBase, greetingCmd: leaderCommand, cwd: base.cwd },
                 label: leaderLabel,
                 logDir: headlessLogDir,
                 launchedBy: ownerId,
                 fleetSlug,
                 coordOwnerId: spawnedLeaderOwnerId,
-              })
+              }))
             : spawnConsole({
                 envelope: { ...governedBase, greetingCmd: leaderCommand, cwd: base.cwd },
                 label: leaderLabel,
@@ -5491,14 +5494,17 @@ export default defineTool({
                         env: { ...base.env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
                       };
                       return args.headless
-                        ? spawnHeadless({
+                        ? spawnAcpMember(workspaceId,ownerId,memberLabel,{...resolvedMemberConfig(i),
+                            fleetSlug,harness,plan:planSlug ?? undefined,ownerId:memberOwnerId,
+                            launchContext:resolvedMemberConfig(i).launchContext ?? memberLaunchContextPathForIndex(i)},
+                            admissionContext,() => spawnHeadless({
                             envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
                             label: memberLabel,
                             logDir: headlessLogDir,
                             launchedBy: ownerId,
                             fleetSlug,
                             coordOwnerId: memberOwnerId,
-                          })
+                          }))
                         : spawnConsole({
                             envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
                             label: memberLabel,

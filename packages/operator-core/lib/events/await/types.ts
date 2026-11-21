@@ -193,6 +193,7 @@ export type DeliveryStatus = 'pending' | 'parked' | 'delivering' | 'delivered' |
  *  per-wake attribution dimension (D-007). `coalesced` = this delivery folded into
  *  another wake for the same subscriber (no turn spent — unify-watch-primitive P-005). */
 export type WakeChannel =
+  | 'acp-inbox'
   | 'pty-inject'
   | 'psu-socket-inject'
   // su-cold-auto-mode-2026-07-03 Phase 2: a COLD loop wake injects a fresh-context

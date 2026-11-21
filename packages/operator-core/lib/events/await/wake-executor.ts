@@ -5470,6 +5470,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     );
     const text = await tagWakeText(sessionDelivery, untaggedText, tagTurn);
 
+    if (fresh?.launchArgv?.[0] === 'psu-acp' && fresh.agent === 'claude') {
+      if (fresh.retiredAt || fresh.coordOwnerId !== d.subscriberId) return {kind:'drop',reason:'ACP owner retired or changed'};
+      const { enqueueAcpWake } = await import('../../su-session-acp-wakes');
+      await enqueueAcpWake(fresh,d.id,text.text);
+      return {kind:'delivered',channel:'acp-inbox'};
+    }
+
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our
     // findPty can't see it and the pid logic below would PARK it (or worse,

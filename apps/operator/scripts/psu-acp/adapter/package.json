@@ -1,0 +1,38 @@
+{
+  "name": "psu-acp",
+  "version": "0.1.0",
+  "description": "ACP stdio adapter for locally supervised Papercusp Claude sessions",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "psu-acp": "psu-acp"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "os": [
+    "linux"
+  ],
+  "files": [
+    "psu-acp",
+    "supervise",
+    "supervise.c",
+    "*.mjs",
+    "README.md",
+    "client.json",
+    "config.example.json",
+    "!fixtures.mjs"
+  ],
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.88.0",
+    "@agentclientprotocol/sdk": "1.7.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.293",
+    "zod": "4.6.5"
+  },
+  "bundledDependencies": [
+    "@agentclientprotocol/claude-agent-acp",
+    "@agentclientprotocol/sdk",
+    "@anthropic-ai/claude-agent-sdk",
+    "zod"
+  ]
+}
