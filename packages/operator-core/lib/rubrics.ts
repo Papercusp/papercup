@@ -47,6 +47,7 @@ import {
 } from './requirement-contract';
 import {
   rubricTemplateDataSchema,
+  type RubricLever,
   stripUnknownRubricKeys,
   rubricTemplateDataAuthoringSchema,
   rubricKindOf,
@@ -205,6 +206,8 @@ export interface AcceptanceBarProvenance {
 
 /** One gradeable item within a rubric (the per-characteristic criterion). */
 export interface RubricCriterion {
+  /** Optional, non-grading advice. A stable lever key can name an observed application. */
+  levers?: RubricLever[];
   /** Stable kebab id; a structured observation's ratings Record is keyed by this. */
   key: string;
   title: string;
@@ -657,6 +660,7 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
       return {
         key: c.key,
         title: c.title,
+        ...(c.levers !== undefined ? { levers: c.levers } : {}),
         ...(c.intent ? { intent: c.intent } : {}),
         model,
         // `bar` is deliberately a projection, not template_data. `model` remains
@@ -708,6 +712,10 @@ export function planRowToRubric(row: RubricPlanRow, delegatedClassRevision?: num
 
 type ParsedRubricTemplateData = ReturnType<typeof rubricTemplateDataSchema.parse>;
 
+function gradedCriterionFields<T extends { levers?: RubricLever[] }>({ levers: _advice, ...meaning }: T) {
+  return meaning;
+}
+
 /**
  * Keep the grading hash construction in one place so current reads and the
  * write-time revision snapshot record exactly the same identity. The delegated
@@ -721,6 +729,7 @@ function computeRubricCriteriaHash(
 ): string {
   return computeSeedContentHash({
     ...templateData,
+    criteria: templateData.criteria.map(gradedCriterionFields),
     ...(templateData.classRef ? { delegatedClassRef: templateData.classRef } : {}),
     ...(templateData.classRef && delegatedClassRevision !== undefined ? { delegatedClassRevision } : {}),
   });
@@ -4063,6 +4072,7 @@ export interface AmendRubricInput {
   /** Target one requirement while preserving every other criterion and its history. */
   requirement?: {
     key: string;
+    levers?: RubricLever[];
     intent?: RequirementIntent;
     acceptance?: Partial<RequirementAcceptance>;
     verification?: Partial<RequirementVerification>;
@@ -4227,6 +4237,7 @@ export function applyRubricAmendment(
       throw new Error('invalid_args: requirement amendment requires an existing criterion; Acceptance/Verification patches require acceptance kind');
     }
     if (
+      patch.levers === undefined &&
       ![patch.intent, patch.acceptance, patch.verification].some((section) => section && Object.keys(section).length)
     ) {
       throw new Error('invalid_args: requirement amendment is empty');
@@ -4238,6 +4249,7 @@ export function applyRubricAmendment(
     const verification = patch.verification;
     const next: ProposeRubricCriterion = {
       ...canonical,
+      ...(patch.levers !== undefined ? { levers: patch.levers } : {}),
       ...(patch.intent ? { intent: patch.intent } : {}),
       ...(acceptance
         ? {
@@ -4327,7 +4339,11 @@ export function applyRubricAmendment(
   }
 
   criteria = migrateLegacyCriterionProbeRevisions(criteria);
-  const standardReplacement = stored.kind === 'standard' && input.criteria !== undefined;
+  const replacingStandard = stored.kind === 'standard' && input.criteria !== undefined;
+  const onlyLeversChanged = replacingStandard &&
+    !isDeepStrictEqual(criteria.map(c => c.levers), storedCriteria.map(c => c.levers)) &&
+    isDeepStrictEqual(criteria.map(gradedCriterionFields), storedCriteria.map(gradedCriterionFields));
+  const standardReplacement = replacingStandard && !onlyLeversChanged;
 
   return {
     rubricId: stored.rubricId,

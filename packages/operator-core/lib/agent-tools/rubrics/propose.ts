@@ -15,6 +15,7 @@ import { auditInstrumentBindings, unregisteredInstrumentRefusal } from '../../ru
 import { validateRubricReplicationSql } from '../../rubrics-replication-sql';
 import {
   rubricCriterionWindowSchema,
+  rubricLeversSchema,
   rubricCriterionCheckSchema,
   acceptanceCriterionRoleSchema,
   acceptanceBarProvenanceSchema,
@@ -74,6 +75,7 @@ const driftMarkers = z
 const criterionFields = {
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
   title: z.string().min(1),
+  levers: rubricLeversSchema.optional(),
   intent: requirementIntentSchema.optional(),
   acceptance: requirementAcceptanceSchema.optional(),
   verification: requirementVerificationSchema.optional(),

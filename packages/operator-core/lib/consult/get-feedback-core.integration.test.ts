@@ -24,6 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ensureCoordEventLogTable } from '@papercusp/coordination/event-log';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import type { RouteResult, RoutingCandidate, RoutingSnapshot } from './relevance-router';
@@ -85,6 +86,12 @@ function asOk(r: GetFeedbackResult | GetFeedbackError): GetFeedbackResult {
 const WS = 'ws-consult-core';
 const NOW = new Date('2026-08-16T00:00:00Z');
 const SOURCE_AUDIT_RESERVED_AT = '2026-08-16T00:00:00.000Z';
+const MIGRATION_501 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/501-session-turns.sql', import.meta.url),
+);
+const MIGRATION_702 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/702-session-turn-parts.sql', import.meta.url),
+);
 const MIGRATION_834 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url),
 );
@@ -116,6 +123,10 @@ beforeAll(async () => {
   fixtureDb = await createFreshTestDb({ prefix: 'consultc' });
   rootSql = postgres(fixtureDb.url, { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA harness_shared');
+  // Expiry checks the answering session's tool activity before advancing a review.
+  await ensureCoordEventLogTable(rootSql);
+  await rootSql.unsafe(readFileSync(MIGRATION_501, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_702, 'utf8'));
   // Minimal landing pad for the migration's coord_conversations kind-CHECK
   // widening (the real table is migration-132-owned). Keep the workspace key
   // and lifecycle columns used by expiry settlement in sync with that table.

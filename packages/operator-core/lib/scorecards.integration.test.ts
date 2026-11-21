@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 import type { OrgSql } from './work-items';
-import type { ScorecardEvidenceCriterion } from './scorecards';
+import { readCriterionRepairHistory, type RepairHistoryCursor, type ScorecardEvidenceCriterion } from './scorecards';
 import { composeCompanionSummary } from '@papercusp/facets';
 import type { StructuredObservation } from './harness/improvements/observation-types';
 import { recordRubricCheckResults, readLatestRubricCheckResults } from './check-results-ledger';
@@ -1772,6 +1772,79 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('recovers explicitly linked repairs across tied timestamps, page boundaries, and a reader restart', async () => {
+    const rubricRef = 'repair-history-pagination';
+    const criterionKey = 'measured';
+    const subject = { kind: 'work-item', ref: 'WI-810' };
+    const at = '2026-01-01T10:00:00.000Z';
+    async function write(id: string, rating: string, extra: Record<string, unknown>, remediation?: string, createdAt = at) {
+      const observation = { rubricRef, criteriaHash: 'a'.repeat(64), subject, sourceHive: 'test',
+        ratings: { [criterionKey]: { rating, evidence: 'measured in fixture', remediation } }, ...extra };
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source, state, payload, created_by, signal_origin, created_at)
+        VALUES (${issuesScopeWorkspace()}, ${id}, 'change', 'harness:papercusp', ${id}, '', 'minor', 'test',
+          'done', ${JSON.stringify({ observation })}::text::jsonb, 'su-test', 'organic', ${createdAt}::timestamptz)`;
+    }
+    const input = { rubricRef, criterionKey, limit: 3 };
+    const ids = ['EI-history-a', 'EI-history-b', 'EI-history-c', 'EI-history-d', 'EI-history-e',
+      'EI-history-f', 'EI-history-g', 'EI-history-h'];
+    expect(await readCriterionRepairHistory(input)).toEqual({ entries: [], omittedCount: 0, nextCursor: null });
+    await write(ids[1]!, 'partial', { purpose: 'diagnostic' }, 'WI-22');
+    await write(ids[0]!, 'partial', { purpose: 'diagnostic' }, 'WI-11');
+    expect(await readCriterionRepairHistory(input)).toMatchObject({ entries: [{}, {}], omittedCount: 0, nextCursor: null });
+    await write(ids[2]!, 'partial', { purpose: 'diagnostic' }, 'WI-33');
+    expect(await readCriterionRepairHistory(input)).toMatchObject({ entries: [{}, {}, {}], omittedCount: 0, nextCursor: null });
+    await write(ids[3]!, 'partial', { purpose: 'diagnostic' }, 'WI-44');
+    const boundary = await readCriterionRepairHistory(input);
+    expect(boundary.omittedCount).toBe(1);
+    expect((await readCriterionRepairHistory({ ...input, cursor: boundary.nextCursor! })).entries[0]?.baselineId).toBe(ids[3]);
+    for (const id of ids.slice(4).reverse()) await write(id, 'partial', { purpose: 'diagnostic' }, 'WI-55');
+    await write('EI-history-z-grade', 'pass', { baselineRef: ids[7], gradingAudit: { state: 'passed' } });
+    await write('EI-history-wrong-scope', 'pass', { baselineRef: ids[0], subject: { ...subject, ref: 'WI-811' } });
+    await write('EI-history-failed-audit', 'pass', { baselineRef: ids[1], gradingAudit: { state: 'failed' } });
+    await write('EI-history-correction', 'pass', { supersedes: ids[6] });
+    await write('EI-history-superseded-pair', 'pass', { baselineRef: ids[6], gradingAudit: { state: 'passed' } });
+    let page = await readCriterionRepairHistory(input);
+    const entries = [...page.entries];
+    expect(page.omittedCount).toBe(5);
+    await expect(readCriterionRepairHistory({ ...input, criterionKey: 'another', cursor: page.nextCursor! }))
+      .rejects.toThrow('Invalid repair history cursor');
+    while (page.nextCursor) {
+      const restored = JSON.parse(JSON.stringify(page.nextCursor)) as RepairHistoryCursor;
+      page = await readCriterionRepairHistory({ ...input, cursor: restored });
+      entries.push(...page.entries);
+      expect(page.omittedCount).toBe(ids.length - entries.length);
+    }
+    expect(entries.map(entry => entry.baselineId)).toEqual(ids);
+    expect(entries[0]).toMatchObject({ outcome: 'unknown', reason: 'scope-mismatch' });
+    expect(entries[1]).toMatchObject({ outcome: 'improved', verification: 'failed' });
+    expect(entries[2]).toMatchObject({ regradeId: null, reason: 'no-linked-regrade' });
+    expect(entries[6]).toMatchObject({ verification: 'unknown', reason: 'correction' });
+    expect(entries[7]).toMatchObject({ baselineId: ids[7], workItemIds: ['WI-55'],
+      regradeId: 'EI-history-z-grade', before: 'partial', after: 'pass', outcome: 'improved', verification: 'verified' });
+
+    // Same subject, hive, rubric and criterion. The more recent repair is deliberately
+    // different, and insertion order disagrees with both event time and identity order.
+    const later = '2026-01-01T10:02:00.000Z';
+    const last = '2026-01-01T10:03:00.000Z';
+    await write('EI-history-chronological-decoy', 'fail', { purpose: 'diagnostic' }, 'WI-999', later);
+    await write('EI-history-older-grade', 'partial', { baselineRef: ids[2], gradingAudit: { state: 'passed' } }, undefined, last);
+    await write('EI-history-legacy-pair', 'pass', { baselineRef: 'EI-history-legacy', sourceHive: null,
+      gradingAudit: { state: 'passed' } }, undefined, last);
+    await write('EI-history-legacy', 'fail', { purpose: 'diagnostic', sourceHive: null }, 'WI-777', later);
+    const linked = await readCriterionRepairHistory({ ...input, limit: 100 });
+    expect(linked.entries.find(row => row.regradeId === 'EI-history-older-grade')).toMatchObject({
+      baselineId: ids[2], workItemIds: ['WI-33'], outcome: 'unchanged', verification: 'verified',
+    });
+    expect(linked.entries.find(row => row.baselineId === 'EI-history-chronological-decoy')).toMatchObject({
+      workItemIds: ['WI-999'], regradeId: null, outcome: 'unknown',
+    });
+    expect(linked.entries.find(row => row.regradeId === 'EI-history-legacy-pair')).toMatchObject({
+      verification: 'unknown', reason: 'scope-mismatch',
+    });
   });
 
   describe.each([

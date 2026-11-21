@@ -1562,6 +1562,40 @@ Preserve this plan body.
     expect(active?.proposedBy).toBe('reviewer-b');
   });
 
+  it('round-trips advisory levers without invalidating a ratified rubric or its grade identity', async () => {
+    const rubricId = 'criterion-repair-advice';
+    const lever = { key: 'placement', action: 'Reconcile the placement', where: 'placement worker',
+      expectedEffect: 'Eliminate duplicate placements', evidence: ['WI-101'] };
+    await rubrics.proposeRubric({ rubricId, characteristic: 'placement', title: 'Placement repair',
+      criteria: sampleCriteria.map(c => c.key === 'placement-health' ? { ...c, levers: [lever] } : c), by: 'author-a' });
+    const before = await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+    expect(before?.criteria.find(c => c.key === 'placement-health')?.levers).toEqual([lever]);
+    const edited = { ...lever, expectedEffect: 'Reduce duplicate placements' };
+    for (const levers of [[edited], []]) {
+      await rubrics.amendRubric({ rubricId, requirement: { key: 'placement-health', levers }, by: 'author-a' });
+      const after = await rubrics.getRubric(rubricId);
+      expect(after?.criteria.find(c => c.key === 'placement-health')?.levers).toEqual(levers);
+      expect(after?.criteriaHash).toBe(before?.criteriaHash);
+      expect(after?.status).toBe('active');
+      expect(after?.ratifiedBy).toBe('independent-reviewer');
+    }
+    const current = await rubrics.getRubric(rubricId);
+    if (!current || !before) throw new Error('Expected the ratified pilot rubric.');
+    const replacement = current.criteria.map(c => c.key === 'placement-health' ? { ...c, levers: [lever] } : c);
+    const full = await rubrics.amendRubric({ rubricId, criteria: replacement, by: 'author-a' });
+    expect(full).toMatchObject({ status: 'active', ratifiedBy: 'independent-reviewer', criteriaHash: before.criteriaHash });
+    const left = before.criteria.find(c => c.key === 'placement-health')!;
+    const right = full!.criteria.find(c => c.key === left.key)!;
+    const gradeKey = (criterion: typeof left) => rubrics.criterionGradeKey(
+      rubrics.computeAcceptanceBarHash(criterion), rubrics.criterionMethodHash(criterion.method));
+    expect(gradeKey(right)).toEqual(gradeKey(left));
+    expect(rubrics.classifyRubricEvidenceCurrentness(before, full!)).toMatchObject({ state: 'current' });
+    const behavioral = await rubrics.amendRubric({ rubricId, by: 'author-a',
+      criteria: replacement.map(c => ({ ...c, model: c.model + ' An additional placement condition.' })) });
+    expect(behavioral?.status).toBe('proposed');
+    expect(behavioral?.criteriaHash).not.toBe(before.criteriaHash);
+  });
+
   it('amendRubric on an ACTIVE rubric preserves the ratifier of record (status is preserved, so provenance must be too)', async () => {
     await rubrics.proposeRubric({
       rubricId: 'amendee',

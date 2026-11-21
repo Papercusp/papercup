@@ -683,10 +683,21 @@ export const requirementSectionsSchema = z
  * (a compile-time assignability check pins this in rubric-template.test.ts). A
  * structured observation's `ratings` Record is keyed by `key`.
  */
+export const rubricLeversSchema = z.array(z.object({
+  key: z.string().min(1),
+  action: z.string().min(1),
+  where: z.string().min(1),
+  expectedEffect: z.string().min(1),
+  evidence: z.array(z.string().min(1)).optional(),
+}).strict()).refine(levers => new Set(levers.map(lever => lever.key)).size === levers.length,
+  'Each advisory lever must have a unique key within the criterion.');
+export type RubricLever = z.infer<typeof rubricLeversSchema>[number];
+
 const rubricCriterionObjectSchema = z
   .object({
     key: z.string().min(1).describe("stable kebab id; a structured observation's ratings Record is keyed by this"),
     title: z.string().min(1).describe('short human label for the criterion'),
+    levers: rubricLeversSchema.optional().describe('Optional advice about repairs. An unlisted repair is equally valid.'),
     intent: requirementIntentSchema
       .optional()
       .describe('acceptance-kind only: original request, rationale, constraints and source references'),
@@ -1012,14 +1023,15 @@ export const requirementAmendmentSchema = z
     intent: requirementIntentSchema.optional(),
     acceptance: requirementAcceptanceSchema.partial().optional(),
     verification: requirementVerificationSchema.partial().optional(),
+    levers: rubricLeversSchema.optional(),
   })
   .strict()
   .refine(
     (input) =>
-      [input.intent, input.acceptance, input.verification].some(
+      input.levers !== undefined || [input.intent, input.acceptance, input.verification].some(
         (section) => section && Object.keys(section).length > 0,
       ),
-    'provide an Intent, Acceptance or Verification amendment',
+    'provide an Intent, Acceptance, Verification or advisory levers amendment',
   )
   .superRefine((input, ctx) => {
     const passRatingsError = acceptancePassRatingsError(input.acceptance);

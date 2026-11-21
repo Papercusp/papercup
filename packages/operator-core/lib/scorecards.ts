@@ -128,6 +128,7 @@ export async function measureGoalModeComputedWindow(input: {
 }
 import {
   OBSERVATION_UNKNOWN_REASONS,
+  POOR_SCORECARD_RATINGS,
   asStructuredObservation,
   normalizeScorecardRatings,
   scorecardAdmissionExclusion,
@@ -4034,6 +4035,146 @@ export function ratingScore10(rating: string, overrides?: Record<string, number>
   const key = rating.toLowerCase();
   const v = overrides?.[key] ?? DEFAULT_RATING_SCORE10[key];
   return v === undefined ? null : v;
+}
+
+export interface RepairHistoryCursor {
+  workspace: string;
+  rubricRef: string;
+  criterionKey: string;
+  asOf: string;
+  baselineId: string;
+  regradeId: string;
+}
+
+export interface CriterionRepairRecord {
+  baselineId: string;
+  baselineAt: string;
+  regradeId: string | null;
+  regradedAt: string | null;
+  remediation: string;
+  workItemIds: string[];
+  before: string;
+  after: string | null;
+  evidence: string | null;
+  appliedLever: string | null;
+  outcome: 'improved' | 'unchanged' | 'worsened' | 'unknown';
+  verification: 'verified' | 'pending' | 'failed' | 'unknown';
+  reason: string | null;
+}
+
+interface RepairHistoryDbRow {
+  baseline_id: string;
+  baseline_at: Date | string;
+  grade_id: string | null;
+  grade_at: Date | string | null;
+  remediation: string;
+  before_rating: string;
+  after_rating: string | null;
+  evidence: string | null;
+  applied_lever: string | null;
+  incomparable: string | null;
+  baseline_audit: string | null;
+  grade_audit: string | null;
+  remaining_count: string | number;
+}
+
+function projectRepairRecord(row: RepairHistoryDbRow, scale?: readonly string[]): CriterionRepairRecord {
+  const workItemIds = [...new Set(row.remediation.match(/\b(?:WI|EI|F)-\d+\b/g) ?? [])];
+  const reason = row.incomparable ?? (workItemIds.length === 1 ? null : 'ambiguous-remediation');
+  const overrides = scoreOverridesForScale(scale);
+  const before = ratingScore10(row.before_rating, overrides);
+  const after = row.after_rating === null ? null : ratingScore10(row.after_rating, overrides);
+  let outcome: CriterionRepairRecord['outcome'] = 'unknown';
+  if (!reason && before !== null && after !== null) {
+    outcome = after === before ? 'unchanged' : after > before ? 'improved' : 'worsened';
+  } else if (!reason && row.after_rating === row.before_rating) {
+    outcome = 'unchanged';
+  }
+  let verification: CriterionRepairRecord['verification'] = 'unknown';
+  if (!reason && outcome !== 'unknown') {
+    const audits = [row.baseline_audit, row.grade_audit];
+    if (audits.includes('failed')) verification = 'failed';
+    else if (audits.every(state => state === 'passed')) verification = 'verified';
+    else if (audits.includes('pending')) verification = 'pending';
+  }
+  return {
+    baselineId: row.baseline_id, baselineAt: new Date(row.baseline_at).toISOString(),
+    regradeId: row.grade_id, regradedAt: row.grade_at === null ? null : new Date(row.grade_at).toISOString(),
+    remediation: row.remediation, workItemIds, before: row.before_rating, after: row.after_rating,
+    evidence: row.evidence, appliedLever: row.applied_lever, outcome, verification,
+    reason: reason ?? (outcome === 'unknown' ? 'rating-direction-unknown' : null),
+  };
+}
+
+/** Each baseline retains its own cited remedy. Only baselineRef creates a before/after relation. */
+export async function readCriterionRepairHistory(input: {
+  rubricRef: string; criterionKey: string; ratingScale?: readonly string[];
+  cursor?: RepairHistoryCursor; limit?: number; asOf?: string;
+}): Promise<{ entries: CriterionRepairRecord[]; omittedCount: number; nextCursor: RepairHistoryCursor | null }> {
+  const workspace = issuesScopeWorkspace();
+  const { rubricRef, criterionKey, cursor } = input;
+  const limit = input.limit ?? 10;
+  const asOf = cursor?.asOf ?? input.asOf ?? new Date().toISOString();
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError('Repair history page size must be an integer from 1 to 100.');
+  }
+  if (!Number.isFinite(Date.parse(asOf)) || (cursor && (cursor.workspace !== workspace ||
+      cursor.rubricRef !== rubricRef || cursor.criterionKey !== criterionKey || !cursor.baselineId ||
+      typeof cursor.regradeId !== 'string' || (input.asOf !== undefined && input.asOf !== asOf)))) {
+    throw new Error('Invalid repair history cursor or snapshot for the requested workspace, rubric and criterion.');
+  }
+  const rows = await boundedPgReadTxn<RepairHistoryDbRow[]>((tx) => tx<RepairHistoryDbRow[]>`
+    WITH cards AS MATERIALIZED (
+      SELECT issue_id, created_at, payload->'observation' AS obs,
+             payload->'observation'->'ratings'->${criterionKey} AS entry
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${workspace} AND created_at <= ${asOf}::timestamptz
+         AND payload->'observation'->>'rubricRef' = ${rubricRef}
+    ), corrections AS (
+      SELECT DISTINCT obs->>'supersedes' AS corrected_id FROM cards
+       WHERE obs->>'supersedes' IS NOT NULL AND obs->'retracted' IS NULL
+    ), history AS (
+      SELECT b.issue_id AS baseline_id, b.created_at AS baseline_at,
+             g.issue_id AS grade_id, g.created_at AS grade_at,
+             b.entry->>'remediation' AS remediation, b.entry->>'rating' AS before_rating,
+             g.entry->>'rating' AS after_rating, g.entry->>'evidence' AS evidence,
+             g.entry->>'appliedLever' AS applied_lever,
+             CASE
+               WHEN g.issue_id IS NULL THEN 'no-linked-regrade'
+               WHEN b.obs->'retracted' IS NOT NULL OR g.obs->'retracted' IS NOT NULL THEN 'retracted'
+               WHEN bc.corrected_id IS NOT NULL OR gc.corrected_id IS NOT NULL
+                 OR b.obs->>'supersedes' IS NOT NULL OR g.obs->>'supersedes' IS NOT NULL THEN 'correction'
+               WHEN b.obs->'provisional' IS NOT NULL OR g.obs->'provisional' IS NOT NULL THEN 'provisional'
+               WHEN b.obs->>'synthesized' = 'true' OR g.obs->>'synthesized' = 'true' THEN 'synthesized'
+               WHEN g.created_at < b.created_at THEN 'regrade-before-baseline'
+               WHEN g.entry->>'rating' IS NULL THEN 'criterion-missing'
+               WHEN nullif(b.obs->'subject'->>'kind', '') IS NULL OR nullif(b.obs->'subject'->>'ref', '') IS NULL
+                 OR nullif(b.obs->>'sourceHive', '') IS NULL OR b.obs->'subject' IS DISTINCT FROM g.obs->'subject'
+                 OR b.obs->>'sourceHive' IS DISTINCT FROM g.obs->>'sourceHive' THEN 'scope-mismatch'
+               WHEN nullif(b.obs->>'criteriaHash', '') IS NULL OR b.obs->>'criteriaHash' IS DISTINCT FROM g.obs->>'criteriaHash'
+                 OR b.obs->>'rubricMeaningRevision' IS DISTINCT FROM g.obs->>'rubricMeaningRevision'
+                 OR b.obs->>'barSetHash' IS DISTINCT FROM g.obs->>'barSetHash' THEN 'meaning-mismatch'
+             END AS incomparable,
+             CASE WHEN b.obs->>'purpose' = 'diagnostic' THEN 'passed' ELSE b.obs->'gradingAudit'->>'state' END AS baseline_audit,
+             g.obs->'gradingAudit'->>'state' AS grade_audit
+        FROM cards b
+        LEFT JOIN cards g ON g.obs->>'baselineRef' = b.issue_id
+        LEFT JOIN corrections bc ON bc.corrected_id = b.issue_id
+        LEFT JOIN corrections gc ON gc.corrected_id = g.issue_id
+       WHERE lower(trim(b.entry->>'rating')) IN ${tx([...POOR_SCORECARD_RATINGS])}
+         AND nullif(trim(b.entry->>'remediation'), '') IS NOT NULL
+    )
+    SELECT history.*, count(*) OVER () AS remaining_count FROM history
+     WHERE (baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C") >
+           (${cursor?.baselineId ?? ''}::text COLLATE "C", ${cursor?.regradeId ?? ''}::text COLLATE "C")
+     ORDER BY baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C"
+     LIMIT ${limit}`);
+  const entries = rows.map(row => projectRepairRecord(row, input.ratingScale));
+  const omittedCount = Number(rows[0]?.remaining_count ?? 0) - rows.length;
+  const last = entries.at(-1);
+  return { entries, omittedCount, nextCursor: omittedCount && last
+    ? { workspace, rubricRef, criterionKey, asOf, baselineId: last.baselineId, regradeId: last.regradeId ?? '' }
+    : null };
 }
 
 /**
