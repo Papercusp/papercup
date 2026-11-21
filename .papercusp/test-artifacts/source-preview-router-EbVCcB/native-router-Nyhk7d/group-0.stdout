@@ -1,0 +1,17 @@
+
+ RUN  v4.1.8 /home/marsh-office/papercupai-workspace/papercusp/packages/operator-core
+
+ ✓ lib/source-preview-export.test.ts (720 tests | 705 skipped) 6252ms
+     ✓ equals the installer selection over the same clean commit, minus node_modules  616ms
+     ✓ refuses an unresolvable gitlink and leaves no export behind  590ms
+     ✓ is deterministic: exporting the same commit twice yields identical bytes  1002ms
+     ✓ exports only committed content, never uncommitted working-tree edits  965ms
+     ✓ uses the pinned dependency graph and leaves dirty source, index and branch unchanged (D-007)  1410ms
+     ✓ dates the copyright from real history, not a fixed-date repair-queue admission commit  402ms
+
+ Test Files  1 passed (1)
+      Tests  15 passed | 705 skipped (720)
+   Start at  21:47:22
+   Duration  12.38s (transform 3.74s, setup 805ms, import 4.93s, tests 6.25s, environment 0ms)
+
+JSON report written to /tmp/pcv/papercusp-test-files-report-80NtB5/group-0.json
