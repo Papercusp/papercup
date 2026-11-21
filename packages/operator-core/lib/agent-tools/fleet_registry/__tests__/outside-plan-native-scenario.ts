@@ -154,11 +154,13 @@ function scriptedCall(body: Record<string, any>, owner: string, round: number, n
     if (tool.type === 'namespace') offered.push(...(tool.tools ?? []).map((t: any) => ({ ...t, namespace: tool.name })));
     else offered.push(tool);
   }
-  const direct = offered.find(t => t.type === 'function' && /(?:^|__)tools_invoke$/.test(t.name));
+  const suffix = name.replace(/[:-]/g, '_');
+  const native = offered.find(t => t.type === 'function' && (t.name === suffix || t.name.endsWith('__' + suffix)));
+  const invoke = offered.find(t => t.type === 'function' && /(?:^|__)tools_invoke$/.test(t.name));
   const exec = offered.find(t => t.type === 'custom' && t.name === 'exec' && t.namespace === 'functions');
-  const tool = direct ?? exec;
+  const tool = native ?? invoke ?? exec;
   assert.ok(tool, 'Native client did not offer the real MCP invocation tool');
-  const input = { name, args };
+  const input = native ? args : { name, args };
   const call = { type: tool.type === 'custom' ? 'custom_tool_call' : 'function_call',
     id: 'fc_outside_' + round, call_id: 'call_outside_' + round, name: tool.name,
     ...(tool.namespace ? { namespace: tool.namespace } : {}), status: 'completed',
@@ -184,6 +186,17 @@ const listener = createServer((req, res) => {
     const body = JSON.parse(bytes);
     const owner = String(req.headers['x-papercusp-owner'] ?? '');
     assert.match(owner, /^su-/);
+    // Codex issues a separate, tool-less thread-title request. It is not a
+    // task turn and must not advance the native execution round counter.
+    const turnMetadata = body.client_metadata?.['x-codex-turn-metadata'];
+    const metadata = typeof turnMetadata === 'string' ? JSON.parse(turnMetadata) : null;
+    if (metadata?.thread_source === 'thread_title') {
+      assert.equal(body.tools?.length ?? 0, 0);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: body.model,
+        text: 'Complete assigned outside work', inputTokens: 100, outputTokens: 10 })));
+      return;
+    }
     const round = rounds.get(owner) ?? 0;
     rounds.set(owner, round + 1);
     assert.ok(round < 50, 'Native tool loop exceeded its finite acceptance budget');
@@ -222,11 +235,16 @@ const listener = createServer((req, res) => {
     }
     modelRequests.push({ owner, round, tool: name, body });
     writeFileSync(join(evidenceDir, 'outside-native-model-requests.json'), JSON.stringify(modelRequests));
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
-    res.end(name ? scriptedCall(body, owner, round, name, args)
+    const response = name ? scriptedCall(body, owner, round, name, args)
       : codexCliResponsesCompletionSse(codexCliResponsesBody({ model: body.model,
-        text: 'The assigned outside work is complete.', inputTokens: 100, outputTokens: 10 })));
-  })().catch(error => { console.error('OUTSIDE_NATIVE_PROTOCOL_ERROR', error); res.writeHead(500); res.end(String(error)); });
+        text: 'The assigned outside work is complete.', inputTokens: 100, outputTokens: 10 }));
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.end(response);
+  })().catch(error => {
+    console.error('OUTSIDE_NATIVE_PROTOCOL_ERROR', error);
+    if (!res.headersSent) res.writeHead(500);
+    res.end(String(error));
+  });
 });
 
 async function main() {
