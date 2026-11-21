@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { fixtureNode } from '../scripts/psu-acp/fixtures/fixture-node';
 
 const run = promisify(execFile);
 const client = fileURLToPath(new URL('../scripts/psu-acp/contract_client.py', import.meta.url));
@@ -53,9 +54,13 @@ describe.runIf(process.platform === 'linux')('pinned native ACP reference', () =
   const endpoint = process.env.DOCKER_HOST || 'unix:///run/docker-bench.sock';
   const docker = (...args: string[]) => run('docker', ['--host', endpoint, ...args], { timeout: 90_000 });
   const node = '/usr/local/bin/node';
+  const nodeMount = 'type=bind,src=' + fixtureNode() + ',dst=' + node + ',readonly';
   let oracle: string;
 
   beforeAll(async () => {
+    const image = (await docker('build', '--network=none', '--pull=false', '--quiet', fixtures)).stdout.trim();
+    await docker('run', '--rm', '--network', 'none', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      '--mount', nodeMount, image, node, '--version');
     oracle = await mkdtemp(join(tmpdir(), 'psu-acp-reference-'));
     const source = join(fixtures, 'reference');
     await Promise.all(['package.json', 'package-lock.json', 'provider.mjs'].map(name =>
@@ -76,13 +81,12 @@ describe.runIf(process.platform === 'linux')('pinned native ACP reference', () =
       '--build-arg', 'PROFILE=' + profile, fixtures)).stdout.trim();
     const native = '/oracle/node_modules/@anthropic-ai/claude-agent-sdk-linux-' + process.arch + '/claude';
     const adapter = '/oracle/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js';
-    const hostNode = process.env.PSU_ACP_TEST_NODE || process.execPath;
     const token = randomBytes(32).toString('hex');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const { stdout } = await docker('run', '-d', '--network', 'none', '--memory', '8g', '--memory-swap', '8g',
       '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
       '--mount', 'type=bind,src=' + oracle + ',dst=/oracle,readonly',
-      '--mount', 'type=bind,src=' + hostNode + ',dst=' + node + ',readonly',
+      '--mount', nodeMount,
       '-e', 'CLAUDE_CODE_EXECUTABLE=' + native, '-e', 'AWS_REGION=us-east-1',
       '-e', 'FIXTURE_MCP_TOKEN_SHA256=' + tokenHash,
       '-e', 'CLAUDE_CODE_SKIP_BEDROCK_AUTH=1', '-e', 'ANTHROPIC_BEDROCK_BASE_URL=http://127.0.0.1:8911',
