@@ -46,15 +46,43 @@ export const CONSULT_RECEIPT_MATRICES: Readonly<Record<string, Readonly<Record<s
   },
 };
 
-const cellSchema = z.object({
-  cell: z.string().min(1).max(200),
-  mode: z.enum(['fork', 'port']),
+const cellName = z.string().min(1).max(200);
+const receiptId = z.union([z.number().int().positive().max(Number.MAX_SAFE_INTEGER), z.string().regex(/^[1-9]\d*$/)]).transform(String);
+const receiptModes = {
+  fork: 'fork', 'isolated native fork': 'fork',
+  port: 'port', 'isolated conversion': 'port', 'maintained session-port adapter': 'port',
+} as const;
+
+const checkedCellSchema = z.object({
+  cell: cellName,
+  mode: z.enum(['fork', 'port', 'isolated native fork', 'isolated conversion', 'maintained session-port adapter'])
+    .transform(mode => receiptModes[mode]),
+  status: z.literal('checked').optional(),
+  passed: z.boolean().optional(),
+  attemptedOnThisBuild: z.literal(true).optional(),
   requestKey: z.string().min(1).max(200),
   conversationId: z.string().regex(/^conv-[a-z0-9-]{1,200}$/),
   portId: z.string().min(1).max(200).nullable().optional(),
   sourceOwnerId: z.string().min(1).max(200),
   answeringOwnerId: z.string().min(1).max(200),
-}).passthrough();
+  sourceAdvSessionId: receiptId.optional(),
+  targetAdvSessionId: receiptId.optional(),
+  answerPostId: receiptId.nullish(),
+});
+type CheckedReceipt = z.infer<typeof checkedCellSchema>;
+type ReceiptCell = CheckedReceipt | { cell: string; failure: string };
+
+// A named failure is still part of the matrix. Only checked receipts can supply
+// database lookup keys, including when a failed cell cites a previous trial.
+const cellSchema = z.object({ cell: cellName }).passthrough().transform((raw): ReceiptCell => {
+  if (raw.status === 'unavailable' || raw.status === 'residual') {
+    return { cell: raw.cell, failure: `artifact reports ${raw.status}` };
+  }
+  const checked = checkedCellSchema.safeParse(raw);
+  if (checked.success) return checked.data;
+  const fields = checked.error.issues.map(issue => issue.path.join('.'));
+  return { cell: raw.cell, failure: `invalid checked receipt: ${fields.join(', ')}` };
+});
 
 const matrixArtifactSchema = z.object({
   plan: z.string().min(1).max(200),
@@ -67,9 +95,10 @@ export interface ConsultReceiptRows {
   database: string;
   port: number;
   consults: Array<{ conversation_id: string; requester_id: string | null; state: string | null; dispatch_attempts: unknown }>;
-  posts: Array<{ id: number | string; thread_id: string; author_id: string | null; len: number | string }>;
+  posts: Array<{ id: number | string; thread_id: string; author_id: string | null; len: number | string; kind: string | null }>;
   ports: Array<{ id: string; source_backend: string | null; target_backend: string | null; status: string | null;
-    delivered_at: unknown; error: unknown; source_adv_session_id: string | null; target_adv_session_id: string | null }>;
+    delivered_at: unknown; error: unknown; source_adv_session_id: string | null; target_adv_session_id: string | null;
+    source_owner_id: string | null; target_owner_id: string | null }>;
 }
 
 /** Every read runs in ONE read-only repeatable-read snapshot, so all cells are judged against the same data. */
@@ -83,18 +112,25 @@ async function readConsultReceiptRows(workspaceId: string, conversations: string
       SELECT conversation_id, requester_id, state, dispatch_attempts FROM harness_shared.consult_state
        WHERE workspace_id = ${workspaceId} AND conversation_id = ANY(${conversations}::text[])`;
     const posts = threads.length === 0 ? [] : await tx`
-      SELECT id, thread_id, author_id, length(body) AS len FROM harness_shared.coord_thread_posts
-       WHERE workspace_id = ${workspaceId} AND thread_id = ANY(${threads}::text[]) ORDER BY id`;
+      SELECT p.id, p.thread_id, p.author_id, length(p.body) AS len, m.kind
+        FROM harness_shared.coord_thread_posts p
+        LEFT JOIN harness_shared.consult_post_meta m ON m.workspace_id = p.workspace_id AND m.post_id = p.id
+          AND m.author_id = p.author_id AND p.thread_id = 'thr-' || m.conversation_id
+       WHERE p.workspace_id = ${workspaceId} AND p.thread_id = ANY(${threads}::text[]) ORDER BY p.id`;
     const ports = portIds.length === 0 ? [] : await tx`
-      SELECT id::text AS id, source_backend, target_backend, status, delivered_at, error,
-             source_adv_session_id, target_adv_session_id
-        FROM harness_shared.session_ports WHERE workspace_id = ${workspaceId} AND id::text = ANY(${portIds}::text[])`;
+      SELECT p.id::text, p.source_backend, p.target_backend, p.status, p.delivered_at, p.error,
+             p.source_adv_session_id::text, p.target_adv_session_id::text,
+             src.coord_owner_id AS source_owner_id, tgt.coord_owner_id AS target_owner_id
+        FROM harness_shared.session_ports p
+        LEFT JOIN harness_shared.adv_sessions src ON src.workspace_id = p.workspace_id AND src.id = p.source_adv_session_id
+        LEFT JOIN harness_shared.adv_sessions tgt ON tgt.workspace_id = p.workspace_id AND tgt.id = p.target_adv_session_id
+       WHERE p.workspace_id = ${workspaceId} AND p.id::text = ANY(${portIds}::text[])`;
     return { database: String(identity?.database ?? ''), port: Number(identity?.port),
       consults: [...consults], posts: [...posts], ports: [...ports] } as ConsultReceiptRows;
   }) as Promise<ConsultReceiptRows>;
 }
 
-type Attempt = { agent?: unknown; operation?: unknown; answeringOwnerId?: unknown; sourceOwnerId?: unknown };
+type Attempt = { dispatched?: unknown; verified?: unknown; agent?: unknown; operation?: unknown; answeringOwnerId?: unknown; sourceOwnerId?: unknown };
 
 /**
  * The oracle. Judges one snapshot of durable rows against the committed claims and
@@ -116,10 +152,16 @@ export function judgeConsultReceiptMatrix(input: {
       add(`cell:${name}`, false, `artifact carries ${claimed.length} entries for defined cell ${name}; exactly one is required`);
       continue;
     }
+    if ('failure' in cell) {
+      add(`cell:${name}`, false, cell.failure);
+      continue;
+    }
     const consult = rows.consults.find(row => row.conversation_id === cell.conversationId);
     const attempts = (Array.isArray(consult?.dispatch_attempts) ? consult!.dispatch_attempts : []) as Attempt[];
-    const dispatched = attempts.filter(a => typeof a?.answeringOwnerId === 'string' && a.answeringOwnerId);
-    const attempt = dispatched[dispatched.length - 1];
+    // A second rank can fail after the first responder has already answered.
+    const attempt = attempts.find(a => a?.dispatched === true && a.verified === true &&
+      a.answeringOwnerId === cell.answeringOwnerId && a.sourceOwnerId === cell.sourceOwnerId &&
+      a.agent === def.targetBackend && a.operation === (def.mode === 'fork' ? 'fork' : 'convert'));
     const answering = typeof attempt?.answeringOwnerId === 'string' ? attempt.answeringOwnerId : null;
     const source = typeof attempt?.sourceOwnerId === 'string' ? attempt.sourceOwnerId : null;
     const requester = artifact.requesterId;
@@ -128,9 +170,12 @@ export function judgeConsultReceiptMatrix(input: {
     // session's own post; fall back to the first one so a missing dispatched answer still fails.
     const qualifying = rows.posts.filter(post => post.thread_id === `thr-${cell.conversationId}` &&
       post.author_id !== null && post.author_id !== requester && post.author_id !== source &&
-      Number(post.len) >= CONSULT_RECEIPT_MIN_ANSWER_CHARS);
+      (post.kind === 'answer' || post.kind === 'new_fact') &&
+      Number(post.len) >= CONSULT_RECEIPT_MIN_ANSWER_CHARS &&
+      (cell.answerPostId == null || String(post.id) === cell.answerPostId));
     const answer = qualifying.find(post => answering !== null && post.author_id === answering) ?? qualifying[0];
     const checks: Record<string, boolean> = {
+      artifact_reports_no_failure: cell.passed !== false,
       consult_row_present: consult !== undefined,
       // Canonical replies activate a consult. A decline can exceed the length
       // floor after valid native delivery, while leaving the consult expired.
@@ -154,6 +199,9 @@ export function judgeConsultReceiptMatrix(input: {
       checks.port_delivered = port?.status === 'delivered' && port.delivered_at != null && !port.error;
       checks.backends_match_definition = port?.source_backend === def.sourceBackend && port?.target_backend === def.targetBackend;
       checks.distinct_target_session = !!port?.target_adv_session_id && port.target_adv_session_id !== port.source_adv_session_id;
+      checks.port_belongs_to_dispatch = port?.source_owner_id === cell.sourceOwnerId && port?.target_owner_id === cell.answeringOwnerId;
+      if (cell.sourceAdvSessionId !== undefined) checks.port_source_session_matches = port?.source_adv_session_id === cell.sourceAdvSessionId;
+      if (cell.targetAdvSessionId !== undefined) checks.port_target_session_matches = port?.target_adv_session_id === cell.targetAdvSessionId;
       mechanism = `port ${cell.portId ?? 'none'} ${port?.source_backend ?? '-'}->${port?.target_backend ?? '-'} ` +
         `status ${port?.status ?? '-'}; ${String(attempt?.operation ?? '-')} as ${answering ?? '-'}`;
     }
@@ -165,7 +213,7 @@ export function judgeConsultReceiptMatrix(input: {
   }
   const defined = Object.keys(definition);
   const checked = assertions.filter(a => a.passed).map(a => a.id.slice('cell:'.length));
-  const extra = artifact.matrix.cells.map(cell => cell.cell).filter(name => !(name in definition));
+  const extra = artifact.matrix.cells.map(cell => cell.cell).filter(name => !Object.hasOwn(definition, name));
   add('matrix:all-defined-cells-checked', checked.length === defined.length && extra.length === 0,
     `defined=${defined.join(',')}; checked=${checked.join(',') || 'none'}; undefined-in-artifact=${extra.join(',') || 'none'}`);
   return assertions;
@@ -214,12 +262,13 @@ export async function executeConsultReceiptMatrix(
           id: 'definition:artifact-parsed', passed: false, evidence: `${evidenceFile} sha256:${digest}` }] };
       }
       const artifact = parsed.data;
-      const definition = CONSULT_RECEIPT_MATRICES[artifact.plan];
+      const definition = Object.hasOwn(CONSULT_RECEIPT_MATRICES, artifact.plan) ? CONSULT_RECEIPT_MATRICES[artifact.plan] : undefined;
       assertions.push({ id: 'definition:matrix-defined', passed: definition !== undefined,
         evidence: `plan=${artifact.plan}; artifact ${evidenceFile} sha256:${digest}` });
       if (definition) {
-        const conversations = [...new Set(artifact.matrix.cells.map(cell => cell.conversationId))];
-        const portIds = [...new Set(artifact.matrix.cells.flatMap(cell => cell.portId ? [cell.portId] : []))];
+        const receipts = artifact.matrix.cells.filter((cell): cell is CheckedReceipt => !('failure' in cell));
+        const conversations = [...new Set(receipts.map(cell => cell.conversationId))];
+        const portIds = [...new Set(receipts.flatMap(cell => cell.portId ? [cell.portId] : []))];
         const rows = await query(workspaceId, conversations, portIds);
         assertions.push({ id: 'scope:database-unchanged', passed: rows.database === server.database && rows.port === server.port,
           evidence: `witnessed ${server.database}@${server.port}; executed ${rows.database}@${rows.port}` });
