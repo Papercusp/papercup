@@ -112,6 +112,17 @@ const docsDiagramRaster = {
     { path: 'apps/operator-docs/package.json', sha256: '12b11ef288855eda499eb22d0ecbb173e9dd76a71bf4f757397887f6fdbb739a' },
   ],
 };
+const operatorPublicRaster = {
+  role: {
+    path: 'apps/operator/bin/host-spa.ts',
+    sha256: '93ee051bd480ac82bcf056367da780bb9f837f60d7d67028eff1240ee0379802',
+    kind: 'static-spa-raster',
+  },
+  additionalRoleSources: [
+    { path: 'apps/operator-vite/vite.config.ts', sha256: '37724b9ba8dcdbf18f25f96f756473043c4479fa0b1ad6234836c2c837bec094' },
+    { path: 'apps/operator-vite/public-assets.ts', sha256: 'f0fac64555d5fab3b40920ba414e918416a41aa025512ea66ba66adb4d81b533' },
+  ],
+};
 // Keep each reviewed binary and every source needed to establish its role
 // pinned to the same snapshot. The PNGs end at IEND, and the ICO and ICNS
 // containers hold raster records and their masks.
@@ -121,6 +132,19 @@ const reviewedBinaryArtifacts = new Map<string, {
   role: ArtifactRoleSource & { kind: string };
   additionalRoleSources?: readonly ArtifactRoleSource[];
 }>([
+  ['apps/operator/.papercusp/papercusp/hyperbee/db/MANIFEST-000005', {
+    format: 'binary',
+    sha256: '39de656bc3e01d0359e7d2f40c1fab828677d54796a47e6a4448578229ddf36b',
+    role: {
+      path: 'packages/operator-core/lib/sync/hyperbee/corestore.ts',
+      sha256: '012e75d968b8a6503ea4a1c77a9c12b2a500c068fb5c543f6e2d4fb51d6a5322',
+      kind: 'rocksdb-manifest-metadata',
+    },
+    additionalRoleSources: [
+      { path: 'apps/operator/.papercusp/papercusp/hyperbee/db/CURRENT', sha256: '9c283f6e81028b9eb0760d918ee4bc0aa256ed3b926393c1734c760c4bd724fd' },
+      { path: 'apps/operator/.papercusp/papercusp/hyperbee/db/OPTIONS-000007', sha256: '8c491e1c8cd22d2e708404d8e981d9e8933b9abbe498d6d88b7d8b75103d06d9' },
+    ],
+  }],
   ['packages/operator-core/lib/__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br', {
     format: 'binary',
     sha256: 'c184f14f95f4fd51c1dd56ae7283b81556dab1515c64d8889d8112ca9dd18e56',
@@ -148,16 +172,49 @@ const reviewedBinaryArtifacts = new Map<string, {
     sha256: '52123ab9742b8eef0519cf77d1e44392308a43d2d1fc198e2c9c8838573e781b',
   }],
   ['apps/operator/public/favicon.ico', {
+    ...operatorPublicRaster,
     sha256: '58cd31c44021676200298e67884af1ae3fcc507a22c45502b63b3b0fd0964051',
-    role: {
-      path: 'apps/operator/bin/host-spa.ts',
-      sha256: '93ee051bd480ac82bcf056367da780bb9f837f60d7d67028eff1240ee0379802',
-      kind: 'static-spa-favicon',
-    },
-    additionalRoleSources: [
-      { path: 'apps/operator-vite/vite.config.ts', sha256: '37724b9ba8dcdbf18f25f96f756473043c4479fa0b1ad6234836c2c837bec094' },
-      { path: 'apps/operator-vite/public-assets.ts', sha256: 'f0fac64555d5fab3b40920ba414e918416a41aa025512ea66ba66adb4d81b533' },
-    ],
+    role: { ...operatorPublicRaster.role, kind: 'static-spa-favicon' },
+  }],
+  ['apps/operator/public/_icon-debug/CURRENT_SOURCE.png', {
+    ...operatorPublicRaster,
+    sha256: 'ef9da0f7f3eac87db6d563c2d492d79e324d0f7e34b778237deccf33111ccd82',
+  }],
+  ['apps/operator/public/_icon-debug/SERVED-wordmark.png', {
+    ...operatorPublicRaster,
+    sha256: 'c7a81fadcc864c1bb9a9e8dab46d36b32b7a59a96e0337be3d394b5fba96c27d',
+  }],
+  ['apps/operator/public/_icon-debug/ic_launcher.png', {
+    ...operatorPublicRaster,
+    sha256: '39fea59e89be187e404059cd185a48d9dfd159e2cc0742596cd96bdb1129585e',
+  }],
+  ['apps/operator/public/_icon-debug/ic_launcher_foreground.png', {
+    ...operatorPublicRaster,
+    sha256: '125be5431eab30e345d161be10c8bff8cf5e849ac40f39865a862b0a6365fd27',
+  }],
+  ['apps/operator/public/_icon-debug/source-mascot.png', {
+    ...operatorPublicRaster,
+    sha256: 'ef9da0f7f3eac87db6d563c2d492d79e324d0f7e34b778237deccf33111ccd82',
+  }],
+  ['apps/operator/public/_icon-debug/source.png', {
+    ...operatorPublicRaster,
+    sha256: 'c05bd06bc5ef46fa680f1e252409c60736e57b66740db861a92082bd31ac6d42',
+  }],
+  ['apps/operator/public/_icon-debug/wordmark-as-icon.png', {
+    ...operatorPublicRaster,
+    sha256: 'be9a5c1aca2f8cd8b04e458b5b34ec02176959119a19ffe7751f6b56af5b747b',
+  }],
+  ['apps/operator/public/_mp-current.png', {
+    ...operatorPublicRaster,
+    sha256: '215969c625832bd7cff29948375726078d26b4abae75d1e95228f5dd56b4ce51',
+  }],
+  ['apps/operator/public/_mp-dev.png', {
+    ...operatorPublicRaster,
+    sha256: 'f0360c83492da076fea1a3426e8906896ed9c250318fc5f1bcb64290e252fb6c',
+  }],
+  ['apps/operator/public/deck-1440.png', {
+    ...operatorPublicRaster,
+    sha256: '101da07142e73dfb6cedce51b0b9cfc65186d3c7f0a92c0159f9526ba78d2029',
   }],
   ['apps/the-swarm-site/public/brand/swarm-hero.png', {
     // The caBX provenance record includes an SVG containing one path. The

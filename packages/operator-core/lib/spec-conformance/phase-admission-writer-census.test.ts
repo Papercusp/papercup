@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { crc32, deflateSync, gunzipSync, inflateSync } from 'node:zlib';
 import { encodePng, PNG_SIGNATURE } from '@papercusp/image-blankness/testing';
 import { extract as extractTar } from 'tar-stream';
@@ -2024,6 +2024,23 @@ describe('phase binding writer census', () => {
 
   const docsDiagramRoles = ['scripts/postbuild-copy.sh', 'astro.config.mjs', 'package.json']
     .map(path => 'apps/operator-docs/' + path);
+  const operatorPublicRoles = [
+    'apps/operator/bin/host-spa.ts',
+    'apps/operator-vite/vite.config.ts',
+    'apps/operator-vite/public-assets.ts',
+  ];
+  const operatorPublicRasters = [
+    'apps/operator/public/_icon-debug/CURRENT_SOURCE.png',
+    'apps/operator/public/_icon-debug/SERVED-wordmark.png',
+    'apps/operator/public/_icon-debug/ic_launcher.png',
+    'apps/operator/public/_icon-debug/ic_launcher_foreground.png',
+    'apps/operator/public/_icon-debug/source-mascot.png',
+    'apps/operator/public/_icon-debug/source.png',
+    'apps/operator/public/_icon-debug/wordmark-as-icon.png',
+    'apps/operator/public/_mp-current.png',
+    'apps/operator/public/_mp-dev.png',
+    'apps/operator/public/deck-1440.png',
+  ];
   it.each([
     {
       assetPath: 'apps/the-swarm-site/public/brand/swarm-hero.png',
@@ -2042,8 +2059,9 @@ describe('phase binding writer census', () => {
     {
       assetPath: 'apps/operator/public/favicon.ico',
       kind: 'static-spa-favicon',
-      roles: ['apps/operator/bin/host-spa.ts', 'apps/operator-vite/vite.config.ts', 'apps/operator-vite/public-assets.ts'],
+      roles: operatorPublicRoles,
     },
+    ...operatorPublicRasters.map(assetPath => ({ assetPath, kind: 'static-spa-raster', roles: operatorPublicRoles })),
     {
       assetPath: 'packages/operator-core/lib/__fixtures__/kernel-anchor-rows.re-armed-predecessor.json.br',
       format: 'binary', kind: 'brotli-json-test-fixture',
@@ -2054,10 +2072,20 @@ describe('phase binding writer census', () => {
       format: 'binary', kind: 'contract-pdf-font',
       roles: ['packages/operator-core/lib/dao-hr/contracts-esign.ts'],
     },
-  ])('keeps $assetPath excluded only while its bytes and every role source match', ({ assetPath, format = 'raster', kind, roles }) => {
+    {
+      assetPath: 'apps/operator/.papercusp/papercusp/hyperbee/db/MANIFEST-000005',
+      format: 'binary', kind: 'rocksdb-manifest-metadata',
+      roles: [
+        'packages/operator-core/lib/sync/hyperbee/corestore.ts',
+        'apps/operator/.papercusp/papercusp/hyperbee/db/CURRENT',
+        'apps/operator/.papercusp/papercusp/hyperbee/db/OPTIONS-000007',
+      ],
+    },
+  ].map(artifact => [artifact.assetPath, artifact] as const))(
+    'keeps %s excluded only while its bytes and every role source match', (_path, { assetPath, format = 'raster', kind, roles }) => {
     const root = mkdtempSync(join(tmpdir(), 'phase-reviewed-binary-'));
     const prefix = `reviewed-${format}`;
-    const lookalike = assetPath.replace(/\.[^.]+$/, '-copy$&');
+    const lookalike = join(dirname(assetPath), '0-copy-' + basename(assetPath));
     const fixture = (path: string) => readFileSync(new URL('../../../../' + path, import.meta.url));
     const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
     const put = (path: string, bytes: Buffer) => {
