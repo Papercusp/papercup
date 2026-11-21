@@ -9,7 +9,7 @@ import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 import { citationEdit, diagnosticCitationCase, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
   type NativePlanEdit } from './_plan-revision-edits';
-import { assertNativePlanRetry, installPlanRetryExpression, installPlanSaveObservation, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
+import { assertNativePlanRetry, assertNativePlanSaveTraffic, installPlanRetryExpression, installPlanSaveObservation, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
 
 const run = promisify(execFile);
 
@@ -18,7 +18,9 @@ type UiAction = { operation: 'navigate' | 'click' | 'edit'; target: string; outc
 test.describe.configure({ mode: 'default' });
 
 async function captureNativeEdit(request: APIRequestContext, info: TestInfo, editCase: NativePlanEdit, rolesToObserve?: 'author' | 'all',
-  mark: (step: string) => void = () => {}) {
+  reportStage: (step: string) => void = () => {}) {
+  let currentStage = '';
+  function mark(step: string) { currentStage = step; reportStage(step); }
   mark('initial private workspace and native liveness');
   const { scenario, originalText, replacementText } = editCase;
   const { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } = await import('@papercusp/operator-core/lib/testing-native-runtime');
@@ -71,6 +73,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     { timeout: 60_000, intervals: [300, 750, 1500] }).toBe(true);
   const trace: Record<string, unknown> = { workspace, slug, scenario, applicationCommit: appCommit, runtimeBefore,
     definitionCommit: process.env.VERIFY_TAURI_TEST_SOURCE_REF, group: process.env.PAPERCUSP_TEST_RUN_GROUP };
+  let collectSave: (() => Promise<void>) | undefined;
   // Each account belongs only to the disposable workspace. The webview creates
   // and consumes the password locally and returns only the authenticated identity.
   async function enterRole(role: keyof typeof handles, action: string) {
@@ -186,7 +189,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     await native('click', detail + ' ' + edit, '--json');
     await visible(`document.querySelector(${JSON.stringify(editor)})?.textContent.includes(${JSON.stringify(originalText)}) === true`);
     trace.requiredFields = await measure(`Array.from(document.querySelectorAll(${JSON.stringify(detail + ' [required], ' + detail + ' [aria-required="true"]')}), e => e.getAttribute('name') || e.getAttribute('aria-label') || e.tagName)`);
-    // The resource observer counts completed requests independently of the retry fixture.
+    // WebKit may expose no resource entries for a completed fetch. Retain the timing channel separately.
     await native('eval', `(() => {
       const requests = [];
       const collect = entries => { for (const e of entries) {
@@ -194,8 +197,11 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
         if (url.origin === location.origin && url.pathname.startsWith('/api/admin/plans/'))
           requests.push({ path: url.pathname, startTime: e.startTime, duration: e.duration });
       }};
+      window.__planCitationRequests = () => null;
+      if (typeof PerformanceObserver !== 'function' || (PerformanceObserver.supportedEntryTypes &&
+        !PerformanceObserver.supportedEntryTypes.includes('resource'))) return false;
       const observer = new PerformanceObserver(list => collect(list.getEntries()));
-      observer.observe({ entryTypes: ['resource'] });
+      try { observer.observe({ entryTypes: ['resource'] }); } catch { return false; }
       window.__planCitationRequests = () => { collect(observer.takeRecords()); observer.disconnect(); return requests };
       return true;
     })()`);
@@ -222,6 +228,32 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     if (textEdit) textEdit.outcome = edited === true ? 'completed' : 'refused';
     expect(edited).toBe(true);
     await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + save + ':enabled')})`);
+    // Observe beneath the retry fixture, including further submissions after that fixture restores fetch.
+    await measure(installPlanSaveObservation({ origin: origin.origin, workspace, slug, harness }));
+    const saveObservation: Record<string, unknown> = {};
+    trace.saveObservation = saveObservation;
+    collectSave = async () => {
+      const capture = await measure(`(async () => {
+        const [attempts, timings] = await Promise.allSettled([
+          Promise.resolve().then(() => window.__planSaveObservation()),
+          Promise.resolve().then(() => window.__planCitationRequests()),
+        ]);
+        return { attempts: attempts.status === 'fulfilled' ? attempts.value : null,
+          timings: timings.status === 'fulfilled' ? timings.value : null };
+      })()`).catch(() => null);
+      saveObservation.attempts = capture?.attempts ?? null;
+      trace.requests = capture?.timings ?? null;
+      trace.resourceTimingStatus = Array.isArray(trace.requests)
+        ? (trace.requests.some(entry => entry.path === '/api/admin/plans/set-content') ? 'save-observed' : 'no-save-entries')
+        : 'unavailable';
+      if (!trace.savedDocument) {
+        const [stored, revisions] = await Promise.allSettled([readSavedDocument(),
+          sql`SELECT id::text, seq, content_hash FROM harness_shared.plan_revisions
+            WHERE workspace_id=${workspace} AND harness_slug=${harness} AND plan_slug=${slug} ORDER BY seq`]);
+        trace.savedDocumentRead = stored.status;
+        trace.revisionsAfterClick = revisions.status === 'fulfilled' ? revisions.value : { status: 'unavailable' };
+      }
+    };
     if (scenario === 'retry') {
       const point = (plan: { version: number; contentHash: string }) => ({ version: plan.version, contentHash: plan.contentHash });
       const savedText = before.raw.replace(originalText, replacementText);
@@ -261,7 +293,6 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
         partial.attempts = await measure('window.__planRevisionRetry.finish()');
       }
     } else {
-      await measure(installPlanSaveObservation({ origin: origin.origin, workspace, slug, harness }));
       let failure: { error: unknown; step: string } | undefined;
       let step = 'desktop Save click';
       try {
@@ -271,30 +302,22 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
       } catch (error) { failure = { error, step }; }
       // Capture the actual response and safe DOM state before navigating away.
       // A failed render still has a separately observable database outcome.
-      trace.saveObservation = await measure(`(async () => {
+      Object.assign(saveObservation, await measure(`(() => {
         const root = document.querySelector(${JSON.stringify(detail)});
         const preview = root?.querySelector('.pc-plan-document__preview, .pc-plan-document__fallback pre');
         const error = root?.querySelector('.pc-editbar__error');
-        return { attempts: await window.__planSaveObservation(), planVisible: !!root, previewPresent: !!preview,
+        return { planVisible: !!root, previewPresent: !!preview,
           showsReplacement: preview?.innerText.includes(${JSON.stringify(replacementText)}) === true,
           showsOriginal: preview?.innerText.includes(${JSON.stringify(originalText)}) === true,
           editAvailable: !!root?.querySelector(${JSON.stringify(edit + ':enabled')}),
           saveAvailable: !!root?.querySelector(${JSON.stringify(save + ':enabled')}),
           saveError: !!error?.textContent, conflict: !!document.querySelector('.pc-conflict__current') };
-      })()`).catch(() => ({ status: 'unavailable' }));
+      })()`).catch(() => ({ status: 'unavailable' })));
       if (failure) {
-        const [stored, revisions] = await Promise.allSettled([readSavedDocument(),
-          sql`SELECT id::text, seq, content_hash FROM harness_shared.plan_revisions
-            WHERE workspace_id=${workspace} AND harness_slug=${harness} AND plan_slug=${slug} ORDER BY seq`]);
-        trace.savedDocumentRead = stored.status;
-        trace.revisionsAfterClick = revisions.status === 'fulfilled' ? revisions.value : { status: 'unavailable' };
         mark(failure.step);
         throw failure.error;
       }
     }
-    trace.requests = await measure('window.__planCitationRequests()');
-    const requests = trace.requests as Array<{ path: string }>;
-    expect(requests.filter(row => row.path === '/api/admin/plans/set-content')).toHaveLength(scenario === 'retry' ? 2 : 1);
     const after = await readSavedDocument();
     const revision = await sql.begin('isolation level repeatable read read only', async tx => {
       const rows = await tx`SELECT id::text, seq, content_hash, author_kind, author_id, created_at::text
@@ -310,6 +333,10 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
       return { rows, audits, planRuns: runs, callsWithTopLevelPlanSlug: calls };
     });
     trace.revision = revision;
+    await collectSave();
+    collectSave = undefined;
+    mark('verify native Save transport and persisted evidence');
+    assertNativePlanSaveTraffic(saveObservation.attempts, trace.requests, scenario === 'retry');
     expect(after.raw).toBe(expectedText);
     expect(after.contentHash).toBe(expectedHash);
     if (scenario !== 'retry') expect(trace.saveObservation).toMatchObject({
@@ -348,6 +375,11 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     return trace;
   } finally {
     try {
+      if (collectSave) {
+        const failedStage = currentStage;
+        await collectSave();
+        mark(failedStage);
+      }
       if (rolesToObserve) trace.roleViews = roleViews;
       const body = JSON.stringify(trace);
       await info.attach(rolesToObserve ? 'native-' + scenario + '-role-views' : 'native-author-citation',

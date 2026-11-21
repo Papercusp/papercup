@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import { assertNativePlanRetry, installPlanRetryExpression, installPlanSaveObservation, lostAcknowledgement, type SaveAttempt } from '../../../apps/operator/e2e/_plan-revision-retry';
+import { assertNativePlanRetry, assertNativePlanSaveTraffic, installPlanRetryExpression, installPlanSaveObservation, lostAcknowledgement, type SaveAttempt } from '../../../apps/operator/e2e/_plan-revision-retry';
 
 const slug = 'revision-retry-11111111-2222-4333-8444-555555555555-2026-11-21';
 const workspace = 'verify-tauri-isolated-1234';
@@ -14,6 +14,21 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 describe('native Plans save observation', () => {
   const scope = { origin: 'http://127.0.0.1:18881', workspace, harness, slug: slug.replace('retry', 'citation') };
   const location = { href: scope.origin + '/adv?ws=' + workspace + '&plan=' + scope.slug };
+
+  it('counts actual Saves when timing is absent and refuses missing, extra or unsuccessful submissions', () => {
+    const accepted = { harness: 'matched', httpStatus: 200, result: 'accepted' };
+    const stale = { harness: 'matched', httpStatus: 409, result: 'stale' };
+    const timing = { path: endpoint };
+    assertNativePlanSaveTraffic([accepted], [], false);
+    assertNativePlanSaveTraffic([accepted], null, false);
+    assertNativePlanSaveTraffic([accepted, stale], [timing], true);
+    expect(() => assertNativePlanSaveTraffic([], [], false)).toThrow();
+    expect(() => assertNativePlanSaveTraffic(null, [timing], false)).toThrow();
+    expect(() => assertNativePlanSaveTraffic([accepted, accepted], [], false)).toThrow();
+    expect(() => assertNativePlanSaveTraffic([accepted], [timing, timing], false)).toThrow();
+    expect(() => assertNativePlanSaveTraffic([stale], [], false)).toThrow();
+    expect(() => assertNativePlanSaveTraffic([{ ...accepted, harness: 'different' }], [], false)).toThrow();
+  });
 
   it.each([
     { status: 200, body: '{"ok":true}', result: 'accepted', scopeField: { harness }, selection: 'matched' },
@@ -81,8 +96,11 @@ describe('native Plans lost-acknowledgement fixture', () => {
       if (!address || typeof address === 'string') throw new Error('Missing local fixture port');
       const origin = 'http://127.0.0.1:' + address.port;
       const transport = (path: string, init?: RequestInit) => fetch(new URL(path, origin), init);
-      const win: { fetch: typeof transport; __planRevisionRetry?: { attempts: SaveAttempt[]; finish(): SaveAttempt[] } } = { fetch: transport };
+      const win: { fetch: typeof transport; __planSaveObservation?: () => Promise<unknown[]>;
+        __planRevisionRetry?: { attempts: SaveAttempt[]; finish(): SaveAttempt[] } } = { fetch: transport };
       const location = { href: origin + '/adv?ws=' + workspace + '&plan=' + slug };
+      runInNewContext(installPlanSaveObservation({ origin, workspace, slug, harness }), { window: win, location, URL });
+      const observedFetch = win.fetch;
       runInNewContext(installPlanRetryExpression({ origin, workspace, slug, harness }),
         { window: win, location, URL, crypto: webcrypto, TextEncoder, Uint8Array });
       expect(win.__planRevisionRetry?.attempts).toHaveLength(0);
@@ -97,7 +115,7 @@ describe('native Plans lost-acknowledgement fixture', () => {
       const retryResponse = await send(body);
       expect(retryResponse.status).toBe(result === 'stale' ? 409 : 200);
       const afterRetry = await (await transport('/document')).json();
-      expect(win.fetch).toBe(transport);
+      expect(win.fetch).toBe(observedFetch);
       const attempts = win.__planRevisionRetry!.finish();
       expect(received.slice(1)).toEqual([JSON.stringify(body), JSON.stringify(body)]);
       expect(attempts.map(a => a.requestHash)).toEqual([hash(JSON.stringify(body)), hash(JSON.stringify(body))]);
@@ -108,6 +126,10 @@ describe('native Plans lost-acknowledgement fixture', () => {
       await send(body);
       expect(received).toHaveLength(4);
       expect(attempts).toHaveLength(2);
+      const submissions = await win.__planSaveObservation!();
+      expect(submissions).toHaveLength(3);
+      expect(() => assertNativePlanSaveTraffic(submissions, [], true)).toThrow('unexpected number');
+      expect(win.fetch).toBe(transport);
       expect(() => assertNativePlanRetry({ ...trace, attempts: attempts.slice(0, 1) })).toThrow();
       expect(() => assertNativePlanRetry({ ...trace, attempts: [...attempts, attempts[1]!] })).toThrow();
       expect(() => assertNativePlanRetry({ ...trace, attempts: [attempts[0]!, { ...attempts[1]!, requestHash: hash('different') }] })).toThrow();

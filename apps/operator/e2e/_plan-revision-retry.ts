@@ -25,6 +25,26 @@ export interface NativePlanRetryTrace {
 
 export const lostAcknowledgement = 'Test transport lost this plan save acknowledgement';
 
+/** Count the scoped transport while using any Resource Timing entries as an independent lower bound. */
+export function assertNativePlanSaveTraffic(attempts: unknown, timings: unknown, retry: boolean) {
+  assert(Array.isArray(attempts), 'the scoped Save transport observation is unavailable');
+  assert.equal(attempts.length, retry ? 2 : 1, 'unexpected number of scoped Save submissions');
+  for (const [index, attempt] of attempts.entries()) {
+    assert(attempt?.harness === 'matched' || attempt?.harness === 'omitted', 'Save used a different harness');
+    if (retry && index === 1 && attempt.result === 'stale') {
+      assert(attempt.httpStatus === 409 || (attempt.httpStatus >= 200 && attempt.httpStatus < 300),
+        'stale retry did not return a conflict or successful HTTP response');
+      continue;
+    }
+    assert.equal(attempt.result, 'accepted', 'Save did not return an accepted response');
+    assert(attempt.httpStatus >= 200 && attempt.httpStatus < 300, 'Save did not return a successful HTTP status');
+  }
+  if (Array.isArray(timings)) {
+    const timedSaves = timings.filter(entry => entry.path === '/api/admin/plans/set-content');
+    assert(timedSaves.length <= attempts.length, 'Resource Timing saw an additional Save');
+  }
+}
+
 /** Check the two original submissions and the document read independently after each one. */
 export function assertNativePlanRetry(trace: NativePlanRetryTrace) {
   assert.equal(trace.editorObservedLoss, true);
