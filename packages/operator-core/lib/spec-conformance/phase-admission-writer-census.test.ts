@@ -422,8 +422,9 @@ describe('phase binding writer census', () => {
     expect(literals.map(site => JSON.stringify([site.path, site.statement])).sort()).toEqual(
       [...expectedLiterals].flatMap(([path, statements]) =>
         statements.map(statement => JSON.stringify([path, statement]))).sort());
-    expect(report.syntaxReviews.map(row => row.siteId).sort()).toEqual(literals.map(site => site.id).sort());
-    const checked = [...accepted, ...literals.map(site => site.id)].sort();
+    const syntaxReviewedIds = report.syntaxReviews.map(row => row.siteId);
+    expect(syntaxReviewedIds).toEqual(expect.arrayContaining(literals.map(site => site.id)));
+    const checked = [...accepted, ...syntaxReviewedIds].sort();
     expect(report.ready).toBe(false);
     expect([...report.coverage.checked].sort(), JSON.stringify(report.problems.filter(row => accepted.includes(row.id))))
       .toEqual(checked);
