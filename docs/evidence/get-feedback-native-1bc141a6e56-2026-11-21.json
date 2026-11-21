@@ -1,0 +1,1038 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Consult router native receipts on staging 1bc141a6e56",
+  "framework": "operational",
+  "command": [
+    "testing:run with each recorded nativeConsult request on the staging operator",
+    "Read the source selection, dispatch, session-port, native persistence and answer rows for the requests",
+    "accounts:probe-capacity on the ordinary Claude provider route with apply false",
+    "Reconcile original-owner indexed turn digests with readArchivedSessionTurns and read the fixed-window consult:routing-health response"
+  ],
+  "startedAt": "2026-11-21T17:02:51.337Z",
+  "finishedAt": "2026-11-21T17:44:03.000Z",
+  "exitCode": 1,
+  "summary": "Two Codex-target requests returned substantive answers from distinct sessions. The Claude fork had no serviceable account. The original cohort retains its shortfall and unknown requester decisions.",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010046171",
+  "requesterId": "su-40c37918-3d17-43e0-ab0e-e3ff709f1776",
+  "runtime": {
+    "route": "http://127.0.0.1:3170",
+    "service": "papercup-staging-api.service",
+    "pid": 1686060,
+    "processId": "linux:89abde54-a267-447a-b75c-4025313eaf90:84363813",
+    "build": "1bc141a6e5676ed77fb0ed9a314065b7d730df85",
+    "physicalRoot": "~/papercupai-workspace/papercusp-staging.generations/.candidate-1bc141a6e567.vFJdtM/checkout",
+    "bundleSha256": "f7867155f4863b329f51800663d3548b31ba86496bbcbb418ddbebbd45543d37",
+    "routerSha256": "d3595394879b3396ff63a1fadaa155dcfb176ae69ec7a335e5d7f3e581d6107f",
+    "comparisonArtifact": "docs/evidence/get-feedback-native-a9fa2bf0683-2026-11-21.json",
+    "matchingFiles": [
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+        "blob": "7407368d12a081e46bc55c89ea7673beeebb1426",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+        "blob": "6df5b7a7af87a7985703c0af0043806f25d1513f",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.ts",
+        "blob": "b4e6318894f54af28e4e5d91b5d9007c950aaa27",
+        "scope": "original",
+        "matchesPriorTrial": false
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.integration.test.ts",
+        "blob": "00005614741b8ec809c115fd25847aaf4ddb7d83",
+        "scope": "original",
+        "matchesPriorTrial": false
+      },
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "blob": "37d970ac5f5391f7231477621da42ec840f97dd8",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "blob": "9694cce5ce84aed364bf583daa322f90ce6cdc4e",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/consult/native-consult.ts",
+        "blob": "f3d6bb610af049a79b89b39bf22c314f2333c90b",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult.ts",
+        "blob": "e40b00fc79f0a554e6ca7ae7f3e34d3e4b0a9016",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult-contract.ts",
+        "blob": "9ea4c8254147cf2959de7e38a2e48f261eaaf0f1",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+        "blob": "1ea5c4d6df3a268e839a25e46685de6cb256dc7b",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
+        "blob": "2342c6ad14b0986c3a5bdea1ee77636468fd2985",
+        "scope": "original",
+        "matchesPriorTrial": true
+      },
+      {
+        "path": "packages/operator-core/lib/agent-launch-core.ts",
+        "blob": "a5f29058c009130b681fa9e89b5512e22d6e0982",
+        "scope": "supplementary"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-prod.ts",
+        "blob": "839f180b6cd0ad9a796bd427c40e6723af521735",
+        "scope": "supplementary"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-check-consult-receipts.ts",
+        "blob": "08e8909268f92d7ff1d73f1d0904912c85ee2aff",
+        "scope": "supplementary"
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/native-adapter.ts",
+        "blob": "bc5ebb2d1379a72848bf18442bbdf79f855e3118",
+        "scope": "supplementary"
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/source.ts",
+        "blob": "e232db5c3399c4fcdd99ae342870a642f41837dd",
+        "scope": "supplementary"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/codex-transcript.ts",
+        "blob": "99ef59fddfd258d6a01dc534bc7ea04ea086e898",
+        "scope": "supplementary"
+      }
+    ]
+  },
+  "matrix": {
+    "partition": {
+      "checked": [
+        "claude-ended-to-codex-conversion",
+        "codex-live-to-codex-session-port"
+      ],
+      "unavailable": [
+        "claude-ended-to-claude-fork"
+      ],
+      "residual": []
+    },
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "mode": "fork",
+        "status": "unavailable",
+        "passed": false,
+        "constraints": {
+          "sourceState": "ended",
+          "sourceBackend": "claude",
+          "targetBackend": "claude"
+        },
+        "attemptedOnThisBuild": false,
+        "requestKey": null,
+        "conversationId": null,
+        "threadId": null,
+        "sourceOwnerId": null,
+        "answeringOwnerId": null,
+        "nativeKickoff": null,
+        "answerPostId": null,
+        "providerProbe": {
+          "invocation": 51008378,
+          "tool": "accounts:probe-capacity",
+          "provider": "claude",
+          "apply": false,
+          "accountsChecked": 7,
+          "serviceable": 0,
+          "weeklyUsageExhausted": 2,
+          "insufficientCredit": 5
+        },
+        "reason": "The configured provider returned two weekly usage limits and five insufficient-credit responses. Weekly usage for the five credit refusals was unmeasured. The existing archive verification requires a serviceable account and measured admission before a fresh fork attempt.",
+        "priorFailedRequest": {
+          "conversationId": "conv-request-b13113b54bbd64e0c9abce909045faa3742ddd3e8f885090f85bd664579d4d4b",
+          "sourceArtifact": "docs/evidence/get-feedback-native-a9fa2bf0683-2026-11-21.json"
+        },
+        "tracking": "EI-28117756199478310"
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "mode": "port",
+        "status": "checked",
+        "passed": true,
+        "invocation": 51008230,
+        "requestKey": "wi6171-r6-3394-1bc141a6e56-claude-to-codex-v1",
+        "conversationId": "conv-request-0317bc3bf377a2145611957fc6b7d609ff2d08689757a0bfb2df8f44be63eae1",
+        "threadId": "thr-conv-request-0317bc3bf377a2145611957fc6b7d609ff2d08689757a0bfb2df8f44be63eae1",
+        "constraints": {
+          "sourceBackend": "claude",
+          "targetBackend": "codex",
+          "sourceState": "ended"
+        },
+        "state": "closed_answered",
+        "sourceOwnerId": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+        "sourceAdvSessionId": 48112,
+        "sourceNativeSessionId": "5ede16a5-c4c8-4399-82bb-9a54015998bb",
+        "sourceKind": "archive-manifest",
+        "sourceCompleteBytes": 2214132,
+        "selectionSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+        "portId": "7523a6c7-ecca-4dab-8323-5bd17b76da99",
+        "portSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+        "portStatus": "delivered",
+        "deliveredAt": "2026-11-21T17:05:07.113Z",
+        "answeringOwnerId": "su-8e4caa60-d107-43ba-a360-33f9ce82ef26",
+        "targetAdvSessionId": 63932,
+        "targetNativeSessionId": "01a1ff11-84a8-73c1-90aa-635b5b3557c7",
+        "targetRankModel": "sol",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": {
+          "verified": true,
+          "persisted": true,
+          "bootstrapReceiptCommitted": true,
+          "renderedSha256": "40b4e9f0e1f9985b6cbbc2ffbb66fe4428d820de771b19d82731dcd17c308ce7"
+        },
+        "answerPostId": 1240581,
+        "answerChars": 2472,
+        "answeredAt": "2026-11-21T17:06:38.879Z",
+        "closePostId": 1240583,
+        "closedBy": "su-8e4caa60-d107-43ba-a360-33f9ce82ef26",
+        "closedAt": "2026-11-21T17:06:50.522Z",
+        "requesterUse": "Retained the checkout-wide mutation guard. The answer identifies writes from shared test setup outside the guard's npm workspace.",
+        "sourceIsolation": {
+          "sourceCapturedAt": "2026-11-21T17:03:38.931Z",
+          "afterObservedAt": "2026-11-21T17:34:01.066Z",
+          "workItemsBefore": [],
+          "workItemsAfter": [],
+          "planClaimIdsBefore": [],
+          "planClaimIdsAfter": []
+        }
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "mode": "port",
+        "status": "checked",
+        "passed": true,
+        "invocation": 51008269,
+        "requestKey": "wi6171-r6-3394-1bc141a6e56-codex-port-v1",
+        "conversationId": "conv-request-4bd47714a34b4030fbcdebd1acba8cc58fb3c037fb54bf5165de5fa67b88c275",
+        "threadId": "thr-conv-request-4bd47714a34b4030fbcdebd1acba8cc58fb3c037fb54bf5165de5fa67b88c275",
+        "constraints": {
+          "sourceBackend": "codex",
+          "targetBackend": "codex",
+          "sourceState": "live"
+        },
+        "state": "closed_answered",
+        "sourceOwnerId": "su-598a1fb5-569f-4322-bda8-20888ead8e48",
+        "sourceAdvSessionId": 63199,
+        "sourceNativeSessionId": "01a1f237-86e6-7cd3-b6e9-bbed29781b9e",
+        "sourceKind": "live-jsonl",
+        "sourceCompleteBytes": 2758267,
+        "selectionSourceSha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+        "portId": "b03d54ff-1aec-46e1-80fc-1b4f753293c5",
+        "portSourceSha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+        "portStatus": "delivered",
+        "deliveredAt": "2026-11-21T17:04:46.455Z",
+        "answeringOwnerId": "su-bb5a3deb-cb58-4377-acb3-a4fba849a16a",
+        "targetAdvSessionId": 63931,
+        "targetNativeSessionId": "01a1ff11-21a7-7ff0-a5be-9d6a84e7c2c6",
+        "targetRankModel": "sol",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": {
+          "verified": true,
+          "persisted": true,
+          "bootstrapReceiptCommitted": true,
+          "renderedSha256": "5986c0f73690d60a1738390f39ecc0a28d98fa4fbeb3fb93b7c33cf6a417b6ca"
+        },
+        "answerPostId": 1240584,
+        "answerChars": 2660,
+        "answeredAt": "2026-11-21T17:07:16.567Z",
+        "closePostId": 1240586,
+        "closedBy": "su-bb5a3deb-cb58-4377-acb3-a4fba849a16a",
+        "closedAt": "2026-11-21T17:07:25.414Z",
+        "requesterUse": "Retained whole-file remeasurement for ordinary evidence. The answer distinguishes the narrow, server-verified tool-guidance exception.",
+        "sourceIsolation": {
+          "sourceCapturedAt": "2026-11-21T17:03:41.415Z",
+          "afterObservedAt": "2026-11-21T17:34:01.066Z",
+          "workItemsBefore": [],
+          "workItemsAfter": [],
+          "planClaimIdsBefore": [],
+          "planClaimIdsAfter": [],
+          "sourcePrefixSha256After": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+          "prefixBytesAfter": 2758267,
+          "sourceDescriptorMatched": true,
+          "prefixMeasurementTask": "0mwqorj8ib4pqt3ut6y"
+        }
+      }
+    ]
+  },
+  "archivedSourceProvenance": {
+    "nativeSessionId": "5ede16a5-c4c8-4399-82bb-9a54015998bb",
+    "indexedOwner": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+    "archiveDirectoryOwner": "su-9b1c9c3a-2c95-484a-96ee-191f8ccab9fe",
+    "verifiedEarlierFork": "conv-mvhd17cy-0000-c860a099b54740f5aa6843eaae474678",
+    "archivedBy": "reconciler",
+    "archivedAt": "2026-10-21T05:26:56.462Z",
+    "comparisonAt": "2026-11-21T17:44:02.891Z",
+    "indexedTurns": 39,
+    "archivedTurns": 39,
+    "equalTurnIdsSpeakersTimestampsAndTextHashes": 39,
+    "citedTurnIndex": 21,
+    "citedTurnMatched": true,
+    "missingTurnIndices": [],
+    "extraTurnIndices": [],
+    "textMismatches": [],
+    "metadataMismatches": [],
+    "scope": "The archive reader verified the stored file hash. The independent index predates archival. Comparison covers its redacted, indexed representation. The original owner's raw file was unavailable for a second whole-file hash."
+  },
+  "qualityReview": {
+    "originalArtifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24.000Z",
+    "eligible": 4,
+    "target": 8,
+    "shortfall": 4,
+    "recordedRequesterDecisions": 2,
+    "unknownRequesterDecisions": 2,
+    "scope": "Original natural-work cohort. Both controlled November 21 trials are excluded."
+  },
+  "routingHealth": {
+    "args": {
+      "since": "2026-11-21T17:02:50Z",
+      "until": "2026-11-21T17:44:03Z"
+    },
+    "response": {
+      "ok": true,
+      "window": {
+        "since": "2026-11-21T17:02:50.000Z",
+        "until": "2026-11-21T17:44:03.000Z",
+        "cohort": "launch-time"
+      },
+      "asOf": "2026-11-21T17:46:17.906Z",
+      "policies": [
+        {
+          "policy": "acceptance-bar-amendment-review",
+          "consults": 44,
+          "consultsWithoutDispatchRecords": 43,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "acceptance-grading",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "bar-critique",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "consult-default",
+          "consults": 64,
+          "consultsWithoutDispatchRecords": 59,
+          "launched": 6,
+          "answered": 4,
+          "declined": 2,
+          "failed": 2,
+          "failedReasons": {
+            "launch-failed": 2
+          },
+          "hung": 0,
+          "pending": 0,
+          "skipped": 10,
+          "skippedReasons": {
+            "account-walled": 8,
+            "consult-closed": 2
+          }
+        },
+        {
+          "policy": "goal-tenure-grading",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "grading-integrity-audit",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "method-review",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        },
+        {
+          "policy": "rubric-vetting",
+          "consults": 0,
+          "consultsWithoutDispatchRecords": 0,
+          "launched": 0,
+          "answered": 0,
+          "declined": 0,
+          "failed": 0,
+          "failedReasons": {},
+          "hung": 0,
+          "pending": 0,
+          "skipped": 0,
+          "skippedReasons": {}
+        }
+      ],
+      "totals": {
+        "consults": 108,
+        "consultsWithoutDispatchRecords": 102,
+        "launched": 6,
+        "answered": 4,
+        "declined": 2,
+        "failed": 2,
+        "failedReasons": {
+          "launch-failed": 2
+        },
+        "hung": 0,
+        "pending": 0,
+        "skipped": 10,
+        "skippedReasons": {
+          "account-walled": 8,
+          "consult-closed": 2
+        }
+      },
+      "bounded": {
+        "truncatedByLimit": false,
+        "consultsScanned": 108,
+        "consultLimit": 5000,
+        "dispatchLogCapped": 0
+      },
+      "requestCohort": {
+        "window": {
+          "since": "2026-11-21T17:02:50.000Z",
+          "until": "2026-11-21T17:44:03.000Z",
+          "cohort": "request-time"
+        },
+        "policies": [
+          {
+            "policy": "acceptance-bar-amendment-review",
+            "requests": 1,
+            "dispatchRequested": 1,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 1,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 1,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "acceptance-grading",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "bar-critique",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "consult-default",
+            "requests": 5,
+            "dispatchRequested": 3,
+            "retrievalOnly": 2,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 3,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 5,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 5,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "goal-tenure-grading",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "grading-integrity-audit",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "method-review",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          },
+          {
+            "policy": "rubric-vetting",
+            "requests": 0,
+            "dispatchRequested": 0,
+            "retrievalOnly": 0,
+            "legacyIntentUnknown": 0,
+            "outcomes": {
+              "received": 0,
+              "declined": 0,
+              "pending": 0,
+              "unavailable": 0,
+              "unlaunchable": 0,
+              "failed": 0,
+              "unmeasured": 0
+            },
+            "followThrough": {
+              "applicable": 0,
+              "notApplicable": 0,
+              "applicabilityUnknown": 0,
+              "recorded": {
+                "confirmed": 0,
+                "rescoped": 0,
+                "reversed": 0,
+                "moot": 0
+              },
+              "unknown": 0,
+              "invalid": 0,
+              "recordedWithFeedback": 0,
+              "recordedWithoutFeedback": 0
+            }
+          }
+        ],
+        "totals": {
+          "requests": 6,
+          "dispatchRequested": 4,
+          "retrievalOnly": 2,
+          "legacyIntentUnknown": 0,
+          "outcomes": {
+            "received": 3,
+            "declined": 0,
+            "pending": 0,
+            "unavailable": 1,
+            "unlaunchable": 0,
+            "failed": 0,
+            "unmeasured": 0
+          },
+          "followThrough": {
+            "applicable": 5,
+            "notApplicable": 1,
+            "applicabilityUnknown": 0,
+            "recorded": {
+              "confirmed": 0,
+              "rescoped": 0,
+              "reversed": 0,
+              "moot": 0
+            },
+            "unknown": 5,
+            "invalid": 0,
+            "recordedWithFeedback": 0,
+            "recordedWithoutFeedback": 0
+          }
+        }
+      },
+      "routingExecutions": {
+        "cohort": "routing-execution-start",
+        "status": "measured",
+        "unavailableReason": null,
+        "rowsScanned": 10,
+        "invalidReceipts": 0,
+        "truncatedByLimit": false,
+        "groups": [
+          {
+            "caller": "consult:get_feedback",
+            "policy": "acceptance-bar-amendment-review",
+            "buildSha": "1bc141a6e56",
+            "calls": 1,
+            "outcomes": {
+              "returned": 1,
+              "degraded": 0,
+              "threw": 0
+            },
+            "latencyMs": {
+              "observed": 1,
+              "p50": 6997.3,
+              "p95": 6997.3
+            },
+            "stages": {
+              "disclosure": {
+                "observed": 1,
+                "p50": 1.2,
+                "p95": 1.2,
+                "threw": 0
+              },
+              "embedding": {
+                "observed": 1,
+                "p50": 5997.5,
+                "p95": 5997.5,
+                "threw": 0
+              },
+              "transcripts": {
+                "observed": 1,
+                "p50": 997.3,
+                "p95": 997.3,
+                "threw": 0
+              }
+            }
+          },
+          {
+            "caller": "consult:get_feedback",
+            "policy": "consult-default",
+            "buildSha": "1bc141a6e56",
+            "calls": 5,
+            "outcomes": {
+              "returned": 5,
+              "degraded": 0,
+              "threw": 0
+            },
+            "latencyMs": {
+              "observed": 5,
+              "p50": 10877.9,
+              "p95": 28825.8
+            },
+            "stages": {
+              "disclosure": {
+                "observed": 5,
+                "p50": 2.4,
+                "p95": 3.4,
+                "threw": 0
+              },
+              "embedding": {
+                "observed": 5,
+                "p50": 185.6,
+                "p95": 597.2,
+                "threw": 0
+              },
+              "transcripts": {
+                "observed": 5,
+                "p50": 1556.4,
+                "p95": 9741.2,
+                "threw": 0
+              },
+              "verification": {
+                "observed": 5,
+                "p50": 76.5,
+                "p95": 147.2,
+                "threw": 0
+              },
+              "liveness": {
+                "observed": 5,
+                "p50": 110,
+                "p95": 1359.6,
+                "threw": 0
+              },
+              "ranking": {
+                "observed": 5,
+                "p50": 0.2,
+                "p95": 0.7,
+                "threw": 0
+              },
+              "evidence": {
+                "observed": 5,
+                "p50": 4516.9,
+                "p95": 26597.1,
+                "threw": 0
+              },
+              "authorship": {
+                "observed": 2,
+                "p50": 680.3,
+                "p95": 2528.8,
+                "threw": 0
+              }
+            }
+          },
+          {
+            "caller": "plans:activation-preview",
+            "policy": "consult-default",
+            "buildSha": "1bc141a6e56",
+            "calls": 3,
+            "outcomes": {
+              "returned": 0,
+              "degraded": 3,
+              "threw": 0
+            },
+            "latencyMs": {
+              "observed": 3,
+              "p50": 12601.6,
+              "p95": 18961.1
+            },
+            "stages": {
+              "disclosure": {
+                "observed": 3,
+                "p50": 3.5,
+                "p95": 163.4,
+                "threw": 0
+              },
+              "embedding": {
+                "observed": 3,
+                "p50": 2971.1,
+                "p95": 3770.9,
+                "threw": 0
+              },
+              "transcripts": {
+                "observed": 3,
+                "p50": 4197.2,
+                "p95": 12271.8,
+                "threw": 0
+              },
+              "verification": {
+                "observed": 3,
+                "p50": 70.2,
+                "p95": 100.8,
+                "threw": 0
+              },
+              "authorship": {
+                "observed": 2,
+                "p50": 1346.9,
+                "p95": 1682.3,
+                "threw": 0
+              },
+              "liveness": {
+                "observed": 3,
+                "p50": 449.7,
+                "p95": 2285.6,
+                "threw": 0
+              },
+              "ranking": {
+                "observed": 3,
+                "p50": 0.5,
+                "p95": 0.8,
+                "threw": 0
+              },
+              "evidence": {
+                "observed": 3,
+                "p50": 4002.2,
+                "p95": 4002.7,
+                "threw": 0
+              }
+            }
+          },
+          {
+            "caller": "plans:start",
+            "policy": "consult-default",
+            "buildSha": "1bc141a6e56",
+            "calls": 1,
+            "outcomes": {
+              "returned": 0,
+              "degraded": 1,
+              "threw": 0
+            },
+            "latencyMs": {
+              "observed": 1,
+              "p50": 1255.3,
+              "p95": 1255.3
+            },
+            "stages": {
+              "disclosure": {
+                "observed": 1,
+                "p50": 3.6,
+                "p95": 3.6,
+                "threw": 0
+              },
+              "embedding": {
+                "observed": 1,
+                "p50": 0.2,
+                "p95": 0.2,
+                "threw": 0
+              },
+              "transcripts": {
+                "observed": 1,
+                "p50": 33.6,
+                "p95": 33.6,
+                "threw": 0
+              },
+              "verification": {
+                "observed": 1,
+                "p50": 57.3,
+                "p95": 57.3,
+                "threw": 0
+              },
+              "authorship": {
+                "observed": 1,
+                "p50": 17.8,
+                "p95": 17.8,
+                "threw": 0
+              },
+              "liveness": {
+                "observed": 1,
+                "p50": 78.9,
+                "p95": 78.9,
+                "threw": 0
+              },
+              "ranking": {
+                "observed": 1,
+                "p50": 0.9,
+                "p95": 0.9,
+                "threw": 0
+              },
+              "evidence": {
+                "observed": 1,
+                "p50": 1.2,
+                "p95": 1.2,
+                "threw": 0
+              }
+            }
+          }
+        ]
+      },
+      "routingRecorder": {
+        "scope": "serving-process",
+        "processId": 1686060,
+        "since": "2026-11-21T16:57:08.990Z",
+        "attempted": 21,
+        "persisted": 21,
+        "failed": 0,
+        "lastFailure": null,
+        "pending": 0
+      }
+    }
+  },
+  "assertions": [
+    {
+      "id": "matrix:claude-ended-to-codex-conversion",
+      "passed": true,
+      "evidence": "Request 51008230, delivered port 7523a6c7-ecca-4dab-8323-5bd17b76da99 and answer 1240581. The cited historical turn matched the original owner's pre-archive index."
+    },
+    {
+      "id": "matrix:codex-live-to-codex-session-port",
+      "passed": true,
+      "evidence": "Request 51008269, delivered port b03d54ff-1aec-46e1-80fc-1b4f753293c5 and answer 1240584. The original source prefix matched after delivery."
+    },
+    {
+      "id": "matrix:claude-ended-to-claude-fork",
+      "passed": false,
+      "evidence": "Provider probe 51008378 found zero serviceable Claude accounts. The fork has no current native receipt or answer."
+    },
+    {
+      "id": "cohort:original-quality-review",
+      "passed": false,
+      "evidence": "The original cut contains four eligible threads against a target of eight and two unknown requester decisions."
+    }
+  ]
+}
