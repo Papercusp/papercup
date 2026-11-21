@@ -47,6 +47,12 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
+# A comparison runs the selected application's own native rig with a separately
+# frozen test definition. The comparison owns its selection, group and receipts.
+if [ "${1:-}" = "--plan-revision-comparison" ]; then
+  shift
+  exec node --import tsx "$ROOT/scripts/lib/plan-revision-native-comparison.mts" run "$@"
+fi
 source "$ROOT/libs/generic/verification-harness/bin/vh.sh"
 
 # The task reconciler recovers a lost managed-task watcher from this terminal
@@ -364,12 +370,14 @@ fs.writeFileSync(file.replace(/\.json$/, '-proof.json'), JSON.stringify({
 }, null, 2) + '\n');
 const readySeedSpecs = new Set([
   'adv-conversations-sessions.spec.ts',
+  'agent-links.native.spec.mts',
   'chat-streaming.spec.ts',
   'cupboard-identity-statements-native.spec.mts',
   'inbox-ack-persistence.native.spec.mts',
   'owner-question-delivery.native.spec.mts',
   'quick-access.native.spec.mts',
   'reports-work-fullscreen.native.spec.mts',
+  'rubric-unknown-breakdown.native.spec.mts',
   'support-workflow-native.spec.mts',
 ]);
 const selectedReadySeedSpecs = [...new Set(selected
