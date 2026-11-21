@@ -248,10 +248,9 @@ describe('bundle-host.sh standalone spawner fallback', () => {
     mkdirSync(join(dir, 'dist-host'), { recursive: true });
     const sibling = join(dir, 'dist-host', 'spawner-sidecar.mjs');
     if (previousSibling) writeFileSync(sibling, GOOD_BUNDLE);
-    // A valid custom entry with a maintained entry's basename reaches the REAL
-    // worker + spawner wrapper without compiling the full HTTP host graph.
-    const entry = join(dir, 'hono-host.ts');
-    writeFileSync(entry, 'export const freshHost = true;\n');
+    // The basename selects the spawner recipe. Keep this input in the verified
+    // source archive so its build and rollback use the same provenance checks as the host.
+    const entry = join(REPO_ROOT, 'packages/operator-core/test/fixtures/bundle-host-fallback/hono-host.ts');
     const shimDir = join(dir, 'shim');
     const path = compilerShim(shimDir, [
       'for a in "$@"; do',
@@ -264,17 +263,21 @@ describe('bundle-host.sh standalone spawner fallback', () => {
       PATH: path,
       PAPERCUSP_BUNDLE_ALLOW_STALE_START: allowStale,
     });
+    const readArtifact = (artifact: string) => {
+      expect(existsSync(artifact), `Missing ${artifact} after bundle-host exited ${code}\n${output}`).toBe(true);
+      return readFileSync(artifact, 'utf8');
+    };
     expect(code, output).toBe(expectedCode);
     expect(output).toContain('standalone spawner build failed');
-    expect(readFileSync(outfile, 'utf8')).toContain('freshHost');
-    expect(existsSync(sibling)).toBe(previousSibling);
-    if (previousSibling) expect(readFileSync(sibling, 'utf8')).toBe(GOOD_BUNDLE);
-    const stale = JSON.parse(readFileSync(marker, 'utf8'));
+    expect(readArtifact(outfile)).toContain('freshHost');
+    expect(existsSync(sibling), output).toBe(previousSibling);
+    if (previousSibling) expect(readArtifact(sibling)).toBe(GOOD_BUNDLE);
+    const stale = JSON.parse(readArtifact(marker));
     expect(stale.entry).toBe('bin/spawner-sidecar.ts');
     expect(stale.outfile).toBe(sibling);
     // The failure must remain diagnosable after the calling terminal exits.
     expect(stale.error).toContain('injected standalone compiler refusal');
-    expect(readFileSync(sibling + '.build-error.log', 'utf8')).toContain('injected standalone compiler refusal');
+    expect(readArtifact(sibling + '.build-error.log')).toContain('injected standalone compiler refusal');
     expect(existsSync(join(dir, 'dist-host', '.bundle-fresh.json'))).toBe(false);
   }, 260_000);
 });
