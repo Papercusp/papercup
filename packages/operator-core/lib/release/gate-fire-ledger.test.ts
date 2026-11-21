@@ -205,12 +205,13 @@ describe('reuse audit population from immutable gate events', () => {
   it('retains an inline-retry miss without any final FAIL console row', () => {
     expect(evaluateGateReuseAuditWindow(fixture('fail'))).toMatchObject({ verdict: 'fail', alarms: 1 });
   });
-  it('audits the measured repair head while the display candidate remains frozen', () => {
+  it.each(['full-gate-red', 'targeted-red', 'pre-suite-red', 'red-scope-unknown'])(
+    'audits the measured repair head independently of the frozen candidate scope %s', (frozenCandidateVerdict) => {
     const r = fixture(); const detail = r.rows[1]!.detail;
     const frozenCandidate = 'b'.repeat(12); const repairHead = sha.slice(0, 12);
     Object.assign(detail, { candidate: frozenCandidate, frozenCandidate, repairHead,
       verdictProvenance: { frozenCandidate, repairHead, phase: 'ready-to-verify',
-        frozenCandidateVerdict: 'full-gate-red', repairHeadVerdict: 'full-gate-red' } });
+        frozenCandidateVerdict, repairHeadVerdict: 'full-gate-red' } });
     expect(evaluateGateReuseAuditWindow(r)).toMatchObject({ verdict: 'pass', audited: 1, runIds: ['run-1'] });
     (detail.verdictProvenance as Record<string, unknown>).repairHeadVerdict = 'not-judged';
     expect(evaluateGateReuseAuditWindow(r).verdict).toBe('unknown');

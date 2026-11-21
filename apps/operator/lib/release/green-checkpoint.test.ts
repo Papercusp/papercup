@@ -1947,6 +1947,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
           head: movingTip,
           failingCount: 1,
           atMs: Date.now(),
+          executed: { mode: "full", gateIds: [], trigger: "promotion-proof" },
         },
       ],
     };
@@ -3578,7 +3579,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       frozenCandidate: frozen,
       repairHead: repaired,
-      verdictProvenance: { repairHeadVerdict: "full-gate-red" },
+      verdictProvenance: { repairHeadVerdict: "targeted-red",
+        repairHeadMeasurement: { scope: "targeted", canonicalSuiteCompleted: false } },
       repairQueue: {
         phase: "awaiting-fixer",
         repairHead: repaired,

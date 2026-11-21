@@ -8926,6 +8926,11 @@ describe('P-002 / D-009 pipeline assessment truth tables', () => {
     verdictUnknownLegs: [],
   };
   const verdictCases: Array<{ name: string; input: VerdictInput; expected: VerdictExpected }> = [
+    ...(['targeted-red', 'pre-suite-red', 'red-scope-unknown'] as const).map((repairHeadVerdict) => ({
+      name: `${repairHeadVerdict} preserves the conservative repair-head-red signal`,
+      input: { ...verdictBase, inconclusive: { status: 'repair-in-progress' }, repairHeadVerdict },
+      expected: 'repair-head-red' as const,
+    })),
     {
       name: 'inconclusive outranks frozen counters',
       input: { ...verdictBase, inconclusive: { status: 'run-active' }, consecutiveReds: 4 },

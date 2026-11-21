@@ -270,6 +270,7 @@ const manifestRow = {
   recipe: 'npm run test:file -- lib/red.test.ts',
   subjectPaths: ['lib/red.test.ts'],
   subjectPathsTruncated: 0,
+  subjectPathsComplete: true,
   subjectSource: 'leg-id' as const,
   status: { kind: 'red-at-candidate' as const },
   statusLabel: 'red-at-candidate',
@@ -565,6 +566,79 @@ beforeEach(() => {
 });
 
 describe('release:repair-queue', () => {
+  it.each([
+    ['targeted workspace tests', { mode: 'targeted', fileCount: 38,
+      gateIds: ['@papercusp/operator-core :: test:lane-stateful'],
+      coverageWithheld: ['selection-incomplete'] }, 'suite', 'targeted-red', 'targeted', false, 'incomplete'],
+    ['early typecheck refusal', undefined, 'non-test-only', 'pre-suite-red', 'pre-suite', false, 'unknown'],
+    ['completed canonical suite', { mode: 'full', gateIds: [], trigger: 'promotion-proof' },
+      'suite', 'full-gate-red', 'canonical-suite', true, 'complete'],
+    ['legacy missing execution', undefined, undefined, 'red-scope-unknown', 'unknown', null, 'unknown'],
+  ] as const)('reports %s through the normal status reader without changing safety', async (
+    _name, executed, measurement, verdict, scope, canonicalSuiteCompleted, coverage,
+  ) => {
+    const recorded = { ...queue, convergenceRounds: [{ round: 14, head: queue.repairHead,
+      failingCount: 1, atMs: 1234, ...(executed ? { executed } : {}), ...(measurement ? { measurement } : {}) }] };
+    mocks.readState.mockResolvedValue({ status: 'value', queue: recorded });
+    mocks.alive.mockResolvedValue(true);
+    const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+    expect(result.repairQueue).toMatchObject({
+      candidate: queue.candidate, repairHead: queue.repairHead,
+      decision: 'wait-for-fixer', retireAllowed: false, retireRefusal: 'live-fixer',
+      verdictProvenance: { repairHeadVerdict: verdict,
+        repairHeadMeasurement: { round: 14, scope, canonicalSuiteCompleted, coverage } },
+    });
+    expect(mocks.admit).not.toHaveBeenCalled();
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.retire).not.toHaveBeenCalled();
+  });
+
+  it('replays the November 19 round 14 targeted red from its recorded execution inputs', async () => {
+    // __GREEN_CHECKPOINT_RESULT__ in 2026-11-19T20-23-23-113Z-scheduled-
+    // b5197e51-6da7-486c-9161-d5ac98d00156.log: 76 targeted-gate measurements,
+    // suiteVerdictReplay.suiteMeasured=false, CI group b27458fa-55fc-412f-96e2-6450a464456b.
+    // These are the exact persisted round fields consumed by the shared status reader.
+    const head = 'f43b6bb56d782442e26a5c79f707a0a8e64ef067';
+    const executed = {
+      mode: 'targeted' as const, fileCount: 38, filesDigest: '6039f1a414dde7c4',
+      gateIds: [
+        'lint:tsc:workspaces', 'lint:tsc:operator', 'lint:tsc', 'lint:tsc:scripts', 'lint:mock-cast-escape',
+        '@papercusp/operator-core :: lint:fire-and-forget-classification',
+        '@papercusp/operator-core :: lint:no-eager-execfile-promisify',
+        '@papercusp/web :: lint:no-fake-timers-in-integration',
+        '@papercusp/web :: lint:no-hand-rolled-cli-entry', '@papercusp/web :: test:e2e:css-preload',
+        '@papercusp/operator-core :: test:lane-pure', '@papercusp/operator-core :: test:lane-stateful',
+        '@papercusp/desktop :: test', '@papercusp/operator-core :: lint:host-bundle-builds',
+        '@papercusp/web :: lint:el-tools', '@papercusp/operator-core :: lint:new-clones',
+        '@papercusp/operator-core :: lint:condition-rail', '@papercusp/operator-core :: lint:bundle-budget',
+        '@papercusp/operator-core :: lint:no-unenrolled-spawn', '@papercusp/operator-core :: lint:no-unenrolled-injector',
+        '@papercusp/operator-core :: gen:tool-delivery:check', '@papercusp/operator-core :: lint:lockfile-census',
+        '@papercusp/operator-core :: lint:npm-licenses', '@papercusp/operator-core :: lint:rust-licenses',
+        '@papercusp/operator-core :: lint:test-timing-budgets', '@papercusp/operator-core :: lint:guidance-returns-schema',
+        '@papercusp/operator-core :: lint:no-agent-intent-comments', '@papercusp/operator-core :: lint:pipefail-sigpipe',
+        '@papercusp/operator-core :: lint:harness-arg-coverage',
+        '@papercusp/operator-core :: lint:integration-teardown-nullsafe',
+        '@papercusp/operator-core :: lint:narrowing-gated-assertions', '@papercusp/web :: lint:tests',
+      ],
+      radiusMode: 'cumulative', coverageWithheld: ['selection-incomplete' as const],
+    };
+    const recorded = { ...queue, candidate: '63442ecf6f53e4c16aae5a56e4d27123c8142f80', repairHead: head,
+      convergenceRounds: [{ round: 14, head, atMs: 1795128252341, failingCount: 55,
+        failureFrontierCompleteness: 'unknown' as const, executed }] };
+    mocks.readState.mockResolvedValue({ status: 'value', queue: recorded });
+    mocks.alive.mockResolvedValue(true);
+    const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+    expect(result.repairQueue.verdictProvenance).toMatchObject({
+      frozenCandidateVerdict: 'red-scope-unknown', repairHeadVerdict: 'targeted-red',
+      repairHeadMeasurement: { round: 14, atMs: 1795128252341, scope: 'targeted', coverage: 'incomplete',
+        canonicalSuiteCompleted: false, failureFrontierCompleteness: 'unknown', execution: executed },
+    });
+    expect(result.repairQueue).toMatchObject({ decision: 'wait-for-fixer', retireAllowed: false,
+      retireRefusal: 'live-fixer', nextAction: null });
+    expect(mocks.write).not.toHaveBeenCalled();
+    expect(mocks.admit).not.toHaveBeenCalled();
+  });
+
   it('allows the four-minute admission preview to finish before the MCP deadline', () => {
     expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(295);
   });
@@ -734,6 +808,8 @@ describe('release:repair-queue', () => {
         ok: status === 'pass',
         failingSignatures: status === 'pass' ? [] : [leg],
         legs: [{ id: leg, status, durationMs: 1_159_000 }],
+        populationEvidence: { status: 'complete', measuredLegCount: 1,
+          failingSignatureCount: status === 'pass' ? 0 : 1 },
       },
     }];
 

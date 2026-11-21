@@ -45,6 +45,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { isCheckpointCandidateSource } from './checkpoint-candidate-source';
+import { isFrozenRepairRedVerdict } from './frozen-candidate-repair-queue';
 import type { Sql } from 'postgres';
 import { appendPipelineEvent, readGatePipelineWindow, type PipelineEventWindowRead, type PipelineEventRow } from '../harness/git-sync/pipeline-events';
 import { evaluateTestPassReuseAuditWindow, parseTestPassReuseAuditArchive,
@@ -218,7 +219,7 @@ function matchesRecordedGateJudgedSha(detail: Record<string, unknown>, judgedSha
   const p = provenance as Record<string, unknown>;
   return detail.frozenCandidate === detail.candidate && sha(detail.repairHead) &&
     judgedSha.startsWith(detail.repairHead) && p.frozenCandidate === detail.frozenCandidate &&
-    p.repairHead === detail.repairHead && p.frozenCandidateVerdict === 'full-gate-red' &&
+    p.repairHead === detail.repairHead && isFrozenRepairRedVerdict(p.frozenCandidateVerdict) &&
     ((p.repairHeadVerdict === 'full-gate-red' &&
       ['awaiting-fixer', 'ready-to-verify', 'blocked'].includes(p.phase as string)) ||
      (p.repairHeadVerdict === 'isolated-repair-green' && p.phase === 'ready-to-promote'));

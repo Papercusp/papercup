@@ -1054,8 +1054,12 @@ describe('frozen-candidate repair queue', () => {
   });
 
   it('P-003 exposes frozenCandidate separately from repairHead and marks no-suite holds', () => {
+    const canonicalRed = () => createFrozenCandidateRepairQueue({
+      candidate: C, base: BASE, failingTests: ['lib/a.test.ts'], nowMs: T0,
+      executed: frozenRepairRoundExecution({ mode: 'full', trigger: 'candidate' }),
+    });
     const repaired = markFrozenRepairFixerFinished(
-      markFrozenRepairFixerDispatched(fresh(), { spawnId: 'fixer', nowMs: T0 + 1 }),
+      markFrozenRepairFixerDispatched(canonicalRed(), { spawnId: 'fixer', nowMs: T0 + 1 }),
       { spawnId: 'fixer', repairHead: C1, nowMs: T0 + 2 },
     );
     const diagnostic = diagnoseFrozenCandidateRepairQueue(repaired, {
@@ -1076,15 +1080,16 @@ describe('frozen-candidate repair queue', () => {
     });
 
     const awaiting = diagnoseFrozenCandidateRepairQueue(
-      markFrozenRepairFixerDispatched(fresh(), { spawnId: 'fixer', nowMs: T0 + 1 }),
+      markFrozenRepairFixerDispatched(canonicalRed(), { spawnId: 'fixer', nowMs: T0 + 1 }),
       { nowMs: T0 + 2, fixerAlive: true },
     );
-    expect(awaiting?.verdictProvenance).toEqual({
+    expect(awaiting?.verdictProvenance).toMatchObject({
       frozenCandidate: C,
       repairHead: C,
       phase: 'awaiting-fixer',
       frozenCandidateVerdict: 'full-gate-red',
       repairHeadVerdict: 'same-as-frozen-full-gate-red',
+      repairHeadMeasurement: { scope: 'canonical-suite', canonicalSuiteCompleted: true },
     });
 
     // EI-22767271786772554: after the canonical red writer appends a round at a
@@ -1093,6 +1098,7 @@ describe('frozen-candidate repair queue', () => {
     const redRepairHead = markFrozenRepairVerificationRed(repaired, {
       repairHead: C1,
       failingTests: ['lib/still-red.test.ts'],
+      executed: frozenRepairRoundExecution({ mode: 'full', trigger: 'promotion-proof' }),
       nowMs: T0 + 4,
     });
     expect(
@@ -1100,13 +1106,56 @@ describe('frozen-candidate repair queue', () => {
         nowMs: T0 + 5,
         fixerAlive: false,
       })?.verdictProvenance,
-    ).toEqual({
+    ).toMatchObject({
       frozenCandidate: C,
       repairHead: C1,
       phase: 'awaiting-fixer',
       frozenCandidateVerdict: 'full-gate-red',
       repairHeadVerdict: 'full-gate-red',
+      repairHeadMeasurement: { scope: 'canonical-suite', canonicalSuiteCompleted: true },
     });
+  });
+
+  it('keeps legacy red custody but reports missing scope and completion as unknown after parsing', () => {
+    for (const input of [fresh(), { ...fresh(), convergenceRounds: undefined }]) {
+      const queue = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(input)))!;
+      const diagnostic = diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 1 });
+      expect(diagnostic?.verdictProvenance).toMatchObject({
+        frozenCandidateVerdict: 'red-scope-unknown', repairHeadVerdict: 'red-scope-unknown',
+        repairHeadMeasurement: { scope: 'unknown', canonicalSuiteCompleted: null, coverage: 'unknown' },
+      });
+      expect(diagnostic?.decision).toBe(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 1 }).kind);
+    }
+  });
+
+  it('uses the newest exact-head round, independently of array order or another head', () => {
+    const full = { round: 1, head: C, failingCount: 1, atMs: T0,
+      executed: frozenRepairRoundExecution({ mode: 'full', trigger: 'candidate' }) };
+    const targeted = { round: 2, head: C, failingCount: 1, atMs: T0 + 1,
+      executed: frozenRepairRoundExecution({ mode: 'targeted', gateIds: ['@fixture :: test'] }) };
+    const other = { ...full, round: 3, head: C1, atMs: T0 + 2 };
+    for (const convergenceRounds of [[full, targeted, other], [other, targeted, full], [targeted, full, other]]) {
+      const queue = parseFrozenCandidateRepairQueue({ ...fresh(), convergenceRounds })!;
+      expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 3 })?.verdictProvenance)
+        .toMatchObject({ repairHeadVerdict: 'targeted-red', repairHeadMeasurement: {
+          round: 2, scope: 'targeted', canonicalSuiteCompleted: false, coverage: 'unknown',
+        } });
+    }
+  });
+
+  it.each([
+    ['legacy suite label alone', undefined, 'suite', 'unknown', null],
+    ['targeted workspace-only run', { mode: 'targeted', gateIds: ['@fixture :: test'] },
+      'non-test-only', 'targeted', false],
+    ['conflicting full and pre-suite markers', { mode: 'full', gateIds: [] },
+      'non-test-only', 'unknown', null],
+    ['malformed execution', { mode: 'full', gateIds: null }, 'suite', 'unknown', null],
+  ] as const)('keeps %s from inventing canonical completion', (_name, executed, measurement, scope, canonicalSuiteCompleted) => {
+    const queue = parseFrozenCandidateRepairQueue({ ...fresh(), convergenceRounds: [{
+      round: 1, head: C, failingCount: 1, atMs: T0, measurement, ...(executed ? { executed } : {}),
+    }] })!;
+    expect(diagnoseFrozenCandidateRepairQueue(queue, { nowMs: T0 + 1 })?.verdictProvenance)
+      .toMatchObject({ repairHeadMeasurement: { scope, canonicalSuiteCompleted } });
   });
 
   it('WI-1586801: advertises the retire recipe ONLY when the decision is terminal', () => {

@@ -2022,12 +2022,15 @@ export interface FrozenRepairQueueDiagnostic {
     frozenCandidate: string;
     repairHead: string;
     phase: FrozenCandidateRepairPhase;
-    frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
+    frozenCandidateVerdict: 'not-judged' | FrozenRepairRedVerdict;
     repairHeadVerdict:
       | 'not-judged'
       | 'same-as-frozen-full-gate-red'
-      | 'full-gate-red'
+      | FrozenRepairRedVerdict
       | 'isolated-repair-green';
+    /** Latest retained red measurement at each exact head, not process liveness or a later green. */
+    frozenCandidateMeasurement?: FrozenRepairVerdictMeasurement;
+    repairHeadMeasurement?: FrozenRepairVerdictMeasurement;
   };
   retireAllowed: boolean;
   retireRefusal: 'live-fixer' | 'liveness-unknown' | 'active-dispatch-reservation' | 'unsafe-phase' | null;
@@ -2047,6 +2050,57 @@ export interface FrozenRepairQueueDiagnostic {
   manifestSummary: RepairManifestSummary | null;
 }
 
+type FrozenRepairRedVerdict = 'full-gate-red' | 'targeted-red' | 'pre-suite-red' | 'red-scope-unknown';
+
+/** Old archived spellings and new scope labels carry the same conservative red decision. */
+export function isFrozenRepairRedVerdict(value: unknown): boolean {
+  return value === 'full-gate-red' || value === 'same-as-frozen-full-gate-red' ||
+    value === 'targeted-red' || value === 'pre-suite-red' || value === 'red-scope-unknown';
+}
+
+export interface FrozenRepairVerdictMeasurement {
+  round: number | null;
+  atMs: number | null;
+  scope: 'canonical-suite' | 'targeted' | 'pre-suite' | 'unknown';
+  /** Completion of THIS recorded round's canonical suite, never whether a suite is running now. */
+  canonicalSuiteCompleted: boolean | null;
+  coverage: 'complete' | 'incomplete' | 'unknown';
+  failureFrontierCompleteness: RepairFailureFrontierCompleteness;
+  /** Existing bounded descriptor, not an exhaustive task census; retain its withheld reasons. */
+  execution: FrozenRepairRoundExecution | null;
+}
+
+function frozenRepairVerdictMeasurement(queue: FrozenCandidateRepairQueue, head: string): FrozenRepairVerdictMeasurement {
+  const round = (queue.convergenceRounds ?? []).reduce<FrozenRepairConvergenceRound | null>((latest, entry) =>
+    entry.head === head && (!latest || entry.round > latest.round ||
+      (entry.round === latest.round && entry.atMs > latest.atMs)) ? entry : latest, null);
+  const execution = round?.executed ?? null;
+  // `measurement:'suite'` also covers targeted workspace tests, and is the legacy default.
+  // Only the full execution writer (after suiteMeasured) establishes a canonical suite.
+  const scope = execution?.mode === 'targeted' ? 'targeted'
+    : round?.measurement === 'non-test-only' ? (execution?.mode === 'full' ? 'unknown' : 'pre-suite')
+    : execution?.mode === 'full' ? 'canonical-suite' : 'unknown';
+  return {
+    round: round?.round ?? null,
+    atMs: round?.atMs ?? null,
+    scope,
+    canonicalSuiteCompleted: scope === 'unknown' ? null : scope === 'canonical-suite',
+    coverage: execution?.coverageWithheld?.length ? 'incomplete'
+      : scope === 'canonical-suite' ? 'complete' : 'unknown',
+    failureFrontierCompleteness: round?.failureFrontierCompleteness ?? 'unknown',
+    execution,
+  };
+}
+
+function frozenRepairRedVerdict(measurement: FrozenRepairVerdictMeasurement): FrozenRepairRedVerdict {
+  switch (measurement.scope) {
+    case 'canonical-suite': return 'full-gate-red';
+    case 'targeted': return 'targeted-red';
+    case 'pre-suite': return 'pre-suite-red';
+    case 'unknown': return 'red-scope-unknown';
+  }
+}
+
 export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueue): {
   frozenCandidate: string;
   repairHead: string;
@@ -2058,9 +2112,9 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
   // writer appends a convergence round at the SHA it judged, so consult that durable
   // provenance before calling a distinct repair head "not-judged". A later green still
   // wins because ready-to-promote is the current, terminal verdict for this head.
-  const repairHeadWasJudgedRed = (queue.convergenceRounds ?? []).some(
-    (round) => round.head === queue.repairHead,
-  );
+  const frozenCandidateMeasurement = frozenRepairVerdictMeasurement(queue, queue.candidate);
+  const repairHeadMeasurement = frozenRepairVerdictMeasurement(queue, queue.repairHead);
+  const frozenCandidateVerdict = frozenRepairRedVerdict(frozenCandidateMeasurement);
   return {
     frozenCandidate: queue.candidate,
     repairHead: queue.repairHead,
@@ -2078,15 +2132,17 @@ export function buildFrozenRepairStatusIdentity(queue: FrozenCandidateRepairQueu
       // while a suite WAS running on this repairHead. Nothing in this read model observes process
       // liveness — it is a DB projection — so no field here may be named as though it does.
       // Liveness is answered by `node scripts/proc-guard.mjs check green-checkpoint`.
-      frozenCandidateVerdict: queue.phase === 'ready-to-test' ? 'not-judged' : 'full-gate-red',
+      frozenCandidateVerdict: queue.phase === 'ready-to-test' ? 'not-judged' : frozenCandidateVerdict,
       repairHeadVerdict:
         queue.phase === 'ready-to-promote'
           ? 'isolated-repair-green'
           : queue.phase !== 'ready-to-test' && queue.repairHead === queue.candidate
-            ? 'same-as-frozen-full-gate-red'
-            : repairHeadWasJudgedRed
-              ? 'full-gate-red'
+            ? frozenCandidateVerdict === 'full-gate-red' ? 'same-as-frozen-full-gate-red' : frozenCandidateVerdict
+            : repairHeadMeasurement.round !== null
+              ? frozenRepairRedVerdict(repairHeadMeasurement)
               : 'not-judged',
+      frozenCandidateMeasurement,
+      repairHeadMeasurement,
     },
   };
 }

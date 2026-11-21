@@ -41,6 +41,7 @@ import type {
   FrozenCandidateBlockedReason,
   FrozenRepairAdmission,
   FrozenRepairConvergenceCellProjection,
+  FrozenRepairQueueDiagnostic,
   RepairSignatureEntry,
 } from './release/frozen-candidate-repair-queue';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
@@ -257,17 +258,7 @@ export interface GateOwnerBrief {
     legsMeasured: boolean;
     blockedReason: FrozenCandidateBlockedReason | null;
     blockedReasonMeasured: boolean;
-    verdictProvenance: {
-      frozenCandidate: string;
-      repairHead: string;
-      phase: string;
-      frozenCandidateVerdict: 'not-judged' | 'full-gate-red';
-      repairHeadVerdict:
-        | 'not-judged'
-        | 'same-as-frozen-full-gate-red'
-        | 'full-gate-red'
-        | 'isolated-repair-green';
-    } | null;
+    verdictProvenance: NonNullable<FrozenRepairQueueDiagnostic['verdictProvenance']> | null;
     attempts: number | null;
     fixerSpawnId: string | null;
     /** null = liveness unmeasurable; false = a dispatched fixer is DEAD (the 5h-gap case). */

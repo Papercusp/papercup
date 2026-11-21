@@ -1895,17 +1895,7 @@ export interface CheckpointResult {
   /** Bounded per-gate output captured by targeted verification at repairVerificationHead. */
   repairVerificationFailureTails?: Record<string, string>;
   /** P-003: machine-readable identity/provenance for the status shown to readers. */
-  verdictProvenance?: {
-    frozenCandidate: string;
-    repairHead: string;
-    phase: FrozenCandidateRepairQueue["phase"];
-    frozenCandidateVerdict: "not-judged" | "full-gate-red";
-    repairHeadVerdict:
-      | "not-judged"
-      | "same-as-frozen-full-gate-red"
-      | "full-gate-red"
-      | "isolated-repair-green";
-  };
+  verdictProvenance?: ReturnType<typeof buildFrozenRepairStatusIdentity>["verdictProvenance"];
   /** EI-203121: durable per-leg execution identity, capped by the producer. */
   postSuiteLegs?: PostSuiteLegRecord[];
   /** P-009: present ONLY on an `awaiting-fixer` repair-in-progress hold — the cheap non-test

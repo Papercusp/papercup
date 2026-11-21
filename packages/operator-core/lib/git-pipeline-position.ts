@@ -105,6 +105,7 @@ import {
 } from './release/freeze-disposition';
 import {
   isJudgingPinnedActiveRepair,
+  isFrozenRepairRedVerdict,
   projectFrozenRepairConvergenceCell,
   type FrozenRepairConvergenceCellProjection,
 } from './release/frozen-candidate-repair-queue';
@@ -1101,7 +1102,7 @@ export function assessGateVerdict(input: {
     const head = input.repairHeadVerdict ?? null;
     if (
       REPAIR_HOLD_INCONCLUSIVE_STATUSES.has(input.inconclusive.status) &&
-      (head === 'full-gate-red' || head === 'same-as-frozen-full-gate-red')
+      isFrozenRepairRedVerdict(head)
     ) {
       return 'repair-head-red';
     }
@@ -4375,6 +4376,14 @@ export function computeStages(
             ? 'no verdict provenance recorded — this queue\'s suite result is UNKNOWN, not green'
             : g.repairQueue.verdictProvenance.repairHeadVerdict === 'isolated-repair-green'
               ? 'an isolated repair suite result is recorded'
+              : g.repairQueue.verdictProvenance.repairHeadMeasurement?.scope === 'canonical-suite'
+                ? 'a completed canonical suite red is recorded for this repairHead'
+                : g.repairQueue.verdictProvenance.repairHeadMeasurement?.scope === 'targeted'
+                  ? 'targeted repair work is recorded, including workspace tests when selected; that round did not complete the canonical suite'
+                  : g.repairQueue.verdictProvenance.repairHeadMeasurement?.scope === 'pre-suite'
+                    ? 'a pre-suite refusal is recorded; that round did not run the canonical suite'
+                    : isFrozenRepairRedVerdict(g.repairQueue.verdictProvenance.repairHeadVerdict)
+                      ? 'a red is recorded, but its measured scope and canonical suite completion are UNKNOWN'
               : 'no COMPLETED suite result for this repairHead yet — a suite may be running RIGHT NOW; this field never observes liveness, so check `node scripts/proc-guard.mjs check green-checkpoint` before concluding the gate is idle'
         }).`
       : null;
