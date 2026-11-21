@@ -20,6 +20,9 @@ export interface RuntimeProofIdentity extends RuntimeIdentity {
 }
 export function validRuntimeProofIdentity(runtime: unknown): boolean;
 export function runtimeProofFingerprint(runtime: unknown): string | null;
+export function verifierRuntimeHandoffSha256(receiptPath: string, snapshotSha256: string,
+  dependenciesSha256: string, treeRecords: ReadonlyArray<readonly [string, string]>, taskSha256: string): string;
+export function prepareVerifierRuntimeProof(options: { root: string }): Promise<void>;
 export function captureRuntimeProofIdentity(options: {
   root: string; cwd?: string; environment?: NodeJS.ProcessEnv; executable?: string;
   execArgv?: string[];
