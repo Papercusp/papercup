@@ -218,12 +218,12 @@
   "reviews": [
     {
       "siteId": "[\"packages/operator-core/lib/agent-tools/work_items/_create-core.ts\",\"createOneWorkItemCore\",\"unresolved\",\"9d218b7dbf89afd4cf530336daefccd96ff31e2a6461796f8b5c95bdcbed2ed2\"]#1",
-      "sourceSha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b",
+      "sourceSha256": "f2fb7f10b05df3aa7d0ca1f005ad613a3ddf0844080436a3a068d5877018eea1",
       "statementSha256": "9d218b7dbf89afd4cf530336daefccd96ff31e2a6461796f8b5c95bdcbed2ed2",
       "sourceProofs": [
         {
           "path": "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
-          "sha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b"
+          "sha256": "f2fb7f10b05df3aa7d0ca1f005ad613a3ddf0844080436a3a068d5877018eea1"
         }
       ],
       "disposition": "metadata-only",
@@ -231,6 +231,7 @@
       "evidenceRefs": [
         "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore",
         "work-item:WI-6554700010050108",
+        "thread-post:1240686",
         "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#pins the two work-item creation condition reads before the receiver escapes"
       ],
       "resolvedEdges": [
@@ -259,12 +260,12 @@
     },
     {
       "siteId": "[\"packages/operator-core/lib/agent-tools/work_items/_create-core.ts\",\"createOneWorkItemCore\",\"unresolved\",\"c50c58ede913c919945767c695854a480aece7d7db6f07120a28348bf650c78d\"]#1",
-      "sourceSha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b",
+      "sourceSha256": "f2fb7f10b05df3aa7d0ca1f005ad613a3ddf0844080436a3a068d5877018eea1",
       "statementSha256": "c50c58ede913c919945767c695854a480aece7d7db6f07120a28348bf650c78d",
       "sourceProofs": [
         {
           "path": "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
-          "sha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b"
+          "sha256": "f2fb7f10b05df3aa7d0ca1f005ad613a3ddf0844080436a3a068d5877018eea1"
         }
       ],
       "disposition": "metadata-only",
@@ -272,6 +273,7 @@
       "evidenceRefs": [
         "source:packages/operator-core/lib/agent-tools/work_items/_create-core.ts#createOneWorkItemCore",
         "work-item:WI-6554700010050108",
+        "thread-post:1240686",
         "test:packages/operator-core/lib/spec-conformance/phase-admission-writer-census.test.ts#pins the two work-item creation condition reads before the receiver escapes"
       ],
       "resolvedEdges": [
