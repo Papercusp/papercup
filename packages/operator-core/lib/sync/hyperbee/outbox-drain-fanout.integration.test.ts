@@ -255,13 +255,8 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     const firstAppendGate = new Promise<void>((r) => (releaseFirstAppend = r));
     let appendCalls = 0;
 
-    // Count how many times the drain BODY (drainOutboxOnce) actually starts a
-    // pass — proxied by counting SELECT-driven passes via append invocations is
-    // unreliable (empty passes append nothing), so we wrap the handle.append and
-    // additionally observe pass count via a row-presence approach: seed exactly
-    // one row, and count appends — each non-empty pass appends it at most once
-    // (and after drained it appends nothing). To count PASSES distinctly we gate
-    // the first append and seed a SECOND row mid-flight.
+    // Keep the first append open so the duplicate wakeups arrive before the
+    // only row can be stamped drained. An overlapping pass would append it again.
     const handle = {
       workspaceId: WS,
       harnessSlug: SLUG,
@@ -308,6 +303,60 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
       expect(undrained).toBe(0);
     } finally {
       releaseFirstAppend(); // ensure the gate is released even on assertion failure
+      await drain.stop();
+    }
+  });
+
+  it('passes a newer committed version of the same reference to fan-out after an in-flight delivery', async () => {
+    const reference = 'F-changing';
+    const change = (title: string) => seedOutbox(db.sql, {
+      table_name: 'harness_features_consolidated', op: 'put', key: reference,
+      row: { ...featureRow(reference), title },
+    });
+    const firstId = await change('first version');
+    const received: Array<{ id: string; title: unknown }> = [];
+    let releaseFirst!: () => void;
+    const firstDelivery = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstInFlight = false;
+    let wake: ((payload: string) => void) | undefined;
+    const { handle } = makeFakeHandle();
+    const drain = startOutboxDrain(handle, db.sql, {
+      pollMs: 0,
+      listen: async (_channel, onNotify) => {
+        wake = onNotify;
+        return () => { wake = undefined; };
+      },
+      fanout: async (row) => {
+        if (String(row.id) === String(firstId)) {
+          firstInFlight = true;
+          await firstDelivery;
+        }
+        received.push({ id: String(row.id), title: row.row?.title });
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(firstInFlight).toBe(true);
+        expect(wake).toBeTypeOf('function');
+      }, { timeout: 5000 });
+      const nextId = await change('second version');
+      wake!(`${WS}::${SLUG}`);
+      expect(received).toEqual([]);
+      releaseFirst();
+
+      await vi.waitFor(async () => {
+        const rows = await db.sql<{ id: string }[]>`
+          SELECT id::text FROM harness_shared.substrate_outbox
+           WHERE key = ${reference} AND drained_at IS NOT NULL ORDER BY substrate_outbox.id`;
+        expect(rows.map((row) => row.id)).toEqual([String(firstId), String(nextId)]);
+      }, { timeout: 5000 });
+      expect(received).toEqual([
+        { id: String(firstId), title: 'first version' },
+        { id: String(nextId), title: 'second version' },
+      ]);
+    } finally {
+      releaseFirst();
       await drain.stop();
     }
   });
