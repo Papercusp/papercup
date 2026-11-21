@@ -1353,7 +1353,7 @@ export const LEADER_STANDING_JOB: readonly string[] = [
   // (salience-ranked, triage-deduped) + the overwatch nudge-hygiene rule.
   'Read the CURATED fleet feed at wave boundaries: `curation:feed` is the salience-ranked, triage-deduped signal (blockers / escalations / questions), so you are not re-deriving state from a raw `coord:inbox` scan. Nudge hygiene: RE-READ state before nudging (the drift may already be resolved); a nudge that fails to land twice is an ESCALATION to the owner, not a third nudge.',
   // su-loop-capability-parity P-012 (leader side): park with carry-notes, not prose.
-  'When you PARK or hand off (wind-down, restart, leadership change), leave carry-notes — not prose that scrolls away: a per-item `work_items:checkpoint` for anything mid-flight + a plan `## Now` pointer (`plans:set-now`) to the resume state, so the next leader / your next wake picks up from durable state.',
+  'At handoff, record ongoing work with `work_items:checkpoint`. If the fleet has a Papercusp plan, update its `## Now` using `plans:set-now`. A claim-kinds fleet working against an external plan item uses the externalPlanRef on its work items to retain that planning context.',
 ];
 
 /**
@@ -5208,7 +5208,7 @@ export default defineTool({
           '',
           'You were LAUNCHED to lead it. The agent that called fleet:launch-on-plan delegated this to',
           'you and retains responsibility for portfolio priorities and resource allocation.',
-          `Your assigned target is ${count} member seats. Execute the plan within the supplied fleet size and model configuration.`,
+          `Your assigned target is ${count} member seats. Work within the supplied fleet size and model configuration.`,
           ...(goalAllocation ? [renderGoalFleetAllocation({ ...goalAllocation, fleetMemberTarget: count })] : []),
           'The GOAL steward chooses the plans, fleet size and role models using the whole portfolio.',
           'Request allocation changes from that steward; do not unilaterally widen the fleet or replace its model choices.',

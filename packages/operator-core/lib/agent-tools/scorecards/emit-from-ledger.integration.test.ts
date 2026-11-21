@@ -31,7 +31,7 @@
  *   - manual-judgement no check → never auto-rated; the emit asks for it by key.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/tooldef';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import type postgres from 'postgres';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -468,6 +468,30 @@ describe('R-7 — scorecards:emit { fromLedger: true } rates executable criteria
       ledgerResult: { testRunId: ids.diskNewer, value: 42, unit: '%' },
     });
     expect(rubricCheckLedgerPath(RUBRIC, 'disk-latest:instrument')).toBe(`rubric-check/${RUBRIC}/disk-latest:instrument`);
+  }, 120_000);
+
+  it('preserves optional repair keys on manual and ledger-filled criteria through MCP', async () => {
+    const result = await emit({
+      subject: { ref: 'PER-emit-ledger-repair-annotation' },
+      ratings: { 'manual-judgement': { ...MANUAL_RATING, appliedLever: 'review-procedure' } },
+      ledgerDispositions: {
+        'cpu-threshold': { remediation: CPU_REMEDIATION, appliedLever: 'off-list-scheduler-repair' },
+        'query-cost': { disregard: 'The intermediate band is already under review.' },
+      },
+      instrumentSnapshots: {
+        'host:df-root-used-pct': { verdict: 'pass', measuredAt: '2026-10-13T01:30:00.000Z', value: 42 },
+      },
+    });
+    expect(result).toMatchObject({ ok: true, created: true, issueId: expect.any(String) });
+    if (!result.ok || !('issueId' in result)) throw new Error('The annotated scorecard was not filed.');
+    const stored = asStructuredObservation(await persistedObservation(result.issueId as string));
+    expect(stored?.ratings?.['manual-judgement']).toMatchObject({
+      ...MANUAL_RATING, appliedLever: 'review-procedure',
+    });
+    expect(stored?.ratings?.['cpu-threshold']).toMatchObject({
+      rating: 'broken', ratedFrom: 'ledger', remediation: CPU_REMEDIATION,
+      ledgerResult: { testRunId: ids.cpu }, appliedLever: 'off-list-scheduler-repair',
+    });
   }, 120_000);
 
   it("crm D-049: a subject's card rates from that subject's row; another subject is unrecorded, never borrowed", async () => {

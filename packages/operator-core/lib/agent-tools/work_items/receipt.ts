@@ -58,7 +58,7 @@ export const CREATE_RECEIPT: WorkItemReceiptSpec = {
   always: ['id', 'state', 'assignee'],
   ifSet: [
     'kind', 'family', 'harness', 'title', 'severity', 'takenAt', 'goalId', 'parent',
-    'sourcePlanSlug', 'sourcePlanItemIds', 'createdAt',
+    'sourcePlanSlug', 'sourcePlanItemIds', 'externalPlanRef', 'createdAt',
   ],
 };
 
@@ -71,7 +71,7 @@ export const COMPLETE_RECEIPT: WorkItemReceiptSpec = {
   always: ['id', 'state', 'assignee'],
   ifSet: [
     'kind', 'family', 'harness', 'title', 'severity', 'terminalOwner', 'terminalCompletionRef',
-    'completionAuthority', 'closedAt', 'goalId', 'parent', 'sourcePlanSlug', 'sourcePlanItemIds',
+    'completionAuthority', 'closedAt', 'goalId', 'parent', 'sourcePlanSlug', 'sourcePlanItemIds', 'externalPlanRef',
   ],
   payloadKeys: ['plan_item', 'domainKind'],
 };

@@ -32,6 +32,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { z } from 'zod';
 import { getSessionUser } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { externalPlanRefSchema } from '../../../work-item-external-plan';
 import { humanAssignee, publicHumanMarketOffer, readHumanMarketJob } from '../../../work-items-human-market';
 import { actOnHumanMarketItem, getHumanMarketItem, reviewHumanMarketItem, type HumanMarketItem } from '../../../work-items-human-market-store';
 import { requireAllowedOriginOr403 } from '../../cors';
@@ -258,6 +259,8 @@ const postWorkItem = defineTool({
     }
     const title = typeof body.title === 'string' && body.title.trim() ? body.title.trim() : '';
     if (!title) return Response.json({ ok: false, error: 'title required' }, { status: 400 });
+    const externalRef = externalPlanRefSchema.optional().safeParse(body.externalPlanRef);
+    if (!externalRef.success) return Response.json({ ok: false, error: 'invalid externalPlanRef' }, { status: 400 });
     try {
       const item = await createWorkItem({
         // Born-pending (work-queue-admission-and-bulk-dedup-2026-08-24 P-002). This is
@@ -272,6 +275,7 @@ const postWorkItem = defineTool({
         summary: typeof body.summary === 'string' ? body.summary : undefined,
         harness: slug,
         payload: 'payload' in body ? body.payload : undefined,
+        externalPlanRef: externalRef.data,
         createdBy: typeof body.createdBy === 'string' ? body.createdBy : undefined,
         severity: body.severity as never,
         parent: typeof body.parent === 'string' ? body.parent : undefined,

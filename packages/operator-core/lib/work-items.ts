@@ -29,6 +29,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { externalPlanRefFromPayload, payloadWithExternalPlanRef } from './work-item-external-plan';
 import { DUP_THRESHOLD, dedupSignature } from './harness/improvements/digest';
 import { assertWorkItemDefinitionUnchanged, readWorkItemDefinition, type WorkItemDefinition } from './work-item-definition';
 import { createPlanSearchSource } from './agent-tools/search/knowledge-sources';
@@ -428,6 +429,8 @@ export interface WorkItem {
   tags?: string[] | null;
   sourcePlanSlug?: string | null;
   sourcePlanItemIds?: string[] | null;
+  /** Opaque identity of an item in an external planning system. */
+  externalPlanRef?: string;
   redundancy?: number | null;
   expectedCostCents?: number | null;
   /** Parent work-item id (a chunk's parent, D-004). */
@@ -711,6 +714,7 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
       : {}),
     ...(i.sourcePlanSlug !== undefined ? { sourcePlanSlug: i.sourcePlanSlug } : {}),
     ...(i.sourcePlanItemIds !== undefined ? { sourcePlanItemIds: i.sourcePlanItemIds } : {}),
+    externalPlanRef: externalPlanRefFromPayload(i.payload),
     ...(i.redundancy !== undefined ? { redundancy: i.redundancy } : {}),
     ...(i.expectedCostCents !== undefined ? { expectedCostCents: i.expectedCostCents } : {}),
     parent: i.parent,
@@ -833,6 +837,7 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     tags: Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === 'string') : null,
     sourcePlanSlug: r.source_plan_slug ?? null,
     sourcePlanItemIds: Array.isArray(r.source_plan_item_ids) ? r.source_plan_item_ids : null,
+    externalPlanRef: externalPlanRefFromPayload(r.payload),
     // Numeric columns arrive as strings from postgres-js when the underlying type is bigint
     // (`expected_cost_cents`), so coerce both rather than typing the runtime problem away.
     redundancy: coerceFiniteNumber(r.redundancy),
@@ -3202,6 +3207,7 @@ export interface CreateWorkItemInput {
   sourcePlanSlug?: string | null;
   /** Plan-item ids covered by this work-item; paired with sourcePlanSlug for both families. */
   sourcePlanItemIds?: string[] | null;
+  externalPlanRef?: string;
   /**
    * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22, P-005):
    * `harness_shared.owner_directives.id` this work-item was created to carry out.
@@ -3313,6 +3319,7 @@ function maybeFireCreatedEvent(wi: WorkItem): void {
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
 export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
+  const payload = payloadWithExternalPlanRef(input.payload, input.externalPlanRef);
   // Public chunk creation is retired. Historical rows remain readable through
   // the feature-family read union; only explicitly marked migration/fixture
   // writes may reconstruct one, and ordinary producers fail before allocation.
@@ -3366,7 +3373,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       assignee: assignTo ?? undefined,
       assignedBy: assignTo ? input.assignedBy : undefined,
       parent: input.parent,
-      payload: input.payload,
+      payload,
       sourcePlanSlug: input.sourcePlanSlug,
       sourcePlanItemIds: input.sourcePlanItemIds,
       // WI-10006622: owner-directive provenance. The feature-family INSERT below has
@@ -3462,7 +3469,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     input.title,
     input.summary ?? null,
     input.kind,
-    input.payload != null ? JSON.stringify(input.payload) : null,
+    payload != null ? JSON.stringify(payload) : null,
     input.parent ?? null,
     now,
     now,

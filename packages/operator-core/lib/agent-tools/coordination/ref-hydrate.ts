@@ -79,6 +79,7 @@ export const DEFAULT_REF_BUDGET: RefHydrationBudget = { snippetChars: 200, maxRe
 /** One resolved (or failed-soft) hydration, ready to render. */
 export interface HydratedRef {
   ref: HydratableRef;
+  externalPlanRef?: string;
   ok: boolean;
   /** Short structured label — WHO/WHAT/WHEN, never the content itself. */
   label: string;
@@ -289,7 +290,8 @@ export function applyRefBudget(
  */
 export function renderHydratedRef(h: HydratedRef): string {
   if (!h.ok) return `↪ ${h.label} — unresolved (${h.error ?? 'unknown'})`;
-  return h.snippet ? `↪ ${h.label}: "${h.snippet}"` : `↪ ${h.label}`;
+  const label = h.externalPlanRef === undefined ? h.label : `${h.label} externalPlanRef=${JSON.stringify(h.externalPlanRef)}`;
+  return h.snippet ? `↪ ${label}: "${h.snippet}"` : `↪ ${label}`;
 }
 
 /** Render a hydration block (one line per ref) — '' for an empty list. */

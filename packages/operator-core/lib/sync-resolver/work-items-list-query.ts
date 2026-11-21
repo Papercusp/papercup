@@ -118,6 +118,7 @@ export interface WorkItemsListRow {
   priority: number | null;
   rank: number | null;
   planSlug: string | null;
+  externalPlanRef?: string;
   spineRole: string | null;
   spineStatus: string | null;
   updatedAt: string;
@@ -413,6 +414,8 @@ function hydratePageSql(sql: OrgSql, workspaceId: string, includeDetails = false
            p.priority,
            p.rank,
            p.plan_slug AS "planSlug",
+           CASE WHEN jsonb_typeof(wi.payload->'externalPlanRef') = 'string'
+                THEN wi.payload->>'externalPlanRef' END AS "externalPlanRef",
            p.spine_role AS "spineRole",
            p.spine_status AS "spineStatus",
            p.updated_ts AS "updatedTs",
@@ -526,6 +529,7 @@ interface WorkItemsDbRow {
   priority: number | null;
   rank: number | null;
   planSlug: string | null;
+  externalPlanRef: string | null;
   spineRole: string | null;
   spineStatus: string | null;
   updatedTs: number | string;
@@ -557,6 +561,7 @@ function mapWorkItemsRow(row: WorkItemsDbRow): WorkItemsListRow & { updatedTs: n
     priority: numberOrNull(row.priority),
     rank: numberOrNull(row.rank),
     planSlug: row.planSlug,
+    ...(row.externalPlanRef != null ? { externalPlanRef: row.externalPlanRef } : {}),
     spineRole: row.spineRole,
     spineStatus: row.spineStatus,
     updatedAt: new Date(updatedTs).toISOString(),

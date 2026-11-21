@@ -1863,6 +1863,86 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     expectSample(await measure(), 7.2, 5);
   });
 
+  it('reports off-list repairs and exhausts only documented levers with verified ineffective attempts', async () => {
+    const rubricRef = 'repair-lever-guidance';
+    const criterionKey = 'latency';
+    const scope = { rubricRef, sourceHive: 'latency-fixture', criteriaHash: 'a'.repeat(64),
+      subject: { kind: 'work-item' as const, ref: 'WI-810' }, createdAt: '2026-02-10T12:00:00.000Z' };
+    const levers = ['cache', 'index'].map(key => ({
+      key, action: `Repair the ${key}`, where: 'the reader', expectedEffect: 'Reduce latency',
+    }));
+    const input = { rubricRef, criterionKey, levers, limit: 2 };
+    const baseline = await fileScorecard(db, { ...scope, id: 'slow read', observationExtra: { purpose: 'diagnostic' },
+      ratings: { [criterionKey]: { rating: 'partial', evidence: 'Fixture timed a slow read.', remediation: 'WI-823' } } });
+    function regrade(id: string, rating: string, appliedLever?: string, audit: 'passed' | 'pending' | 'failed' = 'passed') {
+      return fileScorecard(db, { ...scope, id,
+        ratings: { [criterionKey]: { rating, evidence: id, ...(appliedLever && { appliedLever }) } },
+        observationExtra: { baselineRef: baseline, gradingAudit: {
+          state: audit, metaRubricRef: 'grading-integrity', stampedAt: scope.createdAt,
+        } } });
+    }
+    const cache = await regrade('Cache repair left the timing unchanged.', 'partial', 'cache');
+    await regrade('Index repair awaiting independent audit.', 'fail', 'index', 'pending');
+    await regrade('Index repair failed independent audit.', 'fail', 'index', 'failed');
+    const offList = await regrade('Changing the query reduced its duration.', 'pass', 'query-rewrite');
+    const unreported = await regrade('A separately tracked repair reduced the duration.', 'pass');
+    const empty = { improved: 0, unchanged: 0, worsened: 0 };
+    const first = await readCriterionRepairHistory(input);
+    expect(first.guidance).toEqual({ exhausted: false, alternatives: [], levers: [
+      { ...levers[0], verifiedOutcomes: { ...empty, unchanged: 1 } }, { ...levers[1], verifiedOutcomes: empty },
+    ] });
+    const recovered = [...first.entries];
+    let cursor = first.nextCursor;
+    while (cursor) {
+      const page = await readCriterionRepairHistory({ ...input, cursor: JSON.parse(JSON.stringify(cursor)) });
+      recovered.push(...page.entries);
+      expect(page.guidance).toEqual(first.guidance);
+      expect(page.omittedCount).toBe(5 - recovered.length);
+      cursor = page.nextCursor;
+    }
+    expect(recovered).toHaveLength(5);
+    expect(recovered.find(r => r.regradeId === offList)).toMatchObject({
+      baselineId: baseline, workItemIds: ['WI-823'], before: 'partial', after: 'pass',
+      appliedLever: 'query-rewrite', leverMatch: 'unlisted', outcome: 'improved', verification: 'verified',
+    });
+    expect(recovered.find(r => r.regradeId === unreported)).toMatchObject({ leverMatch: 'unreported', outcome: 'improved' });
+    expect(recovered.find(r => r.regradeId === cache)).toMatchObject({ leverMatch: 'documented', outcome: 'unchanged' });
+    expect((await readCriterionRepairHistory({ ...input, levers: [] })).guidance)
+      .toEqual({ levers: [], exhausted: false, alternatives: [] });
+
+    // The page stays small while the assessment traverses the full verified cohort.
+    let existing = 1;
+    for (const total of [127, 128, 129, 385]) {
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source, state, payload, created_by, signal_origin, created_at)
+        SELECT workspace_id, 'EI-lever-repeat-' || n, kind, scope, title, body, severity, source, state, payload,
+               created_by, signal_origin, created_at
+          FROM harness_shared.engineer_issues CROSS JOIN generate_series(${existing + 1}::int, ${total}::int) n
+         WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${cache}`;
+      const page = await readCriterionRepairHistory(input);
+      expect(page.guidance?.levers[0]?.verifiedOutcomes.unchanged).toBe(total);
+      expect(page.guidance?.exhausted).toBe(false);
+      existing = total;
+    }
+    const index = await regrade('Index repair increased latency.', 'fail', 'index');
+    const exhausted = (await readCriterionRepairHistory(input)).guidance;
+    expect(exhausted?.levers[1]?.verifiedOutcomes).toEqual({ ...empty, worsened: 1 });
+    expect(exhausted?.exhausted).toBe(true);
+    expect(exhausted?.alternatives).toEqual([
+      expect.stringMatching(/recheck.*measurement/i), expect.stringMatching(/larger change/i),
+      expect.stringMatching(/reasoned disregard/i),
+    ]);
+    await db.adminSql`UPDATE harness_shared.engineer_issues
+      SET payload = payload #- ARRAY['observation', 'ratings', ${criterionKey}::text, 'appliedLever']
+      WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${index}`;
+    expect((await readCriterionRepairHistory(input)).guidance).toMatchObject({ exhausted: false, alternatives: [] });
+    await regrade('A later index repair improved latency.', 'pass', 'index');
+    const revised = (await readCriterionRepairHistory(input)).guidance;
+    expect(revised?.levers[1]?.verifiedOutcomes).toEqual({ ...empty, improved: 1 });
+    expect(revised?.exhausted).toBe(false);
+  });
+
   it('recovers explicitly linked repairs across tied timestamps, page boundaries, and a reader restart', async () => {
     const rubricRef = 'repair-history-pagination';
     const criterionKey = 'measured';

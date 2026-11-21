@@ -112,6 +112,8 @@ export interface ObservationRatingEntry {
    *  skipped step the gate exists to stop. See
    *  `validateScorecardPoorRatingDisposition`. */
   remediation?: string;
+  /** Optional key identifying the repair actually tried. An unlisted key is valid. */
+  appliedLever?: string;
   /** The explicit alternative to `remediation`: a reasoned, OWNED decision not to
    *  act on this poor rating (≥10 chars — "n/a" is not a decision). */
   disregard?: string;
@@ -1577,6 +1579,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
             : {}),
           ...(typeof e.suggestion === 'string' && e.suggestion.trim() ? { suggestion: e.suggestion } : {}),
           ...(typeof e.remediation === 'string' && e.remediation.trim() ? { remediation: e.remediation } : {}),
+          ...(typeof e.appliedLever === 'string' && e.appliedLever.trim() ? { appliedLever: e.appliedLever } : {}),
           ...(typeof e.disregard === 'string' && e.disregard.trim() ? { disregard: e.disregard } : {}),
           ...(e.ratedFrom === 'ledger' ? { ratedFrom: 'ledger' as const } : {}),
           ...(asLedgerResult(e.ledgerResult) ? { ledgerResult: asLedgerResult(e.ledgerResult)! } : {}),

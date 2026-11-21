@@ -72,6 +72,7 @@ export const WORK_ITEMS_LIST_UI_FIELDS = [
   // P-010 v2 route-side joins the grid renders. `planItemIds` is deliberately
   // absent — no consumer reads it; only `planSlug`.
   'planSlug',
+  'externalPlanRef',
   'spineRole',
   'spineStatus',
   'updatedAt',

@@ -809,7 +809,7 @@ const scorecardEmitBaseShape = {
     ledgerDispositions: z
       .record(
         z.string().min(1),
-        scorecardRatingEntrySchema.pick({ remediation: true, disregard: true, suggestion: true, attribution: true, evidence: true })
+        scorecardRatingEntrySchema.pick({ remediation: true, disregard: true, suggestion: true, attribution: true, evidence: true, appliedLever: true })
           .partial({ evidence: true }),
       )
       .optional()

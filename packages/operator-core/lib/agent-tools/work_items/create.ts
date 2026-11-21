@@ -23,6 +23,7 @@
  * remains the immediate-bypass (requestUrgentHiveWake) for fire-now cases.
  */
 import { z } from 'zod';
+import { externalPlanRefSchema } from '../../work-item-external-plan';
 import { WorkItemDefinitionSchema } from '../../work-item-definition';
 import { itemClassOfPayload } from '../../scout/ideation-origin';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -280,6 +281,7 @@ const itemSpec = z.object({
   // refuses is a contract break; the arg is cheaper to add than the instruction is to
   // unteach. Terminal states are refused on purpose (see stateOnCreate below).
   state: stateOnCreate.optional(),
+  external_plan_ref: externalPlanRefSchema.optional().describe('Opaque system and item reference for work planned externally.'),
   plan_item: z
     .object({ slug: z.string().min(1), item: z.string().min(1) })
     .optional()
@@ -408,6 +410,7 @@ export default defineTool({
         .object({ slug: z.string().min(1), item: z.string().min(1) })
         .optional()
         .describe('Implemented plan item {slug,item:"P-003"}; adds work→plan_item coverage/rollup and enables residue auto-resolution on completion. Discovered bugs go unlinked.'),
+      external_plan_ref: externalPlanRefSchema.optional().describe('Opaque system and item reference for work planned externally.'),
       links: z.array(linkSpec).max(20).optional().describe('Links from new item to targets at create. Best-effort: bad targets skipped; create still succeeds.'),
       conditionKey: hardText(200).optional().describe('Single-host system filers only: refresh/return existing OPEN item with this identity (result.conditionUpsert), avoiding a sibling.'),
       directiveRef: directiveRefArg,
@@ -491,6 +494,7 @@ export default defineTool({
             workspace: args.workspace,
             assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
+            externalPlanRef: it.external_plan_ref,
             ...(it.links ? { links: it.links } : {}),
           }, itKinds, itKindReason);
         })
@@ -516,6 +520,7 @@ export default defineTool({
             directiveRef: args.directiveRef, // P-005 (items[] path carries it via ...rest)
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
+            externalPlanRef: args.external_plan_ref,
             ...(args.links ? { links: args.links } : {}),
           }, args.changeKinds, args.changeKindReason),
         ];
@@ -814,7 +819,7 @@ export default defineTool({
         // claimable by the fleet working that plan" failure the bug describes. Advisory
         // only — a false positive costs nothing; a missed link is how the work gets lost.
         const residualLinkNudge =
-          !spec.targetPlanItem && looksLikeResidualClosure(`${spec.title} ${spec.summary ?? ''}`)
+          !spec.targetPlanItem && !spec.externalPlanRef && looksLikeResidualClosure(`${spec.title} ${spec.summary ?? ''}`)
             ? {
                 residualLinkNudge:
                   'This reads like a residual split off a plan item, but no plan_item/targetPlanItem was set — ' +

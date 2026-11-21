@@ -68,6 +68,8 @@ export const scorecardRatingEntrySchema = z
     /** Poor-rating disposition (owner-directed 2026-08-31): the WI-/EI-/F- item a
      *  fail/severe/broken/degraded/partial rating's remediation is tracked by. */
     remediation: z.string().min(2).max(300).optional(),
+    appliedLever: z.string().regex(/\S/, 'The applied lever key must contain a nonblank character.').optional()
+      .describe('Optional key for the repair actually tried. Listed and unlisted repairs are equally valid.'),
     /** The explicit alternative: a reasoned decision NOT to act (≥10 chars). */
     disregard: z.string().min(10).max(600).optional(),
   })

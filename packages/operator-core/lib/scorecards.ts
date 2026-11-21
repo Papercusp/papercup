@@ -161,6 +161,7 @@ import {
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import { boundedPgReadTxn } from './pg-read-query';
+import type { RubricLever } from './agent-tools/plans/rubric-template';
 import {
   CRITERION_INSTRUMENT_TOKEN,
   classifyRubricEvidenceCurrentness,
@@ -4076,6 +4077,7 @@ export interface CriterionRepairRecord {
   after: string | null;
   evidence: string | null;
   appliedLever: string | null;
+  leverMatch?: 'documented' | 'unlisted' | 'unreported';
   outcome: 'improved' | 'unchanged' | 'worsened' | 'unknown';
   verification: 'verified' | 'pending' | 'failed' | 'unknown';
   reason: string | null;
@@ -4185,11 +4187,59 @@ function repairPairsSql(tx: OrgSql, scope: {
         LEFT JOIN corrections gc ON gc.corrected_id = g.issue_id AND gc.rubric_ref = b.rubric_ref`;
 }
 
+interface RepairLeverGuidance {
+  levers: Array<RubricLever & { verifiedOutcomes: { improved: number; unchanged: number; worsened: number } }>;
+  exhausted: boolean;
+  alternatives: string[];
+}
+
+/** Summarize explicit applications across the entire criterion history, including rows outside the display page. */
+async function readRepairLeverGuidance(
+  tx: OrgSql,
+  pairs: ReturnType<typeof repairPairsSql>,
+  levers: readonly RubricLever[],
+  ratingScale?: readonly string[],
+): Promise<RepairLeverGuidance> {
+  const results = levers.map(lever => ({ ...lever, verifiedOutcomes: { improved: 0, unchanged: 0, worsened: 0 } }));
+  const byKey = new Map(results.map(lever => [lever.key, lever]));
+  if (byKey.size) {
+    const attempts = tx<RepairHistoryDbRow[]>`
+      SELECT * FROM (${pairs}) AS repairs
+       WHERE applied_lever = ANY(${[...byKey.keys()]}::text[])
+         AND incomparable IS NULL AND baseline_audit = 'passed' AND grade_audit = 'passed'`;
+    for await (const batch of attempts.cursor(128)) {
+      for (const row of batch) {
+        const repair = projectRepairRecord(row, ratingScale);
+        const lever = byKey.get(row.applied_lever!);
+        if (lever && repair.verification === 'verified' && repair.outcome !== 'unknown' && repair.evidence?.trim()) {
+          lever.verifiedOutcomes[repair.outcome]++;
+        }
+      }
+    }
+  }
+  const exhausted = results.length > 0 && results.every(({ verifiedOutcomes }) =>
+    verifiedOutcomes.improved === 0 && verifiedOutcomes.unchanged + verifiedOutcomes.worsened > 0);
+  return {
+    levers: results,
+    exhausted,
+    alternatives: exhausted ? [
+      'Recheck whether the measurement captures the problem.',
+      'Plan a larger change to the design.',
+      'Record a reasoned disregard if action is unwarranted.',
+    ] : [],
+  };
+}
+
 /** Each baseline retains its own cited remedy. Only baselineRef creates a before/after relation. */
 export async function readCriterionRepairHistory(input: {
   rubricRef: string; criterionKey: string; ratingScale?: readonly string[];
   cursor?: RepairHistoryCursor; limit?: number; asOf?: string;
-}): Promise<{ entries: CriterionRepairRecord[]; omittedCount: number; nextCursor: RepairHistoryCursor | null }> {
+  /** Supply the rubric's authored levers when reading guidance, including an empty list for a rubric without levers. */
+  levers?: readonly RubricLever[];
+}): Promise<{
+  entries: CriterionRepairRecord[]; omittedCount: number; nextCursor: RepairHistoryCursor | null;
+  guidance?: RepairLeverGuidance;
+}> {
   const workspace = issuesScopeWorkspace();
   const { rubricRef, criterionKey, cursor } = input;
   const limit = input.limit ?? 10;
@@ -4202,19 +4252,32 @@ export async function readCriterionRepairHistory(input: {
       typeof cursor.regradeId !== 'string' || (input.asOf !== undefined && input.asOf !== asOf)))) {
     throw new Error('Invalid repair history cursor or snapshot for the requested workspace, rubric and criterion.');
   }
-  const rows = await boundedPgReadTxn<RepairHistoryDbRow[]>((tx) => tx<RepairHistoryDbRow[]>`
-    WITH history AS (${repairPairsSql(tx, { workspaceId: workspace, asOf, rubricRef, criterionKey })})
-    SELECT history.*, count(*) OVER () AS remaining_count FROM history
-     WHERE (baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C") >
-           (${cursor?.baselineId ?? ''}::text COLLATE "C", ${cursor?.regradeId ?? ''}::text COLLATE "C")
-     ORDER BY baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C"
-     LIMIT ${limit}`);
-  const entries = rows.map(row => projectRepairRecord(row, input.ratingScale));
+  const { rows, guidance } = await boundedPgReadTxn(async tx => {
+    const pairs = repairPairsSql(tx, { workspaceId: workspace, asOf, rubricRef, criterionKey });
+    const rows = await tx<RepairHistoryDbRow[]>`
+      WITH history AS (${pairs})
+      SELECT history.*, count(*) OVER () AS remaining_count FROM history
+       WHERE (baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C") >
+             (${cursor?.baselineId ?? ''}::text COLLATE "C", ${cursor?.regradeId ?? ''}::text COLLATE "C")
+       ORDER BY baseline_id COLLATE "C", coalesce(grade_id, '') COLLATE "C"
+       LIMIT ${limit}`;
+    const guidance = input.levers && await readRepairLeverGuidance(tx, pairs, input.levers, input.ratingScale);
+    return { rows, guidance };
+  }, { isolationLevel: 'repeatable read' });
+  const documented = input.levers && new Set(input.levers.map(lever => lever.key));
+  const entries = rows.map(row => {
+    const repair = projectRepairRecord(row, input.ratingScale);
+    if (documented) {
+      if (!repair.appliedLever) repair.leverMatch = 'unreported';
+      else repair.leverMatch = documented.has(repair.appliedLever) ? 'documented' : 'unlisted';
+    }
+    return repair;
+  });
   const omittedCount = Number(rows[0]?.remaining_count ?? 0) - rows.length;
   const last = entries.at(-1);
   return { entries, omittedCount, nextCursor: omittedCount && last
     ? { workspace, rubricRef, criterionKey, asOf, baselineId: last.baselineId, regradeId: last.regradeId ?? '' }
-    : null };
+    : null, ...(guidance && { guidance }) };
 }
 
 /** Mean elapsed minutes across distinct baseline/criterion pairs in one completed window. */

@@ -168,6 +168,7 @@ const scorecardEvidenceCriterionSchema = z.object({
   nextEvidenceAction: z.string().optional(),
   suggestion: z.string().optional(),
   remediation: z.string().optional(),
+  appliedLever: z.string().optional(),
   disregard: z.string().optional(),
 }).passthrough();
 

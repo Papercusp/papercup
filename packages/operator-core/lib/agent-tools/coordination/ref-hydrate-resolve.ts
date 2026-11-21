@@ -41,6 +41,7 @@ import {
 export interface RefResolution {
   label: string;
   snippet: string;
+  externalPlanRef?: string;
   terminalSubject?: TerminalSubject;
 }
 
@@ -137,6 +138,7 @@ const defaultWorkItemResolver: RefResolver = async (ref, budget) => {
   return {
     label: wi.id + ' [' + wi.kind + '/' + workItemDisplayState(wi) + scope + assignee + ']',
     snippet: workItemSnippet(wi, budget.snippetChars),
+    ...(wi.externalPlanRef !== undefined ? { externalPlanRef: wi.externalPlanRef } : {}),
     ...(terminalSubject ? { terminalSubject } : {}),
   };
 };
@@ -302,6 +304,7 @@ export async function hydrateRefs(
           ok: true,
           label: hit.label,
           snippet: hit.snippet,
+          ...(hit.externalPlanRef !== undefined ? { externalPlanRef: hit.externalPlanRef } : {}),
           resolvedAt,
           ...(hit.terminalSubject ? { terminalSubject: hit.terminalSubject } : {}),
         };

@@ -15,8 +15,7 @@ import { resolveBestEffortAgainstRoster } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients, type DormantScheduledInfo } from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { COORD_ROLES } from '../roles';
-import type { HydratableRef } from '../ref-hydrate';
-import { renderHydratedRefs } from '../ref-hydrate';
+import { DEFAULT_REF_BUDGET, parseRefToken, renderHydratedRefs, type HydratableRef, type HydratedRef } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
 import { runFlushGate } from '../../../enforcement-gate-io';
 import { trackDetached } from '../../../detached-imports';
@@ -35,19 +34,22 @@ export async function hydrateHandoffItemBodies(
   args: { plan_slug?: string; items?: string[]; body?: string; harness?: string },
   deps: { hydrateRefs?: typeof hydrateRefs } = {},
 ): Promise<{ body: string | undefined; itemsHydrated: number }> {
-  if (!args.plan_slug || !args.items || args.items.length === 0) {
+  if (!args.items?.length) {
     return { body: args.body, itemsHydrated: 0 };
   }
   const hydrate = deps.hydrateRefs ?? hydrateRefs;
   try {
-    const refs: HydratableRef[] = args.items.map((item) => ({
-      kind: 'plan-item' as const,
-      slug: args.plan_slug as string,
-      item,
-    }));
-    const hydrated = await hydrate(refs, {
-      resolvers: { 'plan-item': makePlanItemResolver(args.harness) },
-    });
+    const refs: HydratableRef[] = [];
+    for (const item of new Set(args.items)) {
+      const ref = parseRefToken(item);
+      if (ref?.kind === 'work-item') refs.push({ ...ref, harness: args.harness });
+      else if (args.plan_slug) refs.push({ kind: 'plan-item', slug: args.plan_slug, item });
+    }
+    const hydrated: HydratedRef[] = [];
+    const options = { resolvers: { 'plan-item': makePlanItemResolver(args.harness) } };
+    for (let i = 0; i < refs.length; i += DEFAULT_REF_BUDGET.maxRefs) {
+      hydrated.push(...await hydrate(refs.slice(i, i + DEFAULT_REF_BUDGET.maxRefs), options));
+    }
     const itemsHydrated = hydrated.filter((h) => h.ok).length;
     const block = renderHydratedRefs(hydrated);
     return { body: block ? [args.body, block].filter(Boolean).join('\n\n') : args.body, itemsHydrated };
@@ -84,7 +86,7 @@ export default defineTool({
       .array(z.string().max(20))
       .max(40)
       .optional()
-      .describe('WI-4165: plan-item ids (P-NNN) of `plan_slug` handed off with this note — each one\'s own body is inlined into the delivered `body`, bounded, so the receiver reads WHAT to pick up without re-fetching the plan.'),
+      .describe('Work-item IDs, or P-NNN IDs of plan_slug. The handoff includes each resolved item and the external plan reference on a named work item.'),
     note: z.string().optional().describe('Free-form note when accepting.'),
   }).superRefine((args, ctx) => {
     // Match the handler's existing truthiness and accept precedence. In

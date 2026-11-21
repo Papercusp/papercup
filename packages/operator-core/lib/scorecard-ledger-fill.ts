@@ -379,7 +379,7 @@ function ledgerResultOf(row: LatestRubricCheckResult, binding: LedgerCheckBindin
 }
 
 /** Grader-owned fields a caller may add to a ledger-filled rating that agrees with the ledger. */
-const GRADER_ANNOTATIONS = ['remediation', 'disregard', 'suggestion', 'attribution'] as const;
+const GRADER_ANNOTATIONS = ['remediation', 'disregard', 'suggestion', 'attribution', 'appliedLever'] as const;
 
 /**
  * The routing a grader owns for a ledger-rated criterion, supplied WITHOUT a rating: a poor

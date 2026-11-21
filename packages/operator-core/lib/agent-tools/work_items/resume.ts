@@ -6,6 +6,7 @@ import { ADHOC_WORK_ITEM_SPEC_SCOPE, listSpecEvidence } from '../plans/spec-evid
 import { compactTaskBrief, getClaimTimeTaskBrief, type TaskBrief } from '../../code-intelligence/task-brief';
 import { admissionActionability } from '../../work-items-admission';
 import { projectBlockerResolution } from '../../blocker-resolution-decision';
+import { externalPlanRefFromPayload } from '../../work-item-external-plan';
 
 export const RESUME_PACKET_BUDGET = 5_000;
 const EVIDENCE_READ_LIMIT = 9;
@@ -77,6 +78,8 @@ export function buildWorkItemResume(input: {
     taskBrief: undefined as TaskBrief | { status: 'omitted'; recover: TaskBrief['recover'] } | undefined,
     claim: { id: item.id, assignee: item.assignee ?? null, state: item.state ?? null },
     plan,
+    externalPlanRef: externalPlanRefFromPayload(item.payload),
+    externalPlanRefOmitted: undefined as { readRef: { tool: string; args: Record<string, unknown> } } | undefined,
     blockerResolution,
     authority: {
       status: 'requires-current-control',
@@ -128,6 +131,12 @@ export function buildWorkItemResume(input: {
       readRef: { tool: 'work_items:get', args: { ...scope,
         projection: { pick: ['results[].checkpointFreshness'] } } },
     };
+  }
+  if (resume.externalPlanRef !== undefined && JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
+    resume.externalPlanRef = undefined;
+    resume.externalPlanRefOmitted = { readRef: { tool: 'work_items:get', args: { ...scope,
+      payloadTier: 'full', projection: { pick: ['results[].workItem.externalPlanRef'] },
+    } } };
   }
   if (!admissionBlocker && JSON.stringify(resume).length > RESUME_PACKET_BUDGET) {
     resume.nextAction.status = 'oversized';

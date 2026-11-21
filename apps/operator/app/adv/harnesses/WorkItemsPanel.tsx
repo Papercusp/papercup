@@ -64,6 +64,7 @@ export interface WorkItemRow {
   rank: number | null;
   // P-010 v2 (route-side joins): plan-item linkage + spine position (latest role/stage).
   planSlug: string | null;
+  externalPlanRef?: string;
   spineRole: string | null;
   spineStatus: string | null;
   updatedAt: string;

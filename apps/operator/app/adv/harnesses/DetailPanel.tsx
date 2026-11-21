@@ -603,6 +603,9 @@ export function WorkItemDetail({
               <span>{value}</span>
             </div>
           ))}
+          {workItem.externalPlanRef && (
+            <div>External plan item <code style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{workItem.externalPlanRef}</code></div>
+          )}
           {workItem.planSlug ? (
             <div className="pc-adv-detail__field-row">
               <span className="pc-adv-detail__field-label">Plan</span>

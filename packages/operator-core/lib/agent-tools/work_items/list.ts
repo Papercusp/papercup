@@ -192,6 +192,7 @@ export function shapeWorkItemsList(
       severity: r.severity ?? null,
       priority: r.priority ?? null,
       plan_ref: planRef,
+      external_plan_ref: r.externalPlanRef ?? null,
       ...(c.holder
         ? {
             holder_goal: holder?.goalRef ?? null,
@@ -218,6 +219,7 @@ export function shapeWorkItemsList(
       severity: null,
       priority: null,
       plan_ref: null,
+      external_plan_ref: null,
       ...(c.holder ? { holder_goal: null, holder_stale: null, holder_competing: null } : {}),
     });
   }

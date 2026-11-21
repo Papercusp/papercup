@@ -130,6 +130,7 @@ export interface CreateOneWorkItemArgs {
    *  rolls up into that plan item's coverage and `plans:items` stops showing it as
    *  unworked. Non-fatal — an edge failure never blocks the create. */
   targetPlanItem?: { slug: string; itemId: string };
+  externalPlanRef?: string;
   /** Inline typed links (WI-3956): edges written from the NEW work-item to targets
    *  right after creation — the general form of `targetPlanItem` (the plan-coverage
    *  special case). Each targets another work-item (target_id) OR any coord ObjectRef
@@ -1358,6 +1359,7 @@ async function createOneWorkItemCore(
       topics: args.topics,
       payload: payloadForCreate,
       sourcePlanSlug: args.targetPlanItem?.slug,
+      externalPlanRef: args.externalPlanRef,
       sourcePlanItemIds: args.targetPlanItem?.itemId ? [args.targetPlanItem.itemId] : undefined,
       // P-005: owner-directive provenance, deliberately the same shape as
       // sourcePlanSlug above — "where did this work-item come from" — and

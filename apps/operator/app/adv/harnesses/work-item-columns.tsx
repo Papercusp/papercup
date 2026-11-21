@@ -225,14 +225,17 @@ export function buildWorkItemColumns({
       key: 'plan',
       header: 'Plan',
       width: 1.8,
-      toCopyText: (r) => r.planSlug ?? '',
+      toCopyText: (r) => [r.planSlug, r.externalPlanRef].filter(Boolean).join('\n'),
       // Plan is a FIXED SET (the harness's plan slugs), not free text — enum so
       // the filter offers a selectable checklist of the actual plans (with live
       // counts + an in-list search for long sets), not a blank search box.
       filter: { type: 'enum', accessor: (r) => r.planSlug },
       render: ({ row }) =>
-        row.planSlug ? (
-          <code style={{ ...CELL_TRUNCATE, fontSize: 11 }} title={row.planSlug}>{row.planSlug}</code>
+        row.planSlug || row.externalPlanRef ? (
+          <>
+            {row.planSlug && <code style={{ ...CELL_TRUNCATE, fontSize: 11 }} title={row.planSlug}>{row.planSlug}</code>}
+            {row.externalPlanRef && <code aria-label="External plan item" style={{ display: 'block', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 11 }}>{row.externalPlanRef}</code>}
+          </>
         ) : (
           <>—</>
         ),

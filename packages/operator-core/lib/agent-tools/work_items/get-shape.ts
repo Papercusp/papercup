@@ -614,6 +614,7 @@ function projectWorkItem(
     harness: w.harness ?? null,
     state: w.state ?? null,
     title: clip(w.title, caps.title, dropped),
+    ...(w.externalPlanRef !== undefined ? { externalPlanRef: w.externalPlanRef } : {}),
     severity: w.severity ?? null,
     // Provenance is part of the reduced identity: callers need to know whether a
     // locally impossible mutation will be refused before acting on this row.
