@@ -3199,6 +3199,7 @@ async function readCommittedPlanItemStatus(stamp: FinishPlanStamp, ctx: UnifiedT
 async function retryClearedDependentWorkItems(
   stamp: FinishPlanStamp,
   clearedById: string,
+  custodian: string | undefined,
 ): Promise<string[]> {
   try {
     const [lane, blocking] = await Promise.all([
@@ -3209,6 +3210,7 @@ async function retryClearedDependentWorkItems(
       stamp.plan_slug,
       stamp.item_id,
       stamp.harness_slug,
+      custodian,
     );
     const restored: string[] = [];
     for (const dependentItemId of new Set(dependentPlanItems)) {
@@ -3230,6 +3232,21 @@ async function retryClearedDependentWorkItems(
   } catch {
     return [];
   }
+}
+
+/** A replay can follow a prior committed close without a new status transition. Use
+ * its current authenticated caller for the same custody comparison as the first close. */
+function finishLaneCustodian(ctx: UnifiedToolContext, itemHarness: unknown, stamp: FinishPlanStamp): string | undefined {
+  if (itemHarness !== stamp.harness_slug || (ctx.harnessSlug && ctx.harnessSlug !== '*' && ctx.harnessSlug !== itemHarness)) return;
+  const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+  if (!workspaceId || workspaceId === '*') return;
+  try {
+    const identity = resolveAgentIdentity(ctx);
+    if (identity.workspaceId === workspaceId && identity.source !== 'event-reaction') return identity.ownerId;
+  } catch {
+    // System or unattributed replays still run the ordinary reconciliation for unassigned work.
+  }
+  return undefined;
 }
 
 /** Compact, bounded rendering of a reaction's tool result for a finish-leg error. */
@@ -3465,7 +3482,8 @@ export async function synchronizeFinishWork(
             );
           }
           if (committedStatus === reflected) {
-            dependentRetry = [...new Set([...(dependentRetry ?? []), ...await retryClearedDependentWorkItems(stamp, opts.id)])];
+            const custodian = finishLaneCustodian(opts.ctx, opts.workItem.harness, stamp);
+            dependentRetry = [...new Set([...(dependentRetry ?? []), ...await retryClearedDependentWorkItems(stamp, opts.id, custodian)])];
           }
         } else {
           planItem = 'failed';

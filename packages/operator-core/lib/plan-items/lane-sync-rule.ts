@@ -36,7 +36,8 @@
  * (`{ ok, slug, itemId, from, to }`), exactly like reconcile-rule.ts's EI-6960 fix.
  */
 import { registerReactionRule } from '../events';
-import { PLAN_ITEM_LANE_RESYNC_ACTION } from '../events/builtin-actions';
+import { PLAN_ITEM_LANE_RESYNC_ACTION, PLAN_LANE_SYNC_RULE_IDS } from '../events/builtin-actions';
+import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import type { ToolInvocationEvent } from '../events/types';
 
 /** One fanned per-item `plans:set-item-blocked-by` result — the flat record
@@ -60,6 +61,20 @@ interface SetStatusItemResult {
 
 function isTerminalStatus(status: string | null | undefined): boolean {
   return status === 'done' || status === 'dropped';
+}
+
+/** Capture only the verified coordination identity while its trigger context is live.
+ * Durable execution later has scope metadata but no credentials. */
+function laneCustody(e: ToolInvocationEvent) {
+  const harnessSlug = e.ctx.harnessSlug;
+  if (!harnessSlug || harnessSlug === '*') return {};
+  try {
+    const { ownerId, workspaceId, source } = resolveAgentIdentity(e.ctx);
+    if (!workspaceId || source === 'event-reaction' || workspaceId !== (e.ctx.workspaceId ?? e.ctx.principal?.workspaceId)) return {};
+    return { laneCustodian: { ownerId, workspaceId, harnessSlug } };
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -119,11 +134,11 @@ export function dependencyTerminalityChangedItem(
 }
 
 registerReactionRule({
-  id: 'plan-item-lane-sync:blocked-by-changed',
+  id: PLAN_LANE_SYNC_RULE_IDS.dependenciesEdited,
   on: 'plans:set-item-blocked-by',
   when: (e) => blockedByChangedItem(e) !== null,
   fire: PLAN_ITEM_LANE_RESYNC_ACTION,
-  args: (e) => ({ items: [blockedByChangedItem(e)!] }),
+  args: (e) => ({ items: [blockedByChangedItem(e)!], ...laneCustody(e) }),
   onlyOnSuccess: true,
   source: 'plan-item-lane-sync',
 });
@@ -134,11 +149,11 @@ registerReactionRule({
 // Reuse plan-item.resyncLane in dependency mode: the builtin re-reads the plan,
 // enumerates direct dependents, and classifies each against ALL current blockers.
 registerReactionRule({
-  id: 'plan-item-lane-sync:dependency-terminality-changed',
+  id: PLAN_LANE_SYNC_RULE_IDS.dependencySettled,
   on: 'plans:set-status',
   when: (e) => dependencyTerminalityChangedItem(e) !== null,
   fire: PLAN_ITEM_LANE_RESYNC_ACTION,
-  args: (e) => ({ dependencies: [dependencyTerminalityChangedItem(e)!] }),
+  args: (e) => ({ dependencies: [dependencyTerminalityChangedItem(e)!], ...laneCustody(e) }),
   onlyOnSuccess: true,
   source: 'plan-item-lane-sync',
 });
@@ -150,11 +165,11 @@ registerReactionRule({
 // through the canonical lane reconciler, which atomically restores the stashed
 // pre-park state/claim hold before clearing that provenance-tagged blocker.
 registerReactionRule({
-  id: 'plan-item-lane-sync:status-changed',
+  id: PLAN_LANE_SYNC_RULE_IDS.statusChanged,
   on: 'plans:set-status',
   when: (e) => statusChangedItem(e) !== null,
   fire: PLAN_ITEM_LANE_RESYNC_ACTION,
-  args: (e) => ({ items: [statusChangedItem(e)!] }),
+  args: (e) => ({ items: [statusChangedItem(e)!], ...laneCustody(e) }),
   onlyOnSuccess: true,
   source: 'plan-item-lane-sync',
 });

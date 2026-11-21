@@ -181,7 +181,8 @@ export async function fireReactionInProcess(opts: {
   // cache invalidation is workspace-scoped (D-010).
   if (isBuiltinReactionAction(opts.fire)) {
     if (!workspaceId) return { ok: false, error: 'no workspace to scope the reaction' };
-    return await fireBuiltinReactionAction(opts.fire, opts.args, workspaceId);
+    return await fireBuiltinReactionAction(opts.fire, opts.args, workspaceId,
+      opts.capability === undefined ? opts.cause.ruleId : undefined);
   }
 
   if (!workspaceId) return { ok: false, error: 'no workspace to scope the reaction' };

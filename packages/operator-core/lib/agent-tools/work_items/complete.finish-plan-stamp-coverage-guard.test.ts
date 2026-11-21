@@ -79,6 +79,28 @@ async function runFinish(
 }
 
 describe('synchronizeFinishWork plan-item reflection carries the coverage guard', () => {
+  it.each(['current custodian', 'unattributed', 'different harness'] as const)(
+    'replays a settled predecessor with the verified lane custody available to the caller (%s)', async scenario => {
+      const lane = await import('../../plan-items/reconcile-linked-work-items');
+      const resync = vi.spyOn(lane, 'resyncDependentPlanItemLanesNow').mockResolvedValue([]);
+      const actor = 'fixture-finish-custodian';
+      const request = { workspaceId: 'default', harnessSlug: scenario === 'different harness' ? 'other' : STAMP.harness_slug,
+        ...(scenario === 'unattributed' ? {} : { principal: { kind: 'agent', slug: actor, workspaceId: 'default' } }) };
+      try {
+        const receipt = await synchronizeFinishWork({ id: 'WI-prior', workItem: {
+          state: 'done', harness: STAMP.harness_slug, payload: { plan_item: STAMP },
+        }, completionEvidenceStored: true, completionAuthorityBefore: 'committed', completionAuthorityAfter: 'committed', ctx: request as never },
+        { fire: vi.fn(async () => ({ ok: true })) as never, clearCheckpoint: vi.fn(async () => undefined) as never,
+          readPlanItemStatus: vi.fn(async () => 'done') });
+        expect(receipt).toMatchObject({ complete: true, idempotent: true, authorityChanged: false });
+        expect(resync).toHaveBeenCalledWith(STAMP.plan_slug, STAMP.item_id, STAMP.harness_slug,
+          scenario === 'current custodian' ? actor : undefined);
+      } finally {
+        resync.mockRestore();
+      }
+    },
+  );
+
   it('passes onlyIfNoOtherOpenCoverage on a `done` reflection', async () => {
     const { setStatus } = await runFinish('done');
 

@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { FALLBACK_OBSERVATIONS_MIN_DDL, HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -65,7 +65,7 @@ const setWorkItemStateWithAliasInfo = h2.setWorkItemStateWithAliasInfo;
 // stub so a subsequent activeExternalBlockers/readWorkItemHeldOpenBy read (the
 // REAL pure functions, imported actual below) sees the mutation.
 const h4 = vi.hoisted(() => ({
-  mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>, opts?: { unset?: string[] }) => {
+  mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>, opts?: { unset?: readonly string[] }) => {
     const wi = h2.items.get(id);
     if (wi) {
       const payload = { ...(wi.payload ?? {}), ...patch };
@@ -108,7 +108,8 @@ vi.mock('../work-items', async () => {
       h2.useRealGetWorkItem ? actual.getWorkItem(id, harness) : h2.items.get(id) ?? null,
     setWorkItemState: h2.setWorkItemState,
     setWorkItemStateWithAliasInfo: h2.setWorkItemStateWithAliasInfo,
-    mergeWorkItemPayload: h4.mergeWorkItemPayload,
+    mergeWorkItemPayload: (...args: Parameters<typeof actual.mergeWorkItemPayload>) =>
+      h2.useRealGetWorkItem ? actual.mergeWorkItemPayload(...args) : h4.mergeWorkItemPayload(...args),
     setWorkItemClaimHold: h4.setWorkItemClaimHold,
   };
 });
@@ -220,6 +221,7 @@ beforeAll(async () => {
   `);
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await rootSql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await rootSql.unsafe(FALLBACK_OBSERVATIONS_MIN_DDL).simple();
   h.sql = rootSql;
 }, 90_000);
 
@@ -1638,6 +1640,102 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     expect(node.state).toBe(ownerBlocked ? 'blocked' : 'open');
     if (!ownerBlocked) expect(result?.ungated).toEqual([node.id]);
   });
+
+  it.each(['completed', 'pending', 'peer custody', 'owner gate', 'detached child', 'competing execution',
+    'foreign marker', 'independent blocker', 'malformed blocker', 'independent lease', 'child lease',
+    'reopened before write', 'reparented before write', 'custody changed before write'] as const)(
+    'retains migration custody while reconciling dependency history with an execution child (%s)', async scenario => {
+      const workspace = activeWorkspaceId();
+      const plan = 'p-migration-dependency';
+      const actor = 'su-dependency-custodian';
+      const target = 'F-structural';
+      const child = 'WI-execution';
+      const previous = 'F-prerequisite';
+      const ref = planLaneBlockerRef(plan, 'P-002');
+      const gateActor = 'system:plan-item-lane-sync';
+      const { blockers } = updateExternalBlockerHistory({}, {
+        kind: 'gate', capability: 'live-dependency', ref, summary: 'Waiting for P-001',
+      }, gateActor);
+      const park = { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+        claim_hold_reason: 'Plan promotion owns this park' };
+      const history: unknown[] = scenario === 'foreign marker' ? [{ ...blockers[0], createdBy: 'su-another' }] : [...blockers];
+      if (scenario === 'independent blocker') history.push({ ...blockers[0], ref: 'separate-condition', createdBy: actor });
+      if (scenario === 'malformed blocker') history.push({ status: 'active', note: 'Legacy unrecognized condition' });
+      const gate = { ...park, planLaneParkedFrom: 'open', externalBlockers: history,
+        ...(scenario === 'independent lease' ? { held_open_by: 'su-another' } : {}) };
+      const holder = scenario === 'peer custody' ? 'su-other-custodian' : actor;
+      const priorStatus = scenario === 'pending' ? 'wip' : 'done';
+      const stamp = { plan_item: { plan_slug: plan, item_id: 'P-002', harness_slug: 'sheets' },
+        ...(scenario === 'child lease' ? { held_open_by: 'su-another' } : {}) };
+      await rootSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, plan_slug, plan_line_id, plan_seq,
+         plan_line_text, plan_owner_gate_marker, source_plan_slug, source_plan_item_ids, parent_id, taken_by, payload)
+        VALUES (${workspace}, 'sheets', ${previous}, 'feature', ${priorStatus}, ${plan}, 'P-001', 1,
+          'Prerequisite', NULL, ${plan}, ARRAY['P-001'], NULL, NULL, '{}'::jsonb),
+         (${workspace}, 'sheets', ${target}, 'feature', 'open', ${plan}, 'P-002', 2,
+          'Dependent', ${scenario === 'owner gate' ? 'Owner decision' : null}, ${plan}, ARRAY['P-002'],
+          NULL, ${holder}, ${JSON.stringify(gate)}::text::jsonb),
+         (${workspace}, 'sheets', ${child}, 'task', 'open', NULL, NULL, NULL, NULL, NULL,
+          ${plan}, ARRAY['P-002'], ${scenario === 'detached child' ? null : target}, ${holder}, ${rootSql.json(stamp)})`;
+      if (scenario === 'competing execution') {
+        await insertWorkItemRow({ id: 'WI-competing', kind: 'bug', status: 'open', planSlug: plan,
+          itemId: 'P-002', workspaceId: workspace });
+      }
+      await mirrorWorkItemBlockingEdge({ kind: 'feature', ref: `sheets#${previous}` },
+        { kind: 'feature', ref: `sheets#${target}` }, { createdBy: actor });
+      h2.useRealGetWorkItem = true;
+      h3.getPlanRow.mockResolvedValue({ workspaceId: workspace, harnessSlug: 'sheets', planSlug: plan, items: [
+        { id: 'P-001', status: priorStatus, blockedBy: [] },
+        { id: 'P-002', status: 'todo', blockedBy: ['P-001'] },
+      ] });
+      const readParent = async () => {
+        const [row] = await rootSql`SELECT payload, taken_by, status FROM harness_shared.work_items
+          WHERE workspace_id=${workspace} AND harness_slug='sheets' AND feature_id=${target}`;
+        return row;
+      };
+      const depStore = await import('../dbos/work-item-deps-store');
+      const transact = depStore.withWorkItemDependencyAdmissionTransaction;
+      const race = scenario === 'reopened before write' || scenario === 'reparented before write' || scenario === 'custody changed before write';
+      let intervened = false;
+      const spy = race ? vi.spyOn(depStore, 'withWorkItemDependencyAdmissionTransaction').mockImplementationOnce(async (sql, body, retry) => {
+        if (scenario === 'reopened before write') {
+          await rootSql`UPDATE harness_shared.work_items SET status='wip' WHERE workspace_id=${workspace}
+            AND harness_slug='sheets' AND feature_id=${previous}`;
+        } else if (scenario === 'reparented before write') {
+          await rootSql`UPDATE harness_shared.work_items SET parent_id=NULL WHERE workspace_id=${workspace}
+            AND harness_slug='sheets' AND feature_id=${child}`;
+        } else {
+          await rootSql`UPDATE harness_shared.work_items SET taken_by='su-successor' WHERE workspace_id=${workspace}
+            AND harness_slug='sheets' AND feature_id=${target}`;
+        }
+        intervened = true;
+        return transact(sql, body, retry);
+      }) : null;
+      try {
+        await resyncDependentPlanItemLanesNow(plan, 'P-001', 'sheets', actor);
+      } finally {
+        spy?.mockRestore();
+      }
+      expect(intervened).toBe(race);
+      const parent = await readParent();
+      expect(parent).toMatchObject({ taken_by: scenario === 'custody changed before write' ? 'su-successor' : holder,
+        status: 'open', payload: park });
+      if (scenario === 'completed') {
+        expect(parent.payload.externalBlockers).toEqual([expect.objectContaining({
+          ref, status: 'cleared', createdBy: gateActor, clearedBy: gateActor,
+        })]);
+        await resyncDependentPlanItemLanesNow(plan, 'P-001', 'sheets', actor);
+        expect(await readParent()).toEqual(parent);
+      } else {
+        expect(parent.payload).toEqual(gate);
+      }
+      const [execution] = await rootSql`SELECT parent_id, taken_by, status, payload FROM harness_shared.work_items
+        WHERE workspace_id=${workspace} AND harness_slug='sheets' AND feature_id=${child}`;
+      expect(execution).toMatchObject({ parent_id: scenario === 'detached child' || scenario === 'reparented before write' ? null : target,
+        taken_by: holder, status: 'open', payload: stamp });
+      expect(activeExternalBlockers(execution.payload)).toEqual([]);
+    },
+  );
 
   it('a terminal dependency edge opens only dependents whose full blocker set is resolved', async () => {
     await edge({ plan: 'pdependency', item: 'P-002', srcRef: 'WI-ready' });

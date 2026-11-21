@@ -1572,7 +1572,7 @@ export function issueClaimCandidateSubquery(
       -- disagree. It covers BOTH caller-relative reasons (released-by-me, and filed-by-someone-
       -- else inside the filing-grace window); an exclusion for either reports here, under the
       -- one cooldown breakdown bucket, per WI-5939 "do not add a parallel mechanism".
-      (${issueCooldownExclusionSql(sql, assignee, cooldown)})            AS ok_cooldown,
+      (${issueCooldownExclusionSql(sql, assignee, cooldown, undefined, undefined, undefined, claimantFleetSlug)}) AS ok_cooldown,
       -- P-013/D-012 stop-the-line: while the harness's gate-red-streak condition item has
       -- been open >24h, non-repair rows are not self-selectable (bugs + alarm-condition
       -- items exempt; by-id claims bypass floors by design). Same shared-fragment

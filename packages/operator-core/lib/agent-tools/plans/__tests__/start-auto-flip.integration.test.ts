@@ -25,7 +25,7 @@ import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../../scorec
 import { metadataClauseWrite } from '../coordination-metadata-fixtures';
 import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF } from '../spec-quality';
 import { parsePlan } from '../parser';
-import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
+import { dispatchProjectedTool, type ProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { toolGuardText } from '../../../endpoint-route/routes/agent-mcp/identity-hook-sinks';
 import { controlAnchorKernelResolver } from '../../../projected-tool-deps';
 
@@ -198,9 +198,9 @@ const HARNESS = `zzz-start-flip-${Date.now()}-${Math.random().toString(36).slice
 const SLUG = `${HARNESS}-plan`;
 const WS = DEFAULT_WORKSPACE_ID;
 
-async function seedLegacyPlan(status: 'draft' | 'ready', withItem = false, slug = SLUG) {
-  const body = withItem ? planBody(status).replace('## Decisions',
-    '## Tasks\n\n- **P-001** `todo` Record baseline findings deliverable: doc\n\n## Decisions') : planBody(status);
+async function seedLegacyPlan(status: 'draft' | 'ready', withItem: boolean | string = false, slug = SLUG) {
+  const tasks = typeof withItem === 'string' ? withItem : '- **P-001** `todo` Record baseline findings deliverable: doc';
+  const body = withItem ? planBody(status).replace('## Decisions', `## Tasks\n\n${tasks}\n\n## Decisions`) : planBody(status);
   await seedPlan(admin, WS, HARNESS, slug, body.replaceAll(SLUG, slug));
   // Migration 1111 marks every INSERT as post-epoch. These approval/revision
   // fixtures deliberately represent existing legacy plans, which have no BAR
@@ -503,6 +503,93 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND id LIKE 'work-item-durable-park-audit:plans-start:%'`;
     const decisions = audits.flatMap(row => row.detail.result.rows).filter(row => row.id === node);
     expect(decisions).toEqual([expect.objectContaining({ outcome: 'cleared' })]);
+  });
+
+  it('promotes a structural parent through ordinary start after its generated dependency marker settles', async ({ onTestFinished }) => {
+    await seedLegacyPlan('ready', '- **P-001** `done` Record the baseline deliverable: doc\n' +
+      '- **P-002** `todo` Review the baseline deliverable: doc blocked-by: P-001');
+    const { resolveAgentIdentity } = await import('../../coordination/identity');
+    const { updateExternalBlockerHistory } = await import('../../../external-blockers');
+    const { planLaneBlockerRef, resyncDependentPlanItemLanesNow } = await import('../../../plan-items/reconcile-linked-work-items');
+    const { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } = await import('../../../dbos/work-item-deps-store');
+    const { DEFAULT_COORD_WORKSPACE } = await import('@papercusp/coordination/event-log');
+    const actor = resolveAgentIdentity(makeCtx()).ownerId;
+    const prior = `WI-settled-${HARNESS}`;
+    const node = `WI-structural-${HARNESS}`;
+    const child = `WI-linked-${HARNESS}`;
+    const ref = planLaneBlockerRef(SLUG, 'P-002');
+    const { blockers } = updateExternalBlockerHistory({}, { kind: 'gate', capability: 'live-dependency',
+      ref, summary: 'Waiting for baseline' }, 'system:plan-item-lane-sync');
+    const park = { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes',
+      claim_hold_reason: 'Await audited plan promotion', planLaneParkedFrom: 'open', externalBlockers: blockers };
+    const childStamp = { plan_item: { plan_slug: SLUG, harness_slug: HARNESS, item_id: 'P-002' } };
+    await admin`INSERT INTO harness_shared.plan_items (workspace_id,harness_slug,plan_slug,item_id,seq,item_text,status,blocked_by)
+      VALUES (${WS},${HARNESS},${SLUG},'P-001',1,'Record the baseline','done','{}'),
+             (${WS},${HARNESS},${SLUG},'P-002',2,'Review the baseline','todo',ARRAY['P-001'])`;
+    await admin`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,item_kind,title,status,created_ts,updated_ts,taken_by,parent_id,
+       plan_slug,plan_line_id,plan_seq,plan_deliverable,plan_line_text,source_plan_slug,source_plan_item_ids,payload)
+      VALUES (${WS},${HARNESS},${prior},'feature','Baseline','done',0,0,NULL,NULL,
+        ${SLUG},'P-001',1,'doc','Record the baseline',${SLUG},ARRAY['P-001'],'{}'),
+        (${WS},${HARNESS},${node},'feature','Review','open',0,0,${actor},NULL,
+        ${SLUG},'P-002',2,'doc','Review the baseline',${SLUG},ARRAY['P-002'],${JSON.stringify(park)}::text::jsonb),
+        (${WS},${HARNESS},${child},'task','Execution','open',0,0,${actor},${node},
+        NULL,NULL,NULL,NULL,NULL,${SLUG},ARRAY['P-002'],${admin.json(childStamp)})`;
+    const prerequisite = { kind: 'feature' as const, ref: `${HARNESS}#${prior}` };
+    onTestFinished(async () => {
+      const dependents = await admin<Array<{ kind: 'issue' | 'feature'; ref: string }>>`
+        SELECT blocked_kind AS kind,blocked_ref AS ref FROM harness_shared.work_item_deps
+        WHERE workspace_id=${DEFAULT_COORD_WORKSPACE} AND dep_type='blocks' AND blocker_kind='feature'
+          AND blocker_ref=${prerequisite.ref}`;
+      for (const dependent of dependents) {
+        await removeMirroredWorkItemBlockingEdge(prerequisite, dependent, { sql: admin, itemWorkspaceId: WS });
+      }
+    });
+    await runWithWorkspace(WS, () => mirrorWorkItemBlockingEdge(prerequisite,
+      { kind: 'feature', ref: `${HARNESS}#${node}` }, { createdBy: actor, itemWorkspaceId: WS }));
+    const promotion = await vi.importActual<typeof import('../../../plan-workitem-promotion-run')>('../../../plan-workitem-promotion-run');
+    const admission = await vi.importActual<typeof import('../plan-admission-preflight')>('../plan-admission-preflight');
+    START_GATES.promotion.mockImplementation(promotion.promotePlanItems);
+    START_GATES.admission.mockImplementation(admission.preflightExactPlanAdmission);
+    const parent = async () => (await admin`SELECT payload,status,taken_by FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`)[0];
+    const auditRows = () => admin`SELECT id FROM harness_shared.audit_log WHERE workspace_id=${WS}
+      AND action='work_items:durable_park:clear' AND subject=${node}`;
+    const before = await runStart();
+    expect(before.data, JSON.stringify(before.data)).toMatchObject({ ok: false, executionStartIssued: false,
+      migrationParkLift: { unsettled: [{ workItemId: node, outcome: 'independent-hold' }] } });
+    await runWithWorkspace(WS, () => resyncDependentPlanItemLanesNow(SLUG, 'P-001', HARNESS));
+    expect((await parent()).payload.externalBlockers).toEqual(blockers);
+    await import('../../../plan-items/lane-sync-rule');
+    const { matchReactions, reactionRulesFor } = await import('../../../events/registry');
+    const { fireReactionInProcess } = await import('../../../events/dispatch-reaction');
+    const { serializeParent } = await import('../../../events/reaction-id');
+    const trigger = { ...(makeCtx() as UnifiedToolContext), harnessSlug: HARNESS };
+    const ruleId = 'plan-item-lane-sync:dependency-terminality-changed';
+    const reaction = matchReactions({ tool: 'plans:set-status', ctx: trigger, args: {}, result: { ok: true,
+      data: { ok: true, slug: SLUG, itemId: 'P-001', oldStatus: 'wip', newStatus: 'done' } } }).find(action => action.rule.id === ruleId);
+    expect(reaction).toBeDefined();
+    if (!reaction) throw new Error('Dependency settlement did not match the registered plan reaction');
+    const registered = reactionRulesFor('plans:set-status').find(rule => rule.id === ruleId);
+    if (!registered) throw new Error('Dependency settlement rule is unavailable');
+    const delivered = await runWithWorkspace(WS, () => fireReactionInProcess({ fire: reaction.rule.fire, args: reaction.args,
+      parentCtx: serializeParent(trigger) as UnifiedToolContext, cause: { ruleId, depth: 1, chain: [ruleId] },
+      capability: registered.capability }));
+    expect(delivered).toMatchObject({ ok: true });
+    expect(await parent()).toMatchObject({ status: 'open', taken_by: actor, payload: { _claimHold: true,
+      claim_hold_by: park.claim_hold_by, externalBlockers: [{ ref, status: 'cleared', clearedBy: 'system:plan-item-lane-sync' }] } });
+    expect(await auditRows()).toHaveLength(0);
+    const started = await runStart();
+    expect(started.data, JSON.stringify(started.data)).toMatchObject({ status: 'started', admission: { ready: true },
+      migrationParkLift: { rows: [{ workItemId: node, outcome: 'cleared' }], unsettled: [] } });
+    expect((await parent()).payload).not.toHaveProperty('claim_hold_by');
+    const setStatus = (await import('../set-status')).default;
+    const progress = await runWithWorkspace(WS, () => setStatus.handler({ harness: HARNESS, slug: SLUG,
+      item: 'P-002', status: 'wip' } as never, makeCtx())) as { data: { results: Array<{ ok: boolean }> } };
+    expect(progress.data.results[0], JSON.stringify(progress.data.results[0])).toMatchObject({ ok: true });
+    expect(await parent()).toMatchObject({ status: 'wip', taken_by: actor });
+    expect((await runStart()).isError).toBe(false);
+    expect(await auditRows()).toHaveLength(1);
   });
 
   it.each(['detached', 'independent hold', 'detached before selection'] as const)('retains a %s row when a previously selected promotion is reconciled', async change => {

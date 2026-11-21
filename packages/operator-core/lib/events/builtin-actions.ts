@@ -33,6 +33,11 @@ export const PLAN_ITEM_RECONCILE_ACTION = "plan-item.reconcileLinkedWorkItems";
  *  that item's CURRENT effective lane (blocked/needs-human/actionable) onto its
  *  linked work-items RIGHT NOW, instead of waiting for the 15-min periodic sweep. */
 export const PLAN_ITEM_LANE_RESYNC_ACTION = "plan-item.resyncLane";
+export const PLAN_LANE_SYNC_RULE_IDS = {
+  dependenciesEdited: 'plan-item-lane-sync:blocked-by-changed',
+  dependencySettled: 'plan-item-lane-sync:dependency-terminality-changed',
+  statusChanged: 'plan-item-lane-sync:status-changed',
+} as const;
 
 /** P-004 (deterministic-plan-state-derivation-2026-08-31): the action name
  *  plan-items/plan-drain-rule.ts fires when a `plans:set-status` flip crosses
@@ -225,6 +230,7 @@ export async function fireBuiltinReactionAction(
   fire: string,
   args: Record<string, unknown>,
   workspaceId: string,
+  firstPartyRuleId?: string,
 ): Promise<FireReactionResult> {
   switch (fire) {
     case CACHE_BUMP_TAGS_ACTION: {
@@ -265,11 +271,18 @@ export async function fireBuiltinReactionAction(
       const dependencies = toLaneResyncItems(args.dependencies);
       if (items.length === 0 && dependencies.length === 0) return { ok: true };
       const { resyncPlanItemLaneNow, resyncDependentPlanItemLanesNow } = await import("../plan-items/reconcile-linked-work-items");
+      // Only these first-party rules measured custody in the triggering tool context.
+      // Unattributed sweeps and older persisted envelopes retain assigned structural parents.
+      const custody = args.laneCustodian as { workspaceId?: unknown; harnessSlug?: unknown; ownerId?: unknown } | null;
+      const fromLaneRule = Object.values(PLAN_LANE_SYNC_RULE_IDS).some(id => id === firstPartyRuleId);
+      const ownerFor = (target: LaneResyncItem) => fromLaneRule && custody?.workspaceId === workspaceId &&
+        target.harnessSlug && custody.harnessSlug === target.harnessSlug && typeof custody.ownerId === 'string'
+        ? custody.ownerId : undefined;
       const failures: string[] = [];
       // Isolate each lane's failure without acknowledging it as a successful action.
       for (const it of items) {
         try {
-          const result = await resyncPlanItemLaneNow(it.planSlug, it.itemId, it.harnessSlug);
+          const result = await resyncPlanItemLaneNow(it.planSlug, it.itemId, it.harnessSlug, ownerFor(it));
           for (const failure of result?.failures ?? []) {
             failures.push(`${it.planSlug}#${it.itemId}/${failure.workItemId ?? failure.stage}: ${failure.message}`);
           }
@@ -280,7 +293,7 @@ export async function fireBuiltinReactionAction(
       for (const dependency of dependencies) {
         try {
           await resyncDependentPlanItemLanesNow(
-            dependency.planSlug, dependency.itemId, dependency.harnessSlug,
+            dependency.planSlug, dependency.itemId, dependency.harnessSlug, ownerFor(dependency),
           );
         } catch (error) {
           failures.push(error instanceof Error ? error.message : String(error));

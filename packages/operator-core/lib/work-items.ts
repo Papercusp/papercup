@@ -7124,6 +7124,7 @@ export function issueCooldownExclusionSql(
   graceSec: number = filingGraceSec(),
   dampingReleasers: number = releaseDampingReleasers(),
   dampingWindowSec: number = releaseDampingWindowSec(),
+  claimantFleetSlug?: string,
 ) {
   const legacyReleaseLeg =
     assignee && cooldownSec > 0
@@ -7148,12 +7149,57 @@ export function issueCooldownExclusionSql(
         )`
       : sql`TRUE`;
   const releaseLeg = sql`(${legacyReleaseLeg} AND ${sidecarReleaseLeg})`;
+  // An exact outside cohort authored by the CURRENT leader is a handoff of
+  // that leader's released filings to its current, equally bound members.
+  // Ordinary exact-ID fleets retain filing grace. Read live provenance here:
+  // a peer-authored spec, a former leader, another harness or an omitted ID
+  // cannot waive the filer's head start. Other cooldown legs still apply.
+  const filerHandoff = assignee && claimantFleetSlug
+    ? sql`EXISTS (
+        SELECT 1
+          FROM harness_shared.agent_fleets delegated_fleet
+          JOIN harness_shared.cup_claim_specs delegated_spec
+            ON delegated_spec.workspace_id = delegated_fleet.workspace_id
+           AND delegated_spec.bee_id = 'fleet:' || delegated_fleet.fleet_slug
+         WHERE delegated_fleet.workspace_id = wi.workspace_id
+           AND delegated_fleet.fleet_slug = ${claimantFleetSlug}
+           AND delegated_fleet.leader_owner_id = wi.payload -> '_ei' ->> 'created_by'
+           AND delegated_spec.updated_by = delegated_fleet.leader_owner_id
+           AND delegated_spec.harness_slug = wi.harness_slug
+           AND wi.payload ->> 'externalPlanRef' <> ''
+           AND COALESCE(to_jsonb(delegated_fleet) -> 'last_launch_transaction' ->> 'planRef',
+                        to_jsonb(delegated_fleet) -> 'headcount_config' ->> 'planRef') = wi.payload ->> 'externalPlanRef'
+           AND (
+             SELECT delegated_session.outside_plan_ref FROM harness_shared.adv_sessions delegated_session
+              WHERE delegated_session.workspace_id = wi.workspace_id
+                AND delegated_session.coord_owner_id = ${assignee}
+              ORDER BY delegated_session.started_at DESC, delegated_session.id DESC LIMIT 1
+           ) = wi.payload ->> 'externalPlanRef'
+           AND EXISTS (
+             SELECT 1 FROM (
+               SELECT fleet_slug, fleet_role FROM harness_shared.fleet_membership_events
+                WHERE workspace_id = wi.workspace_id AND owner_id = ${assignee}
+                ORDER BY id DESC LIMIT 1
+             ) membership
+              WHERE membership.fleet_slug = delegated_fleet.fleet_slug AND membership.fleet_role = 'member')
+           AND EXISTS (
+             SELECT 1 FROM harness_shared.work_item_release_cooldowns handoff
+              WHERE handoff.workspace_id = wi.workspace_id AND handoff.harness_slug = wi.harness_slug
+                AND handoff.feature_id = wi.feature_id AND handoff.agent_id = delegated_fleet.leader_owner_id
+                AND handoff.released_at >= to_timestamp(wi.created_ts / 1000.0))
+           AND delegated_spec.spec -> 'view' -> 'filter' ->> 'field' = 'id'
+           AND delegated_spec.spec -> 'view' -> 'filter' ->> 'op' = 'in'
+           AND jsonb_typeof(delegated_spec.spec -> 'view' -> 'filter' -> 'value') = 'array'
+           AND (delegated_spec.spec -> 'view' -> 'filter' -> 'value') @> jsonb_build_array(wi.feature_id)
+      )`
+    : sql`FALSE`;
   const filingGraceLeg =
     assignee && graceSec > 0
       ? sql`(wi.payload -> '_ei' ->> 'created_by' IS NULL
              OR wi.payload -> '_ei' ->> 'created_by' = ${assignee}
              OR wi.created_ts IS NULL
-             OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec}))`
+             OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec})
+             OR ${filerHandoff})`
       : sql`TRUE`;
   // (c) Item-level, so it applies with or without an assignee.
   const dampingLeg =
@@ -9585,7 +9631,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- Mig 499 + WI-5939: a row cooling down FOR THIS CALLER — either this caller released it
          -- recently, or someone else filed it within the filing-grace window — is likewise
          -- pending-but-gated here; same one fragment claimNextIssueWorkItem applies.
-         AND ${issueCooldownExclusionSql(sql, filter.assignee, issueCooldown)}`;
+         AND ${issueCooldownExclusionSql(sql, filter.assignee, issueCooldown, undefined, undefined, undefined, filter.claimantFleetSlug)}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
@@ -9838,7 +9884,7 @@ export function issueClaimBarFloorColumnsSql(
     (${watchdogRecoveryWindowExclusionSql(sql)})                           AS ok_watchdog_recovery,
     (${crossMachineRigExclusionSql(sql, rigAvailable)})                    AS ok_rig,
     (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
-    (${issueCooldownExclusionSql(sql, assignee, cooldown)})                AS ok_cooldown,
+    (${issueCooldownExclusionSql(sql, assignee, cooldown, undefined, undefined, undefined, claimantFleetSlug)}) AS ok_cooldown,
     (${stopTheLineExclusionSql(sql, 'issue-wi')})                          AS ok_stop_line
   `;
 }
@@ -10485,7 +10531,7 @@ export async function claimNextIssueWorkItem(
           -- apply, so the claim door and every read of it can no longer disagree. NULL-safe in
           -- both legs: only "released by ME within the release window" or "filed by SOMEONE
           -- ELSE within the filing-grace window" excludes the row from MY OWN self-select.
-          AND ${issueCooldownExclusionSql(tx, filter.assignee, cooldown)}
+          AND ${issueCooldownExclusionSql(tx, filter.assignee, cooldown, undefined, undefined, undefined, filter.claimantFleetSlug)}
         -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
         -- this function's own doc above — "the Mug can now steer issues too, P-007" — with
         -- no swarmId/Multi-Swarm-lease caveat, unlike the feature-family path's P-010-gated

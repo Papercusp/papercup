@@ -725,6 +725,105 @@ describe('filing-grace floor — the filer gets first refusal on their own filin
     }
   }
 
+  describe('the filer delegates an exact cohort to their fleet (WI-6554700010067072)', () => {
+    const FLEET = 'filer-handoff';
+    const ID = 'EI-GRACE-DELEGATED';
+    const REFERENCE = '  tracker:outside "quoted"\n😀  ';
+    beforeAll(async () => {
+      await db.sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS harness_shared.agent_fleets (
+          workspace_id text NOT NULL, fleet_slug text NOT NULL, leader_owner_id text,
+          last_launch_transaction jsonb,
+          PRIMARY KEY (workspace_id, fleet_slug));
+        CREATE TABLE IF NOT EXISTS harness_shared.cup_claim_specs (
+          workspace_id text NOT NULL, bee_id text NOT NULL, harness_slug text,
+          spec jsonb NOT NULL, updated_by text, PRIMARY KEY (workspace_id, bee_id));
+      `).simple();
+      await db.sql`ALTER TABLE harness_shared.adv_sessions ADD COLUMN IF NOT EXISTS outside_plan_ref text`;
+    });
+    beforeEach(async () => {
+      await db.sql`DELETE FROM harness_shared.cup_claim_specs`;
+      await db.sql`DELETE FROM harness_shared.agent_fleets`;
+      await db.sql`DELETE FROM harness_shared.fleet_membership_events`;
+      await db.sql`DELETE FROM harness_shared.adv_sessions`;
+      await db.sql`DELETE FROM harness_shared.work_item_release_cooldowns`;
+      await seedFiledIssue(ID, FILER, 5);
+      await db.sql`UPDATE harness_shared.work_items SET payload = payload || ${db.sql.json({ externalPlanRef: REFERENCE })}
+        WHERE feature_id = ${ID}`;
+      await db.sql`INSERT INTO harness_shared.agent_fleets (workspace_id, fleet_slug, leader_owner_id)
+        VALUES (${WS}, ${FLEET}, ${FILER})`;
+      await db.sql`UPDATE harness_shared.agent_fleets SET last_launch_transaction = ${db.sql.json({ planRef: REFERENCE })}`;
+      await db.sql`INSERT INTO harness_shared.adv_sessions (workspace_id, coord_owner_id, outside_plan_ref)
+        VALUES (${WS}, ${PEER}, ${REFERENCE})`;
+      await db.sql`INSERT INTO harness_shared.fleet_membership_events (workspace_id, owner_id, fleet_slug, fleet_role)
+        VALUES (${WS}, ${PEER}, ${FLEET}, 'member')`;
+      await db.sql`INSERT INTO harness_shared.work_item_release_cooldowns
+        (workspace_id, harness_slug, feature_id, agent_id, released_at) VALUES (${WS}, ${H}, ${ID}, ${FILER}, now())`;
+      await db.sql`INSERT INTO harness_shared.cup_claim_specs (workspace_id, bee_id, harness_slug, spec, updated_by)
+        VALUES (${WS}, ${'fleet:' + FLEET}, ${H},
+          ${db.sql.json({ view: { filter: { field: 'id', op: 'in', value: ['EI-OTHER', ID] } } })}, ${FILER})`;
+    });
+    const claimDelegated = (fleet = FLEET) => wi.claimNextIssueWorkItem({
+      harness: H, assignee: PEER, claimantFleetSlug: fleet,
+    }, WS);
+
+    it('claims the freshly delegated row, keeps the unrelated filing protected, and agrees with diagnosis', async () => {
+      await seedFiledIssue('EI-GRACE-UNRELATED', FILER, 5);
+      const [explanation] = await wi.explainIssueClaimFloors(H, [ID], { assignee: PEER, claimantFleetSlug: FLEET });
+      expect(explanation.admissible).toBe(true);
+      expect((await claimDelegated())?.id).toBe(ID);
+      expect(await claimDelegated()).toBeNull();
+    });
+
+    it.each(['no-fleet', 'other-fleet', 'other-author', 'former-leader', 'other-harness', 'broad-filter', 'omitted-id',
+      'ordinary-exact-id-fleet', 'mismatched-reference', 'mismatched-member-reference', 'outside-claimant', 'former-member',
+      'unreleased-filing', 'third-party-filing', 'old-session-reference'])(
+      'keeps filing grace when handoff provenance is %s', async reason => {
+        if (reason === 'other-author') await db.sql`UPDATE harness_shared.cup_claim_specs SET updated_by = ${PEER}`;
+        if (reason === 'former-leader') await db.sql`UPDATE harness_shared.agent_fleets SET leader_owner_id = ${PEER}`;
+        if (reason === 'other-harness') await db.sql`UPDATE harness_shared.cup_claim_specs SET harness_slug = 'other'`;
+        if (reason === 'ordinary-exact-id-fleet') {
+          await db.sql`UPDATE harness_shared.agent_fleets SET last_launch_transaction = NULL`;
+          await db.sql`UPDATE harness_shared.adv_sessions SET outside_plan_ref = NULL`;
+          await db.sql`UPDATE harness_shared.work_items SET payload = payload - 'externalPlanRef' WHERE feature_id = ${ID}`;
+        }
+        if (reason === 'mismatched-reference') await db.sql`UPDATE harness_shared.work_items
+          SET payload = payload || ${db.sql.json({ externalPlanRef: 'different' })} WHERE feature_id = ${ID}`;
+        if (reason === 'mismatched-member-reference') await db.sql`UPDATE harness_shared.adv_sessions SET outside_plan_ref = 'different'`;
+        if (reason === 'old-session-reference') await db.sql`INSERT INTO harness_shared.adv_sessions
+          (workspace_id, coord_owner_id, outside_plan_ref) VALUES (${WS}, ${PEER}, NULL)`;
+        if (reason === 'outside-claimant') await db.sql`DELETE FROM harness_shared.fleet_membership_events`;
+        if (reason === 'former-member') await db.sql`INSERT INTO harness_shared.fleet_membership_events
+          (workspace_id, owner_id, fleet_slug, fleet_role) VALUES (${WS}, ${PEER}, NULL, NULL)`;
+        if (reason === 'unreleased-filing') await db.sql`DELETE FROM harness_shared.work_item_release_cooldowns`;
+        if (reason === 'third-party-filing') await db.sql`UPDATE harness_shared.work_items
+          SET payload = jsonb_set(payload, '{_ei,created_by}', to_jsonb('su-third-party'::text)) WHERE feature_id = ${ID}`;
+        if (reason === 'broad-filter' || reason === 'omitted-id') {
+          const filter = reason === 'broad-filter'
+            ? { field: 'kind', op: 'in', value: ['bug'] }
+            : { field: 'id', op: 'in', value: ['EI-OTHER'] };
+          await db.sql`UPDATE harness_shared.cup_claim_specs SET spec = ${db.sql.json({ view: { filter } })}`;
+        }
+        const result = reason === 'no-fleet'
+          ? await wi.claimNextIssueWorkItem({ harness: H, assignee: PEER }, WS)
+          : await claimDelegated(reason === 'other-fleet' ? 'other-fleet' : FLEET);
+        expect(result).toBeNull();
+      },
+    );
+
+    it('retains the member release cooldown after an intentional handoff', async () => {
+      await db.sql`UPDATE harness_shared.work_items SET last_released_by = ${PEER}, last_released_at = now()
+        WHERE feature_id = ${ID}`;
+      expect(await claimDelegated()).toBeNull();
+    });
+
+    it('retains an unfinished dependency after an intentional handoff', async () => {
+      await seedIssue('EI-GRACE-BLOCKER', { state: 'open', takenBy: FILER });
+      await blockEdge(ID, 'EI-GRACE-BLOCKER', 'issue', 'issue');
+      expect(await claimDelegated()).toBeNull();
+    });
+  });
+
   it('a PEER cannot claim a row someone else filed seconds ago', async () => {
     await seedFiledIssue('EI-GRACE-1', FILER, 5);
     expect(await claimOne(PEER)).toBeNull();

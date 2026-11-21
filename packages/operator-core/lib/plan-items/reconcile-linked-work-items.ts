@@ -50,8 +50,11 @@ import {
 } from '../work-items';
 import { getPlanRow, planItemsForRow, type PlanRow } from '../agent-tools/plans/source';
 import { readPlanLineNodes } from '../agent-tools/plans/plan-line-graph';
+import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from '../agent-tools/plans/plan-lock-key';
 import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
 import { getFeatureBlockers, syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
+import { withWorkItemDependencyAdmissionTransaction } from '../dbos/work-item-deps-store';
+import { isAdmissionHoldActive } from '../work-items-admission';
 import {
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
@@ -178,8 +181,7 @@ export function selectCanonicalLinkedWorkItem(linked: readonly LinkedWorkItem[])
     // This mirrors exact-plan admission's D-011 coverage rule: only this
     // provenance is metadata; every other parked node remains authoritative.
     const payload = planNode.payload as Record<string, unknown> | null;
-    const migrationShadow = isClaimHoldParked(payload) &&
-      payload?.claim_hold_by === 'migration:plan-line-work-item-nodes';
+    const migrationShadow = isClaimHoldParked(payload) && payload?.claim_hold_by === MIGRATION_PLAN_LINE_HOLDER;
     const executableRows = nonTerminal.filter((wi) => wi !== planNode);
     if (migrationShadow && executableRows.length > 0) {
       const proven = executableRows.filter((wi) => wi.viaImplementsEdge);
@@ -613,6 +615,7 @@ export async function reconcileLinkedWorkItemsForCompletedPlanItems(
  *  BOTH gated statuses keeps the clear path a single (kind, ref) match. */
 const PLAN_LANE_BLOCKER_KIND = 'gate' as const;
 const PLAN_LANE_SYNC_ACTOR = 'system:plan-item-lane-sync';
+const MIGRATION_PLAN_LINE_HOLDER = 'migration:plan-line-work-item-nodes';
 
 /**
  * WI-37914: the payload key recording the state a work-item held BEFORE this sync
@@ -1239,8 +1242,112 @@ export interface PlanLaneSyncResult {
   skippedDuplicates: string[];
   /** Gated lanes whose linked canonical row was named as their own prerequisite. */
   circularPrerequisites: CircularPrerequisiteFinding[];
+  /** Outcome for the dependency history on a parked structural parent with separate execution. */
+  parkedParentGate?: { workItemId: string; outcome: 'cleared' | 'retained'; reason: string };
   /** Fail-soft sync errors that used to disappear as empty arrays or `noop`. */
   failures?: PlanLaneSyncFailure[];
+}
+
+/** The structural parent can still carry our original marker after the execution child
+ * becomes canonical. Only the dependency projection belongs to this synchronizer. */
+async function reconcileParkedParentGate(
+  item: CompletedPlanItem, plan: CircularPrerequisitePlanRow, parent: LinkedWorkItem, child: LinkedWorkItem,
+): Promise<NonNullable<PlanLaneSyncResult['parkedParentGate']>> {
+  const retained = (reason: string) => ({ workItemId: parent.id, outcome: 'retained' as const, reason });
+  const { workspaceId, harnessSlug } = plan;
+  const authored = plan.items.find(line => line.id === item.itemId);
+  if (!workspaceId || !harnessSlug || plan.planSlug !== item.planSlug || !authored?.blockedBy.length ||
+      authored.ownerGateMarker || parent.harness !== harnessSlug || child.harness !== harnessSlug) {
+    return retained('No exact scoped dependency to reconcile');
+  }
+  const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
+  return withWorkItemDependencyAdmissionTransaction(getOrgPg().sql, async tx => {
+    await acquirePlanAdvisoryLock(tx, planAdvisoryLockKey(workspaceId, harnessSlug, item.planSlug));
+    const nodes = await readPlanLineNodes(tx, { workspaceId, harnessSlug, slug: item.planSlug });
+    const node = nodes.find(line => line.id === item.itemId);
+    const graph = resolveEffectiveStatusForItems(planItemsForRow({ items: nodes, content: '' }));
+    const line = graph.items.find(candidate => candidate.id === item.itemId);
+    if (!node || node.featureId !== parent.id || node.ownerGateMarker || node.status !== authored.status ||
+        !line || !['todo', 'wip'].includes(line.effectiveStatus) || line.needsHuman ||
+        graph.missingRefs.length || graph.cycleMembers.length || new Set(nodes.map(n => n.id)).size !== nodes.length ||
+        line.unresolvedBlockers.length || node.blockedBy.length !== authored.blockedBy.length ||
+        !node.blockedBy.every(id => authored.blockedBy.includes(id))) return retained('Canonical prerequisites changed or are unresolved');
+
+    // A concurrent reopen must win or serialize after this measurement. A serialization
+    // retry reacquires the plan lock and reads the graph and custody from scratch.
+    const prerequisiteIds = nodes.filter(n => node.blockedBy.includes(n.id)).map(n => n.featureId);
+    const prerequisites = await tx`SELECT status FROM harness_shared.work_items
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug} AND plan_slug=${item.planSlug}
+        AND feature_id=ANY(${prerequisiteIds}::text[]) FOR SHARE`;
+    if (prerequisites.length !== node.blockedBy.length || !prerequisites.every(row => isSettledWorkItemState(row.status))) {
+      return retained('Canonical prerequisite settlement changed');
+    }
+    const rows = await tx<{
+      feature_id: string; parent_id: string | null; taken_by: string | null; status: string; origin: string;
+      plan_slug: string | null; plan_line_id: string | null; source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null; payload: Record<string, unknown> | null; version: string;
+    }[]>`SELECT w.feature_id,w.parent_id,w.taken_by,w.status,w.origin,w.plan_slug,w.plan_line_id,
+        w.source_plan_slug,w.source_plan_item_ids,w.payload,w.xmin::text AS version
+      FROM harness_shared.work_items w
+      WHERE w.workspace_id=${workspaceId} AND w.harness_slug=${harnessSlug}
+        AND NOT (w.status=ANY(${[...SETTLED_WORK_ITEM_STATES]}::text[])) AND (
+          w.feature_id=ANY(${[parent.id, child.id]}::text[]) OR w.parent_id=${parent.id} OR
+          (w.plan_slug=${item.planSlug} AND w.plan_line_id=${item.itemId}) OR
+          (w.source_plan_slug=${item.planSlug} AND ${item.itemId}=ANY(w.source_plan_item_ids)) OR
+          (${stampMatchFragment(tx, item.planSlug, item.itemId)}) OR
+          EXISTS (SELECT 1 FROM harness_shared.coord_links l WHERE l.workspace_id=ANY(${implementsLinkScopes()})
+            AND l.rel=${IMPLEMENTS_REL} AND l.dst_kind=${PLAN_ITEM_KIND} AND l.dst_ref=${planItemRef(item.planSlug, item.itemId)}
+            AND ((l.src_kind='issue' AND l.src_ref=w.feature_id) OR
+                 (l.src_kind='feature' AND l.src_ref=w.harness_slug || '#' || w.feature_id))))
+      ORDER BY w.feature_id FOR UPDATE OF w`;
+    const target = rows.find(row => row.feature_id === parent.id);
+    const execution = rows.find(row => row.feature_id === child.id);
+    if (rows.length !== 2 || !target || !execution || target.plan_slug !== item.planSlug || target.plan_line_id !== item.itemId ||
+        execution.parent_id !== target.feature_id || execution.plan_slug !== null || execution.plan_line_id !== null ||
+        target.taken_by !== parent.assignee || execution.taken_by !== child.assignee || target.taken_by !== execution.taken_by ||
+        rows.some(row => row.origin !== 'local' || !['open', 'wip'].includes(row.status) ||
+          (row.taken_by !== null && row.taken_by !== item.triggeredBy))) return retained('Execution coverage or custody changed');
+    const childPayload = execution.payload;
+    if (isClaimHoldParked(childPayload) || isAdmissionHoldActive(childPayload) || childPayload?.held_open_by != null ||
+        childPayload?.needsOwnerAction === true || childPayload?.needsHuman === true || childPayload?.needs_human === true ||
+        (childPayload?.externalBlockers != null && (!Array.isArray(childPayload.externalBlockers) ||
+          childPayload.externalBlockers.length !== readExternalBlockers(childPayload).length || activeExternalBlockers(childPayload).length))) {
+      return retained('Execution child has another hold or an unknown blocker');
+    }
+    const stamp = childPayload?.plan_item ?? childPayload?.planItem;
+    const stamped = stamp && typeof stamp === 'object' ? stamp as Record<string, unknown> : null;
+    const source = execution.source_plan_item_ids ?? [];
+    const exactColumns = execution.source_plan_slug === item.planSlug && source.length === 1 && source[0] === item.itemId;
+    const stampHarness = stamped?.harness_slug ?? stamped?.harnessSlug;
+    const exactStamp = stamped && (stamped.plan_slug ?? stamped.planSlug) === item.planSlug &&
+      (stamped.item_id ?? stamped.itemId) === item.itemId && (stampHarness == null || stampHarness === harnessSlug);
+    if ((!exactColumns && !exactStamp) || (stamp != null && !exactStamp) ||
+        (!exactColumns && (execution.source_plan_slug != null || source.length))) return retained('Execution provenance is ambiguous');
+
+    const payload = target.payload;
+    if (!payload || !isClaimHoldParked(payload) || payload.claim_hold_by !== MIGRATION_PLAN_LINE_HOLDER ||
+        payload.held_open_by != null || payload.needsOwnerAction === true || payload.needsHuman === true ||
+        payload.needs_human === true || isAdmissionHoldActive(payload) ||
+        !['open', 'todo', 'wip'].includes(String(payload[PLAN_LANE_PARKED_FROM_KEY]))) return retained('Independent hold or missing park provenance');
+    const raw = payload.externalBlockers;
+    const history = readExternalBlockers(payload);
+    const active = history.filter(b => b.status === 'active');
+    if (!Array.isArray(raw) || raw.length !== history.length || active.length !== 1) return retained('Blocker history is ambiguous');
+    const gate = active[0];
+    const index = history.indexOf(gate);
+    if (gate.kind !== PLAN_LANE_BLOCKER_KIND || gate.ref !== laneRef || gate.createdBy !== PLAN_LANE_SYNC_ACTOR ||
+        raw[index]?.capability !== 'live-dependency') return retained('Dependency marker has different provenance');
+    const { blockers } = updateExternalBlockerHistory(payload, { kind: gate.kind, ref: laneRef, clear: true }, PLAN_LANE_SYNC_ACTOR);
+    // Replace just the measured element. All other history (including legacy fields),
+    // migration ownership, row status, and the execution child's payload stay intact.
+    const changed = await tx`UPDATE harness_shared.work_items SET updated_ts=${Date.now()},
+        payload=jsonb_set(payload, ${['externalBlockers', String(index)]}::text[], ${JSON.stringify(blockers[index])}::text::jsonb, false)
+      WHERE workspace_id=${workspaceId} AND harness_slug=${harnessSlug} AND feature_id=${parent.id}
+        AND plan_slug=${item.planSlug} AND plan_line_id=${item.itemId} AND xmin::text=${target.version}
+      RETURNING feature_id`;
+    return changed.length === 1 ? { workItemId: parent.id, outcome: 'cleared' as const, reason: 'Authored prerequisites settled' }
+      : retained('Structural parent changed before the marker write');
+  });
 }
 
 /**
@@ -1282,8 +1389,8 @@ export async function syncLinkedWorkItemsToPlanLane(
       workspaceId: planRow?.workspaceId ?? DEFAULT_COORD_WORKSPACE,
       harnessSlug,
     } : undefined);
-    // D-046: elect ONE canonical row; the sync mutates it alone. Terminal rows keep
-    // reporting as skippedAlreadyTerminal; every other non-terminal row is a duplicate.
+    // D-046 elects one execution row. The parked structural parent can separately
+    // retain a projection from before the child existed. It never receives an execution transition here.
     const { canonical } = selectCanonicalLinkedWorkItem(linked);
     for (const wi of linked) {
       if (isSettledWorkItemState(wi.state)) {
@@ -1291,6 +1398,13 @@ export async function syncLinkedWorkItemsToPlanLane(
         continue;
       }
       if (wi !== canonical) {
+        if (wi.viaPlanLineNode && canonical?.parent === wi.id && laneStatus === 'actionable' && planRow &&
+            isClaimHoldParked(wi.payload) && readWorkItemClaimHoldProvenance(wi.payload).parked?.by === MIGRATION_PLAN_LINE_HOLDER &&
+            activeExternalBlockers(wi.payload).some(b => b.kind === PLAN_LANE_BLOCKER_KIND && b.ref === laneRef &&
+              b.createdBy === PLAN_LANE_SYNC_ACTOR && b.capability === 'live-dependency')) {
+          out.parkedParentGate = await reconcileParkedParentGate(item, planRow, wi, canonical);
+          if (out.parkedParentGate.outcome === 'cleared') continue;
+        }
         out.skippedDuplicates.push(wi.id);
         continue;
       }
@@ -1390,7 +1504,7 @@ export async function resyncPlanItemLaneNow(
       const laneStatus = classifyPlanLane(row, itemId);
       if (!laneStatus) return null;
       const result = await syncLinkedWorkItemsToPlanLane(
-        { planSlug, itemId, harnessSlug: harnessSlug ?? null }, laneStatus, row,
+        { planSlug, itemId, harnessSlug: harnessSlug ?? null, triggeredBy: createdBy }, laneStatus, row,
       );
       if (result.failures?.length) throw new PlanLaneSyncAttemptError(result);
       // D-049/D-050: reconcile only plan-authored edges, preserving unrelated blockers.
