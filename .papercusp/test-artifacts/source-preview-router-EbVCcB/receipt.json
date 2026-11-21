@@ -1,0 +1,14 @@
+{
+  "target": "packages/operator-core/lib/source-preview-export.test.ts",
+  "runGroup": "a397656a-eb79-4c6e-8f81-903901fac196",
+  "parentRunGroup": "e0176d3a-b009-490b-8972-c6391f520d05",
+  "startedAtMs": 1795229212147,
+  "inheritedDeadlineAtMs": null,
+  "inheritedChildCutoffAtMs": null,
+  "deadlineAtMs": 1795229302147,
+  "childCutoffAtMs": 1795229272147,
+  "stdout": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/test-artifacts/source-preview-router-EbVCcB/stdout.log",
+  "stderr": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/test-artifacts/source-preview-router-EbVCcB/stderr.log",
+  "phases": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/test-artifacts/source-preview-router-EbVCcB/phases.jsonl",
+  "phase": "before-launch"
+}
