@@ -5059,9 +5059,12 @@ export function checkpointResultMarkerPayload(
   // #D-025: the shadow records carry samples; the marker keeps counts, the comparison and 3
   // short samples. The full records stay in the stderr result.
   if (result.ratchetShadow) {
-    const compact = compactRatchetShadow(result.ratchetShadow);
-    if (JSON.stringify(compact) !== JSON.stringify(result.ratchetShadow)) {
-      out.ratchetShadow = compact;
+    // The stored-health writer owns cumulative credit. Only this round crosses the pipe.
+    const { composedProofCohort, ...round } = result.ratchetShadow;
+    if (composedProofCohort) omitted.push("ratchetShadow.composedProofCohort");
+    const compact = compactRatchetShadow(round);
+    out.ratchetShadow = compact;
+    if (JSON.stringify(compact) !== JSON.stringify(round)) {
       omitted.push("ratchetShadow(samples)");
     }
   }

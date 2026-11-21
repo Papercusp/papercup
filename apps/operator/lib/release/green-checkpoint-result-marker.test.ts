@@ -122,6 +122,22 @@ describe('WI-10005994: the stdout result marker survives the shared 2>&1 pipe', 
     expect(result.flakeSuspects).toHaveLength(500);
   });
 
+  it('carries the full round identities while the stored-health writer owns the cumulative cohort', () => {
+    const candidate = 'a'.repeat(64), repairHead = 'b'.repeat(64);
+    const countedRuns = Array.from({ length: 80 }, (_, index) => index.toString(16).padStart(64, '0') + ':' + repairHead);
+    const result: CheckpointResult = { ...base(), summary: 'cohort fixture', ratchetShadow: {
+      composedProof: { schemaVersion: 1, candidate, repairHead, atMs: 1, status: 'skipped' },
+      composedProofCohort: { schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: 'e'.repeat(64),
+        qualifiedRuns: countedRuns.length, countedRuns },
+    } };
+    const line = checkpointResultMarkerLine(result);
+    expect(Buffer.byteLength(line + '\n')).toBeLessThanOrEqual(CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES);
+    const marker = parseMarker(line);
+    expect(marker.ratchetShadow).toEqual({ composedProof: result.ratchetShadow!.composedProof });
+    expect(marker.markerCompacted).toMatchObject({ omitted: ['ratchetShadow.composedProofCohort'] });
+    expect(result.ratchetShadow!.composedProofCohort?.countedRuns).toEqual(countedRuns);
+  });
+
   it('leaves an ordinary marker byte-identical to the uncompacted result', () => {
     const result = { ...base(), summary: 'short summary' };
     expect(checkpointResultMarkerLine(result)).toBe(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(result)}`);

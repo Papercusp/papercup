@@ -195,7 +195,7 @@ export type ComposedProofQualification =
   | {
       status: 'ineligible';
       reason: 'full-gate-fallback' | 'qualification-context-unmeasured' | 'unverified-legacy-comparison'
-        | 'nothing-carried';
+        | 'nothing-carried' | 'lineage-identity-unmeasured';
     }
   | {
       status: 'eligible';
@@ -205,6 +205,8 @@ export type ComposedProofQualification =
     };
 
 const PROOF_CONTEXT_FINGERPRINT = /^sha256-proof-context-v1:[a-f0-9]{64}$/;
+const fullCommitId = (value: unknown): value is string =>
+  typeof value === 'string' && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
 
 /** Both sides of the proof context by fingerprint; undefined when either side is unmeasured or incomplete. */
 function bindProofContext(value: ProofContextComparison | null | undefined): { before: string; after: string } | undefined {
@@ -230,6 +232,7 @@ function comparisonQualification(record: unknown, comparison: unknown): Composed
     || typeof after !== 'string' || !PROOF_CONTEXT_FINGERPRINT.test(after)) return ineligible('qualification-context-unmeasured');
   const carried = record.carriedCount;
   if (typeof carried !== 'number' || !Number.isInteger(carried) || carried < 1) return ineligible('nothing-carried');
+  if (!fullCommitId(record.candidate) || !fullCommitId(record.repairHead)) return ineligible('lineage-identity-unmeasured');
   return { status: 'eligible', instrumentFingerprint: fingerprint, proofContext: { before, after }, carriedCount: carried };
 }
 
@@ -433,33 +436,60 @@ export function compareComposedProofShadow(
  * Credit never survives an instrument change: a different or unmeasured fingerprint starts from zero.
  * This only counts. The switch that acts on the count belongs to the acting change (P-005).
  */
-export interface ComposedProofShadowCohort {
-  schemaVersion: 'shadow-cohort-v1';
+interface ShadowCohortCounts {
   /** null while the executing instrument is unmeasured; such a cohort holds no credit. */
   instrumentFingerprint: string | null;
   qualifiedRuns: number;
-  /** `candidate:repairHead` keys already counted (newest last), so one lineage is credited once. */
+  /** Candidate and repair-head pairs in the order they earned credit. */
   countedRuns: string[];
 }
 
-/** Bound on remembered lineage keys. A lineage older than this many credited runs could be credited again. */
+interface LegacyShadowCohort extends ShadowCohortCounts { schemaVersion: 'shadow-cohort-v1' }
+export interface ComposedProofShadowCohort extends ShadowCohortCounts {
+  schemaVersion: 'shadow-cohort-v2';
+  /** Version 1 recorded abbreviated pairs and could evict earlier pairs. Retain its observations for inspection. */
+  unverifiedLegacy?: LegacyShadowCohort;
+}
+
+/** Historical wire bound for version 1. Version 2 retains the complete membership in gate_health. */
 export const COMPOSED_PROOF_COHORT_KEY_CAP = 16;
 
-/** Strict read of a stored cohort. Anything malformed or internally inconsistent is no cohort, so no credit. */
-export function parseComposedProofCohort(value: unknown): ComposedProofShadowCohort | undefined {
+function readCohortCounts(value: Record<string, unknown>): ShadowCohortCounts | undefined {
+  const { instrumentFingerprint, qualifiedRuns, countedRuns } = value;
+  if (instrumentFingerprint !== null && !instrumentHash(instrumentFingerprint)) return undefined;
+  if (typeof qualifiedRuns !== 'number' || !Number.isSafeInteger(qualifiedRuns) || qualifiedRuns < 0
+    || (instrumentFingerprint === null && qualifiedRuns !== 0)) return undefined;
+  if (!Array.isArray(countedRuns) || !countedRuns.every((key): key is string => typeof key === 'string')
+    || new Set(countedRuns).size !== countedRuns.length) return undefined;
+  return { instrumentFingerprint, qualifiedRuns, countedRuns: [...countedRuns] };
+}
+
+function readLegacyCohort(value: unknown): LegacyShadowCohort | undefined {
   if (!isRecord(value) || value.schemaVersion !== 'shadow-cohort-v1') return undefined;
-  const raw = value.instrumentFingerprint;
-  const fingerprint = raw === null ? null : instrumentHash(raw) ? raw : undefined;
-  const runs = value.qualifiedRuns;
-  const keys = value.countedRuns;
-  if (fingerprint === undefined || typeof runs !== 'number' || !Number.isInteger(runs) || runs < 0) return undefined;
-  if (!Array.isArray(keys) || keys.length > COMPOSED_PROOF_COHORT_KEY_CAP
-    || keys.some((key) => typeof key !== 'string' || key.length < 3 || key.length > 25)
-    || new Set(keys).size !== keys.length) return undefined;
-  if (runs < keys.length || (runs > keys.length && keys.length < COMPOSED_PROOF_COHORT_KEY_CAP)) return undefined;
-  if (fingerprint === null && runs !== 0) return undefined;
-  return { schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: fingerprint, qualifiedRuns: runs,
-    countedRuns: [...keys] as string[] };
+  const counts = readCohortCounts(value);
+  if (!counts || counts.countedRuns.length !== Math.min(counts.qualifiedRuns, COMPOSED_PROOF_COHORT_KEY_CAP)
+    || counts.countedRuns.some(key => key.length < 3 || key.length > 25)) return undefined;
+  return { schemaVersion: 'shadow-cohort-v1', ...counts };
+}
+
+/** Only complete identities contribute credit. Keep legacy evidence when starting fresh qualification. */
+export function parseComposedProofCohort(value: unknown): ComposedProofShadowCohort | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.schemaVersion === 'shadow-cohort-v1') {
+    const legacy = readLegacyCohort(value);
+    if (!legacy) return undefined;
+    return { schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: null, qualifiedRuns: 0,
+      countedRuns: [], unverifiedLegacy: legacy };
+  }
+  if (value.schemaVersion !== 'shadow-cohort-v2') return undefined;
+  const counts = readCohortCounts(value);
+  if (!counts || counts.qualifiedRuns !== counts.countedRuns.length || counts.countedRuns.some(key => {
+    const pair = key.split(':');
+    return pair.length !== 2 || !pair.every(fullCommitId);
+  })) return undefined;
+  const legacy = readLegacyCohort(value.unverifiedLegacy);
+  if (value.unverifiedLegacy !== undefined && !legacy) return undefined;
+  return { schemaVersion: 'shadow-cohort-v2', ...counts, ...(legacy && { unverifiedLegacy: legacy }) };
 }
 
 /**
@@ -473,19 +503,20 @@ export function parseComposedProofCohort(value: unknown): ComposedProofShadowCoh
 export function advanceComposedProofCohort(previous: unknown, record: ComposedProofShadowRecord): ComposedProofShadowCohort {
   const instrument = parseRatchetInstrument(record.instrument);
   const fingerprint = instrument?.status === 'measured' ? instrument.fingerprint : null;
-  const reset: ComposedProofShadowCohort = {
-    schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: fingerprint, qualifiedRuns: 0, countedRuns: [] };
-  if (fingerprint === null) return reset;
   const prior = parseComposedProofCohort(previous);
+  const reset: ComposedProofShadowCohort = {
+    schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: fingerprint, qualifiedRuns: 0, countedRuns: [],
+    ...(prior?.unverifiedLegacy && { unverifiedLegacy: prior.unverifiedLegacy }) };
+  if (fingerprint === null) return reset;
   const cohort = prior && prior.instrumentFingerprint === fingerprint ? prior : reset;
   const comparison = record.comparison;
   if (!comparison) return cohort;
   if (record.mode === 'composed' && comparison.agree !== true) return reset;
   if (comparisonQualification(record, comparison).status !== 'eligible') return cohort;
-  const key = record.candidate.slice(0, 12) + ':' + record.repairHead.slice(0, 12);
+  const key = record.candidate + ':' + record.repairHead;
   if (cohort.countedRuns.includes(key)) return cohort;
-  return { ...cohort, qualifiedRuns: cohort.qualifiedRuns + 1,
-    countedRuns: [...cohort.countedRuns, key].slice(-COMPOSED_PROOF_COHORT_KEY_CAP) };
+  const countedRuns = [...cohort.countedRuns, key];
+  return { ...cohort, qualifiedRuns: countedRuns.length, countedRuns };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -733,8 +764,8 @@ export function compactRatchetShadow(h: RatchetShadowHealth): RatchetShadowHealt
     out.composedProof = {
       schemaVersion: 1,
       ...(parseRatchetInstrument(cp.instrument) ? { instrument: parseRatchetInstrument(cp.instrument) } : {}),
-      candidate: cp.candidate.slice(0, 12),
-      repairHead: cp.repairHead.slice(0, 12),
+      candidate: cp.candidate,
+      repairHead: cp.repairHead,
       atMs: cp.atMs,
       status: cp.status,
       ...(cp.reason ? { reason: cp.reason.slice(0, 160) } : {}),

@@ -68,7 +68,7 @@ describe('instrument-v1 binding', () => {
   it('preserves the instrument through original shadow, compact marker and persisted consumer, and grants eligibility only while it is measured', async () => {
     const instrument = captureRatchetInstrument(artifact(), context);
     const plan = (bound: typeof instrument) => planComposedProofShadow({ instrument: bound, proofContext: { before: context, after: context },
-      candidate: 'candidate', repairHead: 'head', round1: { failingTests: ['a.test.ts'], failingCount: 1 },
+      candidate: 'a'.repeat(40), repairHead: 'b'.repeat(40), round1: { failingTests: ['a.test.ts'], failingCount: 1 },
       changedFiles: [], radius: async () => new Set(), nowMs: 1 });
     const shadow = await plan(instrument);
     const record = compareComposedProofShadow(shadow, { green: false, failingTests: ['a.test.ts'] });
@@ -349,8 +349,8 @@ describe('composed-proof cohort (R15-INSTRUMENT-ROTATION)', () => {
 
   it('counts one credit per qualified lineage and carries it across the stored boundary', () => {
     let cohort = advanceComposedProofCohort(undefined, run(1));
-    expect(cohort).toEqual({ schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: instrument.fingerprint,
-      qualifiedRuns: 1, countedRuns: [run(1).candidate.slice(0, 12) + ':' + run(1).repairHead.slice(0, 12)] });
+    expect(cohort).toEqual({ schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: instrument.fingerprint,
+      qualifiedRuns: 1, countedRuns: [run(1).candidate + ':' + run(1).repairHead] });
     cohort = advanceComposedProofCohort(cohort, run(1, { atMs: 99 }));
     expect(cohort.qualifiedRuns).toBe(1);
     cohort = advanceComposedProofCohort(cohort, run(2));
@@ -361,6 +361,51 @@ describe('composed-proof cohort (R15-INSTRUMENT-ROTATION)', () => {
     const stored = parseRatchetShadowHealth(JSON.parse(JSON.stringify(compactRatchetShadow({ composedProofCohort: cohort }))));
     expect(stored?.composedProofCohort).toEqual(cohort);
     expect(advanceComposedProofCohort(stored?.composedProofCohort, run(6)).qualifiedRuns).toBe(3);
+  });
+
+  it('preserves distinct full commit pairs through the round marker and stored-health reader', () => {
+    const head = 'a'.repeat(64);
+    const first = run(1, { candidate: '1'.repeat(40), repairHead: head });
+    const second = run(2, { candidate: '1'.repeat(39) + '2', repairHead: head });
+    const third = run(3, { candidate: second.candidate, repairHead: 'a'.repeat(63) + 'b' });
+    let health = nextStoredRatchetShadow(null, null);
+    for (const round of [first, second, third, first]) {
+      const marker = compactRatchetShadow({ composedProof: round });
+      expect(marker.composedProof).toMatchObject({ candidate: round.candidate, repairHead: round.repairHead });
+      health = nextStoredRatchetShadow(JSON.parse(JSON.stringify(health)), marker);
+    }
+    expect(health?.composedProofCohort).toMatchObject({ qualifiedRuns: 3,
+      countedRuns: [first, second, third].map(round => round.candidate + ':' + round.repairHead) });
+  });
+
+  it.each([15, 16, 17, 65])('retains every counted lineage after reload and replay across %i rounds', count => {
+    const rounds = Array.from({ length: count }, (_, index) => run(index + 1));
+    let health = nextStoredRatchetShadow(null, null);
+    for (const batch of [rounds, [...rounds].reverse(), rounds]) {
+      for (const round of batch) {
+        const marker = compactRatchetShadow({ composedProof: round });
+        health = nextStoredRatchetShadow(JSON.parse(JSON.stringify(health)), marker);
+      }
+      const cohort = health?.composedProofCohort;
+      expect(cohort?.qualifiedRuns).toBe(count);
+      expect(cohort?.countedRuns).toEqual(rounds.map(round => round.candidate + ':' + round.repairHead));
+    }
+  });
+
+  it('retains the abbreviated history as unverified and starts counting from full identities', () => {
+    const old = { schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: instrument.fingerprint,
+      qualifiedRuns: 1, countedRuns: ['0123456789ab:fedcba987654'] };
+    const migrated = nextStoredRatchetShadow({ composedProofCohort: old }, undefined);
+    expect(migrated?.composedProofCohort).toMatchObject({ schemaVersion: 'shadow-cohort-v2',
+      qualifiedRuns: 0, countedRuns: [], unverifiedLegacy: old });
+    const short = run(1, { candidate: '0123456789ab', repairHead: 'fedcba987654' });
+    expect(qualified(short)).toEqual({ status: 'ineligible', reason: 'lineage-identity-unmeasured' });
+    const afterShort = nextStoredRatchetShadow(migrated, { composedProof: short });
+    expect(afterShort?.composedProofCohort?.qualifiedRuns).toBe(0);
+    const verified = run(2);
+    const afterFull = nextStoredRatchetShadow(JSON.parse(JSON.stringify(afterShort)), { composedProof: verified });
+    expect(afterFull?.composedProofCohort).toMatchObject({ qualifiedRuns: 1,
+      countedRuns: [verified.candidate + ':' + verified.repairHead], unverifiedLegacy: old });
   });
 
   it('drops prior credit when any bound instrument input changes, keeps it for unchanged bytes, and holds none while unmeasured', () => {
@@ -385,7 +430,7 @@ describe('composed-proof cohort (R15-INSTRUMENT-ROTATION)', () => {
     const same = captureRatchetInstrument({ ...original, evidenceRef: '/elsewhere', sourceSha: 'e'.repeat(40) }, identity('base'));
     expect(advanceComposedProofCohort(prior, run(3, { instrument: same })).qualifiedRuns).toBe(3);
     expect(advanceComposedProofCohort(prior, run(3, { instrument: unmeasured }))).toEqual({
-      schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] });
+      schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] });
     expect(advanceComposedProofCohort(prior, run(3, { instrument: undefined })).qualifiedRuns).toBe(0);
   });
 
@@ -418,7 +463,7 @@ describe('composed-proof cohort (R15-INSTRUMENT-ROTATION)', () => {
     // An unmeasured instrument holds no credit, and the next measured round starts from zero.
     const lost = nextStoredRatchetShadow(second, { composedProof: run(5, { instrument: unmeasured }) });
     expect(lost?.composedProofCohort).toEqual({
-      schemaVersion: 'shadow-cohort-v1', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] });
+      schemaVersion: 'shadow-cohort-v2', instrumentFingerprint: null, qualifiedRuns: 0, countedRuns: [] });
     expect(nextStoredRatchetShadow(lost, { composedProof: run(6) })?.composedProofCohort?.qualifiedRuns).toBe(1);
   });
 });
