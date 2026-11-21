@@ -1,15 +1,29 @@
 import { readFileSync } from 'node:fs';
-import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
-import { detectEmbeddedDatabaseSettings } from '@papercusp/resource-profile';
 import postgres from 'postgres';
 
-const pg = await startEmbeddedPostgresServer({
-  dataDir: '/work/pgdata',
-  credentialsFile: '/work/credentials.json',
-  extraPostgresSettings: detectEmbeddedDatabaseSettings(),
-});
+const discovery = process.argv[2];
+let pg;
 try {
-  const sql = postgres(pg.urls.admin, { max: 1 });
+  let appUrl;
+  if (discovery) {
+    const record = JSON.parse(readFileSync(discovery, 'utf8'));
+    const target = new URL(record.appUrl);
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(target.hostname) ||
+        Number(target.port) !== Number(process.env.PAPERCUSP_PG_PORT)) {
+      throw new Error('Expected the relocated server to use its own loopback database');
+    }
+    appUrl = record.appUrl;
+  } else {
+    const { startEmbeddedPostgresServer } = await import('@papercusp/embedded-postgres-server');
+    const { detectEmbeddedDatabaseSettings } = await import('@papercusp/resource-profile');
+    pg = await startEmbeddedPostgresServer({
+      dataDir: '/work/pgdata',
+      credentialsFile: '/work/credentials.json',
+      extraPostgresSettings: detectEmbeddedDatabaseSettings(),
+    });
+    appUrl = pg.urls.app;
+  }
+  const sql = postgres(appUrl, { max: 1 });
   try {
     const settings = await sql`
       SELECT name, CASE WHEN name = 'max_connections' THEN current_setting(name)::bigint
@@ -25,5 +39,5 @@ try {
     await sql.end();
   }
 } finally {
-  await pg.stop();
+  await pg?.stop();
 }
