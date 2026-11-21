@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { createSourceByteSnapshot, captureRecordedProofContext } from '@papercusp/test-config/execution-details';
-import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
+import * as trackedFiles from '../../../../scripts/lib/tracked-files.mjs';
 import { PROOF_CONTEXT_COMPONENTS, createProofContextIdentity, proofContextImpact,
   type ProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
 import { enumerateAffectedTaskSelection } from '../../../../scripts/lib/related-tests.mjs';
@@ -63,7 +63,7 @@ function compare(oldCapture: ProofContextReachCapture, newCapture: ProofContextR
 describe('actual OLD + NEW static consumer reach', () => {
   it('uses the same source-byte identity as original result observations', () => {
     const root = tree();
-    const source = [...listFilesIncludingUntracked(root).files].sort();
+    const source = [...trackedFiles.listFilesIncludingUntracked(root).files].sort();
     const captured = known(captureProofContextReach({ ...input(root), componentFiles: { source } }));
     const pin = createSourceByteSnapshot(source.map(file => ({ path: file,
       sha256: createHash('sha256').update(readFileSync(join(root, file))).digest('hex') })))!;
@@ -279,13 +279,48 @@ describe('actual OLD + NEW static consumer reach', () => {
       lintLegs: [], admissions: [], dependentTestsOf: () => [] })).toMatchObject({ mode: 'full-gate' });
   });
 
-  it('treats malformed persisted captures as unknown rather than throwing on validly hashed bad shape', () => {
+  it('requires a complete final file census even when the enumerated paths stay the same', () => {
+    const root = tree();
+    write(root, '.gitmodules', '');
+    const options = input(root);
+    const original = known(captureProofContextReach(options));
+    const identity = context(original);
+    const scan = trackedFiles.listFilesIncludingUntracked;
+    const before = scan(root);
+    expect(before.unscanned).toEqual([]);
+
+    const scans = vi.spyOn(trackedFiles, 'listFilesIncludingUntracked')
+      .mockImplementationOnce(scan)
+      .mockImplementationOnce(cwd => {
+        write(root, '.gitmodules', '[submodule "unavailable"]\n\tpath = modules/unavailable\n');
+        return scan(cwd);
+      });
+    try {
+      const current = captureProofContextReach(options);
+      const after = scan(root);
+      expect(after.files).toEqual(before.files);
+      expect(after.unscanned).toEqual(['modules/unavailable']);
+      expect(current).toEqual({ status: 'unknown', reason: 'source-census-incomplete' });
+      const comparison = compareProofContextReach({ before: identity, after: identity,
+        oldCapture: original, newCapture: current });
+      expect(planComposedProof({ proofContext: comparison, round1Tests: { [A]: 'pass', [B]: 'pass' },
+        lintLegs: [], admissions: [], dependentTestsOf: () => [] })).toMatchObject({ mode: 'full-gate' });
+    } finally {
+      scans.mockRestore();
+    }
+  });
+
+  it('rejects legacy and malformed persisted captures even when their fingerprints match', () => {
     const root = tree(), capture = known(captureProofContextReach(input(root))), identity = context(capture);
     const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
       : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort()
         .map(key => [key, canonical((value as Record<string, unknown>)[key])])) : value;
     const { fingerprint: _fingerprint, ...body } = capture;
-    for (const invalid of [{ ...body, components: null }, { ...body, consumers: [null] }]) {
+    for (const invalid of [
+      { ...body, schemaVersion: 'static-selected-consumers-v1' },
+      { ...body, components: null },
+      { ...body, consumers: [null] },
+    ]) {
       const newCapture = { ...invalid, fingerprint: hash(JSON.stringify(canonical(invalid))) } as unknown as ProofContextReachCapture;
       const comparison = compareProofContextReach({ before: identity, after: identity, oldCapture: capture, newCapture });
       expect(comparison).toMatchObject({ status: 'unknown', reason: 'reach-capture-incomplete' });

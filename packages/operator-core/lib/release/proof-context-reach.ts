@@ -16,7 +16,8 @@ import { buildIndex, transitiveDeps, tsconfigPathEntriesFor,
 import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
 
-export const PROOF_CONTEXT_REACH_VERSION = 'static-selected-consumers-v1';
+// A v1 capture could report known reach after an incomplete final file census.
+export const PROOF_CONTEXT_REACH_VERSION = 'static-selected-consumers-v2';
 type FileIdentity = { path: string; sha256: string };
 type Consumer = { kind: 'test' | 'leg'; id: string; inputs: FileIdentity[] };
 type Component = { identity: string; inputs: FileIdentity[]; scope: 'files' | 'global' };
@@ -128,9 +129,12 @@ export function captureProofContextReach(input: ProofContextReachCaptureInput): 
     const root = realpathSync(input.rootDir);
     const selection = input.selection;
     const fail = (reason: string): never => { throw new Error(reason); };
-    const census = listFilesIncludingUntracked(root);
-    if (census.unscanned.length) return { status: 'unknown', reason: 'source-census-incomplete' };
-    const inventory = sorted(census.files as string[]);
+    const readInventory = () => {
+      const census = listFilesIncludingUntracked(root);
+      if (census.unscanned.length) return fail('source-census-incomplete');
+      return sorted(census.files as string[]);
+    };
+    const inventory = readInventory();
     if (!inventory.every(relativeFile)) return { status: 'unknown', reason: 'source-census-invalid' };
     const files = new Set(inventory.map(file => path.resolve(root, file)));
     const reads = new Map<string, Buffer>();
@@ -270,7 +274,7 @@ export function captureProofContextReach(input: ProofContextReachCaptureInput): 
       inputs: [...graphInputs.values()].sort((a, b) => a.path.localeCompare(b.path)) };
     // Detect concurrent writes rather than combining a graph from one tree with bytes from another.
     if (JSON.stringify(workspaceDirs) !== JSON.stringify(workspaceCensus())
-      || JSON.stringify(inventory) !== JSON.stringify(sorted(listFilesIncludingUntracked(root).files as string[]))
+      || JSON.stringify(inventory) !== JSON.stringify(readInventory())
       || [...reads].some(([file, bytes]) => !readFileSync(file).equals(bytes)))
       return { status: 'unknown', reason: 'source-changed-during-capture' };
     const body = { status: 'known' as const, schemaVersion: PROOF_CONTEXT_REACH_VERSION as typeof PROOF_CONTEXT_REACH_VERSION,
