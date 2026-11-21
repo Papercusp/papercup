@@ -399,6 +399,14 @@ const NON_WORKSPACE_VITEST_ROUTES = [
 // Keep this route explicit, like the templates route above, so a path cannot be silently sent to
 // an arbitrary package's runner just because it happens to end in `.test.js`.
 const NON_WORKSPACE_NODE_ROUTES = [
+  // The performance package runs its headless TypeScript unit tests with Node + tsx.
+  // Packaged WebdriverIO specs retain their separate discovery guard below.
+  {
+    prefix: 'tools/perf-test/wdio/',
+    pathPattern: /\.node-test\.ts$/,
+    cwd: 'tools/perf-test/wdio',
+    nodeArgs: ['--import', 'tsx'],
+  },
   // The CLI package owns TypeScript Node:test files, not Vitest suites. Preserve
   // its package test script's host preflight when selecting one exact file.
   {

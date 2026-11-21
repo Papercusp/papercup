@@ -8,8 +8,9 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 
 // Pin the ambient active workspace to DEFAULT_COORD_WORKSPACE ('default'), the
 // scope this hermetic test wires everywhere (stores + reads use WS='default').
@@ -27,8 +28,15 @@ import {
   type ObjectRef,
   type ResolvedSubscriber,
 } from '@papercusp/coordination/capabilities';
-import { insertFanoutNotify, runFanoutForOutboxRow, type OutboxFanoutRow } from './fanout-projection';
+import { fanoutOutboxRow, insertFanoutNotify, runFanoutForOutboxRow, type OutboxFanoutRow } from './fanout-projection';
 import type { InjectEvent } from '../../agent-tools/coordination/fanout-delivery';
+import epochEndpoints from '../../endpoint-route/routes/agent-mcp/context-epoch-bump';
+import { automaticSubscriptionFields } from '../../subscription-lifecycle';
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql }),
+}));
 
 vi.mock('../../workspace-registry', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -102,6 +110,52 @@ function deps(s: postgres.Sql) {
 }
 
 describe('fan-out end-to-end (real PG)', () => {
+  it('a resumed context receives new references and stops receiving changes to old references', async () => {
+    for (const migration of [
+      '581-memory-session-surfaced-ledger.sql',
+      '1638-subscription-reasons-lifecycle.sql',
+      '1639-substrate-fanout-deliveries.sql',
+    ]) {
+      await applyMigrationForTest(sql, fileURLToPath(new URL(
+        `../../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url,
+      )));
+    }
+
+    const reader = 'su-resumed-reader';
+    const peer = 'su-continuing-reader';
+    const subscriptions = stores(sql).subscriptions;
+    async function follow(subscriber: string, plan: string, epoch: number) {
+      const fields = await automaticSubscriptionFields(subscriber, 'context');
+      expect(fields).toEqual({ subscribe: true, reason: 'context', context_epoch: epoch });
+      await subscriptions.subscribe({
+        ...fields, subscriber_id: subscriber, target_kind: 'object', target_ref: `plan:${plan}`, created_ts: TS,
+      });
+    }
+    const dispatch = (id: number, key: string) => fanoutOutboxRow({
+      id, table_name: 'harness_plans', op: 'put', key, row: { status: 'active' },
+    });
+
+    await follow(reader, 'old', 0);
+    await follow(peer, 'old', 0);
+    expect(await dispatch(201, 'old')).toBe(2);
+
+    const request = new Request(`http://localhost/api/agent-mcp/context-epoch-bump?source=resume&owner=${reader}`, {
+      method: 'POST',
+    });
+    const response = await epochEndpoints[0].handler(request, {
+      principal: null, input: undefined, params: {}, log: () => {}, signal: request.signal,
+    });
+    expect(await response.json()).toEqual({ ok: true, epoch: 1 });
+    await follow(reader, 'new', 1);
+    expect(await dispatch(202, 'old')).toBe(1);
+    expect(await dispatch(203, 'new')).toBe(1);
+
+    const messages = (subscriber: string) => notifyRowsFor(sql, subscriber)
+      .then(rows => rows.map(row => [row.msg_id, row.subject]));
+    expect(await messages(reader)).toEqual([[`fan-201-${reader}`, 'plan:old'], [`fan-203-${reader}`, 'plan:new']]);
+    expect(await messages(peer)).toEqual([[`fan-201-${peer}`, 'plan:old'], [`fan-202-${peer}`, 'plan:old']]);
+  });
+
   it('a feature change notifies a direct object subscriber', async () => {
     const st = stores(sql);
     await st.subscriptions.subscribe({ subscriber_id: 'agA', target_kind: 'object', target_ref: 'feature:F-1', created_ts: TS });

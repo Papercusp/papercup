@@ -1508,6 +1508,51 @@ describe('test-files router', () => {
     }
   });
 
+  it('routes the packaged desktop performance unit file to its declared TypeScript Node runner', () => {
+    const file = 'tools/perf-test/wdio/perf-report.node-test.ts';
+    const route = discoverTestRoute(file);
+    expect(isTestFilePath(file)).toBe(true);
+    expect(route).toMatchObject({ runner: 'node', config: null,
+      cwd: resolve(REPO_ROOT, 'tools/perf-test/wdio'),
+      requested: 'perf-report.node-test.ts', nodeArgs: ['--import', 'tsx'] });
+    expect(groupRoutes([route])[0].nodeArgs).toEqual(['--import', 'tsx']);
+  });
+
+  it.each([0, 1])('executes an isolated performance TypeScript Node control with exit %i', (exitCode) => {
+    const root = mkdtempSync(join(tmpdir(), 'perf-node-router-'));
+    try {
+      const cwd = join(root, 'tools/perf-test/wdio');
+      mkdirSync(cwd, { recursive: true });
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(root, 'node_modules'), 'dir');
+      writeFileSync(join(root, 'vitest.config.ts'), 'throw new Error("Node tests must not load Vitest");');
+      // Use the maintained package declaration, rather than inventing a fixture runner.
+      const declaration = JSON.parse(readFileSync(join(REPO_ROOT, 'tools/perf-test/wdio/package.json'), 'utf8'));
+      writeFileSync(join(cwd, 'package.json'), JSON.stringify(declaration));
+      writeFileSync(join(cwd, 'perf-report.node-test.ts'), `
+        import assert from 'node:assert/strict';
+        import test from 'node:test';
+        const actual: number = 2;
+        test('performance TypeScript control', () => {
+          assert.equal(process.cwd(), ${JSON.stringify(cwd)});
+          assert.equal(actual, ${exitCode === 0 ? 2 : 3});
+        });
+      `);
+      const route = discoverTestRoute('tools/perf-test/wdio/perf-report.node-test.ts', root);
+      expect(route.runner).toBe('node');
+      const args = buildNodeTestArgs([route.requested], ['--test-reporter=tap'], { nodeArgs: route.nodeArgs });
+      expect(declaration.scripts['test:unit']).toBe('node --import tsx --test perf-report.node-test.ts');
+      const run = spawnSync(process.execPath, args, { cwd: route.cwd, encoding: 'utf8', timeout: 15_000,
+        env: { ...process.env, NODE_OPTIONS: '' } });
+      expect(run.error, run.stderr || run.stdout).toBeUndefined();
+      expect(run.status, run.stderr || run.stdout).toBe(exitCode);
+      expect(testsExecutedFrom(run.stdout)).toBe(1);
+      expect(testsSkippedFrom(run.stdout)).toBe(0);
+      expect(run.stdout).toContain(exitCode === 0 ? '# pass 1' : '# fail 1');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('refuses packaged WebdriverIO specs before the root Vitest fallback', async () => {
     const file = 'tools/perf-test/wdio/specs/plan-popup-open.perf.spec.ts';
     expect(() => discoverTestRoute(file)).toThrow(/run npm run test:wdio --prefix tools\/perf-test\/wdio/);
