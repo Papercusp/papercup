@@ -99,9 +99,12 @@ beforeEach(() => {
 describe('claimWorkItem — issue-family workspace-scope consistency (EI-1545)', () => {
   it('forwards dispatch provenance to the issue writer (EI-25163151398656476)', async () => {
     await claimWorkItem('WI-246', 'su-member', { assignedBy: 'su-leader' });
-    expect(claimIssue).toHaveBeenCalledWith('WI-246', 'su-member', expect.objectContaining({
+    expect(claimIssue).toHaveBeenCalledTimes(1);
+    const [id, assignee, options] = claimIssue.mock.calls[0]!;
+    expect([id, assignee]).toEqual(['WI-246', 'su-member']);
+    expect(options).toMatchObject({
       workspaceId: 'ws-0', assignedBy: 'su-leader',
-    }));
+    });
   });
 
   it('resolves the issue-scope workspace exactly ONCE per claim, and threads that SAME value into both the pre-check and the write', async () => {
@@ -109,9 +112,10 @@ describe('claimWorkItem — issue-family workspace-scope consistency (EI-1545)',
 
     expect(resolveIssuesScopeWorkspace).toHaveBeenCalledTimes(1);
 
-    const [wsUsedForCheck] = getIssueInWorkspace.mock.calls[0]!;
+    expect(getIssueInWorkspace).toHaveBeenCalledTimes(1);
+    const [wsUsedForCheck, checkedId] = getIssueInWorkspace.mock.calls[0]!;
     const [, , claimOpts] = claimIssue.mock.calls[0]!;
-    expect(getIssueInWorkspace).toHaveBeenCalledWith('ws-0', 'WI-246');
+    expect([wsUsedForCheck, checkedId]).toEqual(['ws-0', 'WI-246']);
     expect(claimOpts).toEqual({ workspaceId: 'ws-0' });
     expect(wsUsedForCheck).toBe(claimOpts!.workspaceId);
 

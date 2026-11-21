@@ -1816,11 +1816,16 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       expect(row.check.provenance?.diagnostics).toContainEqual({ path: '$["sampleCount"]', value: count });
     }
     expectSample(await measure(), null, 0);
-    await write('EI-duration-a', 0, 'partial', { purpose: 'diagnostic' });
+    await write('EI-duration-unaudited-baseline', 0, 'partial', { gradingAudit: undefined });
+    await write('EI-duration-audited-regrade', 1, 'pass', { baselineRef: 'EI-duration-unaudited-baseline' });
+    expectSample(await measure(), null, 0);
+
+    await write('EI-duration-a', 0, 'partial', { purpose: 'diagnostic', gradingAudit: undefined });
     await write('EI-duration-b', 2, 'broken');
     await write('EI-duration-c', 0, 'degraded');
     const linkedA = { baselineRef: 'EI-duration-a' };
     await write('EI-duration-late', 28, 'pass', linkedA);
+    await write('EI-duration-unaudited-regrade', 1, 'pass', { ...linkedA, gradingAudit: undefined });
     await write('EI-duration-pending', 1, 'pass', { ...linkedA, gradingAudit: { state: 'pending' } });
     await write('EI-duration-foreign', 2, 'pass', { ...linkedA, subject: { ...subject, windowEnd: '2026-02-03' } });
     await write('EI-duration-corrected', 3, 'pass', linkedA);

@@ -15,7 +15,78 @@ import type { RecordedTestCase } from './testing-case-filter';
 
 export interface PortalPlaywrightRoute { kind: 'portal-playwright'; root: string; file: string }
 export type CriterionTestRoute = { kind: 'vitest' } | PortalPlaywrightRoute | { kind: 'unsupported'; reason: string };
-const PLAYWRIGHT_IMPORT_RE = /(?:from\s*|require\(\s*|import\(\s*)['"]@playwright\/test['"]/;
+const playwrightClients = new Set(['request', 'chromium', 'firefox', 'webkit', 'devices', 'selectors', 'errors', '_android', '_electron']);
+const vitestRegistrars = ['describe', 'suite', 'it', 'test'];
+const vitestModifiers = new Set(['concurrent', 'sequential', 'only', 'skip', 'todo', 'fails', 'shuffle']);
+const vitestFactories = new Set(['each', 'for', 'skipIf', 'runIf', 'extend']);
+
+/** Look for a module-level call to an imported registrar, including curried .each and .skipIf. */
+function registersVitest(statement: ts.Statement, registrars: ReadonlySet<string>): boolean {
+  if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression)
+    || statement.expression.arguments.length < 2) return false;
+  function isRegistrar(target: ts.Expression): boolean {
+    if (ts.isIdentifier(target)) return registrars.has(target.text);
+    if (ts.isPropertyAccessExpression(target)) {
+      if (ts.isIdentifier(target.expression) && registrars.has(target.expression.text + '.' + target.name.text)) return true;
+      return vitestModifiers.has(target.name.text) && isRegistrar(target.expression);
+    }
+    const factory = ts.isCallExpression(target) ? target.expression : ts.isTaggedTemplateExpression(target) ? target.tag : null;
+    return !!factory && ts.isPropertyAccessExpression(factory)
+      && vitestFactories.has(factory.name.text) && isRegistrar(factory.expression);
+  }
+  return isRegistrar(statement.expression.expression);
+}
+
+function criterionTestFramework(file: string, source: string): 'vitest' | 'playwright' | 'ambiguous' {
+  // A module specifier with escapes also needs parsing. Most Vitest files take the fast path.
+  if (!source.includes('@playwright/test') && !source.includes('\\')) return 'vitest';
+  const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const registrars = new Set<string>();
+  let usesPlaywright = false;
+  let mayUsePlaywrightRunner = false;
+  let opaqueVitestImport = false;
+  function visit(node: ts.Node): void {
+    if (ts.isStringLiteralLike(node)) {
+      const parent = node.parent;
+      if (ts.isImportDeclaration(parent) && parent.moduleSpecifier === node) {
+        const clause = parent.importClause;
+        const bindings = clause?.namedBindings;
+        if (node.text === 'vitest' && !clause?.isTypeOnly && clause?.name) opaqueVitestImport = true;
+        if (node.text === 'vitest' && bindings && !clause?.isTypeOnly) {
+          if (ts.isNamespaceImport(bindings)) {
+            for (const name of vitestRegistrars) registrars.add(bindings.name.text + '.' + name);
+          } else {
+            for (const entry of bindings.elements) {
+              if (!entry.isTypeOnly && vitestRegistrars.includes((entry.propertyName ?? entry.name).text))
+                registrars.add(entry.name.text);
+            }
+          }
+        }
+        if (node.text === '@playwright/test') {
+          usesPlaywright = true;
+          const clientOnly = clause?.isTypeOnly || (!clause?.name && bindings && ts.isNamedImports(bindings)
+            && bindings.elements.every(entry => entry.isTypeOnly || playwrightClients.has((entry.propertyName ?? entry.name).text)));
+          if (!clientOnly) mayUsePlaywrightRunner = true;
+        }
+      } else if ((node.text === '@playwright/test' || node.text === 'vitest') && (ts.isExternalModuleReference(parent)
+        || (ts.isExportDeclaration(parent) && parent.moduleSpecifier === node && !parent.isTypeOnly)
+        || (ts.isCallExpression(parent) && parent.arguments[0] === node && (parent.expression.kind === ts.SyntaxKind.ImportKeyword
+          || (ts.isIdentifier(parent.expression) && parent.expression.text === 'require'))))) {
+        // These forms can expose the whole module, including its test registrar.
+        if (node.text === 'vitest') opaqueVitestImport = true;
+        else {
+          usesPlaywright = true;
+          mayUsePlaywrightRunner = true;
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  if (!usesPlaywright) return 'vitest';
+  if (mayUsePlaywrightRunner) return opaqueVitestImport || registrars.size > 0 ? 'ambiguous' : 'playwright';
+  return ast.statements.some(statement => registersVitest(statement, registrars)) ? 'vitest' : 'ambiguous';
+}
 
 /** Pin both the selected specs and the files that select their maintained executor. */
 function portalInputSnapshot(root: string, files: string[]): string {
@@ -59,7 +130,10 @@ function portalConfigMatches(config: string, file: string): boolean {
 export function resolveCriterionTestRoute(absFile: string): CriterionTestRoute {
   let source: string;
   try { source = readFileSync(absFile, 'utf8'); } catch { return { kind: 'vitest' }; }
-  if (!PLAYWRIGHT_IMPORT_RE.test(source)) return { kind: 'vitest' };
+  const framework = criterionTestFramework(absFile, source);
+  if (framework === 'vitest') return { kind: 'vitest' };
+  if (framework === 'ambiguous') return { kind: 'unsupported', reason:
+    'uses Playwright with mixed or unconfirmed test registration; a single supported test executor must own the suite' };
   const unsupported = (): CriterionTestRoute => ({ kind: 'unsupported', reason:
     'is a Playwright spec without a supported maintained Portal browser executor; native and other Playwright roots cannot run through the Vitest router' });
   let root = dirname(resolve(absFile));

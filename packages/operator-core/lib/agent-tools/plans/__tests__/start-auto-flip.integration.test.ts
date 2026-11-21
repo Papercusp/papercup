@@ -409,6 +409,10 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     const control = await readDurableParkControlRow({ workspaceId: WS, harnessSlug: HARNESS, id: node });
     expect(control).not.toBeNull();
     const expectedFingerprint = durableParkFingerprint(control!);
+    START_GATES.promotion.mockResolvedValueOnce({ promoted: 0, skipped: 1, workItems: [
+      { planItemId: 'P-001', workItemId: node, newlyPromoted: false, actionable: true,
+        association: { harnessSlug: HARNESS, planSlug: SLUG, planItemId: 'P-001' } },
+    ] });
     const started = await runStart();
     expect(started.isError, JSON.stringify(started.data)).toBe(false);
     expect(started.data).toMatchObject({ status: 'started', autoApproved: true });
@@ -430,6 +434,123 @@ describe('plans:start — draft auto-approve (P2-3)', () => {
     const rows = await admin`SELECT feature_id FROM harness_shared.work_items
       WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND source_plan_slug=${SLUG}`;
     expect(rows.map(row => row.feature_id)).toEqual([node]);
+  });
+
+  it.each(['owned child', 'detached migration record'] as const)('checks canonical promotion against its %s and preserves audit identity', async history => {
+    await seedLegacyPlan('ready', true);
+    const { resolveAgentIdentity } = await import('../../coordination/identity');
+    const { readExecutionPlanBindings } = await import('../plan-execution-guard');
+    const owner = resolveAgentIdentity(makeCtx()).ownerId;
+    const linked = history === 'owned child';
+    const suffix = `${linked ? 'linked' : 'detached'}-${HARNESS}`;
+    const node = `WI-canonical-${suffix}`;
+    const child = `WI-execution-${suffix}`;
+    const stamp = { plan_slug: SLUG, harness_slug: HARNESS, item_id: 'P-001' };
+    const park = { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' };
+    const historicalPayload = linked ? { plan_item: stamp } : { plan_item: stamp, ...park };
+    await admin`INSERT INTO harness_shared.plan_items (workspace_id, harness_slug, plan_slug, item_id, seq, item_text, status)
+      VALUES (${WS}, ${HARNESS}, ${SLUG}, 'P-001', 1, 'Record baseline findings', 'todo')`;
+    await admin`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts, taken_by,
+       source_plan_slug, source_plan_item_ids, plan_slug, plan_line_id, plan_deliverable, plan_line_text, plan_seq, parent_id, payload)
+      VALUES (${WS}, ${HARNESS}, ${node}, 'feature', 'canonical line', 'open', 0, 0, ${owner},
+        ${SLUG}, ARRAY['P-001']::text[], ${SLUG}, 'P-001', 'doc', 'Record baseline findings', 1, NULL,
+        ${admin.json(park)}),
+        (${WS}, ${HARNESS}, ${child}, 'task', 'execution child', 'open', 0, 0, ${owner},
+        ${SLUG}, ARRAY['P-001']::text[], NULL, NULL, NULL, NULL, NULL, ${linked ? node : null}, ${admin.json(historicalPayload)})`;
+    const promotion = await vi.importActual<typeof import('../../../plan-workitem-promotion-run')>('../../../plan-workitem-promotion-run');
+    const admission = await vi.importActual<typeof import('../plan-admission-preflight')>('../plan-admission-preflight');
+    START_GATES.promotion.mockImplementation(promotion.promotePlanItems);
+    START_GATES.admission.mockImplementation(admission.preflightExactPlanAdmission);
+    const bindings = () => readExecutionPlanBindings(owner, WS);
+    expect(await bindings()).toContainEqual(expect.objectContaining({ sourceRef: node, canonicalInvalid: true }));
+    const started = await runStart();
+    if (!linked) {
+      expect(started.data).toMatchObject({ ok: false, executionStartIssued: false, error: 'admission_refused' });
+      const lift = started.data.migrationParkLift as import('../plan-admission-preflight').MigrationParkLiftResult;
+      expect(lift.unsettled).toEqual(expect.arrayContaining([
+        expect.objectContaining({ workItemId: node, outcome: 'ambiguous-coverage', conflictingWorkItemIds: [child] }),
+        expect.objectContaining({ workItemId: child, outcome: 'promotion-subject-mismatch' }),
+      ]));
+      const retained = await admin`SELECT feature_id, payload FROM harness_shared.work_items
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND source_plan_slug=${SLUG} ORDER BY feature_id`;
+      expect(retained).toEqual([{ feature_id: node, payload: park }, { feature_id: child, payload: historicalPayload }]);
+      const receipts = await admin`SELECT id FROM harness_shared.audit_log WHERE workspace_id=${WS}
+        AND action='work_items:durable_park:clear' AND subject=ANY(${[node, child]}::text[])`;
+      expect(receipts).toEqual([]);
+      return;
+    }
+    expect(started.isError, JSON.stringify(started.data)).toBe(false);
+    expect(started.data).toMatchObject({ promotion: { promoted: 0, workItems: [
+      { planItemId: 'P-001', workItemId: node, newlyPromoted: false, actionable: true },
+    ] }, admission: { ready: true, promotion: { duplicateActionable: [], missingActionableItemIds: [] } } });
+    expect(started.data.migrationParkLift).toMatchObject({
+      rows: [{ workItemId: node, planItemIds: ['P-001'], outcome: 'cleared' }], unsettled: [],
+    });
+    expect(await bindings()).toContainEqual(expect.objectContaining({
+      sourceRef: node, canonical: expect.objectContaining({ itemId: node, lineId: 'P-001', ownerId: owner }),
+    }));
+    const retry = await runStart();
+    expect(retry.isError, JSON.stringify(retry.data)).toBe(false);
+    expect(retry.data.migrationParkLift).toBeUndefined();
+    const records = await admin`SELECT feature_id, parent_id, taken_by, payload FROM harness_shared.work_items
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND source_plan_slug=${SLUG} ORDER BY feature_id`;
+    expect(records).toEqual([
+      { feature_id: node, parent_id: null, taken_by: owner, payload: {} },
+      { feature_id: child, parent_id: node, taken_by: owner, payload: { plan_item: stamp } },
+    ]);
+    const audits = await admin`SELECT detail FROM harness_shared.admission_runs
+      WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND id LIKE 'work-item-durable-park-audit:plans-start:%'`;
+    const decisions = audits.flatMap(row => row.detail.result.rows).filter(row => row.id === node);
+    expect(decisions).toEqual([expect.objectContaining({ outcome: 'cleared' })]);
+  });
+
+  it.each(['detached', 'independent hold', 'detached before selection'] as const)('retains a %s row when a previously selected promotion is reconciled', async change => {
+    await seedLegacyPlan('ready', true);
+    const node = `WI-stale-${change.replaceAll(' ', '-')}-${HARNESS}`;
+    const park = { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' };
+    await admin`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts,
+       source_plan_slug, source_plan_item_ids, plan_slug, plan_line_id, plan_deliverable, plan_line_text, plan_seq, payload)
+      VALUES (${WS}, ${HARNESS}, ${node}, 'feature', 'selected line', 'open', 0, 0,
+        ${SLUG}, ARRAY['P-001']::text[], ${SLUG}, 'P-001', 'doc', 'Record baseline findings', 1, ${admin.json(park)})`;
+    const scope = { workspaceId: WS, harnessSlug: HARNESS, planSlug: SLUG };
+    if (change === 'detached before selection') {
+      const promotion = await vi.importActual<typeof import('../../../plan-workitem-promotion-run')>('../../../plan-workitem-promotion-run');
+      const receipt = await runWithWorkspace(WS, () => promotion.promotePlanItems({ ...scope, createdBy: 'test-start' }));
+      expect(receipt.workItems).toMatchObject([{ workItemId: node, association: { harnessSlug: HARNESS, planSlug: SLUG, planItemId: 'P-001' } }]);
+      START_GATES.promotion.mockResolvedValue(receipt);
+    }
+    const { readPlanLineWorkItemRefs } = await import('../plan-line-graph');
+    const [selected] = await readPlanLineWorkItemRefs(admin, { ...scope, slug: SLUG, workItemIds: [node], limit: 2 });
+    const { readDurableParkControlRow, durableParkFingerprint, runWorkItemDurableParkReconciliation } =
+      await import('../../../work-items-durable-park-audit');
+    const control = await readDurableParkControlRow({ ...scope, id: node });
+    expect(control).not.toBeNull();
+    const expectedParkFingerprint = durableParkFingerprint(control!);
+    if (change !== 'independent hold') {
+      await admin`UPDATE harness_shared.work_items SET plan_slug=NULL, plan_line_id=NULL
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    } else {
+      await admin`UPDATE harness_shared.work_items SET payload=payload || '{"admissionHold":true}'::jsonb
+        WHERE workspace_id=${WS} AND harness_slug=${HARNESS} AND feature_id=${node}`;
+    }
+    if (change === 'detached before selection') {
+      const retry = await runStart();
+      expect(retry.data).toMatchObject({ ok: false, executionStartIssued: false, migrationParkLift: {
+        unsettled: [{ workItemId: node, outcome: 'promotion-subject-mismatch' }],
+      } });
+    } else {
+      const result = await runWorkItemDurableParkReconciliation({ ...scope, actor: 'test-start', decisions: [{
+        id: node, reasonCode: 'condition-satisfied', evidence: 'Prior plan start selection in this isolated fixture', expectedParkFingerprint,
+        expectedPlanAssociation: { planSlug: selected.planSlug, planItemId: selected.planItemId, rowVersion: selected.rowVersion },
+      }] });
+      expect(result).toMatchObject({ cleared: 0, rows: [{ id: node, outcome: 'stale-fingerprint' }] });
+    }
+    expect((await readDurableParkControlRow({ ...scope, id: node }))?.payload).toEqual(
+      change === 'independent hold' ? { ...park, admissionHold: true } : park);
+    expect(await admin`SELECT id FROM harness_shared.audit_log WHERE workspace_id=${WS}
+      AND action='work_items:durable_park:clear' AND subject=${node}`).toEqual([]);
   });
 
   it.each(['promotion','binding'])('issues no authority when the final %s leg fails', async leg => {
@@ -594,6 +715,10 @@ describe('plans:start — refused approval leaves no persisted start (P-002)', (
     expect(START_GATES.prediction).not.toHaveBeenCalled();
 
     START_GATES.listCards.mockResolvedValue([newCard]);
+    START_GATES.promotion.mockResolvedValue({ promoted: 0, skipped: 1, workItems: [
+      { planItemId: 'P-001', workItemId: planItems[0].featureId, newlyPromoted: false, actionable: true,
+        association: { harnessSlug: HARNESS, planSlug: SLUG, planItemId: 'P-001' } },
+    ] });
     const retry = await runStart();
     expect(retry.isError, JSON.stringify(retry.data)).toBe(false);
     expect(retry.data).toMatchObject({ status: 'started', autoApproved: true });

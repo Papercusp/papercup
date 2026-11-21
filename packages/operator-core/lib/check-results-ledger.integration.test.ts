@@ -141,7 +141,7 @@ it('follows the latest complete report beyond older history while sample quality
   expect(await readLatestInstrumentCheckAttempt({ workspaceId: WS, rubricRef: `${rubricRef}-other`, criterionKey: 'outcomes' }, sql())).toBeNull();
 });
 
-it.each(['missing-ref', 'missing-report', 'malformed-latest', 'cancelled-latest', 'wrong-window'])(
+it.each(['missing-ref', 'missing-report', 'malformed-latest', 'cancelled-latest', 'wrong-window', 'missing-follow-through'])(
   'does not substitute a prior report when the latest attempt is %s (R1 H8)', async mode => {
     const rubricRef = `standing-health-${mode}`;
     const { deps, write } = healthRoundtrip(rubricRef);
@@ -153,6 +153,8 @@ it.each(['missing-ref', 'missing-report', 'malformed-latest', 'cancelled-latest'
     if (mode === 'cancelled-latest') await db.adminSql`UPDATE harness_shared.test_runs SET status='cancelled' WHERE id=${attempt!.testRunId}`;
     if (mode === 'wrong-window') await db.adminSql`UPDATE harness_shared.audit_log
       SET details=jsonb_set(details, '{window,windowStart}', '"2026-11-01T00:00:00Z"'::jsonb) WHERE workspace_id=${WS} AND id=${latest.id}`;
+    if (mode === 'missing-follow-through') await db.adminSql`UPDATE harness_shared.audit_log
+      SET details=details #- '{outcomes,0,followThrough}' WHERE workspace_id=${WS} AND id=${latest.id}`;
     expect((await measureLegMeasurementHealth(WS, deps)).verdict).toBe('unknown');
   });
 

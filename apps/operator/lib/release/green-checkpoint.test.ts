@@ -220,12 +220,24 @@ const testRequire = createRequire(import.meta.url);
 
 it("EI-27302708766102651: the production checkpoint imports outside Vitest", async () => {
   const checkpoint = new URL("./green-checkpoint.ts", import.meta.url).href;
-  const { stdout } = await promisify(execFile)(process.execPath, [
-    "--experimental-transform-types",
-    "--import", testRequire.resolve("tsx/esm"), "--input-type=module", "-e",
-    `await import(${JSON.stringify(checkpoint)}); console.log("checkpoint-import-ok"); process.exit(0);`,
-  ], { cwd: REPO_ROOT, timeout: 30_000, maxBuffer: 1024 * 1024 });
-  expect(stdout).toContain("checkpoint-import-ok");
+  const bootstrapRoot = mkdtempSync(join(tmpdir(), "checkpoint-import-"));
+  const bootstrap = join(bootstrapRoot, "native-import.mts");
+  try {
+    // A real ESM entrypoint avoids the CJS/eval cycle. Register both hooks for
+    // the release directory's existing mixture of CJS and ESM dependencies.
+    writeFileSync(bootstrap,
+      `await import(${JSON.stringify(checkpoint)}); console.log("checkpoint-import-ok"); process.exit(0);`);
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      "--import", testRequire.resolve("tsx"), bootstrap,
+    ], { cwd: REPO_ROOT, timeout: 30_000, maxBuffer: 1024 * 1024 });
+    expect(stdout.trim()).toBe("checkpoint-import-ok");
+  } catch (error) {
+    const child = error as Error & { code?: unknown; signal?: unknown; killed?: boolean; stdout?: string; stderr?: string };
+    throw new Error(`Native checkpoint import failed: ${JSON.stringify({ code: child.code,
+      signal: child.signal, killed: child.killed, stdout: child.stdout, stderr: child.stderr })}`, { cause: error });
+  } finally {
+    rmSync(bootstrapRoot, { recursive: true, force: true });
+  }
 }, 35_000);
 
 it("WI-10003241: a stalled optional freeze disposition cannot retain the checkpoint tree", async () => {
@@ -17867,10 +17879,9 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     // The frozen candidate survives untouched: no worktree cleanup, no queue abandonment.
-    // P-003 negative control: this hold resolves inside the 15-minute stall window, so no
-    // work-item is minted. Routing ordinary pool churn to the fleet is how a useful alarm
-    // becomes noise nobody claims.
-    expect(routedCount).toBe(0);
+    // D-015: preserve even a fresh held inventory on the one lead; this is one
+    // idempotent custody handoff, not a new fixer launch or per-file fleet fan-out.
+    expect(routedCount).toBe(1);
     expect(queue).toMatchObject({ candidate: frozen, attempts: 0 });
     expect(result).toMatchObject({
       advanced: false,

@@ -7,6 +7,11 @@ import { resolveAgentGoal } from '../../agent-goal-ref';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { resetOperatorCacheForTests, _refreshCacheLayerForTests } from '../../cache/instance';
 import { __setCachedReadEnabledForTests } from '../../cache/cached-read';
+import postgres from 'postgres';
+import { createPgDiagnosticHooks, pgResultDiagnosticSnapshot,
+  resetPgDiagnosticContextResolver } from '@papercusp/db-org/acquire-registry';
+import { installDbDiagnosticCorrelationWiring, withNamedQueryDiagnosticContext } from '../db-diagnostic-correlation-wiring';
+import { readReadinessFence } from './plan-continuation-readiness';
 
 const connection = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -559,6 +564,36 @@ describe('canonical adopted repair binding', () => {
       VALUES (${WS},'project','EI-original','bug',${OWNER},'wip','historical-draft','repair-plan','P-001',
         'Repair','normal',ARRAY[]::text[],0,'{}'::jsonb)`;
   }
+  it('retains distinct query legs for the binding census and readiness fence under one guard request', async () => {
+    await seed();
+    await db.sql`UPDATE harness_shared.harness_plans SET execution_start_revision_seq=1 WHERE plan_slug='repair-plan'`;
+    const pool = 'plan-execution-guard-query-legs';
+    const sql = postgres(db.url, { ...createPgDiagnosticHooks(pool), max: 2, prepare: false, onnotice: () => {} });
+    connection.sql = sql;
+    installDbDiagnosticCorrelationWiring();
+    try {
+      await withNamedQueryDiagnosticContext('native-tool-guard', async requestId => {
+        const [bindings, fence] = await Promise.all([
+          readExecutionPlanBindings(OWNER, WS),
+          readReadinessFence({ planSlug: 'repair-plan', harnessSlug: 'project', source: 'session-brief' }, WS),
+        ]);
+        expect(bindings).toEqual([expect.objectContaining({ planSlug: 'repair-plan' })]);
+        expect(fence).toMatchObject({ contentHash: 'repair-hash', startSeq: 1 });
+        const queries = pgResultDiagnosticSnapshot(pool).results
+          .filter(row => row.correlation?.requestId === requestId);
+        expect(queries.flatMap(row => row.correlation?.queryLeg ?? []).sort()).toEqual([
+          'plan-binding-census', 'plan-readiness-fence',
+        ]);
+        expect(queries).toContainEqual(expect.objectContaining({
+          correlation: expect.not.objectContaining({ queryLeg: expect.anything() }),
+        }));
+      });
+    } finally {
+      connection.sql = db.sql;
+      resetPgDiagnosticContextResolver();
+      await sql.end();
+    }
+  });
   it('uses the validated canonical execution plan while retaining source provenance', async () => {
     await seed();
     const bindings = await readExecutionPlanBindings(OWNER,WS);

@@ -161,7 +161,8 @@ import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { createHash } from 'node:crypto';
 import { clearGoalClaimedIfMatches, noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
-import { automaticSubscriptionFields } from './subscription-lifecycle';
+import { automaticSubscriptionFields, syncHeldItemSubscription } from './subscription-lifecycle';
+import { getCoordSubscriptionStore } from './agent-tools/coordination/subscription-store';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
@@ -3618,11 +3619,19 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     const payload = input.payload as Record<string, unknown> | null | undefined;
     const stamp = payload?.plan_item as Record<string, unknown> | undefined;
     const selectionPlan = typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : input.sourcePlanSlug;
-    inserted = selectionPlan && (assignTo || payload?.fleet_slug)
+    const planToCheck = assignTo || payload?.fleet_slug ? selectionPlan : null;
+    inserted = assignTo || planToCheck
       ? await boundedOrgTxn(async (tx) => {
-          const selections = await lockGoalPlanClaimSelections(tx, resolvedWs, assignTo ?? input.createdBy);
-          assertGoalPlanClaimSelection(selections, { harness: featureHarness, planSlug: selectionPlan });
-          return tx.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+          if (planToCheck) {
+            const selections = await lockGoalPlanClaimSelections(tx, resolvedWs, assignTo ?? input.createdBy);
+            assertGoalPlanClaimSelection(selections, { harness: featureHarness, planSlug: planToCheck });
+          }
+          const rows = await tx.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+          if (rows[0] && assignTo) {
+            const ref = workItemObjectRef({ family: 'feature', harness: featureHarness, id: rows[0].feature_id });
+            await syncHeldItemSubscription(tx, ref, assignTo);
+          }
+          return rows;
         }, { client: sql })
       : await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
     if (inserted.length > 0) {
@@ -3706,7 +3715,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     ? await automaticSubscriptionFields(input.createdBy, 'context')
     : null;
   if (input.createdBy && creatorFollow?.subscribe) {
-    await subs.subscribe({
+    await getCoordSubscriptionStore().subscribe({
       subscriber_id: input.createdBy,
       target_kind: 'object',
       target_ref: `${FEATURE_KIND}:${workItemObjectRef(wi).ref}`,
@@ -5281,6 +5290,7 @@ export async function setWorkItemState(
              }) : tx`TRUE`}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`;
       if (blockerMutation && !updated.length) throw new BlockerDecisionMutationConflict();
+      if (updated[0] && isTerminal) await syncHeldItemSubscription(tx, workItemObjectRef(wi), null);
       return updated;
     });
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
@@ -6663,7 +6673,7 @@ async function claimWorkItemInTransaction(
         )
       END`;
       const claimPayloadWithReviewRevision = agentReviewClaimPayloadSql(sql, claimPayload, agentReviewAdmission);
-      return sql<FeatureRowDb[]>`
+      const updated = await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          SET payload = ${claimPayloadWithReviewRevision},
              taken_by = ${assignee},
@@ -6743,6 +6753,8 @@ async function claimWorkItemInTransaction(
              : admissionFloor;
          })()}
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+      if (updated[0]) await syncHeldItemSubscription(tx, workItemObjectRef(wi), updated[0].taken_by);
+      return updated;
     }, { client: sql }));
     claimed = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
@@ -9263,13 +9275,13 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
     // only under the per-Hive claim lease, default OFF). Skip work affined to ANOTHER Swarm
     // and prefer work affined to THIS one over unaffined work. Omitted ⇒ affinity-blind,
     // byte-identical to the pre-P-002 claim.
-    const rows = await boundedOrgTxn(async (tx) => {
+    return boundedOrgTxn(async (tx) => {
       const sql = tx as OrgSql;
       const selections = await lockGoalPlanClaimSelections(sql, ws, filter.assignee);
       const selection = goalPlanClaimFragments(sql, selections, {
         harness: 'harness_slug', goal: 'goal_id', payload: 'payload', sourcePlan: 'source_plan_slug',
       });
-      return sql<FeatureRowDb[]>`
+      const updated = await sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
          -- P-001: self-select only ever grabs an UNCLAIMED row (the inner WHERE pins
          -- taken_by IS NULL/''), so a fresh holder always starts with a clean progress slate.
@@ -9316,8 +9328,10 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
           FOR UPDATE SKIP LOCKED
        )
       RETURNING ${sql.unsafe(FEATURE_COLS)}`;
+      const won = updated[0] ? featureRowToWorkItem(updated[0]) : null;
+      if (won) await syncHeldItemSubscription(tx, workItemObjectRef(won), won.assignee);
+      return won;
     }, { client: sql });
-    return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
 
   // Tier 1: exactly what the caller asked for.
@@ -10515,6 +10529,7 @@ export async function claimNextIssueWorkItem(
             `but could not re-read it inside the claim transaction; the claim was rolled back.`,
         );
       }
+      await syncHeldItemSubscription(tx, workItemObjectRef(issueToWorkItem(issue)), issue.assignee);
       return { issue };
     },
         { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
@@ -11207,13 +11222,16 @@ export async function releaseWorkItem(
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
     RETURNING ${tx.unsafe(FEATURE_COLS)}`;
     if (blockerMutation && !rows.length) throw new BlockerDecisionMutationConflict();
-    if (rows.length) await afterWrite?.(tx, { workspaceId: activeWorkspaceId(), harness: wi.harness ?? '' });
+    if (rows.length) {
+      await syncHeldItemSubscription(tx, workItemObjectRef(wi), null);
+      await afterWrite?.(tx, { workspaceId: activeWorkspaceId(), harness: wi.harness ?? '' });
+    }
     if (rows[0] && parkedPayload !== undefined) rows[0].payload = parkedPayload;
     return rows[0] ? featureRowToWorkItem(rows[0]) : null;
   };
-  const released = paired
-    ? await boundedOrgTxn(write, { phase: 'work_items:release:feature:blocker-decision' })
-    : await write(sql);
+  const released = await boundedOrgTxn(write, {
+    client: sql, phase: paired ? 'work_items:release:feature:blocker-decision' : 'work_items:release:feature',
+  });
   if (released && paired) await releaseLane();
   if (released && wasClaimed && wi.assignee && wi.harness) {
     await recordWorkItemReleaseCooldown({

@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import {
   delegateRepairCausalGroup, reconcileRepairLeadHandoff, recordRepairGroupVerification,
-  recordRepairLeadPickup, repairLeadIntake, type RepairLeadHandoff, type RepairPickupProof,
+  recordRepairLeadPickup, repairLeadIntake, sendPendingRepairLeadHandoffs, type RepairLeadHandoff, type RepairPickupProof,
 } from './frozen-repair-lead-handoff';
 
 const T = 1_800_000_000_000;
@@ -57,6 +57,41 @@ describe('one repair lead and complete intake', () => {
     expect(next.groups).toEqual(original.groups);
   });
 
+  it('does not duplicate a wide inventory when only precheck clocks and progress change', () => {
+    const files = Array.from({ length: 11_475 }, (_, i) => `lib/radius-${i}.test.ts`);
+    const precheck = { schemaVersion: 1 as const, operationId: 'precheck-1', status: 'running' as const,
+      candidate: queue().candidate, repairHead: queue().repairHead, builtCommit: 'c'.repeat(40), files,
+      actor: lead.owner, startedAtMs: T, updatedAtMs: T, expiresAtMs: T + 60_000, heartbeatAtMs: T,
+      currentFile: files[0], completedCount: 0, totalCount: files.length };
+    let state = reconcileRepairLeadHandoff({ prior: null, pipeline: 'papercusp',
+      intake: repairLeadIntake({ ...queue(13), admissionPrecheck: precheck }, 'precheck-start'),
+      lead, workerStates: new Map(), nowMs: T });
+    const original = structuredClone(state.intakes[0]);
+    const delivery = state.groups[0].delivery!.id;
+    for (let round = 1; round <= 30; round++) {
+      const current = { ...queue(13), updatedAtMs: T + round, fixerStateChangedAtMs: T + round,
+        admissionPrecheck: { ...precheck, updatedAtMs: T + round, heartbeatAtMs: T + round,
+          expiresAtMs: T + 60_000 + round, completedCount: round, currentFile: files[round] } };
+      state = reconcileRepairLeadHandoff({ prior: JSON.parse(JSON.stringify(state)), pipeline: 'papercusp',
+        intake: repairLeadIntake(current, 'diagnostic-progress'), lead, workerStates: new Map(), nowMs: T + round });
+    }
+    expect(state.intakes).toEqual([original]);
+    expect(state.currentQueue.admissionPrecheck).toMatchObject({ files, completedCount: 30, heartbeatAtMs: T + 30 });
+    expect(state.groups[0].delivery!.id).toBe(delivery);
+    expect(state.groups[0].delivery!.pickup).toBe('pending');
+    const changed = reconcileRepairLeadHandoff({ prior: state, pipeline: 'papercusp',
+      intake: repairLeadIntake({ ...state.currentQueue, attempts: 1 }, 'actual-attempt'),
+      lead, workerStates: new Map(), nowMs: T + 31 });
+    expect(changed.intakes).toHaveLength(2);
+    expect(changed.intakes[0]).toEqual(original);
+    const measured = reconcileRepairLeadHandoff({ prior: state, pipeline: 'papercusp',
+      intake: repairLeadIntake({ ...state.currentQueue,
+        admissionPrecheck: { ...state.currentQueue.admissionPrecheck!, status: 'failed' } }, 'terminal-precheck'),
+      lead, workerStates: new Map(), nowMs: T + 32 });
+    expect(measured.intakes).toHaveLength(2);
+    expect(measured.intakes[1].queue.admissionPrecheck?.status).toBe('failed');
+  });
+
   it('does not replace a frozen candidate to recover routing', () => {
     expect(() => reconcileRepairLeadHandoff({ prior: initial(), pipeline: 'papercusp',
       intake: repairLeadIntake({ ...queue(), candidate: 'c'.repeat(40) }, 'new-tip'), lead,
@@ -65,6 +100,17 @@ describe('one repair lead and complete intake', () => {
 });
 
 describe('explicit causal groups', () => {
+  it('fences the first delegation against the lead edit scope and requires cause independence', () => {
+    const state = initial();
+    state.groups[0].sourcePaths = ['packages/core/lib/shared-loader.ts'];
+    expect(() => delegateRepairCausalGroup(state, assignment())).toThrow('source paths overlap');
+    const separate = assignment({ sourcePaths: ['packages/compiler/src/check.ts'] });
+    expect(() => delegateRepairCausalGroup(state, separate)).toThrow('Independent cause evidence');
+    expect(delegateRepairCausalGroup(state, { ...separate,
+      independentOf: [{ groupId: 'shared-cause-triage', evidenceRefs: ['test-run:disjoint-root'] }] })
+      .groups.find(group => group.id === 'shared-loader')!.owner).toBe('worker-1');
+    expect(delegateRepairCausalGroup(initial(), assignment()).groups).toHaveLength(2);
+  });
   it('keeps a shared cause together with one worker, leaving unclassified failures with the lead', () => {
     const state = delegateRepairCausalGroup(initial(), assignment());
     const grouped = state.groups.find(group => group.id === 'shared-loader')!;
@@ -146,6 +192,25 @@ describe('explicit causal groups', () => {
       lead, workerStates: new Map(), nowMs: T + 20 });
     const retried = delegateRepairCausalGroup(current, assignment({ attemptId: 'partial-retry' }));
     expect(retried.groups.find(group => group.id === 'shared-loader')!.members).toEqual(members(2));
+  });
+});
+
+describe('durable outbox batch recovery', () => {
+  it.each([11, 12, 13, 37])('delivers later members of %i groups despite a failed prefix, then recovers only unresolved sources', async n => {
+    const groups = Array.from({ length: n }, (_, i) => ({ ...initial().groups[0], id: 'group-' + i }));
+    const delivered = new Set<string>();
+    const send = vi.fn(async (group: typeof groups[number]) => {
+      if (group.id === 'group-0') throw new Error('prefix transport failure');
+      delivered.add(group.id);
+    });
+    await expect(sendPendingRepairLeadHandoffs(groups, send)).rejects.toThrow('durable pending intents');
+    expect(send.mock.calls.map(([group]) => group.id)).toEqual(groups.map(group => group.id));
+    expect(delivered.has('group-' + (n - 1))).toBe(true);
+    const restarted = JSON.parse(JSON.stringify(groups)) as typeof groups;
+    const recover = vi.fn(async (group: typeof groups[number]) => { delivered.add(group.id); });
+    await sendPendingRepairLeadHandoffs(restarted.filter(group => !delivered.has(group.id)), recover);
+    expect(recover.mock.calls.map(([group]) => group.id)).toEqual(['group-0']);
+    expect(delivered.size).toBe(n);
   });
 });
 

@@ -2,6 +2,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION, parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { judgePortalPlaywrightRows, mergeCriterionTestRuns, partitionCriterionTestFiles, playwrightRecordedCases,
   resolveCriterionTestRoute, runPortalPlaywrightChecks } from './rubrics-playwright-checks';
@@ -60,6 +61,56 @@ describe('maintained Portal Playwright executor ownership', () => {
     writeFileSync(native, `import { test } from '${pw}';`);
     expect(resolveCriterionTestRoute(native).kind).toBe('unsupported');
     expect(() => partitionCriterionTestFiles([absolute, native], root)).toThrow('supported maintained Portal');
+  });
+  it('admits the real Vitest Plans adapter and keeps its native Playwright peer on its own executor', () => {
+    const checkout = fileURLToPath(new URL('../../../', import.meta.url));
+    const adapter = 'packages/operator-core/lib/plan-revision-amendment-native.e2e.test.ts';
+    const desktop = 'apps/operator/e2e/plan-revision-amendment-native.spec.mts';
+    const validation = validateCriterionCheckPaths([
+      { key: 'adapter', check: { kind: 'tests', files: [adapter] } },
+      { key: 'desktop', check: { kind: 'tests', files: [desktop] } },
+    ], { root: checkout });
+    expect(validation.failures.map(failure => failure.criterionKey)).toEqual(['desktop']);
+    expect(partitionCriterionTestFiles([adapter], checkout)).toEqual([{ kind: 'vitest', root: checkout, files: [adapter] }]);
+    expect(() => partitionCriterionTestFiles([desktop], checkout)).toThrow('supported maintained Portal');
+  });
+  it.each([
+    ["import { it as check } from 'vitest';", `import { chromium as browser, type Page } from '${pw}';`, "check('client', () => {});"],
+    ["import * as v from 'vitest';", `import type { test, APIRequestContext } from '${pw}';`, "v.describe.skipIf(false)('client', () => {});"],
+    ["import { test } from 'vitest';", `import { request } from '${pw}';`, "test.concurrent.each([1])('client %s', () => {});"],
+    ["import { test } from 'vitest';", `// import { test } from '${pw}';`, "test('client', () => {});"],
+  ])('routes an independently registered Vitest client through ordinary grading', (vitest, client, registration) => {
+    const name = 'client.test.ts';
+    writeFileSync(join(ambient, name), [vitest, client, registration].join('\n'));
+    expect(validateCriterionCheckPaths([{ key: 'client', check: { kind: 'tests', files: [name] } }], { root: ambient }).ok).toBe(true);
+    expect(partitionCriterionTestFiles([name], ambient)).toEqual([{ kind: 'vitest', root: ambient, files: [name] }]);
+  });
+  it.each([
+    [`import { test as browserTest } from '${pw}';`, "it('vitest', () => {}); browserTest('browser', () => {});"],
+    [`import * as browser from '${pw}';`, "it('vitest', () => {});"],
+    [`const browser = require('${pw}');`, "it('vitest', () => {});"],
+    [`const browser = import('${pw}');`, "it('vitest', () => {});"],
+    [`import { request } from '${pw}';`, "function fake(it) { it('shadowed', () => {}); }"],
+    [`import { request } from '${pw}';`, "it.bind(undefined, 'client');"],
+  ])('refuses a mixed or unproven runner even in a Portal-selected file', (client, registration) => {
+    const original = readFileSync(absolute, 'utf8');
+    try {
+      writeFileSync(absolute, ["import { it } from 'vitest';", client, registration].join('\n'));
+      expect(resolveCriterionTestRoute(absolute).kind).toBe('unsupported');
+      expect(validateCriterionCheckPaths([{ key: 'mixed', check: { kind: 'tests', files: [file] } }], { root }).ok).toBe(false);
+      expect(() => partitionCriterionTestFiles([file], root)).toThrow();
+    } finally { writeFileSync(absolute, original); }
+  });
+  it.each(["require('vitest')", "await import('vitest')"])('refuses two runners when Vitest is loaded with %s', loader => {
+    const original = readFileSync(absolute, 'utf8');
+    try {
+      writeFileSync(absolute, [
+        `import { test } from '${pw}';`, `const { it } = ${loader};`,
+        "it('unit', () => {});", "test('browser', () => {});",
+      ].join('\n'));
+      expect(resolveCriterionTestRoute(absolute).kind).toBe('unsupported');
+      expect(() => partitionCriterionTestFiles([file], root)).toThrow();
+    } finally { writeFileSync(absolute, original); }
   });
   it.each([
     config.replace("testDir: './e2e'", "testDir: './native'"),

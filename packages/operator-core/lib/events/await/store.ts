@@ -4063,6 +4063,20 @@ export async function deliveryBacklogSummary(subscriberId: string): Promise<Deli
   };
 }
 
+/** Exact-source custody recovery uses the same flat partition as insertDeliveries.
+ * No recent-row limit: unrelated traffic must not hide a requested delivery. */
+export async function listDeliveriesForSources(
+  sources: readonly string[], transaction?: postgres.TransactionSql,
+): Promise<DeliveryRow[]> {
+  if (sources.length === 0) return [];
+  const sql = transaction ?? getOrgPg().sql;
+  const rows = await sql`
+    SELECT * FROM harness_shared.event_wake_deliveries
+     WHERE workspace_id = ${eventsWs()} AND source = ANY(${[...new Set(sources)]}::text[])
+     ORDER BY id`;
+  return rows.map(mapDelivery);
+}
+
 /** Recent deliveries for a subscriber (events:status). */
 export async function listRecentDeliveries(
   subscriberId: string,

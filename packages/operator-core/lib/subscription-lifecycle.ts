@@ -24,7 +24,8 @@
  * one liveness oracle, and the agent-session registry is adv_sessions.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import type { SubscriptionEndCause } from '@papercusp/coordination/capabilities';
+import { PgEntitySubscriptionStore, type ObjectRef, type SubscriptionEndCause } from '@papercusp/coordination/capabilities';
+import type { Sql, TransactionSql } from 'postgres';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { getCoordSubscriptionStore } from './agent-tools/coordination/subscription-store';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
@@ -84,6 +85,17 @@ export async function automaticSubscriptionFields(
 export interface ContextEndResult {
   released: number;
   cancelled: number;
+}
+
+/** Project the actual owner under the same transaction and row lock as the
+ *  claim, transfer or release. The fan-out reader resolves this same workspace. */
+export async function syncHeldItemSubscription(
+  tx: Sql | TransactionSql, target: ObjectRef, holder: string | null,
+): Promise<void> {
+  const store = new PgEntitySubscriptionStore({
+    getSql: () => tx, ensureSchema: async () => {}, workspaceId: coordScopeWorkspace(),
+  });
+  await store.setHeldItemSubscriber(target, isMachineIdentity(holder) ? null : holder);
 }
 
 /** Store seam: the two PgEntitySubscriptionStore methods the lifecycle uses. */

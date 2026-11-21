@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
   LEG_OUTCOME_TABLE, LEG_OUTCOMES_ACTION, LEG_OUTCOMES_INSTRUMENT_KEY,
   LEG_OUTCOMES_SUBJECT_PLAN, PUSH_LEG_DESIGN_TABLE_SHA256, legOutcomeScheduleVerdict,
@@ -28,6 +29,25 @@ export interface LegMeasurementHealthInput {
 const record = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : null;
+
+const count = z.number().int().nonnegative();
+const legMeasurement = z.object({
+  eligibleTriggers: count.nullable(),
+  exposure: count,
+  followThrough: z.object({
+    measured: count, positive: count, rate: z.number().min(0).max(1).nullable(),
+  }),
+  result: z.discriminatedUnion('status', [
+    z.object({
+      status: z.literal('measured'), key: z.string(), value: z.number().nullable(),
+      unit: z.enum(['ms', 'share', 'share-difference']), sample: count, detail: z.string().trim().min(1),
+    }),
+    z.object({
+      status: z.enum(['insufficient-data', 'unmeasured', 'cannot-observe']),
+      key: z.string(), reason: z.string().trim().min(1),
+    }),
+  ]),
+});
 
 /** Evaluate measurement existence/recurrence without grading descriptive outcomes.
  * Callers must follow the latest ledger attempt's reference to the complete audit record.
@@ -86,12 +106,13 @@ export function rateLegMeasurementHealth(input: LegMeasurementHealthInput): {
   }
   for (const [leg, spec] of expected) {
     const outcome = outcomes.find(value => value?.leg === leg);
-    const reading = record(outcome?.result);
-    if (!reading || reading.key !== spec.resultKey
-      || !['measured', 'insufficient-data', 'unmeasured', 'cannot-observe'].includes(String(reading.status))
-      || (spec.resultKey === 'cannot-observe' && (reading.status !== 'cannot-observe'
-        || typeof reading.reason !== 'string' || !reading.reason.trim()))
-      || (spec.resultKey !== 'cannot-observe' && reading.status === 'cannot-observe')) {
+    const measurement = legMeasurement.safeParse(outcome);
+    if (!measurement.success) {
+      const fields = measurement.error.issues.map(issue => issue.path.join('.'));
+      return result('unknown', `Incomplete measurement for ${leg}: ${fields.join(', ')}.`);
+    }
+    const reading = measurement.data.result;
+    if (reading.key !== spec.resultKey || (reading.status === 'cannot-observe') !== (spec.resultKey === 'cannot-observe')) {
       return result('unknown', `Incomplete or mismatched result identity for ${leg}.`);
     }
   }

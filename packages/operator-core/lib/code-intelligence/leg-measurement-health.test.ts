@@ -75,6 +75,39 @@ describe('R1 measurement health is separate from outcome quality', () => {
     }
   });
 
+  function firstTouchReport(patch: Record<string, unknown>): LegMeasurementHealthInput {
+    const input = fixture();
+    const { outcomes } = input.report!.details as { outcomes: ReturnType<typeof computeLegOutcomes> };
+    Object.assign(outcomes.find(outcome => outcome.leg === 'first-touch')!, patch);
+    return input;
+  }
+
+  it.each([
+    ['missing exposure', { exposure: undefined }],
+    ['missing eligibility', { eligibleTriggers: undefined }],
+    ['negative exposure', { exposure: -1 }],
+    ['missing follow-through', { followThrough: undefined }],
+    ['missing positive count', { followThrough: { measured: 0, rate: null } }],
+    ['missing rate', { followThrough: { measured: 0, positive: 0 } }],
+    ['missing reason', { result: { key: 'time to first correct edit', status: 'unmeasured' } }],
+    ['missing result value', { result: { key: 'time to first correct edit', status: 'measured', sample: 1, unit: 'ms', detail: 'one exposure' } }],
+  ] as const)('retains the report reference when a delivery measurement is incomplete: %s', (_label, patch) => {
+    expect(rateLegMeasurementHealth(firstTouchReport(patch))).toMatchObject({
+      verdict: 'unknown', reportRef: 'audit-log:complete-report',
+    });
+  });
+
+  it('accepts explicit unknown eligibility, null latency and a measured zero without setting a quality threshold', () => {
+    for (const value of [null, 0]) {
+      const input = firstTouchReport({
+        eligibleTriggers: null, exposure: 1,
+        followThrough: { measured: 1, positive: 0, rate: 0 },
+        result: { key: 'time to first correct edit', status: 'measured', sample: 1, unit: 'ms', value, detail: 'one exposure' },
+      });
+      expect(rateLegMeasurementHealth(input).verdict).toBe('pass');
+    }
+  });
+
   it('keeps a newer failed report visible instead of accepting the prior healthy sample (H8 input contract)', () => {
     const input = fixture();
     expect(rateLegMeasurementHealth(input).verdict).toBe('pass');

@@ -55,7 +55,7 @@ import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
-import { automaticSubscriptionFields } from './subscription-lifecycle';
+import { automaticSubscriptionFields, syncHeldItemSubscription } from './subscription-lifecycle';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn, withOrgTxnTimeoutPhase } from './pg-bounded-txn';
 import { applyBlockerDecisionMutation, BlockerDecisionMutationConflict, type BlockerDecisionMutation } from './blocker-resolution-persistence';
@@ -1323,6 +1323,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
               ${bornAdmission}, ${bornAdmittedAt}, ${bornAdmittedBy})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     const inserted = toIssue(rows[0]);
+    if (inserted.assignee) await syncHeldItemSubscription(tx, issueRef(inserted.id), inserted.assignee);
     // The engineer_issues compatibility view exposes these claim-spec columns, but
     // its INSTEAD OF INSERT trigger predates that projection and does not thread them
     // into the base row. Keep the view write for the canonical create path, then fill
@@ -3415,7 +3416,7 @@ export async function claimIssue(
         harness: "regexp_replace(target.scope, '^harness:', '')", goal: 'target.goal_id', payload: 'target.payload',
         sourcePlan: 'target.source_plan_slug', holder: 'target.assignee',
       }, assignee);
-    return sql<IssueRowDb[]>`
+    const updated = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
       payload = ${claimPayloadWithReviewRevision},
       assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
@@ -3541,24 +3542,12 @@ export async function claimIssue(
        -- a terminal item is not reassigned by claim. Reopen it explicitly through
        -- work_items:set_state { force:true, reason } and then claim the non-terminal row.
     RETURNING ${sql.unsafe(ISSUE_COLS)}`;
+    if (updated[0]) await syncHeldItemSubscription(tx, issueRef(id), updated[0].assignee);
+    return updated;
   }, { client: sql }));
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
   const publish = async () => {
-  // The claimer follows the issue while it holds it (reason 'held_item', ended by
-  // the release). A machine identity is never auto-subscribed (P-002,
-  // EI-28704054499880447: system:operator/s-… claimers took 99% of notify rows).
-  const holderFollow = await automaticSubscriptionFields(assignee, 'held_item');
-  if (holderFollow.subscribe) {
-    await subs.subscribe({
-      subscriber_id: assignee,
-      target_kind: 'object',
-      target_ref: `${ISSUE_KIND}:${id}`,
-      delivery_mode: 'full',
-      created_ts: nowIso(),
-      reason: holderFollow.reason,
-    });
-  }
   // WI-2142171: notify ONLY when the claim actually changed the holder (see the pre-read
   // above). A re-claim by the current holder is a no-op for every subscriber — and for the
   // claimer itself, whose own action it is, `deliver` already excludes the actor. The test
@@ -3709,6 +3698,7 @@ export async function releaseIssue(
       return null;
     }
     const issue = toIssue(rows[0]);
+    await syncHeldItemSubscription(tx, issueRef(id), null);
     await opts.afterWrite?.(tx, { workspaceId: ws, harness: formerHarnessSlug ?? '' });
     if (formerAssignee && formerHarnessSlug) {
       releasePhase = 'persist-release-cooldown';
@@ -3730,14 +3720,6 @@ export async function releaseIssue(
   // same cached goal as the unified release path. Compare before clearing so a
   // delayed release cannot erase a newer goal claimed by this owner.
   if (formerAssignee) clearGoalClaimedIfMatches(formerAssignee, id);
-  // shared-reference-system-2026-11-13 P-002 / R-39: releasing the item is the
-  // explicit release of its held-item follow. Only that reason goes; an explicit
-  // or contextual follow by the same agent keeps the subscription alive.
-  if (formerAssignee) {
-    await subs.unsubscribe(formerAssignee, 'object', `${ISSUE_KIND}:${id}`, 'held_item').catch((e) => {
-      console.warn(`[issues-engineer] held-item release for ${formerAssignee} on ${id} failed: ${e instanceof Error ? e.message : e}`);
-    });
-  }
   // EI-6480: harness-agnostic (issue ids are globally unique), flag-gated, best-effort lease
   // cleanup so the released issue is IMMEDIATELY re-claimable, not lease-poisoned until TTL.
   // Covers every voluntary release path (work_items:release + the improvement resolve-core
@@ -4322,6 +4304,9 @@ export async function setIssueState(
   const rows = await boundedOrgTxn(async (tx) => {
     const updated = await writeState(tx);
     if (opts.blockerDecisionMutation && !updated.length) throw new BlockerDecisionMutationConflict();
+    if (updated[0] && (terminalWriteSucceeded || state === 'needs-human')) {
+      await syncHeldItemSubscription(tx, issueRef(id), updated[0].assignee);
+    }
     return updated;
   });
   if (isTerminal && terminalWriteSucceeded && priorAssignee) {

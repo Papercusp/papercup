@@ -1,6 +1,6 @@
 /** D-015: one repair lead owns the complete intake. Groups are evidence, never a spawn policy. */
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import { normalizeRepoPath } from './frozen-candidate-repair-queue';
 import { frozenRepairConvergenceConditionKey } from './frozen-repair-agent-routing';
@@ -60,6 +60,8 @@ export interface RepairLeadHandoff {
   leadWorkItem: string | null;
   latestIntake: string;
   intakes: RepairLeadIntake[];
+  /** Complete current source, including progress; clocks never mint another intake. */
+  currentQueue: FrozenCandidateRepairQueue;
   groups: RepairCausalGroup[];
 }
 export interface RepairLeadObservation {
@@ -77,10 +79,18 @@ export interface RepairPickupProof {
 
 export function repairLeadIntake(queue: FrozenCandidateRepairQueue, reason: string): RepairLeadIntake {
   identities(queue.failingTests);
-  // Mutable bookkeeping clocks and arbitrary head advances do not create a new strategy budget.
-  const { updatedAtMs: _updated, fixerStateChangedAtMs: _fixerClock, ...semanticQueue } = queue;
-  const id = hash({ ...semanticQueue, failingTests: identities(queue.failingTests),
-    signature: [...queue.signature].sort((a, b) => a.id.localeCompare(b.id)) });
+  // Inventory identity is about judged failures, the repair head and actual attempts.
+  // Precheck diagnostics retain their full current source without appending another
+  // copy of a potentially huge file radius on every heartbeat or completed file.
+  const id = hash({ candidate: queue.candidate, repairHead: queue.repairHead, attempts: queue.attempts,
+    fixerDispatchReceipt: queue.fixerDispatchReceipt, admissions: queue.admissions,
+    failingTests: identities(queue.failingTests),
+    signature: [...queue.signature].sort((a, b) => a.id.localeCompare(b.id)),
+    legs: queue.legs, failureFrontierCompleteness: queue.failureFrontierCompleteness,
+    // Terminal measurements are immutable evidence; running diagnostics are not.
+    precheckResult: queue.admissionPrecheck && queue.admissionPrecheck.status !== 'running'
+      ? { operationId: queue.admissionPrecheck.operationId, status: queue.admissionPrecheck.status,
+          verdict: queue.admissionPrecheck.verdict, measurement: queue.admissionPrecheck.measurement } : null });
   return { id, reason, queue: structuredClone(queue) };
 }
 const isOpen = (group: RepairCausalGroup, intake: RepairLeadIntake): boolean =>
@@ -102,10 +112,11 @@ export function reconcileRepairLeadHandoff(input: {
   }
   const state: RepairLeadHandoff = prior ? structuredClone(prior) : {
     schemaVersion: 1, pipeline: input.pipeline, candidate: intake.queue.candidate,
-    lead: null, leadWorkItem: null, latestIntake: intake.id, intakes: [], groups: [],
+    lead: null, leadWorkItem: null, latestIntake: intake.id, intakes: [], currentQueue: structuredClone(intake.queue), groups: [],
   };
   if (!state.intakes.some(row => row.id === intake.id)) state.intakes.push(structuredClone(intake));
   state.latestIntake = intake.id;
+  state.currentQueue = structuredClone(intake.queue);
   if (input.lead) { state.lead = input.lead.owner; state.leadWorkItem = input.lead.workItem; }
   let triage = state.groups.find(group => group.id === 'shared-cause-triage');
   if (!triage) {
@@ -177,8 +188,8 @@ export function delegateRepairCausalGroup(state: RepairLeadHandoff, input: {
   }
   if (!members.some(member => intake.queue.failingTests.includes(member))) throw new Error('No open failure remains in this group');
   for (const other of state.groups) {
-    if (other.id === input.id || other.id === 'shared-cause-triage' || !isOpen(other, intake)) continue;
-    if (members.some(member => other.members.includes(member))) throw new Error('Repair group membership overlaps');
+    if (other.id === input.id || (other.id !== 'shared-cause-triage' && !isOpen(other, intake))) continue;
+    if (other.id !== 'shared-cause-triage' && members.some(member => other.members.includes(member))) throw new Error('Repair group membership overlaps');
     if (other.sourcePaths.length > 0) {
       if (paths.some(path => other.sourcePaths.some(active => path === active || path.startsWith(active + '/') || active.startsWith(path + '/')))) {
         throw new Error('Repair source paths overlap an active group');
@@ -239,7 +250,7 @@ export function recordRepairLeadPickup(state: RepairLeadHandoff, proofs: readonl
 /** Namespace-only update under a row lock; source input and every earlier intake survive. */
 export async function updateStoredRepairLeadHandoff<T>(sql: Sql, input: {
   workspaceId: string; workItem: string; conditionKey: string;
-}, update: (prior: RepairLeadHandoff | null, tx: Sql) => Promise<{ state: RepairLeadHandoff; result: T }>): Promise<T> {
+}, update: (prior: RepairLeadHandoff | null, tx: TransactionSql) => Promise<{ state: RepairLeadHandoff; result: T }>): Promise<T> {
   return sql.begin(async tx => {
     const rows = await tx<{ payload: Record<string, unknown> }[]>`
       SELECT payload FROM harness_shared.work_items
@@ -249,7 +260,7 @@ export async function updateStoredRepairLeadHandoff<T>(sql: Sql, input: {
     if (!payload || !payload._bridge) throw new Error('Repair handoff must use a bridge-owned incident; independent source work is protected');
     const prior = payload.frozenRepairHandoff as RepairLeadHandoff | undefined;
     if (prior && prior.schemaVersion !== 1) throw new Error('Unsupported repair handoff schema; preserve its source');
-    const { state, result } = await update(prior ?? null, tx as unknown as Sql);
+    const { state, result } = await update(prior ?? null, tx);
     await tx`UPDATE harness_shared.work_items
       SET payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{frozenRepairHandoff}', ${JSON.stringify(state)}::text::jsonb),
           updated_ts = ${Date.now()}
@@ -260,6 +271,19 @@ export async function updateStoredRepairLeadHandoff<T>(sql: Sql, input: {
 }
 
 export interface RouteRepairLeadResult { workItem: string; lead: string | null; pickup: 'pending' | 'confirmed' | 'unassigned' }
+/** A failed prefix must not strand later durable outbox intents. The lease bounds
+ * one pass; actual worker strategy budgets are independent of message transport. */
+export async function sendPendingRepairLeadHandoffs(
+  groups: readonly RepairCausalGroup[], send: (group: RepairCausalGroup) => Promise<void>,
+): Promise<void> {
+  const failures: unknown[] = [];
+  for (let offset = 0; offset < groups.length; offset += 12) {
+    const outcomes = await Promise.allSettled(groups.slice(offset, offset + 12).map(send));
+    for (const outcome of outcomes) if (outcome.status === 'rejected') failures.push(outcome.reason);
+  }
+  if (failures.length) throw new AggregateError(failures, 'Repair handoff delivery incomplete; durable pending intents remain recoverable');
+}
+
 export async function routeFrozenRepairToLead(input: {
   workspaceId: string; pipeline: string; queue: FrozenCandidateRepairQueue; reason: string;
   assignment?: Parameters<typeof delegateRepairCausalGroup>[1];
@@ -270,6 +294,8 @@ export async function routeFrozenRepairToLead(input: {
   const { resolveSessionStates } = await import('../agent-tools/coordination/liveness-oracle');
   const { sendMessage } = await import('../agent-tools/coordination/messages');
   const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+  const { listDeliveriesForSources } = await import('../events/await/store');
+  const { getPresence } = await import('../agent-tools/coordination/presence');
   const conditionKey = frozenRepairConvergenceConditionKey(input.pipeline);
   const acquired = await acquireConditionOwner(conditionKey, {
     harness: input.pipeline, workspaceId: input.workspaceId, severity: 'critical',
@@ -307,15 +333,11 @@ export async function routeFrozenRepairToLead(input: {
     const nowMs = Date.now();
     const deliveries = prior?.groups.flatMap(group => group.delivery ? [group.delivery] : []) ?? [];
     const sources = deliveries.map(delivery => 'frozen-repair-handoff:' + delivery.id);
-    const rows = sources.length ? await tx<{ source: string; subscriber_id: string; created_at: Date; delivered_at: Date | null;
-      turn_started_at: Date | null; turn_proof: string | null }[]>`
-      SELECT source, subscriber_id, created_at, delivered_at, turn_started_at, turn_proof
-      FROM harness_shared.event_wake_deliveries
-      WHERE workspace_id = ${input.workspaceId} AND source = ANY(${sources})` : [];
-    const proofs: RepairPickupProof[] = rows.map(row => ({ deliveryId: row.source.slice('frozen-repair-handoff:'.length),
-      owner: row.subscriber_id, offeredAtMs: new Date(row.created_at).getTime(),
-      deliveredAtMs: row.delivered_at ? new Date(row.delivered_at).getTime() : null,
-      turnStartedAtMs: row.turn_started_at ? new Date(row.turn_started_at).getTime() : null, turnProof: row.turn_proof }));
+    const rows = await listDeliveriesForSources(sources, tx);
+    const proofs: RepairPickupProof[] = rows.map(row => ({ deliveryId: row.source!.slice('frozen-repair-handoff:'.length),
+      owner: row.subscriberId, offeredAtMs: new Date(row.createdAt).getTime(),
+      deliveredAtMs: row.deliveredAt ? new Date(row.deliveredAt).getTime() : null,
+      turnStartedAtMs: row.turnStartedAt ? new Date(row.turnStartedAt).getTime() : null, turnProof: row.turnProof }));
     const picked = prior ? recordRepairLeadPickup(prior, proofs, nowMs) : null;
     // Fence the elected leader at the write, rather than trusting a pre-transaction observation.
     const leadRows = lead ? await tx<{ taken_by: string | null }[]>`SELECT taken_by FROM harness_shared.work_items
@@ -324,14 +346,22 @@ export async function routeFrozenRepairToLead(input: {
     if ((input.assignment || input.verification) && !currentLead) throw new Error('Repair lead ownership changed before the group write');
     let state = reconcileRepairLeadHandoff({ prior: picked, pipeline: input.pipeline, intake: repairLeadIntake(input.queue, input.reason),
       lead: currentLead, workerStates, nowMs });
+    if (input.assignment && currentLead) {
+      // The first split must be disjoint from the lead's own current edits too.
+      // An empty current_files lane is discovery-only and adds no fictitious edit scope.
+      const presence = await getPresence(currentLead.owner, tx as unknown as Sql);
+      state.groups.find(group => group.id === 'shared-cause-triage')!.sourcePaths =
+        unique((presence?.currentFiles ?? []).map(normalizeRepoPath));
+    }
     if (input.assignment) state = delegateRepairCausalGroup(state, input.assignment);
     if (input.verification) state = recordRepairGroupVerification(state, input.verification);
     const claimed: string[] = [];
-    const existing = new Set(rows.map(row => row.source));
+    const existing = new Set(rows.filter(row => deliveries.some(delivery => row.subscriberId === delivery.owner &&
+      row.source === 'frozen-repair-handoff:' + delivery.id)).map(row => row.source));
     for (const group of state.groups) {
       const delivery = group.delivery;
       if (!currentLead || !delivery || delivery.pickup !== 'pending' || existing.has('frozen-repair-handoff:' + delivery.id) ||
-          (delivery.sendLeaseUntilMs ?? 0) > nowMs || (delivery.sendAttempts ?? 0) >= 3) continue;
+          (delivery.sendLeaseUntilMs ?? 0) > nowMs) continue;
       delivery.sendLeaseUntilMs = nowMs + 60_000;
       delivery.sendAttempts = (delivery.sendAttempts ?? 0) + 1;
       claimed.push(delivery.id);
@@ -341,9 +371,7 @@ export async function routeFrozenRepairToLead(input: {
   const result = committed.state;
   // An outbox intent is committed before sending. Stable message/source ids make crash replay idempotent.
   const pending = result.groups.filter(group => group.delivery && committed.claimed.includes(group.delivery.id));
-  for (let offset = 0; offset < pending.length; offset += 12) {
-    const batch = pending.slice(offset, offset + 12);
-    await Promise.all(batch.map(async group => {
+   await sendPendingRepairLeadHandoffs(pending, async group => {
     const delivery = group.delivery;
     if (!delivery) return;
     const source = 'frozen-repair-handoff:' + delivery.id;
@@ -362,8 +390,7 @@ export async function routeFrozenRepairToLead(input: {
     }
     await wakeRecipients([delivery.owner], { source, workspaceId: input.workspaceId, summary,
       payload: { workItemId: workItem, deliveryId: delivery.id } });
-    }));
-  }
+    });
   const active = result.groups.filter(group => group.disposition === 'lead' && group.delivery);
   return { workItem, lead: committed.currentLead?.owner ?? null,
     pickup: !committed.currentLead ? 'unassigned' : active.length > 0 && active.every(group => group.delivery?.pickup === 'confirmed') ? 'confirmed' : 'pending' };

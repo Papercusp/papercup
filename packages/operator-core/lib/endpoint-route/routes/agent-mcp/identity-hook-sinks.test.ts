@@ -13,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { capturePgDiagnosticContext, recordPgResult } from '@papercusp/db-org/acquire-registry';
 import * as acquireDiagnostics from '@papercusp/db-org/acquire-registry';
-import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
+import { withNamedQueryDiagnosticContext, withNamedQueryDiagnosticLeg } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 import type { PlanExecutionGuardInput } from '../../../agent-tools/plans/plan-execution-guard';
 import { checkContinuationReadiness } from '../../../agent-tools/plans/plan-continuation-readiness';
 import { __setCachedReadEnabledForTests } from '../../../cache/cached-read';
@@ -474,8 +474,9 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(capturePgDiagnosticContext()).toMatchObject({
         state: 'linked', correlation: { requestId: guardRequestId, operation: 'native-tool-guard' },
       });
-      for (let id = 1; id <= 10; id++) record('org-admin-priority', id);
-      record('org-app-priority', 11);
+      for (let id = 1; id < 10; id++) record('org-admin-priority', id);
+      withNamedQueryDiagnosticLeg('plan-binding-census', () => record('org-admin-priority', 10));
+      withNamedQueryDiagnosticLeg('plan-readiness-fence', () => record('org-app-priority', 11));
       now = 600;
       controller.abort();
       return { code: 'plan_execution_not_ready', reason: 'Bound plan is draft' };
@@ -497,8 +498,11 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(diagnostic.pgTimings.pools[0]).toMatchObject({ pool: 'org-admin-priority', omittedMatched: 2 });
       expect(diagnostic.pgTimings.pools[0].queries.map((query: { queryId: number }) => query.queryId))
         .toEqual([3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(diagnostic.pgTimings.pools[0].queries[6]).not.toHaveProperty('queryLeg');
+      expect(diagnostic.pgTimings.pools[0].queries[7]).toMatchObject({ queryId: 10, queryLeg: 'plan-binding-census' });
       expect(diagnostic.pgTimings.pools[1].queries).toEqual([expect.objectContaining({
         queryId: 11, preBuildMs: 550, elapsedMs: 15, queryFamily: 'select:harness_shared.session_briefs',
+        queryLeg: 'plan-readiness-fence',
       })]);
       expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
       expect(JSON.stringify(log.mock.calls)).not.toContain('999');

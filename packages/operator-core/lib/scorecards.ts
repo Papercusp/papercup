@@ -4135,8 +4135,11 @@ function repairPairsSql(tx: OrgSql, scope: {
   const selectCriterion = scope.criterionKey === undefined
     ? tx`jsonb_each(CASE WHEN jsonb_typeof(c.obs->'ratings') = 'object' THEN c.obs->'ratings' ELSE '{}'::jsonb END)`
     : tx`(SELECT ${scope.criterionKey}::text AS key, c.obs->'ratings'->${scope.criterionKey} AS value)`;
+  // A workspace-wide window needs indexed lookups from each re-grade to its baseline.
+  // The history reader can reuse the much smaller set of cards for its selected rubric.
+  const materialization = scope.windowStart === undefined ? tx`MATERIALIZED` : tx`NOT MATERIALIZED`;
   return tx`
-    WITH cards AS MATERIALIZED (
+    WITH cards AS ${materialization} (
       SELECT issue_id, created_at, payload->'observation' AS obs,
              payload->'observation'->>'rubricRef' AS rubric_ref
         FROM harness_shared.engineer_issues

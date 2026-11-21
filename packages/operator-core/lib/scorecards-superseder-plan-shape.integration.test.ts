@@ -65,12 +65,13 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { listScorecards } = await import('./scorecards');
+const { listScorecards, measureRepairImprovementTime } = await import('./scorecards');
 const { issuesScopeWorkspace } = await import('./issues-engineer');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
 interface PlanNode {
   'Node Type': string;
+  'CTE Name'?: string;
   'Index Name'?: string;
   'Relation Name'?: string;
   Alias?: string;
@@ -248,6 +249,19 @@ beforeAll(async () => {
 afterAll(async () => {
   await traced?.end({ timeout: 5 });
   await db?.cleanup();
+});
+
+it('measures repair time without rescanning a materialized workspace of scorecards', async () => {
+  captured.length = 0;
+  await measureRepairImprovementTime({
+    workspaceId: issuesScopeWorkspace(), harnessSlug: SOURCE_HIVE,
+    windowStart: new Date(BASE_MS).toISOString(),
+    windowEnd: new Date(BASE_MS + 30 * 24 * 60 * 60_000).toISOString(),
+  });
+  const statement = captured.find(({ query }) => query.includes('ORDER BY baseline_id') && query.includes('baseline_audit'));
+  expect(statement, 'the duration check must execute its linked-pair query').toBeDefined();
+  const nodes = await explain(db.adminSql, statement!);
+  expect(nodes.filter(node => node['CTE Name'] === 'cards'), describePlan(nodes)).toHaveLength(0);
 });
 
 describe('listScorecards superseder probe plan shape (migration 1631)', () => {

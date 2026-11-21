@@ -95,7 +95,6 @@ import {
   type RepairDowngradeCoverage,
 } from "@papercusp/operator-core/lib/release/promotion-ratchet";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
-import { runtimeObservabilityHealth } from "@papercusp/operator-core/lib/observability/runtime";
 import {
   captureRatchetInstrument,
   compactRatchetShadow,
@@ -152,7 +151,7 @@ import {
   type GateRoundPhases,
 } from "@papercusp/operator-core/lib/release/gate-round-phases";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
-import { dependencyGenerationInfraCode } from "@papercusp/operator-core/lib/release/admission-fix-precheck";
+import { dependencyGenerationInfraCode } from "@papercusp/operator-core/lib/release/checkpoint-log-tags";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import type { TscDiagnostic } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import {
@@ -4497,8 +4496,12 @@ export function createCheckpointQualificationYieldBoundary(input: {
 }
 
 export class CheckpointQualificationBoundaryError extends Error {
-  constructor(readonly disposition: 'yielded' | 'killed', readonly detail: string) {
+  readonly disposition: 'yielded' | 'killed';
+  readonly detail: string;
+  constructor(disposition: 'yielded' | 'killed', detail: string) {
     super(`QUALIFICATION_BOUNDARY status=${disposition} reason=${detail}`);
+    this.disposition = disposition;
+    this.detail = detail;
   }
 }
 
@@ -8499,6 +8502,9 @@ export async function shadowComposedProofAtRepairHead(input: {
     }
   };
   // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/shadowComposedProofAtRepairHead:3ec2b52610625d07712e:1","classification":"durable","reason":"The <module>/shadowComposedProofAtRepairHead context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+  // Host observability pulls in the tool/SQL instrumentation graph. Import it
+  // only for this optional capture, rather than during every native CLI import.
+  const { runtimeObservabilityHealth } = await import("@papercusp/operator-core/lib/observability/runtime");
   return planComposedProofShadow({
     instrument: captureRatchetInstrument(runtimeObservabilityHealth().artifact, proofContext?.after),
     proofContext,
@@ -14399,36 +14405,8 @@ async function runGreenCheckpointInner(
               : null,
             capacityRetryAtMs: dispatchInfeasible.capacityRetryAtMs ?? null,
           });
-          if (dispatchInfeasible.zeroAttemptStalled) {
-            // WI-2141736 P-003: the LONG-WALL hold is the only state in which no fixer will
-            // ever be dispatched for this candidate, so the repair has to be routed to
-            // agents or the hold converges nowhere. Deliberately only on the stalled branch:
-            // the not-yet-stalled hold resolves inside the 15-minute stall window, and
-            // minting a work-item for it would page the fleet for ordinary pool churn.
-            //
-            // Best-effort, and swallowing here is the point: routing failing must never
-            // convert a held candidate into a failed checkpoint.
-            // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner:af74a5bcae569402c14c:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-            await deps
-              .routeFrozenRepairToAgents?.({
-                pipeline: pipelineName(cfg.integrationRoot),
-                candidate: repairQueue.candidate,
-                repairHead: repairQueue.repairHead,
-                failingTests: repairQueue.failingTests,
-                queue: repairQueue,
-                reason: "dispatch-capacity-held",
-                capacityRetryAtMs: dispatchInfeasible.capacityRetryAtMs,
-                capacitySummary: dispatch.capacityHold.summary,
-                heldMs: dispatchInfeasible.ageMs,
-                convergenceHoldMs: dispatchInfeasible.convergenceHoldMs,
-              })
-              .catch((e) =>
-                // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpointInner/<callback>:28804eafc4aafd7c21f3:1","classification":"durable","reason":"The <module>/runGreenCheckpointInner/<callback> context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-                deps.log(
-                  `warn: frozen-repair agent routing failed (candidate stays held): ${e instanceof Error ? e.message : e}`,
-                ),
-              );
-          }
+          // The terminal funnel records this inventory once for the repair lead,
+          // including fresh capacity holds. This branch only owns freeze state.
           return withRepairIdentity({
             advanced: false,
             candidate: repairQueue.repairHead,
@@ -19384,6 +19362,19 @@ export async function runGreenCheckpoint(
   // lost-run sweep can flag a live run parked here (its heartbeat stays fresh through a hang).
   // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:3676c6aedf8a9c086d43:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
   deps.reportProgress?.("phase:finalizing");
+  try {
+    deps.enterPostVerdictPhase?.(finalResult);
+  } catch (e) {
+    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:f5cb19aebf4ddd4501a5:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
+    deps.log(
+      `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
+  // WI-6554700010010213: every bounded post-verdict step reports a deadline overrun here.
+  const recordDeadline = deps.recordPostVerdictStepDeadline;
+  const onPostVerdictDeadline: PostVerdictDeadlineRecorder | undefined = recordDeadline
+    ? (info) => recordDeadline.call(deps, info)
+    : undefined;
   // D-015: every measured frozen round reaches ONE lead, including exhausted/dead-fixer
   // early returns. Native per-file records below remain coverage, never worker fan-out.
   if (deps.routeFrozenRepairToAgents && finalResult.repairQueueRead?.status !== "unreadable") {
@@ -19399,19 +19390,6 @@ export async function runGreenCheckpoint(
       deps.log, FROZEN_REPAIR_LEG_ROUTING_DEADLINE_MS, onPostVerdictDeadline,
     );
   }
-  try {
-    deps.enterPostVerdictPhase?.(finalResult);
-  } catch (e) {
-    // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:f5cb19aebf4ddd4501a5:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
-    deps.log(
-      `warn: post-verdict watchdog tighten failed: ${e instanceof Error ? e.message : e}`,
-    );
-  }
-  // WI-6554700010010213: every bounded post-verdict step reports a deadline overrun here.
-  const recordDeadline = deps.recordPostVerdictStepDeadline;
-  const onPostVerdictDeadline: PostVerdictDeadlineRecorder | undefined = recordDeadline
-    ? (info) => recordDeadline.call(deps, info)
-    : undefined;
   if (deps.recordDerivedFreezeDisposition) {
     // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/runGreenCheckpoint:343f6e9dd7de5c2935c6:1","classification":"durable","reason":"The <module>/runGreenCheckpoint context reaches notification roots through unresolved callback dispatch. No loss-tolerance proof covers the full root set; retain terminal delivery through aliases and wrappers. This is a requirement, not verified delivery.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}
     await recordDerivedFreezeDispositionWithDeadline(
@@ -23276,6 +23254,7 @@ export function realCheckpointDeps(
       // hold holds, so the condition-staleness sweep closing it on absence is the correct
       // recovery path. See the contract note in frozen-repair-agent-routing.ts.
       try {
+        if (!repairTarget) throw new Error("Frozen repair queue target is unavailable");
         if (input.queue === null) {
           const { releaseConditionOwner } = await import("@papercusp/operator-core/lib/coord/condition-bridge");
           const { frozenRepairConvergenceConditionKey } =
@@ -23299,6 +23278,7 @@ export function realCheckpointDeps(
           await import("@papercusp/operator-core/lib/severe-event-broadcast");
         const ev = buildFrozenRepairConvergenceBroadcast({
           ...input,
+          queue: input.queue ?? undefined,
           nowMs: Date.now(),
         });
         // notify-classification: {"id":"apps/operator/lib/release/green-checkpoint.ts#<module>/realCheckpointDeps/routeFrozenRepairToAgents:ebf9ec0a329ad732bbd9:1","classification":"durable","reason":"The native source census reaches send, sendMessage at this exact source site. No loss-tolerance or terminal-delivery proof is established; preserve the requirement through wrappers. Delivery remains unverified.","durablePath":"UNVERIFIED requirement: plan:dbos-durability-right-sizing-2026-10-21#P-009","deliveryState":"unverified"}

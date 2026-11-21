@@ -2720,8 +2720,8 @@ export function migrateLegacyCriterionProbeRevisions<T extends { check?: RubricC
 ): T[] {
   return criteria.map((criterion) => {
     const check = criterion.check;
-    if (!check || check.kind !== 'probe') return criterion;
-    if (check.probe !== undefined) {
+    if (check?.kind !== 'probe' && check?.kind !== 'tests') return criterion;
+    if (check.kind === 'probe' && check.probe !== undefined) {
       const probe = migrateLegacyProbeRevision(check.probe);
       return probe === check.probe ? criterion : { ...criterion, check: { ...check, probe } };
     }

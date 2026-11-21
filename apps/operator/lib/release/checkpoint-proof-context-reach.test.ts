@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { enumerateAffectedTaskSelection } from '../../../../scripts/lib/related-tests.mjs';
 import { PROOF_CONTEXT_COMPONENTS, createProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
+import { captureRecordedProofContext } from '@papercusp/test-config/execution-details';
 import { compareProofContextReach } from '@papercusp/operator-core/lib/release/proof-context-reach';
 import { captureCheckpointProofContextAtRef, checkpointPostSuiteCommandArgv, checkpointProofContextLegEntries,
   compareCheckpointProofContextCaptures } from './checkpoint-proof-context-reach';
@@ -49,6 +50,41 @@ function fixture() {
 }
 
 describe('checkpoint ref-pinned reach adapter', () => {
+  it('binds the recursive submodule checkouts at the selected ref to the reporter identity', async () => {
+    const f = fixture(), library = fixture(), leaf = fixture();
+    const empty = await f.capture(f.after);
+    library.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', leaf.root, 'nested/leaf');
+    const libraryPin = library.commit();
+    f.git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', library.root, 'vendor/library');
+    f.git('-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
+    const ref = f.commit();
+    const checkouts = [['vendor/library', libraryPin], ['vendor/library/nested/leaf', leaf.after]];
+    const reporterIdentity = (pins: string[][]) => captureRecordedProofContext({
+      commitSha: ref, worktreeDirty: false,
+      sourceSubmodules: { schemaVersion: 'submodule-checkouts-v1', before: pins, after: pins },
+    }).components.submodules;
+
+    const measured = await f.capture(ref);
+    expect(empty.context?.components.submodules).toBe(reporterIdentity([]));
+    expect(measured.context?.components.submodules).toBe(reporterIdentity(checkouts));
+    expect(measured.context?.components.submodules).toMatch(/^[a-f0-9]{64}$/);
+    expect(measured.context?.components.submodules).not.toBe(reporterIdentity([checkouts[0]!]));
+
+    f.git('-C', 'vendor/library', 'submodule', 'deinit', '--', 'nested/leaf');
+    expect(f.git('submodule', 'status', '--recursive')).toContain('-' + leaf.after);
+    const incomplete = await f.capture(ref);
+    expect(incomplete.context?.components.submodules ?? null).toBeNull();
+    expect(compareCheckpointProofContextCaptures({ candidate: ref, repairHead: ref,
+      before: measured, after: incomplete }).status).toBe('unknown');
+
+    const initializedDuringSelection = await f.capture(ref, { select: async () => {
+      f.git('-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive');
+      return f.select();
+    } });
+    expect(initializedDuringSelection.context?.components.source).toBe(measured.context?.components.source);
+    expect(initializedDuringSelection.context?.components.submodules).toBeNull();
+  });
+
   it('detaches the OLD graph before the same checkout is reset to NEW and retains unknown semantic inputs', async () => {
     const f = fixture();
     const before = await f.capture(f.before), after = await f.capture(f.after);

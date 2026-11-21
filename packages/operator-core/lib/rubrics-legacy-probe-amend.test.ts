@@ -122,6 +122,31 @@ describe('acceptance BAR amendments with legacy continuity probes', () => {
     expect(changes[1]?.after?.check).toMatchObject({ probe: { schemaRevision: continuityProbeRevision('status:read') } });
   });
 
+  it('reviews a repinned grouped tests observation with its original case selection intact', () => {
+    const probe = { kind: 'tool' as const, tool: 'status:read', args: { id: 'original' },
+      schemaRevision: 'projected-tool-registry-v1:retired', expect: { path: '$.state', op: 'exists' as const } };
+    const current = continuityProbeRevision(probe.tool);
+    expect(current).toBeTruthy();
+    const check = { kind: 'tests' as const, files: ['service.test.ts'], filesByPlanItem: { 'P-001': ['service.test.ts'] },
+      cases: [{ file: 'service.test.ts', testName: 'stored evidence' }], all: [probe, { ...probe, args: { id: 'second' } }] };
+    const before = [{ key: 'r-5', barKey: 'R-5', title: 'Adoption', model: 'The runtime contains the source.',
+      method: 'Run the service test and observe both receipts.', driftMarkers: 'A receipt is missing.', check }];
+    const stored: Rubric = {
+      rubricId: 'legacy-rubric', workspaceId: 'ws-test', kind: 'acceptance', criteria: before,
+      characteristic: 'runtime adoption', title: 'Adoption', description: '', ratingScale: ['healthy', 'broken'],
+      methodRef: null, gradingAuthority: 'independent', status: 'active', createdBy: 'author', proposedBy: 'author',
+      ratifiedBy: 'reviewer', createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-01T00:00:00Z',
+    };
+    const after = applyRubricAmendment(stored, { rubricId: stored.rubricId, methodRef: 'updated-method' }).criteria;
+    expect(after[0]?.check).toEqual({ ...check, all: check.all.map(entry => ({ ...entry, schemaRevision: current })) });
+    expect(check.all.map(entry => entry.schemaRevision)).toEqual([
+      'projected-tool-registry-v1:retired', 'projected-tool-registry-v1:retired',
+    ]);
+    expect(acceptanceBarAmendmentCriterionChanges(before, after, ['R-5'])).toEqual([
+      { barKey: 'R-5', before: before[0], after: after[0] },
+    ]);
+  });
+
   it('represents added and removed criteria explicitly and omits unchanged criteria', () => {
     const kept = { key: 'kept', barKey: 'R-1' } as Rubric['criteria'][number];
     const removed = { key: 'removed', barKey: 'R-2' } as Rubric['criteria'][number];
@@ -147,5 +172,7 @@ describe('acceptance BAR amendments with legacy continuity probes', () => {
     }]);
 
     expect(candidate?.check).toMatchObject({ probe: staleProbe });
+    const grouped = { kind: 'tests' as const, files: ['service.test.ts'], all: [staleProbe] };
+    expect(migrateLegacyCriterionProbeRevisions([{ check: grouped }])[0]?.check).toEqual(grouped);
   });
 });

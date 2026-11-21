@@ -2,7 +2,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
-import { captureRecordedProofContext } from '@papercusp/test-config/execution-details';
+import { captureRecordedProofContext, parseSubmoduleCheckoutStatus } from '@papercusp/test-config/execution-details';
 import { captureProofContextReach, capturedProofContextComponents, compareProofContextReach,
   type ProofContextReachCapture, type ProofContextReachCaptureInput,
   type ProofContextReachSelection } from '@papercusp/operator-core/lib/release/proof-context-reach';
@@ -10,6 +10,7 @@ import { expandSelectionCommands } from '../../../../scripts/lib/related-tests.m
 import { scriptCommandWords } from '../../../../scripts/lib/executed-source-map.mjs';
 import { listFilesIncludingUntracked } from '../../../../scripts/lib/tracked-files.mjs';
 import { expandWorkspaces } from '../../../../scripts/assert-workspace-links.mjs';
+import { git } from './git-ops';
 
 export const CHECKPOINT_PROOF_CONTEXT_SELECTION_ARGS = ['--all', '--print-selection', '--enumerate-specifications'] as const;
 export const CHECKPOINT_SPA_CONFLICT_MARKER_ARGS = [
@@ -122,6 +123,11 @@ export function checkpointProofContextLegEntries(root: string,
   } catch { return null; }
 }
 
+async function readSubmoduleCheckouts(root: string) {
+  const status = await git(root, ['submodule', 'status', '--recursive']).catch(() => null);
+  return parseSubmoduleCheckoutStatus(status);
+}
+
 /** One shared checkpoint root is reused by setupTree: finish and detach OLD before setting
  * up NEW. Verify HEAD and dirt on both sides of selector/capture; never use today's graph twice.
  * Source/selection preparation does not measure worker configuration, runtime, DB or fixtures.
@@ -143,6 +149,7 @@ export async function captureCheckpointProofContextAtRef(input: {
     // No full native discovery when a known prerequisite already forbids composition.
     const legs = input.legs(root);
     if (!legs) return unknown('post-suite-leg-inputs-unmeasured');
+    const submodulesBefore = await readSubmoduleCheckouts(root);
     const result = await input.select(root);
     if (result.code !== 0) return unknown('consumer-selector-failed');
     const marker = 'AFFECTED_TESTS_SELECTION=';
@@ -158,9 +165,11 @@ export async function captureCheckpointProofContextAtRef(input: {
     const source = [...new Set(census.files as string[])].sort();
     if (!source.length) return unknown('source-census-empty');
     const reach = captureProofContextReach({ rootDir: root, selection, componentFiles: { source }, legs });
+    const submodulesAfter = await readSubmoduleCheckouts(root);
     const after = await input.readTree(root);
     if (after.head !== before.head || after.dirty) return unknown('source-changed-during-capture');
-    const recorded = captureRecordedProofContext({ commitSha: before.head, worktreeDirty: false });
+    const recorded = captureRecordedProofContext({ commitSha: before.head, worktreeDirty: false,
+      sourceSubmodules: { schemaVersion: 'submodule-checkouts-v1', before: submodulesBefore, after: submodulesAfter } });
     const context = createProofContextIdentity({ ...recorded.components, ...capturedProofContextComponents(reach) });
     return { ref: input.ref, context, reach };
   } catch { return unknown('proof-context-capture-failed'); }

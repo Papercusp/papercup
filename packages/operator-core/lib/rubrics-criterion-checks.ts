@@ -301,10 +301,10 @@ function describeUnroutableTestPath(file: string): string | null {
  * above admits it, but scorecards:emit runs check files through the Vitest router, and
  * Vitest cannot run a Playwright spec: its `test` comes from `@playwright/test`, which
  * throws outside the Playwright runner. The criterion would then be permanently
- * ungradeable, the same failure WI-369566 moved to authoring time. Detected by the import
- * itself, which is what makes it a Playwright spec wherever it lives.
+ * ungradeable, the same failure WI-369566 moved to authoring time. A Vitest suite can
+ * use the Playwright client. Both authoring and grading use the same runner classification.
  *
- * @returns a teaching reason when the file imports `@playwright/test`, else null.
+ * @returns the reason a supported executor cannot own the suite, when applicable.
  */
 function describePlaywrightSpec(absPath: string): string | null {
   const route = resolveCriterionTestRoute(absPath);

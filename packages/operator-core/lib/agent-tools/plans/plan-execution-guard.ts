@@ -18,6 +18,7 @@ import { PLAN_READINESS_PENDING, READINESS_PENDING_RETRY_AFTER_MS } from './plan
 import { previewDiscoveryDeclaration, scopedFeasibilityPathSchema,
   type ScopedFeasibilityExperiment } from './plan-declarations';
 import { hasValidGitEntry } from '../locks/valid-git-entry';
+import { withNamedQueryDiagnosticLeg } from '../db-diagnostic-correlation-wiring';
 export { planExecutionMeaning } from './plan-execution-meaning';
 
 // The installed parser has no bundled declarations. Treat its tokens as unknown
@@ -675,7 +676,8 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
   // claims and held work on the same database snapshot. Canonical witnesses
   // below and their final revision rechecks remain fresh.
   const snapshots = await measurePlanStage('binding_census_query', observe,
-    () => sql<Array<{ rebind: unknown; bindings: CensusRow[]; held: HeldRow[] }>>`
+    () => withNamedQueryDiagnosticLeg('plan-binding-census', () =>
+      sql<Array<{ rebind: unknown; bindings: CensusRow[]; held: HeldRow[] }>>`
     WITH brief AS MATERIALIZED (
       SELECT current_plan_slug,harness_slug,control_state FROM harness_shared.session_briefs
        WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
@@ -699,7 +701,7 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
     )
     SELECT (SELECT control_state #> '{lifecycle,executionPlanBinding}' FROM brief LIMIT 1) AS rebind,
            COALESCE((SELECT jsonb_agg(b) FROM bindings b),'[]'::jsonb) AS bindings,
-           COALESCE((SELECT jsonb_agg(h) FROM held h),'[]'::jsonb) AS held`);
+           COALESCE((SELECT jsonb_agg(h) FROM held h),'[]'::jsonb) AS held`));
   if (snapshots.length !== 1) throw new Error('execution_plan_snapshot_unavailable');
   const { bindings: rows, held } = snapshots[0];
   const rebind = parseExecutionPlanRebind(snapshots[0].rebind, ownerId);
@@ -1021,7 +1023,9 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
         const critique = quality.satisfied && quality.applicable && isPlanStartBarCritiqueInCohort(createdMs)
           ? await measurePlanStage('critique', observe, () => evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
             planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,
-            contractEnforced: quality.mode === 'enforced' }))
+            contractEnforced: quality.mode === 'enforced' }, observe ? {
+              measureRead: (stage, read) => measurePlanStage(`critique_${stage}`, observe, read),
+            } : undefined))
           : null;
         return { quality, critique };
       })(),
