@@ -1,0 +1,35 @@
+{
+  "target": "packages/operator-core/lib/source-preview-export.test.ts",
+  "runGroup": "9f9f8ec8-8ffd-409c-b05e-5e6bcee81e78",
+  "parentRunGroup": "6107cf3c-1dba-45c5-a53f-12324df597e5",
+  "startedAtMs": 1795257124905,
+  "inheritedDeadlineAtMs": null,
+  "inheritedChildCutoffAtMs": null,
+  "deadlineAtMs": 1795257214905,
+  "childCutoffAtMs": 1795257184905,
+  "stdout": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/test-artifacts/source-preview-router-tzGWhw/stdout.log",
+  "stderr": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/test-artifacts/source-preview-router-tzGWhw/stderr.log",
+  "phases": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/test-artifacts/source-preview-router-tzGWhw/phases.jsonl",
+  "phase": "returned",
+  "returnedAtMs": 1795257184946,
+  "status": null,
+  "signal": "SIGTERM",
+  "timedOut": true,
+  "error": null,
+  "streamsComplete": true,
+  "processDiagnostic": {
+    "status": "measured",
+    "rootPid": 109350,
+    "truncated": false,
+    "unreadableFields": 0,
+    "processes": [
+      {
+        "pid": 109350,
+        "parentPid": 71572,
+        "name": "node-MainThread",
+        "state": "S",
+        "waitChannel": "__schedule"
+      }
+    ]
+  }
+}
