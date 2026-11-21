@@ -1,15 +1,16 @@
 import { createHash } from 'node:crypto';
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { prepareVerifierSource } from '../../../scripts/source-preview.mjs';
 import {
-  applicationInputs, assertComparisonSelection, definitionInputs, measureComparisonSources, originalComparisonRow,
+  adapterCoverageCase, applicationInputs, assertComparisonSelection, assertCompleteComparisonCoverage,
+  definitionInputs, measureComparisonSources, originalAdapterResult, originalComparisonRow,
   readComparisonCoverage,
 } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 import { git, write } from './source-preview.fixture';
-import { planFixtureIdentity, privatePlanUsername, readPreparedPlanHarness } from '../../../apps/operator/e2e/_plan-revision-edits';
+import { planFixtureIdentity, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure } from '../../../apps/operator/e2e/_plan-revision-edits';
 
 const title = 'saves a citation in native Plans and correlates author reviewer and worker outcomes';
 const file = 'plan-revision-amendment-native.spec.mts';
@@ -138,6 +139,88 @@ describe('the isolated native Plans comparison', () => {
       [{ ...row, execution_details: { ...details, passedCaseTitles: ['only the author'] } }],
       [{ ...row, execution_details: { ...details, runtimeEnvironmentAfter: { ...runtime, fingerprint: 'changed' } } }]])
       expect(() => originalComparisonRow(invalid, request, driver.root, runtime)).toThrow();
+  });
+
+  it('keeps individual native failure locations and deadlines without retaining arguments or replacing earlier evidence', () => {
+    const dir = mkdtempSync(join(scratch, 'scenario-failure-'));
+    const request = { group: 'failure-group', taskId: 'original-task', applicationRef: app.commit, definitionRef: driver.commit };
+    const canary = 'PRIVATE_TEST_ARGUMENT_MUST_STAY_OUT_OF_DIAGNOSTICS';
+    writeFileSync(join(dir, 'request.json'), JSON.stringify({ ...request, extra: canary }));
+    for (const [name, value] of Object.entries({ PLAN_REVISION_EVIDENCE: dir,
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: request.taskId, PAPERCUSP_TEST_RUN_GROUP: request.group,
+      VERIFY_TAURI_SOURCE_REF: app.commit, VERIFY_TAURI_TEST_SOURCE_REF: driver.commit })) vi.stubEnv(name, value);
+    try {
+      const error = Object.assign(new Error(canary), { code: 'ETIMEDOUT',
+        stack: 'Error: ' + canary + '\n    at check (/private/testing-native-runtime.ts:186:3)\n    at native (/private/plan-revision-amendment-native.spec.mts:55:5)' });
+      const first = retainNativePlanFailure('ptool', 'preflight', 'native liveness and private origin', error, 5000);
+      retainNativePlanFailure('desktop', 'citation', 'author sign-in / eval bridge', error, 1200);
+      const files = readdirSync(dir).filter(path => path.startsWith('plan-failure-'));
+      expect(files).toHaveLength(2);
+      const observations = files.map(file => JSON.parse(readFileSync(join(dir, file), 'utf8')));
+      expect(JSON.stringify(observations)).not.toContain(canary);
+      expect(observations).toContainEqual({ ...request, failure: first });
+      expect(first).toMatchObject({ door: 'ptool', scenario: 'preflight', code: 'ETIMEDOUT', elapsedMs: 5000,
+        frames: ['testing-native-runtime.ts:186:3', 'plan-revision-amendment-native.spec.mts:55:5'] });
+      vi.stubEnv('PAPERCUSP_TEST_RUN_GROUP', 'changed-group');
+      expect(() => retainNativePlanFailure('api', 'preflight', 'native liveness', error, 1)).toThrow(/destination/);
+      expect(readdirSync(dir).filter(path => path.startsWith('plan-failure-')).sort()).toEqual(files.sort());
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('requires the original Vitest assertion and clean ledger row for a partial result', () => {
+    const path = 'packages/operator-core/lib/plan-revision-amendment-native.e2e.test.ts';
+    const suite = 'historical private Plans clients';
+    const request = { group: 'adapter-group', harness: 'papercusp', workspace: 'ledger-workspace',
+      applicationRef: app.commit, definitionRef: driver.commit };
+    const runtime = { fingerprint: '3'.repeat(64), units: ['verify-tauri-headless:50'] };
+    const missing = ['worker/ptool/resumed'];
+    let originalError = '';
+    try { assertCompleteComparisonCoverage(missing); } catch (err) { originalError = String(err); }
+    expect(originalError).toContain('Required role/client observations still missing');
+    expect(() => assertCompleteComparisonCoverage([])).not.toThrow();
+    const titles = ['records old author payloads across edits, retry and resumption on api',
+      'records old author payloads across edits, retry and resumption on ptool', adapterCoverageCase];
+    const make = (failures: Record<string, string[]>, moduleError = '') => {
+      const assertions = titles.map(title => ({ title, ancestorTitles: [suite],
+        status: title in failures ? 'failed' : 'passed', failureMessages: failures[title] ?? [] }));
+      const failed = assertions.filter(test => test.status === 'failed');
+      const passed = assertions.filter(test => test.status === 'passed');
+      const success = !failed.length && !moduleError;
+      const diagnostic = moduleError || failed.flatMap(test => test.failureMessages.map(error =>
+        suite + ' > ' + test.title + ': ' + error.split('\n', 1)[0].replace(/^Error: /, ''))).join('\n');
+      const report = { success, numTotalTests: 3, numFailedTests: failed.length, numPassedTests: passed.length,
+        numPendingTests: 0, numTodoTests: 0, testResults: [{ name: join(driver.root, path), message: moduleError,
+          status: success ? 'passed' : 'failed', assertionResults: assertions }] };
+      const row = { id: '411', workspace_id: request.workspace, harness_slug: request.harness, run_group_id: request.group,
+        framework: 'vitest', file_path: path, status: success ? 'pass' : 'fail', finished_at: new Date(), worktree_dirty: false,
+        commit_sha: driver.commit, output_tail: [diagnostic, '[native sources] application=' + app.commit + ' verifier=' + driver.commit]
+          .filter(Boolean).join('\n'),
+        execution_details: { root: driver.root, testLayer: 'e2e', collectionFailed: false, passed: passed.length,
+          failed: failed.length, skipped: 0, passedCaseTitles: passed.map(test => suite + ' > ' + test.title),
+          failedCaseTitles: failed.map(test => suite + ' > ' + test.title), runtimeEnvironmentBefore: runtime,
+          runtimeEnvironmentAfter: runtime } };
+      return { report, row, classify: (code: number, omissions: string[]) => originalAdapterResult([row], request, driver.root,
+        runtime, Buffer.from(JSON.stringify(report)), code, omissions) };
+    };
+    const complete = make({});
+    expect(complete.classify(0, [])).toMatchObject({ status: 'passed', originalStatus: 'pass', id: '411' });
+    expect(complete.classify(0, missing).status).toBe('failed');
+    const onlyCoverage = { [adapterCoverageCase]: [originalError + '\n    at original assertion'] };
+    const partial = make(onlyCoverage);
+    expect(partial.classify(1, missing)).toMatchObject({ status: 'partial', originalStatus: 'fail' });
+    expect(partial.classify(1, ['reviewer/ptool/resumed']).status).toBe('failed');
+    expect(partial.classify(3, missing).status).toBe('failed');
+    expect(make({ ...onlyCoverage, [titles[0]]: ['API failed'] }).classify(1, missing).status).toBe('failed');
+    expect(make({ [adapterCoverageCase]: ['another assertion'] }).classify(1, missing).status).toBe('failed');
+    expect(make({ [adapterCoverageCase]: [originalError, 'teardown failed'] }).classify(1, missing).status).toBe('failed');
+    expect(make(onlyCoverage, 'module teardown failed').classify(1, missing).status).toBe('failed');
+    const additionalSuiteFailure = make(onlyCoverage);
+    additionalSuiteFailure.row.output_tail = 'nested afterAll failed\n[native sources] application=' + app.commit + ' verifier=' + driver.commit;
+    expect(additionalSuiteFailure.classify(1, missing).status).toBe('failed');
+    partial.row.commit_sha = app.commit;
+    expect(() => partial.classify(1, missing)).toThrow();
+    complete.report.testResults[0].assertionResults.pop();
+    expect(() => complete.classify(0, [])).toThrow();
   });
 
   it('keeps the full denominator and original observations when client roles are missing or repeated', () => {

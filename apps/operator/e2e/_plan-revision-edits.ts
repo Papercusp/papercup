@@ -1,11 +1,42 @@
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 /** signup accepts 2–32 lowercase letters, digits, underscores and hyphens. */
 export function privatePlanUsername(role: 'author' | 'reviewer' | 'worker') {
   return role + '-' + randomBytes(11).toString('hex');
+}
+
+/** Native commands can include account credentials in their arguments. Keep
+ * the operation, failure class and original test frames without serializing them. */
+export function nativePlanFailureDetails(error: unknown) {
+  const e = error instanceof Error ? error as NodeJS.ErrnoException : undefined;
+  const names = ['Error', 'TypeError', 'AssertionError', 'TimeoutError', 'AbortError', 'AggregateError'];
+  const codes = ['ETIMEDOUT', 'ENOENT', 'EACCES', 'EPERM', 'ECONNRESET', 'ECONNREFUSED', 'ERR_ASSERTION'];
+  const frames = (e?.stack ?? '').split('\n').filter(line => /^\s*at\s/.test(line)).flatMap(line => {
+    const location = line.match(/(?:^|[/\\])(testing-native-runtime\.ts|plan-revision-amendment-native\.spec\.mts|plan-revision-amendment-native\.e2e\.test\.ts|_native-bridge-json\.ts|_plan-revision-retry\.ts):(\d+):(\d+)/);
+    return location ? [location[1] + ':' + location[2] + ':' + location[3]] : [];
+  });
+  return { kind: e && names.includes(e.name) ? e.name : 'unknown',
+    ...(e?.code && codes.includes(e.code) ? { code: e.code } : {}), frames: [...new Set(frames)] };
+}
+
+export function retainNativePlanFailure(door: 'api' | 'ptool' | 'desktop', scenario: NativePlanEdit['scenario'] | 'preflight',
+  stage: string, error: unknown, elapsedMs: number) {
+  const failure = { door, scenario, stage, elapsedMs, ...nativePlanFailureDetails(error) };
+  const env = process.env;
+  if (env.PLAN_REVISION_EVIDENCE && env.VERIFY_TAURI_TEST_SOURCE_REF) {
+    assert(isAbsolute(env.PLAN_REVISION_EVIDENCE));
+    const request = JSON.parse(readFileSync(join(env.PLAN_REVISION_EVIDENCE, 'request.json'), 'utf8'));
+    assert(request.taskId && request.group && request.taskId === env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID
+      && request.group === env.PAPERCUSP_TEST_RUN_GROUP && request.applicationRef === env.VERIFY_TAURI_SOURCE_REF
+      && request.definitionRef === env.VERIFY_TAURI_TEST_SOURCE_REF, 'unexpected native failure evidence destination');
+    const { taskId, group, applicationRef, definitionRef } = request;
+    writeFileSync(join(env.PLAN_REVISION_EVIDENCE, 'plan-failure-' + randomUUID() + '.json'),
+      JSON.stringify({ taskId, group, applicationRef, definitionRef, failure }) + '\n', { flag: 'wx', mode: 0o600 });
+  }
+  return failure;
 }
 
 export function planFixtureIdentity(workspace: string, fingerprint: string, env: NodeJS.ProcessEnv = process.env) {

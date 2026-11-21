@@ -11,8 +11,9 @@ import { describe, expect, inject, it } from 'vitest';
 import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
 import { seedFakeLlmHarness } from '../../../apps/operator/e2e/_fake-llm-fixture';
 import { readPlanPtoolReply } from '../test/plan-revision-ptool';
-import { nativePlanComparisonTimeoutMs, privatePlanUsername, readPreparedPlanHarness } from '../../../apps/operator/e2e/_plan-revision-edits';
-import { readComparisonCoverage } from '../../../scripts/lib/plan-revision-native-comparison.mts';
+import { nativePlanComparisonTimeoutMs, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
+  type NativePlanEdit } from '../../../apps/operator/e2e/_plan-revision-edits';
+import { adapterCoverageCase, assertCompleteComparisonCoverage, readComparisonCoverage } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 
 const execute = promisify(execFile);
 const definitionRoot = fileURLToPath(new URL('../../../', import.meta.url));
@@ -92,11 +93,27 @@ async function createPrivatePlanClient(role: 'author' | 'reviewer' | 'worker', o
   }
 }
 
-describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plans clients', () => {
-  it.each(['api', 'ptool'] as const)('records old author payloads across edits, retry and resumption on %s', async door => {
+async function preparePrivatePlanClient(door: 'api' | 'ptool') {
+  const started = Date.now();
+  let stage = 'native liveness and private origin';
+  try {
     const app = await privateApplication();
+    stage = 'private harness registration';
     const harness = process.env.VERIFY_TAURI_TEST_SOURCE_REF ? readPreparedPlanHarness(app.workspace, app.runtime.fingerprint)
       : await seedFakeLlmHarness({ hive: true });
+    return { app, harness };
+  } catch (error) {
+    retainNativePlanFailure(door, 'preflight', stage, error, Date.now() - started);
+    throw error;
+  }
+}
+
+describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plans clients', () => {
+  it.each(['api', 'ptool'] as const)('records old author payloads across edits, retry and resumption on %s', async door => {
+    const { app, harness } = await preparePrivatePlanClient(door);
+    const started = Date.now();
+    let activeScenario: NativePlanEdit['scenario'] | 'preflight' = 'preflight';
+    let stage = 'client preparation';
     const admin = postgres(app.database.href, { max: 1, onnotice: () => {} });
     const archive = process.env.PLAN_REVISION_EVIDENCE ?? await mkdtemp(join(tmpdir(), 'native-plan-api-'));
     const observations: object[] = [];
@@ -104,6 +121,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
     const roleReads: object[] = [];
     const completed = new Set<string>();
     async function api(verb: string, payload: Record<string, unknown>, read = false): Promise<Response> {
+      stage = 'Plans API ' + verb;
       const url = new URL('/api/admin/plans/' + verb, app.origin);
       if (read) for (const [key, value] of Object.entries(payload)) url.searchParams.set(key, String(value));
       const client = roles.author!.client;
@@ -117,6 +135,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
     try {
       // Use only the private runner's configured credential and this session's real identity.
       const ptool = async (verb: string, args: object, retry?: Save) => {
+        stage = 'CLI ' + verb;
         const privateHome = await realpath(process.env.PAPERCUSP_HOME!);
         const launchDirectory = dirname(await realpath(process.env.VERIFY_TAURI_LIVENESS_CHECK!));
         expect(privateHome).toBe(join(launchDirectory, 'papercusp-home'));
@@ -167,6 +186,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
         ['resumed', 'plan-efficiency.ts:2', 'plan-efficiency.ts:3'],
         ['material', 'Expected duration: one minute.', 'Expected duration: five minutes.'],
       ] as const) {
+        activeScenario = scenario;
         let resumedFrom: string | undefined;
         if (scenario === 'resumed') {
           if (!last) throw new Error('The resumed client needs a previously submitted document');
@@ -225,7 +245,11 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
         last = payload;
       }
       expect(observations).toHaveLength(5);
+      stage = 'final native liveness';
       expect(assertNativeRuntimeLiveness(app.root, app.applicationCommit).fingerprint).toBe(app.runtime.fingerprint);
+    } catch (error) {
+      retainNativePlanFailure(door, activeScenario, stage, error, Date.now() - started);
+      throw error;
     } finally {
       try {
         const path = join(archive, 'draft-author-' + randomUUID() + '.json');
@@ -243,7 +267,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
     }
   }, 360_000);
 
-  it('captures the pre change role matrix through the real native Plans selector', async () => {
+  it(adapterCoverageCase, async () => {
     const app = await privateApplication();
     const group = process.env.PAPERCUSP_TEST_RUN_GROUP;
     if (!group?.trim() || !process.env.VERIFY_TAURI_TEST_SOURCE_REF) throw new Error('Missing original comparison group or definition');
@@ -282,7 +306,7 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
         harness: process.env.PAPERCUSP_TEST_RUN_HARNESS!,
         applicationRef: app.applicationCommit, definitionRef: process.env.VERIFY_TAURI_TEST_SOURCE_REF,
       }, app.runtime);
-      expect(coverage.unmeasured, 'Required role/client observations still missing').toEqual([]);
+      assertCompleteComparisonCoverage(coverage.unmeasured);
     } finally { await ledger.end({ timeout: 5 }); }
   }, nativePlanComparisonTimeoutMs + 90_000);
 });

@@ -24,6 +24,10 @@ const rig = 'scripts/verify-tauri-headless.sh';
 const adapter = 'packages/operator-core/lib/plan-revision-amendment-native.e2e.test.ts';
 const spec = 'apps/operator/e2e/plan-revision-amendment-native.spec.mts';
 const caseTitle = 'saves a citation in native Plans and correlates author reviewer and worker outcomes';
+export const adapterCoverageCase = 'captures the pre change role matrix through the real native Plans selector';
+const adapterSuite = 'historical private Plans clients';
+const adapterCases = ['records old author payloads across edits, retry and resumption on api',
+  'records old author payloads across edits, retry and resumption on ptool', adapterCoverageCase];
 const config = 'apps/operator/playwright.config.mts';
 type SelectedSource = { root: string; commit: string; receipt: string };
 type RuntimeIdentity = { fingerprint: string; units: string[] };
@@ -38,7 +42,7 @@ type ReporterRow = { id: string; workspace_id: string; harness_slug: string; run
   file_path: string; status: string; finished_at: Date | string | null; worktree_dirty: boolean | null;
   commit_sha: string; output_tail: string | null; execution_details: { root: string; testLayer: string;
     collectionFailed: boolean; passed: number; failed: number; skipped: number; passedCaseTitlesTruncated?: boolean;
-    passedCaseTitles: string[]; runtimeEnvironmentBefore: RuntimeIdentity; runtimeEnvironmentAfter: RuntimeIdentity } };
+    passedCaseTitles: string[]; failedCaseTitles?: string[]; runtimeEnvironmentBefore: RuntimeIdentity; runtimeEnvironmentAfter: RuntimeIdentity } };
 type CapturedSave = { scenario: string; savedHash: string; clientActor?: ClientActor;
   revisions: { id: string; author_id: string; session_id?: string | null; content_hash: string }[] };
 type CapturedTrace = { group: string; applicationCommit: string; definitionCommit: string; workspace: string } & (
@@ -48,6 +52,7 @@ type CapturedTrace = { group: string; applicationCommit: string; definitionCommi
     roleReads: { role: string; scenario: string; actorId: string; savedHash: string; revisionId: string }[] });
 export const applicationInputs = Object.freeze(['apps/operator/app/admin/plans/PlansClient.tsx', 'apps/operator/scripts/ptool.mjs']);
 export const definitionInputs = Object.freeze([entry, adapter, spec, config, 'packages/operator-core/test/plan-revision-ptool.ts',
+  'packages/operator-core/vitest.e2e.config.ts', 'scripts/test-files.mjs',
   'apps/operator/e2e/_fake-llm-fixture.ts', 'apps/operator/e2e/_native-bridge-json.ts', 'apps/operator/e2e/_plan-revision-edits.ts',
   'apps/operator/e2e/_plan-revision-retry.ts',
   'apps/operator/test/reporters/admin-test-runs-reporter-playwright.ts',
@@ -113,18 +118,17 @@ export function measureComparisonSources(application: SelectedSource, definition
   });
 }
 
-/** The independent Playwright reporter is the authority for case execution. */
-export function originalComparisonRow(rows: ReporterRow[], request: ComparisonRequest, driverRoot: string, runtime: RuntimeIdentity) {
-  assert.equal(rows.length, 1, 'expected exactly one original Playwright row for the comparison');
+function originalReporterRow(rows: ReporterRow[], request: ComparisonRequest, driverRoot: string, runtime: RuntimeIdentity,
+  framework: 'playwright' | 'vitest', path: string) {
+  assert.equal(rows.length, 1, 'expected exactly one original ' + framework + ' row for the comparison');
   const [row] = rows;
   assert.match(row.id, /^[1-9][0-9]*$/);
   assert.equal(row.workspace_id, request.workspace);
   assert.equal(row.harness_slug, request.harness);
   assert.equal(row.run_group_id, request.group);
-  assert.equal(row.framework, 'playwright');
-  assert.equal(row.file_path, spec);
-  assert.equal(row.status, 'pass');
-  assert(row.finished_at && row.worktree_dirty === false, 'expected a finished clean-source Playwright row');
+  assert.equal(row.framework, framework);
+  assert.equal(row.file_path, path);
+  assert(row.finished_at && row.worktree_dirty === false, 'expected a finished clean-source ' + framework + ' row');
   assert.equal(row.commit_sha, request.definitionRef);
   assert(row.output_tail?.split('\n').includes('[native sources] application=' + request.applicationRef
     + ' verifier=' + request.definitionRef), 'reporter did not observe both selected sources');
@@ -132,26 +136,94 @@ export function originalComparisonRow(rows: ReporterRow[], request: ComparisonRe
   assert.equal(details.root, driverRoot);
   assert.equal(details.testLayer, 'e2e');
   assert.equal(details.collectionFailed, false);
-  assert.deepEqual([details.passed, details.failed, details.skipped], [1, 0, 0]);
   assert(!details.passedCaseTitlesTruncated);
-  assert.deepEqual(details.passedCaseTitles, [caseTitle]);
   for (const observed of [details.runtimeEnvironmentBefore, details.runtimeEnvironmentAfter]) {
     assert.equal(observed.fingerprint, runtime.fingerprint);
     assert.deepEqual(observed.units, runtime.units);
   }
+  return row;
+}
+
+/** The independent Playwright reporter is the authority for case execution. */
+export function originalComparisonRow(rows: ReporterRow[], request: ComparisonRequest, driverRoot: string, runtime: RuntimeIdentity) {
+  const row = originalReporterRow(rows, request, driverRoot, runtime, 'playwright', spec);
+  assert.equal(row.status, 'pass');
+  const details = row.execution_details;
+  assert.deepEqual([details.passed, details.failed, details.skipped], [1, 0, 0]);
+  assert.deepEqual(details.passedCaseTitles, [caseTitle]);
   return { id: row.id, group: row.run_group_id, applicationCommit: request.applicationRef,
     definitionCommit: row.commit_sha, caseTitle, fingerprint: runtime.fingerprint };
 }
 
-async function readOriginalRow(ledger: string, request: ComparisonRequest, driverRoot: string, runtime: RuntimeIdentity) {
+function coverageFailureMessage(missing: readonly string[]) {
+  return 'Required role/client observations still missing (' + missing.length + ', sha256 '
+    + digest(Buffer.from(JSON.stringify(missing))) + '). See coverage.json.';
+}
+
+export function assertCompleteComparisonCoverage(missing: readonly string[]) {
+  if (missing.length) throw new Error(coverageFailureMessage(missing));
+}
+
+interface AdapterReport {
+  success: boolean; numTotalTests: number; numPassedTests: number; numFailedTests: number; numPendingTests: number; numTodoTests: number;
+  testResults: { name: string; status: string; message: string;
+    assertionResults: { title: string; ancestorTitles: string[]; status: string; failureMessages: string[] }[] }[];
+}
+
+/** A partial result requires one original failed assertion for exactly the recorded omissions. */
+export function originalAdapterResult(rows: ReporterRow[], request: ComparisonRequest, driverRoot: string, runtime: RuntimeIdentity,
+  bytes: Buffer, exitCode: number, missing: readonly string[]) {
+  const row = originalReporterRow(rows, request, driverRoot, runtime, 'vitest', adapter);
+  const report: AdapterReport = JSON.parse(bytes.toString('utf8'));
+  assert.equal(report.testResults.length, 1);
+  const [file] = report.testResults;
+  assert.equal(file.name, join(driverRoot, adapter));
+  const cases = file.assertionResults;
+  assert.deepEqual(cases.map(test => test.title).sort(), [...adapterCases].sort());
+  assert(cases.every(test => test.ancestorTitles.at(-1) === adapterSuite && Array.isArray(test.failureMessages)));
+  const passed = cases.filter(test => test.status === 'passed');
+  const failed = cases.filter(test => test.status === 'failed');
+  assert.equal(passed.length + failed.length, cases.length);
+  assert.deepEqual([report.numTotalTests, report.numPassedTests, report.numFailedTests, report.numPendingTests, report.numTodoTests],
+    [cases.length, passed.length, failed.length, 0, 0]);
+  const details = row.execution_details;
+  assert.deepEqual([details.passed, details.failed, details.skipped], [passed.length, failed.length, 0]);
+  const titles = (tests: typeof cases) => tests.map(test => adapterSuite + ' > ' + test.title).sort();
+  assert.deepEqual([...(details.passedCaseTitles ?? [])].sort(), titles(passed));
+  assert.deepEqual([...(details.failedCaseTitles ?? [])].sort(), titles(failed));
+  let status: 'passed' | 'partial' | 'failed' = 'failed';
+  const noOtherErrors = file.message === '' && passed.every(test => test.failureMessages.length === 0);
+  if (exitCode === 0 && !missing.length && noOtherErrors && !failed.length
+    && report.success === true && file.status === 'passed' && row.status === 'pass') status = 'passed';
+  if (exitCode === 1 && missing.length && noOtherErrors && failed.length === 1 && failed[0].title === adapterCoverageCase
+    && report.success === false && file.status === 'failed' && row.status === 'fail' && failed[0].failureMessages.length === 1) {
+    const message = failed[0].failureMessages[0].split(/\r?\n/, 1)[0];
+    const expected = coverageFailureMessage(missing);
+    // Module and nested suite errors take priority in the independent reporter's
+    // diagnostic. A matching assertion plus a separate teardown failure stays failed.
+    const expectedTail = adapterSuite + ' > ' + adapterCoverageCase + ': ' + expected
+      + '\n[native sources] application=' + request.applicationRef + ' verifier=' + request.definitionRef;
+    if ((message === expected || message === 'Error: ' + expected) && row.output_tail === expectedTail) status = 'partial';
+  }
+  return { id: row.id, group: row.run_group_id, originalStatus: row.status, status,
+    reportSha256: digest(bytes), failedCaseTitles: titles(failed) };
+}
+
+async function readOriginalResults(ledger: string, request: ComparisonRequest, driverRoot: string, runtime: RuntimeIdentity,
+  reportPath: string, exitCode: number, missing: string[]) {
   const { default: postgres } = await import('postgres');
   const sql = postgres(ledger, { max: 1, connect_timeout: 5, onnotice: () => {} });
   try {
     const rows = await sql<ReporterRow[]>`SELECT id::text, workspace_id, harness_slug, run_group_id, framework,
         file_path, status, finished_at, worktree_dirty, commit_sha, output_tail, execution_details
       FROM harness_shared.test_runs WHERE workspace_id=${request.workspace} AND harness_slug=${request.harness}
-        AND run_group_id=${request.group} AND framework='playwright' AND file_path=${spec}`;
-    return originalComparisonRow(rows, request, driverRoot, runtime);
+        AND run_group_id=${request.group} AND ((framework='playwright' AND file_path=${spec})
+          OR (framework='vitest' AND file_path=${adapter}))`;
+    return {
+      original: originalComparisonRow(rows.filter(row => row.framework === 'playwright'), request, driverRoot, runtime),
+      originalAdapter: originalAdapterResult(rows.filter(row => row.framework === 'vitest'), request, driverRoot, runtime,
+        readFileSync(reportPath), exitCode, missing),
+    };
   } finally { await sql.end({ timeout: 5 }); }
 }
 
@@ -292,8 +364,13 @@ async function runComparison(applicationRef: string, definitionRef: string, appl
   assert.equal(result.status, code === 0 ? 'passed' : 'partial');
   for (const [i, file] of ['application.json', 'definition.json'].entries())
     assert.equal(digest(readFileSync(join(out, file))), result.sources[i].receiptSha256);
-  const original = await readOriginalRow(ledger, request, result.sources[1].root, result.before);
-  assert.deepEqual(original, result.original);
+  const coverage = readComparisonCoverage(out, { ...request, privateWorkspace: result.privateWorkspace }, result.before);
+  assert.deepEqual(JSON.parse(readFileSync(join(out, 'coverage.json'), 'utf8')), coverage);
+  assert.deepEqual(result.coverage, coverage);
+  const originals = await readOriginalResults(ledger, request, result.sources[1].root, result.before,
+    join(out, 'vitest.json'), result.adapterExit, coverage.unmeasured);
+  assert.deepEqual(originals, { original: result.original, originalAdapter: result.originalAdapter });
+  assert.equal(result.status, originals.originalAdapter.status);
   writeReceipt(join(out, 'result.json'), { ...result, finalizedAt: new Date().toISOString() });
   return code;
 }
@@ -344,7 +421,9 @@ async function observe() {
     assert.deepEqual([records[0].kind, records[0].self_repo], ['hive', true]);
   } finally { await privateDb.end({ timeout: 5 }); }
   writeReceipt(join(out, 'fixture.json'), { ...planFixtureIdentity(privateWorkspace, before.fingerprint), harness });
-  const code = await runChild(process.execPath, ['scripts/test-files.mjs', adapter], { cwd: root, env });
+  const reportPath = join(out, 'vitest.json');
+  const code = await runChild(process.execPath, ['scripts/test-files.mjs', adapter, '--', '--reporter=default',
+    '--reporter=json', '--outputFile=' + reportPath], { cwd: root, env });
   assert.deepEqual(measureComparisonSources(app, driver), sources, 'tested source changed during the run');
   const after = assertNativeRuntimeLiveness(app.root, app.commit);
   assert.equal(after.fingerprint, before.fingerprint);
@@ -352,17 +431,17 @@ async function observe() {
   writeReceipt(join(out, 'after.json'), { ...witness, after, adapterExit: code });
   const coverage = readComparisonCoverage(out, { ...request, privateWorkspace }, before);
   writeReceipt(join(out, 'coverage.json'), coverage);
-  let original;
+  let originals;
   try {
-    original = await readOriginalRow(ledger.href, request, root, before);
+    originals = await readOriginalResults(ledger.href, request, root, before, reportPath, code, coverage.unmeasured);
   } catch (error) {
     writeReceipt(join(out, 'observation.json'), { ...witness, after, coverage, adapterExit: code,
       status: 'unverified', reason: 'Missing or ineligible independent reporter row' });
     throw error;
   }
-  writeReceipt(join(out, 'observation.json'), { ...witness, after, original, coverage,
-    adapterExit: code, status: coverage.status === 'partial' ? 'partial' : code === 0 ? 'passed' : 'failed' });
-  return coverage.status === 'partial' ? 3 : code;
+  const status = originals.originalAdapter.status;
+  writeReceipt(join(out, 'observation.json'), { ...witness, after, ...originals, coverage, adapterExit: code, status });
+  return status === 'partial' ? 3 : status === 'passed' ? 0 : 1;
 }
 
 if (isCliEntry(import.meta.url)) {

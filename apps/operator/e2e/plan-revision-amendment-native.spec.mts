@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
-import { citationEdit, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness,
+import { citationEdit, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
   type NativePlanEdit } from './_plan-revision-edits';
 import { assertNativePlanRetry, installPlanRetryExpression, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
 
@@ -17,7 +17,9 @@ type UiAction = { operation: 'navigate' | 'click' | 'edit'; target: string; outc
 
 test.describe.configure({ mode: 'default' });
 
-async function captureNativeEdit(request: APIRequestContext, info: TestInfo, editCase: NativePlanEdit, compareRoles = false) {
+async function captureNativeEdit(request: APIRequestContext, info: TestInfo, editCase: NativePlanEdit, compareRoles = false,
+  mark: (step: string) => void = () => {}) {
+  mark('initial private workspace and native liveness');
   const { scenario, originalText, replacementText } = editCase;
   const { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } = await import('@papercusp/operator-core/lib/testing-native-runtime');
   const workspace = assertNativeIsolatedWorkspace();
@@ -51,8 +53,11 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     return action;
   }
 
-  async function native(command: string, ...args: string[]) {
+  let purpose = 'open Plans';
+  async function native(command: 'navigate' | 'click' | 'eval', ...args: string[]) {
+    mark(purpose + ' / ' + command + ' liveness');
     await run('bash', [process.env.VERIFY_TAURI_LIVENESS_CHECK!], { timeout: 15_000 });
+    mark(purpose + ' / ' + command + ' bridge');
     const action = command === 'navigate' || command === 'click' ? beginAction(command, args[0]!) : undefined;
     const { stdout } = await run(process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!,
       [command, '--pid', process.env.VERIFY_TAURI_PID!, ...(command === 'eval' ? ['--json'] : []), ...args],
@@ -69,6 +74,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
   // Each account belongs only to the disposable workspace. The webview creates
   // and consumes the password locally and returns only the authenticated identity.
   async function enterRole(role: keyof typeof handles, action: string) {
+    purpose = role + ' sign-in';
     activeRole = undefined;
     const identity = await measure(`(async () => {
       if (location.origin !== ${JSON.stringify(origin.origin)}) throw new Error('Unexpected native origin');
@@ -95,16 +101,20 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     expect(identity.userId).toBeTruthy();
     roleViews[role] = { userId: identity.userId, workspace, action, uiActions: [] };
     activeRole = role;
+    purpose = role + ' ' + action;
   }
   try {
+    mark('private harness registration');
     // Only the registry setup is used. The plan and both writes go through the real operator.
     const harness = compareRoles ? readPreparedPlanHarness(workspace, runtimeBefore.fingerprint)
       : await seedFakeLlmHarness({ hive: true });
     trace.harness = harness;
     async function readPlan() {
+      mark('fixture Plans get request');
       const response = await request.get(new URL('/api/admin/plans/get', origin).href, {
         params: { slug, harness, mode: 'full', includeEnrichments: 'false' }, headers, maxRedirects: 0,
       });
+      mark('fixture Plans get HTTP ' + response.status());
       expect(response.ok()).toBe(true);
       const plan = await response.json();
       assertFixtureApiSuccess('get', plan);
@@ -113,9 +123,11 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
       return plan as typeof plan & { raw: string; contentHash: string; version: number };
     }
     async function writePlan(verb: string, args: Record<string, unknown>) {
+      mark('fixture Plans ' + verb + ' request');
       const response = await request.post(new URL('/api/admin/plans/' + verb, origin).href, {
         data: { ...args, slug, harness }, headers, maxRedirects: 0,
       });
+      mark('fixture Plans ' + verb + ' HTTP ' + response.status());
       expect(response.ok()).toBe(true);
       assertFixtureApiSuccess(verb, await response.json());
     }
@@ -285,6 +297,7 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
       roleViews.worker!.revisionId = saved.id;
       expect(new Set(Object.values(roleViews).map(row => row.userId)).size).toBe(3);
     }
+    mark('final native liveness');
     const runtimeAfter = assertNativeRuntimeLiveness(appRoot, appCommit);
     expect(runtimeAfter.fingerprint).toBe(runtimeBefore.fingerprint);
     trace.runtimeAfter = runtimeAfter;
@@ -311,13 +324,16 @@ test('records the native author citation edit and reads the exact saved revision
 test('saves a citation in native Plans and correlates author reviewer and worker outcomes', async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID || !process.env.VERIFY_TAURI_TEST_SOURCE_REF, 'Requires the pinned native comparison');
   test.setTimeout(nativePlanComparisonTimeoutMs);
-  const failures: unknown[] = [];
+  const failures: string[] = [];
   for (const editCase of nativePlanEdits) {
+    const started = Date.now();
+    let stage = 'start';
     try {
-      await test.step(editCase.scenario, () => captureNativeEdit(request, info, editCase, true));
+      await test.step(editCase.scenario, () => captureNativeEdit(request, info, editCase, true, step => { stage = step; }));
     } catch (error) {
-      failures.push(error);
+      const failure = retainNativePlanFailure('desktop', editCase.scenario, stage, error, Date.now() - started);
+      failures.push([failure.scenario, failure.stage, failure.code ?? failure.kind, ...failure.frames].join(' / '));
     }
   }
-  if (failures.length) throw new AggregateError(failures, 'Native Plans edits failed. See the individual scenario steps.');
+  if (failures.length) throw new Error('Native Plans edits failed\n' + failures.join('\n'));
 });
