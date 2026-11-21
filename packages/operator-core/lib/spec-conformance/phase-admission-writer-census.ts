@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { crc32, inflateSync } from 'node:zlib';
+import { crc32, gunzipSync, inflateSync } from 'node:zlib';
 import ts from 'typescript';
 import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
@@ -28,6 +28,43 @@ const looseGitObjectPath = /(?:^|\/)[^/]+\.git\/objects\/([0-9a-f]{2})\/([0-9a-f
 // A census pass inflates at most 16 MiB per binary artifact. Larger artifacts
 // remain source gaps with their exact compressed digest for review.
 const binaryArtifactInflateLimit = 16 * 1024 * 1024;
+// These file: dependencies contain source under their own archive paths. The
+// census uses a complete layout for each exact compressed artifact, and the
+// tar-reader regression verifies every member name and content in the layouts.
+type NpmArchiveLayout = {
+  sha256: string;
+  decodedBytes: number;
+  members: ReadonlyArray<readonly [name: string, offset: number, size: number]>;
+};
+const reviewedNpmArchives = new Map<string, NpmArchiveLayout>([
+  ['apps/slack-asana-bug-drill/vendor/papercusp-embedded-pg-discovery-0.1.0.tgz', {
+    sha256: 'e28bcdae350b213635369ab0ec0e671dcfcc06e115e050ed082dfa65c11a7f19',
+    decodedBytes: 39936,
+    members: [
+      ['package/LICENSE', 512, 10754],
+      ['package/package.json', 12288, 579],
+      ['package/README.md', 13824, 1006],
+      ['package/SECURITY.md', 15360, 848],
+      ['package/src/index.test.ts', 16896, 10873],
+      ['package/src/index.ts', 28672, 8107],
+      ['package/src/package-content.test.ts', 37376, 1353],
+    ],
+  }],
+  ['apps/slack-asana-bug-drill/vendor/papercusp-module-singleton-0.1.0.tgz', {
+    sha256: '566c52824dc1bbbbea9cfa58e8de48fe94c8fb9e2c1cfd97cf0bdab749efa88e',
+    decodedBytes: 30208,
+    members: [
+      ['package/package.json', 512, 651],
+      ['package/tsconfig.json', 2048, 432],
+      ['package/README.md', 3072, 3429],
+      ['package/TESTING.md', 7168, 1323],
+      ['package/src/index.test.ts', 9216, 7654],
+      ['package/src/index.ts', 17408, 7739],
+      ['package/src/module-scoped-control.fixture.ts', 26112, 1311],
+      ['package/src/pinned-subject.fixture.ts', 28160, 789],
+    ],
+  }],
+]);
 const drillGitObjectRoot = 'packages/operator-core/hive-git-root/wi3496-drill/papercusp.git/objects/';
 // Both namespace work refs are parentless commits of the empty tree. Their
 // full messages are `tower-work\n` and `vm-work\n`. Pin the compressed bytes
@@ -971,6 +1008,23 @@ function hasCompletePngScanlines(parts: Buffer[], scanlineBytes: number, expecte
   } catch { return false; }
 }
 
+function readPinnedNpmArchive(path: string, bytes: Buffer, layout: NpmArchiveLayout): PhaseWriterSource[] | undefined {
+  try {
+    const decoded = gunzipSync(bytes, { maxOutputLength: layout.decodedBytes });
+    if (decoded.length !== layout.decodedBytes) return;
+    const sources: PhaseWriterSource[] = [];
+    for (const [name, offset, size] of layout.members) {
+      const payload = decoded.subarray(offset, offset + size);
+      const content = payload.toString('utf8');
+      if (payload.length !== size || !Buffer.from(content).equals(payload)) return;
+      sources.push({ path: `${path}/${name}`, content });
+    }
+    return sources;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Recognize the producer's noninterlaced RGB/RGBA PNGs with optional sRGB.
  * Unknown records, malformed streams and bytes after IEND remain auditable gaps.
  */
@@ -1106,6 +1160,22 @@ function readPhaseWriterTree(root: string) {
       }
       if (!stat.isFile()) { gaps.push({ id: `source:${path}`, reason: 'non-regular-source' }); continue; }
       const bytes = readFileSync(fullPath);
+      const archive = reviewedNpmArchives.get(path);
+      if (archive) {
+        const sha256 = digest(bytes);
+        if (sha256 !== archive.sha256) {
+          gaps.push({ id: `source:${path}`, reason: 'npm-archive-bytes-changed', sha256 });
+          continue;
+        }
+        const members = readPinnedNpmArchive(path, bytes, archive);
+        if (!members) {
+          gaps.push({ id: `source:${path}`, reason: 'npm-archive-layout-unreadable', sha256 });
+          continue;
+        }
+        input.push(...members);
+        excluded.push({ path, reason: `reviewed-npm-archive-member-layout:asset-sha256:${sha256}` });
+        continue;
+      }
       if (isWranglerLocalSqliteState(path, bytes)) {
         excluded.push({ path, reason: wranglerLocalStateReason }); continue;
       }

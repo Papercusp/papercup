@@ -4,8 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { crc32, deflateSync, inflateSync } from 'node:zlib';
+import { crc32, deflateSync, gunzipSync, inflateSync } from 'node:zlib';
 import { encodePng, PNG_SIGNATURE } from '@papercusp/image-blankness/testing';
+import { extract as extractTar } from 'tar-stream';
 import {
   assertPhaseWriterCensus, assertPhaseWriterTreeCensus, inventoryPhaseWriters, reconcilePhaseWriterCensus,
   inventoryPhaseWriterTree, readPhaseWriterCensus, verifyPhaseWriterTreeSnapshot, writePhaseWriterCensus,
@@ -2108,6 +2109,69 @@ describe('phase binding writer census', () => {
         id: `${prefix}:${assetPath}`, reason: `${prefix}-bytes-changed`, sha256: hash(textReplacement),
       });
       expect(replaced.sites.some(site => site.path === assetPath && site.statement === 'dispatchWriter();')).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    'papercusp-embedded-pg-discovery-0.1.0.tgz',
+    'papercusp-module-singleton-0.1.0.tgz',
+  ])('censuses every member of %s and refuses changed archive bytes', async name => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-npm-archive-'));
+    const directory = 'apps/slack-asana-bug-drill/vendor/';
+    const path = directory + name;
+    const lookalike = directory + 'copy-' + name;
+    const bytes = readFileSync(new URL('../../../../' + path, import.meta.url));
+    const hash = (data: Buffer) => createHash('sha256').update(data).digest('hex');
+    const members: Array<{ path: string; sha256: string; type: string | null | undefined }> = [];
+    const archive = extractTar();
+    const decoded = new Promise<void>((resolve, reject) => {
+      archive.on('entry', (header, stream, next) => {
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('error', reject);
+        stream.on('end', () => {
+          members.push({ path: path + '/' + header.name, sha256: hash(Buffer.concat(chunks)), type: header.type });
+          next();
+        });
+      });
+      archive.on('error', reject);
+      archive.on('finish', resolve);
+    });
+    try {
+      archive.end(gunzipSync(bytes));
+      await decoded;
+      expect(members.length).toBeGreaterThan(0);
+      expect(members.every(member => member.type === 'file')).toBe(true);
+      mkdirSync(join(root, directory), { recursive: true });
+      writeFileSync(join(root, path), bytes);
+
+      const current = inventoryPhaseWriterTree(root);
+      const expected = members.map(({ path, sha256 }) => ({ path, sha256 }))
+        .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+      expect(current.sources).toEqual(expected);
+      expect(current.excluded).toEqual([{
+        path, reason: 'reviewed-npm-archive-member-layout:asset-sha256:' + hash(bytes),
+      }]);
+      expect(verifyPhaseWriterTreeSnapshot(current).coverage.checked).toEqual(
+        expected.map(member => 'source:' + member.path),
+      );
+
+      const altered = Buffer.concat([bytes, Buffer.from([0xff])]);
+      writeFileSync(join(root, path), altered);
+      writeFileSync(join(root, lookalike), bytes);
+      const changed = inventoryPhaseWriterTree(root);
+      expect(changed.excluded).toEqual([]);
+      expect(changed.sources).toEqual([]);
+      expect(changed.gaps).toEqual(expect.arrayContaining([
+        { id: 'source:' + path, reason: 'npm-archive-bytes-changed', sha256: hash(altered) },
+        { id: 'source:' + lookalike, reason: 'source-not-utf8', sha256: hash(bytes) },
+      ]));
+      const freshness = verifyPhaseWriterTreeSnapshot(current);
+      expect(freshness.ready).toBe(false);
+      expect(freshness.coverage.residue).toEqual([
+        'excluded:' + path, 'gap:source:' + path, 'gap:source:' + lookalike,
+        ...expected.map(member => 'source:' + member.path),
+      ].sort());
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
