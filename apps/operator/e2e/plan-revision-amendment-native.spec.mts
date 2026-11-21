@@ -1,13 +1,13 @@
 import { test, expect, type APIRequestContext, type TestInfo } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
-import { citationEdit, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
+import { citationEdit, diagnosticCitationCase, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
   type NativePlanEdit } from './_plan-revision-edits';
 import { assertNativePlanRetry, installPlanRetryExpression, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
 
@@ -315,10 +315,22 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
   }
 }
 
-test('records the native author citation edit and reads the exact saved revision', async ({ request }, info) => {
+test(diagnosticCitationCase, async ({ request }, info) => {
   test.skip(!process.env.VERIFY_TAURI_PID, 'Requires the isolated native Plans runner');
   test.setTimeout(240_000);
-  await captureNativeEdit(request, info, citationEdit);
+  const evidence = process.env.PLAN_REVISION_EVIDENCE;
+  const pinned = evidence && process.env.VERIFY_TAURI_TEST_SOURCE_REF
+    ? JSON.parse(await readFile(join(evidence, 'request.json'), 'utf8')) : undefined;
+  const diagnosing = pinned?.purpose === 'diagnosis';
+  let stage = 'start';
+  const started = Date.now();
+  try {
+    await captureNativeEdit(request, info, citationEdit, diagnosing, step => { stage = step; });
+  } catch (error) {
+    if (!diagnosing) throw error;
+    const failure = retainNativePlanFailure('desktop', citationEdit.scenario, stage, error, Date.now() - started);
+    throw new Error([failure.stage, failure.code ?? failure.kind, ...failure.frames].join(' / '));
+  }
 });
 
 test('saves a citation in native Plans and correlates author reviewer and worker outcomes', async ({ request }, info) => {

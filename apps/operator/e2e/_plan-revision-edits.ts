@@ -1,7 +1,51 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
+
+export const diagnosticCitationCase = 'records the native author citation edit and reads the exact saved revision';
+
+/** Observe the owned launcher's guard without logging commands, arguments, environment or process output. */
+export function profilePlanLivenessGuard(path: string) {
+  const started = performance.now();
+  const script = readFileSync(path);
+  const command = [
+    'readonly profile_guard="$1"',
+    'shift',
+    'set -T',
+    `trap '[[ "\${BASH_SOURCE[0]-}" != "$profile_guard" ]] || printf "%d %s\\n" "$LINENO" "$EPOCHREALTIME" >&3' DEBUG`,
+    'source "$profile_guard"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', command, 'plan-liveness-diagnosis', path], {
+    timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore', 'pipe'],
+  });
+  const marks = String(result.output?.[3] ?? '').trim().split('\n').filter(Boolean).map(line => {
+    const parsed = /^(\d+) (\d+\.\d+)$/.exec(line);
+    assert(parsed, 'Unexpected line timing record from the native guard');
+    return { line: Number(parsed[1]), epochSeconds: parsed[2] };
+  });
+  const code = result.error && 'code' in result.error ? result.error.code : undefined;
+  return { scriptSha256: createHash('sha256').update(script).digest('hex'), marks,
+    elapsedMs: performance.now() - started, exitCode: result.status, signal: result.signal,
+    errorCode: typeof code === 'string' ? code : null };
+}
+
+export function retainPlanLivenessProfile() {
+  const env = process.env;
+  const home = realpathSync(env.PAPERCUSP_HOME!);
+  const guard = realpathSync(env.VERIFY_TAURI_LIVENESS_CHECK!);
+  assert.equal(guard, join(dirname(home), 'check-live.sh'));
+  assert.equal(home, join(dirname(guard), 'papercusp-home'));
+  const path = join(env.PLAN_REVISION_EVIDENCE!, 'request.json');
+  const request = JSON.parse(readFileSync(path, 'utf8'));
+  assert(request.purpose === 'diagnosis' && request.caseTitle === diagnosticCitationCase
+    && request.group === env.PAPERCUSP_TEST_RUN_GROUP && request.taskId === env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID
+    && request.applicationRef === env.VERIFY_TAURI_SOURCE_REF && request.definitionRef === env.VERIFY_TAURI_TEST_SOURCE_REF);
+  writeFileSync(join(dirname(path), 'cli-liveness-profile.json'), JSON.stringify({
+    group: request.group, taskId: request.taskId, ...profilePlanLivenessGuard(guard),
+  }) + '\n', { flag: 'wx', mode: 0o600 });
+}
 
 /** signup accepts 2–32 lowercase letters, digits, underscores and hyphens. */
 export function privatePlanUsername(role: 'author' | 'reviewer' | 'worker') {

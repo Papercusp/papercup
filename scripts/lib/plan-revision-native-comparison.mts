@@ -13,7 +13,7 @@ import { runVerifierCommand, verifyVerifierSourceSync } from '../source-preview.
 import { readTaskDeadlineEpochMs } from './task-deadline.mjs';
 import { resolveExecutedMapPgUrl } from './executed-source-map.mjs';
 import { assertNativePlanRetry, type NativePlanRetryTrace } from '../../apps/operator/e2e/_plan-revision-retry.ts';
-import { planFixtureIdentity } from '../../apps/operator/e2e/_plan-revision-edits.ts';
+import { diagnosticCitationCase, planFixtureIdentity } from '../../apps/operator/e2e/_plan-revision-edits.ts';
 import { seedFakeLlmHarness } from '../../apps/operator/e2e/_fake-llm-fixture.ts';
 
 const exec = promisify(execFile);
@@ -73,7 +73,7 @@ function inside(parent: string, child: string) {
 
 /** Verify what Playwright actually collected before the native application boots. */
 export function assertComparisonSelection(report: { config: { rootDir: string }; suites: CollectedSuite[]; errors: unknown[] },
-  definitionRoot: string) {
+  definitionRoot: string, diagnosis = false) {
   assert.deepEqual(report.errors, [], 'Playwright reported collection errors');
   const testRoot = realpathSync(report.config.rootDir);
   assert.equal(testRoot, realpathSync(join(definitionRoot, 'apps/operator/e2e')));
@@ -89,8 +89,9 @@ export function assertComparisonSelection(report: { config: { rootDir: string };
     for (const nested of suite.suites ?? []) visit(nested, [...parents, nested.title]);
   }
   for (const fileSuite of report.suites) visit(fileSuite, []);
-  assert.deepEqual(selected, [{ file: join(definitionRoot, spec), title: [caseTitle], project: 'chromium' }],
-    'expected exactly the committed top-level Plans comparison case');
+  const expectedTitle = diagnosis ? diagnosticCitationCase : caseTitle;
+  assert.deepEqual(selected, [{ file: join(definitionRoot, spec), title: [expectedTitle], project: 'chromium' }],
+    'expected exactly the selected top-level Plans case');
 }
 
 /** Read the receipt bytes once and verify each immutable checkout against its own receipt. */
@@ -314,7 +315,7 @@ function runChild(program: string, args: string[], options: SpawnOptions) {
   });
 }
 
-async function runComparison(applicationRef: string, definitionRef: string, applicationReader: string) {
+async function runComparison(applicationRef: string, definitionRef: string, applicationReader: string, diagnosis: boolean) {
   assert.match(applicationRef, /^[0-9a-f]{40}$/, 'expected a full application commit');
   assert.match(definitionRef, /^[0-9a-f]{40}$/, 'expected a full definition commit');
   assert(isAbsolute(applicationReader), 'expected the prepared application reader path');
@@ -334,9 +335,10 @@ async function runComparison(applicationRef: string, definitionRef: string, appl
   const harness = process.env.PAPERCUSP_TEST_RUN_HARNESS ?? process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
   assert(ledger && workspace && harness, 'the reporting database, workspace and harness are required');
   const out = mkdtempSync(join(tmpdir(), 'plan-revision-comparison-'));
-  const group = 'revision-native-' + randomUUID();
+  const group = (diagnosis ? 'revision-native-diagnosis-' : 'revision-native-') + randomUUID();
   const receiptPath = join(out, 'definition.json');
-  const request = { applicationRef, definitionRef, group, workspace, harness, spec, caseTitle,
+  const request = { applicationRef, definitionRef, group, workspace, harness, spec,
+    caseTitle: diagnosis ? diagnosticCitationCase : caseTitle, ...(diagnosis ? { purpose: 'diagnosis' } : {}),
     taskId: process.env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID };
   writeReceipt(join(out, 'request.json'), request);
   console.log('Native Plans comparison evidence', out);
@@ -345,9 +347,9 @@ async function runComparison(applicationRef: string, definitionRef: string, appl
     prepareChildEnv: async ({ sourceRoot }) => {
       const collection = join(out, 'selection.json');
       await exec(process.execPath, [join(sourceRoot, 'node_modules/@playwright/test/cli.js'), 'test',
-        '--config', join(sourceRoot, config), basename(spec), '--grep', caseTitle + '$', '--list', '--reporter=json'],
+        '--config', join(sourceRoot, config), basename(spec), '--grep', request.caseTitle + '$', '--list', '--reporter=json'],
       { cwd: join(sourceRoot, 'apps/operator'), timeout: 60_000, env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: collection } });
-      assertComparisonSelection(JSON.parse(readFileSync(collection, 'utf8')), sourceRoot);
+      assertComparisonSelection(JSON.parse(readFileSync(collection, 'utf8')), sourceRoot, diagnosis);
       return { PAPERCUSP_REPO_DIR: donor, PLAN_REVISION_APPLICATION_READER: app, PLAN_REVISION_EVIDENCE: out,
         VERIFY_TAURI_TEST_SOURCE_REF: definitionRef, VERIFY_TAURI_TEST_SOURCE_RECEIPT: receiptPath,
         VERIFY_TAURI_SOURCE_REF: applicationRef, VERIFY_TAURI_SOURCE_RECEIPT: undefined,
@@ -358,6 +360,7 @@ async function runComparison(applicationRef: string, definitionRef: string, appl
         PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUNS_DB_URL: ledger,
         PAPERCUSP_TEST_RUN_HARNESS: harness, PAPERCUSP_TEST_RUN_WORKSPACE: workspace };
     } });
+  if (diagnosis) return code;
   if (code !== 0 && (code !== 3 || !existsSync(join(out, 'observation.json')))) return code;
   const result = JSON.parse(readFileSync(join(out, 'observation.json'), 'utf8'));
   assert.deepEqual(result.request, request);
@@ -422,6 +425,19 @@ async function observe() {
   } finally { await privateDb.end({ timeout: 5 }); }
   writeReceipt(join(out, 'fixture.json'), { ...planFixtureIdentity(privateWorkspace, before.fingerprint), harness });
   const reportPath = join(out, 'vitest.json');
+  if (request.purpose === 'diagnosis') {
+    assert.equal(request.caseTitle, diagnosticCitationCase);
+    const cliExit = await runChild(process.execPath, ['scripts/test-files.mjs', adapter, '--',
+      '-t', adapterCases[1] + '$', '--reporter=default', '--reporter=json', '--outputFile=' + reportPath], { cwd: root, env });
+    const desktopExit = await runChild(process.execPath, [join(root, 'node_modules/@playwright/test/cli.js'),
+      'test', '--config', join(root, config), basename(spec), '--grep', diagnosticCitationCase + '$',
+      '--workers=1', '--retries=0', '--output=' + join(out, 'diagnostic-desktop')], { cwd: root, env });
+    assert.deepEqual(measureComparisonSources(app, driver), sources, 'diagnostic source changed');
+    const after = assertNativeRuntimeLiveness(app.root, app.commit);
+    assert.deepEqual([after.fingerprint, after.units], [before.fingerprint, before.units]);
+    writeReceipt(join(out, 'diagnosis.json'), { ...witness, after, cliExit, desktopExit });
+    return cliExit || desktopExit;
+  }
   const code = await runChild(process.execPath, ['scripts/test-files.mjs', adapter, '--', '--reporter=default',
     '--reporter=json', '--outputFile=' + reportPath], { cwd: root, env });
   assert.deepEqual(measureComparisonSources(app, driver), sources, 'tested source changed during the run');
@@ -446,12 +462,13 @@ async function observe() {
 
 if (isCliEntry(import.meta.url)) {
   const [action, ...args] = process.argv.slice(2);
-  if (action === 'run' && args.length === 3) process.exitCode = await runComparison(args[0], args[1], args[2]);
+  if (action === 'run' && (args.length === 3 || (args.length === 4 && args[3] === '--diagnose')))
+    process.exitCode = await runComparison(args[0], args[1], args[2], args[3] === '--diagnose');
   else if (action === 'boot' && !args.length) {
     assert(process.env.PLAN_REVISION_APPLICATION_READER, 'missing prepared application reader');
     const application = join(process.env.PLAN_REVISION_APPLICATION_READER, rig);
     process.exitCode = await runChild('bash', [application, '--', process.execPath, '--import', 'tsx', here, 'observe'],
       { cwd: root });
   } else if (action === 'observe' && !args.length) process.exitCode = await observe();
-  else throw new Error('Usage: run-operator-e2e-isolated.sh --plan-revision-comparison APPLICATION_SHA DEFINITION_SHA PREPARED_APPLICATION_ROOT');
+  else throw new Error('Usage: run-operator-e2e-isolated.sh --plan-revision-comparison APPLICATION_SHA DEFINITION_SHA PREPARED_APPLICATION_ROOT [--diagnose]');
 }

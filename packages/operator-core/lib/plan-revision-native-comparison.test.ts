@@ -10,7 +10,7 @@ import {
   readComparisonCoverage,
 } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 import { git, write } from './source-preview.fixture';
-import { planFixtureIdentity, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure } from '../../../apps/operator/e2e/_plan-revision-edits';
+import { diagnosticCitationCase, planFixtureIdentity, privatePlanUsername, profilePlanLivenessGuard, readPreparedPlanHarness, retainNativePlanFailure } from '../../../apps/operator/e2e/_plan-revision-edits';
 
 const title = 'saves a citation in native Plans and correlates author reviewer and worker outcomes';
 const file = 'plan-revision-amendment-native.spec.mts';
@@ -118,6 +118,9 @@ describe('the isolated native Plans comparison', () => {
       })) }],
     });
     expect(() => assertComparisonSelection(report([title]), driver.root)).not.toThrow();
+    expect(() => assertComparisonSelection(report([diagnosticCitationCase]), driver.root, true)).not.toThrow();
+    expect(() => assertComparisonSelection(report([diagnosticCitationCase]), driver.root)).toThrow();
+    expect(() => assertComparisonSelection(report([title]), driver.root, true)).toThrow();
     for (const invalid of [report([]), report([title, title]), report(['only the author']),
       report([title], 'other.spec.mts'), report([title], file, 'skipped')])
       expect(() => assertComparisonSelection(invalid, driver.root)).toThrow();
@@ -186,6 +189,28 @@ describe('the isolated native Plans comparison', () => {
       } else { expect(run.fixture).toBeNull(); }
     }
   });
+
+  it('profiles guard lines without retaining arguments, process output or converting a refusal to success', () => {
+    const path = join(scratch, 'test-guard.sh');
+    const canary = 'PRIVATE_ARGUMENT_AND_OUTPUT';
+    const script = 'echo ' + canary + '\necho ' + canary + ' >&2\nexit 17\n';
+    writeFileSync(path, script);
+    const profile = profilePlanLivenessGuard(path);
+    expect(profile.exitCode).toBe(17);
+    expect(profile.scriptSha256).toBe(createHash('sha256').update(script).digest('hex'));
+    expect(profile.marks).toEqual([1, 2, 3].map(line =>
+      ({ line, epochSeconds: expect.stringMatching(/^\d+\.\d+$/) })));
+    expect(JSON.stringify(profile)).not.toContain(canary);
+  });
+
+  it('retains the last entered guard line when its five-second deadline expires', () => {
+    const path = join(scratch, 'stalled-guard.sh');
+    writeFileSync(path, ':\nexec sleep 30\n');
+    const result = profilePlanLivenessGuard(path);
+    expect(result.marks.map(mark => mark.line)).toEqual([1, 2]);
+    expect(result.errorCode).toBe('ETIMEDOUT');
+    expect(result.exitCode).toBeNull();
+  }, 15_000);
 
   it('keeps individual native failure locations and deadlines without retaining arguments or replacing earlier evidence', () => {
     const dir = mkdtempSync(join(scratch, 'scenario-failure-'));

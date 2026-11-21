@@ -8,10 +8,11 @@ import { promisify } from 'node:util';
 import postgres from 'postgres';
 import { request as playwrightRequest, type APIRequestContext } from '@playwright/test';
 import { describe, expect, inject, it } from 'vitest';
-import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness } from './testing-native-runtime';
+import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness, prepareNativeRuntimeReader } from './testing-native-runtime';
 import { seedFakeLlmHarness } from '../../../apps/operator/e2e/_fake-llm-fixture';
 import { readPlanPtoolReply } from '../test/plan-revision-ptool';
-import { nativePlanComparisonTimeoutMs, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
+import { diagnosticCitationCase, nativePlanComparisonTimeoutMs, privatePlanUsername, readPreparedPlanHarness,
+  retainNativePlanFailure, retainPlanLivenessProfile,
   type NativePlanEdit } from '../../../apps/operator/e2e/_plan-revision-edits';
 import { adapterCoverageCase, assertCompleteComparisonCoverage, readComparisonCoverage } from '../../../scripts/lib/plan-revision-native-comparison.mts';
 
@@ -21,17 +22,21 @@ const historicalCommit = '937d9ed054f9406d535a35f8ebaaf0db8df6d023';
 const spec = 'apps/operator/e2e/plan-revision-amendment-native.spec.mts';
 const comparisonCase = 'saves a citation in native Plans and correlates author reviewer and worker outcomes';
 
-async function privateApplication() {
+async function privateApplication(door?: 'api' | 'ptool') {
   const workspace = assertNativeIsolatedWorkspace();
   expect(process.env.VERIFY_TAURI_ISOLATED_DB).toBe('1');
   let applicationCommit = historicalCommit;
   if (process.env.VERIFY_TAURI_TEST_SOURCE_REF) {
     const request = JSON.parse(await readFile(join(process.env.PLAN_REVISION_EVIDENCE!, 'request.json'), 'utf8'));
     expect(request.definitionRef).toBe(process.env.VERIFY_TAURI_TEST_SOURCE_REF);
-    expect(request.caseTitle).toBe(comparisonCase);
+    expect(request.caseTitle).toBe(request.purpose === 'diagnosis' ? diagnosticCitationCase : comparisonCase);
     expect(request.group).toBe(process.env.PAPERCUSP_TEST_RUN_GROUP);
     expect(request.applicationRef).toMatch(/^[0-9a-f]{40}$/);
     applicationCommit = request.applicationRef;
+    if (door === 'ptool' && request.purpose === 'diagnosis') {
+      expect(prepareNativeRuntimeReader(process.env.OPERATOR_SOURCE_ROOT!, applicationCommit)?.()).toBeTruthy();
+      retainPlanLivenessProfile();
+    }
   }
   expect(process.env.VERIFY_TAURI_SOURCE_REF).toBe(applicationCommit);
   const root = process.env.OPERATOR_SOURCE_ROOT!;
@@ -97,7 +102,7 @@ async function preparePrivatePlanClient(door: 'api' | 'ptool') {
   const started = Date.now();
   let stage = 'native liveness and private origin';
   try {
-    const app = await privateApplication();
+    const app = await privateApplication(door);
     stage = 'private harness registration';
     const harness = process.env.VERIFY_TAURI_TEST_SOURCE_REF ? readPreparedPlanHarness(app.workspace, app.runtime.fingerprint)
       : await seedFakeLlmHarness({ hive: true });
