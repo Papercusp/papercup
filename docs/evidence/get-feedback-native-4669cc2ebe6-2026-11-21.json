@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Consult router native receipts on staging 4669cc2ebe6",
+  "framework": "operational",
+  "command": [
+    "Check the source inputs served by the staging operator and the normal provider admission readings.",
+    "Invoke testing:run with each eligible original nativeConsult scenario and its unchanged source and target constraints.",
+    "Correlate source selection, native delivery, persisted kickoff, reply, closing actor and source claim endpoints.",
+    "Read the fixed consultation-quality artifact and the routing-health counts for the trial window."
+  ],
+  "startedAt": "2026-11-21T20:31:29.121Z",
+  "finishedAt": "2026-11-21T20:46:04.220Z",
+  "exitCode": 1,
+  "summary": "Two fresh Codex-targeted requests returned substantive answers from distinct answering sessions. The Claude fork was unavailable. A secondary attempt in the first conversation recorded a launch failure. The original quality cohort contained four of eight target threads.",
+  "plan": "get-feedback-reliability-usefulness-adoption-2026-10-03",
+  "planItem": "P-006",
+  "workItemId": "WI-6554700010046171",
+  "requesterId": "su-40c37918-3d17-43e0-ab0e-e3ff709f1776",
+  "runtime": {
+    "service": "papercup-staging-api.service",
+    "route": "operator-api",
+    "port": 3170,
+    "build": "4669cc2ebe60db26a66ccfbbbcec76373ee59ef4",
+    "canonicalAtMeasurement": "4669cc2ebe60db26a66ccfbbbcec76373ee59ef4",
+    "generation": ".candidate-4669cc2ebe60.ueDnbc",
+    "pid": 2090186,
+    "processId": "linux:89abde54-a267-447a-b75c-4025313eaf90:85622705",
+    "bundleSha256": "4329b94e77752a62fef286675ad53fc0d845049524388ba4ebd8b040875dddf1",
+    "comparisonArtifact": "docs/evidence/get-feedback-native-1bc141a6e56-2026-11-21.json",
+    "comparisonArtifactSha256": "a2f8fbbc5ff75c556ce10c4c58d00bcb95f54ac59de47fd00e74184267cdd7d9",
+    "matchingFiles": [
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.ts",
+        "blob": "7407368d12a081e46bc55c89ea7673beeebb1426"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
+        "blob": "6df5b7a7af87a7985703c0af0043806f25d1513f"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.ts",
+        "blob": "b4e6318894f54af28e4e5d91b5d9007c950aaa27"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/relevance-router.integration.test.ts",
+        "blob": "00005614741b8ec809c115fd25847aaf4ddb7d83"
+      },
+      {
+        "path": "apps/operator/scripts/psu-launcher.mjs",
+        "blob": "5e22233ca11183c2214109688c2e8eed103d6d4e"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/consult-dispatch.ts",
+        "blob": "9694cce5ce84aed364bf583daa322f90ce6cdc4e"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/native-consult.ts",
+        "blob": "f3d6bb610af049a79b89b39bf22c314f2333c90b"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult.ts",
+        "blob": "e40b00fc79f0a554e6ca7ae7f3e34d3e4b0a9016"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-consult-contract.ts",
+        "blob": "9ea4c8254147cf2959de7e38a2e48f261eaaf0f1"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/resume-transcript-preflight.ts",
+        "blob": "1ea5c4d6df3a268e839a25e46685de6cb256dc7b"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts",
+        "blob": "2342c6ad14b0986c3a5bdea1ee77636468fd2985"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-launch-core.ts",
+        "blob": "ef03c1b90738c940727d52f4002c6049c54a8c82"
+      },
+      {
+        "path": "packages/operator-core/lib/consult/get-feedback-prod.ts",
+        "blob": "839f180b6cd0ad9a796bd427c40e6723af521735"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/testing/native-check-consult-receipts.ts",
+        "blob": "08e8909268f92d7ff1d73f1d0904912c85ee2aff"
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/native-adapter.ts",
+        "blob": "bc5ebb2d1379a72848bf18442bbdf79f855e3118"
+      },
+      {
+        "path": "packages/operator-core/lib/session-port/source.ts",
+        "blob": "e232db5c3399c4fcdd99ae342870a642f41837dd"
+      },
+      {
+        "path": "libs/papercusp/packages/orchestrator/src/codex-transcript.ts",
+        "blob": "99ef59fddfd258d6a01dc534bc7ea04ea086e898"
+      },
+      {
+        "path": "packages/operator-core/lib/session-outside-plan.ts",
+        "blob": "9dfa5ebe9c512beb5c896d1644f2a4feab63639f"
+      }
+    ]
+  },
+  "matrix": {
+    "partition": {
+      "checked": [
+        "claude-ended-to-codex-conversion",
+        "codex-live-to-codex-session-port"
+      ],
+      "unavailable": [
+        "claude-ended-to-claude-fork"
+      ],
+      "residual": []
+    },
+    "cells": [
+      {
+        "cell": "claude-ended-to-claude-fork",
+        "mode": "isolated native fork",
+        "status": "unavailable",
+        "passed": false,
+        "attemptedOnThisBuild": false,
+        "constraints": {
+          "sourceBackend": "claude",
+          "sourceState": "ended",
+          "targetBackend": "claude"
+        },
+        "providerProbe": {
+          "invocation": 51037057,
+          "observedAt": "2026-11-21T20:42:18.686Z",
+          "apply": false,
+          "probed": 7,
+          "serving": 0,
+          "insufficientCredit": 5,
+          "weeklyLimit": 2
+        },
+        "priorFailedRequest": {
+          "conversationId": "conv-request-b13113b54bbd64e0c9abce909045faa3742ddd3e8f885090f85bd664579d4d4b",
+          "sourceArtifact": "docs/evidence/get-feedback-native-a9fa2bf0683-2026-11-21.json"
+        },
+        "tracking": "EI-28117756199478310"
+      },
+      {
+        "cell": "claude-ended-to-codex-conversion",
+        "mode": "isolated conversion",
+        "status": "checked",
+        "passed": true,
+        "constraints": {
+          "sourceBackend": "claude",
+          "sourceState": "ended",
+          "targetBackend": "codex"
+        },
+        "requestKey": "wi6171-r6-3394-4669cc2ebe6-claude-to-codex-v1",
+        "invocation": 51035823,
+        "conversationId": "conv-request-973f951d74c143938d1edd7c60620a8491edde2caff945a704e0968ad6a6772c",
+        "threadId": "thr-conv-request-973f951d74c143938d1edd7c60620a8491edde2caff945a704e0968ad6a6772c",
+        "state": "closed_answered",
+        "sourceOwnerId": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+        "sourceAdvSessionId": 48112,
+        "sourceNativeSessionId": "5ede16a5-c4c8-4399-82bb-9a54015998bb",
+        "sourceKind": "archive-manifest",
+        "sourceCompleteBytes": 2214132,
+        "selectionSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+        "portId": "41810878-ea9e-4978-84c9-313415ff6c6d",
+        "portStatus": "delivered",
+        "portSourceSha256": "774b47fde37ec37fb287d1bbb152617a76d30a8d67d2f7b04d608665701d4476",
+        "deliveredAt": "2026-11-21T20:36:28.467Z",
+        "answeringOwnerId": "su-4ce7cbdc-483d-4771-86c5-9d7a3617a188",
+        "targetAdvSessionId": 63981,
+        "targetNativeSessionId": "01a1ffd3-0799-7373-b4f8-ca7b07da8a6e",
+        "targetRankModel": "sol",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": {
+          "verified": true,
+          "persisted": true,
+          "bootstrapReceiptCommitted": true,
+          "renderedSha256": "706dd2de151ea6646b17e1b86074b50020faa83e2c99b867fcc95e135ef14896",
+          "verifiedAt": "2026-11-21T20:36:28.466Z"
+        },
+        "answerPostId": 1240766,
+        "answerChars": 2121,
+        "answeredAt": "2026-11-21T20:38:08.895Z",
+        "replyInvocation": 51036501,
+        "closePostId": 1240767,
+        "closedBy": "su-4ce7cbdc-483d-4771-86c5-9d7a3617a188",
+        "closedAt": "2026-11-21T20:38:20.143Z",
+        "closeInvocation": 51036514,
+        "requesterUse": "I kept the published receipt's checkout-wide copy-on-write boundary. The answer identified writes from shared test setup outside one npm workspace.",
+        "sourceIsolation": {
+          "sourceCapturedAt": "2026-11-21T20:35:10.054Z",
+          "sourceCaptureCompletedAt": "2026-11-21T20:35:10.254Z",
+          "afterObservedAt": "2026-11-21T20:43:53.058Z",
+          "workItemsBefore": [],
+          "workItemsAfter": [],
+          "planClaimIdsBefore": [],
+          "planClaimIdsAfter": [],
+          "archiveCustodyReference": "docs/evidence/get-feedback-native-1bc141a6e56-2026-11-21.json"
+        }
+      },
+      {
+        "cell": "codex-live-to-codex-session-port",
+        "mode": "maintained session-port adapter",
+        "status": "checked",
+        "passed": true,
+        "constraints": {
+          "sourceBackend": "codex",
+          "sourceState": "live",
+          "targetBackend": "codex"
+        },
+        "requestKey": "wi6171-r6-3394-4669cc2ebe6-codex-port-v1",
+        "invocation": 51035974,
+        "conversationId": "conv-request-dab676ec9783054db768ea6990abd7f6ea41379fcab33f167bdf2bc2911036a7",
+        "threadId": "thr-conv-request-dab676ec9783054db768ea6990abd7f6ea41379fcab33f167bdf2bc2911036a7",
+        "state": "closed_answered",
+        "sourceOwnerId": "su-598a1fb5-569f-4322-bda8-20888ead8e48",
+        "sourceAdvSessionId": 63199,
+        "sourceNativeSessionId": "01a1f237-86e6-7cd3-b6e9-bbed29781b9e",
+        "sourceKind": "live-jsonl",
+        "sourceCompleteBytes": 2758267,
+        "selectionSourceSha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+        "portId": "ac2fbd78-9df2-45a8-a162-28b69848739c",
+        "portStatus": "delivered",
+        "portSourceSha256": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+        "deliveredAt": "2026-11-21T20:36:32.469Z",
+        "answeringOwnerId": "su-bf9131bf-eb83-4d94-8639-e3213ae34b13",
+        "targetAdvSessionId": 63982,
+        "targetNativeSessionId": "01a1ffd3-1445-77c2-b141-90b9c433268f",
+        "targetRankModel": "sol",
+        "targetModel": "gpt-5.6-sol",
+        "nativeKickoff": {
+          "verified": true,
+          "persisted": true,
+          "bootstrapReceiptCommitted": true,
+          "renderedSha256": "3b3a91cd5ab041a78bd93fe76ab2ed88a9c9eb9bd97470f6d6449a178a00ccf9",
+          "verifiedAt": "2026-11-21T20:36:32.468Z"
+        },
+        "answerPostId": 1240768,
+        "answerChars": 2212,
+        "answeredAt": "2026-11-21T20:39:17.374Z",
+        "replyInvocation": 51036626,
+        "closePostId": 1240769,
+        "closedBy": "su-bf9131bf-eb83-4d94-8639-e3213ae34b13",
+        "closedAt": "2026-11-21T20:39:28.077Z",
+        "closeInvocation": 51036652,
+        "requesterUse": "I kept whole-file verification for the measured sources and applied the existing explicit path sets to the proof bindings.",
+        "sourceIsolation": {
+          "sourceCapturedAt": "2026-11-21T20:35:25.176Z",
+          "sourceCaptureCompletedAt": "2026-11-21T20:35:25.216Z",
+          "afterObservedAt": "2026-11-21T20:43:53.058Z",
+          "workItemsBefore": [],
+          "workItemsAfter": [],
+          "planClaimIdsBefore": [],
+          "planClaimIdsAfter": [],
+          "sourcePrefixSha256After": "e631bae7ae220c9038517cfb40fbe54eaa52fca75c5246a9b1a6e7eded48098d",
+          "prefixBytesAfter": 2758267,
+          "sourceDescriptorMatched": true
+        }
+      }
+    ]
+  },
+  "codexAdmission": {
+    "invocation": 51035109,
+    "at": "2026-11-21T20:31:29.121Z",
+    "model": "gpt-5.6-sol",
+    "apply": false,
+    "probed": 8,
+    "serving": 2
+  },
+  "additionalAttempts": [
+    {
+      "conversationId": "conv-request-973f951d74c143938d1edd7c60620a8491edde2caff945a704e0968ad6a6772c",
+      "sourceOwnerId": "su-0dd6b9aa-3d59-4727-991e-377d05bc2459",
+      "rank": 3,
+      "model": "sol",
+      "outcome": "failed",
+      "reason": "launch-failed",
+      "observation": "The additional headless launch exited with signal 15 before kickoff proof. Its log dates the signal to the same second as the first answering session's close. The sender and cause of that signal were unmeasured."
+    },
+    {
+      "conversationId": "conv-request-973f951d74c143938d1edd7c60620a8491edde2caff945a704e0968ad6a6772c",
+      "sourceOwnerId": "su-0dd6b9aa-3d59-4727-991e-377d05bc2459",
+      "rank": 4,
+      "model": "gpt-6-astra",
+      "outcome": "skipped",
+      "reason": "consult-closed",
+      "observation": "The dispatcher observed the closed conversation and skipped this rank before spawning."
+    }
+  ],
+  "sourceEvidenceScope": "Selection and port preparation agreed on each source hash. Both source claim sets were empty at the before and after observations. Intervening claim changes, wakes and their actors remain unknown.",
+  "archivedSourceProvenance": {
+    "reference": "docs/evidence/get-feedback-native-1bc141a6e56-2026-11-21.json",
+    "referenceSha256": "a2f8fbbc5ff75c556ce10c4c58d00bcb95f54ac59de47fd00e74184267cdd7d9",
+    "sourceNativeSessionId": "5ede16a5-c4c8-4399-82bb-9a54015998bb",
+    "indexedOwner": "su-3633bdcb-453b-4177-a7fc-dfa2ed6c8ff9",
+    "citedTurnIndex": 21,
+    "citedTurnMatched": true,
+    "matchedTurnDigests": 39,
+    "previousComparisonAt": "2026-11-21T17:44:02.891Z",
+    "scope": "The archived source's complete-byte length and SHA-256 matched the earlier indexed-turn comparison. The earlier comparison covers the redacted indexed representation."
+  },
+  "qualityReview": {
+    "originalArtifact": "docs/evidence/get-feedback-reliability-usefulness-adoption-2026-10-03-live.json",
+    "sha256": "e99b3e1675e935005d3ba693bc3cc00987311384a35bb5435ad4bb16456b27c3",
+    "windowStart": "2026-10-03T05:21:32.561Z",
+    "windowEnd": "2026-10-05T20:27:24.000Z",
+    "eligible": 4,
+    "target": 8,
+    "shortfall": 4,
+    "recordedRequesterDecisions": 2,
+    "unknownRequesterDecisions": 2,
+    "scope": "Original natural-work cohort. Both controlled November 21 trials are excluded."
+  },
+  "routingHealth": {
+    "args": {
+      "since": "2026-11-21T20:34:25.318Z",
+      "until": "2026-11-21T20:43:54.000Z"
+    },
+    "asOf": "2026-11-21T20:46:04.220Z",
+    "cohort": "launch-time",
+    "totals": {
+      "consults": 97,
+      "consultsWithoutDispatchRecords": 90,
+      "launched": 2,
+      "answered": 2,
+      "declined": 0,
+      "failed": 1,
+      "failedReasons": {
+        "launch-failed": 1
+      },
+      "hung": 0,
+      "pending": 0,
+      "skipped": 1,
+      "skippedReasons": {
+        "consult-closed": 1
+      }
+    },
+    "bounded": {
+      "truncatedByLimit": false,
+      "consultsScanned": 97,
+      "consultLimit": 5000,
+      "dispatchLogCapped": 0
+    }
+  },
+  "assertions": [
+    {
+      "id": "matrix:claude-ended-to-codex-conversion",
+      "passed": true,
+      "evidence": "Invocation 51035823, delivered port 41810878-ea9e-4978-84c9-313415ff6c6d, persisted native kickoff, reply 1240766 and close 1240767 from su-4ce7cbdc-483d-4771-86c5-9d7a3617a188."
+    },
+    {
+      "id": "matrix:codex-live-to-codex-session-port",
+      "passed": true,
+      "evidence": "Invocation 51035974, delivered port ac2fbd78-9df2-45a8-a162-28b69848739c, persisted native kickoff, reply 1240768 and close 1240769 from su-bf9131bf-eb83-4d94-8639-e3213ae34b13."
+    },
+    {
+      "id": "matrix:claude-ended-to-claude-fork",
+      "passed": false,
+      "evidence": "Probe 51037057 found zero serviceable Claude accounts. This build has no native Claude fork receipt or reply."
+    },
+    {
+      "id": "cohort:original-quality-review",
+      "passed": false,
+      "evidence": "The immutable original cohort has four eligible threads against a target of eight and two unknown requester decisions."
+    }
+  ],
+  "deliveryFailureAssessment": {
+    "status": "unknown",
+    "reason": "The fixed-window monitor recorded one additional launch failure on the already answered conversion. The signal occurred in the same second as close. Causal attribution and avoidability remain unverified."
+  }
+}
