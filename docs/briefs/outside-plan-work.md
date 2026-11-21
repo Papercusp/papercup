@@ -7,9 +7,10 @@ still comes from the launch mode. The client supplies
 the task, design material and acceptance criteria in its kickoff. Read the exact label with
 `coord:whoami` (`outsidePlanRef`). The program receives its result in the final reply.
 
-`capability:launch-agent` and `fleet:launch-on-plan` accept `planRef`. The ACP adapter
-contract places the value at `_meta.psuAcp.planRef` on `session/new` and `session/resume`.
-The adapter forwards that value to the launcher. The saved session binding survives resume.
+`capability:launch-agent` and `fleet:launch-on-plan` accept `planRef`. An ACP front
+implementing the client contract should read `_meta.psuAcp.planRef` on `session/new`
+and `session/resume` and pass the exact value as one `--plan-ref=<value>` argument.
+When resuming, the front can omit the argument to reuse the saved session binding.
 A Papercusp plan binding and an outside reference are mutually exclusive.
 
 Create and hold a work-item before editing. The work-item inherits the creating session's
@@ -103,3 +104,20 @@ The single-session test captures the declaration, creation and completion replie
 for a task whose wording ordinarily triggers the residual-plan hint. The stack test
 renders both single-session variants with AUTO enabled and checks which planning
 rule the agent receives.
+
+To reproduce the offline restart checks on Linux, run the maintained suite from the
+repository root. It exercises both the storage restart and the HTTP operator restart.
+
+```sh
+npm run test:file -- packages/operator-core/lib/agent-tools/work_items/outside-plan-restart.integration.test.ts
+```
+
+The HTTP test records each server PID and reads the same session reference, four
+work-item references (including the leader's), and exact three-ID claim filter in
+both processes. The scheduler then drains the admitted items and completes the leader.
+The physical headless-member test has its own entry point and uses a local scripted
+inference service so that the member processes can call the operator offline.
+
+```sh
+npm run test:file -- packages/operator-core/lib/agent-tools/fleet_registry/__tests__/outside-plan-native.integration.test.ts
+```
