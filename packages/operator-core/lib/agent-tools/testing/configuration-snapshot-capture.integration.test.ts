@@ -19,7 +19,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, open, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -97,12 +97,14 @@ async function nativeFixtureDirectory(prefix: string) {
 }
 
 async function runNativeCapture(directory: string, suite: string, group: string, attempt: string,
-  selection: string[] = []) {
+  signal: AbortSignal, selection: string[] = []) {
   const nativeFile = join(directory, 'native.json');
   const receiptFile = join(directory, 'receipts.jsonl');
   const logPath = join(directory, 'native-child.log');
   const log = await open(logPath, 'wx', 0o600);
   try {
+    signal.throwIfAborted();
+    const startedAt = Date.now();
     const child = spawn(process.execPath, ['scripts/test-files.mjs', suite, ...selection], {
       cwd: REPO_ROOT, stdio: ['ignore', log.fd, log.fd], timeout: 150_000,
       env: { ...nestedRouterEnv(directory), PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
@@ -112,9 +114,14 @@ async function runNativeCapture(directory: string, suite: string, group: string,
         PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/test-config',
         PC_EXECUTED_SOURCE_MAP_OUT: nativeFile, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
     });
-    const [code, signal] = await once(child, 'close');
-    if (code !== 0 || signal) throw new Error(
-      `P021 ${attempt} termination ${JSON.stringify({ killed: child.killed, signal, code })}. Full child log at ${logPath}`);
+    const stopChild = () => { child.kill('SIGTERM'); };
+    signal.addEventListener('abort', stopChild, { once: true });
+    const [code, exitSignal] = await once(child, 'close')
+      .finally(() => signal.removeEventListener('abort', stopChild));
+    const result = { attempt, startedAt, elapsedMs: Date.now() - startedAt, killed: child.killed, signal: exitSignal, code, logPath };
+    process.stderr.write(`P021_NATIVE_CAPTURE ${JSON.stringify(result)}\n`);
+    if (code !== 0 || exitSignal) throw new Error(`Native capture failed: ${JSON.stringify(result)}`);
+    signal.throwIfAborted();
   } finally {
     await log.close();
   }
@@ -256,14 +263,14 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
     expect(await evaluate()).toMatchObject({ ok: true });
   }, 180_000);
 
-  it('P021: retains actual owned schema observations through native completion and the original PostgreSQL row', async () => {
+  it('P021: retains actual owned schema observations through native completion and the original PostgreSQL row', async ({ signal }) => {
     const suite = 'libs/test-config/src/pg-migrate.integration.test.ts';
     const group = `schema-custody-${randomUUID()}`;
     const attempt = `schema-native-${randomUUID()}`;
     const receiptDir = await nativeFixtureDirectory('schema-original-custody-');
     let verified = false;
     try {
-      const { receipts, native, nativeFile } = await runNativeCapture(receiptDir, suite, group, attempt,
+      const { receipts, native, nativeFile } = await runNativeCapture(receiptDir, suite, group, attempt, signal,
         ['--testNamePattern=^P021 original schema custody target$']);
       const ids = receipts.map(receipt => String(receipt.id));
       expect(ids, JSON.stringify(receipts)).toHaveLength(1);
@@ -333,35 +340,44 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
       } else expect(consumed).toMatchObject({ status: 'refused', reason: 'snapshot-identity-mismatch', receipts: [] });
       verified = true;
     } finally {
-      if (verified) await rm(receiptDir, { recursive: true, force: true });
+      if (verified && !signal.aborted) await rm(receiptDir, { recursive: true, force: true });
       else process.stderr.write(`P021 original schema custody failure evidence retained: ${receiptDir}\n`);
     }
   }, 240_000);
 
-  it('P021: preserves complete native case identities and measured source bytes through the actual reporter and PostgreSQL consumer', async () => {
+  it('P021: preserves complete native case identities and measured source bytes through the actual reporter and PostgreSQL consumer', async ({ signal, onTestFinished }) => {
     const suite = 'libs/test-config/src/execution-details.test.ts';
     const group = `population-v1-${randomUUID()}`;
     const receiptDir = await nativeFixtureDirectory('population-v1-capture-');
     const attempt = `population-native-${randomUUID()}`;
     let verified = false;
     try {
-      const { receipts, native, nativeFile } = await runNativeCapture(receiptDir, suite, group, attempt);
-      const ids = receipts.map(receipt => String(receipt.id));
-      const rows = await getOrgPg().sql<Array<{ id: string; file_path: string;
+      const comparisonDir = await mkdtemp(join(receiptDir, 'comparison-'));
+      // Each worker owns its artifact directory. Their original receipt IDs identify
+      // the rows even when the two same-group executions finish in the opposite order.
+      const captures = Promise.allSettled([
+        runNativeCapture(receiptDir, suite, group, attempt, signal),
+        runNativeCapture(comparisonDir, suite, group, `population-native-${randomUUID()}`, signal),
+      ]);
+      onTestFinished(async () => { await captures; });
+      const [primary, comparison] = await captures;
+      if (primary.status === 'rejected') throw primary.reason;
+      if (comparison.status === 'rejected') throw comparison.reason;
+      signal.throwIfAborted();
+      const { receipts, native, nativeFile } = primary.value;
+      const primaryIds = new Set(receipts.map(receipt => String(receipt.id)));
+      const comparisonIds = comparison.value.receipts.map(receipt => String(receipt.id));
+      const groupRows = await getOrgPg().sql<Array<{ id: string; file_path: string;
         run_group_id: string; execution_details: unknown; commit_sha: string | null;
         worktree_dirty: boolean; workspace_id: string | null; harness_slug: string | null }>>`
         SELECT id::text AS id, file_path, run_group_id, execution_details,
                commit_sha, worktree_dirty, workspace_id, harness_slug
           FROM harness_shared.test_runs WHERE run_group_id = ${group}
       `;
-      expect(rows.map(row => row.id).sort()).toEqual([...ids].sort());
-      const second = await runNativeCapture(await mkdtemp(join(receiptDir, 'comparison-')),
-        suite, group, `population-native-${randomUUID()}`);
-      const secondRows = await getOrgPg().sql<Array<{ id: string; execution_details: unknown }>>`
-        SELECT id::text AS id, execution_details FROM harness_shared.test_runs
-         WHERE run_group_id = ${group} AND NOT (id = ANY(${ids}::bigint[]))
-      `;
-      expect(secondRows.map(row => row.id).sort()).toEqual(second.receipts.map(receipt => receipt.id).sort());
+      expect(primaryIds.size).toBe(receipts.length);
+      expect(groupRows.map(row => row.id).sort()).toEqual([...primaryIds, ...comparisonIds].sort());
+      const rows = groupRows.filter(row => primaryIds.has(row.id));
+      const secondRows = groupRows.filter(row => !primaryIds.has(row.id));
       const secondDetails = secondRows.map(row => {
         const observed = parseTestRunExecutionDetails(row.execution_details);
         expect(observed, `second PostgreSQL capture, row ${row.id}`).toBeDefined();
@@ -620,7 +636,7 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
       }
       verified = true;
     } finally {
-      if (verified) await rm(receiptDir, { recursive: true, force: true });
+      if (verified && !signal.aborted) await rm(receiptDir, { recursive: true, force: true });
       else process.stderr.write(`P021 original population custody failure evidence retained: ${receiptDir}\n`);
     }
   }, 180_000);
@@ -639,7 +655,7 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
     expect(out).toMatchObject({ statusRef: { tool: 'testing:run-status', args: { runId } } });
     let lastStatus = 'pending';
     const terminal = await vi.waitUntil(async () => {
-      const { data } = await runStatusTool.handler({ runId } as never, {} as never) as { data: TestingRunStatusResult };
+      const { data } = await runStatusTool.handler({ runId } as never, { payloadTierOverride: 'full' } as never) as { data: TestingRunStatusResult };
       if (!data.ok) {
         lastStatus = data.error;
         return;
@@ -649,7 +665,11 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
         const { runId, status, exitCode } = data.snapshot;
         lastStatus = status;
         if (status === 'running') return;
-        return { runId, status, exitCode, failure: data.diagnostics?.failure };
+        if (status === 'pass' && exitCode === 0) return { runId, status, exitCode };
+        const directory = await nativeFixtureDirectory('configuration-supervisor-');
+        const snapshotPath = join(directory, 'status.json');
+        await writeFile(snapshotPath, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' });
+        return { runId, status, exitCode, failure: data.diagnostics?.failure, snapshotPath };
       }
     }, { timeout: Math.max(1, out.deadline!.taskDeadlineAtMs - Date.now()), interval: 500 }).catch(cause => {
       throw new Error(`Configuration capture ${runId} did not reach a terminal result (last status ${lastStatus})`, { cause });
