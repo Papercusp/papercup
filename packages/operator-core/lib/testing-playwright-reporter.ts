@@ -51,11 +51,9 @@ import {
   type MutationDescriptor,
   type MutationInvocationDescriptor,
 } from '@papercusp/test-config/mutation-descriptor';
-import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync } from 'node:fs';
-import { posix, relative, sep } from 'node:path';
+import { posix, relative } from 'node:path';
 import { assertNativeIsolatedWorkspace, prepareNativeRuntimeReader } from './testing-native-runtime';
-import { readVerifierSourceReceiptSync, verifyVerifierSourceSync, type VerifierSourceReceipt } from '@papercusp/test-config/verifier-source';
+import { readVerifierComparisonSourcesSync, type VerifierDefinitionSource } from '@papercusp/test-config/verifier-source';
 export { prepareNativeRuntimeReader } from './testing-native-runtime';
 import {
   isRecordedCaseTitle,
@@ -357,36 +355,11 @@ interface PerFile {
   passedCaseTitlesTruncated: boolean;
 }
 
-type DefinitionSource = { commit: string; receiptPath: string };
-
 /** The historical app and the later test definition have independent archives.
  * Keep the actual app process as the subject of the runtime observations. */
-function readComparisonSources(definitionRoot: string, definition: DefinitionSource) {
+function readComparisonSources(definitionRoot: string, definition: VerifierDefinitionSource) {
   assertNativeIsolatedWorkspace();
-  if (!process.env.VERIFY_TAURI_PID || process.env.VERIFY_TAURI_ISOLATED_DB !== '1'
-    || !process.env.VERIFY_TAURI_SOURCE_REF || !process.env.OPERATOR_SOURCE_ROOT)
-    throw new Error('separate test definition requires the owned isolated native runner');
-  const applicationRoot = realpathSync(process.env.OPERATOR_SOURCE_ROOT);
-  const roots = [applicationRoot, realpathSync(definitionRoot)];
-  if (roots[0] === roots[1] || roots[0].startsWith(roots[1] + sep) || roots[1].startsWith(roots[0] + sep))
-    throw new Error('expected distinct, non-overlapping frozen source roots');
-  if (!process.env.VERIFY_TAURI_SOURCE_RECEIPT || !definition.receiptPath)
-    throw new Error('both external source receipts are required');
-  const receipts = [realpathSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT), realpathSync(definition.receiptPath)];
-  if (receipts[0] === receipts[1] || receipts.some(path => roots.some(root => path === root || path.startsWith(root + sep))))
-    throw new Error('the two source receipts must be independent and outside both archives');
-  const application = readVerifierSourceReceiptSync(applicationRoot);
-  const manifest: VerifierSourceReceipt = JSON.parse(readFileSync(definition.receiptPath, 'utf8'));
-  if (!/^[0-9a-f]{40}$/.test(definition.commit) || manifest.sourceCommit !== definition.commit)
-    throw new Error('test definition receipt differs from the selected verifier commit');
-  if (!application.gitCheckout || !manifest.gitCheckout)
-    throw new Error('native comparison requires Git custody in both source receipts');
-  const verifier = verifyVerifierSourceSync(definitionRoot, manifest, { runtimeArtifacts: true });
-  const digest = createHash('sha256')
-    .update(JSON.stringify([roots, receipts])).update('\0')
-    .update(JSON.stringify(application)).update('\0').update(JSON.stringify(verifier)).digest('hex');
-  return { applicationRoot, applicationCommit: application.sourceCommit, definitionCommit: verifier.sourceCommit, digest,
-    inputs: new Set(verifier.testedInputs.map(input => input.path)) };
+  return readVerifierComparisonSourcesSync(definitionRoot, definition);
 }
 
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
@@ -401,11 +374,11 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private runtimePreparationFailed = false;
   private runtimeBefore?: RuntimeCapture;
   private mutationInvocation: MutationInvocationDescriptor | null = null;
-  private readonly definitionSource?: DefinitionSource;
+  private readonly definitionSource?: VerifierDefinitionSource;
   private comparison?: ReturnType<typeof readComparisonSources>;
   private comparisonAttribution?: ComparisonLedger;
 
-  constructor(options: { readRuntimeEnvironment?: RuntimeReader; definitionSource?: DefinitionSource } = {}) {
+  constructor(options: { readRuntimeEnvironment?: RuntimeReader; definitionSource?: VerifierDefinitionSource } = {}) {
     this.runtimeReader = options.readRuntimeEnvironment;
     this.definitionSource = options.definitionSource;
   }

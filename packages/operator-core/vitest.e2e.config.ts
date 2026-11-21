@@ -81,9 +81,12 @@ export async function prepareRuntimeReader(
   loadPg = async () => (await import('postgres')).default,
   loadNativeRuntime = () => tsImport('./lib/testing-native-runtime.ts', import.meta.url),
 ) {
-  if (!process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE) return undefined;
-  const profile = JSON.parse(readFileSync(resolve(__dirname, '../..',
-    process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE), 'utf8'));
+  const profilePath = process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE;
+  const definitionRef = process.env.VERIFY_TAURI_TEST_SOURCE_REF;
+  const definitionReceipt = process.env.VERIFY_TAURI_TEST_SOURCE_RECEIPT;
+  const comparison = definitionRef !== undefined || definitionReceipt !== undefined;
+  if (!profilePath && !comparison) return undefined;
+  const profile = profilePath ? JSON.parse(readFileSync(resolve(__dirname, '../..', profilePath), 'utf8')) : {};
   // Validate inputs before importing the live graph or collecting any tests.
   // A ledger workspace alone does not authorize an authenticated app read.
   const names = (value: unknown): string[] => {
@@ -109,10 +112,17 @@ export async function prepareRuntimeReader(
   // A verifier owns a disposable native process, rather than the shared units
   // named by the profile. Reuse the same source/kernel custody check as the
   // Playwright reporter; an invalid native witness must never fall back to PG.
-  if (process.env.VERIFY_TAURI_PID || process.env.VERIFY_TAURI_PORT) {
-    const { prepareNativeRuntimeReader } = await loadNativeRuntime();
-    const read = prepareNativeRuntimeReader(resolve(__dirname, '../..'),
-      process.env.VERIFY_TAURI_SOURCE_REF ?? null);
+  if (comparison || process.env.VERIFY_TAURI_PID || process.env.VERIFY_TAURI_PORT) {
+    const native = await loadNativeRuntime();
+    let root = resolve(__dirname, '../..');
+    if (comparison) {
+      if (!definitionReceipt || !/^[0-9a-f]{40}$/.test(definitionRef ?? '') || !process.env.OPERATOR_SOURCE_ROOT
+        || !process.env.VERIFY_TAURI_PID || process.env.VERIFY_TAURI_ISOLATED_DB !== '1')
+        throw new Error('incomplete isolated native comparison');
+      native.assertNativeIsolatedWorkspace();
+      root = process.env.OPERATOR_SOURCE_ROOT;
+    }
+    const read = native.prepareNativeRuntimeReader(root, process.env.VERIFY_TAURI_SOURCE_REF ?? null);
     if (!read) throw new Error('live-profile-native-runtime-unavailable');
     return async () => read();
   }

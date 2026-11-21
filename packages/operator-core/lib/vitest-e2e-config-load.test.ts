@@ -5,6 +5,32 @@ import { prepareRuntimeReader, waitForRuntimeWitness } from '../vitest.e2e.confi
 import { unitExcludedVitestTest } from '../../../scripts/lib/related-tests.mjs';
 
 describe('operator e2e config loading', () => {
+  it('observes the application checkout for an isolated comparison without a shared live profile', async () => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE', undefined);
+    vi.stubEnv('VERIFY_TAURI_PID', '1234');
+    vi.stubEnv('VERIFY_TAURI_ISOLATED_DB', '1');
+    vi.stubEnv('VERIFY_TAURI_SOURCE_REF', 'a'.repeat(40));
+    vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', '/private-run/application.json');
+    vi.stubEnv('VERIFY_TAURI_TEST_SOURCE_REF', 'b'.repeat(40));
+    vi.stubEnv('VERIFY_TAURI_TEST_SOURCE_RECEIPT', '/private-run/definition.json');
+    vi.stubEnv('OPERATOR_SOURCE_ROOT', '/private-run/application');
+    const assertNativeIsolatedWorkspace = vi.fn();
+    const read = vi.fn().mockReturnValueOnce({ fingerprint: 'before' }).mockReturnValueOnce(null);
+    const prepareNativeRuntimeReader = vi.fn(() => read);
+    const native = async () => ({ assertNativeIsolatedWorkspace, prepareNativeRuntimeReader });
+    const shared = vi.fn();
+    try {
+      const reader = await prepareRuntimeReader(shared, shared, native);
+      expect(prepareNativeRuntimeReader).toHaveBeenCalledWith('/private-run/application', 'a'.repeat(40));
+      expect(assertNativeIsolatedWorkspace).toHaveBeenCalledOnce();
+      expect(await reader!()).toEqual({ fingerprint: 'before' });
+      expect(await reader!()).toBeNull();
+      vi.stubEnv('VERIFY_TAURI_TEST_SOURCE_REF', undefined);
+      await expect(prepareRuntimeReader(shared, shared, native)).rejects.toThrow(/comparison/);
+      expect(shared).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('observes the owned native verifier on both reads without loading the shared runtime ledger', async () => {
     vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
       'packages/operator-core/test/parked-agent-audit.live-profile.json');
