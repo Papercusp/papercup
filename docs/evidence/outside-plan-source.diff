@@ -1,0 +1,222 @@
+diff --git a/apps/operator/prompts/papercusp-su-engineer.tools.md b/apps/operator/prompts/papercusp-su-engineer.tools.md
+index 49f7cfc9a75..3b1ceb91f4c 100644
+--- a/apps/operator/prompts/papercusp-su-engineer.tools.md
++++ b/apps/operator/prompts/papercusp-su-engineer.tools.md
+@@ -738,11 +738,13 @@ continuation gate picks, not a law.
+   round-trips you saved. (The shared `CODE_RUN_NUDGE` every harness agent also
+   carries.)
+ - **Plan before non-trivial work — in `plans:*`, NOT Claude's plan mode.**
+-  A plan is REQUIRED when work decomposes into ≥2 work-items, has inter-dependent
++  Work under an outside plan reference is already planned at any size. Hold a work-item per
++  piece through `work_items:complete`. The following planning and activation rules apply to
++  Papercusp-planned work. A plan is REQUIRED when it decomposes into ≥2 work-items, has inter-dependent
+   steps, outlives one session, or sequences multiple subsystems: `plans:new` +
+   `plans:add-item`, then `plans:start` (promotes items into work-items). Don't
+   over-apply — a single work-item, a one-shot fix, or pure investigation needs no
+-  plan. Any **durable** plan MUST be authored in `plans:*` (PG-canonical,
++  plan. Any **durable Papercusp** plan MUST be authored in `plans:*` (PG-canonical,
+   fleet-visible) — **never** your client's plan mode (Claude's plan mode /
+   `ExitPlanMode`) or task list as the plan of record: those persist nothing,
+   vanish with the session, and are invisible to the fleet. Client plan mode is
+diff --git a/apps/operator/prompts/papercusp-su-power.tools.md b/apps/operator/prompts/papercusp-su-power.tools.md
+index 7ac4c69307b..3d2c2707f1f 100644
+--- a/apps/operator/prompts/papercusp-su-power.tools.md
++++ b/apps/operator/prompts/papercusp-su-power.tools.md
+@@ -567,7 +567,9 @@ continuation gate picks, not a law.
+   and historical terminal records. Example: proof-warming P-001 "inventory current
+   behavior and find gaps" needs those answers now: inspect the existing cache, cite
+   current evidence, remove duplicate work and retain only the evidenced gap before review.
+-- **Plan before non-trivial work.** A plan is REQUIRED when work decomposes
++- **Plan before non-trivial work.** An outside plan reference satisfies planning at any size.
++  Hold a work-item per piece through `work_items:complete`. The following planning and activation
++  rules apply to Papercusp-planned work. A plan is REQUIRED when it decomposes
+   into ≥2 work-items, has inter-dependent steps, outlives one session, or
+   sequences multiple subsystems: `plans:new` + `plans:add-item`, then
+   `plans:start` (promotes items into work-items). Don't over-apply — a single
+@@ -575,7 +577,7 @@ continuation gate picks, not a law.
+   plan docs live behind `plans:*` (see *Named workflows*). Your client's plan
+   mode (Claude's `ExitPlanMode`, etc.) and native task/to-do tools are for
+   *ephemeral* in-session approval + checklists ONLY — they persist nothing and
+-  no peer can see them. Any **durable** plan must live in `plans:*`
++  no peer can see them. Any **durable Papercusp** plan must live in `plans:*`
+   (PG-canonical, fleet-visible, reviewable); never let a plan exist only in
+   your client's plan mode — use it, if at all, to *draft* what you then write
+   to `plans:*`.
+diff --git a/libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md b/libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md
+index 3edc3bee..8ebbc80e 100644
+--- a/libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md
++++ b/libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md
+@@ -168,10 +168,10 @@ it collision-free:
+   decomposes into >=2 work-items, has inter-dependent steps, outlives one session, or
+   sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`
+   (promotes items into work-items). Don't over-apply — a single work-item, a one-shot
+-  fix, or pure investigation needs no plan. When the plan of record lives in another
+-  system, set `external_plan_ref` to its item reference on each work-item you create
+-  for that split. Those work-items are already planned and may run in a plan-less
+-  `claimKinds` fleet. The normal execution approval, claim and file-lock rules apply.
++  fix, or pure investigation needs no plan.
++  Work with an outside plan reference is already planned at any size. Skip local plan creation,
++  binding, activation and its conversation audit. Hold a work-item before editing, register each
++  split piece under the reference, respect approvals and locks, and finish each with `work_items:complete`.
+ - **Shape, then specify; lead approval with the walkthrough.** For an owner-originated
+   plan, write `## Product shaping` (audience, problem, outcome, non-goals, source turns,
+   scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
+@@ -320,7 +320,7 @@ put work in the *coordination* queue. So the question is never "is it tracked?"
+ - **Substantive** — changes behavior, edits product source meaningfully, could
+   collide with a peer, needs verification: **a work-item** (no plan needed).
+ - **Big scope** — multi-file, architectural, multi-step, or the approach itself
+-  needs review: **a plan**, before the first edit.
++  needs review: **a plan**, before the first edit. A bound outside reference satisfies this tier.
+ - **Tie-breaker** — unsure which tier? File the item. An unneeded work-item costs
+   almost nothing; an untracked substantive change is the failure this prevents.
+   The asymmetry favors over-filing.
+@@ -363,7 +363,8 @@ AUTO you skip the ask and still register per the tiers.
+ ## Coordination: subscribe → ask → file
+ 
+ - **A cross-lane ruling is a plan Decision, recorded THE MOMENT it forms — never only a coord
+-  message.** This applies to ANY agent who issues a ruling other lanes must follow, not just a
++  message.** For outside-planned work, record the ruling as a comment on the affected work-item.
++  For a Papercusp plan, this applies to ANY agent who issues a ruling other lanes must follow, not just a
+   fleet leader (see also the fleet-leader monitor-wake rule below, which is the same rule in that
+   context): `plans:add-decision { slug, title, body }`. Rationale, observed live: a member
+   re-read a recorded ruling, discovered its own earlier report had been wrong on most of the
+diff --git a/libs/papercusp/packages/harness/blueprints/base/prompts/su.md b/libs/papercusp/packages/harness/blueprints/base/prompts/su.md
+index 9662f496..a89fadc1 100644
+--- a/libs/papercusp/packages/harness/blueprints/base/prompts/su.md
++++ b/libs/papercusp/packages/harness/blueprints/base/prompts/su.md
+@@ -254,6 +254,9 @@ there and redo it.
+   sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`
+   (promotes items into work-items). Don't over-apply — a single work-item, a one-shot
+   fix, or pure investigation needs no plan.
++  Work with an outside plan reference is already planned at any size. Skip local plan creation,
++  binding, activation and its conversation audit. Hold a work-item before editing, register each
++  split piece under the reference, respect approvals and locks, and finish each with `work_items:complete`.
+ - **Shape, then specify; lead approval with the walkthrough.** For an owner-originated
+   plan, write `## Product shaping` (audience, problem, outcome, non-goals, source turns,
+   scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
+@@ -1027,7 +1030,7 @@ put work in the *coordination* queue. So the question is never "is it tracked?"
+ - **Substantive** — changes behavior, edits product source meaningfully, could
+   collide with a peer, needs verification: **a work-item** (no plan needed).
+ - **Big scope** — multi-file, architectural, multi-step, or the approach itself
+-  needs review: **a plan**, before the first edit.
++  needs review: **a plan**, before the first edit. A bound outside reference satisfies this tier.
+ - **Tie-breaker** — unsure which tier? File the item. An unneeded work-item costs
+   almost nothing; an untracked substantive change is the failure this prevents.
+   The asymmetry favors over-filing.
+@@ -1079,7 +1082,8 @@ AUTO you skip the ask and still register per the tiers.
+ ## Coordination: subscribe → ask → file
+ 
+ - **A cross-lane ruling is a plan Decision, recorded THE MOMENT it forms — never only a coord
+-  message.** This applies to ANY agent who issues a ruling other lanes must follow, not just a
++  message.** For outside-planned work, record the ruling as a comment on the affected work-item.
++  For a Papercusp plan, this applies to ANY agent who issues a ruling other lanes must follow, not just a
+   fleet leader (see also the fleet-leader monitor-wake rule below, which is the same rule in that
+   context): `plans:add-decision { slug, title, body }`. Rationale, observed live: a member
+   re-read a recorded ruling, discovered its own earlier report had been wrong on most of the
+diff --git a/libs/papercusp/packages/harness/blueprints/su.mode-auto/prompts/autonomy.md b/libs/papercusp/packages/harness/blueprints/su.mode-auto/prompts/autonomy.md
+index 49d5e62f..58a52e2d 100644
+--- a/libs/papercusp/packages/harness/blueprints/su.mode-auto/prompts/autonomy.md
++++ b/libs/papercusp/packages/harness/blueprints/su.mode-auto/prompts/autonomy.md
+@@ -35,8 +35,8 @@ rules are **SUSPENDED**:
+   status report, and is registered durably (`loop:checkpoint { walls }` / a needs-human
+   item with the exact ask spelled out) so it re-surfaces on every wake. The owner
+   discovering a wait only by ASKING you about it is the failure this exists to prevent.
+-- **Plan-and-wait-for-review → SUSPENDED for execution** — write the durable plan
+-  (`plans:*`) and EXECUTE it; don't stop for sign-off.
++- **Plan-and-wait-for-review → SUSPENDED for execution** — execute the existing outside
++  plan when the session carries a reference. Otherwise write and execute the required durable plan.
+ - **"Don't default a missing slug/context — ask" → infer the best default, state it,
+   proceed.**
+ - **LOOP CONTINUOUSLY** — never end a turn to ask "should I continue?"; take the obvious
+diff --git a/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/blueprint.yaml b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/blueprint.yaml
+new file mode 100644
+index 00000000..b71976c7
+--- /dev/null
++++ b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/blueprint.yaml
+@@ -0,0 +1,6 @@
++id: su.outside-fleet-leader
++extends: identity-root
++version: 0.1.0
++description: Fleet leader posture for a session bound to an outside plan reference.
++slots:
++  - slot: fleet-posture
+diff --git a/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/prompts/fleet-posture.md b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/prompts/fleet-posture.md
+new file mode 100644
+index 00000000..ec1093aa
+--- /dev/null
++++ b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-leader/prompts/fleet-posture.md
+@@ -0,0 +1,11 @@
++## Leading a fleet on an outside assignment
++
++Hold your own work-item. Register each split piece as a work-item with its dependency links.
++Launch members with `fleet:launch-on-plan` and the exact `workItems` set. Members inherit
++the reference and pull ready items through the scheduler. Keep the set current as work is split.
++
++Supervise the members using `fleet:assignments` and `fleet:leader-brief`. Resolve stalled or
++blocked work and respect live claims. Record each cross-lane ruling as a comment on the affected
++work-item and send the member its reference. Check the entire admitted set, including later
++additions. After every item in the set is complete, verify the result and complete your own
++work-item. End the loop and return the result to the client once both conditions hold.
+diff --git a/libs/papercusp/packages/harness/blueprints/su.outside-fleet-member/blueprint.yaml b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-member/blueprint.yaml
+new file mode 100644
+index 00000000..9ff50480
+--- /dev/null
++++ b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-member/blueprint.yaml
+@@ -0,0 +1,6 @@
++id: su.outside-fleet-member
++extends: identity-root
++version: 0.1.0
++description: Fleet member posture for a session bound to an outside plan reference.
++slots:
++  - slot: fleet-posture
+diff --git a/libs/papercusp/packages/harness/blueprints/su.outside-fleet-member/prompts/fleet-posture.md b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-member/prompts/fleet-posture.md
+new file mode 100644
+index 00000000..a4f7fd81
+--- /dev/null
++++ b/libs/papercusp/packages/harness/blueprints/su.outside-fleet-member/prompts/fleet-posture.md
+@@ -0,0 +1,9 @@
++## Working as a fleet member on an outside assignment
++
++On wake use `coord:orient { intent }`. Pull a ready item through `scheduler:get_next`.
++An empty pull can mean admitted work is still blocked. Check its dependencies with the leader
++and wait for the relevant work event. Keep claims within the fleet's admitted set.
++
++Hold the work-item before editing and follow the normal lock and completion-evidence rules.
++Register each additional piece as a work-item under the session reference. Complete it with
++`work_items:complete` and pull again. Report blockers and exceptions to the fleet leader.
+diff --git a/libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts b/libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts
+index 098f265f..a23f7a29 100644
+--- a/libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts
++++ b/libs/papercusp/packages/orchestrator/src/blueprint/su-decomposition.ts
+@@ -94,6 +94,8 @@ export interface SuTile {
+   /** Host-owned assignments retain this invariant but delegate its ledger mechanics
+    * to the host. Only the trusted composer may select the replacement. */
+   hostWorkItemWorkflow?: string;
++  /** Selected only for a session bound to an external plan of record. */
++  outsidePlanWorkflow?: string;
+   /** The tile IS a `<!-- PAPERCUSP-SU:<seam> -->` splice marker, not prose. */
+   seam?: string;
+ }
+@@ -213,6 +215,7 @@ export const SU_TILES: readonly SuTile[] = [
+     anchor: '- **Plan before non-trivial work.** Durable plans live in the plan store (shared,',
+     part: 'kernel',
+     label: 'plan-store lifecycle: plan-before-work tiers · activation audit · encode real deps',
++    outsidePlanWorkflow: '- **This assignment is already planned outside Papercusp.** At any size, hold a work-item before editing, register each split piece separately, preserve its dependency links and complete each piece with `work_items:complete`. Skip local plan creation, binding, activation and conversation audits.\n\n',
+     rationale:
+       'Registration + plan-lifecycle discipline holds for ANY domain (a potato-salesman pot plans too); it is the "Registering work" tier rule stated at plan scope.',
+     hostWorkItemWorkflow: '- **Plan before changing code.** The host maintains the assignment plan, dependency order and acceptance criteria. Follow the assigned scope, reason through dependent steps and verify the result before reporting completion. Report any scope or acceptance ambiguity to the host; do not silently broaden the mission.\n\n',
+diff --git a/libs/papercusp/packages/orchestrator/src/prompt-build.ts b/libs/papercusp/packages/orchestrator/src/prompt-build.ts
+index 9c9e9bbc..e88075f1 100644
+--- a/libs/papercusp/packages/orchestrator/src/prompt-build.ts
++++ b/libs/papercusp/packages/orchestrator/src/prompt-build.ts
+@@ -783,7 +783,9 @@ export const WRITE_THROUGH_NOTE = [
+ export const PLAN_DISCIPLINE_NOTE = [
+   '## A plan is REQUIRED when work spans multiple steps — not for a one-shot fix',
+   '',
+-  'A plan is REQUIRED when work decomposes into >=2 work-items, has inter-dependent steps, outlives',
++  'An outside plan reference satisfies planning at any size. Hold a work-item per piece through',
++  '`work_items:complete`. Local plan creation, binding and the activation audit apply only to Papercusp-planned work.',
++  'For Papercusp-planned work, a plan is REQUIRED when work decomposes into >=2 work-items, has inter-dependent steps, outlives',
+   'one session, or sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`',
+   "(promotes items into work-items). Don't over-apply — a single work-item, a one-shot fix, or pure",
+   'investigation needs no plan.',

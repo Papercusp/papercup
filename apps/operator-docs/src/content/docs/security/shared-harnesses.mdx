@@ -4,22 +4,25 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Shared harnesses
-description: The trust and security model for peer-to-peer shared harnesses — how identity, authorization, membership, and revocation work, what we borrow from other P2P systems, and the tradeoffs we accept intentionally.
+title: "Shared harnesses"
+description: "The trust and security model for peer-to-peer shared harnesses — how identity, authorization, membership, and revocation work, what we borrow from other P2P systems, and the tradeoffs we accept intentionally."
+type: Insight
+discovered: 2026-11-21
+status: active
+documents:
+  - "packages/operator-core/lib/sync/hyperbee/read-admission.ts"
+  - "packages/operator-core/lib/harness/binding-service.ts"
+  - "packages/operator-core/lib/harness/completion-ref-verifier.ts"
+  - "packages/operator-core/lib/harness/fork-pr-on-feature-pass.ts"
+  - "packages/operator-core/lib/pr-host/auto-merge.ts"
+  - "packages/operator-core/lib/dbos/orchestrator-finalize.ts"
+plans:
+  - "papercusp-trust-model-2026-05-31"
+  - "shared-pot-hardening-2026-06-13"
+  - "non-collaborator-join-fork-pr-2026-06-02"
+  - "shared-pot-federation-2026-06-08"
 sidebar:
   order: 1
-plans:
-  - papercusp-trust-model-2026-05-31
-  - shared-pot-hardening-2026-06-13
-  - non-collaborator-join-fork-pr-2026-06-02
-  - shared-pot-federation-2026-06-08
-documents:
-  - packages/operator-core/lib/sync/hyperbee/read-admission.ts
-  - packages/operator-core/lib/harness/binding-service.ts
-  - packages/operator-core/lib/harness/completion-ref-verifier.ts
-  - packages/operator-core/lib/harness/fork-pr-on-feature-pass.ts
-  - packages/operator-core/lib/pr-host/auto-merge.ts
-  - packages/operator-core/lib/dbos/orchestrator-finalize.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -87,10 +90,17 @@ Identity is anchored to **GitHub**: each device holds an Ed25519 keypair in the 
 keychain. The OAuth `GET /user` channel is a **local self-attestation only — it is never
 part of remote admission**. Remote admission (post write-free-join) proves the
 `device_pubkey ↔ github_user_id` binding entirely from a **device-signed announce** plus
-`verifyAttestation` on a **public GitHub gist** — the gist pins `owner.id ===
+`verifyAttestation` on a **GitHub gist addressed by ID** — the gist pins `owner.id ===
 github_user_id`, the body's `device_pubkey`, and a device signature. There is **no
 device-signed commit** anywhere in the code: the old shared-repo contributor-file channel
 was removed in the write-free-join work.
+
+The signed binding contains the GitHub login and numeric account ID, device label,
+Ed25519 public key, creation time, format version and device signature. One device
+can reuse it across public pots, invite-only pots and Cupboard. The host can create
+new bindings as unlisted gists with `PAPERCUSP_ATTESTATION_GIST_VISIBILITY=secret`.
+Anyone who learns the gist ID can read it. Peers receive the ID in the signed
+announcement. Pot discovery and membership follow the pot's own policy.
 
 The single most important fact: **the authority for the one thing that truly matters —
 merging code — is GitHub itself.** PRs merge through the GitHub REST API with a real user

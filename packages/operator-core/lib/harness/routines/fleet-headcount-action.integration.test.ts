@@ -1786,6 +1786,14 @@ describe('governor top-up launches the fleet mode (WI-6554700010029298)', () => 
     expect(mocks.getModes).not.toHaveBeenCalled();
   });
 
+  it('retains an outside binding in replacement argv and the next durable launch transaction', async () => {
+    const command = await runTopUp({ ...baseConfig, plan: undefined, planRef: 'tracker:ABC-123' });
+    expect(command).toContain('--plan-ref=');
+    expect(command).toContain('tracker:ABC-123');
+    expect(command).not.toContain('--plan=');
+    expect(mocks.setTransaction.mock.calls.some(call => call[0].transaction.planRef === 'tracker:ABC-123')).toBe(true);
+  });
+
   it('falls back to the launching leader\'s live DRAIN row for a legacy recipe without a mode', async () => {
     mocks.getModes.mockResolvedValue([{ mode: 'auto' }, { mode: 'drain', subject: 'leader mission', ownerDirected: true }]);
     const command = await runTopUp({ ...baseConfig });

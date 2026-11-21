@@ -21,6 +21,7 @@ const terminalMatcherKeys = {
   tags: ['tags'], paths: ['paths', 'filePath'],
   plan: ['plan_run', 'plan_item', 'planItem', 'source_plan_slug'],
   plan_item: ['plan_item', 'planItem', 'source_plan_item_ids'],
+  external_plan_ref: ['externalPlanRef'],
   fleet: ['fleet_slug'], triage_gate: ['ideaLifecycle'],
   item_class: ['sourceRole', 'ideaOrigin'], risk_tier: ['risk_tier'],
   redundancy: ['redundancy'], est_cost: ['est_cost', 'expected_cost_cents'],

@@ -22,6 +22,11 @@ describe('psu outside-plan launch contract', () => {
     expect(() => parseArgs(['--plan-ref=X', '--plan=P'])).toThrow(/mutually exclusive/);
     expect(() => parseArgs(['--plan=P', '--plan-ref=X'])).toThrow(/mutually exclusive/);
   });
+  it('preserves whitespace-only labels and matches the shared Unicode length bound', () => {
+    expect(parseArgs(['--plan-ref=   ']).planRef).toBe('   ');
+    expect(validateOutsidePlanRef('😀'.repeat(100))).toBe('😀'.repeat(100));
+    expect(() => validateOutsidePlanRef('😀'.repeat(100) + 'x')).toThrow();
+  });
   it('preserves the ordinary launch shape without the flag', () => {
     const args = parseArgs(['--agent=claude', '--plan=ordinary']);
     const body = freshSuBootstrapBody({ ...selections, plan: 'ordinary' }, args);

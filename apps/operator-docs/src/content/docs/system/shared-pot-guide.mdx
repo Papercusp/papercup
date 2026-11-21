@@ -4,16 +4,19 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Shared pots — a user's guide
-description: Walk through the whole peer-to-peer shared-pot lifecycle as a user — create a pot (incl. from a GitHub URL), share it (public / invite / private), discover + join someone else's, what content federates between members and how cross-member browse works, collaborating on shared work, moderation (report / takedown / ban), and leaving or being removed (including how a re-key cuts read access).
+title: "Shared pots — a user's guide"
+description: "Walk through the whole peer-to-peer shared-pot lifecycle as a user — create a pot (incl. from a GitHub URL), share it (public / invite / private), discover + join someone else's, what content federates between members and how cross-member browse works, collaborating on shared work, moderation (report / takedown / ban), and leaving or being removed (including how a re-key cuts read access)."
+type: Insight
+discovered: 2026-11-21
+status: active
+plans:
+  - "comb-pot-native-sharing-2026-06-11"
+  - "shared-pot-federation-2026-06-08"
+  - "shared-pot-member-content-federation-2026-06-20"
+  - "pot-from-github-url-2026-06-11"
+  - "shared-pot-public-release-2026-06-22"
 sidebar:
   order: 9
-plans:
-  - comb-pot-native-sharing-2026-06-11
-  - shared-pot-federation-2026-06-08
-  - shared-pot-member-content-federation-2026-06-20
-  - pot-from-github-url-2026-06-11
-  - shared-pot-public-release-2026-06-22
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -131,6 +134,70 @@ default-OFF**: `pot:beacon_consent { pot, consent: true }` to opt in (`false`
 to stop; omit `consent` to read). It only rides a **published** (public/invite)
 pot — enabling it on a private pot does nothing until you publish.
 </Aside>
+
+### Share one invite link
+
+Send the recipient the **pot invite link**. Opening it subscribes Papercusp to
+the invite-scoped discovery topic. The owner's signed announcement supplies the
+device attestation gist ID, which the recipient's app reads from GitHub. This
+works for public and unlisted gists. The recipient needs only the pot link, and
+the pot's membership rules still apply. Forwarding the link shares discovery
+access with its new recipient.
+
+### Choose the device gist visibility on Linux Server
+
+The gist identifies the machine's device key and GitHub account. It includes the
+login, numeric ID, device label, public key, timestamp and signature. Public is
+the host default. Secret means unlisted on GitHub. Anyone with the ID can read it,
+including recipients of a public pot's signed announcement. A public pot can
+use an unlisted device binding. The same binding can also identify a Cupboard publisher.
+
+Before first starting a Server build with this feature, run
+`systemctl --user edit papercusp-server.service` as the account that runs the
+Server and add this drop-in:
+
+```ini
+[Service]
+Environment=PAPERCUSP_ATTESTATION_GIST_VISIBILITY=secret
+```
+
+Restart the service to apply the preference. An existing verified public gist
+continues to be reused. Federation status and **Settings → P2P** show the
+last observed visibility; an older cache can show unknown until it refreshes.
+
+**Applying the feature to a 0.0.25 Server.** Build a trial Server package from
+a checkout containing this change using the repository's Linux build dependencies:
+
+```bash
+cd papercusp-desktop
+bash bin/build-desktop-sidecar.sh
+bash bin/build-and-archive-deb.sh --test-artifact
+```
+
+Copy the Server package identified by `TEST_ARTIFACT_DEB` to the trial machine.
+Set the service drop-in before starting the upgraded Server. Install the package
+with `sudo apt install --reinstall /absolute/path/to/the-built-server.deb`,
+then run `systemctl --user restart papercusp-server.service`. The 0.0.25 binary
+predates the visibility setting.
+
+**Rotate a previously public device binding.** Run the following from the
+updated source checkout with dependencies installed, as the Server account
+with its usual GitHub login, keychain and Papercusp home. Stop the Server and
+other Papercusp processes using this device identity. Supply the full current
+gist ID shown in the host's `local-announce-identity.json`.
+
+```bash
+systemctl --user stop papercusp-server.service
+PAPERCUSP_ATTESTATION_GIST_VISIBILITY=secret flock -n "$XDG_RUNTIME_DIR/papercusp-attestation-rotate.lock" \
+  node_modules/.bin/tsx packages/operator-core/bin/rotate-attestation.mts OLD_PUBLIC_GIST_ID
+systemctl --user start papercusp-server.service
+```
+
+Rotation verifies the replacement, saves its ID in the local announce cache
+and deletes the old public gist. If interrupted, retry with the same old ID.
+After restart the machine advertises the replacement. A pot invite keeps
+working through discovery. Regenerate direct harness links that embedded the
+old gist ID. Deleting the current binding revokes it on peer re-verification.
 
 ## 3. Discover a pot
 

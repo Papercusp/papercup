@@ -145,6 +145,16 @@ describe('drainLabel (install-wide SYNC honesty — EI-1618/EI-1599)', () => {
 });
 
 describe('<PotFederationStatus>', () => {
+  it.each([
+    ['public', 'public'],
+    ['secret', 'unlisted'],
+    [undefined, 'visibility unknown'],
+  ] as const)('reports device gist visibility independently of the pot (%s)', (visibility, label) => {
+    mockSync(status({ attestationVisibility: visibility }));
+    render(<PotFederationStatus />);
+    expect(screen.getByText('Device gist · ' + label)).toBeTruthy();
+  });
+
   it('renders an announced hive\'s reach + the install substrate line', async () => {
     mockSync(status({ hives: [{ potId: 'h1', title: 'My Hive', visibility: 'public', memberCount: 1, reachablePeers: 4 }] }));
     render(<PotFederationStatus />);

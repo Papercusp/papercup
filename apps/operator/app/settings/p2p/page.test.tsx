@@ -25,6 +25,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 
 /* ── Hoisted mutable holder the sync factory closes over ── */
 const h = vi.hoisted(() => ({
+  federation: undefined as { attestationVisibility?: 'public' | 'secret' | null }[] | undefined,
   settings: undefined as unknown,
   devices: undefined as unknown,
   audit: undefined as unknown,
@@ -42,6 +43,7 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (q: { queryName: string; args?: unknown }) => {
     h.lastArgs[q.queryName] = q.args;
     const data =
+      q.queryName === 'network.federationStatus' ? h.federation :
       q.queryName === 'p2p.settings'
         ? h.settings
         : q.queryName === 'p2p.devices'
@@ -144,6 +146,7 @@ const unavailable = (reason: string, kind: 'pre-migration' | 'read-failed' = 're
 });
 
 beforeEach(() => {
+  h.federation = undefined;
   h.settings = mkLayers();
   h.devices = [];
   h.audit = [];
@@ -201,6 +204,17 @@ describe('/settings/p2p render', () => {
     expect((within(ks).getByRole('button', { name: /Engage kill-switch/i }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: /Apply starter profile/i }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole('alert').textContent).toMatch(/relation "p2p_settings" does not exist/i);
+  });
+
+  it.each([
+    ['public', 'public'],
+    ['secret', 'unlisted'],
+    [undefined, 'visibility unknown'],
+  ] as const)('shows the last observed device gist visibility (%s)', (visibility, label) => {
+    h.federation = [{ attestationVisibility: visibility }];
+    render(<P2pSettingsPage />);
+    const identity = screen.getByRole('region', { name: 'Identity and devices' });
+    expect(within(identity).getByText('Device attestation gist · ' + label)).toBeTruthy();
   });
 
   it('is LOUD when identity is unresolved (no attested identity)', () => {

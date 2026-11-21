@@ -1,6 +1,9 @@
 # Work planned outside Papercusp
 
-Launch an su session with `psu --no-picker --plan-ref='tracker:ABC-123'`. The client supplies
+Launch an su session with `psu --no-picker --plan-ref='tracker:ABC-123'`. A client that
+authorizes unattended execution can also pass `--auto` and supply the assignment with
+`--kickoff`. The outside reference records where the work was planned. Execution authority
+still comes from the launch mode. The client supplies
 the task, design material and acceptance criteria in its kickoff. Read the exact label with
 `coord:whoami` (`outsidePlanRef`). The program receives its result in the final reply.
 
@@ -51,6 +54,29 @@ comparison uses the same Codex profile, AUTO mode and harness on both sides.
 
 ## Verification
 
+The claim-discipline routine only sends a plan-item reminder when presence declares a plan
+slug. The plan-attention reader and unshipped-plan audit operate on existing plans.
+`plans:audit` takes a target slug. The continuation gate considers context headroom,
+pending interrupts and fleet state. The ordinary `coord:orient` path skips the plan read
+when the caller has neither a supplied nor a declared slug. The outside member posture
+uses that path. Work-item creation suppresses its residual-plan and plan-blocker hints
+for a referenced item. The detail panel and work-item table render the stored reference
+as text, preserving spaces and line breaks.
+
+The two fleet identities are separate so launch, resume and leadership changes can
+select the applicable instructions. Later member-created pieces use the existing
+claim-spec store. The work-item field reuses the existing structured
+`payload.externalPlanRef` value on both issue and feature records. The session binding
+uses the `outside_plan_ref` column on `adv_sessions`. These choices avoid a second
+work-item field, fleet queue or plan store.
+
+The ordinary rendered kernel gained clauses about reference-bearing work at the
+planning rule, the big-scope tier and the cross-lane decision rule. The engineer and
+power tool notes and the shared planning note also explain the exception. All apply
+only to referenced work. The ordinary stack still selects the local planning block
+and the original leader/member identities. The diff above compares the rendered
+ordinary and outside cases at the same profile and mode.
+
 Run the focused suites with `npm run test:file --` followed by
 `packages/operator-core/lib/stack-binding-channel.test.ts`,
 `packages/operator-core/lib/su-launch-context.test.ts` and
@@ -58,3 +84,10 @@ Run the focused suites with `npm run test:file --` followed by
 The database restart scenario lives in
 `packages/operator-core/lib/agent-tools/work_items/outside-plan-restart.integration.test.ts`.
 It uses Bubblewrap, a loopback-only namespace and a new native PostgreSQL cluster.
+The single-session case runs in its own database clone and exercises identity,
+creation with an inherited reference, conflicting bindings, a two-file edit and
+completion. The restart case exits one application process after the first claim,
+then uses a second process to read the binding, drain the exact set in dependency
+order, check the unrelated item and complete the leader. The fleet launch-handler
+suite separately checks that the claim spec is stored before either spawn callback
+and that an over-wide launch opens no members.

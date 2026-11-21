@@ -26,7 +26,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { provisionNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
-import { bindSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from '../../../session-outside-plan';
+import { bindSessionOutsidePlanRef, readSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from '../../../session-outside-plan';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 import { requirePrincipal } from '../../../auth/require-principal';
@@ -1835,7 +1835,9 @@ export const bootstrapSu = defineTool({
     const planSlug = body.plan_slug?.trim() || null;
     let planRef: string | null;
     try {
-      planRef = resolveSessionOutsidePlanRef(body.plan_ref, null, planSlug);
+      const storedPlanRef = body.owner_id?.trim()
+        ? await readSessionOutsidePlanRef(body.owner_id.trim(), workspace) : null;
+      planRef = resolveSessionOutsidePlanRef(body.plan_ref, storedPlanRef, planSlug);
     } catch (error) {
       return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 400);
     }

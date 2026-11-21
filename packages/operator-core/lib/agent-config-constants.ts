@@ -559,7 +559,7 @@ export function modelSpecFromArgv(argv: unknown): string | null {
  * a caller that must distinguish those two cannot do it from argv alone (an EMPTY argv is the
  * unknown case, and it is the CALLER's job to check for it — see `readModelSpec`).
  */
-export function flagValueFromArgv(argv: unknown, flag: string): string | null {
+export function flagValueFromArgv(argv: unknown, flag: string, options?: { opaque?: boolean }): string | null {
   if (!Array.isArray(argv)) return null;
   // PASS 1 — argv as TOKENS. The shape every psu/fleet launch records:
   // ["psu", "--no-picker", "--model=sonnet[1m]:high", …]. Authoritative, so it
@@ -569,10 +569,12 @@ export function flagValueFromArgv(argv: unknown, flag: string): string | null {
     const a = argv[i];
     if (typeof a !== 'string') continue;
     if (a.startsWith(eq)) {
+      if (options?.opaque) return a.slice(eq.length);
       const v = a.slice(eq.length).trim();
       if (v) return unquoteArgValue(v);
     }
     if (a === `--${flag}` && typeof argv[i + 1] === 'string') {
+      if (options?.opaque) return argv[i + 1] as string;
       const v = (argv[i + 1] as string).trim();
       if (v) return unquoteArgValue(v);
     }

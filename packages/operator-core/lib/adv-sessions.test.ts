@@ -983,7 +983,10 @@ describe('accepted session shutdown marker (EI-21266145962856513)', () => {
     ]) {
       const from = SOURCE.indexOf('export async function ' + fn);
       expect(from, fn).toBeGreaterThan(-1);
-      const tail = SOURCE.slice(from, from + 3000);
+      // Inspect the complete exported unit: a fixed character prefix can omit
+      // the UPDATE when diagnostics or authority checks precede it.
+      const nextExport = SOURCE.indexOf('\nexport ', from + 1);
+      const tail = SOURCE.slice(from, nextExport < 0 ? undefined : nextExport);
       expect(tail, fn).toMatch(/shutdown_accepted_at = NULL/);
     }
   });

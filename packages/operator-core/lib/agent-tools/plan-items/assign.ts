@@ -137,6 +137,7 @@ export default defineTool({
             tags: [],
             paths: [],
             plan: it.plan,
+            externalPlanRef: null,
             planItem: [it.item],
             fleet: null,
             triageGate: null,

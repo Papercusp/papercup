@@ -16,6 +16,11 @@ describe('trusted session outside-plan binding', () => {
     expect(() => sessionOutsidePlanRefSchema.parse('x'.repeat(201))).toThrow();
     expect(() => sessionOutsidePlanRefSchema.parse('x\0y')).toThrow();
   });
+  it('preserves whitespace-only labels and counts Unicode using the CLI UTF-16 length contract', () => {
+    expect(sessionOutsidePlanRefSchema.parse('   ')).toBe('   ');
+    expect(sessionOutsidePlanRefSchema.parse('😀'.repeat(100))).toBe('😀'.repeat(100));
+    expect(() => sessionOutsidePlanRefSchema.parse('😀'.repeat(100) + 'x')).toThrow();
+  });
   it('keeps the ordinary no-reference path and inherits a persisted reference on resume', () => {
     expect(resolveSessionOutsidePlanRef(undefined, null, 'ordinary-plan')).toBeNull();
     expect(resolveSessionOutsidePlanRef(undefined, 'tracker:X')).toBe('tracker:X');

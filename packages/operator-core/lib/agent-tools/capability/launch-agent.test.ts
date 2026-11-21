@@ -964,11 +964,29 @@ describe('published launch args schema', () => {
     expect(published).toBeDefined();
     if (!published) throw new Error('capability:launch-agent was not registered in the MCP projection');
 
-    const schema = published.inputSchema as unknown as {
+    type PublishedSchema = {
       type?: string;
       properties?: Record<string, { description?: string }>;
       dependentSchemas?: Record<string, unknown>;
+      anyOf?: PublishedSchema[];
+      allOf?: PublishedSchema[];
+      $defs?: Record<string, PublishedSchema>;
     };
+    const root = published.inputSchema as unknown as PublishedSchema;
+    // The public bulk envelope also accepts an inline call. Assert the actual
+    // inline branch's constraint rather than assuming it is the envelope root.
+    const inlineSchema = (schema: PublishedSchema): PublishedSchema | undefined => {
+      if (schema.properties?.successor) return schema;
+      for (const child of [...schema.anyOf ?? [], ...schema.allOf ?? [], ...Object.values(schema.$defs ?? {})]) {
+        const found = inlineSchema(child);
+        if (found) return found;
+      }
+      return undefined;
+    };
+    const schema = inlineSchema(root);
+    expect(root.type).toBe('object');
+    expect(schema).toBeDefined();
+    if (!schema) throw new Error('inline launch schema was not published');
     expect(schema.type).toBe('object');
     expect(schema.dependentSchemas).toMatchObject({
       successor: { not: { required: ['restoreVisible'] } },
@@ -1148,6 +1166,29 @@ describe('published launch args schema', () => {
 });
 
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
+  it('inherits the authenticated caller session outside-plan binding into a fresh child command', async () => {
+    goalContextSqlMock.mockImplementationOnce(async () => [{ outside_plan_ref: 'tracker:X' }]);
+    const result = await launchAgent.handler({ brief: 'Implement the assigned external item' }, ctx);
+    expect(isError(result), textOf(result)).toBe(false);
+    expect(spawnedCommand()).toContain('--plan-ref=tracker:X');
+    expect(goalContextSqlMock.mock.calls[0].slice(1)).toContain('ws-test');
+  });
+  it('refuses an inherited outside reference alongside a requested Papercusp plan before spawn', async () => {
+    goalContextSqlMock.mockImplementationOnce(async () => [{ outside_plan_ref: 'tracker:X' }]);
+    const result = await launchAgent.handler({ plan: 'P', brief: 'Do the work' }, ctx);
+    expect(isError(result)).toBe(true);
+    expect(textOf(result)).toContain('mutually exclusive');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+  it('carries an explicit opaque planRef and refuses a mixed explicit plan binding', async () => {
+    const result = await launchAgent.handler({ planRef: 'tracker:X', brief: 'Do the work' }, ctx);
+    expect(isError(result), textOf(result)).toBe(false);
+    expect(spawnedCommand()).toContain('--plan-ref=tracker:X');
+    spawnConsoleMock.mockClear();
+    const conflict = await launchAgent.handler({ planRef: 'tracker:X', plan: 'P', brief: 'Do the work' }, ctx);
+    expect(isError(conflict)).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
   it('passes the live GOAL width to an ad-hoc child in its first-turn brief', async () => {
     goalLaunchResolveMock.mockResolvedValueOnce({
       goalId: 'goal-1', settings: { intendedParallelPlanFleets: 2 },
