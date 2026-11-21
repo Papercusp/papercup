@@ -18,16 +18,15 @@
  */
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { _resetForTests, getOrgPg } from '@papercusp/db-org';
 import { FLAGS, FLAG_DEFAULTS, flagEnvVarName } from '@papercusp/flags';
 import { captureConfigurationSnapshot, proofContextImpact, readConfigurationSnapshot, readProofContextIdentity } from '@papercusp/test-config/configuration-snapshot';
-import { reconcileTimedOutTestRunReceipts, retainSharedPg,
-  type TestRunReceipt } from '@papercusp/test-config/admin-test-runs-reporter';
+import { latestTestRunReceipts, reconcileTimedOutTestRunReceipts, retainSharedPg } from '@papercusp/test-config/admin-test-runs-reporter';
 import { parseRecordedNativePopulation, parseTestRunExecutionDetails, captureRecordedProofContext,
   parseRecordedWorkerRuntime, parseRecordedSourceSubmodules, stableRecordedWorkerExecution,
   parseRecordedWorkerDatabaseReset, parseRecordedSourceBytes } from '@papercusp/test-config/execution-details';
@@ -36,10 +35,34 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import runTool from './run';
+import runStatusTool, { type TestingRunStatusResult } from './run-status';
 import runsTool from './runs';
 import { evaluateCriterionTestChecks, runCriterionCheckFiles, type CriterionCheckRunner } from '../../rubrics-criterion-checks';
 
 const execFileAsync = promisify(execFile);
+
+async function readInsertedReceipts(file: string) {
+  const log = await readFile(file, 'utf8');
+  const latest = latestTestRunReceipts(log);
+  const byReceiptId = new Map(latest.map(receipt => [receipt.receiptId, receipt]));
+  // A later acknowledgement can update case counts for the same insertion.
+  // Preserve failures for malformed input or a receipt that names two insertions.
+  for (const line of log.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const entries = latestTestRunReceipts(line);
+    expect(entries, `Invalid acknowledgement in ${file}`).toHaveLength(1);
+    const entry = entries[0]!;
+    const final = byReceiptId.get(entry.receiptId);
+    expect(final, `Unrecognized acknowledgement in ${file}`).toBeDefined();
+    if (entry.outcome === 'inserted') {
+      expect(final).toMatchObject({ outcome: 'inserted', id: entry.id, attempt: entry.attempt,
+        filePath: entry.filePath, status: entry.status });
+    }
+  }
+  const inserted = latest.filter(receipt => receipt.outcome === 'inserted');
+  expect(inserted).toHaveLength(latest.length);
+  return inserted;
+}
 
 /** Nested runs own their artifacts; inheriting the outer packet directory
  * makes its independent identity/population verifier reject the foreign router. */
@@ -65,6 +88,45 @@ async function expectIsolatedRouterCustody(directory: string, group: string, sui
     .toEqual(suites.map(suite => join(REPO_ROOT, suite)).sort());
 }
 
+/** Keep failed native observations with the outer run across private runtime teardown. */
+async function nativeFixtureDirectory(prefix: string) {
+  const parent = process.env.PAPERCUSP_TEST_ARTIFACT_DIR?.trim() || tmpdir();
+  await mkdir(parent, { recursive: true });
+  return mkdtemp(join(parent, prefix));
+}
+
+async function runNativeCapture(directory: string, suite: string, group: string, attempt: string,
+  selection: string[] = []) {
+  const nativeFile = join(directory, 'native.json');
+  const receiptFile = join(directory, 'receipts.jsonl');
+  await execFileAsync(process.execPath, ['scripts/test-files.mjs', suite, ...selection], {
+    cwd: REPO_ROOT,
+    env: { ...nestedRouterEnv(directory), PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
+      PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+      PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile,
+      PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: attempt,
+      PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/test-config',
+      PC_EXECUTED_SOURCE_MAP_OUT: nativeFile, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
+    timeout: 150_000, maxBuffer: 16 * 1024 * 1024,
+  }).catch((error: unknown) => {
+    const child = error as { killed?: boolean; signal?: string; code?: string | number;
+      stdout?: string; stderr?: string };
+    throw new Error(`P021 ${attempt} termination ${JSON.stringify({ killed: child.killed,
+      signal: child.signal, code: child.code })}\n${child.stderr?.slice(-3000) ?? ''}\n${child.stdout?.slice(-1000) ?? ''}`,
+    { cause: error });
+  });
+  await expectIsolatedRouterCustody(directory, group, [suite]);
+  const native = JSON.parse(await readFile(nativeFile, 'utf8'));
+  expect(native.completionCheckpoint).toMatchObject({ runGroupId: group, qualificationAttemptId: attempt });
+  expect(native.nativeRun).toMatchObject({ selectedPopulationMatched: true,
+    terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0 });
+  const receipts = await readInsertedReceipts(receiptFile);
+  expect(receipts.length, `No inserted file in ${receiptFile}`).toBeGreaterThan(0);
+  expect(native.nativeRun.selectedManifest.specifications).toHaveLength(receipts.length);
+  expect(native.nativeRun.files).toHaveLength(receipts.length);
+  return { native, nativeFile, receipts };
+}
+
 /** A small, stable, DB-free suite with a tiny import closure. */
 const SUITE = 'packages/operator-core/lib/testing-flakiness.test.ts';
 /** Recorded raw by captureConfigurationSnapshot (CONFIGURATION_SNAPSHOT_RAW_ENV_KEY). */
@@ -72,6 +134,8 @@ const MARKER = 'PAPERCUSP_FLAG_P011_CAPTURE_PROBE';
 
 const ENV_KEYS = [
   'HARNESS_DATABASE_URL', 'HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL',
+  'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE', 'PAPERCUSP_TEST_RUN_RECOVERY_FILE',
+  'PAPERCUSP_TEST_RUNS_PERSIST',
   'PAPERCUSP_PGBOUNCER', 'PAPERCUSP_SKIP_PG_DISCOVERY', MARKER,
 ] as const;
 const savedEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -82,7 +146,7 @@ function callTestingRun(args: Record<string, unknown>, ctx: Record<string, unkno
   return (runTool as unknown as { handler: (a: unknown, c: unknown) => Promise<unknown> }).handler(args, ctx);
 }
 
-type RunResult = { ok: boolean; runId?: string; testRunIds?: number[] };
+type RunResult = { ok: boolean; runId?: string; detachedRunId?: string; deadline?: { taskDeadlineAtMs: number } };
 
 /** testing:run returns its result as `data` or as an MCP-style text envelope. */
 function unwrap(raw: unknown): RunResult {
@@ -101,10 +165,17 @@ beforeAll(async () => {
   process.env.HARNESS_DATABASE_URL = org.appDsn;
   process.env.HARNESS_ADMIN_DATABASE_URL = org.adminDsn;
   process.env.DATABASE_URL = org.adminDsn;
+  // Nested tests have their own ledger. The outer reporter owns its receipt files.
+  process.env.PAPERCUSP_TEST_RUNS_DB_URL = org.adminDsn;
+  delete process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
+  delete process.env.PAPERCUSP_TEST_RUN_RECOVERY_FILE;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   _resetHarnessAdminUrlCacheForTests();
   await _resetForTests();
+  const [database] = await getOrgPg().sql<Array<{ name: string }>>`SELECT current_database() AS name`;
+  expect(database?.name).toBe(org.dbName);
+  process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
 }, 120_000);
 
 afterEach(() => {
@@ -186,45 +257,22 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
     const suite = 'libs/test-config/src/pg-migrate.integration.test.ts';
     const group = `schema-custody-${randomUUID()}`;
     const attempt = `schema-native-${randomUUID()}`;
-    const receiptDir = await mkdtemp(join(tmpdir(), 'schema-original-custody-'));
-    const receiptFile = join(receiptDir, 'receipts.jsonl');
-    const nativeFile = join(receiptDir, 'native.json');
+    const receiptDir = await nativeFixtureDirectory('schema-original-custody-');
     let verified = false;
     try {
-      await execFileAsync(process.execPath, ['scripts/test-files.mjs', suite,
-        '--testNamePattern=^P021 original schema custody target$'], {
-        cwd: REPO_ROOT,
-        env: { ...nestedRouterEnv(receiptDir), PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
-          PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
-          PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile,
-          PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: attempt,
-          PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/test-config',
-          PC_EXECUTED_SOURCE_MAP_OUT: nativeFile, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
-        timeout: 150_000, maxBuffer: 16 * 1024 * 1024,
-      }).catch((error: unknown) => {
-        const child = error as { killed?: boolean; signal?: string; code?: string | number;
-          stdout?: string; stderr?: string };
-        throw new Error(`P021 schema child termination ${JSON.stringify({ killed: child.killed,
-          signal: child.signal, code: child.code })}\n${child.stderr?.slice(-3000) ?? ''}\n${child.stdout?.slice(-1000) ?? ''}`,
-        { cause: error });
-      });
-      await expectIsolatedRouterCustody(receiptDir, group, [suite]);
-      const receipts = (await readFile(receiptFile, 'utf8')).trim().split('\n').filter(Boolean)
-        .map(line => JSON.parse(line) as TestRunReceipt);
-      const ids = receipts.filter(receipt => receipt.outcome === 'inserted').map(receipt => String(receipt.id));
+      const { receipts, native, nativeFile } = await runNativeCapture(receiptDir, suite, group, attempt,
+        ['--testNamePattern=^P021 original schema custody target$']);
+      const ids = receipts.map(receipt => String(receipt.id));
       expect(ids, JSON.stringify(receipts)).toHaveLength(1);
-      const [row] = await getOrgPg().sql<Array<{ id: string; execution_details: unknown }>>`
+      const rows = await getOrgPg().sql<Array<{ id: string; execution_details: unknown }>>`
         SELECT id::text AS id, execution_details FROM harness_shared.test_runs
-          WHERE id::text = ANY(${ids}) AND run_group_id = ${group} AND file_path = ${suite}
+          WHERE run_group_id = ${group} AND file_path = ${suite}
       `;
+      expect(rows.map(row => row.id)).toEqual(ids);
+      const [row] = rows;
       expect(row).toBeDefined();
       const details = parseTestRunExecutionDetails(row!.execution_details);
       expect(details, 'original PostgreSQL schema row').toBeDefined();
-      const native = JSON.parse(await readFile(nativeFile, 'utf8'));
-      expect(native.completionCheckpoint).toMatchObject({ runGroupId: group, qualificationAttemptId: attempt });
-      expect(native.nativeRun).toMatchObject({ terminalHook: 'onTestRunEnd', reason: 'passed',
-        selectedPopulationMatched: true, unhandledErrorCount: 0 });
-      expect(native.nativeRun.files).toHaveLength(1);
       const completion = native.nativeRun.files[0];
       const reset = parseRecordedWorkerDatabaseReset(completion.proof?.inputs?.workerDatabaseReset);
       expect(reset).toBeDefined();
@@ -290,52 +338,32 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
   it('P021: preserves complete native case identities and measured source bytes through the actual reporter and PostgreSQL consumer', async () => {
     const suite = 'libs/test-config/src/execution-details.test.ts';
     const group = `population-v1-${randomUUID()}`;
-    const receiptDir = await mkdtemp(join(tmpdir(), 'population-v1-capture-'));
-    const receiptFile = join(receiptDir, 'receipts.jsonl');
-    const nativeFile = join(receiptDir, 'native.json');
+    const receiptDir = await nativeFixtureDirectory('population-v1-capture-');
     const attempt = `population-native-${randomUUID()}`;
     let verified = false;
     try {
-      await execFileAsync(process.execPath, ['scripts/test-files.mjs', suite], {
-        cwd: REPO_ROOT,
-        env: { ...nestedRouterEnv(receiptDir), PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
-          PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
-          PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile,
-          PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: attempt,
-          PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/test-config',
-          PC_EXECUTED_SOURCE_MAP_OUT: nativeFile, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
-        timeout: 150_000, maxBuffer: 16 * 1024 * 1024,
-      }).catch((error: unknown) => {
-        const child = error as { killed?: boolean; signal?: string; code?: string | number;
-          stdout?: string; stderr?: string };
-        // Put termination and the LAST phase first: the standard error begins
-        // at startup and reporter summaries bound its message length.
-        throw new Error(`P021 child termination ${JSON.stringify({ killed: child.killed,
-          signal: child.signal, code: child.code })}\n${child.stderr?.slice(-3000) ?? ''}\n${child.stdout?.slice(-1000) ?? ''}`,
-        { cause: error });
-      });
-      await expectIsolatedRouterCustody(receiptDir, group, [suite]);
-      const receipts = (await readFile(receiptFile, 'utf8')).trim().split('\n').filter(Boolean)
-        .map(line => JSON.parse(line) as TestRunReceipt);
-      const ids = receipts.filter(receipt => receipt.outcome === 'inserted').map(receipt => String(receipt.id));
-      expect(ids.length, JSON.stringify(receipts)).toBeGreaterThan(0);
+      const { receipts, native, nativeFile } = await runNativeCapture(receiptDir, suite, group, attempt);
+      const ids = receipts.map(receipt => String(receipt.id));
       const rows = await getOrgPg().sql<Array<{ id: string; file_path: string;
         run_group_id: string; execution_details: unknown; commit_sha: string | null;
         worktree_dirty: boolean; workspace_id: string | null; harness_slug: string | null }>>`
         SELECT id::text AS id, file_path, run_group_id, execution_details,
                commit_sha, worktree_dirty, workspace_id, harness_slug
-          FROM harness_shared.test_runs WHERE id::text = ANY(${ids})
+          FROM harness_shared.test_runs WHERE run_group_id = ${group}
       `;
-      expect(rows, JSON.stringify(receipts.map(receipt => ({
-        receiptId: receipt.receiptId, attempt: receipt.attempt, filePath: receipt.filePath,
-        outcome: receipt.outcome, ...(receipt.outcome === 'inserted' ? { id: receipt.id } : {}),
-      })))).toHaveLength(ids.length);
-      const native = JSON.parse(await readFile(nativeFile, 'utf8'));
-      expect(native.completionCheckpoint).toMatchObject({ runGroupId: group, qualificationAttemptId: attempt });
-      expect(native.nativeRun).toMatchObject({ selectedPopulationMatched: true,
-        terminalHook: 'onTestRunEnd', reason: 'passed', unhandledErrorCount: 0 });
-      expect(native.nativeRun.selectedManifest.specifications).toHaveLength(rows.length);
-      expect(native.nativeRun.files).toHaveLength(rows.length);
+      expect(rows.map(row => row.id).sort()).toEqual([...ids].sort());
+      const second = await runNativeCapture(await mkdtemp(join(receiptDir, 'comparison-')),
+        suite, group, `population-native-${randomUUID()}`);
+      const secondRows = await getOrgPg().sql<Array<{ id: string; execution_details: unknown }>>`
+        SELECT id::text AS id, execution_details FROM harness_shared.test_runs
+         WHERE run_group_id = ${group} AND NOT (id = ANY(${ids}::bigint[]))
+      `;
+      expect(secondRows.map(row => row.id).sort()).toEqual(second.receipts.map(receipt => receipt.id).sort());
+      const secondDetails = secondRows.map(row => {
+        const observed = parseTestRunExecutionDetails(row.execution_details);
+        expect(observed, `second PostgreSQL capture, row ${row.id}`).toBeDefined();
+        return observed!;
+      });
       const consumed = readPartialNativeCompletion(nativeFile, { attemptId: attempt,
         root: REPO_ROOT, workspaceName: '@papercusp/test-config',
         manifest: { schemaVersion: 1, units: [{ id: `test:${suite}`, kind: 'test', path: suite }] },
@@ -463,8 +491,19 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
         const missing = await runsTool.handler({ testRunIds: [Number(row.id), Number.MAX_SAFE_INTEGER] } as never,
           {} as never) as { data: { originalResultSetReference: unknown } };
         expect(missing.data.originalResultSetReference).toBeNull();
-        // Keep the original id, outcome and nested population/context stable;
-        // only the actual worker capture changes in this disposable PG row.
+        // A second real execution of the same project and file provides
+        // independently valid receipts whose worker identity differs.
+        const project = population.cases[0]!.identity[0];
+        const peers = secondDetails.filter(other => other.filePath === suite
+          && other.population?.cases[0]?.identity[0] === project);
+        expect(peers.map(other => other.workerExecution?.captureId), `second capture for ${project}`).toHaveLength(1);
+        const other = peers[0]!;
+        const otherWorker = stableRecordedWorkerExecution(other.workerExecution);
+        expect(otherWorker).toBeDefined();
+        expect(otherWorker!.captureId).not.toBe(workerExecution!.captureId);
+        expect(other.workerCompilerInputs?.captureId).toBe(otherWorker!.captureId);
+        expect(other.workerRuntime?.capabilities?.captureId).toBe(otherWorker!.captureId);
+        expect(workerRuntime!.capabilities?.captureId).toBe(workerExecution!.captureId);
         try {
           const invalidSourceBytes = { ...sourceBytes!, before: { ...sourceBytes!.before, sha256: 'foreign-source-bytes' } };
           await getOrgPg().sql`UPDATE harness_shared.test_runs SET execution_details =
@@ -472,30 +511,26 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
             WHERE id::text = ${row.id}`;
           expect(await readOriginal(), 'a malformed source observation must invalidate the original result')
             .toMatchObject({ executionDetails: null, originalResultReference: null, setReference: null });
-          const changedCaptureId = randomUUID();
-          const changedDetails = { ...details!, workerExecution: { ...workerExecution!, captureId: changedCaptureId },
-            workerCompilerInputs: { ...compilerInputs, captureId: changedCaptureId },
-            ...(details!.workerDatabaseReset ? { workerDatabaseReset: {
-              ...details!.workerDatabaseReset, captureId: changedCaptureId } } : {}) };
-          // Validate the complete incarnation before mutating PG. Every bound
-          // receipt must move together, while foreign custody stays rejected.
-          expect(parseTestRunExecutionDetails(changedDetails), 'changed capture preflight').toBeDefined();
-          await getOrgPg().sql`UPDATE harness_shared.test_runs SET execution_details =
-            ${JSON.stringify({ ...changedDetails, workerCompilerInputs: compilerInputs })}::text::jsonb
-            WHERE id::text = ${row.id}`;
-          const foreignCompiler = await readOriginal();
-          expect(foreignCompiler.executionDetails).toBeNull();
-          expect(foreignCompiler.originalResultReference).toBeNull();
-          expect(foreignCompiler.setReference).toBeNull();
+          const foreignReceipts: Partial<typeof other>[] = [
+            { workerCompilerInputs: other.workerCompilerInputs },
+            { workerRuntime: { ...workerRuntime!, capabilities: other.workerRuntime!.capabilities } },
+          ];
           if (details!.workerDatabaseReset) {
-            await getOrgPg().sql`UPDATE harness_shared.test_runs SET execution_details =
-              ${JSON.stringify({ ...changedDetails, workerDatabaseReset: details!.workerDatabaseReset })}::text::jsonb
-              WHERE id::text = ${row.id}`;
-            const foreignReset = await readOriginal();
-            expect(foreignReset.executionDetails).toBeNull();
-            expect(foreignReset.originalResultReference).toBeNull();
-            expect(foreignReset.setReference).toBeNull();
+            expect(other.workerDatabaseReset?.captureId).toBe(otherWorker!.captureId);
+            foreignReceipts.push({ workerDatabaseReset: other.workerDatabaseReset });
           }
+          for (const foreign of foreignReceipts) {
+            await getOrgPg().sql`UPDATE harness_shared.test_runs SET execution_details =
+              ${JSON.stringify({ ...details!, ...foreign })}::text::jsonb
+              WHERE id::text = ${row.id}`;
+            expect(await readOriginal(), `foreign ${Object.keys(foreign)[0]} on row ${row.id}`)
+              .toMatchObject({ executionDetails: null, originalResultReference: null, setReference: null });
+          }
+          // Losing one endpoint of the actual observation changes the content
+          // address at fixed row id, outcomes, configuration and capture id.
+          const changedDetails = { ...details!, workerExecution: { ...workerExecution!, after: null } };
+          expect(parseTestRunExecutionDetails(changedDetails)).toBeDefined();
+          expect(stableRecordedWorkerExecution(changedDetails.workerExecution)).toBeUndefined();
           await getOrgPg().sql`UPDATE harness_shared.test_runs SET execution_details =
             ${JSON.stringify(changedDetails)}::text::jsonb
             WHERE id::text = ${row.id}`;
@@ -591,20 +626,43 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
     const nonce = randomUUID();
     process.env[MARKER] = nonce;
     const out = unwrap(await callTestingRun(
-      { files: [SUITE], harness: 'papercusp' },
+      { files: [SUITE], harness: 'papercusp', background: true, timeoutMs: 120_000 },
       { projectDir: REPO_ROOT, harnessSlug: '*', workspaceId: 'papercusp-workspace' },
     ));
-    expect(out.ok, JSON.stringify(out)).toBe(true);
-    expect(typeof out.runId).toBe('string');
+    expect(out, JSON.stringify(out)).toMatchObject({ ok: true, mode: 'background', status: 'pending',
+      detachedRunId: expect.any(String), detachedDurable: expect.any(Boolean),
+      deadline: { taskDeadlineAtMs: expect.any(Number) } });
+    const runId = out.detachedRunId!;
+    expect(out).toMatchObject({ statusRef: { tool: 'testing:run-status', args: { runId } } });
+    let lastStatus = 'pending';
+    const terminal = await vi.waitUntil(async () => {
+      const { data } = await runStatusTool.handler({ runId } as never, {} as never) as { data: TestingRunStatusResult };
+      if (!data.ok) {
+        lastStatus = data.error;
+        return;
+      }
+      if ('ledgerRecovery' in data) return data.ledgerRecovery;
+      if ('snapshot' in data) {
+        const { runId, status, exitCode } = data.snapshot;
+        lastStatus = status;
+        if (status === 'running') return;
+        return { runId, status, exitCode, failure: data.diagnostics?.failure };
+      }
+    }, { timeout: Math.max(1, out.deadline!.taskDeadlineAtMs - Date.now()), interval: 500 }).catch(cause => {
+      throw new Error(`Configuration capture ${runId} did not reach a terminal result (last status ${lastStatus})`, { cause });
+    });
+    expect(terminal, JSON.stringify(terminal)).toMatchObject({ runId, status: 'pass', exitCode: 0 });
 
     const rows = await getOrgPg().sql<LedgerRow[]>`
       SELECT id::text AS id, source, execution_details->>'mutationPhase' AS phase, configuration_snapshot
         FROM harness_shared.test_runs
-       WHERE run_group_id = ${out.runId!}
+       WHERE run_group_id = ${runId}
     `;
-    // Calibration: the run really recorded the suite, so an empty row set cannot pass vacuously.
-    expect(rows.length).toBeGreaterThan(0);
-    expect(out.testRunIds).toEqual(expect.arrayContaining(rows.map((row) => Number(row.id))));
+    const { data } = await runsTool.handler({ runGroup: runId, source: 'local', latestPerFile: false } as never,
+      {} as never) as { data: { runs: Array<{ id: number; filePath: string; status: string }>; truncatedByLimit: boolean } };
+    expect(data.truncatedByLimit).toBe(false);
+    expect(data.runs.map(row => String(row.id)).sort()).toEqual(rows.map(row => row.id).sort());
+    for (const row of data.runs) expect(row).toMatchObject({ filePath: SUITE, status: 'pass' });
     expectCapturedBy(rows, nonce);
   }, 180_000);
 
@@ -637,17 +695,16 @@ describe('configuration snapshot capture on recorded test runs (P-011)', () => {
       });
       await expectIsolatedRouterCustody(receiptDir, group,
         [SUITE, 'packages/operator-core/lib/testing-case-filter.test.ts']);
-      const receipts = (await readFile(receiptFile, 'utf8')).trim().split('\n').filter(Boolean)
-        .map((line) => JSON.parse(line) as { outcome: string; id?: string });
-      const ids = receipts.filter((receipt) => receipt.outcome === 'inserted').map((receipt) => String(receipt.id));
+      const receipts = await readInsertedReceipts(receiptFile);
+      const ids = receipts.map(receipt => String(receipt.id));
       expect(ids.length, JSON.stringify(receipts)).toBeGreaterThan(0);
 
       const rows = await getOrgPg().sql<Array<LedgerRow & { branch: string | null }>>`
         SELECT id::text AS id, source, execution_details->>'mutationPhase' AS phase, configuration_snapshot, branch
           FROM harness_shared.test_runs
-         WHERE id::text = ANY(${ids})
+         WHERE run_group_id = ${group}
       `;
-      expect(rows).toHaveLength(ids.length);
+      expect(rows.map(row => row.id).sort()).toEqual([...ids].sort());
       expect(rows.length).toBeGreaterThanOrEqual(2);
       for (const row of rows) {
         expect(row.source).toBe('mutation-probe');
