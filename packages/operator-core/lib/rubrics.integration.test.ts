@@ -4016,6 +4016,61 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
   }
 
+  it('preserves an independent grade and its vetted acceptance rubric after an advisory lever amendment', async () => {
+    const { createIssue } = await import('./issues-engineer');
+    const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
+    const { listScorecards } = await import('./scorecards');
+    const { getAcceptanceRubricVettingStatus } = await import('./acceptance-rubric-vetting');
+    const seeded = await explicitAmendmentSubject('retained-lever-proof');
+    const before = seeded.rubric;
+    await insertRubricPlan('meta-acceptance-rubric');
+    await insertRubricPlan('grading-integrity');
+    const auditRubric = (await rubrics.getRubric('grading-integrity'))!;
+    const audit = { state: 'passed', metaRubricRef: auditRubric.rubricId,
+      rubricRevision: auditRubric.revision, criteriaHash: auditRubric.criteriaHash,
+      auditor: 'su-independent-auditor', stampedAt: '2026-09-06T11:00:00Z',
+      auditedAt: '2026-09-06T12:00:00Z', auditIssueId: 'EI-901' };
+    const ratings = Object.fromEntries(before.criteria.map(c => [c.key, { rating: 'pass', evidence: c.method }]));
+    const grade = await createIssue({ title: 'Independent plan grade', kind: 'change', topics: [OBSERVATION_TOPIC],
+      createdBy: 'su-independent-grader', payload: { observation: {
+        rubricRef: before.rubricId, rubricRevision: before.revision, criteriaHash: before.criteriaHash,
+        rubricMeaningRevision: before.barContract?.meaningRevision, barSetHash: before.barSetHash,
+        subject: { kind: 'plan', ref: seeded.subject }, ratings, gradingAudit: audit,
+      } } });
+    const attestation = await createIssue({ title: 'Vetting for retained-lever-proof', kind: 'change',
+      topics: [OBSERVATION_TOPIC], createdBy: 'su-rubric-reviewer', payload: { observation: {
+        rubricRef: 'meta-acceptance-rubric', subject: { kind: 'rubric', ref: before.rubricId },
+        ratings: { 'placement-health': { rating: 'healthy', evidence: 'Independent review in WI-901.' } },
+        gradingAudit: audit, vetting: { workItemId: 'WI-901', rubricRevision: before.revision,
+          criteriaHash: before.criteriaHash, rubricMeaningRevision: before.barContract?.meaningRevision },
+      } } });
+    const checkStoredProof = async (rubric: typeof before) => {
+      const [storedGrade] = await listScorecards({ issueIds: [grade.id] });
+      expect(storedGrade).toMatchObject({ issueId: grade.id, createdBy: 'su-independent-grader',
+        rubricCurrentness: { state: 'current' }, gradingAuditCurrentness: { state: 'current' }, ratings });
+      const status = await getAcceptanceRubricVettingStatus(rubric, { listScorecards, vettingGateEnabled: true });
+      expect(status).toMatchObject({ required: true, satisfied: true, state: 'vetted',
+        attestationIssueId: attestation.id, attestedRevision: before.revision });
+    };
+    await checkStoredProof(before);
+    const criterion = before.criteria[0]!;
+    const levers = [{ key: 'verify', action: 'Verify the cited grade', where: 'grade reader',
+      expectedEffect: 'Expose an outdated grade', evidence: [grade.id] }];
+    await rubrics.amendRubric({ rubricId: before.rubricId, actorId: 'su-test', reason: 'Document a known repair.',
+      requirement: { key: criterion.key, levers }, expectedRubricRevision: before.revision,
+      expectedSubjectPlanRevision: seeded.subjectRevision });
+    const after = (await rubrics.getRubric(before.rubricId))!;
+    const changed = after.criteria.find(c => c.key === criterion.key)!;
+    expect(changed.levers).toEqual(levers);
+    expect(changed.barHash).toBe(criterion.barHash);
+    expect(rubrics.criterionMethodHash(changed.method)).toBe(rubrics.criterionMethodHash(criterion.method));
+    expect(rubrics.criterionGradeKey(changed.barHash!, rubrics.criterionMethodHash(changed.method)))
+      .toBe(rubrics.criterionGradeKey(criterion.barHash!, rubrics.criterionMethodHash(criterion.method)));
+    expect(after.barSetHash).toBe(before.barSetHash);
+    expect(after.criteriaHash).toBe(before.criteriaHash);
+    await checkStoredProof(after);
+  });
+
   it('EI-267115: reads the contract snapshot before holding either amendment plan lock', async () => {
     const seeded = await explicitAmendmentSubject('snapshot-outside-amendment-transaction');
     const snapshots = await import('./acceptance-bar-contract-snapshot');

@@ -2237,6 +2237,7 @@ export function acceptanceCanonicalUnchangedIgnoringLegacyChecks(
   const criterionFields = [
     'key',
     'title',
+    'levers',
     'intent',
     'model',
     'barKey',

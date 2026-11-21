@@ -57,6 +57,18 @@ const lightAcceptanceCriterion = {
 };
 
 describe('rubrics:propose args — standard-only watchdog fields', () => {
+  it('forwards advisory levers through the public proposal and rejects duplicate keys', async () => {
+    const lever = { key: 'check-input', action: 'Compare the inputs', where: 'fixture',
+      expectedEffect: 'Identify a stale input', evidence: ['WI-82'] };
+    const criterion = { ...base.criteria[0]!, levers: [lever] };
+    const proposal = { ...base, kind: 'standard' as const, criteria: [criterion] };
+    mocks.proposeRubric.mockResolvedValue({ ...proposal, rubricId: base.rubricRef, status: 'proposed' });
+    await proposeTool.handler(rubricsProposeArgs.parse(proposal), {} as never);
+    expect(mocks.proposeRubric).toHaveBeenCalledWith(expect.objectContaining({ criteria: [criterion] }));
+    expect(rubricsProposeArgs.safeParse({ ...proposal, criteria: [{ ...criterion, levers: [lever, lever] }] }).success)
+      .toBe(false);
+  });
+
   it('keeps the complete tool schema JSON-Schema-representable', () => {
     expect(() => z.toJSONSchema(proposeTool.args as never)).not.toThrow();
   });

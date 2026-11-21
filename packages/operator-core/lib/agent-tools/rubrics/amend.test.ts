@@ -234,6 +234,19 @@ const criterion = {
 };
 
 describe('rubrics:amend complete acceptance criteria input', () => {
+  it('passes an advisory-only requirement amendment to the writer, including an empty lever list', async () => {
+    const lever = { key: 'check-input', action: 'Compare the inputs', where: 'fixture',
+      expectedEffect: 'Identify a stale input', evidence: ['WI-82'] };
+    rubricsMocks.amendRubric.mockResolvedValue({ rubricId: 'advice', kind: 'standard', criteria: [] });
+    for (const levers of [[lever], []]) {
+      const requirement = { key: 'input', levers };
+      const args = rubricsAmendArgs.parse({ rubricRef: 'advice', requirement,
+        idempotencyKey: levers.length ? 'advice-add' : 'advice-clear' });
+      expect(await body(args)).toMatchObject({ ok: true });
+      expect(rubricsMocks.amendRubric).toHaveBeenLastCalledWith(expect.objectContaining({ requirement }));
+    }
+  });
+
   it('public guidance teaches requestReview before manual preview posting', () => {
     const schema = JSON.stringify(z.toJSONSchema(rubricsAmendArgs));
     expect(schema).toContain('requestReview');
