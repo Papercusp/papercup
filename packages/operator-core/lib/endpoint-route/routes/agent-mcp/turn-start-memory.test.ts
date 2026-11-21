@@ -31,7 +31,7 @@ import {
 } from '../../../agent-tools/coordination/read-cursors';
 import type { PackageOrientationClass } from '../../../agent-identities/package-orientation-classes';
 import { factCellKey, readFactBodyCursor, type FactBodyOffer } from '../../../agent-facts/cells';
-import { memoryFragmentOffer, type MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
+import { memoryFragmentOffer, stageMemoryEmission, type MemoryFragmentOffer } from '../../../memory/session-epoch-ledger';
 import { packContextCandidates } from '../../../context-doors';
 import { turnStartContextCandidates } from './turn-start-memory';
 import { captureContextPackingAttribution, type StoredContextPackingReceipt } from '../../../context-packing-receipts';
@@ -504,6 +504,23 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
     const { rendered: _text, ...manifest } = row;
     await post({ owner: 'su-receipt', prompt: 'continue', memoryEnabled: false,
       confirmedMemoryDeliveries: [{ token: out.deliveryToken, fragments: [manifest] }] });
+    expect(stamps()).toHaveLength(1);
+  });
+
+  it('confirms a submitted GOAL entry only against the actual recipient and complete staged finding', async () => {
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
+    const rendered = JSON.stringify({ reportId: 'rpt_native', finding: 'A complete submitted finding ☃' });
+    const row = memoryFragmentOffer('corpus', 'report:rpt_native', 3, 'goal-brief', rendered);
+    const owner = 'su-submitted-report';
+    const fragment = { id: row.id, bodySha256: row.bodySha256, bodyBytes: row.bodyBytes };
+    const submit = (recipient: string, bytes: number) => post({ owner: recipient, prompt: 'holder wake', memoryEnabled: false,
+      submittedGoalReportDeliveries: [{ token: 'submitted-report', submittedPrompt: true, fragments: [{ ...fragment, bodyBytes: bytes }] }] });
+    const stamps = () => memoryReceiptSqlMock.mock.calls.filter(([parts]) => parts.join('?').includes('INSERT INTO harness_shared.corpus_session_surfaced'));
+    await stageMemoryEmission(sql, owner, 'submitted-report', [row]);
+    await submit('other-holder', row.bodyBytes);
+    await submit(owner, row.bodyBytes - 1);
+    expect(stamps()).toHaveLength(0);
+    await submit(owner, row.bodyBytes);
     expect(stamps()).toHaveLength(1);
   });
 

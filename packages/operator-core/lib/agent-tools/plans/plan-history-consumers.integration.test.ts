@@ -8,6 +8,7 @@
  * suite from concurrent integration files.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,6 +27,12 @@ import { getClaimTimePriorAttemptBrief, readGoalHistoryContext, readPlanHistoryC
 import { postLearnedAtLevel } from '../../effort-thread';
 import { getWorkItem } from '../../work-items';
 import { buildGoalKickoffBrief } from '../goals/start';
+import { DEFAULT_START_GOAL_BY_ID_DEPS, startGoalById } from '../../goals/start-goal-by-id';
+import { launchGoalHolderSession, type GoalHolderLaunchInput } from '../../harness/routines/goal-holder-launch-action';
+import type { GoalLaunchResolution } from '../../goal-launch-settings';
+import { bindGoalReportKickoff, GOAL_REPORT_PAGE_SIZE, type readGoalReportPage } from '../../goal-related-reports';
+import { publishReport } from '../../report-library';
+import type { RecoveredGoalReportPages } from '../../../test/goal-report-recovery-successor.mts';
 import { DEFAULT_CLAIM_SPEC } from '../../scheduler/claim-spec';
 import { fleetSpecBeeKey, setClaimSpec } from '../../scheduler/claim-spec-store';
 import { buildLeaderBrief } from '../fleet/leader-brief';
@@ -459,6 +466,94 @@ describe('bounded plan history production consumers', () => {
     expect(JSON.stringify(leader.data.planHistory)).toContain(CHILD_LESSON);
     expect(JSON.stringify(leader.data.planHistory)).toContain(rawRef);
   }, 60_000);
+
+  it('follows the recovery call extracted from initial and replacement holder briefs to the final permitted report', async () => {
+    type Page = Extract<Awaited<ReturnType<typeof readGoalReportPage>>, { entries: unknown[] }>;
+    const reader = fileURLToPath(new URL('../../../test/goal-report-recovery-successor.mts', import.meta.url));
+    const origin = { harnessSlug: HARNESS, authorOwnerId: 'report-fixture-author' };
+    const workspaceId = fx.workspaceId;
+    const item = `WI-report-continuation-${RUN}`;
+    await admin`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, goal_id)
+      VALUES (${workspaceId}, ${HARNESS}, ${item}, 'task', 'Continuation evidence', 'wip', ${GOAL})`;
+    const cite = (ids: readonly string[]) => admin`UPDATE harness_shared.work_items SET summary = ${ids.join(' ')}
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${item}`;
+    const forbidden = await publishReport(admin, { workspaceId, title: 'Restricted tail finding',
+      subject: { kind: 'goal', ref: GOAL }, visibility: 'owner' }, origin);
+    const resolution: GoalLaunchResolution = {
+      goalId: GOAL, settings: null, goalBrief: { title: 'Report continuation', body: null,
+        killCriterion: null, budgetCents: null, budgetWindowSec: null, standing: false },
+      effective: {}, ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },
+      budget: null, refusal: null, degraded: false, degradedReasons: [],
+    };
+    const permitted: string[] = [];
+    const input = { workspaceId, goalId: GOAL, harnessSlug: HARNESS };
+    for (const count of [GOAL_REPORT_PAGE_SIZE + 1, 3 * GOAL_REPORT_PAGE_SIZE + 1]) {
+      while (permitted.length < count) {
+        const report = await publishReport(admin, { workspaceId, visibility: 'pot',
+          title: `Report continuation finding ${permitted.length}` }, origin);
+        permitted.push(report.reportId);
+      }
+      await admin`UPDATE harness_shared.report_library SET published_at = '2026-10-01T12:00:00Z'
+        WHERE workspace_id = ${workspaceId} AND report_id = ANY(${permitted}::text[])`;
+      await cite(permitted);
+      const delivered = new Map<string, string>();
+      const launchFor = (recipient: string) => (request: GoalHolderLaunchInput) => launchGoalHolderSession(request, {
+        resolveGoalLaunch: async () => resolution,
+        readHistory: (id, viewer) => readGoalHistoryContext(id, undefined, viewer),
+        launch: async opts => {
+          if (!opts.kickoffPrompt) throw new Error('No report kickoff reached the holder launch adapter');
+          delivered.set(recipient, await bindGoalReportKickoff(opts.kickoffPrompt, GOAL, {
+            workspaceId, viewer: { potSlug: HARNESS }, deliveryOwnerId: recipient,
+          }));
+          return { ok: true, ownerId: recipient };
+        },
+      });
+      const initial = `initial-${RUN}-${count}`;
+      const replacement = `replacement-${RUN}-${count}`;
+      const started = await startGoalById(admin, input, { ...DEFAULT_START_GOAL_BY_ID_DEPS,
+        launch: launchFor(initial), resolveGoalLaunch: async () => resolution,
+        attach: async () => ({ ok: true }), refreshControlAnchor: vi.fn().mockResolvedValue(null),
+        stampAgentOwner: async () => {},
+      });
+      expect(started).toMatchObject({ ok: true });
+      await launchFor(replacement)(input);
+      expect([...delivered.keys()]).toEqual([initial, replacement]);
+      const expected = [...permitted].sort().reverse();
+      // Reorder the authority after delivery, before either reader follows its saved call.
+      await cite([...permitted].reverse());
+      for (const [recipient, text] of delivered) {
+        expect(text).not.toContain(forbidden.reportId);
+        expect(text).not.toContain(forbidden.title);
+        const lines = text.split('\n');
+        const heading = lines.indexOf('GOAL HISTORY — own and bounded descendant evidence');
+        expect(heading).toBeGreaterThanOrEqual(0);
+        let page = JSON.parse(lines[heading + 1]).relatedReports as Page;
+        expect(page).toMatchObject({ status: 'available', total: count, omitted: count - GOAL_REPORT_PAGE_SIZE,
+          deliveryToken: expect.any(String) });
+        expect(page.next?.args.reportCursor).toEqual(expect.any(String));
+        const received = page.entries.map(entry => entry.reportId);
+        // A new process for each recipient can recover only from the delivered call and durable data.
+        const recovered = JSON.parse(execFileSync(process.execPath, ['--import', 'tsx/esm', reader], {
+          input: JSON.stringify({ workspaceId, harnessSlug: HARNESS, ownerId: recipient, next: page.next }),
+          encoding: 'utf8', timeout: 60_000,
+        })) as RecoveredGoalReportPages;
+        expect(recovered.pid).not.toBe(process.pid);
+        for (const nextPage of recovered.pages) {
+          expect(received.length).toBeLessThan(count);
+          expect(page.next).toMatchObject({ tool: 'goals:get', args: { id: GOAL, detail: 'full', reportCursor: expect.any(String) } });
+          page = nextPage;
+          expect(page).toMatchObject({ status: 'available', total: count });
+          expect(JSON.stringify(page)).not.toContain(forbidden.reportId);
+          expect(JSON.stringify(page)).not.toContain(forbidden.title);
+          received.push(...page.entries.map(entry => entry.reportId));
+          expect(page.omitted).toBe(count - received.length);
+        }
+        expect(page.next).toBeNull();
+        expect(received).toEqual(expected);
+      }
+    }
+  }, 120_000);
 
   it('delivers goal-owned, related-plan and child-item history into the goal holder brief with raw recovery', async () => {
     const history = await readGoalHistoryContext(GOAL);

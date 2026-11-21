@@ -38,7 +38,7 @@ import { getDoorConstantsSync } from '../../../context-doors-config';
 import { captureContextPackingAttribution, saveContextPackingReceipt, loadContextPackingReceipt, pageContextPackingReceipt } from '../../../context-packing-receipts';
 import type { ActivationRevision } from '../../../session-activation';
 import type { LaunchGovernanceTarget } from '../../../governance-policy/session-governance';
-import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation } from '../../../memory/session-epoch-ledger';
+import type { PreparedMemoryBlock, MemoryFragmentOffer, MemoryEmissionConfirmation, SubmittedGoalReportConfirmation } from '../../../memory/session-epoch-ledger';
 
 // Reuse the hook's emission ledger and the existing two-phase cursor store.
 // This surface is separate from orientation: CTRL may be the only emitted block.
@@ -268,6 +268,7 @@ const turnStartMemory = defineTool({
       /** Private stdout receipt extension; absent on unsupported/older hosts. */
       confirmedFactBodies?: import('../../../agent-facts/cells').FactBodyManifest[];
       confirmedMemoryDeliveries?: MemoryEmissionConfirmation[];
+      submittedGoalReportDeliveries?: SubmittedGoalReportConfirmation[];
       /**
        * The hook's own wall for this request in ms (hooks/inject/core.mjs sends its
        * port's timeoutMs). Jev's memory filter waits only for what is left of it
@@ -713,13 +714,17 @@ const turnStartMemory = defineTool({
 
       const memoryPreparation = { value: null as PreparedMemoryBlock | null };
       const memoryPromise = (async (): Promise<string> => {
-        if (Array.isArray(body.confirmedMemoryDeliveries) && body.confirmedMemoryDeliveries.length <= 16) {
+        const stdoutReceipts = Array.isArray(body.confirmedMemoryDeliveries) && body.confirmedMemoryDeliveries.length <= 16
+          ? body.confirmedMemoryDeliveries : [];
+        const submittedReports = Array.isArray(body.submittedGoalReportDeliveries)
+          ? body.submittedGoalReportDeliveries.filter(proof => proof?.submittedPrompt === true) : [];
+        if (stdoutReceipts.length || submittedReports.length) {
           try {
             const [{ confirmMemoryEmission }, { getOrgPg }] = await Promise.all([
               import('../../../memory/session-epoch-ledger'), import('@papercusp/db-org'),
             ]);
             const { sql } = getOrgPg();
-            for (const proof of body.confirmedMemoryDeliveries) await confirmMemoryEmission(sql, owner, proof);
+            for (const proof of [...stdoutReceipts, ...submittedReports]) await confirmMemoryEmission(sql, owner, proof);
           } catch { /* Unconfirmed fragments stay eligible; the receipt can retry. */ }
         }
         if (body.memoryEnabled === false) {

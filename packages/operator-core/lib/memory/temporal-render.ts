@@ -120,6 +120,18 @@ export function contextSourceVersion(input: {
   return { ...version, fingerprint: sourceVersionFingerprint(version) };
 }
 
+/** An edition has one source identity across topic search and GOAL briefs. */
+export function reportSourceVersion(
+  workspaceId: string, reportId: string, title: string, body: string, publishedAt: Date | string | null,
+  status: 'current' | 'superseded' | 'retracted' = 'current', retiredAt: Date | string | null = null,
+): ContextSourceVersion {
+  return contextSourceVersion({
+    namespace: `corpus:report:${workspaceId}`, ref: `report:${reportId}`, revision: reportId,
+    fullText: `${title}\n${body}`, updatedAt: publishedAt == null ? null : new Date(publishedAt).toISOString(),
+    validity: { status, validAt: null, invalidAt: retiredAt == null ? null : new Date(retiredAt).toISOString(), supersededBy: null },
+  });
+}
+
 /** Compare a previously confirmed source with a fresh, already-authorized
  * canonical read. Absence is not a retraction, and another scope is not a
  * correction. No prior source prose is repeated in the notice. */

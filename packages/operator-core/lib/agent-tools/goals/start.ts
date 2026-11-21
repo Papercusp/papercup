@@ -1107,7 +1107,7 @@ export default defineTool({
     // consumes it only here, immediately before the holder brief is rendered.
     const { readGoalHistoryContext } = await import('../../prior-attempt-context');
     const history = await readGoalHistoryContext(id, undefined, {
-      workspaceId, viewer: { ownerId, potSlug: installSlug },
+      workspaceId, viewer: { ownerId, potSlug: installSlug }, deliveryOwnerId: ownerId,
     });
     // R-4 / D-032: the arm is applied inside buildGoalKickoffBrief; the
     // receipt's portfolio contribution must match what the kickoff carried.

@@ -23,6 +23,8 @@ import {
   type AgentObligationAgendaRead,
 } from './agent-obligation-reader';
 import { renderGoalPortfolioBrief } from './goal-launch-settings';
+import { withBoundedTimeout } from './bounded-timeout';
+import type { readGoalReportPage } from './goal-related-reports';
 
 /** The portfolio snapshot's share of the wake; the full snapshot stays one goals:get away. */
 export const GOAL_HOLDER_WAKE_PORTFOLIO_MAX_CHARS = 2_000;
@@ -40,6 +42,23 @@ export type GoalHolderWakeRead = Pick<
   AgentObligationAgendaRead,
   'agenda' | 'goalId' | 'portfolio' | 'observedAt' | 'degradedSources'
 >;
+
+type ReportPage = Awaited<ReturnType<typeof readGoalReportPage>>;
+
+async function readWakeReports(workspaceId: string, ownerId: string, goalId: string): Promise<ReportPage | null> {
+  const [{ getPresence }, { sessionAllowsAmbientContext }, settings, { getOrgPg }, reports] = await Promise.all([
+    import('./agent-tools/coordination/presence'), import('./capability-envelope/session-confinement-port'),
+    import('./goal-launch-settings'), import('@papercusp/db-org'), import('./goal-related-reports'),
+  ]);
+  if (!await sessionAllowsAmbientContext({ ownerId, workspaceId })) return null;
+  const sql = getOrgPg().sql;
+  const [presence, policy] = await Promise.all([getPresence(ownerId, sql), settings.readGoalLaunchSettings(goalId, sql)]);
+  if (presence?.workspaceId !== workspaceId || policy.error) throw new Error('Goal recipient or policy unavailable');
+  if (settings.goalArmWithholdsBrief(settings.resolveGoalBehaviorArm(policy.settings))) return null;
+  return reports.readGoalReportPage(sql, goalId, {
+    workspaceId, viewer: { ownerId, potSlug: presence.potSlug }, deliveryOwnerId: ownerId,
+  });
+}
 
 export function clipForWake(text: string, max: number, pointer: string): string {
   if (text.length <= max) return text;
@@ -107,6 +126,7 @@ export async function readGoalHolderWakeState(input: {
   loop: GoalHolderWakeLoop;
   now?: Date;
   timeoutMs?: number;
+  readReports?: typeof readWakeReports;
   readAgenda?: (args: {
     workspaceId: string;
     ownerId: string;
@@ -116,6 +136,7 @@ export async function readGoalHolderWakeState(input: {
 }): Promise<string | null> {
   const readAgenda = input.readAgenda ?? readAgentObligationAgenda;
   const timeoutMs = input.timeoutMs ?? GOAL_HOLDER_WAKE_READ_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const read = await Promise.race([
@@ -130,7 +151,15 @@ export async function readGoalHolderWakeState(input: {
       }),
     ]);
     if (!read) return null;
-    return renderGoalHolderWakeState({ read, loop: input.loop });
+    const state = renderGoalHolderWakeState({ read, loop: input.loop });
+    if (!state || !read.goalId) return state;
+    const fallback = { status: 'unavailable' as const,
+      recovery: { tool: 'goals:get' as const, args: { id: read.goalId, detail: 'full' as const } } };
+    const { value } = await withBoundedTimeout<ReportPage | null>(
+      (input.readReports ?? readWakeReports)(input.workspaceId, input.ownerId, read.goalId),
+      { timeoutMs: Math.max(1, deadline - Date.now()), fallback, label: 'goal-holder-wake-reports', warn: false },
+    );
+    return value ? [state, 'GOAL RELATED REPORTS', JSON.stringify({ relatedReports: value })].join('\n') : state;
   } catch {
     return null;
   } finally {

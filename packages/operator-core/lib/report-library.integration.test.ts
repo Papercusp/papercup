@@ -42,6 +42,10 @@ import {
 } from './goal-owner-report-reference';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { GOAL_REPORT_PAGE_SIZE, readGoalReportPage } from './goal-related-reports';
+import { submittedGoalReportDeliveries } from '../../../apps/operator/scripts/hooks/inject/core.mjs';
+import { confirmMemoryEmission, memoryFragmentOffer, stageMemoryEmission } from './memory/session-epoch-ledger';
+import { alreadySurfacedRefs } from './memory/corpus-surfaced-ledger';
+import { reportSourceVersion } from './memory/temporal-render';
 import {
   REPORT_BODY_MAX_BYTES,
   ReportBodyTooLargeError,
@@ -213,6 +217,61 @@ describe('report_library store (real PG)', () => {
     } finally {
       await restarted.end();
     }
+  });
+
+  it('shares only confirmed native report entries with topic recall and advances the ordinary wake past confirmed entries', async () => {
+    const f = await goalReportFixture();
+    const sql = db.adminSql;
+    const owner = `holder-${f.workspaceId}`;
+    const recipient = { workspaceId: f.workspaceId, viewer: { ...f.recipient.viewer, ownerId: owner }, deliveryOwnerId: owner };
+    const subject = { kind: 'goal' as const, ref: f.goalId };
+    const publish = (title: string, supersedes?: string) => publishReport(sql, {
+      workspaceId: f.workspaceId, title, bodyMd: title, subject, supersedes, visibility: 'pot',
+    }, AGENT_1);
+    const first = await publish('First edition');
+    const version = reportSourceVersion(f.workspaceId, first.reportId, first.title, first.bodyMd, first.publishedAt);
+    const fingerprints = new Map([[version.ref, version.fingerprint]]);
+    const read = () => readGoalReportPage(sql, f.goalId, recipient);
+    const page = await read();
+    expect(page).toMatchObject({ status: 'available', deliveryToken: expect.any(String) });
+    const prompt = 'GOAL HISTORY — own and bounded descendant evidence\n' + JSON.stringify({ relatedReports: page });
+    const [proof] = submittedGoalReportDeliveries(prompt);
+    expect(proof.fragments).toHaveLength(1);
+    expect(await alreadySurfacedRefs(sql, owner, 0, [version.ref], fingerprints)).toEqual(new Set());
+    expect(await confirmMemoryEmission(sql, owner, { ...proof, fragments: [] })).toBe(0);
+    expect(await confirmMemoryEmission(sql, owner + '-other', proof)).toBe(0);
+    const [mangled] = submittedGoalReportDeliveries(prompt.replace('"finding":"First edition"', '"finding":"Other bytes"'));
+    expect(await confirmMemoryEmission(sql, owner, mangled)).toBe(0);
+    expect((await read()).status).toBe('available');
+    expect(await confirmMemoryEmission(sql, owner, proof)).toBe(1);
+    expect(await alreadySurfacedRefs(sql, owner, 0, [version.ref], fingerprints)).toEqual(new Set([version.ref]));
+    expect((await read()).status).toBe('in-context');
+
+    const correction = await publish('Corrected edition', first.reportId);
+    expect((await read()).entries?.map(entry => entry.reportId)).toEqual([correction.reportId]);
+    const current = reportSourceVersion(f.workspaceId, correction.reportId, correction.title, correction.bodyMd, correction.publishedAt);
+    const topic = memoryFragmentOffer('corpus', current.ref, 0, 'mid-turn', 'Corrected edition', current);
+    await stageMemoryEmission(sql, owner, 'topic-' + f.workspaceId, [topic]);
+    expect((await read()).status).toBe('available');
+    expect(await confirmMemoryEmission(sql, owner, { token: 'topic-' + f.workspaceId, fragments: [topic] })).toBe(1);
+    expect((await read()).status).toBe('in-context');
+    const ids = new Set<string>();
+    for (let i = 0; i < 2 * GOAL_REPORT_PAGE_SIZE + 1; i++) ids.add((await publish('Additional finding ' + i)).reportId);
+    const received: string[] = [];
+    while (received.length < ids.size) {
+      const next = await read();
+      expect(next.entries?.length).toBeGreaterThan(0);
+      received.push(...next.entries!.map(e => e.reportId));
+      const [delivery] = submittedGoalReportDeliveries('GOAL RELATED REPORTS\n' + JSON.stringify({ relatedReports: next }));
+      expect(await confirmMemoryEmission(sql, owner, delivery)).toBe(next.entries!.length);
+    }
+    expect(new Set(received)).toEqual(ids);
+    expect(received).toHaveLength(ids.size);
+    expect((await read()).status).toBe('in-context');
+    await sql`INSERT INTO harness_shared.memory_session_epochs (session_id, epoch) VALUES (${owner}, 1)`;
+    expect((await read()).status).toBe('available');
+    expect(await alreadySurfacedRefs(sql, owner, 1, [current.ref], new Map([[current.ref, current.fingerprint]]))).toEqual(new Set());
+    expect((await readGoalReportPage(sql, f.goalId, f.recipient)).total).toBe(ids.size + 1);
   });
 
   it('current-edition evidence refuses a private successor while historical exact-ID reads still resolve', async () => {

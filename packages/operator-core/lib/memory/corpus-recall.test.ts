@@ -47,6 +47,17 @@ const wi = (over: Partial<CorpusHit> = {}): CorpusHit => ({
 const QUERY = 'why did the http2 transport change on the sse endpoint';
 
 describe('canonical corpus source identity', () => {
+  it('discovers a topic-only report outside the goal relationships', () => {
+    const report: CorpusHit = { source: 'report', sourceId: 'rpt_quartz', scope: 'papercusp',
+      excerpt: 'quartz calibration drift', score: 0.03, rankers: ['bm25'],
+      meta: { contextUnit: 'Quartz calibration drift changed the reading.' } };
+    const selected = selectCorpusLines({ hits: [report], queryText: 'quartz calibration drift',
+      declaredWorkItemId: 'WI-other', harnessSlugs: ['papercusp'] });
+    expect(selected.lines.map(line => line.handle.ref)).toEqual(['report:rpt_quartz']);
+    expect(renderCorpusBlock(selected.lines)).toContain('Quartz calibration drift changed the reading.');
+    expect(selected.lines[0].handle.resolve).toBe('reports:get {"id":"rpt_quartz"}');
+  });
+
   it('retains the full-source fingerprint independently of the matched unit and rejects a wrong source reference', () => {
     const fullText = 'http2 transport requires approval.\nUnmatched condition outside the passage.';
     const input = { namespace: 'corpus:plan:ws', ref: 'plan:papercusp:repair', fullText,

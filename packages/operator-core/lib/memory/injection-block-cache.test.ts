@@ -3,7 +3,7 @@ import { createCache } from '@papercusp/cache';
 
 const { notifySyncInvalidateMock, control } = vi.hoisted(() => ({
   notifySyncInvalidateMock: vi.fn(),
-  control: { generation: 1, applied: 'identity-1', scope: 'task-1', unavailable: false },
+  control: { generation: 1, applied: 'identity-1', scope: 'task-1', epoch: 0, report_floor: '', unavailable: false },
 }));
 vi.mock('@papercusp/db-org', async original => ({ ...await original<typeof import('@papercusp/db-org')>(),
   getOrgPg: () => ({ sql: async () => control.unavailable ? [] : [{ ...control }] }),
@@ -61,6 +61,26 @@ it('context reliability: unrelated query and authority generations cannot reuse 
     expect(build).toHaveBeenCalledTimes(10);
   } finally {
     control.unavailable = false;
+    setSessionConfinementResolver(undefined);
+  }
+});
+
+it('discards a cached topic report after a holder receipt and restores it in a fresh epoch', async () => {
+  const cache = createCache();
+  setSessionConfinementResolver(() => null);
+  const build = vi.fn(async () => control.report_floor ? null : 'quartz report');
+  const opts = { cache, sessionId: 'report-recipient', retrieval };
+  try {
+    expect(await rawBlock('ws', 'same', build, opts)).toBe('quartz report');
+    control.report_floor = 'confirmed edition';
+    expect(await rawBlock('ws', 'same', build, opts)).toBeNull();
+    control.epoch++;
+    control.report_floor = '';
+    expect(await rawBlock('ws', 'same', build, opts)).toBe('quartz report');
+    expect(build).toHaveBeenCalledTimes(3);
+  } finally {
+    control.epoch = 0;
+    control.report_floor = '';
     setSessionConfinementResolver(undefined);
   }
 });

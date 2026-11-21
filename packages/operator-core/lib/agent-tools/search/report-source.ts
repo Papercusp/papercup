@@ -7,7 +7,7 @@ import { reportsLibraryDisabled } from '../reports/_shared';
 import { boundedSource, completeContextUnit, sectionExcerpt, type KnowledgeAudience } from './knowledge-sources';
 import { lastMarkdownHeading } from '../plans/semantic-leg';
 import { headlineTsQuery, lexicalLeg } from '../../search/lexical/rank';
-import { contextSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
+import { reportSourceVersion, type ContextSourceVersion } from '../../memory/temporal-render';
 import type { Sql } from 'postgres';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 
@@ -29,17 +29,14 @@ export async function revalidateReportSourceVersions(input: {
     if (!ids.length) return [];
     const rows = await sql`SELECT r.report_id, r.title, r.body_md, r.published_at, r.retired_at,
         EXISTS (SELECT 1 FROM harness_shared.report_library newer WHERE newer.workspace_id = ${input.workspaceId}
-          AND newer.lineage_id = r.lineage_id AND newer.retired_at IS NULL
+          AND newer.lineage_id = r.lineage_id
           AND (newer.published_at,newer.report_id) > (r.published_at,r.report_id)) AS superseded
       FROM harness_shared.report_library r WHERE r.workspace_id = ${input.workspaceId}
         AND r.report_id = ANY(${ids}::text[]) AND ${visibleTo(sql, input.viewer)}
         AND (${input.audience.harnessSlugs?.length ? [...input.audience.harnessSlugs] : null}::text[] IS NULL
           OR r.origin_harness_slug = ANY(${input.audience.harnessSlugs?.length ? [...input.audience.harnessSlugs] : null}::text[]))`;
-    return rows.map(row => contextSourceVersion({ namespace: `corpus:report:${input.workspaceId}`,
-      ref: `report:${row.report_id}`, fullText: `${row.title}\n${row.body_md}`, revision: row.report_id,
-      updatedAt: new Date(row.published_at).toISOString(), validity: {
-        status: row.retired_at ? 'retracted' : row.superseded ? 'superseded' : 'current', validAt: null,
-        invalidAt: row.retired_at == null ? null : new Date(row.retired_at).toISOString(), supersededBy: null } }));
+    return rows.map(row => reportSourceVersion(input.workspaceId, row.report_id, row.title, row.body_md,
+      row.published_at, row.retired_at ? 'retracted' : row.superseded ? 'superseded' : 'current', row.retired_at));
   }, { client: input.sql, signal: input.signal, readOnly: true, statementTimeoutMs: 1_500 });
 }
 
@@ -58,11 +55,8 @@ function hits(rows: HitRow[], ranker: string): Listing {
     highlight: ranker === 'embeddings' ? content : r.highlight,
     score: Number(r.rank), rankers: [ranker], meta: {
       contextUnit: r.body_md == null ? null : completeContextUnit(`${r.title}\n${r.body_md}`),
-      contextSourceVersion: r.body_md == null ? null : JSON.stringify(contextSourceVersion({
-        namespace: `corpus:report:${r.workspace_id}`, ref: `report:${r.report_id}`, fullText: `${r.title}\n${r.body_md}`,
-        revision: r.report_id, updatedAt: r.published_at == null ? null : new Date(r.published_at).toISOString(),
-        validity: { status: 'current', validAt: null, invalidAt: null, supersededBy: null },
-      })),
+      contextSourceVersion: r.body_md == null ? null : JSON.stringify(reportSourceVersion(
+        r.workspace_id, r.report_id, r.title, r.body_md, r.published_at)),
       path: `/reports?sel=${encodeURIComponent(r.report_id)}`, section, title: r.title,
       currentness: 'dated-evidence', lineageId: r.lineage_id ?? null,
     },
@@ -80,7 +74,6 @@ export function createReportSearchSource(viewer: ReportViewer = {}, audience: Kn
       AND NOT (('report:' || report_id) = ANY(${[...(audience.excludedRefs ?? [])]}::text[]))
       ${audience.automatic ? p.sql`AND NOT EXISTS (SELECT 1 FROM harness_shared.report_library newer
         WHERE newer.workspace_id = ${p.workspaceId} AND newer.lineage_id = report_library.lineage_id
-          AND newer.retired_at IS NULL
           AND (newer.published_at,newer.report_id) > (report_library.published_at,report_library.report_id))` : p.sql``}
       AND (${p.filters?.owners ?? null}::text[] IS NULL OR author_owner_id = ANY(${p.filters?.owners ?? null}::text[]))
       AND (${p.filters?.since ?? null}::timestamptz IS NULL OR published_at >= ${p.filters?.since ?? null}::timestamptz)

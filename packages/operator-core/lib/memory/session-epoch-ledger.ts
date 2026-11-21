@@ -47,6 +47,9 @@ export type MemoryFragmentOffer = MemoryFragmentManifest & {
 };
 export type PreparedMemoryBlock = { text: string; fragments: MemoryFragmentOffer[] };
 export type MemoryEmissionConfirmation = { token: string; fragments: MemoryFragmentManifest[]; emittedAt?: number };
+export type SubmittedGoalReportConfirmation = {
+  token: string; submittedPrompt: true; fragments: Pick<MemoryFragmentManifest, 'id' | 'bodyBytes' | 'bodySha256'>[];
+};
 
 /** Host-only compare-and-swap state, never supplied by a native receipt. */
 type StagedMemoryFragment = MemoryFragmentManifest & {
@@ -252,7 +255,7 @@ export async function stageMemoryEmission(
 /** Only the native stdout receipt's exact subset advances the existing ledgers.
  * Keep the candidate after a failed stamp so a later receipt can retry it. */
 export async function confirmMemoryEmission(
-  sql: SqlTag, ownerId: string, proof: MemoryEmissionConfirmation,
+  sql: SqlTag, ownerId: string, proof: MemoryEmissionConfirmation | SubmittedGoalReportConfirmation,
 ): Promise<number> {
   if (!proof || !emissionToken(proof.token) || !Array.isArray(proof.fragments) || proof.fragments.length > 128) return 0;
   const { ackAndRead, clearReadCursor } = await import('../agent-tools/coordination/read-cursors');
@@ -272,7 +275,10 @@ export async function confirmMemoryEmission(
   const delivered = (candidate.fragments as StagedMemoryFragment[]).filter(row => validFragment(row) &&
     (row.kind === 'notice' || row.sourceFingerprint === undefined || row.previousSourceFingerprint === null ||
       (typeof row.previousSourceFingerprint === 'string' && /^[a-f0-9]{64}$/.test(row.previousSourceFingerprint))) &&
-    proof.fragments.some(actual => validFragment(actual) && sameFragment(row, actual)));
+    ('submittedPrompt' in proof
+      ? proof.submittedPrompt === true && row.kind === 'corpus' && row.port === 'goal-brief' &&
+        proof.fragments.some(actual => actual?.id === row.id && actual.bodySha256 === row.bodySha256 && actual.bodyBytes === row.bodyBytes)
+      : proof.fragments.some(actual => validFragment(actual) && sameFragment(row, actual))));
   if (!delivered.length) return 0;
   const { stampSurfacedRefsResult } = await import('./corpus-surfaced-ledger');
   let succeeded = true;
@@ -281,7 +287,7 @@ export async function confirmMemoryEmission(
     if (row.kind === 'notice') {
       // The client copies this time from its immutable stdout receipt. A
       // server preparation, arrival ACK or later retry supplies no clock.
-      const at = proof.emittedAt;
+      const at = 'emittedAt' in proof ? proof.emittedAt : undefined;
       if (typeof at !== 'number' || !Number.isSafeInteger(at) || typeof candidate.preparedAt !== 'number' ||
           at < candidate.preparedAt || at > Date.now()) { succeeded = false; continue; }
       const { coordScopeWorkspace } = await import('../agent-tools/coordination/log');

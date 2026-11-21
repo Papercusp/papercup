@@ -90,19 +90,26 @@ const normalizeContext = (text: string) => text.normalize('NFC').replace(/\s+/gu
  * never falls back to the old session-only key. */
 async function memoryBlockControlIdentity(workspaceId: string, sessionId: string): Promise<string> {
   const rows = await getOrgPg().sql<{
-    generation: number | string; applied: unknown; scope: unknown;
+    generation: number | string; applied: unknown; scope: unknown; epoch: number; report_floor: string;
   }[]>`
+    WITH context AS (
+      SELECT coalesce((SELECT epoch FROM harness_shared.memory_session_epochs WHERE session_id = ${sessionId}), 0) AS epoch
+    )
     SELECT control_generation AS generation,
            control_state->'activation'->'applied' AS applied,
-           control_state->'scope' AS scope
-      FROM harness_shared.session_briefs
+           control_state->'scope' AS scope, context.epoch,
+           (SELECT md5(coalesce(string_agg(jsonb_build_array(s.ref, s.source_fingerprint)::text, E'\n' ORDER BY s.ref), ''))
+            FROM harness_shared.corpus_session_surfaced s
+            WHERE s.session_id = ${sessionId} AND s.epoch = context.epoch AND s.ref LIKE 'report:%'
+              AND s.source_version->>'namespace' = ${'corpus:report:' + workspaceId}) AS report_floor
+      FROM harness_shared.session_briefs CROSS JOIN context
      WHERE owner_id = ${sessionId} AND workspace_id = ${workspaceId}
        AND control_state IS NOT NULL
      LIMIT 1`;
   const row = rows[0];
   if (!row || !Number.isSafeInteger(Number(row.generation)) || Number(row.generation) < 0)
     throw new Error('Memory cache control identity is unavailable.');
-  return JSON.stringify([Number(row.generation), row.applied, row.scope]);
+  return JSON.stringify([Number(row.generation), row.applied, row.scope, row.epoch, row.report_floor]);
 }
 
 /**

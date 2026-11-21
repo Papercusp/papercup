@@ -552,6 +552,21 @@ describe('launch-su — the terminal child gets a stable session MCP base', () =
  * uses, for the same reason: it is what the shell actually executes.
  */
 describe('launch-su — launch-time mode (P-042)', () => {
+  it('binds a GOAL report brief to the minted recipient before the spawn receives it', async () => {
+    const reports = await import('../../../goal-related-reports');
+    const bind = vi.spyOn(reports, 'bindGoalReportKickoff').mockResolvedValue('recipient-bound finding');
+    try {
+      const prompt = 'GOAL HISTORY — own and bounded descendant evidence\n{"relatedReports":{}}';
+      const response = await launch({ goal_bootstrap_subject: 'goal-1', harness_slug: 'papercusp',
+        headless: true, kickoff_prompt: prompt });
+      expect(response.status).toBe(200);
+      expect(bind).toHaveBeenCalledWith(prompt, 'goal-1', { workspaceId: 'default',
+        viewer: { potSlug: 'papercusp' }, deliveryOwnerId: response.json.ownerId });
+      expect(headlessOneliner()).toContain('--owner-id=' + response.json.ownerId);
+      expect(spawnHeadlessMock.mock.calls[0]![0].envelope.env?.PAPERCUSP_KICKOFF_PROMPT).toBe('recipient-bound finding');
+    } finally { bind.mockRestore(); }
+  });
+
   it('passes a GOAL bootstrap subject without emitting a separate AUTO mode', async () => {
     const result = await launch({ goal_bootstrap_subject: 'goal-1', headless: true });
     expect(result.status).toBe(200);

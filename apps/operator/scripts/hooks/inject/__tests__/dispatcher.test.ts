@@ -206,6 +206,28 @@ it('emits the exact OMP stdout newline reserved by final context packing', async
 });
 
 describe('native stdout memory receipts', () => {
+  it('sends whole submitted report hashes even when the topical query is clamped', async () => {
+    const op = fakeOperator();
+    running = op;
+    const base = await op.start();
+    const entry = { reportId: 'rpt_native', finding: 'A corrected finding with ☃.' };
+    const rendered = JSON.stringify(entry);
+    const page = JSON.stringify({ relatedReports: { entries: [entry], deliveryToken: 'report-receipt' } });
+    const home = mkdtempSync(path.join(tmpdir(), 'submitted-report-'));
+    try {
+      const prompt = 'ordinary wake '.repeat(1000) + '\nGOAL RELATED REPORTS\n' + page;
+      const out = await runCli(['--client=codex', '--event=UserPromptSubmit'], JSON.stringify({ prompt }), {
+        PAPERCUSP_SID: 'su-receiving-holder', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_HOME: home,
+      });
+      expect(out.code).toBe(0);
+      const body = op.received[0].body;
+      expect(body.prompt).not.toContain(entry.finding);
+      expect(body.submittedGoalReportDeliveries).toEqual([{ token: 'report-receipt', submittedPrompt: true,
+        fragments: [{ id: 'report:rpt_native', bodyBytes: Buffer.byteLength(rendered),
+          bodySha256: createHash('sha256').update(rendered).digest('hex') }] }]);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   for (const client of ['codex', 'claude', 'omp'] as const)
     for (const port of (client === 'omp' ? ['turn-start', 'mid-turn'] as const
       : ['turn-start', 'mid-turn', 'compaction'] as const))

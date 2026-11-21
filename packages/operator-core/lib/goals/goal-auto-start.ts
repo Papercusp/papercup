@@ -416,7 +416,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   command = injectLaunchedByArg(command, launchedBy).command;
 
   const history = await readGoalHistoryContext(id, undefined, {
-    workspaceId, viewer: { ownerId, potSlug: installSlug },
+    workspaceId, viewer: { ownerId, potSlug: installSlug }, deliveryOwnerId: ownerId,
   });
   const env = {
     ...base.env,

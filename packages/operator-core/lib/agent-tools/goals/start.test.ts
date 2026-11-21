@@ -594,6 +594,7 @@ describe('goals:start — the happy path', () => {
       expect(readHistory).toHaveBeenCalledTimes(1);
       expect(readHistory).toHaveBeenCalledWith(goalId, undefined, {
         workspaceId: 'ws-test', viewer: { ownerId: dataOf(res).agent_owner_id, potSlug: 'papercusp' },
+        deliveryOwnerId: dataOf(res).agent_owner_id,
       });
       expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('GOAL HISTORY — own and bounded descendant evidence');
       expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('goal-start-handler-history-fingerprint');
@@ -622,6 +623,7 @@ describe('goals:start — the happy path', () => {
       expect(JSON.parse(line!).relatedReports.entries).toEqual([entry]);
       expect(reader).toHaveBeenCalledWith(result.id, undefined, {
         workspaceId: 'ws-test', viewer: { ownerId: result.agent_owner_id, potSlug: 'papercusp' },
+        deliveryOwnerId: result.agent_owner_id,
       });
     } finally {
       reader.mockRestore();

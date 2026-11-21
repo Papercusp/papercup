@@ -837,6 +837,32 @@ export function clampPrompt(prompt) {
   return typeof prompt === 'string' ? prompt.slice(0, PORTS['turn-start'].promptClamp) : '';
 }
 
+/** Prove what the native submit event contained, before the topical-query clamp.
+ * The server holds the recipient, epoch, source versions and expected fragment hashes.
+ * @param {unknown} prompt
+ * @returns {{token: string, submittedPrompt: true, fragments: {id: string, bodyBytes: number, bodySha256: string}[]}[]}
+ */
+export function submittedGoalReportDeliveries(prompt) {
+  if (typeof prompt !== 'string' || !prompt.includes('"deliveryToken"')) return [];
+  /** @type {ReturnType<typeof submittedGoalReportDeliveries>} */
+  const proofs = [];
+  const blocks = /^(?:GOAL HISTORY — own and bounded descendant evidence|GOAL RELATED REPORTS)\r?\n([^\r\n]+)/gm;
+  for (const match of prompt.matchAll(blocks)) {
+    try {
+      const page = JSON.parse(match[1]).relatedReports;
+      if (typeof page?.deliveryToken !== 'string' || !Array.isArray(page.entries)) continue;
+      const fragments = page.entries.flatMap(entry => {
+        if (typeof entry?.reportId !== 'string') return [];
+        const rendered = JSON.stringify(entry);
+        return [{ id: `report:${entry.reportId}`, bodyBytes: Buffer.byteLength(rendered),
+          bodySha256: createHash('sha256').update(rendered).digest('hex') }];
+      });
+      if (fragments.length) proofs.push({ token: page.deliveryToken, submittedPrompt: true, fragments });
+    } catch { /* An incomplete submitted block cannot confirm a finding. */ }
+  }
+  return proofs;
+}
+
 const SHELL_PRE_TOOL_NAMES = new Set(['Bash', 'bash', 'exec_command', 'shell_command', 'shell']);
 const PLAN_ANCHOR_REPAIR_KEYS = new Set(['slug', 'harness', 'itemId', 'anchors', 'expectedHash', 'rationale']);
 const CANONICAL_GRADING_AUDIT_AWAIT_EVENT = /^scorecard:grading-audit:[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
@@ -1479,6 +1505,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
     const ledger = (port === 'turn-start' || port === 'mid-turn' || port === 'compaction') && openDeliveryLedger
       ? openDeliveryLedger(owner, env, port === 'compaction' ? 'compact' : port) : null;
     const turnStartRequestId = port === 'turn-start' ? randomUUID() : null;
+    const submittedReports = port === 'turn-start' ? submittedGoalReportDeliveries(event?.prompt) : [];
     const request = {
       ...baseRequest({ port, client: adapter.client, owner, cwd: partial.cwd, env }),
       ...partial,
@@ -1493,6 +1520,7 @@ export async function runInjection({ adapter, nativeEvent, event, env = process.
       ...(ledger && (port === 'mid-turn' || port === 'compaction') ? { memoryReceiptMode: true } : {}),
       ...(port === 'turn-start' && typeof ledger?.confirmedFactBodies === 'function' ? { confirmedFactBodies: ledger.confirmedFactBodies() } : {}),
       ...(typeof ledger?.confirmedMemoryDeliveries === 'function' ? { confirmedMemoryDeliveries: ledger.confirmedMemoryDeliveries() } : {}),
+      ...(submittedReports.length ? { submittedGoalReportDeliveries: submittedReports } : {}),
       ...(turnStartRequestId ? { turnStartRequestId } : {}),
     };
 

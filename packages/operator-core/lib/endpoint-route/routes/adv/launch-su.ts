@@ -463,7 +463,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     return json({ status: 'error', error: kickoffV.error }, 400);
   }
   const kickoffKind = kickoffV.value?.kind ?? null;
-  const kickoffPrompt =
+  let kickoffPrompt =
     typeof body.kickoff_prompt === 'string' && body.kickoff_prompt.trim() ? body.kickoff_prompt : null;
 
   // Safety floor (unify-agent-spawn-chokepoint P-012): a human-initiated psu
@@ -560,6 +560,12 @@ async function handleLaunchSu(req: Request): Promise<Response> {
   // exists to prevent, inverted. A resume returns no `ownerId`, and callers
   // treat that as "nothing to open" rather than guessing.
   const ownerId = resumeSessionId ? null : `su-${randomUUID()}`;
+  if (ownerId && harness && goalBootstrapSubject && kickoffPrompt?.includes('"relatedReports"')) {
+    const { bindGoalReportKickoff } = await import('../../../goal-related-reports');
+    kickoffPrompt = await bindGoalReportKickoff(kickoffPrompt, goalBootstrapSubject, {
+      workspaceId: activeWorkspaceId(), viewer: { potSlug: harness }, deliveryOwnerId: ownerId,
+    });
+  }
   const psuArgs = [psuRef, '--no-picker', `--agent=${agent}`];
   if (ownerId) psuArgs.push(`--owner-id=${ownerId}`);
   if (harness) psuArgs.push(`--harness=${harness}`);

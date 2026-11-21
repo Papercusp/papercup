@@ -12,7 +12,10 @@ import * as recallStaleness from './recall-staleness';
 import * as flagServer from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { resetOperatorCacheForTests } from '../cache/instance';
-import { contextSourceVersion, renderContextSourceUnit } from './temporal-render';
+import { contextSourceVersion, renderContextSourceUnit, reportSourceVersion } from './temporal-render';
+import { submittedGoalReportDeliveries } from '../../../../apps/operator/scripts/hooks/inject/core.mjs';
+import { readGoalHolderWakeState, type GoalHolderWakeRead } from '../goal-holder-wake-state';
+import { AGENT_OBLIGATION_SCHEMA_VERSION } from '../agent-obligations';
 import { getOrgPg } from '@papercusp/db-org';
 import { stageMemoryEmission, confirmMemoryEmission } from './session-epoch-ledger';
 import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../agent-tools/coordination/read-cursors';
@@ -2907,6 +2910,88 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
     sqlMockState.rows = [{ ref: 'work-item:WI-6512', epoch: 0, source_fingerprint: sourceVersion.fingerprint }];
     const corpus = await run(true);
     expect(corpus).toMatchObject({ selected: 1, admitted: 0, sessionDedup: 1 });
+  });
+
+  const reportOwner = 'su-report-holder';
+  const wakeAgenda = (): GoalHolderWakeRead => ({
+    goalId: 'goal-report', observedAt: '2026-10-01T00:00:00Z', portfolio: null, degradedSources: [],
+    agenda: { schemaVersion: AGENT_OBLIGATION_SCHEMA_VERSION, evaluatedAt: '2026-10-01T00:00:00Z',
+      sourceGeneration: 'test', evaluations: [], primary: [], conflicts: [] },
+  });
+  const reportWake = (readReports: NonNullable<Parameters<typeof readGoalHolderWakeState>[0]['readReports']>) =>
+    readGoalHolderWakeState({ ownerId: reportOwner, workspaceId: 'ws', readAgenda: async () => wakeAgenda(),
+      readReports, loop: { fireNumber: 2, intervalSec: 60, firedAtMs: Date.parse('2026-10-01T00:00:00Z') } });
+
+  it('delivers one report per edition and receiving context across kickoff and topic recall', async () => {
+    useBackend(mockBackend([]));
+    const edition = 'rpt_quartz';
+    const entry = { reportId: edition, finding: 'Quartz calibration requires 20°C.' };
+    const version = reportSourceVersion('ws', edition, 'Calibration', entry.finding, '2026-10-01T00:00:00Z');
+    const topic = { line: '- [report] ' + entry.finding, score: 1, operative: true, sourceVersion: version,
+      handle: { kind: 'report' as const, ref: version.ref, query: ['quartz'], resolve: 'reports:get' } };
+    corpusIoResult = oneLine({ lines: [topic] });
+    const recall = { userId: 'u1', workspaceId: 'ws', queryContext: 'quartz calibration',
+      session: { sessionId: reportOwner, epoch: 2, port: 'mid-turn' } };
+    const prepared = await prepareMemoryContextBlock(recall);
+    expect(prepared?.fragments).toContainEqual(expect.objectContaining({ id: version.ref, sourceFingerprint: version.fingerprint }));
+    const rendered = JSON.stringify(entry);
+    const kickoff = memoryLedger.memoryFragmentOffer('corpus', version.ref, 2, 'goal-brief', rendered, version);
+    const sql = getOrgPg().sql;
+    configureReadCursorStore(new InMemoryReadCursorStore());
+    try {
+      await stageMemoryEmission(sql, reportOwner, 'kickoff-test', [kickoff]);
+      const prompt = 'GOAL HISTORY — own and bounded descendant evidence\n' +
+        JSON.stringify({ relatedReports: { entries: [entry], deliveryToken: 'kickoff-test' } });
+      expect(submittedGoalReportDeliveries('kickoff-test')).toEqual([]);
+      const [proof] = submittedGoalReportDeliveries('x'.repeat(5000) + '\n' + prompt);
+      const stamp = vi.spyOn(corpusLedger, 'stampSurfacedRefsResult').mockImplementation(async (_sql, owner, epoch, refs, _port, fingerprint) => {
+        expect([owner, epoch, refs, fingerprint]).toEqual([reportOwner, 2, [version.ref], version.fingerprint]);
+        sqlMockState.rows = [{ ref: version.ref, source_fingerprint: fingerprint, source_version: version }];
+        return { ok: true, inserted: 1 };
+      });
+      try {
+        expect(await confirmMemoryEmission(sql, 'other-holder', proof)).toBe(0);
+        const [altered] = submittedGoalReportDeliveries(prompt.replace('20°C', '2°C'));
+        expect(await confirmMemoryEmission(sql, reportOwner, altered)).toBe(0);
+        expect(stamp).not.toHaveBeenCalled();
+        expect(await confirmMemoryEmission(sql, reportOwner, proof)).toBe(1);
+        expect((await prepareMemoryContextBlock(recall))?.fragments.filter(f => f.id === version.ref) ?? []).toEqual([]);
+      } finally { stamp.mockRestore(); }
+    } finally { resetReadCursorStore(); }
+  });
+
+  it('delivers a corrected edition on an ordinary wake and restores evidence in fresh context', async () => {
+    useBackend(mockBackend([]));
+    const old = reportSourceVersion('ws', 'rpt_old', 'Quartz', 'Old finding', '2026-09-01T00:00:00Z');
+    const corrected = reportSourceVersion('ws', 'rpt_corrected', 'Quartz', 'Corrected finding', '2026-10-01T00:00:00Z');
+    const entry = { reportId: 'rpt_corrected', title: 'Quartz', finding: 'Corrected finding', findingTruncated: false,
+      publishedAt: '2026-10-01T00:00:00Z', relationship: 'attached to goal', sourceRef: 'goal-report',
+      disposition: 'current' as const, read: { tool: 'reports:get' as const, args: { id: 'rpt_corrected' } } };
+    const wake = await reportWake(async (workspace, owner, goal) => {
+      expect([workspace, owner, goal]).toEqual(['ws', reportOwner, 'goal-report']);
+      return { status: 'available', entries: [entry], total: 1, omitted: 0, next: null, deliveryToken: 'wake-test' };
+    });
+    expect(wake).toContain(entry.finding);
+    expect(submittedGoalReportDeliveries(wake)[0].fragments[0].id).toBe(corrected.ref);
+    corpusIoResult = oneLine({ lines: [{ line: '- [report] ' + entry.finding, score: 1, sourceVersion: corrected,
+      handle: { kind: 'report', ref: corrected.ref, query: ['quartz'], resolve: 'reports:get' } }] });
+    const topic = (epoch: number) => prepareMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'quartz calibration',
+      session: { sessionId: reportOwner, epoch, port: 'turn-start' } });
+    sqlMockState.rows = [{ ref: old.ref, source_fingerprint: old.fingerprint, source_version: old }];
+    expect((await topic(0))?.text).toContain(entry.finding);
+    sqlMockState.rows = [{ ref: corrected.ref, source_fingerprint: corrected.fingerprint, source_version: corrected }];
+    expect((await topic(0))?.text ?? '').not.toContain(entry.finding);
+    sqlMockState.rows = [];
+    expect((await topic(1))?.text).toContain(entry.finding);
+  });
+
+  it('distinguishes an unavailable related-report read from zero visible matches', async () => {
+    const empty = await reportWake(async () => ({ status: 'empty', entries: [], total: 0, omitted: 0, next: null }));
+    const failed = await reportWake(async () => { throw new Error('fixture read unavailable'); });
+    expect(empty).toContain('"status":"empty"');
+    expect(failed).toContain('"status":"unavailable"');
+    expect(failed).toContain('"recovery":{"tool":"goals:get","args":{"id":"goal-report","detail":"full"}}');
+    expect(failed).toContain('GOAL-HOLDER STATE');
   });
 
   it('replays corpus sources with missing or stale canonical identities and offers the current version to the native receipt seam', async () => {

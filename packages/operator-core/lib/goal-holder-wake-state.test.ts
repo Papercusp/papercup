@@ -91,7 +91,7 @@ describe('readGoalHolderWakeState (P-007)', () => {
 
   it('renders the block from one agenda read', async () => {
     const readAgenda = vi.fn(async () => read());
-    const text = await readGoalHolderWakeState({ ...base, readAgenda });
+    const text = await readGoalHolderWakeState({ ...base, readAgenda, readReports: async () => null });
     expect(readAgenda).toHaveBeenCalledTimes(1);
     expect(readAgenda).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'papercusp-workspace', ownerId: 'su-holder' }));
     expect(text).toContain('GOAL-HOLDER STATE — goal goal-60d3a8');
