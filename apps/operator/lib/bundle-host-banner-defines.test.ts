@@ -29,6 +29,14 @@ const TEST_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(TEST_FILE), '../../..');
 const COMMON_SCRIPT = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
 
+function hostRecipeSection(source: string, name: string): string {
+  const opening = `# >>> ${name}\n`;
+  const start = source.indexOf(opening);
+  const end = source.indexOf(`# <<< ${name}\n`, start + opening.length);
+  if (start < 0 || end < 0) throw new Error(`Missing host recipe section: ${name}`);
+  return source.slice(start + opening.length, end);
+}
+
 /** Roots whose shell scripts invoke esbuild with the shared banner. */
 const SCAN_ROOTS = ['apps/operator/bin', 'scripts', 'papercusp-desktop/bin'] as const;
 /** papercusp-desktop is a submodule; its scripts are only scanned when it is checked out. */
@@ -163,13 +171,10 @@ describe('WI-10007604 — frozen host source identity', () => {
     }
   });
   const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
-  const blockStart = source.indexOf('SOURCE_SHA="$(bundle_host_source_sha');
-  const blockEnd = source.indexOf('# EI-9413:', blockStart);
-  if (blockStart < 0 || blockEnd < 0) throw new Error('bundle-host source identity block markers not found');
-  const block = source.slice(blockStart, blockEnd);
+  const block = hostRecipeSection(source, 'host bundle source identity');
   const select = (root: string, receipt = '') => spawnSync('bash', ['-c', 'set -euo pipefail; REPO_ROOT="$1"; source "$2"; COMMITTED_NODE=(node);\n' + block + '\nprintf "%s" "$SOURCE_SHA"', '_', root, COMMON_SCRIPT],
     { encoding: 'utf8', timeout: 15_000, env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '',
-      VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: '' } });
+      VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_SOURCE_REF: '', PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '0' } });
   function snapshotRoot() {
     // Match the maintained verifier's ignored scratch boundary. An unignored
     // fixture is rightly refused by the committed-source loader before receipt
@@ -181,26 +186,24 @@ describe('WI-10007604 — frozen host source identity', () => {
     expect(spawnSync('git', ['check-ignore', root], { cwd: REPO_ROOT }).status).toBe(0);
     return root;
   }
+  function fixtureGit(root: string, ...args: string[]): string {
+    const result = spawnSync('git', ['-C', root, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', ...args], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    return result.stdout.trim();
+  }
   function snapshot(withGit = true) {
     const root = snapshotRoot();
     const helper = 'libs/test-config/src/verifier-source.ts';
     mkdirSync(dirname(join(root, helper)), { recursive: true });
     writeFileSync(join(root, helper), readFileSync(join(REPO_ROOT, helper)));
     writeFileSync(join(root, 'entry.ts'), 'console.log(__PAPERCUSP_BUNDLED_SOURCE_SHA__);\n');
-    const git = (...args: string[]) => {
-      const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
-      expect(result.status, result.stderr).toBe(0);
-      return result.stdout.trim();
-    };
     if (withGit) {
-      git('init', '--quiet');
-      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-        'commit', '--quiet', '--allow-empty', '-m', 'parent');
-      git('add', 'entry.ts', helper);
-      git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-        'commit', '--quiet', '-m', 'selected source');
+      fixtureGit(root, 'init', '--quiet');
+      fixtureGit(root, 'commit', '--quiet', '--allow-empty', '-m', 'parent');
+      fixtureGit(root, 'add', 'entry.ts', helper);
+      fixtureGit(root, 'commit', '--quiet', '-m', 'selected source');
     }
-    const sourceCommit = withGit ? git('rev-parse', 'HEAD') : 'a'.repeat(40);
+    const sourceCommit = withGit ? fixtureGit(root, 'rev-parse', 'HEAD') : 'a'.repeat(40);
     const files = verifierSourceFiles(root, { gitMetadataPaths: withGit ? ['.git'] : [] });
     const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit,
       testedInputs: [{ path: 'entry.ts', sha256: files.find(file => file.path === 'entry.ts')!.sha256 }], files,
@@ -216,10 +219,17 @@ describe('WI-10007604 — frozen host source identity', () => {
       const selected = select(root, root + '.receipt.json');
       expect(selected.status, selected.stderr).toBe(0);
       expect(selected.stdout).toBe(expected);
-      const outfile = join(root, 'bundle.mjs');
+      // Preserve the attested source tree and give the generated child its own Git object.
+      const outputRoot = snapshotRoot();
+      fixtureGit(outputRoot, 'init', '--quiet');
+      const outfile = join(outputRoot, 'bundle.mjs');
       await build({ entryPoints: [join(root, 'entry.ts')], outfile,
         define: { __PAPERCUSP_BUNDLED_SOURCE_SHA__: JSON.stringify(selected.stdout) } });
-      expect(spawnSync(process.execPath, [outfile], { encoding: 'utf8' }).stdout.trim()).toBe(expected);
+      fixtureGit(outputRoot, 'add', 'bundle.mjs');
+      fixtureGit(outputRoot, 'commit', '--quiet', '-m', 'compiled test output');
+      const run = spawnSync(process.execPath, [outfile], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout.trim()).toBe(expected);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('refuses changed source bytes before stamping an archive commit', () => {
@@ -286,35 +296,35 @@ describe('WI-10007604 — frozen host source identity', () => {
       expect(selected.stdout).toBe('');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+  function withOrdinaryCheckout(check: (root: string, head: string) => void) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'host-source-checkout-')));
+    try {
+      fixtureGit(root, 'init', '-q');
+      // An archive uses its receipt's 12 characters. Ordinary Git honors core.abbrev.
+      fixtureGit(root, 'config', 'core.abbrev', '8');
+      writeFileSync(join(root, 'entry.ts'), 'export const source = 1;\n');
+      fixtureGit(root, 'add', 'entry.ts');
+      fixtureGit(root, 'commit', '-q', '-m', 'fixture source');
+      expect(fixtureGit(root, 'status', '--porcelain=v1', '--untracked-files=all')).toBe('');
+      check(root, fixtureGit(root, 'rev-parse', '--short', 'HEAD'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
   it('attributes an ordinary checkout only when its source tree is clean', () => {
-    const selected = select(REPO_ROOT);
-    expect(selected.status, selected.stderr).toBe(0);
-    const head = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    const status = spawnSync('git', ['-C', REPO_ROOT, 'status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], { encoding: 'utf8' });
-    expect(status.status, status.stderr).toBe(0);
-    expect(selected.stdout).toBe(status.stdout.trim() ? head + '+dirty' : head);
+    withOrdinaryCheckout((root, head) => {
+      const selected = select(root);
+      expect(selected.status, selected.stderr).toBe(0);
+      expect(selected.stdout).toBe(head);
+    });
   });
   it('marks tracked and untracked Git source changes as dirty instead of attributing them to HEAD', () => {
-    const root = mkdtempSync(join(tmpdir(), 'host-source-dirty-'));
-    const git = (...args: string[]) => spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' });
-    try {
-      expect(git('init', '-q').status).toBe(0);
-      expect(git('config', 'user.name', 'Papercusp fixture').status).toBe(0);
-      expect(git('config', 'user.email', 'fixture@example.invalid').status).toBe(0);
-      writeFileSync(join(root, 'entry.ts'), 'export const source = 1;\n');
-      expect(git('add', 'entry.ts').status).toBe(0);
-      const committed = git('commit', '-q', '-m', 'fixture source');
-      expect(committed.status, committed.stderr).toBe(0);
-      const head = git('rev-parse', '--short', 'HEAD').stdout.trim();
-
-      expect(select(root).stdout).toBe(head);
+    withOrdinaryCheckout((root, head) => {
       writeFileSync(join(root, 'entry.ts'), 'export const source = 2;\n');
       expect(select(root).stdout).toBe(head + '+dirty');
-
-      expect(git('checkout', '--', 'entry.ts').status).toBe(0);
+      fixtureGit(root, 'restore', '--', 'entry.ts');
+      expect(select(root).stdout).toBe(head);
       writeFileSync(join(root, 'new-entry.ts'), 'export const added = true;\n');
       expect(select(root).stdout).toBe(head + '+dirty');
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    });
   });
   it('bakes a generation-alias checkout identity into the actual build-info resolver', () => {
     const dir = mkdtempSync(join(tmpdir(), 'host-source-alias-'));
@@ -382,8 +392,7 @@ describe('EI-25446866026477971 — host build paths across the package-cache rea
       const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
       // Execute the production path-selection boundary, then exercise its paths
       // through the real reader and compiler from a different working directory.
-      const block = source.slice(source.indexOf('ENTRY="${1:-'), source.indexOf('STALE_MARKER='));
-      expect(block).toContain('OUTFILE=');
+      const block = hostRecipeSection(source, 'host bundle paths');
       const entryPath = join(operatorDir, entry), outputPath = join(operatorDir, outfile);
       mkdirSync(dirname(entryPath), { recursive: true });
       writeFileSync(entryPath, 'console.log("reader-relative-entry");\n');
@@ -480,7 +489,7 @@ describe('WI-10007376 — helper-only host bundles avoid eager PTY script hashin
  * variable built from it, such as STAMP_BANNER), and report whether the same logical shell
  * command — the run of lines joined by trailing backslashes — also passes HOST_BANNER_DEFINES.
  */
-function findBannerCalls(source: string): BannerCall[] {
+function findBannerCalls(source: string, primaryForwardsDefines = false): BannerCall[] {
   // Blank comment lines while keeping line numbers, so prose that mentions the flag never counts.
   const lines = source.split('\n').map((text) => (/^\s*#/.test(text) ? '' : text));
   const bannerVars = new Set(['HOST_BANNER']);
@@ -498,7 +507,9 @@ function findBannerCalls(source: string): BannerCall[] {
     let end = index;
     while (continues(end)) end += 1;
     const command = lines.slice(start, end + 1).join('\n');
-    calls.push({ line: index + 1, bannerVar: arg[1], hasDefines: command.includes('HOST_BANNER_DEFINES[@]'), command });
+    const hasDefines = command.includes('HOST_BANNER_DEFINES[@]') ||
+      (primaryForwardsDefines && /^\s*bundle_host_primary\s/.test(command));
+    calls.push({ line: index + 1, bannerVar: arg[1], hasDefines, command });
   });
   return calls;
 }
@@ -579,10 +590,19 @@ describe('shared esbuild host banner (WI-10005299)', () => {
   it('every esbuild call that injects the banner also passes HOST_BANNER_DEFINES', () => {
     const consumers = new Set<string>();
     const missing: string[] = [];
+    // The desktop rig overrides the banner on a call to the shared primary recipe.
+    // Count the forwarded defines only when the actual compiler command supplies them.
+    const primary = spawnSync('bash', ['-c', 'source "$1" && declare -f bundle_host_primary', '_', COMMON_SCRIPT], {
+      encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '' },
+    });
+    expect(primary.status, primary.stderr).toBe(0);
+    const primaryCalls = findBannerCalls(primary.stdout);
+    const primaryForwardsDefines = primaryCalls.length > 0 && primaryCalls.every(call =>
+      call.hasDefines && call.command.includes('bundle_host_esbuild ') && call.command.includes('"$@"'));
     for (const root of SCAN_ROOTS) {
       for (const file of listShellFiles(root)) {
         const rel = relative(REPO_ROOT, file);
-        for (const call of findBannerCalls(readFileSync(file, 'utf8'))) {
+        for (const call of findBannerCalls(readFileSync(file, 'utf8'), primaryForwardsDefines)) {
           consumers.add(rel);
           if (!call.hasDefines) missing.push(`${rel}:${call.line} (--banner:js="$${call.bannerVar}")`);
         }
@@ -615,14 +635,15 @@ describe('shared esbuild host banner (WI-10005299)', () => {
 
     it('selects release compaction explicitly and rejects unknown or unbound freshness profiles', () => {
       const host = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
-      const block = host.split('# >>> host bundle profile\n')[1]?.split('# <<< host bundle profile')[0];
-      expect(block).toBeTruthy();
+      const block = hostRecipeSection(host, 'host bundle profile');
       const select = (profile: string, reuse = '0') => spawnSync('bash', ['-c',
         'set -euo pipefail; SCRIPT_DIR="$1"; shift;\n' + block +
         '\nprintf "%s\\n" "${HOST_MINIFY_ARGS[@]}"', '_', dirname(COMMON_SCRIPT), 'entry', 'output', profile], {
         encoding: 'utf8', env: { ...process.env, PAPERCUSP_BUNDLE_HOST_COMMON_LOADED: '', PAPERCUSP_BUNDLE_REUSE_FRESH: reuse },
       });
-      expect(select('development').stdout.trim()).toBe('');
+      const development = select('development');
+      expect(development.status, development.stderr).toBe(0);
+      expect(development.stdout.trim()).toBe('--minify-whitespace');
       const release = select('release');
       expect(release.status, release.stderr).toBe(0);
       expect(release.stdout.trim().split('\n')).toEqual(['--minify-whitespace', '--minify-syntax']);
