@@ -31757,7 +31757,7 @@
       "guidance": {
         "when": "Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.",
         "notWhen": "Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.",
-        "chaining": "scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance."
+        "chaining": "For a poor rating, diagnose the original failure first. Follow repairGuidance to see observed outcomes and optional suggestions. Choose any repair the evidence supports and compare its re-grade with baselineRef. scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:evaluate { rubricRef, ratings, instrumentSnapshots, testedSha } → scorecards:emit with that same canonical payload → scorecards:list / rubrics:trend. `testedSha` is required when a releaseGating rubric has a pass-like rating. For acceptance rubrics, the non-implementer grading and the author acceptance are separate cards; the author acceptance adopts ratings via acceptanceOf; do not pass supersedes on the author acceptance."
       }
     },
     {
