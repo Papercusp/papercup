@@ -36,6 +36,20 @@ function state(over: Partial<ControlAnchorState> = {}): ControlAnchorState {
 }
 
 describe('stackRefsForRoute (P-012)', () => {
+  it('keeps the ordinary single-session planning rule and selects work-item registration for outside assignments', () => {
+    const compose = (outsidePlan: boolean) => blueprint.composeSuStackSource({
+      harnessDir, binding: blueprint.suSessionBinding({ modes: ['auto'], outsidePlan }), outsidePlan,
+    }).text;
+    const ordinary = compose(false);
+    const outside = compose(true);
+    expect(ordinary).toMatch(/A plan is REQUIRED when work\s+decomposes into >=2 work-items/);
+    expect(ordinary).toContain('Audit the complete source conversation before activating');
+    expect(outside).toContain('This assignment is already planned outside Papercusp');
+    expect(outside).toContain('hold a work-item before editing');
+    expect(outside).toContain('complete each piece with `work_items:complete`');
+    expect(outside).not.toMatch(/A plan is REQUIRED when work|Audit the complete source conversation before activating/);
+  });
+
   it.each(['leader', 'member'] as const)('keeps the outside %s posture across launch and reconciliation', async role => {
     const binding = blueprint.suSessionBinding({ fleetRole: role, outsidePlan: true });
     const refs = stackRefsForSession({ route: { kind: 'fleet', fleet: 'alpha', role }, modes: [], outsidePlan: true });
