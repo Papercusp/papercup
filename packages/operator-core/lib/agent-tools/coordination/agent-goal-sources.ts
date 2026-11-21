@@ -113,8 +113,14 @@ async function withMeasuredGoalConnection<T>(
   const connection = await withGoalQueryCancellation(sql.reserve(), signal).finally(() => {
     recordGoalReadTiming(observeTiming, `goal_pool_acquire_${suffix}`, performance.now() - acquireStarted);
   });
-  try { return await read(withGoalQuerySignal(connection, signal)); }
-  finally { connection.release(); }
+  try {
+    // Postgres.js cannot cancel a pending reservation. Release a connection
+    // granted after the selector deadline without starting a new read.
+    if (signal?.aborted) throw signal.reason ?? new Error('goal read aborted');
+    return await read(withGoalQuerySignal(connection, signal));
+  } finally {
+    connection.release();
+  }
 }
 
 /**

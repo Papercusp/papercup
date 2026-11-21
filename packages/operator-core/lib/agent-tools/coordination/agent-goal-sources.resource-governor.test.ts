@@ -36,9 +36,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { sqlMock, fastPathState } = vi.hoisted(() => ({
-  sqlMock: vi.fn(),
+const { sqlMock, fastPathState, foldFactsMock } = vi.hoisted(() => ({
+  sqlMock: Object.assign(vi.fn(), { reserve: vi.fn() }),
   fastPathState: { on: true },
+  foldFactsMock: vi.fn(async () => []),
 }));
 
 vi.mock('./log', () => ({
@@ -49,9 +50,9 @@ vi.mock('./log', () => ({
 
 // No author override in play — exercise the work-item leg and its precedence
 // over an unrelated plan-item/fleet leg, not the override short-circuit.
-vi.mock('../../agent-facts/store', () => ({ foldFacts: async () => [] }));
+vi.mock('../../agent-facts/store', () => ({ foldFacts: foldFactsMock }));
 
-import { readGoalCandidates, resolveOwnerGoal } from './agent-goal-sources';
+import { readGoalCandidates, resolveOwnerGoal, resolveOwnerGoalForAuthority } from './agent-goal-sources';
 
 const OWNER = 'su-goal-rg-test';
 
@@ -95,7 +96,30 @@ function primeSql(workItems: WorkItemRow[]) {
 
 beforeEach(() => {
   sqlMock.mockReset();
+  sqlMock.reserve.mockReset();
+  foldFactsMock.mockClear();
   fastPathState.on = true;
+});
+
+describe('goal selector cancellation', () => {
+  it('releases a late reservation without starting the override read', async () => {
+    const connection = { release: vi.fn() };
+    let supplyConnection!: (value: typeof connection) => void;
+    sqlMock.reserve.mockReturnValue(new Promise<typeof connection>(resolve => {
+      supplyConnection = resolve;
+    }));
+    const controller = new AbortController();
+    const result = resolveOwnerGoalForAuthority(OWNER, 'self', () => {}, controller.signal);
+    expect(sqlMock.reserve).toHaveBeenCalledOnce();
+    controller.abort(new Error('selector deadline expired'));
+    supplyConnection(connection);
+
+    expect(await result).toEqual({ goal: null, diagnostics: [
+      { leg: 'resolution', status: 'unavailable', detail: 'selector deadline expired' },
+    ] });
+    expect(foldFactsMock).not.toHaveBeenCalled();
+    expect(connection.release).toHaveBeenCalledOnce();
+  });
 });
 
 describe('EI-21870243647094665: a resource-governor receipt cannot compete with the real goal', () => {
