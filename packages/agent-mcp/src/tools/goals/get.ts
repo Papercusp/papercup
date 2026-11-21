@@ -56,7 +56,9 @@ export default defineTool({
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
     const goal = rows[0];
-    if (args.reportCursor !== undefined) {
+    const requestedHistoryRefs = args.priorAttemptRefs ?? [];
+    const explicitHistoryRead = requestedHistoryRefs.length > 0;
+    if (args.reportCursor !== undefined && !explicitHistoryRead) {
       const [{ readGoalReportPage }, { resolveViewer }] = await Promise.all([
         import('@papercusp/operator-core/lib/goal-related-reports'),
         import('@papercusp/operator-core/lib/agent-tools/reports/_shared'),
@@ -168,8 +170,6 @@ export default defineTool({
       live: h.live,
       sessionState: h.sessionState,
     }));
-    const requestedHistoryRefs = args.priorAttemptRefs ?? [];
-    const explicitHistoryRead = requestedHistoryRefs.length > 0;
     // Keep the continuity compiler off the agent-MCP bootstrap graph. It owns
     // plan/source readers, and eagerly importing it here makes every unrelated
     // tool test inherit that graph (including tests with intentionally narrow
@@ -182,7 +182,7 @@ export default defineTool({
     const historyContext = continuity ? await continuity.readGoalHistoryContext(goal.id, undefined, {
       workspaceId: goal.workspaceId,
       viewer: (await import('@papercusp/operator-core/lib/agent-tools/reports/_shared')).resolveViewer(ctx),
-    }) : undefined;
+    }, args.reportCursor) : undefined;
     const priorAttemptRecords = explicitHistoryRead
       ? await continuity!.resolvePriorAttemptRefs({
           target: { kind: 'goal', ref: goal.id },

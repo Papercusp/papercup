@@ -17,6 +17,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName } from '@papercusp/tooldef';
+import * as dbOrg from '@papercusp/db-org';
+import { resolveViewer } from '@papercusp/operator-core/lib/agent-tools/reports/_shared';
 
 let fixtureQueue: unknown[][] = [];
 let queriesBuilt = 0;
@@ -26,6 +28,7 @@ let historyQueries = 0;
 const continuity = vi.hoisted(() => ({
   read: vi.fn(),
   resolve: vi.fn(),
+  reportPage: vi.fn(),
 }));
 const portfolio = vi.hoisted(() => ({ read: vi.fn() }));
 
@@ -37,6 +40,10 @@ vi.mock('@papercusp/operator-core/lib/goal-launch-settings', async (importOrigin
 vi.mock('@papercusp/operator-core/lib/prior-attempt-context', () => ({
   readGoalHistoryContext: (...args: unknown[]) => continuity.read(...args),
   resolvePriorAttemptRefs: (...args: unknown[]) => continuity.resolve(...args),
+}));
+
+vi.mock('@papercusp/operator-core/lib/goal-related-reports', () => ({
+  readGoalReportPage: continuity.reportPage,
 }));
 
 /**
@@ -152,6 +159,7 @@ beforeEach(() => {
   historyRows = [];
   historyQueries = 0;
   portfolio.read.mockReset().mockResolvedValue(null);
+  continuity.reportPage.mockReset();
   continuity.read.mockReset().mockResolvedValue({
     status: 'available',
     brief: { fingerprint: 'goal-history-fingerprint' },
@@ -484,6 +492,40 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
       target: { kind: 'goal', ref: 'g-1' },
       rawRefs: ['WI-1#checkpoint'],
     });
+  });
+
+  it('reads a report continuation for the receiving agent without rebuilding goal history', async () => {
+    fixtureQueue = [[GOAL_ROW()]];
+    const page = { status: 'empty', entries: [], total: 0, omitted: 0, next: null };
+    continuity.reportPage.mockResolvedValue(page);
+    const args = tool.args.parse({ id: 'g-1', detail: 'full', reportCursor: 'after-first-page' });
+    const ctx = { ...CTX(), ownerId: 'receiving-agent', harnessSlug: 'papercusp' };
+    const sql = vi.fn();
+    const viewer = resolveViewer(ctx);
+    expect(viewer).toEqual({ isOwner: false, ownerId: 'receiving-agent', potSlug: 'papercusp' });
+    const connection = vi.spyOn(dbOrg, 'getOrgPg').mockReturnValue({ sql } as unknown as ReturnType<typeof dbOrg.getOrgPg>);
+    try {
+      const result = await tool.handler(args, ctx as never);
+      expect(result).toEqual({ data: { id: 'g-1', historyContext: { relatedReports: page } } });
+      expect(continuity.reportPage).toHaveBeenCalledWith(sql, 'g-1', { workspaceId: 'default', viewer }, 'after-first-page');
+    } finally {
+      connection.mockRestore();
+    }
+    expect(continuity.read).not.toHaveBeenCalled();
+    expect(portfolio.read).not.toHaveBeenCalled();
+  });
+
+  it('resolves explicit history refs alongside a report continuation', async () => {
+    fixtureQueue = [[GOAL_ROW()], []];
+    const page = { status: 'empty', entries: [], total: 0, omitted: 0, next: null };
+    const records = { records: [{ rawRef: 'WI-1#checkpoint', text: 'Last attempt' }], unresolved: [] };
+    continuity.read.mockResolvedValue({ relatedReports: page });
+    continuity.resolve.mockResolvedValue(records);
+    const args = tool.args.parse({ id: 'g-1', detail: 'full', priorAttemptRefs: ['WI-1#checkpoint'], reportCursor: 'after-first-page' });
+    const result = await tool.handler(args, CTX() as never);
+
+    expect(result).toMatchObject({ data: { priorAttemptRecords: records, historyContext: { relatedReports: page } } });
+    expect(continuity.read).toHaveBeenCalledWith('g-1', undefined, expect.objectContaining({ workspaceId: 'default' }), 'after-first-page');
   });
 
   it('full mode with no children → empty children array (second query still fires)', async () => {
