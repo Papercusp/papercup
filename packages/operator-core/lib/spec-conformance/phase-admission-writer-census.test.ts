@@ -486,7 +486,7 @@ describe('phase binding writer census', () => {
     expect(stale.syntaxReviews).toEqual(report.syntaxReviews);
     expect([...stale.coverage.checked].sort()).toEqual([
       ...reviewed.reviews.filter(row => !row.sourceProofs.some(proof => proof.path === dependency)).map(row => row.siteId),
-      ...literals.map(site => site.id),
+      ...syntaxReviewedIds,
     ].sort());
   });
 
