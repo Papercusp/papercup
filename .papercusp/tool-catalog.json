@@ -13395,7 +13395,7 @@
           "POST"
         ]
       },
-      "description": "Launch su members on a plan, exact workItems set, or claimKinds lane. Persists admission before member boot. Process open is not worker readiness; read launchTransaction. Visible/headless and warm/cold carry are supported.",
+      "description": "Launch su members on a plan, exact workItems set, or claimKinds lane. Persists admission before member boot. Process open is not proof of registration, a verified first turn, or a claimed task; read launchTransaction. Visible/headless and warm/cold carry are supported.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -13413,8 +13413,8 @@
         "cup"
       ],
       "guidance": {
-        "when": "Launch a fleet on an existing plan or registered workItems set. Members join and self-pull through scheduler:get_next.",
-        "notWhen": "Resume/fork one agent with capability:launch-agent; arbitrary commands use capability:terminal.",
+        "when": "ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR: also accepts a registered workItems set. Prefer over capability:launch-agent or capability:terminal. Members self-pull through scheduler:get_next. Queue duplicate screening governs claims; it is not a reason to delay opening the fleet.",
+        "notWhen": "Resume/fork one agent with capability:launch-agent; arbitrary commands use capability:terminal. See /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
         "chaining": "For a Papercusp plan, plans:start precedes launch. For outside work, create work-items then pass workItems and planRef. Add later items with scheduler:set_claim_spec {fleet,appendIds:[id]}; no relaunch required."
       }
     },
