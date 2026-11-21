@@ -73,6 +73,8 @@ package-lock.json
 !/package-lock.json
 # The isolated Minecraft image is a standalone npm project built with npm ci.
 !/packages/operator-core/vendor/minecraft-runtime/package-lock.json
+# Isolated, version-pinned reference installation for ACP differential tests.
+!/apps/operator/scripts/psu-acp/fixtures/reference/package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log
