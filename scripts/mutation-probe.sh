@@ -2446,6 +2446,14 @@ run_guard() {
     exec {guard_output}>"$output" || die "could not open the $label output"
     (
       export PAPERCUSP_MUTATION_PHASE="$phase"
+      # The descriptor names the file relative to its own Git repository. An
+      # overlay baseline can run the router from an enclosing superproject.
+      # Give its bootstrap the original file without granting a dirty-file exemption.
+      unset PAPERCUSP_MUTATION_PROBE_BASELINE_SUBJECT
+      if [ "${RELOCATION_USED:-}" = "overlay" ] && [ "$phase" = "baseline" ]; then
+        unset PAPERCUSP_MUTATION_PROBE_SUBJECT
+        export PAPERCUSP_MUTATION_PROBE_BASELINE_SUBJECT="$FILE"
+      fi
       export PAPERCUSP_TEST_RUN_RECEIPT_FILE="$(test_run_receipt_file "$phase")"
       # Own a complete machine-readable notice channel for this leg. The
       # human summary remains captured below but cannot distinguish receipt

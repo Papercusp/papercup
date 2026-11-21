@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const BOOTSTRAP_ENTRY = 'scripts/lib/mutation-probe-inner-runner.mjs';
@@ -204,14 +204,26 @@ function main() {
     throw new Error('committed-source-loader does not match HEAD');
   }
 
-  const subjectArgument = env.PAPERCUSP_MUTATION_PROBE_SUBJECT?.trim();
+  const baselineSubject = env.PAPERCUSP_MUTATION_PROBE_BASELINE_SUBJECT;
+  const subjectArgument = baselineSubject ?? env.PAPERCUSP_MUTATION_PROBE_SUBJECT?.trim();
   const subjectPath = subjectArgument
     ? resolve(subjectArgument)
     : resolve(currentRoot, descriptor.subjectPath);
-  if (!isAbsolute(subjectPath)) throw new Error('mutation subject path must be absolute after resolution');
+  if (baselineSubject !== undefined) {
+    const file = realpathSync(subjectPath);
+    if (env.PAPERCUSP_MUTATION_PHASE !== 'baseline' || !isAbsolute(baselineSubject)
+      || !within(currentRoot, file)
+      || relative(gitRoot(dirname(file)), file).split(sep).join('/') !== descriptor.subjectPath) {
+      throw new Error('baseline subject does not match its repository-relative mutation descriptor');
+    }
+  }
   const subjectHashBefore = digest(readFileSync(subjectPath));
+  if (baselineSubject !== undefined && subjectHashBefore !== descriptor.subjectBeforeSha256) {
+    throw new Error('baseline subject bytes do not match the original mutation descriptor');
+  }
   const clean = stripCommittedLoader(env.NODE_OPTIONS ?? '', currentRoot, loaderPaths);
   const childEnv = { ...env };
+  delete childEnv.PAPERCUSP_MUTATION_PROBE_BASELINE_SUBJECT;
   if (clean.value) childEnv.NODE_OPTIONS = clean.value;
   else delete childEnv.NODE_OPTIONS;
 
