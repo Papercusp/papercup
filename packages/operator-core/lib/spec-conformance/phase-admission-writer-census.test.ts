@@ -2861,9 +2861,62 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('recovers literal unary and arithmetic proofs and a decisive trailing dispatch identity across stream batches', async () => {
+  it('checks primitive-only untagged template substitutions through the native tree guard', () => {
+    const effects: string[] = [];
+    const supplied = { [Symbol.toPrimitive]() { effects.push('coercion'); return 'value'; } };
+    const tag = (_strings: TemplateStringsArray, value: number) => { effects.push('tag'); return value; };
+    expect(`${supplied}`).toBe('value');
+    expect(tag`${7}`).toBe(7);
+    expect(effects).toEqual(['coercion', 'tag']);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-primitive-template-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/template.ts';
+      const literals = [
+        '`key:${1}:${ /* literal */ "text"}:${true}:${null}:${2n}:${`nested`}`',
+        '`${7}:${7}:${false}`',
+      ];
+      const exact = 'const templates = [' + literals.join(', ') + '];';
+      writeFileSync(join(root, path), exact);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      expect(inert.inventory.sites.map(site => site.statement).sort()).toEqual([...literals].sort());
+      const identities = inert.inventory.sites.map(site => site.id);
+      expect(inert.census.coverage).toEqual({
+        population: identities, checked: identities, notChecked: [], notApplicable: [], residue: [],
+      });
+      for (const row of inert.census.syntaxReviews) {
+        const site = inert.inventory.sites.find(candidate => candidate.id === row.siteId)!;
+        expect(row).toMatchObject({ disposition: 'metadata-only', sourceSha256: site.sourceSha256,
+          statementSha256: site.statementSha256, sourceProofs: [{ path, sha256: site.sourceSha256 }] });
+        expect(row.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+      expect(inert.inventory.sites.find(site => site.statement === literals[1])?.dynamicEdges).toEqual(['7', 'false']);
+
+      const controls = ['`${supplied}`', '`${undefined}`', '`${(7)}`', 'tag`${7}`'];
+      writeFileSync(join(root, path), exact + 'function render(supplied, undefined, tag) { return ['
+        + controls.join(', ') + ']; }');
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const report = reconcilePhaseWriterCensus(current, []);
+      const remaining = current.sites.filter(site => report.coverage.residue.includes(site.id));
+      expect([...new Set(remaining.map(site => site.statement))].sort()).toEqual([...controls].sort());
+      expect(report.coverage.checked).toHaveLength(literals.length);
+
+      const coerced = remaining.find(site => site.statement === controls[0])!;
+      const forged = { ...current, sites: current.sites.map(site => site.id === coerced.id
+        ? { ...site, syntaxWitness: inert.inventory.sites[0]!.syntaxWitness } : site) };
+      expect(reconcilePhaseWriterCensus(forged, [])).toEqual(report);
+      const stale = reconcilePhaseWriterCensus(current, inert.census.syntaxReviews);
+      expect(stale.coverage.checked).toEqual([]);
+      expect(stale.problems.filter(problem => problem.reasons.includes('stale-review'))).toHaveLength(literals.length);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('recovers literal unary, arithmetic and template proofs and a decisive trailing dispatch identity across stream batches', async () => {
     for (const size of [3, 4, 5, 81]) {
-      const terms = Array.from({ length: size }, (_, index) => index % 2 === 0 ? '-7' : '2 * 2');
+      const examples = ['-7', '2 * 2', '`${7}:${"a"}`'];
+      const terms = Array.from({ length: size }, (_, index) => examples[index % examples.length]);
       const literals = source('const values = [' + terms.join(', ') + '];', 'packages/literals.ts');
       const tail = source('const read = () => +subject;', 'packages/tail.ts');
       const inventory = inventoryPhaseWriters([tail, literals]);

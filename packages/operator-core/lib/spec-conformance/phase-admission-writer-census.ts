@@ -343,7 +343,12 @@ const nonCoerciveBinaryOperators = new Set([
 const implicitDispatchReview = 'implicit-dispatch-requires-review';
 const numericLiteralUnary = 'numeric-literal-unary';
 const numericLiteralArithmetic = 'numeric-literal-arithmetic';
-type NumericLiteralWitness = typeof numericLiteralUnary | typeof numericLiteralArithmetic;
+const primitiveLiteralTemplate = 'primitive-literal-template';
+type PhaseWriterSyntaxWitness = typeof numericLiteralUnary | typeof numericLiteralArithmetic | typeof primitiveLiteralTemplate;
+const primitiveLiteralKinds = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.NumericLiteral,
+  ts.SyntaxKind.BigIntLiteral, ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword,
+]);
 const numericUnaryOperators = new Set<ts.SyntaxKind>([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.TildeToken]);
 const numericArithmeticOperators = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken,
@@ -402,7 +407,7 @@ export interface PhaseWriterSite {
   helperDeclaration?: SymbolDeclaration;
   invocation?: PhaseWriterInvocation;
   argumentFlow?: PhaseWriterArgumentFlow;
-  syntaxWitness?: NumericLiteralWitness;
+  syntaxWitness?: PhaseWriterSyntaxWitness;
 }
 export interface PhaseWriterInventory {
   schemaVersion: 1;
@@ -765,12 +770,12 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
       // witness for source-bound disposition.
       // Append after explicit sites so duplicate syntax cannot renumber any
       // existing reviewed occurrence or discard an earlier opaque frontier.
-      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[]; syntaxWitness?: NumericLiteralWitness }> = [];
+      const implicitEffects: Array<{ node: ts.Node; operands: ts.Node[]; syntaxWitness?: PhaseWriterSyntaxWitness }> = [];
       const isAsync = (node: ts.Node): boolean => ts.canHaveModifiers(node)
         && !!ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.AsyncKeyword);
       const captureImplicitEffect = (node: ts.Node): void => {
         let expression = node, operands: ts.Node[] | undefined;
-        let syntaxWitness: NumericLiteralWitness | undefined;
+        let syntaxWitness: PhaseWriterSyntaxWitness | undefined;
         if (ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)) {
           expression = node.parent;
           const declaration = node.parent;
@@ -787,6 +792,9 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           operands = [node.expression];
         } else if (ts.isTemplateExpression(node) && !ts.isTaggedTemplateExpression(node.parent)) {
           operands = node.templateSpans.map(span => span.expression);
+          if (operands.length && operands.every(operand => primitiveLiteralKinds.has(operand.kind))) {
+            syntaxWitness = primitiveLiteralTemplate;
+          }
         } else if (ts.isBinaryExpression(node)) {
           const operator = node.operatorToken.kind;
           const destructuring = operator === ts.SyntaxKind.EqualsToken
@@ -1418,30 +1426,64 @@ const dispositions = new Set<PhaseWriterDisposition>([
   'advancing', 'safe-retreat', 'metadata-only', 'isolated-fixture', 'historical/unreachable',
 ]);
 
-function reviewNumericLiteral(site: PhaseWriterSite): PhaseWriterReview | undefined {
-  const unary = site.syntaxWitness === numericLiteralUnary;
-  const arithmetic = site.syntaxWitness === numericLiteralArithmetic;
-  if ((!unary && !arithmetic) || site.kind !== 'unresolved' || site.invocation
-    || site.callees.length || site.relations.length || site.columns.length
-    || site.unresolved.length !== 1 || site.unresolved[0] !== implicitDispatchReview
-    || digest(site.statement) !== site.statementSha256) return;
-  // Recheck the complete token sequence and the collector's exact operand edges.
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, site.statement);
+function scanPrimitiveTemplateOperands(scanner: ts.Scanner): Set<string> | undefined {
+  let templateToken = scanner.scan();
+  if (templateToken !== ts.SyntaxKind.TemplateHead) return;
   const operands = new Set<string>();
-  if (arithmetic) {
+  do {
+    if (!primitiveLiteralKinds.has(scanner.scan()) || scanner.isUnterminated()) return;
+    operands.add(scanner.getTokenText());
+    if (scanner.scan() !== ts.SyntaxKind.CloseBraceToken) return;
+    templateToken = scanner.reScanTemplateToken(false);
+    if (scanner.isUnterminated()) return;
+  } while (templateToken === ts.SyntaxKind.TemplateMiddle);
+  if (templateToken === ts.SyntaxKind.TemplateTail) return operands;
+}
+
+function scanNumericLiteralOperands(scanner: ts.Scanner, unary: boolean): Set<string> | undefined {
+  const operands = new Set<string>();
+  if (!unary) {
     if (scanner.scan() !== ts.SyntaxKind.NumericLiteral) return;
     operands.add(scanner.getTokenText());
   }
   const operators = unary ? numericUnaryOperators : numericArithmeticOperators;
   if (!operators.has(scanner.scan()) || scanner.scan() !== ts.SyntaxKind.NumericLiteral) return;
   operands.add(scanner.getTokenText());
-  if (scanner.scan() !== ts.SyntaxKind.EndOfFileToken || operands.size !== site.dynamicEdges.length
+  return operands;
+}
+
+const syntaxProofs = {
+  [numericLiteralUnary]: {
+    reason: 'This unary expression directly consumes a numeric literal. Evaluating it and coercing its primitive Number cannot dispatch user code.',
+    semantics: 'sec-unary-operators',
+  },
+  [numericLiteralArithmetic]: {
+    reason: 'Both operands are Number literals. This arithmetic operation evaluates and combines primitive numbers without dispatching user code.',
+    semantics: 'sec-applystringornumericbinaryoperator',
+  },
+  [primitiveLiteralTemplate]: {
+    reason: 'Every substitution in this untagged template is a direct primitive literal. Evaluating and converting these values to strings cannot dispatch user code.',
+    semantics: 'sec-template-literals-runtime-semantics-evaluation',
+  },
+} satisfies Record<PhaseWriterSyntaxWitness, { reason: string; semantics: string }>;
+
+function reviewSyntaxWitness(site: PhaseWriterSite): PhaseWriterReview | undefined {
+  const witness = site.syntaxWitness;
+  if (!witness || !Object.hasOwn(syntaxProofs, witness) || site.kind !== 'unresolved' || site.invocation
+    || site.callees.length || site.relations.length || site.columns.length
+    || site.unresolved.length !== 1 || site.unresolved[0] !== implicitDispatchReview
+    || digest(site.statement) !== site.statementSha256) return;
+  // Recheck the complete token sequence and the collector's exact operand edges.
+  let lexicalError = false;
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, site.statement,
+    () => { lexicalError = true; });
+  const operands = witness === primitiveLiteralTemplate ? scanPrimitiveTemplateOperands(scanner)
+    : scanNumericLiteralOperands(scanner, witness === numericLiteralUnary);
+  if (!operands || scanner.scan() !== ts.SyntaxKind.EndOfFileToken || lexicalError
+    || operands.size !== site.dynamicEdges.length
     || [...operands].some((operand, index) => site.dynamicEdges[index] !== operand)) return;
 
-  const reason = unary
-    ? 'This unary expression directly consumes a numeric literal. Evaluating it and coercing its primitive Number cannot dispatch user code.'
-    : 'Both operands are Number literals. This arithmetic operation evaluates and combines primitive numbers without dispatching user code.';
-  const semantics = unary ? 'sec-unary-operators' : 'sec-applystringornumericbinaryoperator';
+  const { reason, semantics } = syntaxProofs[witness];
   const evidenceRefs = [`source:${site.path}#${site.sourceSha256}`, `https://tc39.es/ecma262/#${semantics}`];
   return { siteId: site.id, sourceSha256: site.sourceSha256, statementSha256: site.statementSha256,
     sourceProofs: [{ path: site.path, sha256: site.sourceSha256 }], disposition: 'metadata-only', reason, evidenceRefs,
@@ -1462,7 +1504,7 @@ export function reconcilePhaseWriterCensus(inventory: PhaseWriterInventory,
   for (const site of inventory.sites) {
     coverage.population.push(site.id);
     const candidates = byId.get(site.id) ?? [];
-    const syntaxReview = candidates.length === 0 ? reviewNumericLiteral(site) : undefined;
+    const syntaxReview = candidates.length === 0 ? reviewSyntaxWitness(site) : undefined;
     const review = candidates.length === 1 ? candidates[0] : syntaxReview;
     const reasons: string[] = [];
     if (!review) reasons.push(candidates.length ? 'duplicate-review' : 'unclassified-writer');
