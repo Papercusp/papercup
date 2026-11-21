@@ -5,6 +5,12 @@ const sid = '11111111-1111-4111-8111-111111111111';
 const jsonl = (records: unknown[]) => records.map((record) => JSON.stringify(record)).join('\n') + '\n';
 const codexHeader = { type: 'session_meta', payload: { id: sid } };
 const ompHeader = { type: 'session', id: sid };
+const codexCatalog = {
+  type: 'additional_tools', role: 'developer', id: 'private-catalog-id',
+  tools: [{ type: 'namespace', name: 'private-catalog-name', tools: [
+    { type: 'function', name: 'private-function', description: 'private-catalog-description' },
+  ] }],
+};
 
 describe('native session-port adapters', () => {
   it('retains Codex tool inputs/results as linked inert evidence without provider ids or reasoning', () => {
@@ -42,6 +48,40 @@ describe('native session-port adapters', () => {
       { type: 'text', text: 'summary' }, { type: 'text', text: 'kept tail' }, { type: 'text', text: 'next' },
     ]);
     expect(adapted.turns[0]?.compactSummary).toBe(true);
+  });
+
+  it('accounts for developer tool catalogs without importing declarations or losing the first compacted turn', () => {
+    const message = { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'summary' }] };
+    const catalogRecord = { type: 'response_item', payload: codexCatalog };
+    const source = jsonl([
+      codexHeader, catalogRecord,
+      { type: 'compacted', payload: { replacement_history: [codexCatalog, message] } },
+      catalogRecord,
+      { type: 'event_msg', payload: { type: 'user_message', message: 'summary' } },
+      { type: 'event_msg', payload: { type: 'agent_message', message: 'decision' } },
+    ]);
+    const adapted = adaptCodexJsonl(source, sid);
+    expect(adapted.turns.map(turn => turn.blocks)).toEqual([
+      [{ type: 'text', text: 'summary' }], [{ type: 'text', text: 'decision' }],
+    ]);
+    expect(adapted.turns[0].compactSummary).toBe(true);
+    expect(adapted.warnings).toContain('3 Codex developer tool catalog record(s) omitted');
+    expect(JSON.stringify(adapted)).not.toMatch(/private-catalog|private-function/);
+    expect(() => adaptCodexJsonl(source, 'another-session')).toThrow(/exact native session/);
+    expect(() => adaptCodexJsonl(jsonl([codexHeader, catalogRecord]), sid)).toThrow(/no material conversation/);
+    expect(() => adaptCodexJsonl(jsonl([codexHeader,
+      { type: 'compacted', payload: { replacement_history: [codexCatalog] } },
+    ]), sid)).toThrow(/no portable replacement history/);
+  });
+
+  it.each([
+    { ...codexCatalog, role: 'user' },
+    { ...codexCatalog, tools: {} },
+    { ...codexCatalog, tools: [null] },
+    { ...codexCatalog, content: [{ type: 'input_text', text: 'material history' }] },
+  ])('refuses a malformed Codex tool catalog', payload => {
+    expect(() => adaptCodexJsonl(jsonl([codexHeader, { type: 'response_item', payload }]), sid))
+      .toThrow(/unsupported Codex response item/);
   });
 
   it('selects the OMP active branch, retains tool pairs and excludes another branch', () => {

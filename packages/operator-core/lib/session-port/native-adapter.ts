@@ -60,6 +60,7 @@ export function adaptCodexJsonl(jsonl: string, nativeSessionId: string): ClaudeA
   let parent: string | null = null;
   const state: { lastVisible: { key: string; wire: string } | null } = { lastVisible: null };
   let serial = 0;
+  let omittedToolCatalogs = 0;
   const append = (role: string, content: unknown, timestamp: unknown, compactSummary = false) => {
     const uuid = `codex-${++serial}`;
     normalized.push({ uuid, parentUuid: parent, type: role === 'assistant' ? 'assistant' : 'user',
@@ -88,6 +89,11 @@ export function adaptCodexJsonl(jsonl: string, nativeSessionId: string): ClaudeA
       append('tool', [{ type: 'tool_result', tool_use_id: payload.call_id, content: output, is_error: payload.is_error }], timestamp);
     } else if (payload.type === 'reasoning') {
       append('assistant', [{ type: 'thinking', signature: payload.encrypted_content }], timestamp);
+    } else if (payload.type === 'additional_tools' && payload.role === 'developer' && Array.isArray(payload.tools)
+      && Object.keys(payload).every(key => ['type', 'id', 'role', 'tools'].includes(key))
+      && payload.tools.every((tool) => typeof tool?.type === 'string' && tool.type.length > 0)) {
+      // The source snapshot retains the catalog. The target gets its capabilities from its own runtime.
+      omittedToolCatalogs++;
     } else {
       throw new Error(`unsupported Codex response item ${String(payload.type)}`);
     }
@@ -107,13 +113,16 @@ export function adaptCodexJsonl(jsonl: string, nativeSessionId: string): ClaudeA
       parent = null;
       state.lastVisible = null;
       if (Array.isArray(payload.replacement_history) && payload.replacement_history.length) {
-        payload.replacement_history.forEach((item: RecordValue, index: number) => response(item, record.timestamp, index === 0));
+        for (const item of payload.replacement_history) response(item, record.timestamp, normalized.length === 0);
+        if (!normalized.length) throw new Error('Codex compaction has no portable replacement history');
       } else if (typeof payload.message === 'string' && payload.message.trim()) {
         append('user', [{ type: 'text', text: payload.message }], record.timestamp, true);
       } else throw new Error('Codex compaction has no portable replacement history');
     }
   }
-  return materialize(normalized, source.length);
+  const adapted = materialize(normalized, source.length);
+  if (omittedToolCatalogs) adapted.warnings.push(`${omittedToolCatalogs} Codex developer tool catalog record(s) omitted`);
+  return adapted;
 }
 
 export function adaptOmpJsonl(jsonl: string, nativeSessionId: string): ClaudeAdaptResult {
