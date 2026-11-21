@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { sessionOutsidePlanRefSchema } from './session-outside-plan';
 
 // The external system owns the spelling. Validate without trimming or parsing it.
 export const externalPlanRefSchema = z.string().refine(
@@ -8,7 +9,11 @@ export const externalPlanRefSchema = z.string().refine(
 
 // The new launch/create spelling has a contractual limit. Historical references
 // retain their original spelling and length through external_plan_ref and reads.
-export const workItemPlanRefSchema = externalPlanRefSchema.min(1).max(200);
+export const workItemPlanRefSchema = sessionOutsidePlanRefSchema;
+
+// Persisted identities have no new length cap. The legacy argument above keeps
+// its original validation; newly launched opaque labels may consist of spaces.
+const storedExternalPlanRefSchema = z.string().min(1).refine(value => !value.includes('\0'));
 
 export function resolveWorkItemOutsidePlanRef(
   input: { planRef?: string; external_plan_ref?: string; payload?: unknown; plan_item?: unknown },
@@ -38,12 +43,12 @@ export function resolveWorkItemOutsidePlanRef(
 export function externalPlanRefFromPayload(payload: unknown): string | undefined {
   if (!payload || typeof payload !== 'object' || !('externalPlanRef' in payload)) return undefined;
   const ref = payload.externalPlanRef;
-  return typeof ref === 'string' && ref.trim().length > 0 ? ref : undefined;
+  return typeof ref === 'string' && ref.length > 0 ? ref : undefined;
 }
 
 export function payloadWithExternalPlanRef(payload: unknown, ref?: string): unknown {
   if (ref === undefined) return payload;
-  externalPlanRefSchema.parse(ref);
+  storedExternalPlanRefSchema.parse(ref);
   if (payload != null && (typeof payload !== 'object' || Array.isArray(payload))) {
     throw new Error('An externally referenced work item requires an object payload');
   }
