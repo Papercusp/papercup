@@ -588,11 +588,19 @@ export const SUBJECT_EVIDENCE_TIMEOUT_MS = 4_000;
 function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
   const constraint = params.nativeConsult;
   if (!constraint) return sql`TRUE`;
+  const exactNative = sql`CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
+                              ELSE a.session_id END = session_turns.session_id`;
+  // An exact ended registration survives a later backend change. For a
+  // reanchored transcript, match resolveResumeTarget's registration ordering:
+  // an unrelated old row cannot supply the backend of the selected history.
   const state = constraint.sourceState === 'live'
-    ? sql`a.ended_at IS NULL AND
-        CASE WHEN a.agent = 'omp' THEN COALESCE(a.omp_thread_id, a.session_id)
-             ELSE a.session_id END = session_turns.session_id`
-    : sql`a.ended_at IS NOT NULL`;
+    ? sql`a.ended_at IS NULL AND ${exactNative}`
+    : sql`a.ended_at IS NOT NULL AND (${exactNative} OR a.id = (
+        SELECT r.id FROM harness_shared.adv_sessions r
+         WHERE r.workspace_id = a.workspace_id AND r.coord_owner_id = a.coord_owner_id
+         ORDER BY (r.session_id = session_turns.session_id) DESC, r.id DESC
+         LIMIT 1
+      ))`;
   const claimed = constraint.requireSourcePlanClaims ? sql`EXISTS (
     SELECT 1 FROM harness_shared.plan_item_claims c
      WHERE c.workspace_id = a.workspace_id AND c.owner = a.coord_owner_id

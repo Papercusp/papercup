@@ -278,6 +278,33 @@ describe('native source population before retrieval and subject bounds', () => {
     expect(result.qualified[0]?.evidence[0]?.session_id).toBe('historical-native');
   });
 
+  it.each([1, 2, 3, 8])('keeps an exact ended source visible behind %i incompatible histories', async count => {
+    const compatible = 'ended-exact-source';
+    const turnLimit = 2;
+    const addSuccessor = async (owner: string) => {
+      await rootSql`INSERT INTO harness_shared.adv_sessions
+        (workspace_id, coord_owner_id, agent, session_id, ended_at)
+        VALUES (${WS}, ${owner}, 'codex', ${'codex-' + owner}, ${NOW.toISOString()}::timestamptz)`;
+    };
+    const addCompatible = async () => {
+      await source(compatible, 0.25, { ended: true });
+      await addSuccessor(compatible);
+    };
+    // In both insertion orders the rotation histories rank closer to the query.
+    if (count % 2 === 0) await addCompatible();
+    for (let index = 0; index < count; index++) {
+      const owner = 'ended-rotated-source-' + index;
+      await source(owner, index * 0.01, { ended: true, currentSession: 'unrelated-' + owner });
+      await addSuccessor(owner);
+    }
+    if (count % 2 !== 0) await addCompatible();
+
+    const result = await routeConsult({ ...baseParams, turnLimit,
+      nativeConsult: { ...nativeConsult, sourceState: 'ended' } }, deps(0));
+    expect(result.qualified.map(candidate => candidate.ownerId)).toEqual([compatible]);
+    expect(result.qualified[0]?.evidence.map(ref => ref.session_id)).toEqual(['sess-' + compatible]);
+  });
+
   it('requires genuine source plan leases before bounded semantic and lexical retrieval', async () => {
     await source('native-plan-empty', 0.01);
     await source('native-plan-expired', 0.02);

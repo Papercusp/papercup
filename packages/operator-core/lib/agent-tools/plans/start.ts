@@ -899,7 +899,10 @@ export default defineTool({
           typeof import('./plan-admission-preflight').liftMigrationParkedCoverage
         >> | null = null;
         let migrationParkLiftError: string | null = null;
-        if (promotion && !promotionError && read) {
+        const promotionSucceeded = promotion !== null && !promotionError && !promotion.flagOff &&
+          !promotion.specTriadBlocked && !promotion.specQualityBlocked && !promotion.acceptanceBarBlocked &&
+          !promotion.planUnreadable && !promotion.templateExcluded && !promotion.dependencyBlocked;
+        if (promotion && promotionSucceeded && read) {
           try {
             const [{ liftMigrationParkedCoverage }, { resolveAgentIdentity }] = await Promise.all([
               import('./plan-admission-preflight'),
@@ -910,6 +913,7 @@ export default defineTool({
               harnessSlug,
               planSlug: slug,
               planItems: read.row.items.length ? planItemsForRow(read.row) : read.parsed.items,
+              promotedWorkItems: promotion.workItems,
               actor: resolveAgentIdentity(ctx).ownerId,
             });
           } catch (error) {
@@ -993,6 +997,12 @@ export default defineTool({
         let claimSpecBinding: Awaited<ReturnType<typeof import('../../scheduler/claim-spec-store').setClaimSpec>> | null = null;
         let claimSpecBindingError: string | null = null;
         try {
+          if (migrationParkLiftError !== null) throw new Error(`Migration park reconciliation failed: ${migrationParkLiftError}`);
+          if (migrationParkLift?.unsettled.length) {
+            const subjects = migrationParkLift.unsettled.map(row =>
+              `${row.planItemIds.join(', ')} (${row.workItemId}: ${row.outcome})`);
+            throw new Error(`Migration park reconciliation remains unsettled for ${subjects.join('; ')}.`);
+          }
           const [{ preflightExactPlanAdmission, buildExactPlanClaimSpec, allowsPlanExecutionStart }, { resolveAgentIdentity }] = await Promise.all([
             import('./plan-admission-preflight'),
             import('../coordination/identity'),
@@ -1029,7 +1039,7 @@ export default defineTool({
           // for an authored worker policy. Preserve cohort/dependency exceptions,
           // exclusions, ranking and limits, including inherited fleet policy.
           // Only an unscoped solo starter needs a new exact-plan default binding.
-          if (admissionAllowsStart) {
+          if (admissionAllowsStart && promotionSucceeded) {
             try {
               const { getClaimSpecRecord, setClaimSpec } = await import('../../scheduler/claim-spec-store');
               const current = await getClaimSpecRecord({ cupId: ownerId, workspaceId: startWorkspaceId });
@@ -1070,6 +1080,9 @@ export default defineTool({
                 ? `Item promotion is blocked by the acceptance BAR contract: ${promotion.acceptanceBarLifecycle?.message ?? 'inspect `promotion.acceptanceBarLifecycle` before retrying.'}`
               : promotion?.flagOff
                 ? 'Item promotion is disabled by papercusp-plan-workitem-promotion; no queue rows were minted.'
+                : promotion?.planUnreadable ? 'Item promotion could not read the plan.'
+                : promotion?.templateExcluded ? `Item promotion excludes template ${promotion.templateExcluded}.`
+                : promotion?.dependencyBlocked ? 'Item promotion was refused by dependency validation.'
                 : promotion
                   ? `Item promotion completed before this response: promoted ${promotion.promoted}, skipped ${promotion.skipped}.`
                   : 'Item promotion returned no outcome; verify claimable work-items before launching a fleet.';
@@ -1092,6 +1105,8 @@ export default defineTool({
             slug,
             harnessSlug,
             status: axisLive ? 'started' : null,
+            executionStartIssued: false,
+            earlierSideEffectsMayHaveCommitted: true,
             updatedAt: row?.op_updated_at,
             autoApproved,
             transitioned,
@@ -1150,8 +1165,7 @@ export default defineTool({
         // A failed final append must never turn those partial effects into a grant.
         let executionStart: Awaited<ReturnType<typeof recordPlanExecutionStart>>;
         try {
-          if (!promotion || promotionError || promotedBlockError || promotion.flagOff
-            || promotion.specTriadBlocked || promotion.specQualityBlocked || promotion.acceptanceBarBlocked)
+          if (!promotionSucceeded || promotedBlockError)
             throw new Error('plan_start_promotion_incomplete');
           const scope = { workspaceId: startWorkspaceId, harnessSlug, planSlug: slug };
           const expected = await readExecutionPlanRow(scope);
