@@ -218,12 +218,12 @@
   "reviews": [
     {
       "siteId": "[\"packages/operator-core/lib/agent-tools/work_items/_create-core.ts\",\"createOneWorkItemCore\",\"unresolved\",\"9d218b7dbf89afd4cf530336daefccd96ff31e2a6461796f8b5c95bdcbed2ed2\"]#1",
-      "sourceSha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6",
+      "sourceSha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b",
       "statementSha256": "9d218b7dbf89afd4cf530336daefccd96ff31e2a6461796f8b5c95bdcbed2ed2",
       "sourceProofs": [
         {
           "path": "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
-          "sha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6"
+          "sha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b"
         }
       ],
       "disposition": "metadata-only",
@@ -259,12 +259,12 @@
     },
     {
       "siteId": "[\"packages/operator-core/lib/agent-tools/work_items/_create-core.ts\",\"createOneWorkItemCore\",\"unresolved\",\"c50c58ede913c919945767c695854a480aece7d7db6f07120a28348bf650c78d\"]#1",
-      "sourceSha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6",
+      "sourceSha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b",
       "statementSha256": "c50c58ede913c919945767c695854a480aece7d7db6f07120a28348bf650c78d",
       "sourceProofs": [
         {
           "path": "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
-          "sha256": "1203d3ea69abfdff0a37791a41337abb8b975558be8640b351aac7fada83abc6"
+          "sha256": "2e02610b60ef4866869f7d2e0f755967e4572c0704ebfabc4e6b44e5489fa88b"
         }
       ],
       "disposition": "metadata-only",
