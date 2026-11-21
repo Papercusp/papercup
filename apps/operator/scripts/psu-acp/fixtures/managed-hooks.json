@@ -2,10 +2,12 @@
   "permissions": {
     "defaultMode": "auto",
     "disableBypassPermissionsMode": "disable",
-    "allow": []
+    "allow": [],
+    "ask": ["Write"]
   },
   "allowManagedPermissionRulesOnly": true,
   "allowManagedHooksOnly": true,
+  "allowedMcpServers": [{ "serverUrl": "http://127.0.0.1:8911/mcp" }],
   "strictPluginOnlyCustomization": ["hooks", "mcp", "agents"],
   "env": { "CLAUDE_CODE_USE_BEDROCK": "1" },
   "availableModels": ["sonnet", "haiku"],

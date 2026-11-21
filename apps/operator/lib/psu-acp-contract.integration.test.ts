@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const run = promisify(execFile);
 const client = fileURLToPath(new URL('../scripts/psu-acp/contract_client.py', import.meta.url));
@@ -37,15 +38,127 @@ const peer = `
   }
 `;
 
-async function invokeClient(cwd: string, args: string[], env = process.env) {
+async function invokeClient(cwd: string, args: string[], env = process.env,
+  command = [process.execPath, '--input-type=module', '--eval', peer]) {
   const python = env.PSU_ACP_TEST_PYTHON;
   const prefix = python ? [client] : ['run', '--no-project', '--script', client];
-  return run(python || 'uv', [...prefix, '--cwd', cwd, ...args, '--', process.execPath,
-    '--input-type=module', '--eval', peer], { env, timeout: 75_000 });
+  return run(python || 'uv', [...prefix, '--cwd', cwd, ...args, '--', ...command], { env, timeout: 75_000 });
 }
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+});
+
+describe.runIf(process.platform === 'linux')('pinned native ACP reference', () => {
+  const endpoint = process.env.DOCKER_HOST || 'unix:///run/docker-bench.sock';
+  const docker = (...args: string[]) => run('docker', ['--host', endpoint, ...args], { timeout: 90_000 });
+  const node = '/usr/local/bin/node';
+  let oracle: string;
+
+  beforeAll(async () => {
+    oracle = await mkdtemp(join(tmpdir(), 'psu-acp-reference-'));
+    const source = join(fixtures, 'reference');
+    await Promise.all(['package.json', 'package-lock.json', 'provider.mjs'].map(name =>
+      copyFile(join(source, name), join(oracle, name))));
+    await run('npm', ['ci', '--include=optional', '--ignore-scripts', '--prefer-offline',
+      '--no-audit', '--no-fund', '--workspaces=false'], { cwd: oracle, timeout: 120_000 });
+    await chmod(oracle, 0o755);
+  }, 130_000);
+
+  afterAll(async () => { if (oracle) await rm(oracle, { recursive: true, force: true }); });
+
+  it.each([
+    { profile: 'core', decision: 'none' }, { profile: 'hooks', decision: 'none' },
+    { profile: 'core', decision: 'allow_once' }, { profile: 'core', decision: 'reject_once' },
+    { profile: 'core', decision: 'cancelled' },
+  ])('runs a native reference turn under $profile with $decision', async ({ profile, decision }) => {
+    const image = (await docker('build', '--network=none', '--pull=false', '--quiet',
+      '--build-arg', 'PROFILE=' + profile, fixtures)).stdout.trim();
+    const native = '/oracle/node_modules/@anthropic-ai/claude-agent-sdk-linux-' + process.arch + '/claude';
+    const adapter = '/oracle/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js';
+    const hostNode = process.env.PSU_ACP_TEST_NODE || process.execPath;
+    const token = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const { stdout } = await docker('run', '-d', '--network', 'none', '--memory', '8g', '--memory-swap', '8g',
+      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      '--mount', 'type=bind,src=' + oracle + ',dst=/oracle,readonly',
+      '--mount', 'type=bind,src=' + hostNode + ',dst=' + node + ',readonly',
+      '-e', 'CLAUDE_CODE_EXECUTABLE=' + native, '-e', 'AWS_REGION=us-east-1',
+      '-e', 'FIXTURE_MCP_TOKEN_SHA256=' + tokenHash,
+      '-e', 'CLAUDE_CODE_SKIP_BEDROCK_AUTH=1', '-e', 'ANTHROPIC_BEDROCK_BASE_URL=http://127.0.0.1:8911',
+      image, node, '/oracle/provider.mjs');
+    const container = stdout.trim();
+    try {
+      const exec = (...args: string[]) => docker('exec', container, ...args);
+      await vi.waitFor(async () => {
+        await exec(node, '--input-type=module', '--eval',
+          "if (!(await fetch('http://127.0.0.1:8911/ready')).ok) process.exit(1)");
+      }, { timeout: 10_000, interval: 100 });
+      const policy = '/etc/claude-code/managed-settings.json';
+      expect((await exec('id', '-u')).stdout.trim()).toBe('65534');
+      expect((await exec('stat', '-c', '%u:%g %a', policy)).stdout.trim()).toBe('0:0 444');
+      expect((await exec('cat', policy)).stdout).toBe(await readFile(join(fixtures, 'managed-' + profile + '.json'), 'utf8'));
+      const version = (await exec(native, '--version')).stdout.trim();
+      expect(version).toMatch(/^2\.1\.293\b/);
+      const scenario = decision === 'none' ? profile : profile + '-' + decision;
+      const prompt = join(oracle, scenario + '.txt');
+      await writeFile(prompt, decision === 'none' ? 'Return the managed fixture receipt.' :
+        'Return the managed fixture receipt and exercise the fixture Write.');
+      const invocation = ['docker', '--host', endpoint, 'exec', '-i', container, node, adapter];
+      const choice = ['allow_once', 'reject_once'].includes(decision) ? ['--fixture-decision', decision] : [];
+      const credential = join(oracle, scenario + '.token');
+      await writeFile(credential, token, { mode: 0o600 });
+      const probe = await invokeClient('/work', ['--launch-cwd', oracle, '--expect-adapter-version', '0.88.0',
+        '--effort', 'low', '--prompt-timeout', '45', '--prompt-file', prompt,
+        '--fixture-mcp-token-file', credential, ...choice], process.env, invocation);
+      const trace = JSON.parse(probe.stdout);
+      const provider = (await exec('cat', '/work/provider-requests.jsonl')).stdout.trim().split('\n')
+        .map(line => JSON.parse(line));
+      const mcp = (await exec('cat', '/work/mcp-requests.jsonl')).stdout.trim().split('\n').map(line => JSON.parse(line));
+      const evidence = process.env.PSU_ACP_TRACE_DIR;
+      if (evidence) {
+        await mkdir(evidence, { recursive: true });
+        await writeFile(join(evidence, 'reference-' + scenario + '.json'),
+          JSON.stringify({ profile, decision, image, version, invocation, provider, mcp, trace }, null, 2) + '\n', { flag: 'wx' });
+      }
+      expect(mcp).toEqual(expect.arrayContaining(['initialize', 'tools/list'].map(method => ({ method, digest: tokenHash }))));
+      expect(probe.stdout + probe.stderr).not.toContain(token);
+      expect(trace).toMatchObject({ protocolVersion: 1, adapter: { version: '0.88.0' },
+        initialConfig: { mode: 'auto' }, selectedConfig: { effort: 'low' },
+        result: { stopReason: 'end_turn' } });
+      if (decision !== 'none') {
+        const receipt = '/work/permission-receipt.txt';
+        expect(provider).toContainEqual(expect.objectContaining({ emittedToolId: 'toolu_psu_acp_receipt' }));
+        expect(trace.permissions).toEqual([{ sessionId: trace.sessionId, toolCallId: 'toolu_psu_acp_receipt', decision }]);
+        const states = trace.updates.map(({ update }: { update: { toolCallId?: string; status?: string } }) => update)
+          .filter((update: { toolCallId?: string; status?: string }) => update.toolCallId === 'toolu_psu_acp_receipt' && update.status)
+          .map((update: { status: string }) => update.status);
+        expect(states[0]).toBe('pending');
+        expect(states.at(-1)).toBe(decision === 'allow_once' ? 'completed' : 'failed');
+        if (decision === 'allow_once') expect((await exec('cat', receipt)).stdout).toBe('approved fixture receipt\n');
+        else await exec('test', '!', '-e', receipt);
+        return;
+      }
+      expect(trace.permissions).toEqual([]);
+      const replies: string[] = [];
+      for (const { update } of trace.updates) {
+        if (update.sessionUpdate !== 'agent_message_chunk') continue;
+        if (update._meta?.claudeCode?.kind === 'informational') {
+          expect(update.content.text).not.toBe('');
+          continue;
+        }
+        expect(provider).toContainEqual(expect.objectContaining({
+          messageId: update.messageId, containsProbe: true, effort: 'low',
+        }));
+        replies.push(update.content.text);
+      }
+      expect(replies.join('')).toBe('Native managed fixture completed.\n/work/result.txt');
+      expect(trace.result.usage).toMatchObject({ totalTokens: 22, inputTokens: 14, outputTokens: 8 });
+    } finally {
+      await docker('rm', '-f', container);
+      expect((await docker('ps', '-aq', '--no-trunc', '--filter', 'id=' + container)).stdout.trim()).toBe('');
+    }
+  }, 140_000);
 });
 
 describe('psu ACP differential client', () => {
