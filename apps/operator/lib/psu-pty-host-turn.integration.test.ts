@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import { execPath } from 'node:process';
 import { tmpdir } from 'node:os';
@@ -2456,15 +2457,21 @@ it.each(['repaired', 'unavailable', 'wrong-route', 'auth', 'interactive', 'inter
  *  Resolves true once `substr` is seen, false at `timeoutMs`. */
 async function waitForOutput(
   capturedFn: () => string,
-  substr: string,
+  substr: string | RegExp,
   timeoutMs = 3000,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    if (capturedFn().includes(substr)) return true;
+    const output = capturedFn();
+    if (typeof substr === 'string' ? output.includes(substr) : substr.test(output)) return true;
     if (Date.now() >= deadline) return false;
     await sleep(15);
   }
+}
+
+async function expectChildOutput(ownerId: string, captured: () => string, marker: string | RegExp, timeoutMs: number) {
+  await waitForOutput(captured, marker, timeoutMs);
+  expect(captured(), hostTestDiagnostics(ownerId, captured)).toMatch(marker);
 }
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin.
@@ -2581,7 +2588,7 @@ function pasteAwareChildCode(ttlMs: number, pasteWindowMs: number): string {
  *  It also echoes 'ECHO:<line>' per
  *  newline-terminated stdin line, so a CR-submitted wake turn is observable.
  *  Self-exits after ttlMs. The output stream is what the host's mid-turn gate watches. */
-function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string, pausePath?: string): string {
+function busyChildOutputCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string, pausePath?: string): string {
   const pauseCondition = pausePath ? `&&!fs.existsSync(${JSON.stringify(pausePath)})` : '';
   const emitterCode = releasePath
     ? `const fs=require('node:fs');setInterval(()=>{if(!fs.existsSync(${JSON.stringify(releasePath)})${pauseCondition})fs.writeSync(1,'.');},${intervalMs});`
@@ -2595,7 +2602,13 @@ function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number
     "const {Worker}=require('node:worker_threads');" +
     `const emitter=new Worker(${JSON.stringify(emitterCode)},{eval:true});` +
     releaseCode +
-    "process.on('exit',()=>{void emitter.terminate();});" +
+    "process.on('exit',()=>{void emitter.terminate();});"
+  );
+}
+
+function busyThenIdleChildCode(busyMs: number, intervalMs: number, ttlMs: number, releasePath?: string, pausePath?: string): string {
+  return (
+    busyChildOutputCode(busyMs, intervalMs, ttlMs, releasePath, pausePath) +
     "process.stdin.setEncoding('utf8');let b='';" +
     "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});"
   );
@@ -2623,6 +2636,40 @@ function busyThenIdleChildCodeWithNativeProof(
     "process.stdin.setEncoding('utf8');let b='';",
     "process.stdin.setEncoding('utf8');let b='';" + nativeListener,
   );
+}
+
+// Model a full multiline prompt in the backend's private transcript. Only the
+// child's receipt of Enter may produce the user row and its completed turn.
+function nativeSubmitChildCode(transcript: string): string {
+  return String.raw`
+    const { appendFileSync } = require('node:fs');
+    const transcript = ${JSON.stringify(transcript)};
+    let composer = '', sequence = 0;
+    process.stdin.setRawMode(true);
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => {
+      for (const key of chunk) {
+        if (key === '\x04') process.exit(0);
+        if (key !== '\r') { composer += key; continue; }
+        if (!composer) continue;
+        const turnId = String(++sequence), timestamp = new Date().toISOString();
+        const rows = process.env.PAPERCUSP_AGENT === 'codex'
+          ? [
+              { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: composer }] } },
+              { type: 'event_msg', payload: { type: 'task_started', turn_id: turnId } },
+              { type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId } },
+            ]
+          : [
+              { type: 'user', uuid: 'user-' + turnId, message: { role: 'user', content: composer } },
+              { type: 'assistant', uuid: 'reply-' + turnId, parentUuid: 'user-' + turnId,
+                message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'done' }] } },
+            ];
+        appendFileSync(transcript, rows.map(row => JSON.stringify({ ...row, timestamp }) + '\n').join(''));
+        process.stdout.write('SUBMITTED:' + composer + '\n');
+        composer = '';
+      }
+    });
+  `;
 }
 
 it('the busy fixture keeps emitting while its agent main thread is blocked', async () => {
@@ -2708,11 +2755,8 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
       if (state === 'predecessor-settled') writeTurnRow('task_complete');
       const { captured, io } = fakeIo();
       const childCode = [
-        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        nativeSubmitChildCode(transcript),
         "process.stdout.write('READY\\n');setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
-        "let line='';process.stdin.on('data',d=>{for(const c of d){",
-        "if(c==='\\u0004')process.exit(0);",
-        "else if(c==='\\r'){if(line){process.stdout.write('SUBMITTED:'+line+'\\n');line='';}}else line+=c;}});",
         'setTimeout(()=>process.exit(0),4000);',
       ].join('');
       const done = hostThroughPty({
@@ -2751,12 +2795,12 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
           // pipeline settles. Poll its observable submit marker with the file's
           // established bounded shared-host budget; never replace this with a
           // flat sleep or treat the admission ACK as delivery proof.
-          expect(await waitForOutput(captured, 'SUBMITTED:warm-settled', 5_000)).toBe(true);
+          await expectChildOutput(ownerId, captured, /SUBMITTED:⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧\r?\nwarm-settled\r?\n/, 5_000);
           const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
           expect(events).not.toContain('"kind":"busy-gate-expired"');
         } else {
           await sleep(700);
-          expect(captured()).not.toContain(`SUBMITTED:warm-${state}`);
+          expect(captured()).not.toContain('SUBMITTED:');
           const events = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
           expect(events).toContain('"kind":"busy-gate-expired"');
           expect(events).toContain('"mode":"turn"');
@@ -3235,6 +3279,11 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
     async () => {
       const busyMs = 1_500;
       const ownerId = uniqueOwner('DEDUP-FOLDED-DEFER');
+      const nativeRoot = mkdtempSync(join(tmpdir(), 'folded-defer-native-'));
+      const project = join(nativeRoot, 'projects', 'fixture');
+      const nativeId = '66666666-6666-4666-8666-666666666666';
+      mkdirSync(project, { recursive: true });
+      const releaseBusy = join(nativeRoot, 'release');
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
@@ -3245,7 +3294,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         command: execPath,
         // Keep the parent waiter busy past its short cap, then leave the child
         // quiet long enough for a retry to exercise a fresh delivery cycle.
-        args: ['-e', busyThenIdleChildCode(busyMs, 50, 5_000)],
+        args: ['-e', busyChildOutputCode(busyMs, 50, 5_000, releaseBusy) + nativeSubmitChildCode(join(project, nativeId + '.jsonl'))],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -3253,6 +3302,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_IDLE_MS: '60',
+          CLAUDE_CONFIG_DIR: nativeRoot,
           // Force the cap-expiry branch without relying on repaint scheduling.
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '600',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
@@ -3262,6 +3312,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         },
         ownerId,
         advSessionId: 35_093,
+        resolveRespawnNativeId: () => nativeId,
         io,
         bridgeTty: true,
         onExit: (c: number) => {
@@ -3303,8 +3354,7 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
           reason: 'coalesced-into-pending-turn',
         });
 
-        // Anchor on the parent's actual cap expiry, then wait past the original
-        // busy window + quiet gate before retrying B.
+        // Keep the child busy until the parent waiter actually hits its cap.
         const capDeadline = Date.now() + 3_000;
         let events = '';
         while (Date.now() < capDeadline) {
@@ -3313,21 +3363,18 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
           await sleep(20);
         }
         expect(events).toContain('"kind":"busy-gate-expired"');
-        await sleep(busyMs + 300);
-        // P-005 / D-007: the PARENT is no longer abandoned when the busy cap expires — it
-        // is re-armed and delivered at the next clean boundary, so its own echo
-        // legitimately appears in this window. What THIS case guards is narrower and
-        // unchanged: the FOLDED delivery ID must not be burned by that settlement. So
-        // assert on the folded payload specifically. The original bare
-        // `not.toContain('ECHO:F03_DIAG')` matched either payload, which after P-005 is
-        // an assertion that the wake was ABANDONED — precisely the behavior the item
-        // exists to remove — so leaving it would have pinned the old defect in place.
-        expect(captured()).not.toContain('ECHO:F03_DIAG folded-B');
-        // Prove the re-arm actually ran, rather than inferring it from the absence of the
-        // folded echo: if the re-arm silently stopped firing, every assertion below would
-        // still pass while the wake-loss this plan fixes had quietly returned.
+        writeFileSync(releaseBusy, 'release\n');
+        // Only the parent owns this re-arm. B must still be available to retry
+        // after the child accepts A and its host records the delivery.
+        expect(captured()).not.toContain('F03_DIAG folded-B');
         const afterCap = existsSync(eventLog) ? readFileSync(eventLog, 'utf8') : '';
         expect(afterCap).toContain('"kind":"wake-rearm-queued"');
+        await vi.waitFor(() => {
+          expect(readEvents(ownerId)).toContainEqual(expect.objectContaining({
+            kind: 'wake-rearm-delivered', deliveredDeliveryId: 'f03-parent-a',
+          }));
+        }, { timeout: 5_000 });
+        expect(captured()).not.toContain('F03_DIAG folded-B');
 
         const retry = await injectIntoHostWithConfirmation(sock, {
           ...envelope,
@@ -3336,21 +3383,18 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
           fireNumber: 2,
         });
         expect(retry).toMatchObject({ ok: true, confirmation: 'acked', reason: 'accepted' });
-        expect(await waitForOutput(captured, 'ECHO:F03_DIAG folded-B', 6_000)).toBe(true);
+        await expectChildOutput(ownerId, captured, /SUBMITTED:⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧\r?\nF03_DIAG folded-B\r?\n/, 6_000);
         await sleep(300);
 
         const output = captured();
-        expect((output.match(/ECHO:F03_DIAG folded-B/g) ?? []).length).toBe(1);
-        // P-005 / D-007: the parent is DELIVERED now — re-armed at the next clean boundary
-        // instead of abandoned at the busy cap — so assert it arrived EXACTLY ONCE. That is
-        // strictly stronger than the original `not.toContain(...)`: it proves the re-arm ran
-        // AND that it did not double-inject alongside the folded retry, where the old form
-        // could only ever prove the wake had been lost.
-        expect((output.match(/ECHO:F03_DIAG parent-A/g) ?? []).length).toBe(1);
+        expect(output.match(/F03_DIAG folded-B\r?\n/g)).toHaveLength(1);
+        expect(output.match(/F03_DIAG parent-A\r?\n/g)).toHaveLength(1);
       } finally {
+        writeFileSync(releaseBusy, 'release\n');
         await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
         await done;
         rmSync(meta, { force: true });
+        rmSync(nativeRoot, { recursive: true, force: true });
       }
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
@@ -3928,14 +3972,20 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // becomes the waiter, later same-key arrivals FOLD into it (newest text
       // wins), and exactly ONE annotated turn lands.
       const ownerId = uniqueOwner('COALESCE');
-      const releaseBusy = join(PSU_PTY_DIR, `${ownerId}.release`);
+      const root = mkdtempSync(join(tmpdir(), 'coalesced-turn-native-'));
+      const project = join(root, 'projects', 'fixture');
+      const nativeId = '77777777-7777-4777-8777-777777777777';
+      mkdirSync(project, { recursive: true });
+      const transcript = join(project, nativeId + '.jsonl');
+      const provenanceDir = join(root, 'provenance');
+      const releaseBusy = join(root, 'release');
       const { captured, io } = bridgedIo();
 
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
         // Keep every same-source wake inside one parent-owned busy window.
-        args: ['-e', busyThenIdleChildCode(900, 50, 5000, releaseBusy)],
+        args: ['-e', busyChildOutputCode(900, 50, 5000, releaseBusy) + nativeSubmitChildCode(transcript)],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
@@ -3945,9 +3995,12 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
           PAPERCUSP_PSU_PTY_IDLE_MS: '60',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000',
+          PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+          CLAUDE_CONFIG_DIR: root,
         },
         ownerId,
         advSessionId: 8883,
+        resolveRespawnNativeId: () => nativeId,
         io,
         bridgeTty: true,
         onExit: (c: number) => {
@@ -3955,7 +4008,11 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
         },
       });
 
-      onTestFinished(async () => { writeFileSync(releaseBusy, 'release\n'); await done; });
+      onTestFinished(async () => {
+        writeFileSync(releaseBusy, 'release\n');
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      });
 
       const host = await waitForHost(ownerId);
       expect(host).not.toBeNull();
@@ -3965,11 +4022,13 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // Three same-source wakes while mid-turn: identical first line (the coalesce
       // key — a loop's wake texts share it), differing detail (the checkpoint splice).
       for (let n = 1; n <= 3; n++) {
-        const ok = await injectIntoHost(host!.sock, {
+        const confirmation = await injectIntoHostWithConfirmation(host!.sock, {
           mode: 'turn',
           data: `LOOPWAKE goal G\ndetail-${n}`,
         });
-        expect(ok).toBe(true);
+        expect(confirmation, hostTestDiagnostics(ownerId, captured)).toMatchObject({
+          ok: true, reason: n === 1 ? 'accepted' : 'coalesced-into-pending-turn',
+        });
       }
 
       writeFileSync(releaseBusy, 'release\n');
@@ -3980,21 +4039,23 @@ describe('psu-pty-host mid-turn inject safety: a turn DEFERS until the agent is 
       // falsifying power — the old flat sleep had no observation anchor at all,
       // so under load it could sample before even the FIRST delivery landed and
       // read a race as a clean pass.
-      expect(await waitForOutput(captured, 'ECHO:detail-3', 6000)).toBe(true);
-      await sleep(500);
-      const out = captured();
-      // Exactly one turn delivered — not three.
-      expect(out.split('ECHO:LOOPWAKE goal G').length - 1).toBe(1);
-      // Newest text won; the folded earlier texts were never written at all.
-      expect(out).toContain('ECHO:detail-3');
-      expect(out).not.toContain('detail-1');
-      expect(out).not.toContain('detail-2');
-      // The delivery is annotated so the agent treats it as ONE wake.
-      expect(out).toContain('2 duplicate queued wakes were coalesced');
-
+      await expectChildOutput(ownerId, captured, /SUBMITTED:⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧\r?\nLOOPWAKE goal G\r?\ndetail-3\r?\n/, 6000);
       const code = await done;
       expect(code).toBe(0);
       expect(exitCode).toBe(0);
+      const prompts = readFileSync(transcript, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+        .filter(row => row.type === 'user').map(row => row.message.content as string);
+      expect(prompts).toHaveLength(1);
+      const [origin, ...body] = prompts[0].split('\n');
+      expect(body).toEqual(['LOOPWAKE goal G', 'detail-3',
+        '(2 duplicate queued wakes were coalesced into this ONE delivery while your session was busy — treat this as a single wake, not 3 separate ones)']);
+      expect(captured()).not.toContain('detail-1');
+      expect(captured()).not.toContain('detail-2');
+      const nonce = /^⟦turn-origin:host-control nonce:([a-f0-9]{16})⟧$/.exec(origin)?.[1];
+      expect(nonce).toBeDefined();
+      const origins = readFileSync(join(provenanceDir, ownerId + '.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(origins).toContainEqual(expect.objectContaining({ sid: ownerId, nonce, origin: 'host-control',
+        sha256: createHash('sha256').update(body.join('\n')).digest('hex') }));
     },
     20_000,
   );
@@ -4476,7 +4537,7 @@ describe('psu-pty-host turn SUBMITS because the CR is a SEPARATE keystroke (past
       // machine with several PTY children and having widened the READY wait to
       // 10s for exactly that reason — the submit assertion right after it was
       // left on a fixed sleep, which is the same load-sensitivity one line down.
-      expect(await waitForOutput(captured, 'SUBMIT:paste-then-enter', 5000)).toBe(true);
+      await expectChildOutput(ownerId, captured, /SUBMIT:⟦turn-origin:host-control nonce:[a-f0-9]{16}⟧⏎paste-then-enter\r?\n/, 5000);
 
       const code = await done;
       expect(code).toBe(0);

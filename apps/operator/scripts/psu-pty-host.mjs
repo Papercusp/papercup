@@ -10054,7 +10054,7 @@ export async function runMcpReconnectMacro({
 // differ — those still deliver independently.
 
 /** Coalesce key for an injected turn: a loop's stable instance id when present,
- *  otherwise its first non-empty line, trimmed+capped. Loop short-form wakes
+ *  otherwise its complete first non-empty line, trimmed. Loop short-form wakes
  *  lead with `Loop wake #<fireNumber>`, so text-only keys treat every fire as a
  *  different source and let a queued backlog spend one turn per fire. The
  *  envelope's routineId is the stable identity we actually want to coalesce.
@@ -10084,11 +10084,12 @@ export function turnCoalesceKey(data, routineId, ownerId) {
   const first = String(data ?? '')
     .split('\n')
     .find((l) => l.trim().length > 0);
-  return `${ownerPrefix}${(first ?? '').trim().slice(0, 300)}`;
+  return `${ownerPrefix}${(first ?? '').trim()}`;
 }
 
-function turnCoalesceMetadata(message) {
+function turnCoalesceMetadata(message, hostSourceText) {
   return {
+    hostSourceText,
     ...(message.routineId && message.fireNumber != null
       ? { routineId: message.routineId, fireNumber: message.fireNumber }
       : {}),
@@ -14929,8 +14930,8 @@ export function hostThroughPty(o) {
     }
     return true;
   };
-  const interruptScopedCoalesceKey = message => {
-    const key = turnCoalesceKey(message.data, message.routineId, ownerId);
+  const interruptScopedCoalesceKey = (sourceText, routineId) => {
+    const key = turnCoalesceKey(sourceText, routineId, ownerId);
     return key == null ? null : `${key}:owner-stop:${ownerStopGeneration}`;
   };
   const nativeStartPending = new Map();
@@ -16177,7 +16178,11 @@ export function hostThroughPty(o) {
       // Host-control prompt provenance: an untagged live turn or lifecycle
       // carry-note gets a verified host-control envelope before any gate can
       // defer or deliver it, so machine text never falls through to owner input.
-      if (stampUnenrolledControlPrompt(msg, ownerId, env)) {
+      // A host-added nonce identifies this delivery. The text-only coalescer
+      // needs the sender's source line, while the child needs the stamped text.
+      const sourceText = msg.data;
+      const hostStamped = stampUnenrolledControlPrompt(msg, ownerId, env);
+      if (hostStamped) {
         appendHostEvent(ownerId, 'control-carry-origin-stamped', { mode: msg.mode, origin: 'host-control' });
       }
       if ((hooksObservationActive || hooksObservationInputHeld) && msg.mode === 'raw')
@@ -16425,10 +16430,10 @@ export function hostThroughPty(o) {
         // already claimed its slot is deliberately not resurrected.
         const pendingLoopKey =
           duplicateState === 'pending' && msg.mode === 'turn' && msg.routineId
-            ? interruptScopedCoalesceKey(msg)
+            ? interruptScopedCoalesceKey(sourceText, msg.routineId)
             : null;
         const pendingLoopMetadata =
-          msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
+          msg.mode === 'turn' ? turnCoalesceMetadata(msg, hostStamped ? sourceText : undefined) : undefined;
         const refreshedPendingTurn =
           pendingLoopKey != null
             // The busy cap can hand the same delivery from the coalescer to
@@ -16615,8 +16620,8 @@ export function hostThroughPty(o) {
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
       const coalesceKey = msg.mode === 'turn' && !Object.hasOwn(msg, 'providerRecovery')
-        ? interruptScopedCoalesceKey(msg) : null;
-        const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
+        ? interruptScopedCoalesceKey(sourceText, msg.routineId) : null;
+      const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg, hostStamped ? sourceText : undefined) : undefined;
       const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
       const claimCoalesced = () => {
         const claimed = coalesceKey != null ? turnCoalescer.claim(coalesceKey) : null;
@@ -17235,10 +17240,16 @@ export function hostThroughPty(o) {
             // The folded text is the newest loop fire, so carry its fire identity
             // forward too. Keeping the first envelope here would make the stale-
             // fire guard commit an older number for newer text.
+            const { hostSourceText, ...metadata } = claimed.metadata ?? {};
+            // Bind a host-created receipt to the actual annotated body. Only
+            // this host's own unstamped source is eligible for a new receipt.
+            const data = claimed.folded && hostSourceText !== undefined
+              ? stampUntaggedControlPrompt(renderCoalescedTurn(hostSourceText, claimed.folded), ownerId, env)
+              : renderCoalescedTurn(claimed.data, claimed.folded);
             deliver = {
               ...msg,
-              ...(claimed.metadata ?? {}),
-              data: renderCoalescedTurn(claimed.data, claimed.folded),
+              ...metadata,
+              data,
             };
           }
         }

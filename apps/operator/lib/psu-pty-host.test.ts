@@ -5175,8 +5175,13 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
         turnCoalesceKey('Loop wake #1 — short form', 'routine-2'),
       );
     });
-    it('caps the key and tolerates empty/undefined', () => {
-      expect(turnCoalesceKey('x'.repeat(1000)).length).toBe(300);
+    it.each([299, 300, 301, 1000])('keeps distinct source lines of length %i independent', (length) => {
+      const prefix = 'x'.repeat(length - 1);
+      const first = turnCoalesceKey(prefix + 'a\none');
+      expect(first).toBe(turnCoalesceKey(prefix + 'a\ntwo'));
+      expect(first).not.toBe(turnCoalesceKey(prefix + 'b\ntwo'));
+    });
+    it('tolerates empty/undefined', () => {
       expect(turnCoalesceKey('')).toBe('');
       expect(turnCoalesceKey(undefined)).toBe('');
     });
@@ -5200,7 +5205,7 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       expect(turnCoalesceKey('Loop wake #1 — short form', 'routine-1', undefined)).toBe(
         turnCoalesceKey('Loop wake #1 — short form', 'routine-1'),
       );
-      expect(turnCoalesceKey('x'.repeat(1000), undefined, undefined).length).toBe(300);
+      expect(turnCoalesceKey('x'.repeat(1000), undefined, undefined)).toBe('x'.repeat(1000));
     });
   });
 
