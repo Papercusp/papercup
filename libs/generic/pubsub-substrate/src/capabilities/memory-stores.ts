@@ -91,12 +91,11 @@ export class InMemoryEntitySubscriptionStore implements SubscribableStore {
     );
     const reason = input.reason ?? 'explicit';
     if (active) {
-      // P-002 parity with the PG store: a contextual re-subscribe only adds its
-      // reason and refreshes the epoch; a direct one replaces mode/TTL/blockers.
+      // Automatic reasons preserve preferences supplied by an explicit follow.
       const held = active.reasons ?? ['explicit'];
       if (reason === 'context') {
         active.context_epoch = Math.max(active.context_epoch ?? input.context_epoch ?? 0, input.context_epoch ?? 0);
-      } else {
+      } else if (reason !== 'held_item') {
         active.delivery_mode = mode;
         active.expires_ts = input.expires_ts ?? null;
         if (input.follow_blockers !== undefined) active.follow_blockers = input.follow_blockers;

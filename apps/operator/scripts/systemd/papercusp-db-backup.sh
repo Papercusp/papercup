@@ -225,9 +225,51 @@ fs_avail_gb() {
   local blocks block_size measurement measurement_rc measurement_detail measurement_outcome
   local max_integer=9223372036854775807
   local measurement_started_epoch="$EPOCHREALTIME" measurement_finished_epoch
+  local probe_id="$BASHPID:$EPOCHREALTIME"
   # statfs reads this path directly; df additionally reads the mount table.
   # %a excludes reserved blocks and %S is their size, matching df's availability.
-  if measurement=$(LC_ALL=C timeout --verbose --kill-after=1s 4s stat -f -c '%a %S' -- "$PGOUT" 2>&1); then
+  # Retain execution stages in the existing log, separately from stat output.
+  # A timeout alone cannot distinguish child startup, runnable CPU wait, and a
+  # blocked syscall. Take ONE pre-deadline /proc sample; never retry the probe.
+  if measurement=$(LC_ALL=C timeout --verbose --kill-after=1s 4s python3 -c '
+import os
+import signal
+import subprocess
+import sys
+import time
+
+path, probe_id, log_path = sys.argv[1:]
+def stage(name, fields):
+    try:
+        with open(log_path, "a") as log:
+            log.write(f"[{time.time():.6f}] SPACE PROBE: id={probe_id} stage={name} "
+                      f"monotonic_sec={time.monotonic_ns() / 1e9:.9f} {fields}\n")
+    except OSError:
+        pass  # Diagnostic storage must never invalidate a space observation.
+
+# Keep the supervisor alive while its child handles TERM. Otherwise timeout
+# could reap the supervisor and cancel escalation while stat still ignores TERM.
+# A Python handler resets to the default on child exec, unlike SIG_IGN.
+signal.signal(signal.SIGTERM, lambda *_: None)
+stage("child-started", f"supervisor_pid={os.getpid()}")
+probe = subprocess.Popen(["stat", "-f", "-c", "%a %S", "--", path])
+stage("stat-spawned", f"stat_pid={probe.pid}")
+try:
+    rc = probe.wait(timeout=3)
+except subprocess.TimeoutExpired:
+    fields = [f"stat_pid={probe.pid}"]
+    for field in ("stat", "wchan", "schedstat", "syscall"):
+        try:
+            with open(f"/proc/{probe.pid}/{field}") as record:
+                value = record.read().rstrip("\n") or "unavailable"
+        except OSError:
+            value = "unavailable"
+        fields.append(f"{field}={value}")
+    stage("pre-deadline", " ".join(fields))
+    rc = probe.wait()
+stage("stat-reaped", f"stat_pid={probe.pid} stat_status={rc}")
+sys.exit(rc if rc >= 0 else 128 - rc)
+  ' "$PGOUT" "$probe_id" "${LOG:-/dev/null}" 2>&1); then
     measurement_rc=0
   else
     measurement_rc=$?
@@ -265,7 +307,7 @@ fs_avail_gb() {
   esac
   measurement_detail=$(printf '%s' "$measurement" | tr '\r\n' ' ')
   measurement_detail=${measurement_detail:0:240}
-  log "SPACE MEASUREMENT FAILED: stat_status=$measurement_rc probe_outcome=$measurement_outcome path=$PGOUT probe_started_epoch=$measurement_started_epoch probe_finished_epoch=$measurement_finished_epoch invocation=${INVOCATION_ID:-unknown} source=${BACKUP_SELF:-unknown} detail=${measurement_detail:-<empty>}"
+  log "SPACE MEASUREMENT FAILED: stat_status=$measurement_rc probe_outcome=$measurement_outcome path=$PGOUT probe_started_epoch=$measurement_started_epoch probe_finished_epoch=$measurement_finished_epoch probe_id=$probe_id invocation=${INVOCATION_ID:-unknown} source=${BACKUP_SELF:-unknown} detail=${measurement_detail:-<empty>}"
   # Unknown space still refuses a dump, but must not masquerade as measured 0.
   return 1
 }

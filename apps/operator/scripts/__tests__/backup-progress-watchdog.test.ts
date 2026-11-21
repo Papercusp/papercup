@@ -161,7 +161,8 @@ sleep() {
   [ "$1" != 0 ] || return 0
   local tick
   tick=$(( $(cat "$CLOCK") + TICK_STEP ))
-  printf '%s\\n' "$tick" > "$CLOCK"
+  printf '%s\\n' "$tick" > "$CLOCK.next"
+  mv -- "$CLOCK.next" "$CLOCK"
   if [[ "$MODE" = growing* ]] || { [ "$MODE" = stalled-after-floor ] && [ "$tick" -le 4 ]; }; then
     printf x >> "$PROGRESS_PATH/1.dat.zst"
   fi
@@ -312,19 +313,22 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       // unrelated mount metadata. The old df implementation fails this fixture.
       writeFileSync(join(root, 'df'), '#!/bin/bash\nexec /bin/sleep 30\n');
       chmodSync(join(root, 'df'), 0o755);
-      const run = spawnSync('timeout', ['--kill-after=1s', '2s', 'bash', '-c', [
+      const run = spawnSync('timeout', ['--kill-after=1s', '8s', 'bash', '-c', [
         'set -uo pipefail',
         'PGOUT=/fixture/backup-volume',
         'log() { printf "%s\\n" "$*" >&2; }',
         'timeout() {',
         '  [ "$1" = --verbose ] && [ "$2" = --kill-after=1s ] && [ "$3" = 4s ] || return 98',
         '  shift 3',
-        '  command timeout --verbose --kill-after=0.1s 0.1s "$@"',
+        // Exercise the actual observer deadline: a compressed 100ms wall also
+        // measured supervisor startup, so an external SIGKILL could be
+        // misclassified as a deadline before the observer was even reaped.
+        '  command timeout --verbose --kill-after=1s 4s "$@"',
         '}',
         functionBody('fs_avail_gb'),
         'fs_avail_gb',
       ].join('\n')], {
-        encoding: 'utf8', timeout: 4_000,
+        encoding: 'utf8', timeout: 10_000,
         env: { ...process.env, PATH: `${root}:${process.env.PATH}`, MEASURE_MODE: mode },
       });
       expect(run.error, run.stderr).toBeUndefined();
@@ -342,7 +346,74 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 10_000);
+
+  it.each(['before-child', 'stat-wait', 'stat-ignores-term', 'success'] as const)(
+    'retains separate space-observer stages without changing the measurement: %s', (mode) => {
+      const root = mkdtempSync(join(tmpdir(), 'backup-space-stages-'));
+      const pidPath = join(root, 'stat-pid');
+      try {
+        const trace = join(root, 'backup.log');
+        writeFileSync(trace, '');
+        writeFileSync(join(root, 'python3'), [
+          '#!/bin/bash',
+          '[ "$PROBE_MODE" != before-child ] || exec /bin/sleep 30',
+          'exec /usr/bin/python3 "$@"',
+        ].join('\n'));
+        writeFileSync(join(root, 'stat'), [
+          '#!/bin/bash',
+          'printf "%s\\n" "$$" > "$STAT_PID_PATH"',
+          '[ "$PROBE_MODE" != success ] || { printf "524288 4096\\n"; exit 0; }',
+          '[ "$PROBE_MODE" != stat-ignores-term ] || trap "" TERM',
+          'exec /bin/sleep 30',
+        ].join('\n'));
+        for (const executable of ['python3', 'stat']) chmodSync(join(root, executable), 0o755);
+        const run = spawnSync('/bin/bash', ['-c', [
+          'set -uo pipefail',
+          'PGOUT=/fixture/backup-volume',
+          'log() { printf "%s\\n" "$*" >&2; }',
+          functionBody('fs_avail_gb'),
+          'fs_avail_gb',
+        ].join('\n')], {
+          encoding: 'utf8', timeout: 10_000,
+          env: { ...process.env, PATH: `${root}:${process.env.PATH}`, PROBE_MODE: mode, LOG: trace, STAT_PID_PATH: pidPath },
+        });
+        expect(run.error, run.stderr).toBeUndefined();
+        expect(run.status, run.stderr).toBe(mode === 'success' ? 0 : 1);
+        expect(run.stdout).toBe(mode === 'success' ? '2\n' : '');
+        const stages = readFileSync(trace, 'utf8');
+        if (mode === 'before-child') {
+          expect(stages).toBe('');
+          expect(existsSync(pidPath)).toBe(false);
+        } else {
+          expect(stages).toMatch(/stage=child-started monotonic_sec=\d+\.\d+ supervisor_pid=\d+/);
+          expect(stages).toContain(`stage=stat-spawned`);
+          const pid = readFileSync(pidPath, 'utf8').trim();
+          expect(stages).toContain(`stat_pid=${pid}`);
+          if (mode === 'success') {
+            expect(stages).toContain(`stage=stat-reaped`);
+            expect(stages).toContain('stat_status=0');
+            expect(stages).not.toContain('stage=pre-deadline');
+            expect(run.stderr).toBe('');
+          } else {
+            expect(stages).toMatch(/stage=pre-deadline .*stat_pid=\d+ stat=.+ wchan=.+ schedstat=.+ syscall=.+/);
+            expect(stages).not.toContain('stat_status=0');
+          }
+        }
+        if (mode !== 'success') {
+          const id = run.stderr.match(/probe_id=(\d+:\d+\.\d+)/)?.[1];
+          expect(id, run.stderr).toBeTruthy();
+          if (mode !== 'before-child') expect(stages).toContain(`id=${id} `);
+          expect(run.stderr).toContain(`probe_outcome=${mode === 'stat-ignores-term' ? 'wall-timeout-kill' : 'wall-timeout'}`);
+        }
+      } finally {
+        if (existsSync(pidPath)) {
+          try { process.kill(Number(readFileSync(pidPath, 'utf8').trim()), 'SIGKILL'); } catch { /* already reaped */ }
+        }
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 10_000,
+  );
 
   it.each([
     ['1073741823 1', '0', null],
@@ -559,7 +630,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         'KILL_GRACE_SEC=0',
         'printf "0\\n" > "$CLOCK"',
         'date() { cat "$CLOCK"; }',
-        'sleep() { if [ "$1" = "$PC_BACKUP_WATCH_SEC" ]; then tick=$(cat "$CLOCK"); printf "%s\\n" "$((tick + 1))" > "$CLOCK"; fi; command sleep "$1"; }',
+        'sleep() { if [ "$1" = "$PC_BACKUP_WATCH_SEC" ]; then tick=$(cat "$CLOCK"); printf "%s\\n" "$((tick + 1))" > "$CLOCK.next"; mv -- "$CLOCK.next" "$CLOCK"; fi; command sleep "$1"; }',
         'fs_avail_gb() { echo 999; }',
         'log() { printf "%s\\n" "$*" >&2; }',
         'reap_own_stragglers() { :; }',
@@ -603,7 +674,9 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         'KILL_GRACE_SEC=0',
         'printf "0\\n" > "$CLOCK"',
         'date() { cat "$CLOCK"; }',
-        'sleep() { if [ "$1" = "$PC_BACKUP_WATCH_SEC" ]; then tick=$(cat "$CLOCK"); printf "%s\\n" "$((tick + 1))" > "$CLOCK"; fi; command sleep "$1"; }',
+        // The producer reads this clock concurrently; publish whole records so
+        // a truncation window cannot manufacture an early producer exit.
+        'sleep() { if [ "$1" = "$PC_BACKUP_WATCH_SEC" ]; then tick=$(cat "$CLOCK"); printf "%s\\n" "$((tick + 1))" > "$CLOCK.next"; mv -- "$CLOCK.next" "$CLOCK"; fi; command sleep "$1"; }',
         'fs_avail_gb() { echo 999; }',
         'log() { printf "tick=%s %s\\n" "$(cat "$CLOCK")" "$*" >&2; }',
         'reap_own_stragglers() { :; }',

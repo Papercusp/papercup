@@ -350,14 +350,11 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     const mode: DeliveryMode = input.delivery_mode ?? 'full';
     const reason = input.reason ?? 'explicit';
     const contextEpoch = reason === 'context' ? (input.context_epoch ?? null) : null;
-    // P-002: one row per (subscriber, target) carries every reason holding it. A
-    // contextual re-subscribe only adds its reason and refreshes the epoch; it never
-    // overwrites the delivery mode, TTL or blocker settings a direct follow chose.
-    // A direct (explicit / held_item) subscribe keeps the WI-4119 rule that a direct
-    // follow replaces a generated blocker follow. A legacy NULL reasons reads as
-    // {explicit}.
+    // An automatic follow adds a reason without changing the subscriber's
+    // preferences or replacing the edge that generated a blocker follow.
+    const preserveSettings = reason === 'context' || reason === 'held_item';
     const rows = await sql<SubRowDb[]>`
-      INSERT INTO harness_shared.coord_entity_subscriptions AS sub
+      INSERT INTO harness_shared.coord_entity_subscriptions AS s
         (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, expires_ts, created_at,
          follow_blockers, derived_from_kind, derived_from_ref, reasons, context_epoch)
       VALUES (${this.ws}, ${input.subscriber_id}, ${input.target_kind}, ${input.target_ref},
@@ -365,21 +362,20 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
               ARRAY[${reason}]::text[], ${contextEpoch})
       ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL
       DO UPDATE SET
-        delivery_mode = CASE WHEN ${reason} = 'context' THEN sub.delivery_mode ELSE EXCLUDED.delivery_mode END,
-        expires_ts = CASE WHEN ${reason} = 'context' THEN sub.expires_ts ELSE EXCLUDED.expires_ts END,
-        follow_blockers = CASE WHEN ${reason} = 'context' THEN sub.follow_blockers ELSE EXCLUDED.follow_blockers END,
-        derived_from_kind = CASE WHEN ${reason} = 'context' THEN sub.derived_from_kind ELSE NULL END,
-        derived_from_ref = CASE WHEN ${reason} = 'context' THEN sub.derived_from_ref ELSE NULL END,
+        delivery_mode = CASE WHEN ${preserveSettings} THEN s.delivery_mode ELSE EXCLUDED.delivery_mode END,
+        expires_ts = CASE WHEN ${preserveSettings} THEN s.expires_ts ELSE EXCLUDED.expires_ts END,
+        follow_blockers = CASE WHEN ${preserveSettings} THEN s.follow_blockers ELSE EXCLUDED.follow_blockers END,
+        derived_from_kind = CASE WHEN ${preserveSettings} THEN s.derived_from_kind ELSE NULL END,
+        derived_from_ref = CASE WHEN ${preserveSettings} THEN s.derived_from_ref ELSE NULL END,
         reasons = (
           SELECT array_agg(DISTINCT r ORDER BY r)
             FROM unnest(
-              CASE WHEN ${reason} = 'context'
-                   THEN COALESCE(sub.reasons, ARRAY['explicit']::text[])
-                   ELSE array_remove(COALESCE(sub.reasons, ARRAY['explicit']::text[]), 'blocker')
+              CASE WHEN ${preserveSettings} THEN ${sql.unsafe(EFFECTIVE_REASONS_SQL)}
+                   ELSE array_remove(${sql.unsafe(EFFECTIVE_REASONS_SQL)}, 'blocker')
               END || ARRAY[${reason}]::text[]) AS r),
         context_epoch = CASE WHEN ${reason} = 'context'
-                             THEN GREATEST(COALESCE(sub.context_epoch, EXCLUDED.context_epoch), EXCLUDED.context_epoch)
-                             ELSE sub.context_epoch END
+                             THEN GREATEST(s.context_epoch, EXCLUDED.context_epoch)
+                             ELSE s.context_epoch END
       RETURNING id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
                 follow_blockers, derived_from_kind, derived_from_ref, reasons, context_epoch`;
     return toSubRow(rows[0]);
@@ -404,6 +400,23 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
               ${input.derived_from.kind}, ${input.derived_from.ref}, ARRAY['blocker']::text[])
       ON CONFLICT (workspace_id, subscriber_id, target_kind, target_ref) WHERE cancelled_at IS NULL
       DO NOTHING`;
+  }
+
+  /** Caller holds the work-item row lock in the transaction backing this store.
+   *  Reconcile against the winning holder, including stale reasons left by older writers. */
+  async setHeldItemSubscriber(target: ObjectRef, subscriberId: string | null): Promise<void> {
+    const targetRef = `${target.kind}:${target.ref}`;
+    await this.releaseReasons(
+      `s.workspace_id = $1 AND s.target_kind = 'object' AND s.target_ref = $2
+       AND s.subscriber_id IS DISTINCT FROM $3::text`,
+      [this.ws, targetRef, subscriberId], ['held_item'], 'release:held_item',
+    );
+    if (subscriberId !== null) {
+      await this.subscribe({
+        subscriber_id: subscriberId, target_kind: 'object', target_ref: targetRef,
+        reason: 'held_item', created_ts: new Date().toISOString(),
+      });
+    }
   }
 
   /** Remove generated follows created by one dependent→blocker edge. */
@@ -497,7 +510,7 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
    *  remains; otherwise it keeps its remaining reasons and stays active. */
   private async releaseReasons(
     whereSql: string,
-    whereParams: readonly (string | number)[],
+    whereParams: readonly (string | number | null)[],
     release: readonly SubscriptionReason[],
     cause: string,
   ): Promise<{ released: number; cancelled: number }> {
