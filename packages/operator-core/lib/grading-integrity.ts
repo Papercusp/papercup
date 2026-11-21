@@ -892,6 +892,24 @@ async function* nativeTranscriptLines(path: string, signal?: AbortSignal): Async
   finally { lines.close(); input.destroy(); }
 }
 
+function reportsRuntimeInterruption(message: string, runtime: GradingAuditRuntimeBinding): boolean {
+  // A loopback port can be a prefix of another valid port.
+  const namesRuntime = (text: string) => text.match(/https?:\/\/[\w.-]+:\d+/gu)?.includes(runtime.baseUrl) === true;
+  if (!namesRuntime(message)) return false;
+  if (/unreachable|ECONNREFUSED|connection (?:refused|failure)|not reachable|(?:could not|failed to) connect|endpoint[^\n]*unavailable/i.test(message)) return true;
+
+  // A build-identity probe can time out before the auditor even sends a replay.
+  // Require the stopped outcome and the exact build and route in the probe report.
+  if (!/\baudit stopped (?:without|before) (?:grading|emitting|emission)\b/i.test(message)
+    || !/\bno (?:MCP )?replay request was sent\b/i.test(message)) return false;
+  return message.split(/\r?\n/u).some(line => {
+    const build = /\bbuild identity\s+[\x60'"]?([a-f0-9]+)[\x60'"]?\s+(?:reported as|was|is)\s+[\x60'"]?unknown\b/i.exec(line);
+    return build?.[1] === runtime.evaluatorBuild.sha
+      && namesRuntime(line)
+      && /\b(?:timed out|timeout)\b/i.test(line);
+  });
+}
+
 async function nativeRuntimeInterruption(
   lines: AsyncIterable<string> | Iterable<string>, proof: RetainedNativeTranscriptProof, runtime: GradingAuditRuntimeBinding,
 ): Promise<string | undefined> {
@@ -911,8 +929,7 @@ async function nativeRuntimeInterruption(
     if (completion) {
       completed = undefined;
       const epoch = payload?.turn_id ?? row.uuid ?? row.timestamp;
-      if (typeof final === 'string' && typeof epoch === 'string' && epoch && final.includes(runtime.baseUrl) &&
-          /unreachable|ECONNREFUSED|connection (?:refused|failure)|not reachable|(?:could not|failed to) connect|endpoint[^\n]*unavailable/i.test(final)) {
+      if (typeof final === 'string' && typeof epoch === 'string' && epoch && reportsRuntimeInterruption(final, runtime)) {
         completed = createHash('sha256').update(JSON.stringify([proof.nativeSessionId, epoch, final])).digest('hex');
       }
     } else if ((codex && ['task_started', 'turn_started'].includes(String(payload?.type))) ||
@@ -2678,7 +2695,31 @@ export async function dispatchPendingGradingAudits(
       allowGradingAuditRefusal: true,
       detectStartupStall: false,
     });
-  const retireProvenTerminalAuditTasks = async (issueId: string) => {
+  const interruptedAuditReason = 'The retained auditor stopped before emitting a grade on the pinned evaluator.';
+  const parkedResume = async (ownerId: string, proof?: RetainedNativeTranscriptProof,
+    runtime?: GradingAuditRuntimeBinding): Promise<{ resumeParked?: true; resumeAfterTurn?: string }> => {
+    try {
+      const presence = await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(ownerId);
+      if (presence?.sessionState !== 'parked') return {};
+    } catch { return {}; }
+    if (runtime && proof) {
+      try {
+        const deadline = input.ctx.deadlineAtMs;
+        const timeout = typeof deadline === 'number' && Number.isFinite(deadline)
+          ? AbortSignal.timeout(Math.max(0, Math.ceil(deadline - Date.now()))) : undefined;
+        const signals = [input.ctx.signal, timeout].filter((signal): signal is AbortSignal => Boolean(signal));
+        // The PTY tail can split JSON records. The native stream must reach EOF.
+        const lines = deps.readLogTail
+          ? (await readLogTail(proof.nativeTranscriptPath)).split(/\r?\n/u)
+          : nativeTranscriptLines(proof.nativeTranscriptPath, signals.length ? AbortSignal.any(signals) : undefined);
+        const epoch = await nativeRuntimeInterruption(lines, proof, runtime);
+        if (epoch) return { resumeParked: true, resumeAfterTurn: epoch };
+      } catch { /* An incomplete native read cannot establish a new wake epoch. */ }
+    }
+    return { resumeParked: true };
+  };
+  const retireProvenTerminalAuditTasks = async (issueId: string,
+    survivingProofs?: Map<string, RetainedNativeTranscriptProof & { ownerId: string }>) => {
     const retiredTaskIds: string[] = [];
     const codes: GradingAuditRecoveryCode[] = [];
     const terminalFailures: Array<{ taskId: string; backend: 'claude' | 'codex'; code: GradingAuditRecoveryCode }> = [];
@@ -2781,17 +2822,18 @@ export async function dispatchPendingGradingAudits(
       }
       if (!nativeTranscriptPath) continue;
 
+      const proof: RetainedNativeTranscriptProof = { nativeTranscriptPath, nativeSessionId: taskSessionId,
+        nativeBackend: nativeSession.agent === 'claude' ? 'claude' : 'codex' };
       let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null;
       try {
-        terminalFailure = await detectTerminalFailure(taskLogPath, 0, false, {
-          nativeTranscriptPath,
-          nativeSessionId: taskSessionId,
-          nativeBackend: nativeSession.agent === 'claude' ? 'claude' : 'codex',
-        });
+        terminalFailure = await detectTerminalFailure(taskLogPath, 0, false, proof);
       } catch {
         continue;
       }
-      if (!terminalFailure) continue;
+      if (!terminalFailure) {
+        survivingProofs?.set(task.taskId, { ...proof, ownerId: taskOwnerId });
+        continue;
+      }
 
       try {
         const result = await terminateSupersededTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
@@ -3199,7 +3241,8 @@ export async function dispatchPendingGradingAudits(
       const heldReservation = card.gradingAudit?.dispatchReservation;
       if (reservation.status === 'already-reserved' && heldReservation?.key === idempotencyKey &&
           heldReservation.reservedAt) {
-        const cleanup = await retireProvenTerminalAuditTasks(issueId);
+        const survivingProofs = new Map<string, RetainedNativeTranscriptProof & { ownerId: string }>();
+        const cleanup = await retireProvenTerminalAuditTasks(issueId, survivingProofs);
         retiredTaskIds.push(...cleanup.retiredTaskIds);
         terminalCodes.push(...cleanup.codes);
         if (cleanup.retiredTaskIds.length > 0 && cleanup.remainingTaskIds.length === 0 && cleanup.errors.length === 0 &&
@@ -3259,13 +3302,18 @@ export async function dispatchPendingGradingAudits(
               };
             }
             markPhase('retained-auditor-notification');
+            const proof = survivingProofs.get(retainedTask.taskId);
+            const resume = proof?.ownerId === ownerId && proof.nativeSessionId === retainedTask.sessionId
+              ? await parkedResume(ownerId, proof, retainedRuntime) : {};
             const renewalNotification = await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
               card, task: retainedTask, reservation: heldReservation, runtime: retainedRuntime,
+              ...(resume.resumeAfterTurn ? resume : {}),
               ...(replayBasisFingerprint ? { replayBasisFingerprint } : {}),
               workspaceId: workspaceId!, ...(harnessResolved ? { harness } : {}),
             });
             return { issueId, rubricRef: card.rubricRef, state: 'deduped', idempotencyKey,
-              dispatchReservation: heldReservation, renewalNotification, ...recoveryFields() };
+              dispatchReservation: heldReservation, renewalNotification,
+              ...(resume.resumeAfterTurn ? { reason: interruptedAuditReason } : {}), ...recoveryFields() };
           }
         }
       }
@@ -3575,19 +3623,9 @@ export async function dispatchPendingGradingAudits(
         // restored the row. A parked owner gets the resume wording; every
         // other identified single owner gets the normal renewal notice. An
         // ambiguous or ownerless task remains untouched and fail-closed.
-        let resumeParked = false;
         const retainedTask = viableLiveTasks.length === 1 ? viableLiveTasks[0] : undefined;
         const retainedOwnerId = typeof retainedTask?.detail?.coordOwnerId === 'string'
           ? retainedTask.detail.coordOwnerId.trim() : '';
-        if (priorReservation && retainedOwnerId) {
-          try {
-            resumeParked = (await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(retainedOwnerId))
-              ?.sessionState === 'parked';
-          } catch {
-            // An unavailable oracle preserves the retained task and still
-            // permits the durable renewal notice below.
-          }
-        }
         const replayRefusal = card.gradingAudit?.replayRefusal;
         const unchangedReplayRefusal = Boolean(
           retainedTask &&
@@ -3598,23 +3636,9 @@ export async function dispatchPendingGradingAudits(
         );
         markPhase('retained-auditor-notification');
         const retainedRuntime = retainedRuntimes.get(issueId);
-        let resumeAfterTurn: string | undefined;
         const retainedProof = retainedTask && retainedNativeProofs.get(retainedTask.taskId);
-        if (resumeParked && retainedRuntime && retainedProof) {
-          try {
-            const deadline = input.ctx.deadlineAtMs;
-            const timeout = typeof deadline === 'number' && Number.isFinite(deadline)
-              ? AbortSignal.timeout(Math.max(0, Math.ceil(deadline - Date.now()))) : undefined;
-            const signals = [input.ctx.signal, timeout].filter((signal): signal is AbortSignal => Boolean(signal));
-            // The ordinary PTY tail cuts at 16KB and can split a native JSON
-            // record. Stream the exact transcript through EOF instead; caller
-            // cancellation/deadline makes an incomplete scan unknown.
-            const lines = deps.readLogTail
-              ? (await readLogTail(retainedProof.nativeTranscriptPath)).split(/\r?\n/u)
-              : nativeTranscriptLines(retainedProof.nativeTranscriptPath, signals.length ? AbortSignal.any(signals) : undefined);
-            resumeAfterTurn = await nativeRuntimeInterruption(lines, retainedProof, retainedRuntime);
-          } catch { /* Unknown transcript evidence keeps the original once-per-lease wake. */ }
-        }
+        const resume = priorReservation && retainedOwnerId && !unchangedReplayRefusal
+          ? await parkedResume(retainedOwnerId, retainedProof, retainedRuntime) : {};
         const renewalNotification = unchangedReplayRefusal
           ? {
               state: 'skipped' as const,
@@ -3636,8 +3660,7 @@ export async function dispatchPendingGradingAudits(
                 ...(replayBasisFingerprint ? { replayBasisFingerprint } : {}),
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 ...(retainedRuntime ? { runtime: retainedRuntime } : {}),
-                ...(resumeParked ? { resumeParked: true } : {}),
-                ...(resumeAfterTurn ? { resumeAfterTurn } : {}),
+                ...resume,
               });
         if (renewalNotification?.state === 'failed') {
           // A pre-append failure delivered nothing. Clear only this exact epoch
@@ -3663,8 +3686,8 @@ export async function dispatchPendingGradingAudits(
               label: typeof task.detail?.label === 'string' ? task.detail.label : idempotencyKey,
             })),
           },
-          reason:
-            viableLiveTasks.length === 1
+          reason: resume.resumeAfterTurn ? interruptedAuditReason
+            : viableLiveTasks.length === 1
               ? `existing live grading auditor task '${viableLiveTasks[0]?.taskId ?? 'unknown'}' owns ${idempotencyKey}; duplicate launch suppressed`
               : `${viableLiveTasks.length} existing live grading auditor tasks own ${idempotencyKey}; duplicate launch suppressed`,
           ...recoveryFields(),

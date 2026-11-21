@@ -3147,6 +3147,54 @@ describe('dispatchPendingGradingAudits', () => {
     } finally { if (root) rmSync(root, { recursive: true, force: true }); }
   });
 
+  it.each([
+    { lease: 'fresh', outcome: 'identity-timeout', interrupted: true },
+    { lease: 'expired', outcome: 'identity-timeout', interrupted: true },
+    { lease: 'fresh', outcome: 'other-endpoint', interrupted: false },
+    { lease: 'expired', outcome: 'other-build', interrupted: false },
+    { lease: 'expired', outcome: 'completed-audit', interrupted: false },
+  ])('reports a pinned identity timeout before emission under a $lease lease ($outcome)', async ({ lease, outcome, interrupted }) => {
+    const f = parkedAuditorFixture();
+    const target = card('EI-parked', { evidenceFingerprint: 'exact-fingerprint',
+      gradedGeneration: { deployedSha: '2222222', hostStartedAt: null, bootHeadSha: null,
+        scoutCodeHash: null, staleHost: false } });
+    target.gradingAudit = { ...target.gradingAudit!, dispatchReservation: f.prior };
+    f.d.listScorecards.mockResolvedValue([target]);
+    f.d.getEvaluatorBuild.mockReturnValue({ sha: '2222222', version: '1.2.3' });
+    if (lease === 'fresh') f.d.reserve.mockResolvedValue({ status: 'already-reserved' });
+    const sessionId = 'identity-probe-auditor';
+    const task = { taskId: 'retained', workspaceId: 'ws-test', class: 'agent-session', state: 'running',
+      sessionId, logPath: '/tmp/auditor.log', startedAt: new Date().toISOString(),
+      detail: { label: f.prior.key, coordOwnerId: 'su-independent' } } as unknown as TaskRow;
+    f.d.listTasks.mockResolvedValue([task]);
+    f.d.getTask.mockResolvedValue(task);
+    const endpoint = outcome === 'other-endpoint' ? 'http://127.0.0.1:45188' : 'http://127.0.0.1:45187';
+    const build = outcome === 'other-build' ? '3333333' : '2222222';
+    const message = outcome === 'completed-audit'
+      ? `Audit emitted. An earlier request to ${endpoint} timed out before the successful replay.`
+      : ['Audit stopped without grading or emission.', 'The pinned evaluator route failed during the required replay:',
+        `\`${endpoint}\` → build identity \`${build}\` reported as \`unknown\`; operation aborted due to timeout. No MCP replay request was sent.`].join('\n\n');
+    const nativePath = '/tmp/identity-probe-auditor.jsonl';
+    const transcript = [JSON.stringify({ type: 'session_meta', payload: { id: sessionId } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'probe-turn', last_agent_message: message } })].join('\n');
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f,
+      listNativeSessionsByTranscriptHandles: async () => [{ id: 123, sessionId, agent: 'codex', coordOwnerId: 'su-independent' }],
+      findCodexRolloutPath: async () => nativePath,
+      readLogTail: path => path === nativePath ? transcript : '', readLogMtimeMs: () => Date.now(), terminalLogMaxRechecks: 0,
+    });
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: f.prior });
+    const notice = f.d.notifyRetainedAuditor.mock.calls[0]![0];
+    if (interrupted) {
+      expect(notice).toMatchObject({ resumeParked: true, resumeAfterTurn: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      expect(result.receipts[0].reason).toContain('stopped before emitting');
+    } else {
+      expect(notice).not.toHaveProperty('resumeAfterTurn');
+      expect(result.receipts[0].reason ?? '').not.toContain('stopped before emitting');
+    }
+    expect(f.d.launch).not.toHaveBeenCalled();
+    expect(f.killTask).not.toHaveBeenCalled();
+  });
+
   it('suppresses a retained wake when the same auditor already refused the unchanged basis', async () => {
     const f = parkedAuditorFixture();
     const target = card('EI-parked', { evidenceFingerprint: 'exact-fingerprint' });
