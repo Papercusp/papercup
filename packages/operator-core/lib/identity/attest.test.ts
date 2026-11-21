@@ -362,7 +362,7 @@ describe('verifyAttestation', () => {
     };
   }
 
-  it('returns valid=true for a correctly-signed gist', async () => {
+  it.each([true, false])('verifies a correctly signed gist with public=%s', async (isPublic) => {
     const { verifyAttestation } = await import('./attest');
     const { pubkeyBase64, gistResponse } = makeFakeGistResponse();
 
@@ -371,13 +371,14 @@ describe('verifyAttestation', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: async () => gistResponse,
+        json: async () => ({ ...gistResponse, public: isPublic }),
       }),
     );
 
     const result = await verifyAttestation('test-gist-id', pubkeyBase64, 12345);
     expect(result.valid).toBe(true);
     expect(result.resolvedGithubUserId).toBe(12345);
+    expect(result.visibility).toBe(isPublic ? 'public' : 'secret');
     vi.unstubAllGlobals();
   });
 
@@ -388,19 +389,19 @@ describe('verifyAttestation', () => {
     // find-by-filename match and the verifyAttestation lookup hit.
     const filename = attestationGistFilename(pubkeyBase64);
     const validGist = {
-      id: 'g-existing',
+      id: 'g-existing', public: false,
       owner: { id: 12345 },
       files: { [filename]: { content: JSON.stringify(body, null, 2) } },
     };
 
     const fetchMock = vi.fn(async (url: unknown, init?: unknown) => {
-      void init;
       if (typeof url === 'string' && url.includes('/gists?')) {
+        expect((init as RequestInit).headers).toMatchObject({ Authorization: 'token tok' });
         // The "list my gists" call → one gist carrying the attestation filename.
         return {
           ok: true,
           status: 200,
-          json: async () => [{ id: 'g-existing', files: { [filename]: {} } }],
+          json: async () => [{ id: 'g-existing', public: false, files: { [filename]: {} } }],
         };
       }
       // The verifyAttestation gist-by-id fetch.

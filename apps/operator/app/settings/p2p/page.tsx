@@ -472,6 +472,10 @@ export default function P2pSettingsPage() {
     queryName: 'p2p.settings',
   });
   const layers = settingsData?.[0] ?? null;
+  const { data: federation } = useSyncQuery<{ attestationVisibility?: 'public' | 'secret' | null }>({
+    queryName: 'network.federationStatus',
+  });
+  const gistVisibility = federation?.[0]?.attestationVisibility;
   const settingsUnavailable = layers?.unavailable === true ? layers : null;
   const settingsReadError = settingsError?.message ?? settingsUnavailable?.unavailableReason ?? null;
   const settingsReadable = Boolean(layers) && settingsReadError === null;
@@ -663,6 +667,7 @@ export default function P2pSettingsPage() {
       {/* ── Identity & devices ── */}
       <section className="pc-settings-section" aria-label="Identity and devices" style={sectionStyle}>
         <h2 style={h2Style}>Identity &amp; devices</h2>
+        <p>Device attestation gist · {gistVisibility === 'secret' ? 'unlisted' : gistVisibility ?? 'visibility unknown'}</p>
         {deviceReadError ? (
           <p role="alert" style={{ color: 'var(--bad)', fontSize: 13 }}>
             Device and membership state unavailable

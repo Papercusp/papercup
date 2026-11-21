@@ -57,6 +57,7 @@ export interface FedDrain {
   worstOldestUndrainedAgeMs: number | null;
 }
 export interface FedStatus {
+  attestationVisibility?: 'public' | 'secret' | null;
   ok: boolean;
   substrate: {
     active: boolean;
@@ -203,6 +204,7 @@ export default function PotFederationStatus({ collapsible = false }: HiveFederat
             <span className={`pclsb-dot ${data.substrate.active && degraded === 0 ? 'is-up' : 'is-down'}`} aria-hidden="true" />
             <div className="pclsb-row__main">
               <div className="pclsb-row__sub">{substrateLabel(data.substrate)}</div>
+              <div className="pclsb-row__sub">Device gist · {data.attestationVisibility === 'secret' ? 'unlisted' : data.attestationVisibility ?? 'visibility unknown'}</div>
             </div>
           </div>
 

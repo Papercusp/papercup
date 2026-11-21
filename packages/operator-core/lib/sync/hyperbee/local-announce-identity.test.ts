@@ -740,7 +740,7 @@ describe('resolveLocalAnnounceIdentityFromHiveMembers', () => {
     }
   });
 
-  it('prefers the row gist over the cache and does not read the cache for it', async () => {
+  it('keeps the row gist when a legacy cache has unknown visibility', async () => {
     let cacheReads = 0;
     const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
       members: [{ ...emptyGistMember, deviceAttestations: [{ device_pubkey: 'PUBKEY==', gist_id: 'gist-row' }] }],
@@ -753,6 +753,16 @@ describe('resolveLocalAnnounceIdentityFromHiveMembers', () => {
     });
 
     expect(identity?.attestationGistId).toBe('gist-row');
-    expect(cacheReads).toBe(0);
+    expect(cacheReads).toBe(1);
+  });
+
+  it('announces the rotated secret binding when the membership row still names the old public gist', async () => {
+    const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+      members: [{ ...emptyGistMember, deviceAttestations: [{ device_pubkey: 'PUBKEY==', gist_id: 'old' }] }],
+      buildKeychainId: (uid) => String(uid) + ':m',
+      loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'PUBKEY==' }),
+      loadCachedIdentity: async () => ({ ...cachedIdentity, attestationVisibility: 'secret', supersededGistId: 'old' }),
+    });
+    expect(identity?.attestationGistId).toBe('gist-cached');
   });
 });

@@ -13395,7 +13395,7 @@
           "POST"
         ]
       },
-      "description": "Launch N su members on an existing plan — visible or headless. Ensures fleet, leadership, plan binding and first-turn request; do not assemble them with capability:launch-agent/terminal. Process open is not proof of registration, a verified first turn, or a claimed task; read `launchTransaction`. `carry` picks warm/cold; `placement:'remote'` uses delegated-seat machines.",
+      "description": "Launch su members on a plan, exact workItems set, or claimKinds lane. Persists admission before member boot. Process open is not worker readiness; read launchTransaction. Visible/headless and warm/cold carry are supported.",
       "capabilities": [
         "capability:terminal"
       ],
@@ -13413,9 +13413,9 @@
         "cup"
       ],
       "guidance": {
-        "when": "ERGONOMIC N-AGENTS-ON-AN-EXISTING-PLAN DOOR: members auto-join and receive the plan as their first-turn request. Prefer over capability:launch-agent or capability:terminal. Queue duplicate screening governs work-item claims; it is not a reason to delay opening the fleet.",
-        "notWhen": "Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
-        "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake."
+        "when": "Launch a fleet on an existing plan or registered workItems set. Members join and self-pull through scheduler:get_next.",
+        "notWhen": "Resume/fork one agent with capability:launch-agent; arbitrary commands use capability:terminal.",
+        "chaining": "For a Papercusp plan, plans:start precedes launch. For outside work, create work-items then pass workItems and planRef. Add later items with scheduler:set_claim_spec {fleet,appendIds:[id]}; no relaunch required."
       }
     },
     {

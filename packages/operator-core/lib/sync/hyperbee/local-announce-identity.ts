@@ -47,7 +47,8 @@ import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { getGhAuthToken } from '../../identity/gh-token';
 import { isRequestOnlyIdentityProcess, keychainLoad } from '../../identity/keychain';
 import { pubkeyBase64FromDer } from '../../identity/ed25519';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -61,6 +62,10 @@ export interface LocalAnnounceIdentity {
    *  remote peer admits via `verifyAttestation` with NO shared-repo read
    *  (write-free join, `non-collaborator-join-fork-pr-2026-06-02`). */
   attestationGistId: string;
+  /** Host-only metadata about this gist, absent on older caches. */
+  attestationVisibility?: 'public' | 'secret';
+  /** The membership projection may still refer to this retired binding. */
+  supersededGistId?: string;
 }
 
 /** Inputs the gist resolver receives — this peer's resolved device identity. */
@@ -236,13 +241,29 @@ async function writeCachedIdentity(
 ): Promise<void> {
   if (!path) return;
   try {
-    await mkdir(dirname(path), { recursive: true });
-    const body: CachedLocalAnnounceIdentity = { version: 1, savedAt: Date.now(), ...identity };
-    await writeFile(path, JSON.stringify(body, null, 2), 'utf8');
+    await persistLocalAnnounceIdentity(identity, path);
   } catch {
     // Cache is a resilience aid; never fail identity resolution because it could
     // not be written.
   }
+}
+
+/** Rotation must durably install the replacement before retiring the old gist. */
+export async function persistLocalAnnounceIdentity(identity: LocalAnnounceIdentity, path = defaultCachePath()) {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = path + '.' + randomUUID();
+  const body: CachedLocalAnnounceIdentity = { version: 1, savedAt: Date.now(), ...identity };
+  try {
+    await writeFile(tmp, JSON.stringify(body, null, 2), { mode: 0o600, flag: 'wx' });
+    await rename(tmp, path);
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
+
+export async function lastAttestationVisibility(): Promise<'public' | 'secret' | null> {
+  const value = (await readCachedIdentity(defaultCachePath()))?.attestationVisibility;
+  return value === 'public' || value === 'secret' ? value : null;
 }
 
 async function identityFromCache(
@@ -266,6 +287,8 @@ async function identityFromCache(
     githubUserId: cached.githubUserId,
     githubLogin: cached.githubLogin,
     attestationGistId: cached.attestationGistId,
+    ...(cached.attestationVisibility && { attestationVisibility: cached.attestationVisibility }),
+    ...(cached.supersededGistId && { supersededGistId: cached.supersededGistId }),
   };
 }
 
@@ -309,6 +332,7 @@ async function defaultResolveGithubUser(): Promise<{ id: number; login: string }
 
 async function defaultResolveAttestationGistId(
   args: ResolveAttestationGistArgs,
+  onVisibility: (value: LocalAnnounceIdentity['attestationVisibility']) => void,
 ): Promise<string> {
   const tok = await getGhAuthToken();
   if (tok.kind !== 'ok') {
@@ -322,7 +346,7 @@ async function defaultResolveAttestationGistId(
     githubLogin: args.githubLogin,
     token: tok.token,
     ...(args.knownGistId ? { knownGistId: args.knownGistId } : {}),
-  });
+  }, onVisibility);
 }
 
 async function loadExistingDeviceKeypair(
@@ -369,15 +393,12 @@ export async function resolveLocalAnnounceIdentityFromHiveMembers(
       if (!devicePubkey || revoked.has(devicePubkey)) continue;
       if (devicePubkey !== keypair.pubkeyBase64) continue;
       let attestationGistId = attestation.gist_id ?? '';
-      if (!attestationGistId) {
-        const cached = await loadCachedIdentity().catch(() => null);
-        if (
-          cached?.attestationGistId &&
-          cached.devicePubkeyBase64 === keypair.pubkeyBase64 &&
-          cached.githubUserId === member.githubUserId
-        ) {
-          attestationGistId = cached.attestationGistId;
-        }
+      const cached = await loadCachedIdentity().catch(() => null);
+      if (
+        cached?.attestationGistId && (!attestationGistId || cached.supersededGistId === attestationGistId) &&
+        cached.devicePubkeyBase64 === keypair.pubkeyBase64 && cached.githubUserId === member.githubUserId
+      ) {
+        attestationGistId = cached.attestationGistId;
       }
       return {
         keychainId,
@@ -492,7 +513,9 @@ export async function resolveLocalAnnounceIdentity(
   }
   const keychainId = opts.keychainId ?? buildKeychainId(user.id);
   const keypair = await loadKeypair(keychainId);
-  const resolveGist = opts.resolveAttestationGistId ?? defaultResolveAttestationGistId;
+  let attestationVisibility: LocalAnnounceIdentity['attestationVisibility'];
+  const resolveGist = opts.resolveAttestationGistId ?? ((args: ResolveAttestationGistArgs) =>
+    defaultResolveAttestationGistId(args, value => { attestationVisibility = value; }));
   // WI-10006733: past the 60s fresh window the cache still names the gist this
   // device resolved last time. Hand it to the resolver as a hint (it verifies
   // it remotely) so the steady state is one request, not a walk of every gist
@@ -547,6 +570,8 @@ export async function resolveLocalAnnounceIdentity(
     githubUserId: user.id,
     githubLogin: user.login,
     attestationGistId,
+    ...(attestationVisibility && { attestationVisibility }),
+    ...(prior?.supersededGistId && knownGistId === attestationGistId && { supersededGistId: prior.supersededGistId }),
   };
   await writeCachedIdentity(cachePath, identity);
   return identity;

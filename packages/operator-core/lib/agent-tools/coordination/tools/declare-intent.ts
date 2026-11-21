@@ -108,8 +108,8 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
   return (
     'EI-5873: this reads like a broad "take everything remaining" intent with no structured `items` — ' +
     'a peer declaring the same broad scope has no structural signal to see the overlap (the claim check ' +
-    'only runs on declared `items`). If this work has enumerable plan items (P-NNN) or work-items, pass ' +
-    'them as `items` (or claim the specific ones via work_items:claim / scheduler:get_next) so a colliding ' +
+    'only runs on declared `items`). Claim specific work-items via work_items:claim / scheduler:get_next. ' +
+    'When already working on Papercusp plan items, pass those P-NNN ids as `items` so a colliding ' +
     'peer sees a real conflict instead of both of you discovering it after the fact.'
   );
 }

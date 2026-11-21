@@ -567,7 +567,9 @@ continuation gate picks, not a law.
   and historical terminal records. Example: proof-warming P-001 "inventory current
   behavior and find gaps" needs those answers now: inspect the existing cache, cite
   current evidence, remove duplicate work and retain only the evidenced gap before review.
-- **Plan before non-trivial work.** A plan is REQUIRED when work decomposes
+- **Plan before non-trivial work.** An outside plan reference satisfies planning at any size.
+  Hold a work-item per piece through `work_items:complete`. The following planning and activation
+  rules apply to Papercusp-planned work. A plan is REQUIRED when it decomposes
   into ≥2 work-items, has inter-dependent steps, outlives one session, or
   sequences multiple subsystems: `plans:new` + `plans:add-item`, then
   `plans:start` (promotes items into work-items). Don't over-apply — a single
@@ -575,7 +577,7 @@ continuation gate picks, not a law.
   plan docs live behind `plans:*` (see *Named workflows*). Your client's plan
   mode (Claude's `ExitPlanMode`, etc.) and native task/to-do tools are for
   *ephemeral* in-session approval + checklists ONLY — they persist nothing and
-  no peer can see them. Any **durable** plan must live in `plans:*`
+  no peer can see them. Any **durable Papercusp** plan must live in `plans:*`
   (PG-canonical, fleet-visible, reviewable); never let a plan exist only in
   your client's plan mode — use it, if at all, to *draft* what you then write
   to `plans:*`.

@@ -263,6 +263,15 @@ export interface CreateAttestationGistResult {
   gistId: string;
   gistUrl: string;
   body: AttestationGistBody;
+  visibility: 'public' | 'secret';
+}
+
+/** This process setting belongs to the machine that owns the device key. */
+export function attestationGistPreference(): 'public' | 'secret' {
+  const value = process.env.PAPERCUSP_ATTESTATION_GIST_VISIBILITY;
+  if (value === undefined || value === 'public') return 'public';
+  if (value === 'secret') return 'secret';
+  throw new Error('PAPERCUSP_ATTESTATION_GIST_VISIBILITY must be public or secret');
 }
 
 type AttestationGistListEntry = {
@@ -396,8 +405,7 @@ async function listAttestationGists(token: string): Promise<AttestationGistListE
 
 /**
  * Create the GitHub Gist that constitutes this device's attestation.
- * The gist is public (GitHub requires auth for gist creation, but the
- * verifier needs to read it without the creator's token).
+ * Peers can read either listing visibility by gist ID.
  *
  * Signs the canonical payload with the Ed25519 private key from the
  * keychain before publishing, so the gist is self-authenticating.
@@ -427,9 +435,10 @@ export async function createAttestationGist(
   const body = await createDeviceAttestationBody(input);
 
   const filename = attestationGistFilename(pubkeyBase64);
+  const visibility = attestationGistPreference();
   const gistPayload = {
     description: 'Papercusp device binding attestation',
-    public: true,
+    public: visibility === 'public',
     files: {
       [filename]: { content: JSON.stringify(body, null, 2) },
     },
@@ -454,8 +463,9 @@ export async function createAttestationGist(
     );
   }
 
-  const data = (await resp.json()) as { id: string; html_url: string };
-  return { gistId: data.id, gistUrl: data.html_url, body };
+  const data = (await resp.json()) as { id: string; html_url: string; public?: boolean };
+  return { gistId: data.id, gistUrl: data.html_url, body,
+    visibility: typeof data.public === 'boolean' ? (data.public ? 'public' : 'secret') : visibility };
 }
 
 // ─── write-capability preflight ───────────────────────────────────────────────
@@ -593,6 +603,7 @@ export async function probeGistWriteCapability(token: string): Promise<GistWrite
  */
 export async function ensureAttestationGist(
   input: CreateAttestationGistInput,
+  onVisibility?: (visibility: 'public' | 'secret' | undefined) => void,
 ): Promise<string> {
   const expectedFilename = attestationGistFilename(input.pubkeyBase64);
 
@@ -607,7 +618,10 @@ export async function ensureAttestationGist(
       input.githubUserId,
       { token: input.token },
     );
-    if (hinted.valid) return input.knownGistId;
+    if (hinted.valid) {
+      onVisibility?.(hinted.visibility);
+      return input.knownGistId;
+    }
   }
 
   // Creating is safe only after we have positively established that no usable
@@ -636,7 +650,10 @@ export async function ensureAttestationGist(
     const v = await verifyAttestation(g.id, input.pubkeyBase64, input.githubUserId, {
       token: input.token,
     });
-    if (v.valid) return g.id;
+    if (v.valid) {
+      onVisibility?.(v.visibility);
+      return g.id;
+    }
     const reason = v.reason ?? 'unknown';
     throw new Error(
       'ensureAttestationGist: could not verify candidate binding ' + g.id +
@@ -645,10 +662,57 @@ export async function ensureAttestationGist(
   }
 
   const created = await createAttestationGist(input);
+  onVisibility?.(created.visibility);
   return created.gistId;
 }
 
 // ─── verification ─────────────────────────────────────────────────────────────
+
+/** Offline owner action. The caller holds the host rotation lock, stops other
+ * identity writers and durably switches the announce cache before retirement. */
+export async function rotatePublicAttestation(
+  input: CreateAttestationGistInput,
+  oldId: string,
+  install: (newId: string) => Promise<void>,
+): Promise<string> {
+  if (attestationGistPreference() !== 'secret' || !/^[0-9a-f]+$/i.test(oldId)) {
+    throw new Error('Rotation requires secret visibility and the full public gist ID');
+  }
+  const verify = (id: string) => verifyAttestation(id, input.pubkeyBase64, input.githubUserId,
+    { token: input.token, skipCache: true });
+  const filename = attestationGistFilename(input.pubkeyBase64);
+  const entries = (await listAttestationGists(input.token)).filter(g => g.files && filename in g.files);
+  const old = entries.find(g => g.id === oldId);
+  const replacements = entries.filter(g => g.id !== oldId);
+  if (replacements.length > 1) throw new Error('Multiple replacement candidates; inspect the bindings before rotating');
+  let newId = replacements[0]?.id;
+  if (!input.knownGistId || (input.knownGistId !== oldId && input.knownGistId !== newId)) {
+    throw new Error('The requested gist does not match the cached device binding or its replacement');
+  }
+  if (old) {
+    if (Object.keys(old.files ?? {}).length !== 1 || (await verify(oldId)).visibility !== 'public') {
+      throw new Error('Old gist must be a verified, single-file public binding for this device');
+    }
+  } else if (!newId || input.knownGistId !== newId || (await verify(oldId)).reason !== 'gist_not_found') {
+    throw new Error('The original binding is missing or its retirement cannot be confirmed');
+  }
+  if (replacements.length && !newId) throw new Error('Replacement candidate has no ID');
+  newId ??= (await createAttestationGist(input)).gistId;
+  if ((await verify(newId)).visibility !== 'secret') {
+    throw new Error('Could not verify an unlisted replacement; the old binding was retained');
+  }
+  await install(newId);
+  if (old) {
+    const response = await fetch('https://api.github.com/gists/' + oldId, {
+      method: 'DELETE', headers: { Authorization: 'token ' + input.token },
+    });
+    if (!response.ok && response.status !== 404) {
+      throw new Error('Replacement installed. Retirement returned HTTP ' + response.status + '; retry with the same old ID');
+    }
+  }
+  evictAttestationCache(oldId, input.pubkeyBase64);
+  return newId;
+}
 
 /**
  * Verify a peer's attestation gist. Checks:
@@ -738,7 +802,7 @@ async function runVerification(
 
   // Fetch gist — authenticated when the box has a gh token (quota only; the
   // gist is public and any token can read it).
-  let gistData: { owner?: { id?: number }; files?: Record<string, { content?: string }> };
+  let gistData: { public?: boolean; owner?: { id?: number }; files?: Record<string, { content?: string }> };
   try {
     const token = tokenOverride ?? await resolveLocalGhToken();
     let resp = await fetchGist(gistId, token);
@@ -806,6 +870,7 @@ async function runVerification(
     valid: true,
     verifiedAt,
     resolvedGithubUserId: body.github_user_id,
+    ...(typeof gistData.public === 'boolean' && { visibility: gistData.public ? 'public' : 'secret' }),
   };
 }
 

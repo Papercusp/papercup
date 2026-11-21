@@ -39,7 +39,7 @@ import type { HarnessLink } from './url-scheme';
 import type { ChannelResult } from '../identity/binding-verifier-types';
 import {
   loadOrGenerateDeviceKeypair,
-  createAttestationGist,
+  ensureAttestationGist,
 } from '../identity/attest';
 import type { DeviceKeypairId } from '../identity/attestation-types';
 import {
@@ -228,7 +228,7 @@ export async function step1_oauthAttest(opts: {
   let attestationGistId = opts.existingGistId ?? '';
   if (!attestationGistId) {
     try {
-      const gistResult = await createAttestationGist({
+      attestationGistId = await ensureAttestationGist({
         keychainId: opts.keychainId,
         pubkeyBase64: keypair.pubkeyBase64,
         deviceLabel: 'unnamed-device',
@@ -236,7 +236,6 @@ export async function step1_oauthAttest(opts: {
         githubLogin: opts.githubLogin,
         token: opts.token,
       });
-      attestationGistId = gistResult.gistId;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       throw new JoinStepError(

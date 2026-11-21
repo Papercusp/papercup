@@ -28,6 +28,7 @@ export interface WorkItemSearchMatch {
   summary: string;
   state: string;
   severity: string | null;
+  externalPlanRef?: string;
   planStatus?: 'draft';
   planSlug?: string;
   planItemId?: string;
@@ -55,6 +56,7 @@ export function projectWorkItemSearchMatch(item: WorkItem | DraftPlanSearchMatch
     summary: summary.value,
     state: item.state,
     severity: item.severity,
+    ...('externalPlanRef' in item && item.externalPlanRef !== undefined ? { externalPlanRef: item.externalPlanRef } : {}),
     ...('planStatus' in item ? { planStatus: item.planStatus, planSlug: item.planSlug, planItemId: item.planItemId } : {}),
     ...(title.truncated ? { title_truncated: true, title_full_chars: title.fullChars } : {}),
     ...(summary.truncated ? { summary_truncated: true, summary_full_chars: summary.fullChars } : {}),

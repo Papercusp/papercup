@@ -1,0 +1,64 @@
+--- ordinary-launch
++++ outside-plan-launch
+@@ -1011,54 +1011,8 @@
+   msg_id and carries no free text), then send your one-line disposition as a separate
+   `coord:send { expects:'none', summary }`.
+ 
+-- **Plan before non-trivial work.** Durable plans live in the plan store (shared,
+-  fleet-visible), never only in a client-local task list. A plan is REQUIRED when work
+-  decomposes into >=2 work-items, has inter-dependent steps, outlives one session, or
+-  sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`
+-  (promotes items into work-items). Don't over-apply — a single work-item, a one-shot
+-  fix, or pure investigation needs no plan.
+-  Work with an outside plan reference is already planned at any size. Skip local plan creation,
+-  binding, activation and its conversation audit. Hold a work-item before editing, register each
+-  split piece under the reference, respect approvals and locks, and finish each with `work_items:complete`.
+-- **Shape, then specify; lead approval with the walkthrough.** For an owner-originated
+-  plan, write `## Product shaping` (audience, problem, outcome, non-goals, source turns,
+-  scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
+-  approve with the `ownerWalkthrough` from `plans:audit { slug, phase:'shaping' }`
+-  first — plain-language scenarios, assumptions, open choices — not the requirement list.
+-- **Discover before implementation review.** Brief → scoped discovery → findings
+-  incorporated → implementation review → execution. Discovery is ordinary task work
+-  about a draft, not starting its implementation. Use code-intelligence suggestions
+-  as leads; inspect current behavior, remaining gaps and feasibility. In `## Discovery`,
+-  author bounded questions, conclusions, existing evidence refs and dispositions on
+-  current R/P/D/section targets. Save with `plans:set-content`, then finalize with
+-  `plans:audit { slug, phase:'discovery' }`; the server derives facts and freshness.
+-  An incomplete draft is a **provisional discovery brief**. Reviewers read original
+-  intent and the reconciled revision with full BAR re-review and no round cap.
+-  Implementers start only after review and authority checks. Small/general plans may
+-  reuse current evidence and justify unchanged scope; relevant changes reopen only
+-  affected judgments. Keep in-flight work and historical terminal records intact.
+-  Example: original proof-warming P-001 "inventory current behavior and find gaps"
+-  cannot defer those answers until implementation. Inspect the existing proof cache,
+-  cite its current evidence, remove duplicate warming work, and retain only the
+-  evidenced gap before finalizing discovery and requesting implementation review.
+-- **Audit the complete source conversation before activating a draft plan.** Before
+-  `draft → ready` / `active` or `plans:start`, use `sessions:search` / `sessions:read`
+-  to re-read the full plan-related conversation — never rely on memory or a summary.
+-  Extract every requirement, scope boundary, constraint, correction, rejected
+-  alternative, decision, dependency, sequence, acceptance condition, unresolved
+-  question, and promised follow-up; map each to a plan section, D-NNN, or P-NNN;
+-  repair every omission; then record `plans:audit { phase:'activation', ... }` before
+-  activating. The audit also checks the reverse: each non-dropped item needs an
+-  owner-typed turn in some mapping, or an `itemProvenance` entry declaring it `derived`
+-  or `agent-added` with a reason; your own turns never count as the owner. A later
+-  edit PRESERVES that audit. Read the edit response's
+-  `activationAudit` metadata, compare its audited/current revisions, and re-audit when
+-  the edit changes meaning (requirements, scope, constraints, decisions, dependencies,
+-  sequencing, acceptance criteria, open questions, or promised follow-ups). Spelling,
+-  formatting, and other cosmetic-only edits do not need another audit.
+-- **Decompose deliberately; don't reflex-parallelize.** Encode real `blocked-by` deps;
+-  fan out only when items are genuinely independent AND touch disjoint files (same-file
+-  "parallel" work just serializes on the locks).
++- **This assignment is already planned outside Papercusp.** At any size, hold a work-item before editing, register each split piece separately, preserve its dependency links and complete each piece with `work_items:complete`. Skip local plan creation, binding, activation and conversation audits.
++
+ - **Raw forensic output (journalctl, psql dumps, proc scans) never enters agent context** —
+   run it via `code:run` and return distilled evidence; park the evidence on the work-item.
+ - **Before you report a number, find the code that WRITES it.** A metric, a count, a score, a
+@@ -1425,3 +1379,4 @@
+ <!-- papercusp-rule:harness-scope=explicit-per-call -->
+ - **Scope:** harness `outside-example`; pass `harness: 'outside-example'` to `docs:*`, `features:*`, `issues:*`, and `plans:*`.
+ - **Other harnesses:** read through `cross_harness:docs_*` / `cross_harness:plans_*`.
++The client supplied the plan of record. Read the opaque reference with `coord:whoami`. Hold a work-item before editing and complete it with evidence. Return the result to the client.

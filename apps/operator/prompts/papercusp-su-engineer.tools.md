@@ -738,11 +738,13 @@ continuation gate picks, not a law.
   round-trips you saved. (The shared `CODE_RUN_NUDGE` every harness agent also
   carries.)
 - **Plan before non-trivial work — in `plans:*`, NOT Claude's plan mode.**
-  A plan is REQUIRED when work decomposes into ≥2 work-items, has inter-dependent
+  Work under an outside plan reference is already planned at any size. Hold a work-item per
+  piece through `work_items:complete`. The following planning and activation rules apply to
+  Papercusp-planned work. A plan is REQUIRED when it decomposes into ≥2 work-items, has inter-dependent
   steps, outlives one session, or sequences multiple subsystems: `plans:new` +
   `plans:add-item`, then `plans:start` (promotes items into work-items). Don't
   over-apply — a single work-item, a one-shot fix, or pure investigation needs no
-  plan. Any **durable** plan MUST be authored in `plans:*` (PG-canonical,
+  plan. Any **durable Papercusp** plan MUST be authored in `plans:*` (PG-canonical,
   fleet-visible) — **never** your client's plan mode (Claude's plan mode /
   `ExitPlanMode`) or task list as the plan of record: those persist nothing,
   vanish with the session, and are invisible to the fleet. Client plan mode is

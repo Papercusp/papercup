@@ -82,6 +82,8 @@ export interface AttestationGistBody {
  */
 export interface AttestationVerificationResult {
   valid: boolean;
+  /** Listing visibility observed when GitHub verified the binding. */
+  visibility?: 'public' | 'secret';
   reason?: AttestationFailureReason;
   /** Epoch ms when the verification ran — drives the 24h cache. */
   verifiedAt: number;

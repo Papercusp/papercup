@@ -41,7 +41,9 @@
  * Plan: substrate-revocation-v2, Component A; harden-shared-hive-to-256-peers P-002.
  */
 
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import * as keychain from '../../../identity/keychain';
+import { ensureAttestationGist, verifyAttestation, rotatePublicAttestation } from '../../../identity/attest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -80,7 +82,7 @@ function makeDevice() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const devicePubkey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
   const sign = async (bytes: Buffer) => nodeSign(null, bytes, privateKey);
-  return { devicePubkey, sign };
+  return { devicePubkey, sign, privateKey };
 }
 
 /** Build a VALID signed announce from a device. */
@@ -89,13 +91,14 @@ async function makeAnnounce(
   logCoreKey: string,
   githubLogin = 'alice',
   githubUserId = 4242,
+  gistId = 'gist-test',
 ): Promise<SignedAnnounce> {
   return buildAnnounce(
     {
       device_pubkey: device.devicePubkey,
       github_user_id: githubUserId,
       github_login: githubLogin,
-      attestation_gist_id: 'gist-test',
+      attestation_gist_id: gistId,
       log_core_key: logCoreKey,
     },
     device.sign,
@@ -103,6 +106,77 @@ async function makeAnnounce(
 }
 
 describe('channel-2 re-verify for admitted peers (rev-v2 Component A)', () => {
+  it.each(['public', 'secret'] as const)('two instances admit a %s binding and enforce gist deletion', async initial => {
+    const device = makeDevice();
+    const input = { keychainId: 'sender', pubkeyBase64: device.devicePubkey,
+      deviceLabel: 'sender', githubUserId: 4242, githubLogin: 'alice', token: 'test-token' };
+    vi.spyOn(keychain, 'keychainLoad').mockResolvedValue({
+      kind: 'ok', value: device.privateKey.export({ type: 'pkcs8', format: 'der' }) as Buffer,
+    });
+    cleanups.push(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+    vi.stubEnv('PAPERCUSP_ATTESTATION_GIST_VISIBILITY', initial === 'public' ? undefined : initial);
+    type Gist = { id: string; public: boolean; owner: { id: number }; files: Record<string, { content: string }> };
+    const gists = new Map<string, Gist>();
+    let created = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const endpoint = new URL(url);
+      if (endpoint.origin !== 'https://api.github.com') throw new Error('Unexpected endpoint ' + url);
+      if (endpoint.pathname === '/gists') {
+        expect(new Headers(init?.headers).get('Authorization')).toBe('token test-token');
+        if (init?.method !== 'POST') return Response.json([...gists.values()]);
+        const id = (++created).toString(16);
+        const gist = { ...JSON.parse(String(init.body)), id, owner: { id: 4242 } } as Gist;
+        gists.set(id, gist);
+        return Response.json(gist, { status: 201 });
+      }
+      const id = endpoint.pathname.split('/')[2];
+      if (init?.method === 'DELETE') {
+        gists.delete(id);
+        return new Response(null, { status: 204 });
+      }
+      return gists.has(id) ? Response.json(gists.get(id)) : new Response(null, { status: 404 });
+    }));
+    const verifyBinding = async (key: string, _login: string, uid: number, gistId: string) =>
+      (await verifyAttestation(gistId, key, uid, { token: input.token, skipCache: true })).valid
+        ? 'verified' as const : 'fail' as const;
+    const boot = async (workspaceId: string) => {
+      const instance = await bootHarnessSubstrate({ workspaceId, workspaceRoot: tmpDir(workspaceId),
+        harnessSlug: 'trial', mergePollMs: 0, pendingRetryMs: 0, reverifyIntervalMs: 0,
+        rekeyDepsOverride: null, loadRevokedOverride: async () => new Set(), verifyBindingOverride: verifyBinding });
+      cleanups.push(() => instance.close());
+      return instance;
+    };
+    const sender = await boot('gist-sender');
+    const receiver = await boot('gist-receiver');
+    const announce = async (id: string) => receiver.onAnnounce(await makeAnnounce(device, sender.ownLog.keyHex, 'alice', 4242, id));
+    const checkDrop = async () => {
+      await receiver.reverifyAdmitted();
+      await receiver.mergeNow();
+      expect(receiver.admitted.has(sender.ownLog.keyHex)).toBe(false);
+    };
+    let current = await ensureAttestationGist(input);
+    expect(gists.get(current)?.public).toBe(initial === 'public');
+    expect((await announce(current)).admit).toBe(true);
+    vi.stubEnv('PAPERCUSP_ATTESTATION_GIST_VISIBILITY', 'secret');
+    expect(await ensureAttestationGist(input)).toBe(current);
+    expect(created).toBe(1);
+    if (initial === 'public') {
+      const old = current;
+      const rotate = (install: (id: string) => Promise<void>) =>
+        rotatePublicAttestation({ ...input, knownGistId: current }, old, install);
+      await expect(rotate(async () => { throw new Error('cache write failed'); })).rejects.toThrow('cache write failed');
+      expect(gists.has(old)).toBe(true);
+      current = await rotate(async id => { current = id; });
+      expect(current).not.toBe(old);
+      expect(gists.size).toBe(1);
+      expect(gists.get(current)?.public).toBe(false);
+      expect(created).toBe(2);
+      await checkDrop();
+      expect((await announce(current)).admit).toBe(true);
+    }
+    gists.delete(current);
+    await checkDrop();
+  });
   // ── Test 1: conclusive 'fail' drops peer, no permanent blocklist ───────────
   it("re-verify 'fail': peer dropped from admitted, peer_revoked recorded, pubkey NOT in revoked (re-admittable)", async () => {
     // Start with 'verified' so the peer is admitted initially.

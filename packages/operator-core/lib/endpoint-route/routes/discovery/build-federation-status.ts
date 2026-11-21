@@ -67,6 +67,7 @@ export interface OwnedHiveStatusRow {
 }
 
 export interface FederationStatus {
+  attestationVisibility: 'public' | 'secret' | null;
   ok: boolean;
   substrate: {
     active: boolean;
@@ -246,5 +247,6 @@ export async function buildFederationStatus(): Promise<FederationStatus> {
     /* keep the conservative default */
   }
 
-  return { ok: true, substrate, hives };
+  const { lastAttestationVisibility } = await import('../../../sync/hyperbee/local-announce-identity');
+  return { ok: true, substrate, hives, attestationVisibility: await lastAttestationVisibility() };
 }
