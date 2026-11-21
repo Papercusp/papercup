@@ -273,6 +273,24 @@ describe('recordRouteInvocation — native guard route correlation', () => {
     }
   });
 
+  it.each(['clauses', 'rubric', 'cards', 'auditor'])(
+    'retains completed and pending spec-quality %s timing', async (stage) => {
+      const exec = execWith({ method: 'POST', path, status: 'timeout',
+        headers: { 'x-papercusp-guard-request-id': requestId } });
+      const completed = `guard_plan_spec_quality_${stage}`;
+      const pending = `guard_plan_pending_spec_quality_${stage}`;
+      exec.routeDiagnostics = { measure: async (_phase, work) => work(),
+        snapshot: () => ({ invoke: 1000, [completed]: 40, [pending]: 75,
+          guard_plan_spec_quality_private: 90, guard_plan_pending_spec_quality_private: 91 }) };
+      recordRouteInvocation(exec);
+
+      await vi.waitFor(() => expect(JSON.parse(String(findInsertCall().params[11]))).toEqual({
+        guardRequestId: requestId,
+        routePhaseTimingsMs: { invoke: 1000, [completed]: 40, [pending]: 75 },
+      }));
+    },
+  );
+
   it.each(['readiness_pending', 'readiness_reused', 'readiness_settled_refusal'])(
     'retains continuation-readiness evidence (%s)', async (outcome) => {
       const exec = execWith({ method: 'POST', path, status: 'timeout',
