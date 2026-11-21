@@ -3209,6 +3209,8 @@ export interface CreateWorkItemInput {
   /** Plan-item ids covered by this work-item; paired with sourcePlanSlug for both families. */
   sourcePlanItemIds?: string[] | null;
   externalPlanRef?: string;
+  /** Internal hook: failure rolls back the INSERT and its dependent write. */
+  onCreatedInTransaction?: (id: string, tx: OrgSql) => Promise<void>;
   /**
    * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22, P-005):
    * `harness_shared.owner_directives.id` this work-item was created to carry out.
@@ -3387,6 +3389,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       // admitted and claimable between the two writes.
       admission: input.admission,
       admittedBy: input.admittedBy,
+      onCreatedInTransaction: input.onCreatedInTransaction,
     });
     const created = issueToWorkItem(issue);
     // EI-18654138087054247: createIssue tags the coord topic store, which the
@@ -3620,13 +3623,14 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     const stamp = payload?.plan_item as Record<string, unknown> | undefined;
     const selectionPlan = typeof stamp?.plan_slug === 'string' ? stamp.plan_slug : input.sourcePlanSlug;
     const planToCheck = assignTo || payload?.fleet_slug ? selectionPlan : null;
-    inserted = assignTo || planToCheck
+    inserted = assignTo || planToCheck || input.onCreatedInTransaction
       ? await boundedOrgTxn(async (tx) => {
           if (planToCheck) {
             const selections = await lockGoalPlanClaimSelections(tx, resolvedWs, assignTo ?? input.createdBy);
             assertGoalPlanClaimSelection(selections, { harness: featureHarness, planSlug: planToCheck });
           }
           const rows = await tx.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+          if (rows[0]) await input.onCreatedInTransaction?.(rows[0].feature_id, tx as unknown as OrgSql);
           if (rows[0] && assignTo) {
             const ref = workItemObjectRef({ family: 'feature', harness: featureHarness, id: rows[0].feature_id });
             await syncHeldItemSubscription(tx, ref, assignTo);

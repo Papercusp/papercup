@@ -30,6 +30,8 @@ import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { getCoordSubscriptionStore } from './agent-tools/coordination/subscription-store';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { currentSessionEpoch } from './memory/session-epoch-ledger';
+import { boundedOrgTxn } from './pg-bounded-txn';
+import { activeWorkspaceId } from './workspace-registry';
 
 /** Identity families that are machines by construction, measured in
  *  coord_entity_subscriptions on 2026-11-15 and in EI-28704054499880447 (where
@@ -91,11 +93,112 @@ export interface ContextEndResult {
  *  claim, transfer or release. The fan-out reader resolves this same workspace. */
 export async function syncHeldItemSubscription(
   tx: Sql | TransactionSql, target: ObjectRef, holder: string | null,
+  workspaceId = coordScopeWorkspace(),
 ): Promise<void> {
   const store = new PgEntitySubscriptionStore({
-    getSql: () => tx, ensureSchema: async () => {}, workspaceId: coordScopeWorkspace(),
+    getSql: () => tx, ensureSchema: async () => {}, workspaceId,
   });
   await store.setHeldItemSubscriber(target, isMachineIdentity(holder) ? null : holder);
+}
+
+/** A direct base-table writer can change custody between reaper passes. Read
+ *  only the addressed item. The common case is a single read with no writes.
+ *  On mismatch, re-read under the same row lock normal claim writers take. */
+export async function refreshHeldItemForDelivery(target: ObjectRef): Promise<void> {
+  const issue = target.kind === 'issue';
+  const separator = target.ref.indexOf('#');
+  if (!issue && (target.kind !== 'feature' || separator < 1 || separator === target.ref.length - 1)) return;
+  const { issuesScopeWorkspace } = await import('./issues-engineer');
+  const { ISSUE_FAMILY_KINDS, isSettledWorkItemState } = await import('./work-items');
+  const rowWorkspace = issue ? issuesScopeWorkspace() : activeWorkspaceId();
+  const coordWorkspace = coordScopeWorkspace();
+  const id = issue ? target.ref : target.ref.slice(separator + 1);
+  const pg = getOrgPg().sql;
+  const family = pg`COALESCE(w.item_kind = ANY(${pg.array([...ISSUE_FAMILY_KINDS])}::text[]), false)`;
+  const source = pg`FROM harness_shared.work_items w
+    WHERE w.workspace_id = ${rowWorkspace} AND w.feature_id = ${id}
+      AND ${family} = ${issue}::boolean
+      ${issue ? pg`` : pg`AND w.harness_slug = ${target.ref.slice(0, separator)}`}`;
+  type Custody = { taken_by: string | null; status: string };
+  const holderOf = (rows: Custody[]) => {
+    // An unqualified issue with physical twins has no unambiguous holder.
+    const row = rows.length === 1 ? rows[0] : undefined;
+    return row && !isSettledWorkItemState(row.status) && !isMachineIdentity(row.taken_by) ? row.taken_by : null;
+  };
+  const snapshot = await pg<(Custody & { projected: string[] })[]>`
+    SELECT w.taken_by, w.status, ARRAY(
+      SELECT s.subscriber_id FROM harness_shared.coord_entity_subscriptions s
+       WHERE s.workspace_id = ${coordWorkspace} AND s.target_kind = 'object'
+         AND s.target_ref = ${`${target.kind}:${target.ref}`} AND s.cancelled_at IS NULL
+         AND (to_jsonb(s)->'reasons') ? 'held_item'
+    ) AS projected ${source}`;
+  if (!snapshot.length) return;
+  const holder = holderOf(snapshot);
+  const projected = snapshot[0].projected;
+  if (holder === null ? projected.length === 0 : projected.length === 1 && projected[0] === holder) return;
+  await boundedOrgTxn(async (tx) => {
+    const current = await tx<Custody[]>`SELECT w.taken_by, w.status ${source} ORDER BY w.harness_slug FOR NO KEY UPDATE OF w`;
+    if (current.length) await syncHeldItemSubscription(tx, target, holderOf(current), coordWorkspace);
+  }, { client: pg });
+}
+
+/** Recover pre-upgrade assignments and changes made directly to the base table.
+ *  Completed repairs leave the mismatch set, so the next tick can resume from
+ *  the database even after a restart. Never replay a claim to repair a follow. */
+export async function reconcileHeldItemSubscriptions(opts: {
+  dryRun?: boolean;
+  batchSize?: number;
+  sql?: ReturnType<typeof getOrgPg>['sql'];
+} = {}): Promise<{ matched: number; repaired: number; more: boolean }> {
+  const batchSize = opts.batchSize ?? 100;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize >= Number.MAX_SAFE_INTEGER) {
+    throw new Error('held-item subscription batchSize must be a positive safe integer with room for a lookahead row');
+  }
+  const { issuesScopeWorkspace } = await import('./issues-engineer');
+  const { familyOf, ISSUE_FAMILY_KINDS, isSettledWorkItemState, SETTLED_WORK_ITEM_STATES, workItemObjectRef } =
+    await import('./work-items');
+  const featureWs = activeWorkspaceId();
+  const issueWs = issuesScopeWorkspace();
+  const coordWs = coordScopeWorkspace();
+  return boundedOrgTxn(async (tx) => {
+    const issue = tx`COALESCE(w.item_kind = ANY(${tx.array([...ISSUE_FAMILY_KINDS])}::text[]), false)`;
+    const scope = tx`w.workspace_id = CASE WHEN ${issue} THEN ${issueWs}::text ELSE ${featureWs}::text END`;
+    const settled = tx`COALESCE(w.status = ANY(${tx.array([...SETTLED_WORK_ITEM_STATES])}::text[]), false)`;
+    // Classify actual holder IDs with the same recipient predicate as a claim.
+    // This read only selects candidates. Re-evaluate the locked row before writing.
+    const holders = await tx<{ taken_by: string }[]>`
+      SELECT DISTINCT w.taken_by FROM harness_shared.work_items w
+       WHERE ${scope} AND w.taken_by IS NOT NULL AND NOT ${settled}`;
+    const agents = holders.map(row => row.taken_by).filter(id => !isMachineIdentity(id));
+    const rows = await tx<{
+      harness_slug: string; feature_id: string; item_kind: string; taken_by: string | null; status: string;
+    }[]>`
+      WITH follows AS (
+        SELECT target_ref, array_agg(subscriber_id ORDER BY subscriber_id) AS holders
+          FROM harness_shared.coord_entity_subscriptions
+         WHERE workspace_id = ${coordWs} AND target_kind = 'object' AND cancelled_at IS NULL
+           AND 'held_item' = ANY(reasons)
+         GROUP BY target_ref)
+      SELECT w.harness_slug, w.feature_id, w.item_kind, w.taken_by, w.status
+        FROM harness_shared.work_items w
+        LEFT JOIN follows f ON f.target_ref = CASE WHEN ${issue} THEN 'issue:' || w.feature_id
+          ELSE 'feature:' || btrim(w.harness_slug) || '#' || w.feature_id END
+       WHERE ${scope}
+         AND COALESCE(f.holders, ARRAY[]::text[]) <> CASE
+           WHEN NOT ${settled} AND w.taken_by = ANY(${tx.array(agents)}::text[]) THEN ARRAY[w.taken_by]
+           ELSE ARRAY[]::text[] END
+       ORDER BY w.updated_ts, w.harness_slug, w.feature_id
+       LIMIT ${batchSize + 1}
+       ${opts.dryRun ? tx`` : tx`FOR NO KEY UPDATE OF w`}`;
+    const batch = rows.slice(0, batchSize);
+    if (!opts.dryRun) {
+      for (const row of batch) {
+        const target = workItemObjectRef({ family: familyOf(row.item_kind), harness: row.harness_slug, id: row.feature_id });
+        await syncHeldItemSubscription(tx, target, isSettledWorkItemState(row.status) ? null : row.taken_by, coordWs);
+      }
+    }
+    return { matched: batch.length, repaired: opts.dryRun ? 0 : batch.length, more: rows.length > batch.length };
+  }, { client: opts.sql ?? getOrgPg().sql, readOnly: opts.dryRun === true });
 }
 
 /** Store seam: the two PgEntitySubscriptionStore methods the lifecycle uses. */

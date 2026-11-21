@@ -37,7 +37,9 @@
 import type { Sql } from 'postgres';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getOrgPg } from '@papercusp/db-org';
-import { resolvedSubscriberTarget, type ObjectRef, type ResolvedSubscriber } from '@papercusp/coordination/capabilities';
+import {
+  LIVE_SUBSCRIPTION_REASONS_SQL, LIVE_SUBSCRIPTION_SQL, resolvedSubscriberTarget, type ObjectRef, type ResolvedSubscriber,
+} from '@papercusp/coordination/capabilities';
 import { coordScopeWorkspace } from '../../agent-tools/coordination/log';
 import { buildInjectEnvelope, type InjectEvent } from '../../agent-tools/coordination/fanout-delivery';
 
@@ -154,7 +156,7 @@ export async function writeFanoutNotify(
       SELECT s.id FROM harness_shared.coord_entity_subscriptions AS s
        WHERE s.workspace_id = ${ws} AND s.subscriber_id = ${sub.subscriber_id}
          AND s.target_kind = ${targetKind} AND s.target_ref = ${targetRef}
-         AND s.cancelled_at IS NULL AND (s.expires_ts IS NULL OR s.expires_ts > now())
+         AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}
        LIMIT 1
        FOR SHARE),
     pend AS (
@@ -374,10 +376,10 @@ async function liveReasons(
   targetRef: string,
 ): Promise<{ live: boolean; reasons: string[] | null }> {
   const rows = await sql<{ reasons: string[] | null }[]>`
-    SELECT s.reasons FROM harness_shared.coord_entity_subscriptions AS s
+    SELECT ${sql.unsafe(LIVE_SUBSCRIPTION_REASONS_SQL)} AS reasons FROM harness_shared.coord_entity_subscriptions AS s
      WHERE s.workspace_id = ${ws} AND s.subscriber_id = ${subscriberId}
        AND s.target_kind = ${targetKind} AND s.target_ref = ${targetRef}
-       AND s.cancelled_at IS NULL AND (s.expires_ts IS NULL OR s.expires_ts > now())
+       AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}
      LIMIT 1`;
   return rows.length === 0 ? { live: false, reasons: null } : { live: true, reasons: rows[0].reasons ?? null };
 }
@@ -517,11 +519,11 @@ export async function retryPendingFanoutDeliveries(
                 SELECT 1 FROM harness_shared.coord_entity_subscriptions AS s
                  WHERE s.workspace_id = d.workspace_id AND s.subscriber_id = d.subscriber_id
                    AND s.target_kind = d.target_kind AND s.target_ref = d.target_ref
-                   AND s.cancelled_at IS NULL AND (s.expires_ts IS NULL OR s.expires_ts > now())) AS live,
-              (SELECT s.reasons FROM harness_shared.coord_entity_subscriptions AS s
+                   AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}) AS live,
+              (SELECT ${sql.unsafe(LIVE_SUBSCRIPTION_REASONS_SQL)} FROM harness_shared.coord_entity_subscriptions AS s
                 WHERE s.workspace_id = d.workspace_id AND s.subscriber_id = d.subscriber_id
                   AND s.target_kind = d.target_kind AND s.target_ref = d.target_ref
-                  AND s.cancelled_at IS NULL AND (s.expires_ts IS NULL OR s.expires_ts > now())
+                  AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}
                 LIMIT 1) AS reasons`;
   result.claimed = claimed.length;
   // Newest first, so a durable newer write supersedes older rows of the same
@@ -668,7 +670,7 @@ export async function failEndedContextDeliveries(
          SELECT 1 FROM harness_shared.coord_entity_subscriptions AS s
           WHERE s.workspace_id = d.workspace_id AND s.subscriber_id = d.subscriber_id
             AND s.target_kind = d.target_kind AND s.target_ref = d.target_ref
-            AND s.cancelled_at IS NULL AND (s.expires_ts IS NULL OR s.expires_ts > now()))
+            AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)})
     RETURNING d.outbox_id::text AS outbox_id`;
   return rows.length;
 }

@@ -43,6 +43,7 @@ export interface FleetAssignmentRow {
   agentName: string | null;
   harnessSlug: string | null;
   planSlug: string | null;
+  outsidePlanRef?: string;
   /** P-NNN for plan-item rows. */
   itemId: string | null;
   /** WI-/F-/EI- id for work-item rows. */
@@ -256,7 +257,9 @@ export async function listFleetAssignments(
   const { sql } = getOrgPg();
   const activeOnly = opts.activeOnly !== false;
   const rows = await traceNamedQueryStage('fleet-assignments-sql', async () => sql`
-    SELECT * FROM harness_shared.fleet_assignment
+    SELECT fa.*, (SELECT wi.payload->>'externalPlanRef' FROM harness_shared.work_items wi
+      WHERE wi.workspace_id = fa.workspace_id AND wi.feature_id = fa.work_item_id) AS outside_plan_ref
+      FROM harness_shared.fleet_assignment fa
     WHERE ${
       opts.workspaceId != null
         ? // EI-295: the view UNIONs rows from TWO scoping domains — presence
@@ -338,6 +341,7 @@ export async function listFleetAssignments(
       agentName: (r.agent_name as string | null) ?? null,
       harnessSlug: (r.harness_slug as string | null) ?? null,
       planSlug: (r.plan_slug as string | null) ?? null,
+      ...(typeof r.outside_plan_ref === 'string' ? { outsidePlanRef: r.outside_plan_ref } : {}),
       itemId: (r.item_id as string | null) ?? null,
       workItemId: (r.work_item_id as string | null) ?? null,
       itemKind: (r.item_kind as string | null) ?? null,
@@ -391,6 +395,7 @@ export interface AgentClaim {
   type: 'plan-item' | 'work-item' | 'assignment';
   harnessSlug: string | null;
   planSlug: string | null;
+  outsidePlanRef?: string;
   /** P-NNN (plan-item/assignment) or the work-item id. */
   id: string | null;
   itemKind: string | null;
@@ -474,6 +479,7 @@ function toClaim(r: FleetAssignmentRow): AgentClaim {
           : 'work-item',
     harnessSlug: r.harnessSlug,
     planSlug: r.planSlug,
+    ...(r.outsidePlanRef ? { outsidePlanRef: r.outsidePlanRef } : {}),
     id: r.itemId ?? r.workItemId,
     itemKind: r.itemKind,
     detail: r.detail,

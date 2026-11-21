@@ -491,6 +491,7 @@ export async function claimPlanItem(opts: ClaimPlanItemOpts): Promise<ClaimPlanI
       tags: [],
       paths: [],
       plan: opts.planSlug,
+      externalPlanRef: null,
       planItem: [opts.itemId],
       fleet: null,
       triageGate: null,

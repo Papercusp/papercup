@@ -18,7 +18,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../_baseli
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { listFleetAssignments, groupByAgent, orphanedClaims } from './assignments';
 import { recordedLiveOwnerIds } from '../adv-sessions';
-import { reorderWorkItem } from '../work-items';
+import { createWorkItem, reorderWorkItem } from '../work-items';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { onFleetAssignmentChange, _stopForTests, type FleetAssignmentChange } from '../fleet-assignment-bus';
 
@@ -177,6 +177,19 @@ beforeEach(async () => {
 });
 
 describe('fleet_assignment view + reader (P-001/P-002)', () => {
+  it('reads outside plan labels from the migrated work-item column and exposes them on claims', async () => {
+    const owner = 'su-fa-outside-plan';
+    const id = 'FA-TEST-OUTSIDE';
+    const outsidePlanRef = 'tracker:item with spaces';
+    await seedPresence(owner);
+    await createWorkItem({ id, kind: 'task', title: 'outside work', workspaceId: WS,
+      harness: 'demo', assignee: owner, externalPlanRef: outsidePlanRef });
+    const rows = await listFleetAssignments({ workspaceId: WS, agent: owner });
+    expect(rows.find(row => row.workItemId === id)?.outsidePlanRef).toBe(outsidePlanRef);
+    expect(groupByAgent(rows).find(agent => agent.agentId === owner)?.claims.find(claim => claim.id === id))
+      .toMatchObject({ planSlug: null, outsidePlanRef });
+  });
+
   it('EI-8106: running nursery aliases are positive recorded-live evidence during bootstrap', async () => {
     await seedSpawn('fa-test-bootstrap', { runId: 'fa-test-bootstrap-run' });
     await seedSpawn('fa-test-stale', { heartbeatAgeSeconds: 1200 });

@@ -227,6 +227,19 @@ const storeOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, 
 const subscriptions = new PgEntitySubscriptionStore(storeOpts);
 const tags = new PgTaggableStore(storeOpts);
 const topics = new PgTopicStore(storeOpts);
+const productionStores = { subscriptions, tags, topics };
+
+async function refreshCustody(object: ObjectRef): Promise<void> {
+  if (object.kind === 'issue' || object.kind === 'feature') {
+    const { refreshHeldItemForDelivery } = await import('../../subscription-lifecycle');
+    await refreshHeldItemForDelivery(object);
+  }
+}
+
+async function resolveForDelivery(object: ObjectRef, stores = productionStores as Parameters<typeof resolveObjectSubscribers>[1]) {
+  if (stores === productionStores) await refreshCustody(object);
+  return resolveObjectSubscribers(object, stores);
+}
 
 /** Idempotent insert of one fan-out notify (deterministic msg_id + ON CONFLICT,
  *  migration 126). Mirrors PgCoordLog.appendLine's row shape so coord:inbox
@@ -296,7 +309,7 @@ export async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): P
 export async function fanoutOutboxRow(outboxRow: OutboxFanoutRow): Promise<number> {
   const pg = getOrgPg().sql as unknown as Sql;
   return runFanoutForOutboxRow(outboxRow, {
-    resolve: (object) => resolveObjectSubscribers(object, { subscriptions, tags, topics }),
+    resolve: resolveForDelivery,
     deliver: (outboxId, sub, ev, object) => writeFanoutNotify({ outboxId, sub, ev, object }, { sql: pg }),
     recordFailure: (outboxId, sub, ev, object, error) => recordFanoutFailure({ outboxId, sub, ev, object, error }, { sql: pg }),
   });
@@ -341,15 +354,16 @@ export async function fanoutForObject(
   return withDeadline(
     (async () => {
       try {
-        const stores = opts.stores ?? { subscriptions, tags, topics };
-        const subscribers = (await resolveObjectSubscribers(object, stores)).filter(
+        const stores = opts.stores ?? productionStores;
+        const subscribers = (await resolveForDelivery(object, stores)).filter(
           (s) => opts.excludeId == null || s.subscriber_id !== opts.excludeId,
         );
         const { deliverInjectMany } = await import('../../agent-tools/coordination/fanout-delivery');
         // P-002 / R-8: re-check each subscription right before its write.
-        return await deliverInjectMany(subscribers, ev, opts.sink, (sub) =>
-          isResolvedSubscriberLive(stores.subscriptions, object, sub),
-        );
+        return await deliverInjectMany(subscribers, ev, opts.sink, async (sub) => {
+          if (stores === productionStores && sub.via === 'object') await refreshCustody(object);
+          return isResolvedSubscriberLive(stores.subscriptions, object, sub);
+        });
       } catch {
         return 0;
       }

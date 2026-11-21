@@ -336,6 +336,16 @@ const EFFECTIVE_REASONS_SQL = `(CASE
                                           THEN ARRAY['context']::text[] ELSE ARRAY[]::text[] END
   ELSE COALESCE(s.reasons, ARRAY['explicit']::text[]) END)`;
 
+// A timed explicit follow can share its row with the current holder. Its expiry
+// cannot end custody. Use row JSON so candidate databases predating 1638 still
+// honor expiry without requiring a reasons column. Both fragments use alias s.
+const WITHIN_SUBSCRIPTION_TTL = '(s.expires_ts IS NULL OR s.expires_ts > now())';
+const ROW_REASONS = "(to_jsonb(s)->'reasons')";
+export const LIVE_SUBSCRIPTION_SQL = `s.cancelled_at IS NULL AND
+  (${WITHIN_SUBSCRIPTION_TTL} OR ${ROW_REASONS} ? 'held_item')`;
+export const LIVE_SUBSCRIPTION_REASONS_SQL = `CASE WHEN ${WITHIN_SUBSCRIPTION_TTL}
+  THEN ${ROW_REASONS} ELSE ${ROW_REASONS} - 'explicit' END`;
+
 export class PgEntitySubscriptionStore implements SubscribableStore {
   constructor(private readonly opts: PgCapabilityStoreOptions) {}
   /** The workspace scope NOW (F-C1): the per-call resolver when set + non-empty,
@@ -556,14 +566,14 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     // instead of failing while naming columns that do not exist yet.
     const rows = await sql<SubRowDb[]>`
       SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
-             COALESCE((to_jsonb(sub)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
-             to_jsonb(sub)->>'derived_from_kind' AS derived_from_kind,
-             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref,
-             to_jsonb(sub)->'reasons' AS reasons,
-             to_jsonb(sub)->>'context_epoch' AS context_epoch
-        FROM harness_shared.coord_entity_subscriptions AS sub
+             COALESCE((to_jsonb(s)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
+             to_jsonb(s)->>'derived_from_kind' AS derived_from_kind,
+             to_jsonb(s)->>'derived_from_ref' AS derived_from_ref,
+             ${sql.unsafe(LIVE_SUBSCRIPTION_REASONS_SQL)} AS reasons,
+             to_jsonb(s)->>'context_epoch' AS context_epoch
+        FROM harness_shared.coord_entity_subscriptions AS s
        WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
-         AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())
+         AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}
        ORDER BY created_at ASC, id ASC`;
     return rows.map(toSubRow);
   }
@@ -573,14 +583,14 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     const sql = this.opts.getSql();
     const rows = await sql<SubRowDb[]>`
       SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
-             COALESCE((to_jsonb(sub)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
-             to_jsonb(sub)->>'derived_from_kind' AS derived_from_kind,
-             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref,
-             to_jsonb(sub)->'reasons' AS reasons,
-             to_jsonb(sub)->>'context_epoch' AS context_epoch
-        FROM harness_shared.coord_entity_subscriptions AS sub
+             COALESCE((to_jsonb(s)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
+             to_jsonb(s)->>'derived_from_kind' AS derived_from_kind,
+             to_jsonb(s)->>'derived_from_ref' AS derived_from_ref,
+             ${sql.unsafe(LIVE_SUBSCRIPTION_REASONS_SQL)} AS reasons,
+             to_jsonb(s)->>'context_epoch' AS context_epoch
+        FROM harness_shared.coord_entity_subscriptions AS s
        WHERE workspace_id = ${this.ws} AND target_kind = ${targetKind} AND target_ref = ${targetRef}
-         AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())
+         AND ${sql.unsafe(LIVE_SUBSCRIPTION_SQL)}
        ORDER BY created_at ASC, id ASC`;
     return rows.map(toSubRow);
   }

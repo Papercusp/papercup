@@ -4,7 +4,7 @@ import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } 
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   FANOUT_CLAIM_LEASE_MS, FANOUT_MAX_ATTEMPTS, FANOUT_RETRY_BASE_MS,
-  recordFanoutFailure, retryOwedFanoutFindings, type FanoutFindingFiler,
+  failEndedContextDeliveries, recordFanoutFailure, retryOwedFanoutFindings, retryPendingFanoutDeliveries, type FanoutFindingFiler,
 } from './fanout-deliveries';
 
 const capture = vi.hoisted(() => ({ run: vi.fn() }));
@@ -113,6 +113,29 @@ describe('R-27 permanent finding reservation and independent recovery (real PG)'
       expect(await db.sql`SELECT id FROM harness_shared.test_fanout_findings`).toHaveLength(count);
       expect((await run()).filed).toBe(0);
     });
+
+  it('routes an expired explicit follow to the still-current holder until the holder releases', async () => {
+    const opts = { sql: db.sql, workspaceId: WS, now: NOW };
+    await db.sql`INSERT INTO harness_shared.coord_entity_subscriptions
+      (workspace_id, subscriber_id, target_kind, target_ref, reasons)
+      VALUES (${WS}, 'reader', 'object', 'issue:WI-1', ARRAY['explicit','held_item'])`;
+    const failed = (outboxId: string) => recordFanoutFailure({
+      outboxId, sub: { subscriber_id: 'reader', delivery_mode: 'full', via: 'object' },
+      object: { kind: 'issue', ref: 'WI-1' },
+      ev: { from: 'writer', subject: 'issue:WI-1', summary: 'changed', notify_kind: 'item_updated' },
+      error: new Error('sink unavailable'),
+    }, opts);
+    expect((await failed('1')).route).toBe('inbox');
+    await db.sql`UPDATE harness_shared.coord_entity_subscriptions SET expires_ts = now() - interval '1 second'`;
+    expect((await failed('2')).route).toBe('item-read');
+    const end = () => failEndedContextDeliveries({ subscriberId: 'reader', cause: 'session-end' }, opts);
+    expect(await end()).toBe(0);
+    const retried = await retryPendingFanoutDeliveries({ ...opts, subscriberId: 'reader', ignoreSchedule: true });
+    expect(retried).toMatchObject({ claimed: 1, parked: 1, failed: 0 });
+    expect(await row(1)).toMatchObject({ route: 'item-read', state: 'pending' });
+    await db.sql`UPDATE harness_shared.coord_entity_subscriptions SET reasons = ARRAY['explicit']`;
+    expect(await end()).toBe(2);
+  });
 
   it('the unsuccessful threshold attempt files immediately, with the reserved id', async () => {
     await seed(1, FANOUT_MAX_ATTEMPTS - 1);

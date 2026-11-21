@@ -52,6 +52,8 @@ export { LinkBackedTaggable } from './taggable';
 export {
   type PgCapabilityStoreOptions,
   type SubscriptionEndCause,
+  LIVE_SUBSCRIPTION_SQL,
+  LIVE_SUBSCRIPTION_REASONS_SQL,
   ensureCoordCapabilityTables,
   PgTopicStore,
   PgEntitySubscriptionStore,

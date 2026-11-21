@@ -1108,6 +1108,8 @@ async function deliver(
 }
 
 export interface CreateIssueInput {
+  /** Internal hook, committed atomically with the issue-family INSERT. */
+  onCreatedInTransaction?: (id: string, tx: OrgSql) => Promise<void>;
   title: string;
   body?: string;
   severity?: IssueSeverity;
@@ -1382,6 +1384,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
         context_epoch: creatorFollow.context_epoch,
       });
     }
+    await input.onCreatedInTransaction?.(inserted.id, tx as unknown as OrgSql);
     return inserted;
   });
   const id = issue.id;

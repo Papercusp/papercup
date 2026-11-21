@@ -152,7 +152,11 @@ export class InMemoryEntitySubscriptionStore implements SubscribableStore {
     const now = Date.now();
     return this.rows
       .filter((r) => !r.cancelled)
-      .filter((r) => r.expires_ts == null || new Date(r.expires_ts).getTime() > now)
+      .flatMap((r) => {
+        if (r.expires_ts == null || new Date(r.expires_ts).getTime() > now) return [r];
+        if (!r.reasons?.includes('held_item')) return [];
+        return [{ ...r, reasons: r.reasons.filter(reason => reason !== 'explicit') }];
+      })
       .sort((a, b) => a.created_ts.localeCompare(b.created_ts) || a.id - b.id);
   }
 }

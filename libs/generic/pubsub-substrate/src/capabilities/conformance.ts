@@ -201,6 +201,23 @@ export function describeSubscribableStoreConformance(
       expect(await store.listTargetSubscribers('topic', topic)).toEqual([]);
     });
 
+    it('keeps a holder visible after an explicit follow expires, until custody ends', async () => {
+      if (skip) return;
+      const store = makeStore();
+      const subscriber = uid();
+      const ref = `issue:${uid()}`;
+      const target = { subscriber_id: subscriber, target_kind: 'object' as const, target_ref: ref,
+        created_ts: '2026-01-01T00:00:00Z' };
+      await store.subscribe({ ...target, reason: 'explicit', delivery_mode: 'digest', expires_ts: FAR_PAST });
+      expect(await store.listTargetSubscribers('object', ref)).toEqual([]);
+      await store.subscribe({ ...target, reason: 'held_item' });
+      const expected = [{ subscriber_id: subscriber, reasons: ['held_item'], delivery_mode: 'digest' }];
+      expect(await store.listSubscriptions(subscriber)).toMatchObject(expected);
+      expect(await store.listTargetSubscribers('object', ref)).toMatchObject(expected);
+      await store.unsubscribe(subscriber, 'object', ref, 'held_item');
+      expect(await store.listTargetSubscribers('object', ref)).toEqual([]);
+    });
+
     it('expired subscriptions are excluded; future/null expiry included; sorted by (created_ts, id)', async () => {
       if (skip) return;
       const store = makeStore();

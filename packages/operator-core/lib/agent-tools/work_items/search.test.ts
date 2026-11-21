@@ -49,6 +49,14 @@ const coverageAssessment = (verdict: 'degraded' | 'unknown'): SourceCoverageAsse
 });
 
 describe('work_items:search transaction scope', () => {
+  it.each([199, 200, 201, 1200])('preserves a complete %i-character outside reference through every search tier', length => {
+    const ref = `  tracker:${'路'.repeat(length - 10)}`;
+    const match = projectWorkItemSearchMatch(workItem({ externalPlanRef: ref }));
+    expect(match.externalPlanRef).toBe(ref);
+    for (const tier of ['standard', 'trimmed'] as const) {
+      expect(shapeWorkItemsSearch({ items: [match] }, tier)).toMatchObject({ items: [{ externalPlanRef: ref }] });
+    }
+  });
   it('preserves work-items exports used by neighboring modules', () => {
     expect(typeof getWorkItem).toBe('function');
   });

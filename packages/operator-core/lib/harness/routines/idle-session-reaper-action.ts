@@ -181,6 +181,17 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
     console.warn(`[idle-session-reaper] context-subscription sweep failed: ${e instanceof Error ? e.message : e}`);
   }
 
+  try {
+    const { reconcileHeldItemSubscriptions } = await import('../../subscription-lifecycle');
+    const holds = await reconcileHeldItemSubscriptions({ dryRun });
+    if (holds.matched) {
+      console.log(`[idle-session-reaper] held-item subscriptions: ${dryRun ? 'would repair' : 'repaired'} ${holds.matched}` +
+        (holds.more ? '; additional mismatches remain for the next tick' : ''));
+    }
+  } catch (e) {
+    console.warn(`[idle-session-reaper] held-item reconciliation failed: ${e instanceof Error ? e.message : e}`);
+  }
+
   // Slice 4 — RECLAIM-LANE (fleet-dispatch-wake-clarity P-004): GC the dangling
   // inbox-wake awaits of DEAD sessions so a coordinator's coord:presence /
   // fetchWakeability stops showing them as `wakeable`/`parked` dispatch targets
