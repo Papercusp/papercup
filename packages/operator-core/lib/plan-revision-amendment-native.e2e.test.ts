@@ -10,7 +10,7 @@ import { request as playwrightRequest, type APIRequestContext } from '@playwrigh
 import { describe, expect, inject, it } from 'vitest';
 import { assertNativeIsolatedWorkspace, assertNativeRuntimeLiveness, prepareNativeRuntimeReader } from './testing-native-runtime';
 import { seedFakeLlmHarness } from '../../../apps/operator/e2e/_fake-llm-fixture';
-import { readPlanPtoolReply } from '../test/plan-revision-ptool';
+import { readPlanPtoolDocument, readPlanPtoolReply } from '../test/plan-revision-ptool';
 import { diagnosticCitationCase, nativePlanComparisonTimeoutMs, privatePlanUsername, readPreparedPlanHarness,
   retainNativePlanFailure, retainPlanLivenessProfile,
   type NativePlanEdit } from '../../../apps/operator/e2e/_plan-revision-edits';
@@ -170,8 +170,9 @@ describe.skipIf(inject('papercuspTestLayer') !== 'e2e')('historical private Plan
       const created = door === 'api' ? await api('new', draft) : await ptool('plans:new', draft);
       expect(created.ok).toBe(true);
       const read = async () => {
+        if (door === 'ptool') return readPlanPtoolDocument(slug, harness, ptool);
         const args = { slug, harness, mode: 'full', includeEnrichments: false };
-        const doc = door === 'api' ? await api('get', args, true) : await ptool('plans:get', args);
+        const doc = await api('get', args, true);
         if (doc.ok !== true || typeof doc.raw !== 'string' || typeof doc.version !== 'number'
           || typeof doc.contentHash !== 'string') throw new Error('Incomplete old-client document from ' + door);
         return { content: doc.raw, expectedVersion: doc.version, expectedHash: doc.contentHash, slug, harness };

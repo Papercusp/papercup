@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
-import { readPlanPtoolReply } from '../test/plan-revision-ptool';
+import { readPlanPtoolDocument, readPlanPtoolReply } from '../test/plan-revision-ptool';
 
 const execute = promisify(execFile);
 const cli = new URL('../../../apps/operator/scripts/ptool.mjs', import.meta.url).href;
@@ -17,6 +17,33 @@ function printed(reply: unknown) {
 }
 
 describe('plan revision CLI measurements', () => {
+  it('requests and round-trips the exact stored Markdown, including its frontmatter and final newline', async () => {
+    const slug = 'measured-plan', harness = 'private-harness';
+    const raw = '---\ntitle: Reference\n---\n\n## Reference\n\nCafé 📚\r\n';
+    const contentHash = hashPlanContent(raw);
+    let reads = 0;
+    const result = await readPlanPtoolDocument(slug, harness, (verb, args) => {
+      reads++;
+      expect(verb).toBe('plans:get');
+      expect(args).toMatchObject({ slug, harness, mode: 'full', includeRaw: true, includeEnrichments: false });
+      const row = { ok: true, slug, harness, version: 4, contentHash, ...(args.includeRaw === true ? { raw } : {}) };
+      return readPlanPtoolReply(printed({ structuredContent: { ok: true, results: [row] } }));
+    });
+    expect(reads).toBe(1);
+    expect(result).toEqual({ slug, harness, content: raw, expectedVersion: 4, expectedHash: contentHash });
+  });
+
+  it('refuses an omitted, changed or differently scoped document before an edit is constructed', async () => {
+    const raw = '## Reference\n\nComplete document\n';
+    const row = { ok: true, slug: 'measured-plan', harness: 'private-harness', version: 3, raw,
+      contentHash: hashPlanContent(raw) };
+    for (const change of [{ raw: undefined }, { raw: raw.trimEnd() }, { contentHash: hashPlanContent('other') },
+      { slug: 'another-plan' }, { harness: 'another-harness' }, { version: 1.5 }, { ok: false }]) {
+      await expect(readPlanPtoolDocument(row.slug, row.harness, async () => ({ ...row, ...change })))
+        .rejects.toThrow('complete stored document');
+    }
+  });
+
   it('reads the delivered stale response on both CLI output channels for an exact retry', async () => {
     const mcpError = { isError: true, content: [{ type: 'text', text: JSON.stringify(stale) }] };
     await expect(readPlanPtoolReply(printed(mcpError), retry)).resolves.toEqual(stale);

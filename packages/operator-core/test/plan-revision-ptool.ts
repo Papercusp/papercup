@@ -44,3 +44,20 @@ export async function readPlanPtoolReply(command: Promise<{ stdout: string }>, r
   }
   return singleReply(output.stdout);
 }
+
+/** The CLI requires an explicit opt-in to read the stored Markdown used by the editor's CAS. */
+export async function readPlanPtoolDocument(slug: string, harness: string,
+  call: (verb: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>) {
+  const doc = await call('plans:get', {
+    slug, harness, mode: 'full', includeEnrichments: false, includeRaw: true,
+    projection: { pick: ['results[].ok', 'results[].slug', 'results[].harness', 'results[].raw',
+      'results[].version', 'results[].contentHash'] },
+    payloadTier: 'full',
+  });
+  if (doc.ok !== true || doc.slug !== slug || doc.harness !== harness || typeof doc.raw !== 'string'
+    || typeof doc.version !== 'number' || !Number.isSafeInteger(doc.version)
+    || typeof doc.contentHash !== 'string' || hashPlanContent(doc.raw) !== doc.contentHash) {
+    throw new Error('The plan CLI did not deliver the complete stored document and its matching version and hash');
+  }
+  return { slug, harness, content: doc.raw, expectedVersion: doc.version, expectedHash: doc.contentHash };
+}
