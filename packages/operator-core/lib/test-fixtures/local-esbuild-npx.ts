@@ -1,19 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const compilers = new Map<string, { binary: Buffer; api: Buffer; metadata: Buffer }>();
 
-/** Resolve the real pinned compiler once for these behavior fixtures, under
- * the maintained cache lease. Every fixture invocation then avoids registry
- * resolution, while retaining the production compiler version. */
-export function localEsbuildNpxPath(directory: string, repoRoot: string): string {
-  const compilerRoot = join(directory, 'esbuild');
-  mkdirSync(join(compilerRoot, 'bin'), { recursive: true });
-  mkdirSync(join(compilerRoot, 'lib'), { recursive: true });
-  const compiler = join(compilerRoot, 'bin/esbuild');
-  const api = join(compilerRoot, 'lib/main.js'), metadata = join(compilerRoot, 'package.json');
-  let retained = compilers.get(repoRoot);
+function packageFiles(root: string) {
+  mkdirSync(join(root, 'bin'), { recursive: true });
+  mkdirSync(join(root, 'lib'), { recursive: true });
+  return { binary: join(root, 'bin/esbuild'), api: join(root, 'lib/main.js'), metadata: join(root, 'package.json') };
+}
+
+function populateCompiler(repoRoot: string, { binary: compiler, api, metadata }: ReturnType<typeof packageFiles>): void {
+  const retained = compilers.get(repoRoot);
   if (!retained) {
     // Copy while the REAL cache lease is held. The fixture can then exercise a
     // private lease domain without reading a shared cache the janitor owns.
@@ -26,25 +24,43 @@ export function localEsbuildNpxPath(directory: string, repoRoot: string): string
         BUNDLE_TEST_COMPILER_API_OUTPUT: api, BUNDLE_TEST_COMPILER_METADATA_OUTPUT: metadata },
     }).trim();
     if (version !== '0.25.0') throw new Error(`Pinned fixture compiler must be 0.25.0; received ${version}`);
-    retained = { binary: readFileSync(compiler), api: readFileSync(api), metadata: readFileSync(metadata) };
-    compilers.set(repoRoot, retained);
+    compilers.set(repoRoot, { binary: readFileSync(compiler), api: readFileSync(api), metadata: readFileSync(metadata) });
+  } else {
+    writeFileSync(compiler, retained.binary, { mode: 0o755 });
+    writeFileSync(api, retained.api);
+    writeFileSync(metadata, retained.metadata);
   }
-  writeFileSync(compiler, retained.binary, { mode: 0o755 });
-  writeFileSync(api, retained.api);
-  writeFileSync(metadata, retained.metadata);
-  const quotedCompiler = `'${compiler.replaceAll("'", "'\\''")}'`;
-  writeFileSync(join(directory, 'npx'), [
-    '#!/usr/bin/env bash',
-    'set -euo pipefail',
-    'if [[ "$*" == "--yes --package=esbuild@0.25.0 -c command -v esbuild" ]]; then',
-    `  printf '%s\\n' ${quotedCompiler}; exit 0`,
-    'fi',
-    'if [[ "${1:-}" != --yes || "${2:-}" != esbuild@0.25.0 ]]; then',
-    '  echo "unexpected npm exec in bundle fixture: $*" >&2; exit 78',
-    'fi',
-    'shift 2',
-    `exec ${quotedCompiler} "$@"`,
-    '',
-  ].join('\n'), { mode: 0o755 });
+}
+
+/** Resolve the pinned compiler under the cache lease and publish a private package for the fixture. */
+export function localEsbuildNpxPath(directory: string, repoRoot: string): string {
+  const destination = packageFiles(join(directory, 'esbuild'));
+  const staging = mkdtempSync(join(directory, '.esbuild-'));
+  try {
+    const files = packageFiles(staging);
+    populateCompiler(repoRoot, files);
+    // Copies from an immutable dependency generation may be read-only. Replace the
+    // directory entries without opening the old files for writing.
+    for (const key of ['binary', 'api', 'metadata'] as const) {
+      renameSync(files[key], destination[key]);
+    }
+    const quotedCompiler = `'${destination.binary.replaceAll("'", "'\\''")}'`;
+    writeFileSync(join(staging, 'npx'), [
+      '#!/usr/bin/env bash',
+      'set -euo pipefail',
+      'if [[ "$*" == "--yes --package=esbuild@0.25.0 -c command -v esbuild" ]]; then',
+      `  printf '%s\\n' ${quotedCompiler}; exit 0`,
+      'fi',
+      'if [[ "${1:-}" != --yes || "${2:-}" != esbuild@0.25.0 ]]; then',
+      '  echo "unexpected npm exec in bundle fixture: $*" >&2; exit 78',
+      'fi',
+      'shift 2',
+      `exec ${quotedCompiler} "$@"`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    renameSync(join(staging, 'npx'), join(directory, 'npx'));
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
   return `${directory}:${process.env.PATH ?? ''}`;
 }
