@@ -26,8 +26,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn as spawnProcess, spawnSync as spawnProcessSync, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createTextCollector } from './child-output';
 
 /**
@@ -431,7 +433,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(process.env.NODE_OPTIONS).toBe(parentOptions);
   });
 
-  it('runs a committed test-files router in a fresh loader-free child over the contained mutant', () => {
+  function verifyCommittedRouter(nested: boolean) {
     const repo = join(dir, 'mutation-inner-runner');
     mkdirSync(join(repo, 'scripts', 'lib'), { recursive: true });
     git(repo, ['init', '-q']);
@@ -442,30 +444,45 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     const bootstrap = join(repo, 'scripts/lib/mutation-probe-inner-runner.mjs');
     const loader = join(repo, 'scripts/lib/committed-source-loader.mjs');
     const mutex = join(repo, 'scripts/lib/fs-mutex.mjs');
-    const subjectPath = join(repo, 'scripts/mutated-subject.mjs');
+    const subjectEntry = 'scripts/mutated-subject.mjs';
+    const subjectOrigin = nested ? join(dir, 'subject-origin') : repo;
+    const subjectDirectory = nested ? 'modules/subject' : '';
+    const subjectPath = join(repo, subjectDirectory, subjectEntry);
     const testFiles = join(repo, 'scripts/test-files.mjs');
     const seen = join(dir, 'mutation-inner-runner-seen.jsonl');
     writeFileSync(probe, readFileSync(SCRIPT));
     writeFileSync(bootstrap, readFileSync(INNER_RUNNER));
     writeFileSync(loader, readFileSync(COMMITTED_SOURCE_LOADER));
     writeFileSync(mutex, readFileSync(FS_MUTEX));
-    writeFileSync(subjectPath, 'export const VALUE = 1;\n');
+    if (nested) {
+      mkdirSync(join(subjectOrigin, 'scripts'), { recursive: true });
+      git(subjectOrigin, ['init', '-q']);
+    }
+    writeFileSync(join(subjectOrigin, subjectEntry), 'export const VALUE = 1;\n');
+    if (nested) {
+      git(subjectOrigin, ['add', subjectEntry]);
+      git(subjectOrigin, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'commit submodule subject']);
+      git(repo, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', subjectOrigin, subjectDirectory]);
+    }
     writeFileSync(testFiles, [
       "import { readFileSync, statSync, writeFileSync } from 'node:fs';",
-      "import { VALUE } from './mutated-subject.mjs';",
+      `import { VALUE } from ${JSON.stringify('../' + join(subjectDirectory, subjectEntry))};`,
       'const phase = process.env.PAPERCUSP_MUTATION_PHASE;',
       'const descriptor = process.env.PAPERCUSP_MUTATION_DESCRIPTOR ?? "";',
       'const receiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE ?? "";',
       'const noticeFile = process.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES ?? "";',
       'const noticeOffset = statSync(noticeFile).size;',
-      `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ phase, value: VALUE, descriptor, receiptFile, noticeOffset, nodeOptions: process.env.NODE_OPTIONS ?? "", parentPid: process.ppid }) + "\\n", { flag: "a" });`,
+      'const subjectExemption = process.env.PAPERCUSP_MUTATION_PROBE_SUBJECT ?? null;',
+      `writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ phase, value: VALUE, descriptor, receiptFile, noticeOffset, subjectExemption, nodeOptions: process.env.NODE_OPTIONS ?? "", parentPid: process.ppid }) + "\\n", { flag: "a" });`,
       'console.log("TEST_FILE_FINALIZATION " + JSON.stringify({ pid: process.pid, phase: "provenance-complete", status: "measured" }));',
       'const passed = VALUE === 1;',
       'console.log(`TEST_FILE_RESULT requested=1 status=${passed ? "passed" : "failed"} childSubstituted=0 childNoticeOffsetBytes=${noticeOffset} launcherParentPid=${process.ppid} skippedTests=0`);',
       'if (!passed) { console.log("TEST_FILE_ASSERTION_FAILURE file=\\"fixture.test.ts\\" name=\\"mutant\\" message=\\"AssertionError\\""); process.exitCode = 1; }',
     ].join('\n'));
     git(repo, ['add', 'scripts/mutation-probe.sh', 'scripts/lib/mutation-probe-inner-runner.mjs',
-      'scripts/lib/committed-source-loader.mjs', 'scripts/lib/fs-mutex.mjs', 'scripts/mutated-subject.mjs', 'scripts/test-files.mjs']);
+      'scripts/lib/committed-source-loader.mjs', 'scripts/lib/fs-mutex.mjs', 'scripts/test-files.mjs',
+      ...(nested ? ['.gitmodules', subjectDirectory] : [subjectEntry])]);
     git(repo, ['commit', '-qm', 'committed mutation probe inner-runner fixture']);
 
     // Exercise the loader's committed substitution for the bootstrap itself.
@@ -498,11 +515,24 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     const rows = readFileSync(seen, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(rows.map(row => row.phase)).toEqual(['baseline', 'copy-baseline', 'mutant']);
     expect(rows.map(row => row.value)).toEqual([1, 1, 2]);
+    expect(rows[0].subjectExemption).toBeNull();
+    const descriptor = JSON.parse(rows[0].descriptor);
+    expect(descriptor.subjectPath).toBe(subjectEntry);
+    const subjectHashes = out.split('\n').filter(line => line.startsWith('MUTATION_PROBE_INNER_RUNNER '))
+      .map(line => JSON.parse(line.slice('MUTATION_PROBE_INNER_RUNNER '.length)).subjectSha256Before);
+    expect(subjectHashes).toEqual([descriptor.subjectBeforeSha256, descriptor.subjectBeforeSha256,
+      descriptor.subjectAfterSha256]);
     expect(rows.every(row => row.descriptor && row.receiptFile && row.noticeOffset >= 0)).toBe(true);
     expect(rows.every(row => !row.nodeOptions.includes('committed-source-loader'))).toBe(true);
     expect(new Set(rows.map(row => row.descriptor)).size).toBe(1);
     expect(readFileSync(subjectPath, 'utf8')).toBe('export const VALUE = 1;\n');
-  }, 60_000);
+  }
+
+  it('runs a committed test-files router in a fresh loader-free child over the contained mutant',
+    () => verifyCommittedRouter(false), 60_000);
+
+  it('runs a committed test-files router over a subject in a registered Git submodule',
+    () => verifyCommittedRouter(true), 60_000);
 
   it.each([
     ['invalid syntax', 's/beta/'],
@@ -701,37 +731,33 @@ process.exit(28);
     expect(readFileSync(unicodeSubject, 'utf8')).toBe(ORIGINAL);
   });
 
-  it('runs from a frozen source when the launched script is rewritten during baseline', async () => {
+  it('runs from a frozen source when the launched script is rewritten during baseline', () => {
     const launched = join(dir, 'mutable-probe.sh');
-    const marker = join(dir, 'baseline-started');
     writeFileSync(launched, readFileSync(SCRIPT));
     const env = { ...process.env };
     delete env.MUTATION_PROBE_FROZEN_SOURCE;
     // This fixture launches a copied script outside the repository, so supply
     // the supported explicit sink instead of requiring its source-tree resolver.
     env.PAPERCUSP_TEST_RUNS_DB_URL = 'postgresql://ledger.example:5444/papercusp';
-    const guard = `test -f "$MUTATION_PROBE_FROZEN_SOURCE" && bash -n "$MUTATION_PROBE_FROZEN_SOURCE" && if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then touch ${JSON.stringify(marker)}; sleep 1; fi; grep -q '^beta$' {}`;
-    const child = spawn('bash', [launched, '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard], {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    // Merged stdout+stderr capture, decoded boundary-safely (WI-6728).
-    const output = createTextCollector();
-    output.attach(child.stdout);
-    output.attach(child.stderr);
-    const closed = new Promise<number>((resolve) => child.once('close', (code) => resolve(code ?? -1)));
-    try {
-      const deadline = Date.now() + 10_000;
-      while (!existsSync(marker) && Date.now() < deadline) await sleep(25);
-      expect(existsSync(marker), output.peek()).toBe(true);
-      writeFileSync(launched, '#!/usr/bin/env bash\ninvalid shell ) fragment\n');
-      const code = await closed;
-      expect(code, output.text()).toBe(0);
-      expect(output.text()).toMatch(/MUTANT CAUGHT/);
-      expect(read()).toBe(ORIGINAL);
-    } finally {
-      child.kill('SIGTERM');
-    }
+    env.FROZEN_TEST_LAUNCH = launched;
+    // Rewrite only the disposable launcher once the actual baseline is running.
+    // An in-place write also exercises a shell that still has the original inode open.
+    const guard = [
+      'test -f "$MUTATION_PROBE_FROZEN_SOURCE" || exit 2',
+      'bash -n "$MUTATION_PROBE_FROZEN_SOURCE" || exit 2',
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then',
+      '  test ! "$FROZEN_TEST_LAUNCH" -ef "$MUTATION_PROBE_FROZEN_SOURCE" || exit 2',
+      '  printf "%s\\n" "# rewritten fixture" > "$FROZEN_TEST_LAUNCH" || exit 2',
+      'fi',
+      "grep -q '^beta$' {}",
+    ].join('\n');
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard,
+    ], env, dir, launched);
+    expect(code, out).toBe(0);
+    expect(readFileSync(launched, 'utf8')).toBe('# rewritten fixture\n');
+    expect(out).toContain('MUTANT CAUGHT');
+    expect(read()).toBe(ORIGINAL);
   });
 
   it('propagates available legacy scope aliases to canonical test-run variables', () => {
@@ -4461,7 +4487,52 @@ fi
     expect(read()).toBe(ORIGINAL);
   });
 
-  it('accepts only the verified built-ins-only Git reader receipt while still catching the mutant', () => {
+  it('runs the reporter Git reader in each guard and catches the changed subject', () => {
+    const { repo } = makeHistoricalRepo();
+    const expectedHead = git(repo, ['rev-parse', 'HEAD']);
+    const reporter = new URL('../../../libs/test-config/src/admin-test-runs-reporter.ts', import.meta.url);
+    const guard = join(dir, 'read-head.mts');
+    writeFileSync(guard, [
+      "import assert from 'node:assert/strict';",
+      "import { readFileSync } from 'node:fs';",
+      `import { runGit } from ${JSON.stringify(reporter.href)};`,
+      `assert.equal(await runGit('git rev-parse HEAD', ${JSON.stringify(repo)}, 10000), ${JSON.stringify(expectedHead)});`,
+      `assert.equal(readFileSync(process.argv[2], 'utf8'), ${JSON.stringify(ORIGINAL)}, 'fixture subject contents');`,
+    ].join('\n'));
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', 'node --import "$READER_TSX" "$READER_GUARD" {} 2>"$READER_LOG_DIR/$PAPERCUSP_MUTATION_PHASE.log"',
+    ], {
+      ...process.env,
+      PAPERCUSP_TEST_REPORTER_STAGE_TRACE: '1',
+      READER_TSX: pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm')).href,
+      READER_GUARD: guard,
+      READER_LOG_DIR: dir,
+    });
+    const operations = new Set<string>();
+    for (const phase of ['baseline', 'copy-baseline', 'mutant']) {
+      const log = readFileSync(join(dir, phase + '.log'), 'utf8');
+      const prefix = 'TEST_FILE_FINALIZATION ';
+      const events = log.split('\n').filter(line => line.startsWith(prefix))
+        .map(line => JSON.parse(line.slice(prefix.length)))
+        .filter(event => event.phase === 'reporter-git-reader' && event.commandKind === 'head');
+      const started = events.find(event => event.event === 'worker-started');
+      expect(started?.operationId, log).toEqual(expect.any(String));
+      operations.add(started.operationId);
+      const sameRead = events.filter(event => event.operationId === started.operationId);
+      expect(sameRead, log).toEqual(expect.arrayContaining([
+        expect.objectContaining({ event: 'spawned', childPid: expect.any(Number) }),
+        expect.objectContaining({ event: 'result', readable: true }),
+      ]));
+      if (phase === 'mutant') expect(log).toContain('AssertionError [ERR_ASSERTION]: fixture subject contents');
+    }
+    expect(operations.size).toBe(3);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(read()).toBe(ORIGINAL);
+  }, 60_000);
+
+  it('refuses a synthetic Git reader notice without verified command provenance', () => {
     const guard = join(dir, 'git-reader-router.sh');
     const top = resolve(__dirname, '../../../libs/test-config');
     const readerNotice = JSON.stringify({
@@ -4477,19 +4548,15 @@ fi
       '#!/usr/bin/env bash',
       "printf '%s\\n' '" + readerNotice + "' >> \"$PAPERCUSP_COMMITTED_SOURCE_NOTICES\"",
       "printf 'TEST_FILE_RESULT requested=1 status=passed childSubstituted=1 childNoticeOffsetBytes=0 skippedTests=0\\n'",
-      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then',
-      "  printf 'TEST_FILE_ASSERTION_FAILURE file=\"fixture.test.ts\" name=\"behavior\" message=\"AssertionError\"\\n'",
-      '  exit 1',
-      'fi',
     ];
     writeFileSync(guard, lines.join('\n'));
     const { code, out } = runProbeIO([
       '--file', subject, '--mutate', 's/beta/BETA/', '--test', 'bash ' + guard + ' {}',
     ]);
-    expect(code, out).toBe(0);
-    expect(out).toContain('MUTATION_PROBE_CHILD_SOURCE_NOTICES records=1 gitReaders=1 unclassified=0');
-    expect(out).toContain('verdict=caught');
-    expect(out).not.toContain('child_source_substituted=yes');
+    expect(code, out).toBe(2);
+    expect(out).toContain('git-reader-command-provenance-unverified');
+    expect(out).toContain('verdict=harness-error');
+    expect(out).not.toContain('verdict=caught');
     expect(read()).toBe(ORIGINAL);
   });
 
