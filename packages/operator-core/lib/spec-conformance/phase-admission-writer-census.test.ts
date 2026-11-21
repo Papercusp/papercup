@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { deflateSync, inflateSync } from 'node:zlib';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
+import { encodePng, PNG_SIGNATURE } from '@papercusp/image-blankness/testing';
 import {
   assertPhaseWriterCensus, assertPhaseWriterTreeCensus, inventoryPhaseWriters, reconcilePhaseWriterCensus,
   inventoryPhaseWriterTree, readPhaseWriterCensus, verifyPhaseWriterTreeSnapshot, writePhaseWriterCensus,
@@ -24,6 +25,24 @@ function review(site: PhaseWriterSite, disposition: PhaseWriterReview['dispositi
     raceTest: 'phase-admission.integration.test.ts :: example write current/stale variants' };
 }
 const write = 'async function exampleWrite(tx) { await tx`UPDATE harness_shared.work_items SET status=${status} WHERE feature_id=${id}`; }';
+
+function testRaster(width: number, height: number, channels: 3 | 4, pixels: Buffer) {
+  const chunk = (type: string, data: Buffer) => {
+    const bytes = Buffer.alloc(12 + data.length);
+    bytes.writeUInt32BE(data.length);
+    bytes.write(type, 4, 'ascii');
+    data.copy(bytes, 8);
+    bytes.writeUInt32BE(crc32(bytes.subarray(4, -4)), bytes.length - 4);
+    return bytes;
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = channels === 3 ? 2 : 6;
+  return Buffer.concat([PNG_SIGNATURE, chunk('IHDR', header), chunk('sRGB', Buffer.from([0])),
+    chunk('IDAT', deflateSync(pixels)), chunk('IEND', Buffer.alloc(0))]);
+}
 
 describe('phase binding writer census', () => {
 
@@ -415,7 +434,25 @@ describe('phase binding writer census', () => {
     for (const { siteId } of reviewed.pendingAdvancing) {
       expect(report.problems).toContainEqual({ id: siteId, reasons: ['unclassified-writer'] });
     }
-    expect(reviewed.pendingAdvancing.length).toBeGreaterThan(0);
+    const claimUpdates = new Map([
+      ['claimIssue', ['packages/operator-core/lib/issues-engineer.ts', 'engineer_issues']],
+      ['claimNextIssueWorkItem', ['packages/operator-core/lib/work-items.ts', 'work_items']],
+      ['claimNextWorkItem', ['packages/operator-core/lib/work-items.ts', 'harness_features_consolidated']],
+      ['claimWorkItemInTransaction', ['packages/operator-core/lib/work-items.ts', 'harness_features_consolidated']],
+    ]);
+    const pending = new Set(reviewed.pendingAdvancing.map(row => row.siteId));
+    for (const [operation, [path, relation]] of claimUpdates) {
+      const writers = inventory.sites.filter(site => site.kind === 'sql' && site.path === path
+        && site.operation.split('::')[0] === operation
+        && site.statement.includes(`UPDATE harness_shared.${relation} AS target`)
+        && /\b(?:taken_by|assignee)\s*=/.test(site.statement));
+      expect(writers, operation).toHaveLength(1);
+      for (const writer of writers) {
+        expect(pending.has(writer.id)).toBe(true);
+        expect(report.coverage.notChecked).toContain(writer.id);
+        expect(report.coverage.residue).toContain(writer.id);
+      }
+    }
 
     // A new source snapshot cannot silently re-approve the notifier dependency.
     // Claim statements stay identical; a whole SQL module gets a new identity.
@@ -908,6 +945,7 @@ describe('phase binding writer census', () => {
     const generic = 'libs/generic/resource-profile/src/index.ts';
     const discovery = 'packages/operator-core/lib/embedded-pg-discovery.ts';
     const dependencies = [binding, generic, discovery,
+      'libs/generic/resource-profile/src/cgroup-memory.ts',
       'packages/operator-core/lib/background-workers.ts',
       'libs/generic/embedded-pg-discovery/src/index.ts',
       'libs/papercusp/libs/db/src/operator-db-env.ts'];
@@ -1982,6 +2020,58 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('keeps the static hero image excluded only while its bytes and every role source match', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-static-hero-'));
+    const app = 'apps/the-swarm-site/';
+    const hero = app + 'public/brand/swarm-hero.png';
+    const lookalike = app + 'public/brand/swarm-hero-copy.png';
+    const roles = ['app/page.tsx', 'app/globals.css', 'app/layout.tsx', 'next.config.js', 'package.json']
+      .map(path => app + path);
+    const fixture = (path: string) => readFileSync(new URL('../../../../' + path, import.meta.url));
+    const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    const put = (path: string, bytes: Buffer) => {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), bytes);
+    };
+    const asset = fixture(hero);
+    const proof = roles.map(path => `${path}#${hash(fixture(path))}`).join(':');
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      for (const path of roles) put(path, fixture(path));
+      put(hero, asset);
+      const inventory = inventoryPhaseWriterTree(root);
+      expect(inventory.excluded).toEqual([{
+        path: hero, reason: `reviewed-raster:static-site-image:${proof}:asset-sha256:${hash(asset)}`,
+      }]);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.notApplicable).toEqual(['excluded:' + hero]);
+
+      for (const path of roles) {
+        put(path, Buffer.concat([fixture(path), Buffer.from('\n')]));
+        const current = verifyPhaseWriterTreeSnapshot(inventory);
+        expect(current.ready).toBe(false);
+        expect(current.coverage.notApplicable).toEqual([]);
+        expect(current.coverage.residue).toEqual(['excluded:' + hero, 'gap:source:' + hero, 'source:' + path].sort());
+        expect(inventoryPhaseWriterTree(root).gaps).toEqual([{
+          id: 'source:' + hero, reason: 'reviewed-raster-role-unverified', sha256: hash(asset),
+        }]);
+        put(path, fixture(path));
+      }
+
+      const altered = Buffer.concat([asset, Buffer.from([0xff])]);
+      put(hero, altered);
+      put(lookalike, asset);
+      const current = inventoryPhaseWriterTree(root);
+      expect(current.excluded).toEqual([]);
+      expect(current.gaps).toEqual([
+        { id: 'source:' + lookalike, reason: 'source-not-utf8', sha256: hash(asset) },
+        { id: 'source:' + hero, reason: 'source-not-utf8', sha256: hash(altered) },
+      ]);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.residue).toEqual([
+        'excluded:' + hero, 'gap:source:' + lookalike, 'gap:source:' + hero,
+      ].sort());
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('accounts for Lost Pixel PNGs under the exact destinations declared by the current producer', async () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-lost-pixel-'));
     const project = 'apps/operator';
@@ -1992,12 +2082,21 @@ describe('phase binding writer census', () => {
       imagePathBaseline: './lostpixel-baseline',
       imagePathCurrent: './lostpixel-current',
     };`;
-    const png = Buffer.from('89504e470d0a1a0a0000000d494844520000000100000001', 'hex');
+    const png = Buffer.from(encodePng(1, 1, Uint8Array.of(0, 0, 0)));
+    const changedPng = Buffer.from(encodePng(1, 1, Uint8Array.of(0, 0, 1)));
+    const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    const badCrc = Buffer.from(png);
+    badCrc[badCrc.length - 1] = badCrc[badCrc.length - 1]! ^ 1;
     const baseline = project + '/lostpixel-baseline/story--default.png';
     const current = project + '/lostpixel-current/story--default.png';
     const authored = project + '/lostpixel-baseline/writer.ts';
     const invalidPaths = [
-      [project + '/lostpixel-baseline/story--malformed.png', png.subarray(0, png.length - 1)],
+      [project + '/lostpixel-baseline/story--header-only.png', png.subarray(0, 24)],
+      [project + '/lostpixel-baseline/story--truncated.png', png.subarray(0, png.length - 1)],
+      [project + '/lostpixel-baseline/story--bad-crc.png', badCrc],
+      [project + '/lostpixel-baseline/story--trailing.png', Buffer.concat([png, Buffer.of(0)])],
+      [project + '/lostpixel-baseline/story--short-row.png', testRaster(1, 1, 3, Buffer.alloc(3))],
+      [project + '/lostpixel-baseline/story--long-row.png', testRaster(1, 1, 3, Buffer.alloc(5))],
       [project + '/lostpixel-baseline/nested/story--default.png', png],
       [project + '/lostpixel-baseline/raw-name.png', png],
       [project + '/lostpixel-baseline-source/story--default.png', png],
@@ -2014,8 +2113,8 @@ describe('phase binding writer census', () => {
       const snapshot = inventoryPhaseWriterTree(root);
       const producer = `generated-lost-pixel-output:${configPath}`;
       expect(snapshot.excluded).toEqual([
-        { path: baseline, reason: producer + '#imagePathBaseline' },
-        { path: current, reason: producer + '#imagePathCurrent' },
+        { path: baseline, reason: producer + '#imagePathBaseline:asset-sha256:' + hash(png) },
+        { path: current, reason: producer + '#imagePathCurrent:asset-sha256:' + hash(png) },
       ]);
       expect(snapshot.gaps.filter(gap => gap.reason === 'source-not-utf8').map(gap => gap.id)).toEqual(
         invalidPaths.map(([path]) => 'source:' + path).sort());
@@ -2033,6 +2132,17 @@ describe('phase binding writer census', () => {
       expect(rows.map(row => JSON.parse(row)).filter(row => row.kind === 'gap').map(row => row.value))
         .toEqual(snapshot.gaps);
 
+      writeFileSync(join(root, current), changedPng);
+      const replaced = verifyPhaseWriterTreeSnapshot(snapshot);
+      expect(replaced.coverage.notApplicable).toEqual(['excluded:' + baseline]);
+      expect(replaced.differences).toEqual([{
+        id: 'excluded:' + current, reason: 'changed',
+        expected: producer + '#imagePathCurrent:asset-sha256:' + hash(png),
+        actual: producer + '#imagePathCurrent:asset-sha256:' + hash(changedPng),
+      }]);
+      expect(replaced.coverage.residue).toContain('excluded:' + current);
+      writeFileSync(join(root, current), png);
+
       writeFileSync(join(root, configPath), config.replace("'./lostpixel-current'", "'./different-current'"));
       const comparison = verifyPhaseWriterTreeSnapshot(snapshot);
       expect(comparison.ready).toBe(false);
@@ -2049,6 +2159,41 @@ describe('phase binding writer census', () => {
         'excluded:' + baseline, 'excluded:' + current, 'gap:source:' + baseline,
         'gap:source:' + current, 'source:' + configPath,
       ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('retains the exact Lost Pixel source identity across the binary inflate boundary', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-lost-pixel-inflate-'));
+    const project = 'apps/operator';
+    const configPath = project + '/lostpixel.config.ts';
+    const path = project + '/lostpixel-baseline/story--default.png';
+    const cases = [
+      { width: 2486, height: 1687, channels: 4, size: 16 * 1024 * 1024 - 1 },
+      { width: 1365, height: 4096, channels: 3, size: 16 * 1024 * 1024 },
+      { width: 6232, height: 673, channels: 4, size: 16 * 1024 * 1024 + 1 },
+    ] as const;
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, configPath), `export const config = {
+        storybookShots: {}, imagePathBaseline: './lostpixel-baseline',
+      };`);
+      for (const { width, height, channels, size } of cases) {
+        expect((1 + width * channels) * height).toBe(size);
+        const image = testRaster(width, height, channels, Buffer.alloc(size));
+        const sha256 = createHash('sha256').update(image).digest('hex');
+        writeFileSync(join(root, path), image);
+        const inventory = inventoryPhaseWriterTree(root);
+        if (size <= 16 * 1024 * 1024) {
+          expect(inventory.gaps).toEqual([]);
+          expect(inventory.excluded).toEqual([{ path,
+            reason: `generated-lost-pixel-output:${configPath}#imagePathBaseline:asset-sha256:${sha256}` }]);
+        } else {
+          expect(inventory.excluded).toEqual([]);
+          expect(inventory.gaps).toEqual([{ id: 'source:' + path, reason: 'lost-pixel-raster-inflate-limit', sha256 }]);
+          expect(verifyPhaseWriterTreeSnapshot(inventory).coverage.residue).toEqual(['gap:source:' + path]);
+        }
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

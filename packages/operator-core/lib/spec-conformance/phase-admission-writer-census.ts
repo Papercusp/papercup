@@ -5,7 +5,7 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { inflateSync } from 'node:zlib';
+import { crc32, inflateSync } from 'node:zlib';
 import ts from 'typescript';
 import { parse } from 'pgsql-ast-parser';
 import { censusSites } from '../../../../scripts/lib/source-path-census.mjs';
@@ -25,7 +25,9 @@ const wranglerLocalStateReason = 'generated-wrangler-local-state:apps/operator-p
 const miniflareSqlitePath = /^(?:cache\/miniflare-CacheObject|d1\/miniflare-D1DatabaseObject|kv\/miniflare-KVNamespaceObject|r2\/miniflare-R2BucketObject)\/(?:metadata|[0-9a-f]{64})\.sqlite(?:-(shm|wal))?$/;
 const sqliteHeader = Buffer.from('SQLite format 3\0');
 const looseGitObjectPath = /(?:^|\/)[^/]+\.git\/objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/;
-const looseGitObjectInflateLimit = 16 * 1024 * 1024;
+// A census pass inflates at most 16 MiB per binary artifact. Larger artifacts
+// remain source gaps with their exact compressed digest for review.
+const binaryArtifactInflateLimit = 16 * 1024 * 1024;
 const drillGitObjectRoot = 'packages/operator-core/hive-git-root/wi3496-drill/papercusp.git/objects/';
 // Both namespace work refs are parentless commits of the empty tree. Their
 // full messages are `tower-work\n` and `vm-work\n`. Pin the compressed bytes
@@ -59,12 +61,32 @@ const swarmBrandRasterRole = {
   kind: 'documented-brand-asset',
 };
 const swarmDesktopRasterRoot = 'libs/papercusp/apps/desktop/src-tauri/icons/the-hive/';
+type RasterRoleSource = { path: string; sha256: string };
 // The reviewed PNGs end at IEND and can contain a fixed-size bKGD color field.
 // The reviewed ICO and ICNS containers contain only raster records and their
-// masks. Each role file names the exact asset path.
+// masks. Keep the asset and every source needed to establish its role pinned
+// to the same snapshot.
 const reviewedRasterArtifacts = new Map<string, {
-  sha256: string; role: { path: string; sha256: string; kind: string };
+  sha256: string;
+  role: RasterRoleSource & { kind: string };
+  additionalRoleSources?: readonly RasterRoleSource[];
 }>([
+  ['apps/the-swarm-site/public/brand/swarm-hero.png', {
+    // The caBX provenance record includes an SVG containing one path. The
+    // pinned display and export sources serve the whole file as a static PNG.
+    sha256: '089bf2e41bfe5fd3f285d8db922ca6d4a97c166dbfb2ffa05b37a936246ad8d9',
+    role: {
+      path: 'apps/the-swarm-site/app/page.tsx',
+      sha256: '28b5426e0b50141bd242ddfcbf143420180db7f3e753d07135a56ecc782fc8c8',
+      kind: 'static-site-image',
+    },
+    additionalRoleSources: [
+      { path: 'apps/the-swarm-site/app/globals.css', sha256: '9268799a974e8b84b055789187f3acce1c839824b2ba3f96c00b3c5668187654' },
+      { path: 'apps/the-swarm-site/app/layout.tsx', sha256: '642842602105ec6f3886b4280f571f7c25cf2dde98ab75410bd26bcdcb78cf5d' },
+      { path: 'apps/the-swarm-site/next.config.js', sha256: '95fff0fc8094352c5f46f0c1bb7618ccd5772ea03a37c2b17828aba718093bd0' },
+      { path: 'apps/the-swarm-site/package.json', sha256: 'f56508706c0f579c9f1f1956a7b03d9589a55a63487f52754efefdc2f0770ae3' },
+    ],
+  }],
   ['apps/operator/e2e/__artifacts__/adv-contributors-panel.png', {
     sha256: 'e4af00b5196779d437b244733aded78dc587c04e40c1c4a643bddf5c0dc071fa',
     role: {
@@ -854,7 +876,7 @@ function inspectLooseGitObject(path: string, bytes: Buffer):
   let reason = 'loose-git-object-unresolved';
   try {
     const { buffer: object, engine } = inflateSync(bytes, {
-      info: true, maxOutputLength: looseGitObjectInflateLimit,
+      info: true, maxOutputLength: binaryArtifactInflateLimit,
     }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
     if (engine.bytesWritten !== bytes.length) return;
     const separator = object.indexOf(0);
@@ -883,12 +905,78 @@ function inspectLooseGitObject(path: string, bytes: Buffer):
   return { gap: { id: `source:${path}`, reason, sha256: digest(bytes) } };
 }
 
-function lostPixelOutputCandidate(path: string, bytes: Buffer) {
+function hasCompletePngScanlines(parts: Buffer[], scanlineBytes: number, expectedBytes: number): boolean {
+  if (!parts.length) return false;
+  const compressed = Buffer.concat(parts);
+  try {
+    const { buffer, engine } = inflateSync(compressed, {
+      info: true, maxOutputLength: expectedBytes,
+    }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+    if (engine.bytesWritten !== compressed.length || buffer.length !== expectedBytes) return false;
+    for (let offset = 0; offset < buffer.length; offset += scanlineBytes) {
+      if (buffer[offset]! > 4) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+/** Recognize the producer's noninterlaced RGB/RGBA PNGs with optional sRGB.
+ * Unknown records, malformed streams and bytes after IEND remain auditable gaps.
+ */
+function inspectLostPixelPng(bytes: Buffer): 'complete' | 'invalid' | 'inflate-limit' {
+  const header = readPngDimensionsSafe(bytes);
+  if (!header.ok || bytes.length < 33 || bytes.readUInt32BE(8) !== 13 || bytes[24] !== 8
+    || bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] !== 0) return 'invalid';
+  const colorType = bytes[25];
+  if (colorType !== 2 && colorType !== 6) return 'invalid';
+  const scanlineBytes = 1 + header.dimensions.width * (colorType === 2 ? 3 : 4);
+  const expectedBytes = scanlineBytes * header.dimensions.height;
+  if (expectedBytes > binaryArtifactInflateLimit) return 'inflate-limit';
+
+  const parts: Buffer[] = [];
+  let sawColorProfile = false;
+  for (let offset = 8; offset + 12 <= bytes.length;) {
+    const size = bytes.readUInt32BE(offset);
+    const dataStart = offset + 8, dataEnd = dataStart + size, next = dataEnd + 4;
+    if (next > bytes.length || crc32(bytes.subarray(offset + 4, dataEnd)) !== bytes.readUInt32BE(dataEnd)) {
+      return 'invalid';
+    }
+    const type = bytes.toString('latin1', offset + 4, dataStart);
+    // The header fields were checked above. This iteration verifies its CRC.
+    if (offset === 8) {
+      offset = next;
+      continue;
+    }
+    if (type === 'sRGB' && !sawColorProfile && !parts.length && size === 1 && bytes[dataStart]! <= 3) {
+      sawColorProfile = true;
+    } else if (type === 'IDAT') {
+      parts.push(bytes.subarray(dataStart, dataEnd));
+    } else if (type === 'IEND' && size === 0 && next === bytes.length) {
+      return hasCompletePngScanlines(parts, scanlineBytes, expectedBytes) ? 'complete' : 'invalid';
+    } else return 'invalid';
+    offset = next;
+  }
+  return 'invalid';
+}
+
+type LostPixelOutput = {
+  path: string;
+  directory: keyof typeof lostPixelOutputFields;
+  configPath: string;
+  sha256: string;
+};
+
+function lostPixelOutputCandidate(path: string, bytes: Buffer):
+  { output: LostPixelOutput } | { gap: PhaseWriterInventory['gaps'][number] } | null {
   if (!path.endsWith('.png')) return null;
   const match = lostPixelPngPath.exec(path);
-  if (!match || !lostPixelProjects.has(match[1]!) || !readPngDimensionsSafe(bytes).ok) return null;
+  if (!match || !lostPixelProjects.has(match[1]!)) return null;
+  const png = inspectLostPixelPng(bytes);
+  if (png === 'invalid') return null;
+  const sha256 = digest(bytes);
+  if (png === 'inflate-limit') return { gap: { id: `source:${path}`, reason: 'lost-pixel-raster-inflate-limit', sha256 } };
   const directory = match[2] as keyof typeof lostPixelOutputFields;
-  return { path, directory, configPath: `${match[1]}/lostpixel.config.ts`, sha256: digest(bytes) };
+  return { output: { path, directory, configPath: `${match[1]}/lostpixel.config.ts`, sha256 } };
 }
 
 function lostPixelConfiguredOutputs(source: PhaseWriterSource): Set<string> {
@@ -930,7 +1018,7 @@ function readPhaseWriterTree(root: string) {
   const input: PhaseWriterSource[] = [];
   const gaps: PhaseWriterInventory['gaps'] = [];
   const excluded: Array<{ path: string; reason: string }> = [];
-  const lostPixelPngs: NonNullable<ReturnType<typeof lostPixelOutputCandidate>>[] = [];
+  const lostPixelPngs: LostPixelOutput[] = [];
   const reviewedRasterPaths: string[] = [];
   const files: string[] = [];
   for (const path of enumeration.files) {
@@ -986,8 +1074,9 @@ function readPhaseWriterTree(root: string) {
       }
       const content = bytes.toString('utf8');
       if (!Buffer.from(content).equals(bytes)) {
-        const output = lostPixelOutputCandidate(path, bytes);
-        if (output) lostPixelPngs.push(output);
+        const candidate = lostPixelOutputCandidate(path, bytes);
+        if (candidate && 'output' in candidate) lostPixelPngs.push(candidate.output);
+        else if (candidate) gaps.push(candidate.gap);
         else gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256: rasterDigest ?? digest(bytes) });
         continue;
       }
@@ -998,13 +1087,18 @@ function readPhaseWriterTree(root: string) {
     } catch { gaps.push({ id: `source:${path}`, reason: 'source-read-failed' }); }
   }
   if (reviewedRasterPaths.length > 0) {
-    const rolePaths = new Set(reviewedRasterPaths.map(path => reviewedRasterArtifacts.get(path)!.role.path));
+    const rolePaths = new Set(reviewedRasterPaths.flatMap(path => {
+      const { role, additionalRoleSources = [] } = reviewedRasterArtifacts.get(path)!;
+      return [role.path, ...additionalRoleSources.map(source => source.path)];
+    }));
     const roleHashes = new Map(input.filter(source => rolePaths.has(source.path))
       .map(source => [source.path, digest(source.content)]));
     for (const path of reviewedRasterPaths) {
-      const { sha256, role } = reviewedRasterArtifacts.get(path)!;
-      if (roleHashes.get(role.path) === role.sha256) {
-        excluded.push({ path, reason: `reviewed-raster:${role.kind}:${role.path}#${role.sha256}:asset-sha256:${sha256}` });
+      const { sha256, role, additionalRoleSources = [] } = reviewedRasterArtifacts.get(path)!;
+      const sources = [role, ...additionalRoleSources];
+      if (sources.every(source => roleHashes.get(source.path) === source.sha256)) {
+        const proof = sources.map(source => `${source.path}#${source.sha256}`).join(':');
+        excluded.push({ path, reason: `reviewed-raster:${role.kind}:${proof}:asset-sha256:${sha256}` });
       } else {
         gaps.push({ id: `source:${path}`, reason: 'reviewed-raster-role-unverified', sha256 });
       }
@@ -1018,7 +1112,7 @@ function readPhaseWriterTree(root: string) {
       .map(source => [source.path, lostPixelConfiguredOutputs(source)]));
     for (const { path, directory, configPath, sha256 } of lostPixelPngs) {
       if (configured.get(configPath)?.has(directory)) {
-        excluded.push({ path, reason: `generated-lost-pixel-output:${configPath}#${lostPixelOutputFields[directory]}` });
+        excluded.push({ path, reason: `generated-lost-pixel-output:${configPath}#${lostPixelOutputFields[directory]}:asset-sha256:${sha256}` });
       } else {
         gaps.push({ id: `source:${path}`, reason: 'source-not-utf8', sha256 });
       }
