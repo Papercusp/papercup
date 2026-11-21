@@ -7,6 +7,10 @@
  * substrate summary from the verdicts, and (c) gates non-loopback callers.
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { createAdaptorServer } from '@hono/node-server';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // --- mock the route's external seams (PG read / boot wire / in-process trackers) ---
 const M = vi.hoisted(() => ({
@@ -41,6 +45,7 @@ vi.mock('../../../service-health', async (importOriginal) => {
 });
 
 import statusRoute from './federation-status';
+import { persistLocalAnnounceIdentity } from '../../../sync/hyperbee/local-announce-identity';
 import {
   configureHiveDirectoryForTest,
   __resetHiveDirectorySingleton,
@@ -103,6 +108,38 @@ afterEach(() => {
 });
 
 describe('GET /api/discovery/federation-status (G-004)', () => {
+  it('serves the observed device visibility over HTTP when the creation preference is secret', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'federation-visibility-'));
+    const cachePath = join(dir, 'identity.json');
+    vi.stubEnv('PAPERCUSP_ANNOUNCE_IDENTITY_CACHE', cachePath);
+    vi.stubEnv('PAPERCUSP_ATTESTATION_GIST_VISIBILITY', 'secret');
+    const server = createAdaptorServer({
+      fetch: req => statusRoute.handler(req as never, {} as never) as Promise<Response>,
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', resolve);
+      });
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Expected a loopback TCP port');
+      const url = `http://127.0.0.1:${address.port}/api/discovery/federation-status`;
+      for (const visibility of [undefined, 'public', 'secret'] as const) {
+        await persistLocalAnnounceIdentity({
+          keychainId: 'test-key', devicePubkeyBase64: 'fixture-key', githubUserId: 42,
+          githubLogin: 'trial', attestationGistId: 'fixture-gist', attestationVisibility: visibility,
+        }, cachePath);
+        const response = await fetch(url);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ ok: true, attestationVisibility: visibility ?? null });
+      }
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      vi.unstubAllEnvs();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reports each owned hive\'s real announce-topic reach + the substrate summary', async () => {
     const dir = configureHiveDirectoryForTest(fakeDeps(3));
     dir.registerLocalHive(ownedDesc());
