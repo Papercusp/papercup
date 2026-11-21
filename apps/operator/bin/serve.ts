@@ -1128,14 +1128,8 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   // + agents, so it takes a gentler RAM slice (see deriveDatabaseTuning). Without
   // this the desktop's embedded PG runs on laptop-sized stock defaults
   // (max_connections=100 / shared_buffers=128MB), which a busy fleet exhausts.
-  const {
-    deriveDatabaseTuning,
-    databaseTuningToSettings,
-    detectResourceSignals,
-  } = await import("@papercusp/resource-profile");
-  const extraPostgresSettings = databaseTuningToSettings(
-    deriveDatabaseTuning(detectResourceSignals({ embeddedPg: true })),
-  );
+  const { detectEmbeddedDatabaseSettings } = await import("@papercusp/resource-profile");
+  const extraPostgresSettings = detectEmbeddedDatabaseSettings();
   log(
     `embedded PG host-tuning: max_connections=${extraPostgresSettings.max_connections}, ` +
       `shared_buffers=${extraPostgresSettings.shared_buffers}, ` +

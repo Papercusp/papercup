@@ -25,6 +25,8 @@
  * connections, DBOS, file descriptors) can absorb.
  */
 
+import { effectiveCgroupMemoryBytes } from '#cgroup-memory';
+
 /** Coarse host bucket, derived from effective core count. Drives nothing on its
  *  own — it's a label for diagnostics + a cheap switch consumers can branch on. */
 export type HostClass = 'laptop' | 'workstation' | 'server';
@@ -68,7 +70,7 @@ export interface ResourceSignals {
    *  `os.cpus().length`, which is NOT cgroup-quota-aware and so reads the real
    *  machine regardless of this process's own CPU allowance. */
   physicalCores?: number;
-  /** Total physical RAM in bytes (`os.totalmem()`). */
+  /** Total RAM in bytes. Embedded PostgreSQL auto-detection also honors its hard cgroup limit. */
   totalMemBytes: number;
   /** Free RAM in bytes at detection time (`os.freemem()`). A second clamp on the
    *  agent cap: a 64-core box with 1 GB free shouldn't launch 16 agents. */
@@ -975,16 +977,28 @@ export function detectResourceSignals(overrides?: ResourceProfileConfig): Resour
   // cannot statically analyze in server bundles.
   const os = nodeBuiltin<typeof import('node:os')>('node:os');
   const cores = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+  let totalMemBytes = os.totalmem();
+  if (overrides?.embeddedPg && overrides.totalMemBytes === undefined && process.platform === 'linux') {
+    const fs = nodeBuiltin<typeof import('node:fs')>('node:fs');
+    totalMemBytes = effectiveCgroupMemoryBytes(totalMemBytes, path => {
+      try { return fs.readFileSync(path, 'utf8'); } catch { return undefined; }
+    });
+  }
   return {
     cores,
     physicalCores: os.cpus().length,
-    totalMemBytes: os.totalmem(),
-    freeMemBytes: os.freemem(),
+    totalMemBytes,
+    freeMemBytes: Math.min(os.freemem(), totalMemBytes),
     embeddedPg: false,
     hostRole: 'full',
     onBattery: false,
     ...overrides,
   };
+}
+
+/** Settings for a postmaster launched in this process's resource hierarchy. */
+export function detectEmbeddedDatabaseSettings(): Record<string, string> {
+  return databaseTuningToSettings(deriveDatabaseTuning(detectResourceSignals({ embeddedPg: true })));
 }
 
 /** A host's current power source. 'unknown' for a host with no battery (a server,

@@ -9,6 +9,9 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "imports": {
+    "#cgroup-memory": "./src/cgroup-memory.ts"
+  },
   "scripts": {
     "test": "vitest run"
   },

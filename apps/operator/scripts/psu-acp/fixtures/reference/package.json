@@ -1,0 +1,9 @@
+{
+  "name": "psu-acp-reference-fixture",
+  "private": true,
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.88.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@smithy/core": "3.35.1"
+  }
+}

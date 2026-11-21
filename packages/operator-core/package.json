@@ -8,6 +8,7 @@
   "types": "./lib/index.ts",
   "exports": {
     ".": "./lib/index.ts",
+    "./lib/goal-related-reports": "./lib/goal-related-reports.ts",
     "./lib/endpoint-route/hosted-auth-runtime": {
       "types": "./lib/endpoint-route/hosted-auth-runtime.types.d.ts",
       "default": "./lib/endpoint-route/hosted-auth-runtime.ts"
