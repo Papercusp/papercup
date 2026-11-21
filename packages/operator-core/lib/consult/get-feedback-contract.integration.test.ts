@@ -13,6 +13,7 @@ import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../te
 // evidence includes the catalog whose public contract these cases exercise.
 import '../agent-tools/index';
 import tool from '../agent-tools/consult/get-feedback';
+import { withInlinedSchemaRefs } from '../agent-tools/schema-ref-inline';
 import { acceptFeedbackRequestCore, continueFeedbackRequestCore, getFeedbackCore,
   type GetFeedbackDeps, type GetFeedbackRequest } from './get-feedback-core';
 import { buildQueryEmbedderResolved, type QueryEmbedderAcquisition } from '../agent-tools/search/embedder';
@@ -132,10 +133,9 @@ describe('registered consult contract and persisted recovery', () => {
   it('projects the same bounded retry field and recovery guidance that the store accepts', async () => {
     const projected = lookupByMcpName('consult:get_feedback');
     expect(projected).toBeDefined();
-    const schema = projected!.inputSchema as {
-      properties: { request_key: { minLength: number; maxLength: number } };
-    };
-    expect(schema.properties.request_key).toMatchObject({ minLength: 1, maxLength: 200 });
+    expect(withInlinedSchemaRefs(projected!.inputSchema)).toMatchObject({
+      properties: { request_key: { type: 'string', minLength: 1, maxLength: 200 } },
+    });
     expect(projected!.description).toContain('conversations:get');
     expect(projected!.description).toContain('request_key');
     const input = request('x'.repeat(200));
