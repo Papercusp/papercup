@@ -2198,7 +2198,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
      * 'superseded' when a PRODUCTION respawn replaced the payload of an
      * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
-    schedule(msg: any): "queued" | "closed" | "superseded" | "duplicate";
+    schedule(msg: any): "superseded" | "closed" | "duplicate" | "queued";
     /**
      * Close all detached re-arm work when this PTY host is ending. Every
      * accepted message receives one terminal settlement so its delivery dedup
@@ -5289,7 +5289,7 @@ export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sle
     detail: string;
 }>;
 /** Coalesce key for an injected turn: a loop's stable instance id when present,
- *  otherwise its first non-empty line, trimmed+capped. Loop short-form wakes
+ *  otherwise its complete first non-empty line, trimmed. Loop short-form wakes
  *  lead with `Loop wake #<fireNumber>`, so text-only keys treat every fire as a
  *  different source and let a queued backlog spend one turn per fire. The
  *  envelope's routineId is the stable identity we actually want to coalesce.
@@ -5417,7 +5417,7 @@ export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?:
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay
  * retryable. */
-export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "pending" | "cancelled" | "clear";
+export function deliveryDedupSettlement(deliveryOutcome: any, rearmOwnsDelivery?: boolean): "completed" | "cancelled" | "pending" | "clear";
 /** Persist the re-arm controller's retry window with a failed Codex-home attempt. */
 export function codexHomeEnsureFailureMetadata(failure: any, capMs: any): {
     retryable: boolean;
