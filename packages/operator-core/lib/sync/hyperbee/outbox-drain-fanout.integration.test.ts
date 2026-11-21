@@ -24,7 +24,15 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
+import {
+  ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgTaggableStore, PgTopicStore, resolveObjectSubscribers,
+} from '@papercusp/coordination/capabilities';
+import { ensureCoordEventLogTable, PgCoordLog } from '@papercusp/coordination/event-log';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { configureCoordLog, resetCoordLog } from '../../agent-tools/coordination/log';
+import { readDirectedInbox } from '../../agent-tools/coordination/messages';
+import { writeFanoutNotify } from './fanout-deliveries';
+import { runFanoutForOutboxRow } from './fanout-projection';
 import {
   drainOutboxOnce,
   startOutboxDrain,
@@ -307,14 +315,31 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     }
   });
 
-  it('passes a newer committed version of the same reference to fan-out after an in-flight delivery', async () => {
+  it('delivers the newer committed version to the subscriber when the first delivery is in flight', async () => {
     const reference = 'F-changing';
+    const subscriber = 'su-following-feature';
+    await ensureCoordCapabilityTables(db.sql);
+    await ensureCoordEventLogTable(db.sql);
+    for (const migration of ['126-coordination-fanout.sql', '1639-substrate-fanout-deliveries.sql']) {
+      await applyMigrationForTest(db.sql, fileURLToPath(new URL(
+        `../../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url,
+      )));
+    }
+    const options = { getSql: () => db.sql, ensureSchema: async () => {}, workspaceId: WS };
+    const stores = {
+      subscriptions: new PgEntitySubscriptionStore(options),
+      tags: new PgTaggableStore(options),
+      topics: new PgTopicStore(options),
+    };
+    await stores.subscriptions.subscribe({
+      subscriber_id: subscriber, target_kind: 'object', target_ref: `feature:${reference}`,
+      created_ts: new Date().toISOString(),
+    });
     const change = (title: string) => seedOutbox(db.sql, {
       table_name: 'harness_features_consolidated', op: 'put', key: reference,
       row: { ...featureRow(reference), title },
     });
     const firstId = await change('first version');
-    const received: Array<{ id: string; title: unknown }> = [];
     let releaseFirst!: () => void;
     const firstDelivery = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let firstInFlight = false;
@@ -326,15 +351,20 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
         wake = onNotify;
         return () => { wake = undefined; };
       },
-      fanout: async (row) => {
-        if (String(row.id) === String(firstId)) {
-          firstInFlight = true;
-          await firstDelivery;
-        }
-        received.push({ id: String(row.id), title: row.row?.title });
-      },
+      fanout: (row) => runFanoutForOutboxRow(row, {
+        resolve: (object) => resolveObjectSubscribers(object, stores),
+        deliver: async (outboxId, sub, ev, object) => {
+          if (outboxId === String(firstId)) {
+            firstInFlight = true;
+            await firstDelivery;
+          }
+          return writeFanoutNotify({ outboxId, sub, ev, object }, { sql: db.sql, workspaceId: WS });
+        },
+      }),
     });
 
+    configureCoordLog(new PgCoordLog(options));
+    const notifications = () => readDirectedInbox(subscriber, { kinds: ['notify'] });
     try {
       await vi.waitFor(() => {
         expect(firstInFlight).toBe(true);
@@ -342,7 +372,7 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
       }, { timeout: 5000 });
       const nextId = await change('second version');
       wake!(`${WS}::${SLUG}`);
-      expect(received).toEqual([]);
+      expect(await notifications()).toEqual([]);
       releaseFirst();
 
       await vi.waitFor(async () => {
@@ -351,11 +381,13 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
            WHERE key = ${reference} AND drained_at IS NOT NULL ORDER BY substrate_outbox.id`;
         expect(rows.map((row) => row.id)).toEqual([String(firstId), String(nextId)]);
       }, { timeout: 5000 });
-      expect(received).toEqual([
-        { id: String(firstId), title: 'first version' },
-        { id: String(nextId), title: 'second version' },
+      const messages = await notifications();
+      expect(messages.map(({ msg_id, summary }) => [msg_id, summary])).toEqual([
+        [`fan-${firstId}-${subscriber}`, `feature ${reference} → todo: first version`],
+        [`fan-${nextId}-${subscriber}`, `feature ${reference} → todo: second version`],
       ]);
     } finally {
+      resetCoordLog();
       releaseFirst();
       await drain.stop();
     }
