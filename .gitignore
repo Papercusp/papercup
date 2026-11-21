@@ -75,6 +75,8 @@ package-lock.json
 !/packages/operator-core/vendor/minecraft-runtime/package-lock.json
 # Isolated, version-pinned reference installation for ACP differential tests.
 !/apps/operator/scripts/psu-acp/fixtures/reference/package-lock.json
+# The standalone psu-acp distribution installs its own pinned dependency tree.
+!/apps/operator/scripts/psu-acp/adapter/package-lock.json
 *.tsbuildinfo
 .DS_Store
 *.log
