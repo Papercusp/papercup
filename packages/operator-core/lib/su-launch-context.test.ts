@@ -7,6 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { composeLaunchContext, launchContextDir, launchContextPathFor } from './su-launch-context';
 
 describe('composeLaunchContext', () => {
+  it('identifies an outside assignment even at workspace scope', () => {
+    const out = composeLaunchContext({ harnessSlug: null, planSlug: null, outsidePlan: true });
+    expect(out).toContain('coord:whoami');
+    expect(out).toContain('Hold a work-item');
+    expect(out).not.toMatch(/plans:(?:new|start|get)/);
+  });
   it('returns empty when neither harness nor plan is picked (ad-hoc launch)', () => {
     expect(composeLaunchContext({ harnessSlug: null, planSlug: null })).toBe('');
   });

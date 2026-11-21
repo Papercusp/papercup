@@ -59,6 +59,27 @@ describe('typed verifier launch modes', () => {
   });
 });
 
+describe('opaque outside-plan command arguments', () => {
+  it('quotes the exact label as one argv value in both composers', () => {
+    const planRef = " tracker:a' $HOME `echo bad`\n";
+    const commands = [
+      buildAgentLaunchCommand({ mode: 'fresh', agent: 'claude', planRef }),
+      memberLaunchCommand({ fleetSlug: 'fleet', agent: 'claude', harness: 'h', planRef }),
+    ];
+    for (const command of commands) {
+      const argv = JSON.parse(execFileSync('bash', ['-c',
+        'psu() { python3 -c \'import json,sys; print(json.dumps(sys.argv[1:]))\' "$@"; }; ' + command,
+      ], { encoding: 'utf8' }));
+      expect(argv.filter((a: string) => a.startsWith('--plan-ref='))).toEqual([`--plan-ref=${planRef}`]);
+    }
+  });
+  it('refuses both plan forms and an oversized label before command composition', () => {
+    expect(() => buildAgentLaunchCommand({ mode: 'fresh', plan: 'P', planRef: 'X' })).toThrow(/mutually exclusive/);
+    expect(() => memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'P', planRef: 'X' })).toThrow(/mutually exclusive/);
+    expect(() => buildAgentLaunchCommand({ mode: 'fresh', planRef: 'x'.repeat(201) })).toThrow();
+  });
+});
+
 describe('GOAL allocation in every member brief (P-020)', () => {
   it('carries the holder width after a custom brief without replacing the fleet target', () => {
     const context = composeMemberLaunchContext({

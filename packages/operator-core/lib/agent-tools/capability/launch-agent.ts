@@ -32,6 +32,7 @@
  *     `fork:false` instead requires an in-place resume and refuses a live source.
  */
 import { randomUUID } from 'node:crypto';
+import { readSessionOutsidePlanRef, resolveSessionOutsidePlanRef, sessionOutsidePlanRefSchema } from '../../session-outside-plan';
 import { isBlindReviewerBackendAgent } from '../../blind-reviewer-backends';
 import { blindReviewProviderWall, withBlindReviewNativeLaunch } from '../../blind-review-continuation-custody';
 import { SCOPED_INFERENCE_GATEWAY_ENV, snapshotScopedInferenceGateway, type ScopedInferenceGateway } from '@papercusp/orchestrator/codex-gateway-config';
@@ -715,6 +716,7 @@ export default defineTool({
         .describe(
           "Plan binding with automatic kickoff; no fleet required.",
         ),
+      planRef: sessionOutsidePlanRefSchema.optional().describe('Opaque outside plan item reference; excludes plan. Inherited by fresh child sessions.'),
       harness: z
         .string()
         .max(120)
@@ -1305,6 +1307,14 @@ export default defineTool({
     } catch {
       callerOwnerId = null;
     }
+    let planRef: string | null = null;
+    try {
+      const inheritedRef = !sourceAction && callerOwnerId
+        ? await readSessionOutsidePlanRef(callerOwnerId, workspaceId) : null;
+      planRef = resolveSessionOutsidePlanRef(args.planRef ?? inheritedRef, null, args.plan);
+    } catch (error) {
+      return err(error instanceof Error ? error.message : String(error));
+    }
     if (args.goalVerifier) {
       if (sourceAction || count !== 1 || args.fleet?.trim() || args.plan?.trim() ||
           args.members?.length || args.extraArgs?.length || !callerOwnerId) {
@@ -1500,6 +1510,13 @@ export default defineTool({
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
       resumeId = target.resumeId ?? target.sessionId;
       resumeOwnerId = target.ownerId;
+      try {
+        planRef = resolveSessionOutsidePlanRef(args.planRef,
+          resumeOwnerId ? await readSessionOutsidePlanRef(resumeOwnerId, workspaceId) : null,
+          target.planSlug);
+      } catch (error) {
+        return err(error instanceof Error ? error.message : String(error));
+      }
       if (interruptionRecovery && (target.live || args.fork !== false ||
           target.ownerId !== interruptionRecovery.ownerId ||
           (target.sessionId ?? target.ompThreadId) !== interruptionRecovery.nativeSessionId)) {
@@ -2334,6 +2351,12 @@ export default defineTool({
           );
         }
         if (savedLaunchSpec.found) {
+          try {
+            planRef = resolveSessionOutsidePlanRef(savedLaunchSpec.effective.planRef,
+              planRef, savedLaunchSpec.effective.plan ?? args.plan);
+          } catch (error) {
+            return err(error instanceof Error ? error.message : String(error));
+          }
           persistedHeadcountProfile = {
             workspaceId,
             fleetSlug,
@@ -2836,6 +2859,7 @@ export default defineTool({
               ...(fork ? { ownerId: memberOwnerIds[i] } : {}),
               sessionId: resumeSessionId,
               resumeId,
+              planRef,
               // A same-session resume/fork keeps the source's account route
               // unless the caller deliberately requests another one. Without
               // this, `--account=auto` sessions silently restart on `default`.
@@ -2867,6 +2891,7 @@ export default defineTool({
               ownerId: memberOwnerIds[i],
               fleetRole: recoveredFleetRole === 'leader' ? 'leader' : undefined,
               plan: args.plan ?? null,
+              planRef,
               // ALWAYS harness-scope a fresh launch, plan or not (caught by the P-016
               // live-verify): `--harness` is what makes psu bootstrap a papercusp-su
               // collaborator. Without it psu boots a PLAIN claude, skips the su bootstrap,

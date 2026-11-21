@@ -34,6 +34,7 @@ import {
   type InstructionRuntimeContext,
 } from './instruction-lint';
 import { launchContextDir } from './su-launch-context';
+import { readSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from './session-outside-plan';
 import { PSU_CACHE_BOUNDARY, cacheSplitBoundaryEnabled } from './inference-gateway/cache-policy';
 import {
   replayAgentSpecification,
@@ -277,6 +278,7 @@ export interface SuLaunchSpecRecord {
   model: string | null;
   modelSource?: 'explicit' | 'inherited' | 'configured-default';
   planSlug: string | null;
+  planRef?: string | null;
   launchedBy: string | null;
   autoMode: boolean;
   drainMode: boolean;
@@ -520,6 +522,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     model: str(r.model),
     ...(modelSource ? { modelSource } : {}),
     planSlug: str(r.planSlug),
+    ...(r.planRef !== undefined ? { planRef: resolveSessionOutsidePlanRef(r.planRef, null, str(r.planSlug)) } : {}),
     launchedBy: str(r.launchedBy),
     autoMode: r.autoMode === true,
     drainMode: r.drainMode === true,
@@ -605,6 +608,8 @@ export async function rebuildSuLaunchArtifact(
     harnessSlug: record.harnessSlug,
     planSlug: record.planSlug,
   });
+  const planRef = resolveSessionOutsidePlanRef(record.planRef,
+    await readSessionOutsidePlanRef(ownerId, record.workspaceId), record.planSlug);
   const spec = await buildLaunchSpec({
     ownerId,
     kind: 'su',
@@ -617,6 +622,7 @@ export async function rebuildSuLaunchArtifact(
     personaTier: record.personaTier,
     model: record.model,
     planSlug: record.planSlug,
+    ...(planRef !== null ? { planRef } : {}),
     stack: nextStack,
     planTitle: plan.planTitle,
     planNow: plan.planNow,

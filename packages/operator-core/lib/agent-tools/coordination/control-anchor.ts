@@ -22,6 +22,7 @@ import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { buildConsumerView, type ConsumerView } from '../../consumer-view';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 import { stackRefsForSession } from '../../stack-binding-channel';
+import { readSessionOutsidePlanRef } from '../../session-outside-plan';
 import { trackDetached } from '../../detached-imports';
 import { narrowedLaunchSpecSql } from '../../capability-envelope/identity-receipt-narrowing';
 import {
@@ -1372,7 +1373,11 @@ export async function buildControlAnchorState(
     ),
     // P-012 / P-021: the stack binding is a projection of the route (fleet posture) and of
     // the active modes (one definition identity per mode axis) — no new leg.
-    stack: stackRefsForSession({ route, modes: modes.map((m) => m.mode), explicit: explicitStack, modeCatalog }),
+    stack: stackRefsForSession({
+      route,
+      outsidePlan: route.kind === 'fleet' && (await readSessionOutsidePlanRef(ownerId, workspaceId, sql)) !== null,
+      modes: modes.map((m) => m.mode), explicit: explicitStack, modeCatalog,
+    }),
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',

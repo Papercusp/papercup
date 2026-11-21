@@ -911,6 +911,7 @@ export default defineTool({
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,
       launchTransaction: fleet.lastLaunchTransaction,
+      ...(fleet.lastLaunchTransaction?.planRef ? { planRef: fleet.lastLaunchTransaction.planRef } : {}),
       ...(launchTransactionUnconfirmedMembers.length > 0
         ? { launchTransactionUnconfirmedMembers }
         : {}),

@@ -17,6 +17,7 @@
  */
 import { hostname } from 'node:os';
 import { z } from 'zod';
+import { resolveSessionOutsidePlanRef } from './session-outside-plan';
 import { filterNodeSchema, type FilterNode } from './scheduler/claim-spec';
 import { FRESH_VERIFY_TIMEOUT_MS } from './agent-kickoff/launch-budgets.mjs';
 import { getOrgPg } from '@papercusp/db-org';
@@ -228,6 +229,7 @@ export function launchModeFromFleetRecipe(config: { mode?: unknown } | null | un
 
 /** A resume/fork target fully resolved to the exact session to act on. */
 export interface ResumeTarget {
+  planSlug?: string | null;
   /**
    * The native CLI session uuid, when the backend recorded one.
    *
@@ -525,6 +527,7 @@ export async function resolveResumeTarget(ref: {
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
     workspaceId: row.workspaceId?.trim() || null,
+    planSlug: row.planSlug,
     agent: row.agent,
     role: row.role,
     feature: row.feature,
@@ -577,6 +580,7 @@ export function buildAgentLaunchCommand(opts: {
    */
   targetAgent?: string | null;
   plan?: string | null;
+  planRef?: string | null;
   harness?: string | null;
   account?: string | null;
   /** Emit the retained fleet leader role on a resume or identity-preserving successor. */
@@ -663,6 +667,7 @@ export function buildAgentLaunchCommand(opts: {
     }
     return v;
   };
+  const planRef = resolveSessionOutsidePlanRef(opts.planRef, null, opts.plan);
   // R-12: resolve the conversion target before composing anything, so an
   // impossible request is refused here rather than emitted as a command psu
   // will reject at boot (the same rule the fresh-launch --agent default below
@@ -743,6 +748,7 @@ export function buildAgentLaunchCommand(opts: {
     if (opts.plan) parts.push(`--plan=${safe('plan', opts.plan)}`);
   }
   if (opts.fleetRole === 'leader') parts.push('--fleet-role=leader');
+  if (planRef !== null) parts.push(`--plan-ref=${quoteLaunchValue(planRef)}`);
   // --headless keeps the managed-pty host ON despite non-TTY stdio, so the session
   // stays injectable (wakes AND the resume kickoff both ride that pty). Without it a
   // windowless member parks forever after one turn.
@@ -869,6 +875,7 @@ export interface MemberLaunchOpts {
   /** psu --plan the member self-pulls on. OPTIONAL (P-003): a pure claim-spec fleet
    *  launches with no plan — members pull via their claim spec, so `--plan` is omitted. */
   plan?: string;
+  planRef?: string | null;
   headless?: boolean;
   /**
    * psu --carry: persist the member's warm/cold carry choice in launch_argv so
@@ -1117,6 +1124,7 @@ function quoteLaunchValue(value: string): string {
  * without weakening its injection boundary or breaking paths with spaces.
  */
 export function memberLaunchCommand(opts: MemberLaunchOpts): string {
+  const planRef = resolveSessionOutsidePlanRef(opts.planRef, null, opts.plan);
   const identifier = (label: string, value: string): string => {
     if (!/^[A-Za-z0-9._:=@/,+-]+$/.test(value)) {
       throw new Error(`memberLaunchCommand: refusing ${label} with shell metacharacters: ${JSON.stringify(value)}`);
@@ -1140,6 +1148,7 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   // P-003: `plan` is optional — a pure claim-spec fleet (launched without a plan)
   // omits `--plan`; its members self-pull via the fleet claim spec, not a plan lane.
   if (opts.plan) parts.push(`--plan=${identifier('plan', opts.plan)}`);
+  if (planRef !== null) parts.push(`--plan-ref=${quoteLaunchValue(planRef)}`);
   if (opts.headless) parts.push('--headless');
   if (opts.carry) parts.push(`--carry=${opts.carry}`);
   if (opts.account) parts.push(`--account=${quoteLaunchValue(opts.account)}`);

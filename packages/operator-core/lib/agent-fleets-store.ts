@@ -143,6 +143,8 @@ export interface FleetLaunchGovernorState {
 
 export interface FleetLaunchTransaction {
   version: 1;
+  /** Fleet-level outside binding survives heterogeneous launches and operator restart. */
+  planRef?: string;
   transactionId: string;
   /** Bounded lineage pointer when a governor wave supersedes a prior snapshot. */
   previousTransactionId?: string;
@@ -306,6 +308,8 @@ export interface FleetHeadcountConfig {
    * is what governor top-ups use anyway (they launch plan-less). R-8 of
    * feature-drain-delivery-readiness-and-outcome-accounting-2026-10-01. */
   plan?: string;
+  /** Opaque outside plan binding, persisted for replacement leaders and members. */
+  planRef?: string;
   harness: string;
   agent: 'claude' | 'omp' | 'codex';
   model?: string;

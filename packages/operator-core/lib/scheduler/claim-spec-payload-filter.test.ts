@@ -70,6 +70,7 @@ function subjectOf(p: {
     paths: [],
     plan: p.plan ?? null,
     planItem: [],
+    externalPlanRef: null,
     fleet: p.fleet ?? null,
     triageGate: null,
     itemClass: 'work',

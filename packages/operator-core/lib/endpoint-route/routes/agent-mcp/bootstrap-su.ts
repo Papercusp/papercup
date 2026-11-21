@@ -26,6 +26,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { provisionNativeRuntimeBearer } from '@papercusp/agent-mcp/provisioning';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
+import { bindSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from '../../../session-outside-plan';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { CORS_HEADERS, jsonRes, gatePrincipal, AUTO_MODE_DIRECTIVE, AUTO_MODE_DIRECTIVE_LOOP_ARMED, autoModeDirective, DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE, composeModePromptSection } from './bootstrap-su-shared';
 import { requirePrincipal } from '../../../auth/require-principal';
@@ -142,6 +143,7 @@ export interface BootstrapSuResult {
   cwd: string;
   harnessSlug: string | null;
   planSlug: string | null;
+  outsidePlanRef?: string | null;
   /**
    * File holding the engineer playbook + per-launch scope/plan addendum —
    * the launcher feeds it as the system prompt. claude/omp: a launch-context
@@ -1308,6 +1310,7 @@ export function reconstructPsuLaunchArgv(o: {
   headless?: boolean;
   harnessSlug?: string | null;
   planSlug?: string | null;
+  planRef?: string | null;
   profile?: string | null;
   contextSize?: string | null;
   account?: string | null;
@@ -1326,6 +1329,7 @@ export function reconstructPsuLaunchArgv(o: {
   for (const ref of o.stack ?? []) if (ref) argv.push(`--stack=${ref}`);
   if (o.harnessSlug) argv.push(`--harness=${o.harnessSlug}`);
   argv.push(o.planSlug ? `--plan=${o.planSlug}` : '--no-plan');
+  if (o.planRef != null) argv.push(`--plan-ref=${resolveSessionOutsidePlanRef(o.planRef, null, o.planSlug)}`);
   if (!o.role && o.profile && o.profile !== 'engineer') argv.push(`--profile=${o.profile}`);
   if (o.contextSize) argv.push(`--context-size=${o.contextSize}`);
   if (o.account) argv.push(`--account=${o.account}`);
@@ -1589,6 +1593,7 @@ export const bootstrapSu = defineTool({
       workspace?: string | null;
       harness_slug?: string | null;
       plan_slug?: string | null;
+      plan_ref?: unknown;
       label?: string | null;
       /** Playbook profile (engineer|power), assembled per-launch (P-023).
        *  Omitted/invalid → 'engineer'. */
@@ -1828,6 +1833,12 @@ export const bootstrapSu = defineTool({
       : null;
     const harnessSlug = body.harness_slug?.trim() || null;
     const planSlug = body.plan_slug?.trim() || null;
+    let planRef: string | null;
+    try {
+      planRef = resolveSessionOutsidePlanRef(body.plan_ref, null, planSlug);
+    } catch (error) {
+      return jsonRes({ status: 'error', error: error instanceof Error ? error.message : String(error) }, 400);
+    }
     const callerCwd = body.cwd?.trim() || null;
     // P-023: playbook profile. Valid base playbooks (prompts/papercusp-su-<profile>.tools.md):
     // 'engineer' (working ON papercusp) | 'power' (managing an external repo) |
@@ -2040,6 +2051,7 @@ export const bootstrapSu = defineTool({
         model,
         planSlug,
         planTitle,
+        ...(planRef !== null ? { planRef } : {}),
         planNow,
         // EI-996: null for a plain su launch ⇒ byte-identical prompt.
         roleAddendum,
@@ -2428,6 +2440,7 @@ export const bootstrapSu = defineTool({
         harnessSlug,
         planSlug,
         profile,
+        ...(planRef !== null ? { planRef } : {}),
         contextSize,
         account: body.account?.trim() || null,
         fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
@@ -2650,6 +2663,10 @@ export const bootstrapSu = defineTool({
     }
     if (!sessionPortContext && sessionId != null) {
       incompleteBootstrapSessionId = sessionId;
+    }
+    if (planRef !== null) {
+      if (sessionId == null) return jsonRes({ status: 'error', error: 'planRef requires a persisted session' }, 500);
+      await bindSessionOutsidePlanRef({ ownerId: sid, advSessionId: sessionId, workspaceId: workspace, planRef });
     }
     if (!sessionPortContext) {
       await bindKnownAgentSessionTasks({
@@ -3374,6 +3391,7 @@ export const bootstrapSu = defineTool({
         planSlug,
         launchedBy,
         autoMode,
+        ...(planRef !== null ? { planRef } : {}),
         drainMode,
         loopArmed,
         headless,
@@ -3508,6 +3526,7 @@ export const bootstrapSu = defineTool({
       harnessSlug,
       planSlug,
       promptFile,
+      ...(planRef !== null ? { outsidePlanRef: planRef } : {}),
       instructionLint,
       specificationRevision: launchArtifact.specificationRevision,
       stateRevision: launchArtifact.stateRevision,

@@ -21,6 +21,7 @@ import {
   releaseAdvSessionResume,
 } from '../../../adv-sessions';
 import { CORS_HEADERS, gatePrincipal, jsonRes } from './bootstrap-su-shared';
+import { bindSessionOutsidePlanRef, resolveSessionOutsidePlanRef } from '../../../session-outside-plan';
 import { committedRouteResponse } from '../../route-stack';
 import { withNamedQueryDiagnosticContext } from '../../../agent-tools/db-diagnostic-correlation-wiring';
 
@@ -159,12 +160,14 @@ const sessionResumed = defineTool({
     let resumeClaimKey: string | null = null;
     let localLivenessEvidence: unknown = undefined;
     let allowRetired = false;
+    let requestedPlanRef: unknown;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         resumeClaimKey?: unknown;
         localLivenessEvidence?: unknown;
         allowRetired?: unknown;
+        planRef?: unknown;
         assumeHost?: { request?: unknown; afterExit?: unknown; action?: unknown; startup?: unknown };
       };
       if (body.assumeHost !== undefined) {
@@ -187,6 +190,7 @@ const sessionResumed = defineTool({
         return jsonRes({ error: 'allowRetired must be boolean' }, 400);
       }
       allowRetired = body.allowRetired === true;
+      requestedPlanRef = body.planRef;
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -215,6 +219,16 @@ const sessionResumed = defineTool({
       return jsonRes({ error: 'advSessionId required' }, 400);
     }
     try {
+      if (requestedPlanRef !== undefined) {
+        const session = await getAdvSession(advSessionId);
+        if (!session?.coordOwnerId) return jsonRes({ ok: false, error: 'planRef requires a persisted session identity' }, 409);
+        let planRef: string | null;
+        try { planRef = resolveSessionOutsidePlanRef(requestedPlanRef, session.outsidePlanRef ?? null, session.planSlug); }
+        catch (error) { return jsonRes({ ok: false, error: error instanceof Error ? error.message : String(error) }, 409); }
+        if (planRef !== null) await bindSessionOutsidePlanRef({
+          advSessionId, ownerId: session.coordOwnerId, workspaceId: session.workspaceId, planRef,
+        });
+      }
       if (resumeClaimKey) {
         const reservation = localLivenessEvidence === undefined && !allowRetired
           ? await acquireAdvSessionResume(advSessionId, resumeClaimKey)

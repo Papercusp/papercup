@@ -21,7 +21,7 @@ import { matchesClaimSpecFilter, type ClaimSpecSubject } from './claim-spec-matc
 
 const BASE: ClaimSpecSubject = {
   id: null, title: null, summary: null, kind: 'change', priority: null, tags: [], paths: [], plan: null,
-  planItem: [], fleet: null, triageGate: null, itemClass: 'work', age: null, riskTier: null, redundancy: null,
+  planItem: [], externalPlanRef: null, fleet: null, triageGate: null, itemClass: 'work', age: null, riskTier: null, redundancy: null,
   estCost: null, assignee: null, severity: null, goal: null,
 };
 

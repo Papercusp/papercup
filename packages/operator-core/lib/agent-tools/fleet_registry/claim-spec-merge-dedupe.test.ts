@@ -34,6 +34,7 @@ const subject = (over: Partial<ClaimSpecSubject>): ClaimSpecSubject => ({
   tags: [],
   paths: [],
   plan: 'fleet-friction-remediation-2026-08-21',
+  externalPlanRef: null,
   planItem: ['P-006'],
   fleet: null,
   triageGate: null,

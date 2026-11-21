@@ -44,10 +44,12 @@ export const SU_POSTURE_REFS = {
 } as const;
 
 /** The bound-layer refs a session's route implies (the fleet posture). */
-export function stackRefsForRoute(route: ControlAnchorState['route']): string[] {
+export function stackRefsForRoute(route: ControlAnchorState['route'], outsidePlan = false): string[] {
   if (route.kind !== 'fleet') return [];
   const role = (route.role ?? '').trim().toLowerCase();
-  if (role === 'leader' || role === 'member') return [SU_POSTURE_REFS[role]];
+  if (role === 'leader' || role === 'member') {
+    return [outsidePlan ? `fleet-posture:su.outside-fleet-${role}` : SU_POSTURE_REFS[role]];
+  }
   return [];
 }
 
@@ -90,11 +92,12 @@ export function stackRefsForModes(
  */
 export function stackRefsForSession(input: {
   route: ControlAnchorState['route'];
+  outsidePlan?: boolean;
   modes: readonly string[] | null | undefined;
   explicit?: readonly string[] | null;
   modeCatalog?: ModeCatalogSnapshot;
 }): string[] {
-  return [...new Set([...(input.explicit ?? []), ...stackRefsForRoute(input.route), ...stackRefsForModes(input.modes, input.modeCatalog)])];
+  return [...new Set([...(input.explicit ?? []), ...stackRefsForRoute(input.route, input.outsidePlan), ...stackRefsForModes(input.modes, input.modeCatalog)])];
 }
 
 function sameRefs(a: readonly string[], b: readonly string[]): boolean {

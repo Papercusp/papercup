@@ -102,6 +102,7 @@ export interface AdvSessionRow {
    *  Older rows and pre-migration databases omit it and remain workspace-only. */
   harnessSlug?: string | null;
   planSlug: string | null;
+  outsidePlanRef?: string | null;
   /** Which agent CLI backs this session; null for pre-*-su rows. */
   agent: SuAgent | null;
   /** Pipeline role this session runs as (worker/validator/…); null = plain SU/engineer. */
@@ -297,6 +298,7 @@ export function mapAdvSessionRow(r: {
   workspace_id: string;
   harness_slug?: string | null;
   plan_slug: string | null;
+  outside_plan_ref?: string | null;
   agent: string | null;
   role: string | null;
   feature: string | null;
@@ -340,6 +342,7 @@ export function mapAdvSessionRow(r: {
     workspaceId: r.workspace_id,
     harnessSlug: r.harness_slug ?? null,
     planSlug: r.plan_slug,
+    outsidePlanRef: r.outside_plan_ref ?? null,
     agent: (r.agent as SuAgent | null) ?? null,
     role: r.role ?? null,
     feature: r.feature ?? null,
@@ -463,7 +466,7 @@ export async function listPendingWorkbenchLaunches(
     const { sql } = getOrgPg();
     const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
              display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
@@ -640,7 +643,7 @@ export async function listStartingTerminalLaunches(
     const { sql } = getOrgPg();
     const workspacePredicate = ws === null ? true : sql`workspace_id = ${ws}`;
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
              display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
@@ -2822,7 +2825,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
         launch_argv?: string[] | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(a)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              to_jsonb(a)->>'port_id' AS port_id,
@@ -3012,7 +3015,7 @@ export async function listResumableSessions(
       SELECT a.id, a.workspace_id,
              -- Keep optional launch_spec parse-safe; convert only the selected rows.
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
-             a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
+             a.plan_slug, to_jsonb(a)->>'outside_plan_ref' AS outside_plan_ref, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
              a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
              a.launch_argv,
              a.started_at, selected.last_active_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal, a.retired_at, a.retired_by, a.retired_reason
@@ -3075,7 +3078,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
              -- through to_jsonb so old schemas remain parse-safe while resumed
              -- sessions recover the harness scope persisted at launch time.
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
-             plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             plan_slug, to_jsonb(a)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at,
              started_at::text AS started_at_exact, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
              to_jsonb(a)->'launch_argv' AS launch_argv,
@@ -3124,7 +3127,7 @@ export async function getLatestActiveAdvSessionByOwner(
       (tx) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
         SELECT id, workspace_id,
                to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
-               plan_slug, agent, role, feature, mode, terminal_bin, pid,
+               plan_slug, to_jsonb(a)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
                window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
                started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
                to_jsonb(a)->'launch_argv' AS launch_argv,
@@ -3165,7 +3168,7 @@ export async function getAdvSessionInWorkspace(
     const rows = await boundedOrgTxn((sql) => sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id,
              to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
-             plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             plan_slug, to_jsonb(a)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
              to_jsonb(a)->'launch_argv' AS launch_argv,
              started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason,
@@ -3269,7 +3272,7 @@ export async function advSessionsByCoordOwner(
       }>
     >`
       SELECT ${ids ? sql`DISTINCT ON (coord_owner_id)` : sql``}
-             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv,
              display, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
@@ -3357,7 +3360,7 @@ export async function listRecordedLiveSessions(
          )`;
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
-             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NULL
@@ -3474,7 +3477,7 @@ export async function listEndedAdvSessionsByOwners(coordOwnerIds: string[]): Pro
     const { sql } = getOrgPg();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
-             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
@@ -3669,7 +3672,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
   type LookupSql = Parameters<Parameters<typeof boundedOrgTxn>[0]>[0];
   const queryLatest = async (tx: LookupSql) => {
     return await tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
@@ -3758,7 +3761,7 @@ export async function latestLiveAdvSessionByLabel(label: string, workspaceId: st
     const { sql } = getOrgPg();
     const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE label = ${label}
@@ -3825,7 +3828,7 @@ export async function listEndedAdvSessions(
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
@@ -4016,7 +4019,7 @@ export async function advSessionsByTranscriptHandles(handles: {
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
@@ -4079,7 +4082,7 @@ export async function advSessionsByIdToken(token: string, opts: { limit?: number
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id, plan_slug, to_jsonb(adv_sessions)->>'outside_plan_ref' AS outside_plan_ref, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
         FROM harness_shared.adv_sessions
        WHERE lower(coord_owner_id) LIKE ${pattern}

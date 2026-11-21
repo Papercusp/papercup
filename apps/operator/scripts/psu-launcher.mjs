@@ -331,6 +331,9 @@ Launch context:
   --harness=<slug>                   Harness context
   --feature=<id>                     Feature context
   --plan=<slug>                      Plan context
+  --plan-ref=<opaque>                Outside plan item label (1–200 characters); excludes --plan
+                                    Tools: planRef; ACP front: _meta.psuAcp.planRef on session/new or session/resume
+                                    coord:whoami returns outsidePlanRef; resume retains the persisted value
   --no-plan                          Launch without a plan
   --model=<model[:effort]>           Model and optional effort
   --model-source=<source>            Codex provenance: explicit|inherited|configured-default
@@ -1068,6 +1071,22 @@ function fmtAgo(ms) {
  *  apps/operator/lib/psu-launcher.test.ts — the same pattern validateModelSpec uses. */
 export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
+/** Outside plans are opaque labels, never parsed or silently shortened. */
+export function validateOutsidePlanRef(value) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 200 || value.includes("\0")) {
+    throw new Error("--plan-ref requires an opaque string of 1–200 characters without NUL");
+  }
+  return value;
+}
+
+export function resumeOutsidePlanRef(session, requested) {
+  const stored = session?.outsidePlanRef ?? null;
+  const ref = requested == null ? stored : validateOutsidePlanRef(requested);
+  if (ref != null && session?.planSlug) throw new Error("--plan-ref and the session's Papercusp plan binding are mutually exclusive");
+  if (stored != null && ref !== stored) throw new Error("--plan-ref conflicts with the persisted session outside plan reference");
+  return ref;
+}
+
 /** Parse the scripting-escape flags. Pure — exported for tests. */
 export function parseArgs(argv) {
   const out = {
@@ -1085,6 +1104,7 @@ export function parseArgs(argv) {
     workspace: null,
     harness: null,
     plan: null,
+    planRef: null,
     noPlan: false,
     model: null,
     resumeSession: null,
@@ -1149,6 +1169,7 @@ export function parseArgs(argv) {
   let pendingFeature = false;
   let pendingHarness = false;
   let pendingPlan = false;
+  let pendingPlanRef = false;
   let pendingModeSubject = false;
   let pendingModeInstructions = false;
   let pendingTui = false;
@@ -1210,6 +1231,11 @@ export function parseArgs(argv) {
     if (pendingPlan) {
       pendingPlan = false;
       out.plan = a;
+      continue;
+    }
+    if (pendingPlanRef) {
+      pendingPlanRef = false;
+      out.planRef = validateOutsidePlanRef(a);
       continue;
     }
     if (pendingModeSubject) {
@@ -1400,6 +1426,8 @@ export function parseArgs(argv) {
       out.harness = a.slice("--harness=".length);
     else if (a === "--plan") pendingPlan = true;
     else if (a.startsWith("--plan=")) out.plan = a.slice("--plan=".length);
+    else if (a === "--plan-ref") pendingPlanRef = true;
+    else if (a.startsWith("--plan-ref=")) out.planRef = validateOutsidePlanRef(a.slice("--plan-ref=".length));
     // P-032 omp-convergence passthroughs: a model fuzzy-match, resume of a
     // specific recorded session, and a kickoff/launch-context file the server
     // pre-generated (fed to the *-su wrapper as its launch-context).
@@ -1617,6 +1645,8 @@ export function parseArgs(argv) {
     }
   }
   if (pendingResumeHost) resumeHostValue(undefined);
+  if (pendingPlanRef) validateOutsidePlanRef(undefined);
+  if (out.planRef !== null && out.plan) throw new Error("--plan-ref and --plan are mutually exclusive");
   if (out.resumeHost && (!out.resume || !out.resumeId)) {
     throw new Error("--resume-host requires --resume with an exact session id");
   }
@@ -8570,7 +8600,7 @@ export function presetsFromArgs(args) {
   }
   const harness =
     args.harness != null && args.harness !== "" ? args.harness : null;
-  const planProvided = args.noPlan || (args.plan != null && args.plan !== "");
+  const planProvided = args.planRef != null || args.noPlan || (args.plan != null && args.plan !== "");
   return {
     agent,
     workspace: args.workspace || null,
@@ -11661,6 +11691,7 @@ export function describeSessionEndReportFailure(outcome) {
  * @property {string} [resumeClaimKey]
  * @property {unknown} [localLivenessEvidence]
  * @property {boolean} [allowRetired] explicit operator exact relaunch only
+ * @property {string|null} [planRef] outside-plan binding checked by trusted resume admission
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {ResumeClaimOptions} [opts]
@@ -11683,6 +11714,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
     resumeClaimKey = randomUUID(),
     localLivenessEvidence = null,
     allowRetired = false,
+    planRef = null,
   } = opts;
   if (!advSessionId) return { claimed: false, reason: "no-session" };
   const claimKey = String(resumeClaimKey || "").trim();
@@ -11710,6 +11742,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
           body: JSON.stringify({
             advSessionId: Number(advSessionId),
             resumeClaimKey: claimKey,
+            ...(planRef != null ? { planRef: validateOutsidePlanRef(planRef) } : {}),
             ...(allowRetired === true ? { allowRetired: true } : {}),
             ...(evidence ? { localLivenessEvidence: evidence } : {}),
           }),
@@ -11901,6 +11934,7 @@ export async function acquireSessionResumeWithRecovery(
     waitBudgetMs = 75_000,
     localLivenessEvidence = null,
     allowRetired = false,
+    planRef = null,
   } = opts;
   const claimKey = String(resumeClaimKey || "").trim();
   const startedAt = now();
@@ -11911,6 +11945,7 @@ export async function acquireSessionResumeWithRecovery(
   while (true) {
     const outcome = await reportImpl(advSessionId, {
       resumeClaimKey: claimKey,
+      ...(planRef != null ? { planRef } : {}),
       ...(allowRetired === true ? { allowRetired: true } : {}),
       ...(canonicalLocalLivenessEvidence
         ? { localLivenessEvidence: canonicalLocalLivenessEvidence }
@@ -12168,6 +12203,7 @@ export function resumeLaunchArgvRecord(
     workspace: session?.workspaceId ?? priorArgs.workspace ?? null,
     harness: session?.harnessSlug ?? priorArgs.harness ?? null,
     plan: session?.planSlug ?? priorArgs.plan ?? null,
+    planRef: session?.outsidePlanRef ?? priorArgs.planRef ?? null,
     model,
     modelSource,
     addDir,
@@ -15496,6 +15532,7 @@ async function launchResume(
     }
     const governedReservation = governedResumeReservationForLaunch(managedAssume, process.env, session);
     const claim = await acquireSessionResumeWithRecovery(session.id, {
+      ...(session.outsidePlanRef != null ? { planRef: session.outsidePlanRef } : {}),
       ...(governedReservation ? { resumeClaimKey: governedReservation.claimKey } : {}),
       ...(localLivenessEvidence ? { localLivenessEvidence } : {}),
       ...(allowRetiredResume ? { allowRetired: true } : {}),
@@ -15922,6 +15959,8 @@ export function forkBootstrapBody(
     workspace: session.workspaceId || null,
     harness_slug: null,
     plan_slug: session.planSlug || null,
+    ...(resumeOutsidePlanRef(session, launchArgs?.planRef) != null
+      ? { plan_ref: resumeOutsidePlanRef(session, launchArgs?.planRef) } : {}),
     cwd: session.cwd,
     ...(session.agent === "codex" ? { native_fork_source: {
       advSessionId: Number(session.id), nativeSessionId: session.sessionId,
@@ -16094,6 +16133,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   if (selections.workspace) argv.push(`--workspace=${selections.workspace}`);
   if (selections.harness) argv.push(`--harness=${selections.harness}`);
   argv.push(selections.plan ? `--plan=${selections.plan}` : "--no-plan");
+  if (args.planRef != null) argv.push(`--plan-ref=${validateOutsidePlanRef(args.planRef)}`);
   if (args.profile) argv.push(`--profile=${args.profile}`);
   for (const ref of args.stack || []) argv.push(`--stack=${ref}`);
   if (args.selectedIdentityRevision)
@@ -16164,6 +16204,7 @@ export function freshSuBootstrapBody(
     workspace: selections.workspace,
     harness_slug: selections.harness,
     plan_slug: selections.plan,
+    ...(args.planRef != null ? { plan_ref: validateOutsidePlanRef(args.planRef) } : {}),
     // Codex writes this base into its per-session MCP config. Keep it separate
     // from the bootstrap request origin, which the server uses for control-plane env.
     ...(selections.agent === "codex" && mcpBaseUrl
@@ -18442,6 +18483,12 @@ export function unresumableSourceCause(
 }
 
 async function launchResolvedResume(source, args, { tracked }) {
+  const planRef = resumeOutsidePlanRef(source, args.planRef);
+  if (planRef !== null && !tracked) throw new Error("--plan-ref requires a tracked session on resume");
+  if (planRef !== null) {
+    source = { ...source, outsidePlanRef: planRef };
+    args = { ...args, planRef };
+  }
   // Backend/model first, account second. Account choices are provider-scoped;
   // prompting before the target is known is how cross-backend resumes get
   // silently pinned to the source provider.

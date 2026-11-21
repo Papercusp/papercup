@@ -1113,6 +1113,7 @@ function governorLaunchTransaction(args: {
   const requestedMemberIds = [...new Set([...args.liveMemberIds, ...args.newMemberIds])];
   const transaction: FleetLaunchTransaction = {
     version: 1,
+    ...((args.config.planRef ?? args.prior?.planRef) ? { planRef: args.config.planRef ?? args.prior?.planRef } : {}),
     transactionId: randomUUID(),
     ...(args.prior ? { previousTransactionId: args.prior.transactionId } : {}),
     launcherOwnerId: args.launcherOwnerId,
@@ -1823,6 +1824,7 @@ async function topUpOneFleet(ctx: SystemActionCtx, fleetSlug: string): Promise<v
       fleetSlug,
       agent: effectiveAgent,
       harness: config.harness,
+      planRef: config.planRef,
       headless: config.headless,
       ownerId,
       workspace: workspaceId,

@@ -30,6 +30,7 @@ export interface LaunchContextInput {
   harnessSlug: string | null;
   /** Plan the session is bound to, or null for an ad-hoc session. */
   planSlug: string | null;
+  outsidePlan?: boolean;
   /** Plan title from frontmatter, if known. */
   planTitle?: string | null;
   /** The plan's `## Now` block, if the plan was readable at launch. */
@@ -47,7 +48,7 @@ export interface LaunchContextInput {
  */
 export function composeLaunchContext(input: LaunchContextInput): string {
   const { harnessSlug, planSlug, planTitle, planNow } = input;
-  if (!harnessSlug && !planSlug) return '';
+  if (!harnessSlug && !planSlug && !input.outsidePlan) return '';
 
   const lines: string[] = [
     '# Operating brief — this launch',
@@ -89,7 +90,10 @@ export function composeLaunchContext(input: LaunchContextInput): string {
     );
   }
 
-  if (planSlug) {
+  if (input.outsidePlan) {
+    lines.push('The client supplied the plan of record. Read the opaque reference with `coord:whoami`. ' +
+      'Hold a work-item before editing and complete it with evidence. Return the result to the client.');
+  } else if (planSlug) {
     lines.push(`- **Plan:** bound to \`${planSlug}\`${planTitle ? ` — ${planTitle}` : ''}.`);
     if (planNow && (planNow.state || planNow.next)) {
       if (planNow.state) lines.push(`  - **Now:** ${planNow.state}`);

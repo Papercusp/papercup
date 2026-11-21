@@ -36,6 +36,18 @@ function state(over: Partial<ControlAnchorState> = {}): ControlAnchorState {
 }
 
 describe('stackRefsForRoute (P-012)', () => {
+  it.each(['leader', 'member'] as const)('keeps the outside %s posture across launch and reconciliation', async role => {
+    const binding = blueprint.suSessionBinding({ fleetRole: role, outsidePlan: true });
+    const refs = stackRefsForSession({ route: { kind: 'fleet', fleet: 'alpha', role }, modes: [], outsidePlan: true });
+    expect(refs).toEqual(binding.layers.map(blueprint.bindingRef));
+    const rendered = blueprint.composeSuStackSource({ harnessDir, binding, outsidePlan: true });
+    expect(rendered.text).toContain('This assignment is already planned outside Papercusp');
+    expect(rendered.text).not.toContain('A plan is REQUIRED when work');
+    const transition = await renderStackTransitionContext({ stackBefore: [], state: state({ stack: refs }) }, { harnessDir });
+    const expected = role === 'leader' ? 'comment on the affected' : 'coord:orient { intent }';
+    expect(transition).toContain(expected);
+    expect(transition).not.toMatch(/read the plan.s `## Now`|plans:add-decision/i);
+  });
   it('projects the fleet posture from the route and nothing else; the ids are the orchestrator posture layers', () => {
     expect(stackRefsForRoute({ kind: 'self' })).toEqual([]);
     expect(stackRefsForRoute({ kind: 'mug' })).toEqual([]);

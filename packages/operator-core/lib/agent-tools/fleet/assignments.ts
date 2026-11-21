@@ -1246,6 +1246,7 @@ export default defineTool({
     // reject unknown names explicitly so an invalid fleet never looks measured-empty.
     const requestedFleetSlug = args.fleet === undefined ? undefined : fleetSlugFromName(args.fleet);
     let fleetFilter = requestedFleetSlug;
+    let fleetPlanRef: string | undefined;
     const degradedLegs = new Set<string>();
     const readTimings: FleetAssignmentsReadTiming[] = [];
     const boundedRead = async <T>(
@@ -1324,6 +1325,7 @@ export default defineTool({
         };
       }
       fleetFilter = fleet.fleetSlug;
+      fleetPlanRef = fleet.lastLaunchTransaction?.planRef;
     }
 
     // Start the independent top-level reads together. In particular, a stalled
@@ -2057,6 +2059,7 @@ export default defineTool({
         scope: {
           agent: args.agent ?? null,
           plan: args.plan ?? null,
+          ...(fleetPlanRef ? { planRef: fleetPlanRef } : {}),
           fleet: fleetFilter ?? null,
           harness: args.harness ?? null,
           /** True when narrowed to the caller itself — then `summary.agents` is at

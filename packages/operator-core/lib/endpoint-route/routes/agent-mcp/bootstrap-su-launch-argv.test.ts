@@ -39,6 +39,11 @@ import {
 } from './bootstrap-su';
 
 describe('normalizeLaunchArgv (WI-1343)', () => {
+  it('reconstructs an opaque outside-plan argument intact and refuses a mixed plan binding', () => {
+    const planRef = " tracker: x' $ \n";
+    expect(reconstructPsuLaunchArgv({ agent: 'claude', planRef })).toContain(`--plan-ref=${planRef}`);
+    expect(() => reconstructPsuLaunchArgv({ agent: 'claude', planRef, planSlug: 'P' })).toThrow(/mutually exclusive/);
+  });
   it('accepts a clean string[] and returns it', () => {
     expect(normalizeLaunchArgv(['psu', '--no-picker', '--agent=claude'])).toEqual([
       'psu', '--no-picker', '--agent=claude',

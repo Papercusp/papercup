@@ -64,6 +64,8 @@ export const ITEM_FIELDS = [
   'paths',
   'plan',
   'plan_item',
+  // Opaque external identity: filterable, never an ordering dimension.
+  'external_plan_ref',
   // `fleet` — EI-13524. A filter-only authorization field carried by
   // `payload.fleet_slug` on work-items promoted for a fleet-owned plan lane. It lets
   // a fleet spec explicitly adopt a stamped lane without making the fleet slug a
@@ -312,6 +314,7 @@ export const RANKABLE_ITEM_FIELDS = FILTERABLE_ITEM_FIELDS.filter(
     f !== 'severity' &&
     f !== 'risk_tier' &&
     f !== 'goal' &&
+    f !== 'external_plan_ref' &&
     f !== 'fleet' &&
     f !== 'triage_gate' &&
     // P-005: a two-valued partition ('ideation'|'work'), not an ordering — filter-only.

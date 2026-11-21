@@ -12,6 +12,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
 import { COORD_READ_ROLES } from '../roles';
 import { inboxWakeKey } from '../inbox-wake';
+import { readSessionOutsidePlanRef } from '../../../session-outside-plan';
 
 export default defineTool({
   name: 'coord:whoami',
@@ -76,6 +77,7 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify({
             ...identity,
+            outsidePlanRef: await readSessionOutsidePlanRef(identity.ownerId, identity.workspaceId ?? undefined),
             fleetSlug: fleet.fleetSlug,
             fleetRole: fleet.fleetRole,
             inbox_wake_key: inboxWakeKey(identity.ownerId),

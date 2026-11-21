@@ -11,6 +11,11 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AdvSessionResumeReservation } from '../../../adv-sessions';
+const bindOutsidePlan = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('../../../session-outside-plan', async original => ({
+  ...await original<typeof import('../../../session-outside-plan')>(),
+  bindSessionOutsidePlanRef: bindOutsidePlan,
+}));
 
 vi.setConfig({ testTimeout: 15_000 });
 
@@ -106,6 +111,26 @@ async function postResumed(body: unknown): Promise<Response> {
   });
   return route.handler(req);
 }
+
+describe('outside-plan resume admission', () => {
+  it('persists a label against the authenticated existing session before acquiring the resume', async () => {
+    const response = await postResumed({ advSessionId: 42, resumeClaimKey: 'attempt', planRef: 'tracker:X' });
+    expect(response.status).toBe(200);
+    expect(bindOutsidePlan).toHaveBeenCalledWith({
+      advSessionId: 42, ownerId: 'su-resumed-test', workspaceId: 'ws-test', planRef: 'tracker:X',
+    });
+    expect(bindOutsidePlan.mock.invocationCallOrder[0]).toBeLessThan(acquireResumeMock.mock.invocationCallOrder[0]);
+  });
+  it('refuses a changed outside label and an ordinary plan binding without acquiring a resume', async () => {
+    for (const binding of [{ outsidePlanRef: 'tracker:Y' }, { planSlug: 'ordinary-plan' }]) {
+      getAdvSessionMock.mockResolvedValueOnce({ workspaceId: 'ws-test', coordOwnerId: 'su-resumed-test', ...binding });
+      const response = await postResumed({ advSessionId: 42, resumeClaimKey: 'attempt', planRef: 'tracker:X' });
+      expect(response.status).toBe(409);
+    }
+    expect(bindOutsidePlan).not.toHaveBeenCalled();
+    expect(acquireResumeMock).not.toHaveBeenCalled();
+  });
+});
 
 async function postTransition(
   suffix: 'session-resume-finalized' | 'session-resume-released',

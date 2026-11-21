@@ -21,6 +21,7 @@ export interface ClaimSpecSubject {
   tags: string[];
   paths: string[];
   plan: string | null;
+  externalPlanRef: string | null;
   planItem: string[];
   /** EI-13524: fleet lane stamp (`payload.fleet_slug`), or null when unstamped. */
   fleet: string | null;
@@ -155,6 +156,7 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     tags: [...new Set([...staticTagsOfWorkItem(item), ...topicTags])],
     paths: [...new Set([...strings(payload.paths), ...filePathPaths])],
     plan,
+    externalPlanRef: item.externalPlanRef ?? null,
     // EI-20288961198837165: mirror FIELD_MAP.plan_item's COALESCE order. The projected physical
     // column is authoritative when present (including []); payload plan-item ids are the fallback
     // for rows whose provenance was written only to JSONB.
@@ -229,6 +231,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'paths': return subject.paths;
     case 'plan': return subject.plan;
     case 'plan_item': return subject.planItem;
+    case 'external_plan_ref': return subject.externalPlanRef;
     case 'fleet': return subject.fleet;
     case 'triage_gate': return subject.triageGate;
     case 'item_class': return subject.itemClass;

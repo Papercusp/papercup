@@ -1245,6 +1245,8 @@ export interface BuildSuLaunchSpecInput {
   modes?: readonly string[] | null;
   /** Plan binding for the launch-context addendum (optional). */
   planSlug?: string | null;
+  /** Opaque outside assignment label from the session launch binding. */
+  planRef?: string | null;
   planTitle?: string | null;
   planNow?: { state: string; next: string } | null;
   /**
@@ -1432,6 +1434,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   });
   const { ambientContextAllowed } = promptPolicy;
   const hostManagedWorkflow = promptPolicy.workItemWorkflow === 'host-managed';
+  const outsidePlan = input.planRef != null;
+  if (outsidePlan && (input.planSlug || hostManagedWorkflow)) {
+    throw new Error('An outside plan reference requires work-item registration and excludes a Papercusp plan binding.');
+  }
 
   // 1. cwd — the harness project dir if scoped, else the workspace root.
   //    Matches console-launcher's superuser shell: a *given* slug must
@@ -1534,7 +1540,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
     const blueprintPersonaEnabled = await getFlag(FLAGS.SU_BLUEPRINT_PERSONA, input.workspaceId);
-    if (!blueprintPersonaEnabled && (requestedStack.layers.length > 0 || hostManagedWorkflow)) {
+    if (!blueprintPersonaEnabled && (requestedStack.layers.length > 0 || hostManagedWorkflow || outsidePlan)) {
       throw new Error('selected identity stack requires the SU blueprint persona renderer');
     }
     if (blueprintPersonaEnabled) {
@@ -1558,7 +1564,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           // launches into and the definition identity of each mode it launches with — is
           // part of the FIRST render (an inject-now layer also renders in place on every
           // full render). Derived from the same facts presence + agent_modes carry.
-          const derived = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
+          const derived = suSessionBinding({ fleetRole: input.fleetRole, modes: input.modes, outsidePlan }, modeCatalog);
           const launchBinding = normalizeStackBinding([...requestedStack.layers, ...derived.layers]);
           const selectedLayerDocs = new Map<string, import('@papercusp/orchestrator/blueprint').StackDocument>();
           for (const layer of requestedStack.layers) {
@@ -1599,6 +1605,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           const composeFrom = (dir: string) => composeSuStackSource({
             harnessDir: dir,
             binding: launchBinding,
+            outsidePlan,
             workItemWorkflow: hostManagedWorkflow ? 'host-managed' : undefined,
             resolveLayer: (layer) => selectedLayerDocs.get(`${layer.slot}:${layer.id}`) ?? null,
           }).text;
@@ -1623,7 +1630,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
             ...derived.layers.map((layer) => `${layer.slot}:${layer.id}`),
           ];
         } catch (e) {
-          if (modeCatalog || requestedStack.layers.length > 0 || hostManagedWorkflow) throw e;
+          if (modeCatalog || requestedStack.layers.length > 0 || hostManagedWorkflow || outsidePlan) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
@@ -1631,11 +1638,13 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   } catch (error) {
     // An explicit layer or selected mode is part of the requested identity.
     // Never turn its missing document into an apparently successful plain SU.
-    if (requestedStack.layers.length > 0 || modeCatalog || hostManagedWorkflow) throw error;
+    if (requestedStack.layers.length > 0 || modeCatalog || hostManagedWorkflow || outsidePlan) throw error;
     /* flag/resolve miss → fall through to today's playbook (byte-identical) */
   }
   if (hostManagedWorkflow && !suBaseText)
     throw new Error('Host-managed workflow requires the sealed SU source renderer; unfiltered fallback is refused.');
+  if (outsidePlan && !suBaseText)
+    throw new Error('Outside-plan sessions require the sealed SU source renderer.');
   // P-017/P-018 persona tier: explicit ask wins; else auto-select 'fleet' for a
   // KNOWN ≤200k-window model (the sonnet-fleet death mode: full persona +
   // catalog + guide left no headroom before the first turn). An OMITTED model
@@ -1665,7 +1674,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
       );
       const guideHarness = guideHarnessForLaunchProfile(launchProfile, harnessSlug);
       if (!guideHarness) return undefined;
-      const binding = bp.suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
+      const binding = bp.suSessionBinding({ fleetRole: input.fleetRole, modes: input.modes, outsidePlan }, modeCatalog);
       return projectGuideComposerForWearer({
         // portable-identity P-003: the SAME wearer the mid-session stack transition derives
         // (stack-binding-channel) — requested + derived layers attached over the static su
@@ -1746,6 +1755,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const launchCtx = composeLaunchContext({
     harnessSlug,
     planSlug: input.planSlug ?? null,
+    outsidePlan,
     planTitle: ambientContextAllowed ? input.planTitle ?? null : null,
     planNow: ambientContextAllowed ? input.planNow ?? null : null,
     profile: launchProfile,
