@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { build } from 'vite';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { publicAssetsPlugin } from './public-assets';
@@ -48,6 +48,32 @@ describe('operator public asset build copy', () => {
       expect(await readFile(join(root, 'public/internal', directory, 'pagefind/fragment/en.pf_fragment'), 'utf8'))
         .toBe('separately served');
     }
+  });
+
+  it('replaces a read-only public asset on a retained rebuild', async () => {
+    const { root, put } = await fixture();
+    const asset = 'monaco/vs/grammar.js';
+    const source = join(root, 'public', asset);
+    const output = join(root, 'dist', asset);
+    const retained = join(root, 'dist', 'previous-chunk.js');
+    const buildRetained = () => build({
+      root, configFile: false, logLevel: 'silent',
+      build: { emptyOutDir: false }, plugins: [publicAssetsPlugin()],
+    });
+
+    await put(asset, 'first version');
+    await chmod(source, 0o444);
+    await buildRetained();
+    expect(await readFile(output, 'utf8')).toBe('first version');
+
+    await chmod(output, 0o444);
+    await writeFile(retained, 'keep this chunk');
+    const replacement = join(root, 'next-grammar.js');
+    await writeFile(replacement, 'second version', { mode: 0o444 });
+    await rename(replacement, source);
+    await buildRetained();
+    expect(await readFile(output, 'utf8')).toBe('second version');
+    expect(await readFile(retained, 'utf8')).toBe('keep this chunk');
   });
 
   it('honors an explicit public-copy opt out', async () => {
