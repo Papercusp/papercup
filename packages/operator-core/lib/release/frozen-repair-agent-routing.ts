@@ -33,7 +33,7 @@
  * broadcasts, mints nothing, and reads exactly like a gate that never held anything.
  */
 import { createHash } from 'node:crypto';
-import type { RepairSignatureEntry } from './frozen-candidate-repair-queue';
+import type { FrozenCandidateRepairQueue, RepairSignatureEntry } from './frozen-candidate-repair-queue';
 import {
   FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX,
   FROZEN_REPAIR_LEG_CONDITION_PREFIX,
@@ -64,6 +64,9 @@ export interface FrozenRepairConvergenceRoutingInput {
   convergenceHoldMs: number;
   /** Injected so the rendered deadline is deterministic under test. */
   nowMs: number;
+  /** Complete durable intake for the existing convergence bridge. */
+  queue?: FrozenCandidateRepairQueue;
+  reason?: string;
 }
 
 /** How many failing paths are named inline before the list is summarized. */
@@ -332,8 +335,6 @@ export function buildFrozenRepairConvergenceBroadcast(
   const failing = input.failingTests.filter(
     (t) => typeof t === 'string' && t.trim() !== '',
   );
-  const named = failing.slice(0, MAX_NAMED_FAILING);
-  const remaining = failing.length - named.length;
   const remainingMs = Math.max(0, input.convergenceHoldMs - input.heldMs);
 
   const wall = input.capacitySummary?.trim()
@@ -359,15 +360,13 @@ export function buildFrozenRepairConvergenceBroadcast(
     `FROZEN CANDIDATE: ${input.candidate}\n` +
     `CONVERGE ONTO (repairHead): ${input.repairHead}\n` +
     `HELD FOR: ${renderDuration(input.heldMs)} of ${renderDuration(input.convergenceHoldMs)} ` +
-    `— ${renderDuration(remainingMs)} before the hold gives up and the candidate is retired.\n` +
+    `— ${renderDuration(remainingMs)} before escalation; the frozen candidate stays pinned.\n` +
     `ADMIT WITH: release:repair-queue { op: 'admit', paths: [<the paths you changed>] } — author on the ` +
     `shared staging checkout, dry-run first, then confirm:true. An edit that is never admitted is ` +
     `invisible to the gate (D-010: there is no repair worktree).\n` +
     `\nFAILING ON THE FROZEN CANDIDATE (${failing.length}):\n` +
-    (named.length
-      ? named.map((t) => `  · ${t}`).join('\n') +
-        (remaining > 0 ? `\n  · … +${remaining} more` : '') +
-        '\n'
+    (failing.length
+      ? failing.map((t) => `  · ${t}`).join('\n') + '\n'
       : '  (the queue recorded no failing-file list for this round)\n') +
     `\n⚠ FIX ON THE FROZEN LINEAGE, NOT AT TIP. A fix committed to staging tip is NOT in ` +
     `${shortSha(input.candidate)}, so this gate re-reds on the same file and the fix reads as ` +
@@ -377,9 +376,12 @@ export function buildFrozenRepairConvergenceBroadcast(
     `afterwards with \`dev:pipeline_position { path }\` or ` +
     `\`state:read { cell: 'gate.greenCheckpoint.candidate', as: '<path>' }\` — ancestry is not ` +
     `containment.\n\n` +
-    `This condition owns ONE work-item for this held candidate, so claim that item rather than ` +
-    `opening another. It closes on its own when the hold ends — the wall lifts, the candidate ` +
-    `goes green, or the hold budget expires and the candidate is retired.`;
+    `This condition owns ONE repair-lead handoff, with the complete intake at ` +
+    `work_items:get → payload.frozenRepairHandoff. Per-file records are coverage, never a worker fan-out. ` +
+    `Start with shared-cause triage. Delegate only measured independent causes with disjoint source edits, ` +
+    `recording membership, attempts and verification. Worker loss returns the open group and its evidence ` +
+    `to the lead or verified successor; a queued wake is not pickup. The existing gate lead alone admits ` +
+    `fixes and verifies the final gate. Exhaustion never resets the three-launch budget or retires the pin.`;
 
   return {
     conditionKey: frozenRepairConvergenceConditionKey(input.pipeline),

@@ -371,7 +371,8 @@ describe('typed dispatcher refusals (WI-6554700010015397)', () => {
     });
     await f.at(61);
     expect(f.messages[0].body).toContain(reason);
-    expect(f.messages[0].body).toContain('release:checkpoint-run');
+    expect(f.messages[0].body).toContain('complete repair-lead handoff');
+    expect(f.messages[0].body).not.toContain('Fire release:checkpoint-run');
     f.state.snap = snapshot({ lastVerdictAtMs: OPENED, lastResumeRunStartedAtMs: OPENED + 100 * MIN, runInFlight: true });
     expect((await f.at(130)).decision).toBe('not-idle');
     f.state.episode = parseEpisode(JSON.stringify(f.state.episode));

@@ -117,7 +117,7 @@ describe('buildFrozenRepairConvergenceBroadcast', () => {
     );
     expect(ev.summary).toContain('3h');
     expect(ev.body).toContain('1h of 4h');
-    expect(ev.body).toContain('3h before the hold gives up');
+    expect(ev.body).toContain('3h before escalation');
   });
 
   it('never renders a negative remainder once the budget is spent', () => {
@@ -129,7 +129,7 @@ describe('buildFrozenRepairConvergenceBroadcast', () => {
     expect(ev.body).not.toMatch(/-\d+(m|h)/);
     expect(ev.summary).not.toMatch(/-\d+(m|h)/);
     expect(ev.body).toContain('9h of 4h');
-    expect(ev.body).toContain('0m before the hold gives up');
+    expect(ev.body).toContain('0m before escalation');
   });
 
   it('renders the wall reset when the probe measured one', () => {
@@ -149,15 +149,15 @@ describe('buildFrozenRepairConvergenceBroadcast', () => {
     expect(ev.body).not.toContain('lifts at');
   });
 
-  it('bounds the named failing set instead of pasting an unbounded list', () => {
+  it('keeps the complete intake beyond the former 12-file display boundary', () => {
     const many = Array.from({ length: 30 }, (_, i) => `lib/f${i}.test.ts`);
     const ev = buildFrozenRepairConvergenceBroadcast(
       input({ failingTests: many }),
     );
     expect(ev.body).toContain('lib/f0.test.ts');
     expect(ev.body).toContain('lib/f11.test.ts');
-    expect(ev.body).not.toContain('lib/f12.test.ts');
-    expect(ev.body).toContain('+18 more');
+    for (const member of many) expect(ev.body).toContain(member);
+    expect(ev.body).not.toContain('+18 more');
     // The COUNT stays honest even though the list is bounded — a truncated list read as a
     // total is how a 30-file red gets sized as a 12-file one.
     expect(ev.body).toContain('FAILING ON THE FROZEN CANDIDATE (30)');
