@@ -21,9 +21,12 @@ its saved label and rejects a conflicting replacement. Work-item reads expose
 `externalPlanRef`, and a claim filter can select it with `field: "external_plan_ref"`.
 Historical work-item labels retain their original spelling and length.
 
-For a fleet, the leader holds its own item and creates one item for each piece, recording
-unfinished prerequisites with `blocks` links. For example, with three actual IDs and two
-ready items, issue one launch:
+For a fleet, keep the leader's own item assigned to the leader. Create each piece with
+`assign_to: 'self'` and `state: 'wip'`, then record unfinished prerequisites with `blocks`
+links. Release the pieces with `work_items:release`, starting with the dependents while
+their prerequisites still have a custodian. That release lets the scheduler recognize
+the leader's handoff when a member with the same outside reference pulls a named piece.
+With three actual IDs and two ready pieces, issue one launch.
 
 ```json
 {
