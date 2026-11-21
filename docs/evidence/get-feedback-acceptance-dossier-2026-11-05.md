@@ -1,4 +1,39 @@
-**Get-feedback acceptance dossier — preparation, updated 2026-11-08**
+# Get-feedback acceptance dossier
+
+## November 21 staging candidate
+
+**Staging is available for user testing. The plan is awaiting acceptance.** The native run and retrieval check below used `e772e45a78b193b9bb613c8ae3414c2f2c8835cc` on port 3170. The observed bundle was `1892752a51dc7952d5f44f95b47e319e1e489881d554cd8291cfc0398212e149`. Revision 93 of `get-feedback-reliability-usefulness-adoption-2026-10-03` has content hash `414e59e46e5db0cfae9053b5daf0dedd9d2d5290a83235f12a5a95548cbc5b5b`. The implementation work continues under WI-6554700010046171 and directive 3394. [Staging test instructions and completed example](/reports?sel=rpt_78202d1a-e1ab-4548-af4e-d31c8631ce6d)
+
+| Check | Evidence and scope |
+| --- | --- |
+| Public retrieval | Request 50996624 ranked six candidates, selected three and returned `retrieval_only`. |
+| Live Codex source → Codex answer | Request 50997596 closed with reply 1240513 in 3 minutes 48 seconds. The selected source hash matched the port preparation. Port `ae6ab445-ebb2-4c40-a15d-48b1b8afab28` recorded native persistence for a distinct answer owner. Parent post 1240519 retains the identities and times. The answer confirmed the existing decision to remeasure whole files. The subsequent source-claim history and its causes remain unverified. |
+| Ended Claude source → Codex answer | Request 50998123 returned `below_floor` before launch. Its eight candidates supplied 18 distinct owner and native-session pairs. The native resolver reported a different backend for each. No pair had an exact ended Claude registration for that owner and session in the workspace. Historical owner activity alone cannot establish custody of the selected transcript. |
+| Claude fork | Provider check 50985685 found two weekly quota limits and five explicit insufficient-credit responses. The latter five had unknown weekly usage. The last check gave no actionable reset time. |
+| R4 on the staging candidate | Private PostgreSQL run 24207765 passed all 19 named cases with a clean source tree. Binding 84013 records this run. The preceding run used the same case population. Changes subsequently committed to the plan-start and spec-quality sources require fresh verification. |
+| Completion source audit | Audit 40, invocation 50999702, records 41 source and test citations across 24 files for P-001 through P-005 and P-009 through P-011. It carries P-006, P-007 and the dropped P-008 from audit 39 with their original provenance. P-001 now cites the shared receipt writer. P-009 includes the production caller in `packages/agent-mcp/src/tools/goals/create.ts`. The working copy of `plans/start.ts` had additional changes beyond the cited call. The recorded blobs identify the committed candidate. |
+
+### What remains before shipment
+
+The governed review preview 50999910 returned `acceptance_bar_contract_not_ready`. The earlier preview 50997959 had R6 alone at pre-grading. The later preview and the clause evaluator also require fresh integration evidence for R3 and R10, current mutation evidence for R3/P-003 and R10, and a current R4 plan-start test. The R6 native receipt checker still requires three authentic source and answer pairs. Its prior failing run 24194662 and the successful individual Codex example retain their original outcomes.
+
+The original usefulness sample had four eligible consultations against a target of eight. Two had recorded requester decisions and two were unknown. The original cutoff, selected population, subsequent provenance addenda and independent assessments are preserved in the dated record below.
+
+After the author evidence qualifies, D-036 permits independent review with R7 pending delivery. D-040 requires a new native measurement when a measured source changes. D-044 requires the current candidate dossier. Final shipment still needs independent verification of R6 and R7, a grading against the vetted rubric, the rubric author’s subsequent decision, and a changed-behavior trace on the promoted green release artifact. There is no verified production shipment time.
+
+### November 21 update at 16:20 UTC
+
+The latest review preview, 51003335, names two outstanding author checks. **R6 needs the live native matrix. R8 needs a current committed router integration test.** The four R3, R4 and R10 clause evaluations all passed in 51003155. R8 evaluation 51003366 credits its unit tests and caught mutation. Its outstanding file is `packages/operator-core/lib/consult/relevance-router.integration.test.ts`.
+
+| Verification | Result |
+| --- | --- |
+| Committed author candidate | Private PostgreSQL tests ran from `d9e8ef60d20851bf97492ec4f8062d0bd91bb29f`. R4 row 24213318 passed the same 19 cases as 24207765. Row 24213895 passed the same 275 cases as 24181697. Both runs finished with zero skips or failures. The R4 binding is 84016. |
+| R3 and R10 mutation checks | For R3, both controls passed four cases and the changed code failed the three expected receipt assertions. The baseline, copy control and mutant rows are 24213938, 24213939 and 24213940. For R10, both controls passed three cases and the changed code failed the pending-request assertion. The rows are 24213941, 24213953 and 24213967. Bindings 84017, 84020, 84021, 84022 and 84023 retain the whole-file, targeted and mutation evidence. |
+| Ended-source ranking repair | EI-29413691133238988 traced the incorrect shortlist to preliminary matching against an unrelated earlier registration. Four PostgreSQL cases failed before the edit (24213935). After the edit, 65 integration cases and 66 unit cases passed (24213951 and 24213954). Applying the predicates to the previous request’s metadata excluded all 18 incompatible references. These are working-tree and metadata results. |
+
+The next candidate needs a committed R8 run, staged process and source verification, and a fresh native measurement under D-040. Genuine provider capacity and exact source custody still determine which native answers can be obtained. The independent grading, author decision and final promoted-release obligations above remain open.
+
+## November 8 dossier and earlier receipts
 
 Status: **not accepted; not shipped; not ready for independent acceptance**. This is the author’s retained pre-delivery dossier for GF-P007-acceptance-dossier@1 and decision D-044. It is not an independent verdict or a replacement for any BAR, native trial, cohort, author decision or shipment receipt.
 
