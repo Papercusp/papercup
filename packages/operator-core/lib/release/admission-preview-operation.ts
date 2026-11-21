@@ -450,21 +450,15 @@ export function createRoutineMetadataAdmissionPreviewStore(
       const rows = (await sql(
         `UPDATE harness_shared.routines
             SET metadata = jsonb_set(
-                  COALESCE(metadata, '{}'::jsonb),
-                  '{admission_previews}',
-                  jsonb_set(
-                    COALESCE(metadata->'admission_previews', '{}'::jsonb),
-                    ARRAY[$3::text],
-                    jsonb_set(
-                      jsonb_set(
-                        jsonb_set(metadata->'admission_previews'->$3::text, '{status}', to_jsonb('interrupted'::text)),
-                        '{settledAtMs}', to_jsonb($6::bigint)
-                      ),
-                      '{error}', to_jsonb('host restarted before preview settled'::text)
-                    ),
-                    '{verdict}', jsonb_build_object('verdict', 'interrupted', 'reason', 'host-restarted')
+                  metadata,
+                  ARRAY['admission_previews', $3::text],
+                  (metadata->'admission_previews'->$3::text) || jsonb_build_object(
+                    'status', 'interrupted',
+                    'settledAtMs', $6::bigint,
+                    'error', 'host restarted before preview settled',
+                    'verdict', jsonb_build_object('verdict', 'interrupted', 'reason', 'host-restarted')
                   ),
-                  true)
+                  false)
           WHERE ${ROUTINE_ROW_FILTER}
             AND metadata->'admission_previews'->$3::text->>'status' = 'running'
             AND COALESCE(metadata->'admission_previews'->$3::text->>'hostInstanceId', '') = COALESCE($4::text, '')
