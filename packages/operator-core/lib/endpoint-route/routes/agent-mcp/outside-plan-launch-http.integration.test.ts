@@ -15,6 +15,7 @@ it('serves the persisted outside-plan binding through current-build bootstrap an
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/routes/agent-mcp/outside-plan-launch-http.integration.test.ts',
     sourcePaths: [...scenarioPaths, 'packages/operator-core/test/private-http-workspace-preflight.ts',
+      'packages/operator-core/test/codex-budget-http-scenario.ts',
       'packages/operator-core/lib/session-outside-plan.ts', 'packages/operator-core/lib/role-launch-spec.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts',
       'packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su-resume.ts',

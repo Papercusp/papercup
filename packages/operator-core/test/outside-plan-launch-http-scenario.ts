@@ -5,13 +5,12 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { prepareCodexBudgetScenario } from './codex-budget-http-scenario';
+export { prepareCodexBudgetScenario as prepareOutsidePlanLaunchScenario } from './codex-budget-http-scenario';
 
 export async function measureOutsidePlanLaunchScenario(o: {
   workspace: string; base: string; headers: Record<string, string>; evidenceDir: string;
 }) {
   assert.match(o.workspace, /^test-runtime-/);
-  await prepareCodexBudgetScenario(o.workspace);
   const [{ getOrgPg }, { readSuperuserToken }] = await Promise.all([
     import('@papercusp/db-org'), import('../lib/superuser-token'),
   ]);
@@ -52,11 +51,14 @@ export async function measureOutsidePlanLaunchScenario(o: {
   let whoami: Record<string, unknown> | undefined;
   try {
     await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }), { timeout: 30_000 });
+    const catalog = await client.listTools();
+    assert.ok(catalog.tools.some(tool => tool.name === 'coord:whoami'), 'identity tool must be advertised');
     const result = await client.callTool({ name: 'coord:whoami', arguments: {} });
     for (const entry of result.content as Array<{ type: string; text?: string }>) {
       if (entry.type !== 'text' || !entry.text) continue;
       try { const parsed = JSON.parse(entry.text); if (parsed.ownerId === owner) whoami = parsed; } catch { /* other tool advisories */ }
     }
+    assert.deepEqual(result.structuredContent, whoami, 'structured and text identity must agree after tools/list');
   } finally { await client.close(); }
   assert.equal(whoami?.outsidePlanRef, planRef, JSON.stringify(whoami));
 

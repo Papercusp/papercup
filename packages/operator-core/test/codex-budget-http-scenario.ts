@@ -13,7 +13,15 @@ type Options = { workspace: string; base: string; headers: Record<string, string
 export async function prepareCodexBudgetScenario(workspace: string) {
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
-  assert.equal(process.env.PC_ISOLATED_RUNTIME_PROOF, '1');
+  // The proof flag belongs to the supervisor and is stripped from the child.
+  // Check the allocated runtime itself before writing its private credentials.
+  assert.equal(process.env.PAPERCUSP_POT_HOME_SLUG, workspace);
+  assert.equal(process.env.PAPERCUSP_SKIP_PG_DISCOVERY, '1');
+  const port = process.env.PAPERCUSP_PG_PORT;
+  assert.ok(port && /^\d+$/.test(port) && Number(port) > 0 && port !== '5432', 'private PG required');
+  const database = new URL(process.env.HARNESS_ADMIN_DATABASE_URL!);
+  assert.ok(['127.0.0.1', 'localhost', '[::1]'].includes(database.hostname));
+  assert.equal(database.port, port);
   assert.equal(process.env.PAPERCUSP_BACKGROUND_WORKERS, '0');
   assert.equal(process.env.PAPERCUSP_DBOS_ENABLE, '0');
   const home = process.env.HOME!;

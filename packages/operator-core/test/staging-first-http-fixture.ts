@@ -226,6 +226,9 @@ async function main(native?: NativeProofRecorder) {
   const isCodexManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'codex-managed-tools';
   const isOmpManagedTools = e.STAGING_FIRST_HTTP_SCENARIO === 'omp-managed-tools';
   const isSecurityCensus = e.STAGING_FIRST_HTTP_SCENARIO === 'security-census';
+  const isOutsidePlanLaunch = e.STAGING_FIRST_HTTP_SCENARIO === 'outside-plan-launch';
+  if (isOutsidePlanLaunch)
+    await (await import('./outside-plan-launch-http-scenario')).prepareOutsidePlanLaunchScenario(workspace);
   // A private MCP-only request needs the same disposable bearer as managed
   // tool requests, before the API host or MCP client can start.
   await preparePrivateMcpBearer(e.STAGING_FIRST_HTTP_SCENARIO);
@@ -248,7 +251,8 @@ async function main(native?: NativeProofRecorder) {
   if (!prepared && !shippedTarget) {
     console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
     try {
-      await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
+      await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000,
+        ...(isOutsidePlanLaunch ? { env: { ...e, PAPERCUSP_BUNDLE_SNAPSHOT_DIRTY: '1' } } : {}) });
     } finally {
       writeFileSync(join(evidenceDir, 'build.log'), readFileSync(join(evidenceDir, 'operator-api-build.log')));
     }
@@ -381,7 +385,7 @@ async function main(native?: NativeProofRecorder) {
   }
   const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv,
     requireBuildIdentity: isCurrentSuNative || isCodexManagedTools || isOmpManagedTools || isSecurityCensus
-      || isPrivateMcpPreflightOnly || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' });
+      || isPrivateMcpPreflightOnly || isOutsidePlanLaunch || e.STAGING_FIRST_HTTP_SCENARIO === 'private-completion-mcp' });
   if (isCurrentSuNative || isPrivateMcpPreflightOnly) {
     const preflightPath = join(evidenceDir, 'private-mcp-preflight.json');
     let expectedServingGeneration: string | null = null;
