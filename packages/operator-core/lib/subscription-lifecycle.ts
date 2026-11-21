@@ -89,11 +89,22 @@ export interface ContextEndResult {
   cancelled: number;
 }
 
-/** Project the actual owner under the same transaction and row lock as the
- *  claim, transfer or release. The fan-out reader resolves this same workspace. */
-export async function syncHeldItemSubscription(
+// A candidate can serve legacy follows before work_items or migration 1638 is
+// installed. Recheck on the same connection so applying the migration enables
+// projection immediately, including for assignments made before the upgrade.
+async function hasHeldItemSchema(sql: Sql | TransactionSql): Promise<boolean> {
+  const [schema] = await sql<{ available: boolean }[]>`
+    SELECT to_regclass('harness_shared.work_items') IS NOT NULL AND EXISTS (
+      SELECT 1 FROM pg_catalog.pg_attribute
+       WHERE attrelid = to_regclass('harness_shared.coord_entity_subscriptions')
+         AND attname = 'reasons' AND NOT attisdropped
+    ) AS available`;
+  return schema.available;
+}
+
+async function writeHeldItemSubscription(
   tx: Sql | TransactionSql, target: ObjectRef, holder: string | null,
-  workspaceId = coordScopeWorkspace(),
+  workspaceId: string,
 ): Promise<void> {
   const store = new PgEntitySubscriptionStore({
     getSql: () => tx, ensureSchema: async () => {}, workspaceId,
@@ -101,103 +112,131 @@ export async function syncHeldItemSubscription(
   await store.setHeldItemSubscriber(target, isMachineIdentity(holder) ? null : holder);
 }
 
-/** A direct base-table writer can change custody between reaper passes. Read
- *  only the addressed item. The common case is a single read with no writes.
- *  On mismatch, re-read under the same row lock normal claim writers take. */
-export async function refreshHeldItemForDelivery(target: ObjectRef): Promise<void> {
+/** Serialize projection writers on the logical reference. A deleted work row
+ * cannot be locked, and two issue rows in different harnesses share this key.
+ * Read custody after acquiring it, without waiting on physical row locks that
+ * a claim transaction may already hold while waiting for the projection. */
+async function lockHeldItemProjection(sql: Sql | TransactionSql, target: ObjectRef, workspaceId: string): Promise<void> {
+  const key = JSON.stringify(['held_item', workspaceId, target.kind, target.ref]);
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+}
+
+async function readHeldItemProjection(sql: Sql | TransactionSql, target: ObjectRef, workspaceId: string) {
+  const { issuesScopeWorkspace } = await import('./issues-engineer');
+  const { ISSUE_FAMILY_KINDS, SETTLED_WORK_ITEM_STATES } = await import('./work-items');
   const issue = target.kind === 'issue';
   const separator = target.ref.indexOf('#');
-  if (!issue && (target.kind !== 'feature' || separator < 1 || separator === target.ref.length - 1)) return;
-  const { issuesScopeWorkspace } = await import('./issues-engineer');
-  const { ISSUE_FAMILY_KINDS, isSettledWorkItemState } = await import('./work-items');
   const rowWorkspace = issue ? issuesScopeWorkspace() : activeWorkspaceId();
-  const coordWorkspace = coordScopeWorkspace();
   const id = issue ? target.ref : target.ref.slice(separator + 1);
+  // The aggregate always returns one row. Both a missing item and ambiguous
+  // physical twins have no holder, even if the two rows name the same agent.
+  const [row] = await sql<{ holder: string | null; projected: string[] }[]>`
+    SELECT CASE WHEN count(*) = 1 THEN min(w.taken_by) FILTER (
+             WHERE NOT COALESCE(w.status = ANY(${sql.array([...SETTLED_WORK_ITEM_STATES])}::text[]), false)
+           ) END AS holder,
+           ARRAY(SELECT s.subscriber_id FROM harness_shared.coord_entity_subscriptions s
+                  WHERE s.workspace_id = ${workspaceId} AND s.target_kind = 'object'
+                    AND s.target_ref = ${`${target.kind}:${target.ref}`} AND s.cancelled_at IS NULL
+                    AND 'held_item' = ANY(s.reasons)) AS projected
+      FROM harness_shared.work_items w
+     WHERE w.workspace_id = ${rowWorkspace} AND w.feature_id = ${id}
+       AND COALESCE(w.item_kind = ANY(${sql.array([...ISSUE_FAMILY_KINDS])}::text[]), false) = ${issue}::boolean
+       ${issue ? sql`` : sql`AND btrim(w.harness_slug) = ${target.ref.slice(0, separator)}`}`;
+  const holder = isMachineIdentity(row.holder) ? null : row.holder;
+  const matches = holder === null ? row.projected.length === 0 : row.projected.length === 1 && row.projected[0] === holder;
+  return { holder, matches };
+}
+
+/** Project the actual owner in the transaction that claimed or released it.
+ * Before migration, the work row retains custody for later reconciliation. */
+export async function syncHeldItemSubscription(
+  tx: Sql | TransactionSql, target: ObjectRef, holder: string | null,
+  workspaceId = coordScopeWorkspace(),
+): Promise<void> {
+  if (!await hasHeldItemSchema(tx)) return;
+  await lockHeldItemProjection(tx, target, workspaceId);
+  // A single changed issue row cannot establish custody of an unqualified ID.
+  const owner = target.kind === 'issue' ? (await readHeldItemProjection(tx, target, workspaceId)).holder : holder;
+  await writeHeldItemSubscription(tx, target, owner, workspaceId);
+}
+
+async function repairHeldItemProjection(tx: Sql | TransactionSql, target: ObjectRef, workspaceId: string): Promise<boolean> {
+  await lockHeldItemProjection(tx, target, workspaceId);
+  const { holder, matches } = await readHeldItemProjection(tx, target, workspaceId);
+  if (matches) return false;
+  await writeHeldItemSubscription(tx, target, holder, workspaceId);
+  return true;
+}
+
+/** Check a direct writer's latest custody before delivery. Matching projections
+ * use a read-only fast path. On mismatch, read again under the projection lock. */
+export async function refreshHeldItemForDelivery(target: ObjectRef): Promise<void> {
+  const separator = target.ref.indexOf('#');
+  if (target.kind !== 'issue' && (target.kind !== 'feature' || separator < 1 || separator === target.ref.length - 1)) return;
   const pg = getOrgPg().sql;
-  const family = pg`COALESCE(w.item_kind = ANY(${pg.array([...ISSUE_FAMILY_KINDS])}::text[]), false)`;
-  const source = pg`FROM harness_shared.work_items w
-    WHERE w.workspace_id = ${rowWorkspace} AND w.feature_id = ${id}
-      AND ${family} = ${issue}::boolean
-      ${issue ? pg`` : pg`AND w.harness_slug = ${target.ref.slice(0, separator)}`}`;
-  type Custody = { taken_by: string | null; status: string };
-  const holderOf = (rows: Custody[]) => {
-    // An unqualified issue with physical twins has no unambiguous holder.
-    const row = rows.length === 1 ? rows[0] : undefined;
-    return row && !isSettledWorkItemState(row.status) && !isMachineIdentity(row.taken_by) ? row.taken_by : null;
-  };
-  const snapshot = await pg<(Custody & { projected: string[] })[]>`
-    SELECT w.taken_by, w.status, ARRAY(
-      SELECT s.subscriber_id FROM harness_shared.coord_entity_subscriptions s
-       WHERE s.workspace_id = ${coordWorkspace} AND s.target_kind = 'object'
-         AND s.target_ref = ${`${target.kind}:${target.ref}`} AND s.cancelled_at IS NULL
-         AND (to_jsonb(s)->'reasons') ? 'held_item'
-    ) AS projected ${source}`;
-  if (!snapshot.length) return;
-  const holder = holderOf(snapshot);
-  const projected = snapshot[0].projected;
-  if (holder === null ? projected.length === 0 : projected.length === 1 && projected[0] === holder) return;
-  await boundedOrgTxn(async (tx) => {
-    const current = await tx<Custody[]>`SELECT w.taken_by, w.status ${source} ORDER BY w.harness_slug FOR NO KEY UPDATE OF w`;
-    if (current.length) await syncHeldItemSubscription(tx, target, holderOf(current), coordWorkspace);
-  }, { client: pg });
+  if (!await hasHeldItemSchema(pg)) return;
+  const workspaceId = coordScopeWorkspace();
+  if ((await readHeldItemProjection(pg, target, workspaceId)).matches) return;
+  await boundedOrgTxn(tx => repairHeldItemProjection(tx, target, workspaceId), { client: pg });
 }
 
 /** Recover pre-upgrade assignments and changes made directly to the base table.
- *  Completed repairs leave the mismatch set, so the next tick can resume from
- *  the database even after a restart. Never replay a claim to repair a follow. */
+ * Compare one logical object at a time, including projected holds with no work
+ * row. Repaired objects leave the mismatch set across passes and restarts. */
 export async function reconcileHeldItemSubscriptions(opts: {
   dryRun?: boolean;
   batchSize?: number;
   sql?: ReturnType<typeof getOrgPg>['sql'];
-} = {}): Promise<{ matched: number; repaired: number; more: boolean }> {
+} = {}): Promise<{ matched: number; repaired: number; more: boolean; deferred?: 'custody-schema-unavailable' }> {
   const batchSize = opts.batchSize ?? 100;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize >= Number.MAX_SAFE_INTEGER) {
     throw new Error('held-item subscription batchSize must be a positive safe integer with room for a lookahead row');
   }
   const { issuesScopeWorkspace } = await import('./issues-engineer');
-  const { familyOf, ISSUE_FAMILY_KINDS, isSettledWorkItemState, SETTLED_WORK_ITEM_STATES, workItemObjectRef } =
-    await import('./work-items');
+  const { ISSUE_FAMILY_KINDS, SETTLED_WORK_ITEM_STATES } = await import('./work-items');
   const featureWs = activeWorkspaceId();
   const issueWs = issuesScopeWorkspace();
   const coordWs = coordScopeWorkspace();
   return boundedOrgTxn(async (tx) => {
+    if (!await hasHeldItemSchema(tx)) {
+      return { matched: 0, repaired: 0, more: false, deferred: 'custody-schema-unavailable' as const };
+    }
     const issue = tx`COALESCE(w.item_kind = ANY(${tx.array([...ISSUE_FAMILY_KINDS])}::text[]), false)`;
     const scope = tx`w.workspace_id = CASE WHEN ${issue} THEN ${issueWs}::text ELSE ${featureWs}::text END`;
     const settled = tx`COALESCE(w.status = ANY(${tx.array([...SETTLED_WORK_ITEM_STATES])}::text[]), false)`;
-    // Classify actual holder IDs with the same recipient predicate as a claim.
-    // This read only selects candidates. Re-evaluate the locked row before writing.
     const holders = await tx<{ taken_by: string }[]>`
       SELECT DISTINCT w.taken_by FROM harness_shared.work_items w
        WHERE ${scope} AND w.taken_by IS NOT NULL AND NOT ${settled}`;
     const agents = holders.map(row => row.taken_by).filter(id => !isMachineIdentity(id));
-    const rows = await tx<{
-      harness_slug: string; feature_id: string; item_kind: string; taken_by: string | null; status: string;
-    }[]>`
-      WITH follows AS (
+    const rows = await tx<{ target_ref: string }[]>`
+      WITH custody AS (
+        SELECT CASE WHEN ${issue} THEN 'issue:' || w.feature_id
+                    ELSE 'feature:' || btrim(w.harness_slug) || '#' || w.feature_id END AS target_ref,
+               CASE WHEN count(*) = 1 THEN min(w.taken_by) FILTER (
+                 WHERE NOT ${settled} AND w.taken_by = ANY(${tx.array(agents)}::text[])
+               ) END AS holder
+          FROM harness_shared.work_items w WHERE ${scope}
+         GROUP BY 1
+      ), follows AS (
         SELECT target_ref, array_agg(subscriber_id ORDER BY subscriber_id) AS holders
           FROM harness_shared.coord_entity_subscriptions
          WHERE workspace_id = ${coordWs} AND target_kind = 'object' AND cancelled_at IS NULL
-           AND 'held_item' = ANY(reasons)
+           AND (target_ref LIKE 'issue:%' OR target_ref LIKE 'feature:%#%') AND 'held_item' = ANY(reasons)
          GROUP BY target_ref)
-      SELECT w.harness_slug, w.feature_id, w.item_kind, w.taken_by, w.status
-        FROM harness_shared.work_items w
-        LEFT JOIN follows f ON f.target_ref = CASE WHEN ${issue} THEN 'issue:' || w.feature_id
-          ELSE 'feature:' || btrim(w.harness_slug) || '#' || w.feature_id END
-       WHERE ${scope}
-         AND COALESCE(f.holders, ARRAY[]::text[]) <> CASE
-           WHEN NOT ${settled} AND w.taken_by = ANY(${tx.array(agents)}::text[]) THEN ARRAY[w.taken_by]
-           ELSE ARRAY[]::text[] END
-       ORDER BY w.updated_ts, w.harness_slug, w.feature_id
-       LIMIT ${batchSize + 1}
-       ${opts.dryRun ? tx`` : tx`FOR NO KEY UPDATE OF w`}`;
+      SELECT target_ref FROM custody FULL JOIN follows USING (target_ref)
+       WHERE COALESCE(follows.holders, ARRAY[]::text[]) <>
+             CASE WHEN custody.holder IS NULL THEN ARRAY[]::text[] ELSE ARRAY[custody.holder] END
+       ORDER BY target_ref LIMIT ${batchSize + 1}`;
     const batch = rows.slice(0, batchSize);
+    let repaired = 0;
     if (!opts.dryRun) {
-      for (const row of batch) {
-        const target = workItemObjectRef({ family: familyOf(row.item_kind), harness: row.harness_slug, id: row.feature_id });
-        await syncHeldItemSubscription(tx, target, isSettledWorkItemState(row.status) ? null : row.taken_by, coordWs);
+      for (const { target_ref } of batch) {
+        const separator = target_ref.indexOf(':');
+        const target = { kind: target_ref.slice(0, separator), ref: target_ref.slice(separator + 1) };
+        if (await repairHeldItemProjection(tx, target, coordWs)) repaired++;
       }
     }
-    return { matched: batch.length, repaired: opts.dryRun ? 0 : batch.length, more: rows.length > batch.length };
+    return { matched: batch.length, repaired, more: rows.length > batch.length };
   }, { client: opts.sql ?? getOrgPg().sql, readOnly: opts.dryRun === true });
 }
 

@@ -14,9 +14,12 @@ import type postgres from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, applyClaimPathReadDeps, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
-import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import { ensureCoordCapabilityTables, PgEntitySubscriptionStore } from '@papercusp/coordination/capabilities';
+import { getCoordSubscriptionStore } from './agent-tools/coordination/subscription-store';
+import { reconcileHeldItemSubscriptions, syncHeldItemSubscription } from './subscription-lifecycle';
+import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { mintLegacyFleetScopeDowngradeAdmission } from './work-item-fleet-scope-recovery';
@@ -206,6 +209,7 @@ afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`
     TRUNCATE harness_shared.work_items,
+             harness_shared.coord_entity_subscriptions,
              harness_shared.adv_sessions,
              harness_shared.session_briefs,
              harness_shared.blueprint_specifications,
@@ -220,6 +224,304 @@ beforeEach(async () => {
   leaderDispatchAdmission.fleetControlWindDownRefusal.mockReset().mockResolvedValue(null);
   leaderDispatchAdmission.leaderDispatchedAdmission.mockReset().mockResolvedValue(false);
   leaderDispatchAdmission.selfFiledFalloutAdmission.mockReset().mockReturnValue(false);
+});
+
+describe.each([
+  { family: 'feature', seed: seedFeature, ref: (id: string) => `feature:${H}#${id}` },
+  { family: 'issue', seed: seedIssue, ref: (id: string) => `issue:${id}` },
+])('held-item subscriptions for $family claims', ({ family, seed, ref }) => {
+  it('delivers to the current holder immediately after a direct transfer or release', async () => {
+    const id = `WI-direct-fanout-${family}`;
+    await seed(id, { admission: 'auto' });
+    const claimed = await wi.claimWorkItem(id, 'original-holder', { harness: H });
+    if (!claimed) throw new Error(`Could not claim ${id}`);
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, created_ts, updated_ts)
+      SELECT 'other-workspace', 'other-harness', feature_id, item_kind, status, 'foreign-holder', 0, 0
+        FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = ${H} AND feature_id = ${id}`;
+    const object = wi.workItemObjectRef(claimed);
+    await getCoordSubscriptionStore().subscribe({
+      subscriber_id: 'explicit-reader', target_kind: 'object', target_ref: ref(id),
+      reason: 'explicit', created_ts: new Date().toISOString(),
+    });
+    const recipients = async (onReceive?: (reader: string) => Promise<void>) => {
+      const received: string[] = [];
+      await fanoutForObject(object, {
+        from: 'writer', subject: ref(id), notify_kind: 'item_updated', summary: 'changed',
+      }, { sink: { appendLine: async (_surface, reader) => {
+        received.push(reader);
+        await onReceive?.(reader);
+      } } });
+      return received.sort();
+    };
+    const setHolder = (holder: string | null) => db.sql`
+      UPDATE harness_shared.work_items SET taken_by = ${holder}
+       WHERE workspace_id = 'default' AND harness_slug = ${H} AND feature_id = ${id}`;
+
+    expect(await recipients()).toEqual(['explicit-reader', 'original-holder']);
+    await setHolder('next-holder');
+    const transferred = await recipients();
+    await setHolder(null);
+    const released = await recipients();
+    await setHolder('routine:direct-writer');
+    const machine = await recipients();
+    await setHolder('in-flight-holder');
+    // The explicit follow predates this hold and is written first. Transfer
+    // while the old holder is in the resolved audience, before its own write.
+    const inFlight = await recipients(async reader => {
+      if (reader === 'explicit-reader') await setHolder('later-holder');
+    });
+    const after = await recipients();
+    await db.sql`DELETE FROM harness_shared.work_items
+      WHERE workspace_id = 'default' AND harness_slug = ${H} AND feature_id = ${id}`;
+    const deleted = await recipients();
+    expect({ transferred, released, machine, inFlight, after, deleted }).toEqual({
+      transferred: ['explicit-reader', 'next-holder'],
+      released: ['explicit-reader'],
+      machine: ['explicit-reader'],
+      inFlight: ['explicit-reader'],
+      after: ['explicit-reader', 'later-holder'],
+      deleted: ['explicit-reader'],
+    });
+  });
+
+  it('moves only the held reason on transfer and removes it on release', async () => {
+    const id = `WI-held-transfer-${family}`;
+    await seed(id, { admission: 'auto' });
+    const store = getCoordSubscriptionStore();
+    const target = { subscriber_id: 'first-holder', target_kind: 'object' as const,
+      target_ref: ref(id), created_ts: new Date().toISOString() };
+    await store.subscribe({ ...target, reason: 'explicit', delivery_mode: 'digest', follow_blockers: true });
+    await store.subscribe({ ...target, reason: 'context', context_epoch: 3 });
+    const subscribers = () => store.listTargetSubscribers('object', ref(id));
+    const first = { subscriber_id: 'first-holder', reasons: ['context', 'explicit'],
+      context_epoch: 3, delivery_mode: 'digest', follow_blockers: true };
+    const held = { ...first, reasons: ['context', 'explicit', 'held_item'] };
+
+    expect((await wi.claimWorkItem(id, 'first-holder', { harness: H }))?.assignee).toBe('first-holder');
+    expect(await subscribers()).toMatchObject([held]);
+    expect((await wi.claimWorkItem(id, 'first-holder', { harness: H }))?.assignee).toBe('first-holder');
+    expect(await wi.claimWorkItem(id, 'other-agent', { harness: H })).toBeNull();
+    expect(await wi.releaseWorkItem(id, { harness: H, expectedAssignee: 'other-agent' })).toBeNull();
+    expect(await subscribers()).toMatchObject([held]);
+
+    expect((await wi.claimWorkItem(id, 'next-holder', { harness: H, fromHolder: 'first-holder' }))?.assignee)
+      .toBe('next-holder');
+    expect(await subscribers()).toMatchObject([first, { subscriber_id: 'next-holder', reasons: ['held_item'] }]);
+    expect((await wi.releaseWorkItem(id, { harness: H, expectedAssignee: 'next-holder' }))?.assignee).toBeNull();
+    expect(await subscribers()).toMatchObject([first]);
+  });
+
+  it('subscribes the claim-next winner and excludes a machine successor', async () => {
+    const id = `WI-held-pull-${family}`;
+    await seed(id, { admission: 'auto' });
+    const filter = { harness: H, assignee: 'pull-winner' };
+    const pulled = family === 'feature' ? await wi.claimNextWorkItem(filter) : await wi.claimNextIssueWorkItem(filter, 'default');
+    expect(pulled).toMatchObject({ id, assignee: 'pull-winner' });
+    const subscribers = () => getCoordSubscriptionStore().listTargetSubscribers('object', ref(id));
+    expect(await subscribers()).toMatchObject([{ subscriber_id: 'pull-winner', reasons: ['held_item'] }]);
+    const machine = 'routine:held-subscription-test';
+    expect((await wi.claimWorkItem(id, machine, { harness: H, fromHolder: 'pull-winner' }))?.assignee).toBe(machine);
+    expect(await subscribers()).toEqual([]);
+  });
+
+  it('follows an item born assigned and ends that reason when the item settles', async () => {
+    const id = `WI-held-create-${family}`;
+    const item = await wi.createWorkItem({
+      id, kind: family === 'feature' ? 'feature' : 'task', harness: H,
+      title: 'Assigned at creation', assignee: 'creator-holder', createdBy: 'creator-holder', admission: 'auto',
+    });
+    expect(item.assignee).toBe('creator-holder');
+    const subscribers = () => getCoordSubscriptionStore().listTargetSubscribers('object', ref(id));
+    expect(await subscribers()).toMatchObject([{ subscriber_id: 'creator-holder', reasons: ['context', 'held_item'] }]);
+    const settled = await wi.setWorkItemState(id, 'done', { harness: H, by: 'creator-holder', completionRef: 'completed' });
+    expect(settled).toMatchObject({ state: 'done', assignee: null });
+    expect(await subscribers()).toMatchObject([{ subscriber_id: 'creator-holder', reasons: ['context'] }]);
+  });
+
+  it('rolls back a failed subscription write and follows only the winner of competing transfers', async () => {
+    const id = `WI-held-race-${family}`;
+    await seed(id, { admission: 'auto' });
+    await wi.claimWorkItem(id, 'incumbent', { harness: H });
+    const transfer = (successor: string) => wi.claimWorkItem(id, successor, { harness: H, fromHolder: 'incumbent' });
+    const subscribers = () => getCoordSubscriptionStore().listTargetSubscribers('object', ref(id));
+    await db.sql`ALTER TABLE harness_shared.coord_entity_subscriptions ADD CONSTRAINT reject_test_successor
+      CHECK (subscriber_id <> 'rejected-successor') NOT VALID`;
+    try {
+      await expect(transfer('rejected-successor')).rejects.toThrow('reject_test_successor');
+      expect((await wi.getWorkItem(id, H))?.assignee).toBe('incumbent');
+      expect(await subscribers()).toMatchObject([{ subscriber_id: 'incumbent', reasons: ['held_item'] }]);
+    } finally {
+      await db.sql`ALTER TABLE harness_shared.coord_entity_subscriptions DROP CONSTRAINT reject_test_successor`;
+    }
+    const claims = await Promise.all([transfer('left-successor'), transfer('right-successor')]);
+    const winners = claims.filter(claim => claim !== null);
+    expect(winners).toHaveLength(1);
+    expect((await wi.getWorkItem(id, H))?.assignee).toBe(winners[0].assignee);
+    expect(await subscribers()).toMatchObject([{ subscriber_id: winners[0].assignee, reasons: ['held_item'] }]);
+  });
+});
+
+describe('held-item subscription recovery', () => {
+  it('repairs a deleted item and an ambiguous issue once each, then follows the surviving issue', async () => {
+    const id = 'WI-twin';
+    const store = getCoordSubscriptionStore();
+    const readers = () => store.listTargetSubscribers('object', `issue:${id}`);
+    const deliver = async () => {
+      const received: string[] = [];
+      await fanoutForObject({ kind: 'issue', ref: id }, {
+        from: 'writer', subject: `issue:${id}`, notify_kind: 'item_updated', summary: 'changed',
+      }, { sink: { appendLine: async (_surface, reader) => { received.push(reader); } } });
+      return received.sort();
+    };
+    await seedIssue(id, { takenBy: 'first-holder' });
+    await seedFeature('F-deleted', { takenBy: 'feature-holder' });
+    const run = (dryRun = false) => reconcileHeldItemSubscriptions({ sql: db.sql, batchSize: 1, dryRun });
+    await run();
+    await run();
+    await store.subscribe({ subscriber_id: 'first-holder', target_kind: 'object', target_ref: `issue:${id}`,
+      created_ts: new Date().toISOString(), reason: 'explicit' });
+    const deletedRef = `feature:${H}#F-deleted`;
+    expect(await store.listTargetSubscribers('object', deletedRef)).toMatchObject([{ subscriber_id: 'feature-holder' }]);
+    expect(await readers()).toMatchObject([{ subscriber_id: 'first-holder', reasons: ['explicit', 'held_item'] }]);
+
+    await db.sql`DELETE FROM harness_shared.work_items WHERE feature_id = 'F-deleted'`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, created_ts, updated_ts)
+      VALUES ('default', 'second-harness', ${id}, 'task', 'open', 'second-holder', 0, 0)`;
+    expect(await run(true)).toEqual({ matched: 1, repaired: 0, more: true });
+    expect(await run()).toEqual({ matched: 1, repaired: 1, more: true });
+    expect(await run()).toEqual({ matched: 1, repaired: 1, more: false });
+    expect(await run()).toEqual({ matched: 0, repaired: 0, more: false });
+    expect(await store.listTargetSubscribers('object', deletedRef)).toEqual([]);
+    expect(await readers()).toMatchObject([{ subscriber_id: 'first-holder', reasons: ['explicit'] }]);
+    expect(await deliver()).toEqual(['first-holder']);
+
+    await db.sql`DELETE FROM harness_shared.work_items WHERE harness_slug = ${H} AND feature_id = ${id}`;
+    expect(await deliver()).toEqual(['first-holder', 'second-holder']);
+    expect(await run()).toEqual({ matched: 0, repaired: 0, more: false });
+  });
+
+  it('keeps legacy explicit delivery working before the custody schema is available, then includes the holder', async () => {
+    const candidate = await createFreshPgDb('held-delivery-upgrade');
+    const sql = candidate.sql;
+    h.sql = sql;
+    try {
+      await applyMigrationForTest(sql, resolve(SQL_DIR, '123-coordination-substrate.sql'));
+      await applyMigrationForTest(sql, resolve(SQL_DIR, '602-work-item-follow-blockers.sql'));
+      const targets = [
+        { kind: 'feature', ref: `${H}#F-candidate` },
+        { kind: 'issue', ref: 'WI-candidate' },
+      ];
+      for (const target of targets) {
+        await sql`INSERT INTO harness_shared.coord_entity_subscriptions
+          (workspace_id, subscriber_id, target_kind, target_ref)
+          VALUES ('default', 'legacy-reader', 'object', ${`${target.kind}:${target.ref}`})`;
+      }
+      const deliver = () => Promise.all(targets.map(async (target) => {
+        const readers: string[] = [];
+        await fanoutForObject(target, {
+          from: 'writer', subject: `${target.kind}:${target.ref}`, notify_kind: 'item_updated', summary: 'changed',
+        }, { sink: { appendLine: async (_surface, reader) => { readers.push(reader); } } });
+        return readers.sort();
+      }));
+      const coordinationOnly = await deliver();
+      await sql.unsafe(HFC_DDL);
+      await sql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, created_ts, updated_ts)
+        VALUES ('default', ${H}, 'F-candidate', 'feature', 'open', 'feature-holder', 1, 1),
+               ('default', ${H}, 'WI-candidate', 'task', 'open', 'issue-holder', 1, 1)`;
+      const beforeReasons = await deliver();
+      expect(await reconcileHeldItemSubscriptions({ sql })).toMatchObject({ deferred: 'custody-schema-unavailable' });
+      await sql.begin(async (tx) => {
+        await tx`UPDATE harness_shared.work_items SET taken_by = 'new-feature-holder' WHERE feature_id = 'F-candidate'`;
+        await syncHeldItemSubscription(tx, targets[0], 'new-feature-holder');
+      });
+      await applyMigrationForTest(sql, resolve(SQL_DIR, '1638-subscription-reasons-lifecycle.sql'));
+      const afterReasons = await deliver();
+      expect({ coordinationOnly, beforeReasons, afterReasons }).toEqual({
+        coordinationOnly: [['legacy-reader'], ['legacy-reader']],
+        beforeReasons: [['legacy-reader'], ['legacy-reader']],
+        afterReasons: [['legacy-reader', 'new-feature-holder'], ['issue-holder', 'legacy-reader']],
+      });
+    } finally {
+      h.sql = db.sql;
+      await candidate.cleanup();
+    }
+  });
+
+  it('recovers holds created before migration 1638 without replaying the claim or replacing a legacy follow', async () => {
+    const legacy = await createFreshPgDb('held-upgrade');
+    const sql = legacy.sql;
+    try {
+      await sql.unsafe(HFC_DDL);
+      for (const name of ['123-coordination-substrate.sql', '602-work-item-follow-blockers.sql']) {
+        await applyMigrationForTest(sql, resolve(SQL_DIR, name));
+      }
+      await sql`INSERT INTO harness_shared.work_items
+          (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, created_ts, updated_ts)
+        VALUES ('default', ${H}, 'F-old', 'feature', 'open', 'old-feature-holder', 1, 1),
+               ('default', ${H}, 'WI-old', 'task', 'open', 'old-issue-holder', 1, 2),
+               ('other-workspace', ${H}, 'F-other', 'feature', 'open', 'other-holder', 1, 3),
+               ('default', ${H}, 'F-machine', 'feature', 'open', 'routine:test', 1, 4),
+               ('default', ${H}, 'WI-settled', 'task', 'done', 'last-holder', 1, 5)`;
+      await sql`INSERT INTO harness_shared.coord_entity_subscriptions
+          (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, follow_blockers)
+        VALUES ('default', 'old-issue-holder', 'object', 'issue:WI-old', 'digest', true)`;
+      await applyMigrationForTest(sql, resolve(SQL_DIR, '1638-subscription-reasons-lifecycle.sql'));
+      const store = new PgEntitySubscriptionStore({ getSql: () => sql, ensureSchema: async () => {}, workspaceId: 'default' });
+      const subscribers = (target: string) => store.listTargetSubscribers('object', target);
+      const run = (dryRun = false) => reconcileHeldItemSubscriptions({ sql, batchSize: 1, dryRun });
+      expect(await run(true)).toEqual({ matched: 1, repaired: 0, more: true });
+      expect(await subscribers(`feature:${H}#F-old`)).toEqual([]);
+      expect(await run()).toEqual({ matched: 1, repaired: 1, more: true });
+      expect(await run()).toEqual({ matched: 1, repaired: 1, more: false });
+      expect(await run()).toEqual({ matched: 0, repaired: 0, more: false });
+      expect(await subscribers(`feature:${H}#F-old`)).toMatchObject([{ subscriber_id: 'old-feature-holder', reasons: ['held_item'] }]);
+      expect(await subscribers('issue:WI-old')).toMatchObject([
+        { subscriber_id: 'old-issue-holder', reasons: ['explicit', 'held_item'], delivery_mode: 'digest', follow_blockers: true },
+      ]);
+      expect(await sql`SELECT feature_id, updated_ts::int FROM harness_shared.work_items ORDER BY updated_ts`).toEqual([
+        { feature_id: 'F-old', updated_ts: 1 }, { feature_id: 'WI-old', updated_ts: 2 },
+        { feature_id: 'F-other', updated_ts: 3 }, { feature_id: 'F-machine', updated_ts: 4 },
+        { feature_id: 'WI-settled', updated_ts: 5 },
+      ]);
+      expect(await sql`SELECT subscriber_id FROM harness_shared.coord_entity_subscriptions
+        WHERE subscriber_id IN ('other-holder', 'routine:test', 'last-holder')`).toEqual([]);
+
+      // Direct base-table writers can release several items, transfer custody or
+      // settle a row while retaining its former assignee for attribution.
+      await sql`UPDATE harness_shared.work_items SET taken_by = 'replacement' WHERE feature_id = 'F-old'`;
+      await sql`UPDATE harness_shared.work_items SET status = 'done' WHERE feature_id = 'WI-old'`;
+      await run();
+      await run();
+      expect(await subscribers(`feature:${H}#F-old`)).toMatchObject([{ subscriber_id: 'replacement', reasons: ['held_item'] }]);
+      expect(await subscribers('issue:WI-old')).toMatchObject([{ subscriber_id: 'old-issue-holder', reasons: ['explicit'] }]);
+      await sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE feature_id = 'F-old'`;
+      await run();
+      expect(await subscribers(`feature:${H}#F-old`)).toEqual([]);
+    } finally {
+      await legacy.cleanup();
+    }
+  });
+
+  it.each([1, 2, 3, 7])('repairs %i previously held items across independent two-item batches', async count => {
+    const ids = Array.from({ length: count }, (_, i) => `F-recover-${count}-${i}`);
+    for (const id of [...ids].reverse()) await seedFeature(id, { takenBy: `agent-${id}` });
+    let repaired = 0;
+    do {
+      const result = await reconcileHeldItemSubscriptions({ sql: db.sql, batchSize: 2 });
+      repaired += result.repaired;
+      expect(result.more).toBe(repaired < count);
+      if (!result.more) break;
+      expect(result.repaired).toBe(2);
+    } while (repaired < count);
+    expect(repaired).toBe(count);
+    for (const id of ids) {
+      expect(await getCoordSubscriptionStore().listTargetSubscribers('object', `feature:${H}#${id}`))
+        .toMatchObject([{ subscriber_id: `agent-${id}`, reasons: ['held_item'] }]);
+    }
+  });
 });
 
 describe('claim invocation transaction corroboration', () => {

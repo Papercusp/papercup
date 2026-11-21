@@ -153,6 +153,7 @@ function nullPlanSubject(id: string): ClaimSpecSubject {
     tags: [],
     paths: [],
     plan: null,
+    externalPlanRef: null,
     planItem: [],
     fleet: null,
     triageGate: null,

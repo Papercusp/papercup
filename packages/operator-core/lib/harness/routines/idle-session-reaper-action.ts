@@ -184,7 +184,9 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   try {
     const { reconcileHeldItemSubscriptions } = await import('../../subscription-lifecycle');
     const holds = await reconcileHeldItemSubscriptions({ dryRun });
-    if (holds.matched) {
+    if (holds.deferred) {
+      console.log(`[idle-session-reaper] held-item reconciliation deferred: ${holds.deferred}`);
+    } else if (holds.matched) {
       console.log(`[idle-session-reaper] held-item subscriptions: ${dryRun ? 'would repair' : 'repaired'} ${holds.matched}` +
         (holds.more ? '; additional mismatches remain for the next tick' : ''));
     }

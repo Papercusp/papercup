@@ -65,6 +65,7 @@ import {
   type CandidateWaitSnapshot,
 } from '../pg-bounded-txn';
 import { activeWorkspaceId } from '../workspace-registry';
+import { syncHeldItemSubscription } from '../subscription-lifecycle';
 import {
   claimFloorsWhereSql,
   schedulerMaintainedReadyEnabled,
@@ -73,6 +74,7 @@ import {
   guardPlanItemSiblingClaim,
   armWorkItemHolderInterests,
   featureRowToWorkItem,
+  workItemObjectRef,
   familyOf,
   FEATURE_COLS,
   ISSUE_FAMILY_CLAIMABLE_STATES,
@@ -356,6 +358,14 @@ const FIELD_MAP: Record<string, FieldMap> = {
   // ⚠ NULLABLE and mostly unstamped, so a `not`/`!=` leaf silently drops every unstamped
   // row (WI-5181). A goal lane wants the positive `=`/`in` form.
   goal: { col: (sql) => sql`goal_id`, kind: 'scalar-text' },
+  // Same typed payload field used by both WorkItem family readers. Never cap
+  // or normalize an external identity, including historical references >200.
+  external_plan_ref: {
+    col: (sql) => sql`CASE WHEN jsonb_typeof(payload->'externalPlanRef') = 'string'
+      AND payload->>'externalPlanRef' <> ''
+      THEN payload->>'externalPlanRef' END`,
+    kind: 'scalar-text',
+  },
   est_cost: { col: (sql) => sql`expected_cost_cents`, kind: 'scalar-num' },
   redundancy: { col: (sql) => sql`COALESCE(redundancy, 1)`, kind: 'scalar-num' },
   assignee: { col: (sql) => sql`taken_by`, kind: 'scalar-text' },
@@ -3395,7 +3405,7 @@ export async function getNextWorkItem(
     );
     let candidateWaitSnapshot: CandidateWaitSnapshot | undefined;
     try {
-      const rows = await boundedOrgTxn(
+      return await boundedOrgTxn(
         async (tx) => {
           // Compile against the TRANSACTION client so the fragments belong to the connection
           // that carries the SET LOCAL statement_timeout.
@@ -3485,14 +3495,15 @@ export async function getNextWorkItem(
           } else {
             rows = await updateCandidate();
           }
-          if (!rows[0]) return rows;
-          return (await guardPlanItemSiblingClaim(tx, rows[0], {
+          const row = rows[0];
+          if (!row || !await guardPlanItemSiblingClaim(tx, row, {
             workspaceId: ws,
             assignee: bee.assignee,
             family: 'feature',
-          }))
-            ? rows
-            : [];
+          })) return null;
+          const claimed = featureRowToWorkItem(row);
+          await syncHeldItemSubscription(tx, workItemObjectRef(claimed), claimed.assignee);
+          return claimed;
         },
         {
           client: sql,
@@ -3501,7 +3512,6 @@ export async function getNextWorkItem(
           statementTimeoutMs,
         },
       );
-      return rows[0] ? featureRowToWorkItem(rows[0]) : null;
     } catch (error) {
       if (error instanceof OrgTxnTimeoutError && candidateWaitSnapshot) {
         error.candidateWaitSnapshot = candidateWaitSnapshot;

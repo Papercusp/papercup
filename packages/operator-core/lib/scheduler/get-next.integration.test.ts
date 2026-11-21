@@ -40,6 +40,7 @@ import { OrgTxnTimeoutError } from '../pg-bounded-txn';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { acknowledgeActivation, desiredActivation, prepareActivation } from '../session-activation';
+import { getCoordSubscriptionStore } from '../agent-tools/coordination/subscription-store';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -986,6 +987,11 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
       rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
     });
     expect((await getNextWorkItem(s, BEE, { harness: H }))?.workItem.id).toBe('F-exact');
+    const subscriptions = getCoordSubscriptionStore();
+    expect(await subscriptions.listTargetSubscribers('object', `feature:${H}#F-exact`)).toMatchObject([
+      { subscriber_id: BEE.assignee, reasons: ['held_item'] },
+    ]);
+    expect(await subscriptions.listTargetSubscribers('object', `feature:${H}#RT-older`)).toEqual([]);
   });
 
   // enterprise-data-sources-2026-10-01 D-022 point 2: chunks are excluded by the STATUS

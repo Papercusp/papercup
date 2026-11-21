@@ -399,6 +399,7 @@ const base: ClaimSpecSubject = {
   tags: ['scheduler', 'non-p2p'],
   paths: ['packages/operator-core/lib/scheduler/get-next.ts'],
   plan: 'bug-drain',
+  externalPlanRef: null,
   planItem: ['P-016'],
   fleet: null,
   triageGate: null,
