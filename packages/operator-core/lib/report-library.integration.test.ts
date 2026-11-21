@@ -41,6 +41,7 @@ import {
   deriveGoalReportNotification, goalReportDeliveryId,
 } from './goal-owner-report-reference';
 import type { OrgTestDb } from '../test/_org-test-db';
+import { GOAL_REPORT_PAGE_SIZE, readGoalReportPage } from './goal-related-reports';
 import {
   REPORT_BODY_MAX_BYTES,
   ReportBodyTooLargeError,
@@ -88,6 +89,59 @@ const AGENT_1: ReportOrigin = {
 };
 
 describe('report_library store (real PG)', () => {
+  async function goalReportFixture() {
+    const workspaceId = nextWs();
+    const goalId = `goal-${workspaceId}`;
+    const plan = 'related-plan';
+    const item = 'WI-42';
+    const recipient = { workspaceId, viewer: { ownerId: 'receiving-holder', potSlug: 'pot-a' } };
+    await db.adminSql`INSERT INTO harness_shared.goals (workspace_id, id, install_slug, title)
+      VALUES (${workspaceId}, ${goalId}, 'pot-a', 'Report context fixture')`;
+    await db.adminSql`INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug, content, content_hash, version, origin, goal_id)
+      VALUES (${workspaceId}, 'pot-a', ${plan}, 'Governing decision', md5('Governing decision'), 1, 'local', ${goalId})`;
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, item_kind, title, status, source_plan_slug)
+      VALUES (${workspaceId}, 'pot-a', ${item}, 'task', 'Open blocker', 'wip', ${plan})`;
+    return { goalId, plan, item, workspaceId, recipient };
+  }
+
+  async function followGoalReports(f: Awaited<ReturnType<typeof goalReportFixture>>) {
+    const entries = [];
+    let cursor: string | undefined;
+    do {
+      const page = await readGoalReportPage(db.adminSql, f.goalId, f.recipient, cursor);
+      if (!page.entries) throw new Error(`Report page unavailable: ${page.status}`);
+      entries.push(...page.entries);
+      cursor = page.next?.args.reportCursor;
+    } while (cursor);
+    return entries;
+  }
+
+  it('resolves current and pinned historical report editions as the receiving holder', async () => {
+    const f = await goalReportFixture();
+    const publish = (title: string, options: Partial<Parameters<typeof publishReport>[1]> = {}) =>
+      publishReport(db.adminSql, { workspaceId: f.workspaceId, title, summary: title, ...options }, AGENT_1);
+    const pin = await publish('Original blocker finding', { visibility: 'pot' });
+    const fix = await publish('Corrected blocker finding', { supersedes: pin.reportId, visibility: 'pot' });
+    const plan = await publish('Plan audit', { subject: { kind: 'plan', ref: f.plan } });
+    const item = await publish('Item evidence', { subject: { kind: 'work_item', ref: f.item } });
+    const goal = await publish('Recent status digest', { kind: 'status-digest', subject: { kind: 'goal', ref: f.goalId } });
+    const hidden = await publish('Private audit', { visibility: 'owner', subject: { kind: 'goal', ref: f.goalId } });
+    const retired = await publish('Retired subject edition', { subject: { kind: 'goal', ref: f.goalId } });
+    await retireReport(db.adminSql, f.workspaceId, retired.reportId);
+    await db.adminSql`UPDATE harness_shared.work_items SET summary = ${`See report:${pin.reportId} and [hidden](/reports?sel=${hidden.reportId}).`}
+      WHERE workspace_id = ${f.workspaceId} AND feature_id = ${f.item}`;
+    const entries = await followGoalReports(f);
+    expect(entries.map(entry => entry.reportId)).toEqual([pin.reportId, fix.reportId, item.reportId, plan.reportId, goal.reportId]);
+    expect(entries[0]).toMatchObject({ sourceRef: f.item, disposition: 'superseded', relationship: 'cited by work_item' });
+    expect(entries[1]).toMatchObject({ finding: fix.summary, disposition: 'current' });
+    expect(new Date(entries[1].publishedAt).toISOString()).toBe(new Date(fix.publishedAt).toISOString());
+    expect(JSON.stringify(entries)).not.toContain(hidden.reportId);
+    const outsider = await followGoalReports({ ...f, recipient: { ...f.recipient, viewer: { ownerId: 'other', potSlug: 'other' } } });
+    expect(outsider.map(entry => entry.reportId)).toEqual([item.reportId, plan.reportId, goal.reportId]);
+  });
+
   it('current-edition evidence refuses a private successor while historical exact-ID reads still resolve', async () => {
     const workspaceId = nextWs();
     const viewer = { ownerId: 'unrelated-agent' };

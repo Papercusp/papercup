@@ -165,6 +165,24 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     });
   });
 
+  it('delivers governing work and eligible report editions in the replacement holder brief', async () => {
+    const d = deps();
+    const history = await d.readHistory('goal-1', { workspaceId: 'ws', viewer: {} });
+    const reportId = 'rpt_replacement-edition';
+    const entry = { reportId, title: 'Audit', finding: 'The decision applies to the blocker.',
+      findingTruncated: false, publishedAt: '2026-11-10T12:00:00Z', relationship: 'attached to plan',
+      sourceRef: 'current-plan', disposition: 'current' as const,
+      read: { tool: 'reports:get' as const, args: { id: reportId } } };
+    d.readHistory = vi.fn().mockResolvedValue({ ...history,
+      relatedReports: { status: 'available', total: 1, omitted: 0, next: null, entries: [entry] } });
+    await launchGoalHolderSession({ workspaceId: 'ws', goalId: 'goal-1', harnessSlug: 'pot-a',
+      launcherOwnerId: 'private-report-author', kickoffPrompt: 'Retain decision D-001 and the open blocker.' }, d);
+    const delivered = d.launch.mock.calls[0][0].kickoffPrompt as string;
+    expect(delivered).toContain('Retain decision D-001 and the open blocker.');
+    expect(JSON.parse(delivered.split('\n').find(line => line.includes('"relatedReports"'))!).relatedReports.entries).toEqual([entry]);
+    expect(d.readHistory).toHaveBeenCalledExactlyOnceWith('goal-1', { workspaceId: 'ws', viewer: { potSlug: 'pot-a' } });
+  });
+
   it('threads the kickoff brief to launch-su as the first turn (P-017)', async () => {
     const d = deps();
     await launchGoalHolderSession(

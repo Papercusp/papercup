@@ -592,12 +592,39 @@ describe('goals:start — the happy path', () => {
       const env = (spawnConsoleMock.mock.calls[0][0] as { envelope: { env: Record<string, string> } }).envelope.env;
 
       expect(readHistory).toHaveBeenCalledTimes(1);
-      expect(readHistory).toHaveBeenCalledWith(goalId);
+      expect(readHistory).toHaveBeenCalledWith(goalId, undefined, {
+        workspaceId: 'ws-test', viewer: { ownerId: dataOf(res).agent_owner_id, potSlug: 'papercusp' },
+      });
       expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('GOAL HISTORY — own and bounded descendant evidence');
       expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('goal-start-handler-history-fingerprint');
       expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain('PRODUCTION HANDLER HISTORY MARKER');
     } finally {
       readHistory.mockRestore();
+    }
+  });
+
+  it('delivers cited and related report editions in the kickoff brief', async () => {
+    const priorAttempts = await import('../../prior-attempt-context');
+    const reportId = 'rpt_first-holder-edition';
+    const entry = {
+      reportId, title: 'Blocked work audit', finding: 'The governing decision resolves the blocker.',
+      findingTruncated: false, publishedAt: '2026-11-10T12:00:00Z', relationship: 'cited by work_item',
+      sourceRef: 'WI-42', disposition: 'current' as const, read: { tool: 'reports:get' as const, args: { id: reportId } },
+    };
+    const reader = vi.spyOn(priorAttempts, 'readGoalHistoryContext').mockResolvedValueOnce({
+      status: 'empty', brief: null, recovery: { tool: 'goals:get', args: { id: 'test-goal', detail: 'full' } },
+      relatedReports: { status: 'available', total: 1, omitted: 0, next: null, entries: [entry] },
+    });
+    try {
+      const result = dataOf(await call());
+      const { envelope } = spawnConsoleMock.mock.calls[0][0] as { envelope: { env: Record<string, string> } };
+      const line = envelope.env.PAPERCUSP_KICKOFF_PROMPT.split('\n').find(text => text.includes('"relatedReports"'));
+      expect(JSON.parse(line!).relatedReports.entries).toEqual([entry]);
+      expect(reader).toHaveBeenCalledWith(result.id, undefined, {
+        workspaceId: 'ws-test', viewer: { ownerId: result.agent_owner_id, potSlug: 'papercusp' },
+      });
+    } finally {
+      reader.mockRestore();
     }
   });
 
