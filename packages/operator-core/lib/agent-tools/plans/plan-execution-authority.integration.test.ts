@@ -704,6 +704,25 @@ describe('canonical successful-start revision authority (real PG)', () => {
     expect(await checkExecutionPlan(binding, scope.workspaceId)).toEqual([]);
   });
 
+  it('tracks the individual fresh start-proof reads through the continuation guard', async () => {
+    await issue();
+    const completed: string[] = [];
+    const pending: string[] = [];
+    const cleared: string[] = [];
+    const observe = Object.assign(({ stage }: { stage: string }) => { completed.push(stage); }, {
+      trackPending(stage: string) {
+        pending.push(stage);
+        return () => { cleared.push(stage); };
+      },
+    });
+
+    expect(await checkExecutionPlan(binding, scope.workspaceId, observe)).toEqual([]);
+    const proofReads = ['start_proof_catalog', 'start_proof_graph', 'start_proof_row'];
+    for (const stages of [pending, cleared, completed]) {
+      expect(stages.filter(stage => stage.startsWith('start_proof_')).sort()).toEqual(proofReads);
+    }
+  });
+
   it('reads an existing offset-formatted receipt without losing microseconds or granting an orphaned start', async () => {
     await db.sql`UPDATE harness_shared.harness_plans SET created_at='2026-11-05T18:19:03.691104Z'`;
     await issue();

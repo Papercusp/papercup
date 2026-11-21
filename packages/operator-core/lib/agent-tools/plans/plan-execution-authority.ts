@@ -466,10 +466,16 @@ export async function recordPlanExecutionStart(scope: ExecutionStartScope, ident
   });
 }
 
+type StartProofRead = 'row' | 'graph' | 'catalog';
+
 /** Read the exact same-scope reference; caller properties and rationale grant nothing. */
-export async function readPlanExecutionStart(binding: ExecutionPlanBinding, workspaceId: string): Promise<string[]> {
+export async function readPlanExecutionStart(
+  binding: ExecutionPlanBinding,
+  workspaceId: string,
+  measureRead: <T>(stage: StartProofRead, read: () => Promise<T>) => Promise<T> = (_stage, read) => read(),
+): Promise<string[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ row: ExecutionPlanRow; snapshot: string | null }[]>`
+  const rows = await measureRead('row', async () => sql<{ row: ExecutionPlanRow; snapshot: string | null }[]>`
     SELECT to_jsonb(p) - ARRAY(SELECT attname::text FROM pg_attribute
       WHERE attrelid='harness_shared.harness_plans'::regclass AND attgenerated<>'' AND NOT attisdropped) AS row,
       r.content_snapshot AS snapshot
@@ -477,7 +483,7 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
       LEFT JOIN harness_shared.plan_revisions r ON r.workspace_id=p.workspace_id
         AND r.harness_slug=p.harness_slug AND r.plan_slug=p.plan_slug AND r.seq=p.execution_start_revision_seq
      WHERE p.workspace_id=${workspaceId} AND p.plan_slug=${binding.planSlug}
-       AND (${binding.harnessSlug}::text IS NULL OR p.harness_slug=${binding.harnessSlug})`;
+       AND (${binding.harnessSlug}::text IS NULL OR p.harness_slug=${binding.harnessSlug})`);
   if (rows.length !== 1) return [rows.length ? 'plan_scope_ambiguous' : 'bound_plan_missing'];
   const { row, snapshot } = rows[0]!;
   if (!['ready', 'active', 'awaiting-acceptance'].includes(String(row.status))) return [`plan_status:${row.status ?? 'unknown'}`];
@@ -492,10 +498,10 @@ export async function readPlanExecutionStart(binding: ExecutionPlanBinding, work
     // read with the graph read so their round trips do not serialize on the
     // native guard's deadline. Keep the meaning check first for refusal precedence.
     const [lines, inputs] = await Promise.allSettled([
-      readPlanLineItems(sql,
+      measureRead('graph', () => readPlanLineItems(sql,
         { workspaceId, harnessSlug: String(row.harness_slug), slug: binding.planSlug },
-        { items: row.items, content: row.content }),
-      normalizeExecutionTimestamps(sql, [receipt.inputs, executionPlanInputs(row)]),
+        { items: row.items, content: row.content })),
+      measureRead('catalog', () => normalizeExecutionTimestamps(sql, [receipt.inputs, executionPlanInputs(row)])),
     ]);
     if (lines.status === 'rejected') return ['plan_start_revision_invalid'];
     if (planExecutionMeaning(receipt.body) !== planExecutionMeaning(renderPlanLines(row.content, lines.value)))
