@@ -7,6 +7,8 @@
     "packages/operator-core/lib/plan-items/plan-item-claim-authority-ops.ts",
     "packages/operator-core/lib/agent-tools/plan-items/index.ts",
     "packages/operator-core/lib/agent-tools/work_items/_create-core.ts",
+    "packages/operator-core/lib/issues-engineer.ts",
+    "packages/operator-core/lib/work-items.ts",
     "libs/papercusp/libs/db/sql/141-plan-item-claims.sql",
     "libs/papercusp/libs/db/sql/165-fleet-assignment-view-and-change-feed.sql",
     "libs/papercusp/libs/db/sql/525-fleet-assignment-work-items-notify.sql",
@@ -20,6 +22,7 @@
     "libs/papercusp/libs/db/src/store-identity.ts",
     "packages/operator-core/lib/resource-profile.ts",
     "libs/generic/resource-profile/src/index.ts",
+    "libs/generic/resource-profile/src/cgroup-memory.ts",
     "packages/operator-core/lib/embedded-pg-discovery.ts",
     "packages/operator-core/lib/background-workers.ts",
     "libs/generic/embedded-pg-discovery/src/index.ts",
@@ -976,7 +979,7 @@
     },
     {
       "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"deriveResourceProfile\",\"helper-edge\",\"b7f33c44b6c523aa7ce202b0691280d7927488a46fa1dab9bd6fa9217b409295\"]#1",
-      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "sourceSha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
       "statementSha256": "b7f33c44b6c523aa7ce202b0691280d7927488a46fa1dab9bd6fa9217b409295",
       "sourceProofs": [
         {
@@ -989,7 +992,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1009,11 +1016,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1030,7 +1038,7 @@
           ]
         },
         {
-          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "edge": "source:libs/generic/resource-profile/src/index.ts#43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
           "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
           "evidenceRefs": [
             "source:libs/generic/resource-profile/src/index.ts",
@@ -1041,7 +1049,7 @@
     },
     {
       "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"deriveResourceProfile\",\"helper-edge\",\"c12b1865c7e9c6a24cd3b764fe2e484fd57530833298388420987df63ef4d165\"]#1",
-      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "sourceSha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
       "statementSha256": "c12b1865c7e9c6a24cd3b764fe2e484fd57530833298388420987df63ef4d165",
       "sourceProofs": [
         {
@@ -1054,7 +1062,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1074,11 +1086,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1095,7 +1108,7 @@
           ]
         },
         {
-          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "edge": "source:libs/generic/resource-profile/src/index.ts#43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
           "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
           "evidenceRefs": [
             "source:libs/generic/resource-profile/src/index.ts",
@@ -1106,7 +1119,7 @@
     },
     {
       "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"getResourceProfile\",\"helper-edge\",\"363b01e073ce7f50477d11995447a8c4c0cae5aca432da25579c3eb2ec778d7d\"]#1",
-      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "sourceSha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
       "statementSha256": "363b01e073ce7f50477d11995447a8c4c0cae5aca432da25579c3eb2ec778d7d",
       "sourceProofs": [
         {
@@ -1119,7 +1132,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1139,11 +1156,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1160,7 +1178,7 @@
           ]
         },
         {
-          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "edge": "source:libs/generic/resource-profile/src/index.ts#43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
           "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
           "evidenceRefs": [
             "source:libs/generic/resource-profile/src/index.ts",
@@ -1171,7 +1189,7 @@
     },
     {
       "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"getResourceProfile\",\"helper-edge\",\"a78031817aed1d41ca5787e7779e83482c41e96dcc25c0dc2009db51bdfc2426\"]#1",
-      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "sourceSha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
       "statementSha256": "a78031817aed1d41ca5787e7779e83482c41e96dcc25c0dc2009db51bdfc2426",
       "sourceProofs": [
         {
@@ -1184,7 +1202,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1204,11 +1226,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1225,7 +1248,7 @@
           ]
         },
         {
-          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "edge": "source:libs/generic/resource-profile/src/index.ts#43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
           "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
           "evidenceRefs": [
             "source:libs/generic/resource-profile/src/index.ts",
@@ -1236,7 +1259,7 @@
     },
     {
       "siteId": "[\"libs/generic/resource-profile/src/index.ts\",\"maxClusterWorkersForConnBudget\",\"helper-edge\",\"bfc729e88be16cafa09d3625bc49f944a4258d34441a09d66ea0d8ec373c02e6\"]#1",
-      "sourceSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+      "sourceSha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
       "statementSha256": "bfc729e88be16cafa09d3625bc49f944a4258d34441a09d66ea0d8ec373c02e6",
       "sourceProofs": [
         {
@@ -1249,7 +1272,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1269,11 +1296,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1290,7 +1318,7 @@
           ]
         },
         {
-          "edge": "source:libs/generic/resource-profile/src/index.ts#56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+          "edge": "source:libs/generic/resource-profile/src/index.ts#43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa",
           "reason": "Resolved by inspection of the exact resource-profile/configuration closure described above; every dependency byte is pinned in sourceProofs.",
           "evidenceRefs": [
             "source:libs/generic/resource-profile/src/index.ts",
@@ -1314,7 +1342,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1334,11 +1366,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1379,7 +1412,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1399,11 +1436,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1444,7 +1482,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1464,11 +1506,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1509,7 +1552,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1529,11 +1576,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1574,7 +1622,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1594,11 +1646,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1639,7 +1692,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1659,11 +1716,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1704,7 +1762,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1724,11 +1786,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1769,7 +1832,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1789,11 +1856,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1834,7 +1902,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1854,11 +1926,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1899,7 +1972,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1919,11 +1996,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -1964,7 +2042,11 @@
         },
         {
           "path": "libs/generic/resource-profile/src/index.ts",
-          "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+          "sha256": "43e63493e04bb8b46e90fd805c6048d59a989b3a19ce99d740b3bd99dd4ba4aa"
+        },
+        {
+          "path": "libs/generic/resource-profile/src/cgroup-memory.ts",
+          "sha256": "5f65d699e921d119827dda390f92c2b31b0fcdbca52eb21b99e9a38955bcecce"
         },
         {
           "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
@@ -1984,11 +2066,12 @@
         }
       ],
       "disposition": "metadata-only",
-      "reason": "Inspected the exact resource-profile/configuration call closure: local memoization and numeric derivation; node:os reads; environment predicates; canonical operator-env/discovery JSON reads and process/port-existence checks. configureResourceProfile only merges local scalar configuration. This closure performs no SQL, claim, lease or lifecycle mutation and starts no worker, timer or callback. The boundedOrgPoolMax argument pgbouncerEnabled follows the same inspected profile/environment path. Pins include the caller, binding, generic calculations, both discovery layers, environment parser and background-role predicates. Approval covers only this exact call; adjacent database construction, timeout/diagnostic/telemetry callbacks, getters, notification and advancing writers remain unresolved.",
+      "reason": "Inspected the exact resource-profile and configuration call closure. On Linux with auto-detected embedded PostgreSQL memory, the cgroup reader invokes a synchronous readFileSync callback for proc metadata and cgroup hard-limit files. Path parsing and numeric folding feed local memory and pool sizing. The other paths read OS, environment and database discovery metadata or update local memoization. These calls do not write claims, leases or lifecycle state. Adjacent database construction, diagnostic callbacks and advancing writers remain unresolved.",
       "evidenceRefs": [
         "source:libs/papercusp/libs/db/src/connection.ts",
         "source:packages/operator-core/lib/resource-profile.ts",
         "source:libs/generic/resource-profile/src/index.ts",
+        "source:libs/generic/resource-profile/src/cgroup-memory.ts",
         "source:packages/operator-core/lib/embedded-pg-discovery.ts",
         "source:packages/operator-core/lib/background-workers.ts",
         "source:libs/generic/embedded-pg-discovery/src/index.ts",
@@ -5278,6 +5361,10 @@
   ],
   "pendingAdvancing": [
     {
+      "siteId": "[\"packages/operator-core/lib/issues-engineer.ts\",\"claimIssue::<callback>::<callback>\",\"sql\",\"35ccd1e2f703119603d4c522f0fb69ac6378401587a6f498c22f97d9ddbe74d2\"]#1",
+      "reason": "The named issue claim updates assignee through the engineer_issues view, including permitted holder replacement. Phase admission still needs verification through the view trigger's base-row compare-and-set."
+    },
+    {
       "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"acquireClaimLocal\",\"sql\",\"3ce25ba62c4382823cf305c3eb650675ecca4082637b11de3aed70cfcbc23e44\"]#1",
       "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
     },
@@ -5304,6 +5391,18 @@
     {
       "siteId": "[\"packages/operator-core/lib/plan-items/claims.ts\",\"renewOwnerActivityClaims\",\"sql\",\"c0a8154299693aa2ee253664f2cda5d4fab9d1d9500913324e951434fa8cf233\"]#1",
       "reason": "Grants, replaces or renews execution authority; source classification does not supply a verified transactional guard or real race matrix."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimNextIssueWorkItem::<callback>::<callback>::<callback>::<callback>\",\"sql\",\"8e99d6b933d26b9f55735c0abcbb86e67d3fa6a432cb5fa3a0bf881a389a45b1\"]#1",
+      "reason": "Issue self-selection sets taken_by on the selected base work_items row. The selected row and current phase authority must be verified together at this transaction boundary."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimNextWorkItem::claimFeatureRow::<callback>\",\"sql\",\"a94359d90609f94a665930df1be2d0774d1d6024d26a7a275c6d22cc1c111717\"]#1",
+      "reason": "Feature self-selection sets taken_by through harness_features_consolidated. Transactional phase admission and its race cases need proof for the selected row on this branch."
+    },
+    {
+      "siteId": "[\"packages/operator-core/lib/work-items.ts\",\"claimWorkItemInTransaction::<callback>::<callback>\",\"sql\",\"5ffd5c9965ff0980c270a6086dc35b880f0ebbb623e1983f91496512b24adcc0\"]#1",
+      "reason": "The named feature claim sets taken_by through harness_features_consolidated, including permitted holder replacement. Verify current phase authority inside the compare-and-set while preserving the existing holder predicates."
     }
   ]
 }
