@@ -6,10 +6,56 @@ import { execFileSync } from 'node:child_process';
 import { inspectScopedFeasibilitySelection, readScopedFeasibilityQuestion,
   scopedFeasibilityAuditSchema } from './plan-execution-authority';
 import { discoveryDeclarationSchema, scopedFeasibilityExperimentSchema } from './plan-declarations';
-import { checkScopedFeasibilityCall, readScopedFeasibilityPatch, readScopedFeasibilityTestRoutes,
-  renderScopedFeasibilityCommand, type PlanExecutionGuardInput } from './plan-execution-guard';
+import { checkPlanExecutionGuard, checkScopedFeasibilityCall, readScopedFeasibilityPatch, readScopedFeasibilityTestRoutes,
+  renderScopedFeasibilityCommand, type ExecutionPlanBinding, type PlanExecutionGuardInput } from './plan-execution-guard';
 
 import { readScopedFeasibilityHistory, type ScopedFeasibilityHistoryRow } from './plan-execution-authority';
+
+describe('selected plan binding reads', () => {
+  it.each([
+    { name: 'first binding refused', firstBlockers: ['first-lane-refused'], secondBlockers: [] },
+    { name: 'later binding revoked during warmup', firstBlockers: [], secondBlockers: ['plan_execution_start_stale'] },
+    { name: 'all bindings admitted', firstBlockers: [], secondBlockers: [] },
+  ])('warms the next binding and reads authority in order when $name', async ({ firstBlockers, secondBlockers }) => {
+    const bindings = ['first', 'second'].map(planSlug => ({ planSlug, harnessSlug: 'project' }));
+    const deadline = performance.now() + 10_000;
+    let finishFirst!: (blockers: string[]) => void;
+    const first = new Promise<string[]>(resolve => { finishFirst = resolve; });
+    let currentSecondBlockers: string[] = [];
+    const warmPlanReadiness = vi.fn(async (_binding: ExecutionPlanBinding, _workspace: string, _deadline: number) =>
+      currentSecondBlockers);
+    const checkPlan = vi.fn(async (binding: ExecutionPlanBinding, _workspace: string,
+      _observe?: unknown, _deadline?: number) => {
+      return binding.planSlug === 'first' ? first : currentSecondBlockers;
+    });
+    const attempt = checkPlanExecutionGuard({ ownerId: 'actor', workspaceId: 'workspace',
+      toolName: 'apply_patch', args: {}, readinessDeadlineAtMs: deadline }, {
+      readBindings: async () => bindings,
+      checkPlan,
+      warmPlanReadiness,
+    });
+
+    try {
+      await vi.waitFor(() => expect(warmPlanReadiness).toHaveBeenCalledExactlyOnceWith(bindings[1], 'workspace', deadline));
+      expect(checkPlan.mock.calls.map(([binding]) => binding.planSlug)).toEqual(['first']);
+      expect(await warmPlanReadiness.mock.results[0]!.value).toEqual([]);
+      currentSecondBlockers = secondBlockers;
+    } finally {
+      finishFirst(firstBlockers);
+    }
+    const result = await attempt;
+    if (firstBlockers.length) {
+      expect(result).toMatchObject({ planSlug: 'first', blockers: firstBlockers });
+      expect(checkPlan.mock.calls.map(([binding]) => binding.planSlug)).toEqual(['first']);
+    } else {
+      expect(result).toEqual(secondBlockers.length
+        ? expect.objectContaining({ planSlug: 'second', blockers: secondBlockers }) : null);
+      expect(checkPlan.mock.calls.map(([binding]) => binding.planSlug)).toEqual(['first', 'second']);
+    }
+    expect(checkPlan.mock.calls.every(([, workspace, , observedDeadline]) =>
+      workspace === 'workspace' && observedDeadline === deadline)).toBe(true);
+  });
+});
 
 describe('scoped feasibility immutable history', () => {
   const scope = { workspaceId: 'workspace', harnessSlug: 'project', planSlug: 'draft' };

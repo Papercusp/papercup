@@ -254,6 +254,7 @@ export interface PlanExecutionGuardDeps {
     signal?: AbortSignal) => Promise<ExecutionPlanGoalResolution>;
   checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver,
     readinessDeadlineAtMs?: number) => Promise<string[]>;
+  warmPlanReadiness?: (binding: ExecutionPlanBinding, workspaceId: string, deadlineAtMs: number) => Promise<unknown>;
   checkFeasibility?: (input: PlanExecutionGuardInput, binding: ExecutionPlanBinding,
     bindings: readonly ExecutionPlanBinding[]) => Promise<boolean>;
   /** Test seam for the bounded selector path; production uses the fixed 650ms budget. */
@@ -1051,6 +1052,7 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     readBindings: readExecutionPlanBindings,
     resolveGoal: readExecutionPlanGoal,
     checkPlan: checkExecutionPlan,
+    warmPlanReadiness: (binding, workspaceId, deadline) => checkExecutionPlan(binding, workspaceId, undefined, deadline),
     checkFeasibility: checkScopedFeasibilityAdmission,
   },
 ): Promise<PlanExecutionRefusal | null> {
@@ -1094,13 +1096,26 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
     const bindings = resolution && resolution.diagnostics.length === 0
       ? selectExecutionPlanBindings(allBindings, resolution.goal)
       : uniqueBindings;
-    for (const binding of bindings) {
+    const { readinessDeadlineAtMs: deadline } = input;
+    const { warmPlanReadiness } = deps;
+    let warming = false;
+    for (const [index, binding] of bindings.entries()) {
       if (binding.canonicalInvalid) return {code:'plan_execution_not_ready',blockers:['canonical_plan_binding_invalid'],
         reason:'The selected work-item has an invalid canonical identity; historical lineage is not a fallback permit.'};
-      const blockers = await measurePlanStage('binding', input.observeTiming,
-        () => input.readinessDeadlineAtMs === undefined
-          ? deps.checkPlan(binding, input.workspaceId, input.observeTiming)
-          : deps.checkPlan(binding, input.workspaceId, input.observeTiming, input.readinessDeadlineAtMs));
+      const current = measurePlanStage('binding', input.observeTiming,
+        () => deadline === undefined ? deps.checkPlan(binding, input.workspaceId, input.observeTiming)
+          : deps.checkPlan(binding, input.workspaceId, input.observeTiming, deadline));
+      const next = bindings[index + 1];
+      // A native call can prime the next revision-keyed readiness build. Its
+      // ordered check still rereads the canonical binding, start, and lane.
+      if (warmPlanReadiness && deadline !== undefined && performance.now() < deadline
+        && next && !next.canonicalInvalid && !warming) {
+        warming = true;
+        void Promise.resolve().then(() => warmPlanReadiness(next, input.workspaceId, deadline))
+          .catch(() => { /* The ordered read reports its own result. */ })
+          .finally(() => { warming = false; });
+      }
+      const blockers = await current;
       if (blockers.length === 1 && blockers[0] === PLAN_READINESS_PENDING) return {
         code: 'plan_execution_not_ready', planSlug: binding.planSlug, blockers, retryable: true,
         retryAfterMs: READINESS_PENDING_RETRY_AFTER_MS,
