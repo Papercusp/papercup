@@ -267,6 +267,27 @@ describe('resolveSpawnHostOperatorBaseUrl (WI-6154)', () => {
 });
 
 describe('resolveLongLivedSessionMcpBaseUrl', () => {
+  it('keeps a private fleet child on its spawning API when the live proxy is absent or configured', () => {
+    for (const proxy of [undefined, 'http://127.0.0.1:9071']) {
+      expect(resolveLongLivedSessionMcpBaseUrl({
+        OPERATOR_DEV_PORT: '33445', PAPERCUSP_HONO_PORT: '33445',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:33445',
+        PAPERCUSP_MCP_PROXY_BASE: proxy,
+      })).toBe('http://localhost:33445');
+      expect(resolveLongLivedSessionMcpBaseUrl({
+        PAPERCUSP_HONO_PORT: '33445', PAPERCUSP_MCP_PROXY_BASE: proxy,
+      })).toBe('http://localhost:33445');
+    }
+  });
+
+  it('uses the desktop sidecar port even when its parent exported a staging identity', () => {
+    expect(resolveLongLivedSessionMcpBaseUrl({
+      OPERATOR_DEV_PORT: '33700', PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://localhost:3070',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9071', PAPERCUSP_MCP_STAGING_PROXY_PORT: '9171',
+    })).toBe('http://localhost:33700');
+  });
+
   it('routes staging-host launches through the same-vintage proxy, not the live proxy', () => {
     expect(
       resolveLongLivedSessionMcpBaseUrl({

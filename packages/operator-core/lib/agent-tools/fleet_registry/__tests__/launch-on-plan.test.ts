@@ -124,6 +124,12 @@ vi.mock('../../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({ cwd: '/tmp/fleet', env: {} })),
 }));
 
+// These console-launch fixtures have no registered ACP parent.
+vi.mock('../../../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../adv-sessions')>()),
+  getLatestActiveAdvSessionByOwner: vi.fn(async () => null),
+}));
+
 vi.mock('../../../console-spawn', () => ({
   spawnConsole: (...args: unknown[]) => spawnConsoleMock(...args),
   spawnHeadless: (...args: unknown[]) => spawnHeadlessMock(...args),

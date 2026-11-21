@@ -133,6 +133,15 @@ export function resolveChildSessionOperatorBaseUrl(env: NodeJS.ProcessEnv = proc
  * persistent clients use the stable proxy instead.
  */
 export function resolveLongLivedSessionMcpBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  // A desktop sidecar or private current-build host owns its selected port.
+  // Sending its fleet children to the live proxy crosses runtime/database
+  // boundaries and cannot bootstrap at all in an offline private network.
+  const desktopPort = env.OPERATOR_DEV_PORT?.trim();
+  const hostPort = env.PAPERCUSP_HONO_PORT?.trim();
+  if ((desktopPort && Number.isInteger(Number(desktopPort)) && Number(desktopPort) > 0)
+    || (hostPort && !['3070', '3170', '3270', '3271'].includes(hostPort))) {
+    return resolveAgentMcpBaseUrl(resolveSpawnHostOperatorBaseUrl(env), env);
+  }
   // Staging launches need the staging host's own runtime vintage. The generic stable proxy
   // defaults to green :3070; using it from :3170 makes discovery and tool dispatch disagree
   // whenever staging has newer handlers. Reuse the host-aware resolver, which selects the
