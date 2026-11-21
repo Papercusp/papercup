@@ -563,6 +563,7 @@ export function workItemsGetSourceReadOptions(
   }
 
   let includeBody = false;
+  let includeExternalPlanRef = false;
   let payloadProjection: WorkItemPayloadProjection = 'none';
   for (const rawPick of picks as string[]) {
     const pick = rawPick.trim();
@@ -592,6 +593,10 @@ export function workItemsGetSourceReadOptions(
       continue;
     }
     if (path === 'workItem') return undefined;
+    if (path === 'workItem.externalPlanRef') {
+      includeExternalPlanRef = true;
+      continue;
+    }
     // This derived view reads both canonical decision history and unresolved
     // blocker metadata. A bodyless/payload-free read would invent absence.
     if (path === 'blockerResolution' || path.startsWith('blockerResolution.')) return undefined;
@@ -653,10 +658,10 @@ export function workItemsGetSourceReadOptions(
     // independent checkpoint/holder/prior-work fields, do not require payload.
   }
 
-  return {
-    includeBody,
-    payloadProjection,
-  };
+  if (includeExternalPlanRef) {
+    payloadProjection = payloadProjection === 'completionEvidence' ? 'completionEvidenceAndPlanRef' : 'externalPlanRef';
+  }
+  return { includeBody, payloadProjection };
 }
 
 const workItemIdentityResultSchema = z.object({

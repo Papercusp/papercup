@@ -27,6 +27,16 @@ describe('work-item source read projection', () => {
     expect(projectWorkItemColumns('id,payload,state', 'none')).toContain('NULL::jsonb AS payload');
   });
 
+  it('reads only the outside reference unless completion evidence was also selected', () => {
+    expect(projectWorkItemColumns(columns, 'externalPlanRef')).toBe(
+      "id, body, jsonb_build_object('externalPlanRef', payload -> 'externalPlanRef') AS payload, state",
+    );
+    expect(projectWorkItemColumns(columns, 'completionEvidenceAndPlanRef')).toBe(
+      "id, body, jsonb_build_object('_completionEvidence', payload -> '_completionEvidence', " +
+      "'externalPlanRef', payload -> 'externalPlanRef') AS payload, state",
+    );
+  });
+
   it('keeps fleet controls by subtracting only archival keys, preserving malformed shapes', () => {
     const projected = projectWorkItemColumns(columns, 'fleetMetrics');
     expect(projected).toContain("CASE WHEN jsonb_typeof(payload) = 'object'");

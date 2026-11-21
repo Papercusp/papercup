@@ -67,6 +67,7 @@ const WORK_ITEM_ROW = z.object({
   severity: z.string().nullable(),
   parent: z.string().nullable(),
   payload: z.unknown(),
+  externalPlanRef: z.string().optional(),
   /** Shared backlog priority (feature_order) — LOWER = claimed sooner; null = unprioritized.
    *  Feature-family only (the Queen's steer lever, B7); issue-family is always null. */
   priority: z.number().nullable(),
@@ -495,6 +496,8 @@ export default defineTool({
     // intentionally clears contextTier before re-dispatching sub-tools.
     const includeBody = args.includeBody ?? !ambientLeanSource;
     const includePayload = args.includePayload ?? !ambientLeanSource;
+    // The public label is stored in JSONB even on rows that omit their raw payload.
+    const payloadProjection = includePayload ? "full" as const : "externalPlanRef" as const;
     // EI-6506: `mine` resolves to the CALLER's own agent identity — an explicit
     // `assignee` wins if both are passed (mine is the no-args-needed convenience,
     // not an override of a deliberate lookup of someone else's work).
@@ -576,7 +579,7 @@ export default defineTool({
           // ambient/session tier is otherwise deliberately outside this key because
           // shaping is a post-cache operation; the source projection is not.
           includeBody,
-          includePayload,
+          payloadProjection,
           limit: args.limit ?? null,
         },
         // WI-4491: tag with the base TABLE `work_items` (the emit_change_notify producer,
@@ -609,7 +612,7 @@ export default defineTool({
           natures: args.natures,
           audience,
           includeBody,
-          includePayload,
+          payloadProjection,
           limit: args.limit,
         };
         // D-041: when the agent default narrowed the read, count what it withheld, so the
@@ -625,7 +628,8 @@ export default defineTool({
         ]));
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent
         // result cap. Full body via work_items:get { id }.
-        return { rows: boundSummaries(rows), agentCount, anyCount };
+        const visibleRows = includePayload ? rows : rows.map(row => ({ ...row, payload: null }));
+        return { rows: boundSummaries(visibleRows), agentCount, anyCount };
       },
     ));
     const items = cached.rows;

@@ -155,12 +155,12 @@ describe("work_items:list — cache wiring", () => {
   it("ambient trimmed/standard reads request the lean SQL projection", async () => {
     await list({}, "ws-wi", "trimmed");
     expect(M.listWorkItems).toHaveBeenCalledWith(
-      expect.objectContaining({ includeBody: false, includePayload: false }),
+      expect.objectContaining({ includeBody: false, payloadProjection: "externalPlanRef" }),
     );
 
     await list({}, "ws-wi", "standard");
     expect(M.listWorkItems).toHaveBeenCalledWith(
-      expect.objectContaining({ includeBody: false, includePayload: false }),
+      expect.objectContaining({ includeBody: false, payloadProjection: "externalPlanRef" }),
     );
   });
 
@@ -174,10 +174,10 @@ describe("work_items:list — cache wiring", () => {
 
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
     expect(M.listWorkItems.mock.calls[0]![0]).toEqual(
-      expect.objectContaining({ includeBody: false, includePayload: false }),
+      expect.objectContaining({ includeBody: false, payloadProjection: "externalPlanRef" }),
     );
     expect(M.listWorkItems.mock.calls[1]![0]).toEqual(
-      expect.objectContaining({ includeBody: true, includePayload: true }),
+      expect.objectContaining({ includeBody: true, payloadProjection: "full" }),
     );
   });
 
@@ -190,10 +190,10 @@ describe("work_items:list — cache wiring", () => {
     // not trigger a third database read, but it must never hit the lean entry.
     expect(M.listWorkItems).toHaveBeenCalledTimes(2);
     expect(M.listWorkItems.mock.calls[0]![0]).toEqual(
-      expect.objectContaining({ includeBody: false, includePayload: false }),
+      expect.objectContaining({ includeBody: false, payloadProjection: "externalPlanRef" }),
     );
     expect(M.listWorkItems.mock.calls[1]![0]).toEqual(
-      expect.objectContaining({ includeBody: true, includePayload: true }),
+      expect.objectContaining({ includeBody: true, payloadProjection: "full" }),
     );
   });
 

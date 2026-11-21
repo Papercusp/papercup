@@ -8,6 +8,7 @@ import { matchesWorkItemClaimSpec } from '../../scheduler/claim-spec-match';
 import { compileFilter } from '../../scheduler/get-next';
 import createTool from './create';
 import getTool from './get';
+import listTool, { shapeWorkItemsList } from './list';
 import { bindSessionOutsidePlanRef } from '../../session-outside-plan';
 
 const store = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -37,6 +38,44 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); });
 
 describe('outside-plan creation persistence', () => {
+  it('shows each outside reference on compact lists while omitting the raw payload', async () => {
+    const title = `Compact outside label ${randomUUID()}`;
+    const ref = '  tracker:\n😀  ';
+    const tagged = await Promise.all((['task', 'feature'] as const).map(kind =>
+      createWorkItem({ kind, title, harness: 'papercusp', externalPlanRef: ref, payload: { other: 'private fixture marker' } })));
+    const untagged = await createWorkItem({ kind: 'task', title, harness: 'papercusp' });
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const read = await listTool.handler(listTool.args.parse({ harness: 'papercusp', q: title, audience: 'any' }), {
+        workspaceId: 'default', harnessSlug: 'papercusp', uiClientId: 'su-outside-list', isSuperuser: true, contextTier: tier,
+      } as Parameters<typeof listTool.handler>[1]);
+      if (!('data' in read)) throw new Error('public list must return structured data');
+      const rows = read.data as WorkItem[];
+      expect(rows).toHaveLength(3);
+      expect(rows.every(row => row.payload === null)).toBe(true);
+      const shaped = shapeWorkItemsList(rows, tier);
+      for (const { id } of tagged) expect(shaped).toContainEqual(expect.objectContaining({ id, external_plan_ref: ref }));
+      expect(shaped).toContainEqual(expect.objectContaining({ id: untagged.id, external_plan_ref: null }));
+    }
+  });
+
+  it('preserves selected references on bulk reads across both storage families', async () => {
+    const refs = ['  issue\n😀  ', ' feature\tref '];
+    const items = await Promise.all((['task', 'feature'] as const).map((kind, i) =>
+      createWorkItem({ kind, title: `Projected ${kind} ${randomUUID()}`, harness: 'papercusp', externalPlanRef: refs[i] })));
+    const ids = items.map(item => item.id);
+    const args = getTool.args.parse({ ids, harness: 'papercusp' });
+    const refPath = 'results[].workItem.externalPlanRef';
+    const completionPath = 'results[].workItem.terminalCompletionEvidence';
+    for (const fields of [[refPath], [refPath, completionPath], [completionPath, refPath]]) {
+      const read = await getTool.handler(args, { workspaceId: 'default', harnessSlug: 'papercusp',
+        uiClientId: 'su-outside-projection', isSuperuser: true,
+        sourceProjection: { pick: ['results[].id', ...fields] } } as Parameters<typeof getTool.handler>[1]);
+      if (!('data' in read)) throw new Error('public get must return structured data');
+      const { results } = read.data as { results: Array<{ id: string; workItem: WorkItem }> };
+      expect(results.map(row => [row.id, row.workItem.externalPlanRef])).toEqual(ids.map((id, i) => [id, refs[i]]));
+    }
+  });
+
   it.each(['   ', '\t\n', '😀'.repeat(200)])('round-trips inherited opaque reference through public create/read and claim filtering: %j', async ref => {
     const ownerId = `su-opaque-${randomUUID()}`;
     const [session] = await store.sql<{ id: number }[]>`INSERT INTO harness_shared.adv_sessions

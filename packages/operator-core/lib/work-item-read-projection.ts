@@ -10,7 +10,13 @@
 import type { ItemField } from './scheduler/claim-spec';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
-export type WorkItemPayloadProjection = 'full' | 'none' | 'completionEvidence' | 'fleetMetrics' | 'fleetMetricsCensus';
+const selectedPayloadKeys = {
+  completionEvidence: ['_completionEvidence'],
+  externalPlanRef: ['externalPlanRef'],
+  completionEvidenceAndPlanRef: ['_completionEvidence', 'externalPlanRef'],
+} as const;
+
+export type WorkItemPayloadProjection = 'full' | 'none' | keyof typeof selectedPayloadKeys | 'fleetMetrics' | 'fleetMetricsCensus';
 
 // Terminal rows feed stock/flow, the claim matcher and presentation stages, but
 // never the remaining queue's park/review clocks. Enumerate the matcher's payload
@@ -51,9 +57,8 @@ export interface WorkItemReadOptions {
    */
   includeBody?: boolean;
   /**
-   * `none` returns a typed NULL payload; `completionEvidence` returns only the
-   * `_completionEvidence` member, wrapped under the original payload key so
-   * existing mappers preserve terminal-evidence semantics.
+   * Named key selections keep their original JSON keys for the row mappers.
+   * `none` returns a typed NULL payload.
    */
   payloadProjection?: WorkItemPayloadProjection;
 }
@@ -92,9 +97,7 @@ export function projectWorkItemColumns(
     return columns.replace(PAYLOAD_COLUMN,
       `$1(CASE WHEN jsonb_typeof(payload) = 'object' THEN ${objectPayload} ELSE payload END) AS payload$2`);
   }
-  const replacement =
-    projection === 'none'
-      ? 'NULL::jsonb AS payload'
-      : "jsonb_build_object('_completionEvidence', payload -> '_completionEvidence') AS payload";
-  return columns.replace(PAYLOAD_COLUMN, `$1${replacement}$2`);
+  if (projection === 'none') return columns.replace(PAYLOAD_COLUMN, '$1NULL::jsonb AS payload$2');
+  const fields = selectedPayloadKeys[projection].map(key => `'${key}', payload -> '${key}'`);
+  return columns.replace(PAYLOAD_COLUMN, `$1jsonb_build_object(${fields.join(', ')}) AS payload$2`);
 }
