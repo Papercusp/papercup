@@ -497,6 +497,9 @@ export interface OutboxFanoutRow {
  *  Runs per row on the SAME drain as federation (not a second consumer). */
 export type OutboxFanoutFn = (row: OutboxFanoutRow) => Promise<unknown>;
 
+/** The worker has durable custody, but the recipient work is still outstanding. */
+export const FANOUT_PENDING = Symbol.for('@papercusp/operator-core.fanout-pending');
+
 /**
  * The encrypt-on-capture capability for the read-plane re-key (C-001,
  * shared-hive-rekey-2026-06-19). Built at boot from the hive's crypto + epoch-key
@@ -644,8 +647,15 @@ async function markRowDrained(
   id: string | number,
   now: number,
   logKey: string | null,
-  fanoutFailure: string | null,
+  fanoutFailure: string | typeof FANOUT_PENDING | null,
 ): Promise<unknown> {
+  if (fanoutFailure === FANOUT_PENDING) {
+    return pg`
+      UPDATE harness_shared.substrate_outbox
+         SET drained_at = ${now}, drained_log_key = ${logKey},
+             fanout_retry_at = COALESCE(fanout_retry_at, ${now + fanoutRetryDelayMs(1)})
+       WHERE id = ${id}`;
+  }
   if (fanoutFailure !== null) {
     try {
       return await pg`
@@ -707,7 +717,7 @@ interface FanoutRetryRow {
  * never double-delivers. Best-effort: per-row write failures are logged, never thrown.
  */
 export async function retryPendingFanouts(
-  handle: BootedHarnessHandle,
+  handle: Pick<BootedHarnessHandle, 'workspaceId' | 'harnessSlug'>,
   pg: postgres.Sql,
   opts: FanoutRetryOptions,
 ): Promise<FanoutRetryResult> {
@@ -737,19 +747,27 @@ export async function retryPendingFanouts(
     if (opts.signal?.aborted) break;
     result.retried += 1;
     let failure: string | null = null;
+    let pending = false;
     try {
-      await raceRowStage(
+      const outcome = await raceRowStage(
         r.id,
         `fanout-retry (row id=${r.id} table=${r.table_name})`,
         opts.fanout({ id: r.id, table_name: r.table_name, op: r.op, key: r.key, row: r.row }),
         timeoutMs,
       );
+      pending = outcome === FANOUT_PENDING;
     } catch (e) {
       failure = (e instanceof Error ? e.message : String(e)).slice(0, FANOUT_ERROR_MAX_CHARS);
     }
     const attempts = Number(r.fanout_attempts ?? 0) + (failure === null ? 0 : 1);
     try {
-      if (failure === null) {
+      if (pending) {
+        await pg`
+          UPDATE harness_shared.substrate_outbox
+             SET fanout_retry_at = ${now + fanoutRetryDelayMs(1)}
+           WHERE id = ${r.id} AND fanout_retry_at IS NOT NULL`;
+        result.rescheduled += 1;
+      } else if (failure === null) {
         await pg`
           UPDATE harness_shared.substrate_outbox
              SET fanout_retry_at = NULL,
@@ -762,7 +780,7 @@ export async function retryPendingFanouts(
              SET fanout_retry_at = ${now + fanoutRetryDelayMs(attempts)},
                  fanout_attempts = ${attempts},
                  fanout_last_error = ${failure}
-           WHERE id = ${r.id}`;
+           WHERE id = ${r.id} AND fanout_retry_at IS NOT NULL`;
         result.rescheduled += 1;
         if (attempts === FANOUT_MAX_ATTEMPTS) {
           result.reachedThreshold += 1;
@@ -1124,7 +1142,7 @@ export async function drainOutboxOnce(
       // delivered. The row still drains (federation must progress), but the failure is
       // persisted as fan-out retry state in the SAME mark-drained UPDATE, and
       // retryPendingFanouts() re-runs it independently of federation.
-      let fanoutFailure: string | null = null;
+      let fanoutFailure: string | typeof FANOUT_PENDING | null = null;
       if (opts.fanout) {
         try {
           // WI-3896 follow-up: fan-out was previously bounded ONLY by logIfStageStalls
@@ -1146,7 +1164,7 @@ export async function drainOutboxOnce(
           // per pass even if every one's fan-out hangs, so `drained_at`/merge-cursor
           // progress keeps moving while fan-out itself degrades independently.
           const fanoutStage = `fanout (row id=${r.id} table=${r.table_name})`;
-          await raceRowStage(
+          const outcome = await raceRowStage(
             r.id,
             fanoutStage,
             logIfStageStalls(
@@ -1156,6 +1174,7 @@ export async function drainOutboxOnce(
             ),
             fanoutTimeoutMs,
           );
+          if (outcome === FANOUT_PENDING) fanoutFailure = FANOUT_PENDING;
         } catch (e) {
           fanoutFailure = e instanceof Error ? e.message : String(e);
           const schemaSig = fanoutSchemaMismatchSignature(r.table_name, e);
