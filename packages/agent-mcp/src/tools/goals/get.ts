@@ -10,7 +10,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generated, schemaOf } from '@papercusp/db-org';
+import { generated, getOrgPg, schemaOf } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 import { resolveGoalHolders } from '@papercusp/operator-core/lib/goals/holder';
 import {
@@ -56,6 +56,16 @@ export default defineTool({
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
     const goal = rows[0];
+    if (args.reportCursor !== undefined) {
+      const [{ readGoalReportPage }, { resolveViewer }] = await Promise.all([
+        import('@papercusp/operator-core/lib/goal-related-reports'),
+        import('@papercusp/operator-core/lib/agent-tools/reports/_shared'),
+      ]);
+      const relatedReports = await readGoalReportPage(getOrgPg().sql, goal.id, {
+        workspaceId: goal.workspaceId, viewer: resolveViewer(ctx),
+      }, args.reportCursor);
+      return { data: { id: goal.id, historyContext: { relatedReports } } };
+    }
     // Readiness (goal-dag-shared-substrate-2026-08-18 P-003, D-002/D-003):
     // derived on read from the shared dependency substrate. `actionable` = every
     // blocked-by edge satisfied (doable right now); `premiseInvalidated` = a
@@ -160,20 +170,19 @@ export default defineTool({
     }));
     const requestedHistoryRefs = args.priorAttemptRefs ?? [];
     const explicitHistoryRead = requestedHistoryRefs.length > 0;
-    const needsHistory = args.detail === 'full' || explicitHistoryRead || args.reportCursor !== undefined;
     // Keep the continuity compiler off the agent-MCP bootstrap graph. It owns
     // plan/source readers, and eagerly importing it here makes every unrelated
     // tool test inherit that graph (including tests with intentionally narrow
     // plans/source mocks). A full or explicit drill-down is the only call path
     // that consumes it, so load the module exactly at that production boundary.
     const continuity =
-      needsHistory
+      args.detail === 'full' || explicitHistoryRead
         ? await import('@papercusp/operator-core/lib/prior-attempt-context')
         : null;
     const historyContext = continuity ? await continuity.readGoalHistoryContext(goal.id, undefined, {
       workspaceId: goal.workspaceId,
       viewer: (await import('@papercusp/operator-core/lib/agent-tools/reports/_shared')).resolveViewer(ctx),
-    }, args.reportCursor) : undefined;
+    }) : undefined;
     const priorAttemptRecords = explicitHistoryRead
       ? await continuity!.resolvePriorAttemptRefs({
           target: { kind: 'goal', ref: goal.id },
