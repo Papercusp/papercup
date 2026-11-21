@@ -52,6 +52,7 @@ vi.mock('@papercusp/agent-mcp', async (importActual) => {
 });
 
 import routes, { dispatchRead } from './plans';
+import setContent from '../../../agent-tools/plans/set-content';
 
 const reqFor = (verb: string, extraQs = ''): Request =>
   new Request(`http://localhost/api/admin/plans/${verb}?slug=demo&mode=full${extraQs}`);
@@ -61,6 +62,38 @@ const ctxFor = (verb: string) => ({ params: { verb } }) as unknown as Parameters
 beforeEach(() => {
   H.calls = [];
   H.invalidate.mockClear();
+});
+
+describe('admin Plans Save scope', () => {
+  const edit = { slug: 'demo', content: '# Plan\n\nReference: updated\n', expectedVersion: 3, expectedHash: 'a'.repeat(64) };
+
+  async function forwardedSave(scope: Record<string, unknown>) {
+    const request = new Request('http://localhost:3170/api/admin/plans/set-content', {
+      method: 'POST', headers: { origin: 'http://localhost:3170', 'content-type': 'application/json' },
+      body: JSON.stringify({ ...edit, ...scope }),
+    });
+    await routes[1].handler(request, ctxFor('set-content'));
+    expect(H.calls).toHaveLength(1);
+    expect(H.calls[0].pathname).toBe('/api/agent-tools/plans/set-content');
+    return H.calls[0].body;
+  }
+
+  it.each([
+    { harness: 'project', harness_slug: 'project' }, // Existing desktop Save payload.
+    { harness: 'project' }, { harness_slug: 'project' }, { harnessSlug: 'project' },
+    { hive: 'project' }, { potSlug: 'project' }, { hive_slug: 'project' },
+  ])('forwards the chosen harness and complete edit to the strict writer for %j', async scope => {
+    const body = await forwardedSave(scope);
+    expect(setContent.args.parse(body)).toEqual({ ...edit, harness: 'project' });
+    expect(H.invalidate).toHaveBeenCalledWith('plansDrafts.bySlug', { harnessSlug: 'project' });
+  });
+
+  it.each([
+    { harness: 'project', harness_slug: 'different' }, { harness_slug: 42 },
+    { harness: 'project', harness_slug: 'project', unrelated: true },
+  ])('keeps invalid input visible to writer validation for %j', async scope => {
+    expect(setContent.args.safeParse(await forwardedSave(scope)).success).toBe(false);
+  });
 });
 
 describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078)', () => {

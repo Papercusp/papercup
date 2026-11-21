@@ -232,15 +232,16 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function normalizePlanScopeArg(body: Record<string, unknown>): string | undefined {
-  const harness = firstString(
-    body.harness,
-    body.harnessSlug,
-    body.harness_slug,
-    body.hive,
-    body.potSlug,
-    body.hive_slug,
-  );
+const planScopeAliases = ['harnessSlug', 'harness_slug', 'hive', 'potSlug', 'hive_slug'] as const;
+
+function normalizePlanScopeArg(body: Record<string, unknown>, consumeAliases = false): string | undefined {
+  const supplied = [body.harness, ...planScopeAliases.map(key => body[key])].filter(value => value !== undefined);
+  const harness = firstString(...supplied);
+  // The desktop sends both harness and harness_slug. The document writer accepts only harness.
+  // Leave ambiguous or malformed aliases in the request so the writer can reject them.
+  if (consumeAliases && harness && supplied.every(value => firstString(value) === harness)) {
+    for (const key of planScopeAliases) delete body[key];
+  }
   if (harness) body.harness = harness;
   return harness;
 }
@@ -331,7 +332,7 @@ async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response>
       { status: 400 },
     );
   }
-  const normalizedHarness = normalizePlanScopeArg(body);
+  const normalizedHarness = normalizePlanScopeArg(body, verb === 'set-content');
   // Same /adv default as dispatchRead: operator-scope writes target Papercusp's
   // own plans, so default the harness gate to 'all' (→ papercup) unless given.
   if (body.harness == null) body.harness = 'all';
