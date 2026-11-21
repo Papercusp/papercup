@@ -141,6 +141,52 @@ describe('the isolated native Plans comparison', () => {
       expect(() => originalComparisonRow(invalid, request, driver.root, runtime)).toThrow();
   });
 
+  it('replays the two failed historical attempts and all of their omissions from the saved trace bytes', () => {
+    type Capture = {
+      request: Omit<Parameters<typeof readComparisonCoverage>[1], 'privateWorkspace'> & { taskId: string };
+      terminalExit: number; observationStatus: string; privateWorkspace: string;
+      coverage: ReturnType<typeof readComparisonCoverage>; coverageSha256: string;
+      runtimeBefore: Parameters<typeof readComparisonCoverage>[2]; runtimeAfter: Parameters<typeof readComparisonCoverage>[2];
+      traceFiles: { file: string; sha256: string; ending: string; data: unknown }[];
+      originalReporterRows: { id: string; status: string; run_group: string }[];
+      fixture: { taskId: string; fingerprint: string; group: string } | null; fixtureSha256: string | null;
+    };
+    const path = new URL('../test/fixtures/plan-revision-baseline.json', import.meta.url);
+    const captures: Capture[] = JSON.parse(readFileSync(path, 'utf8')).native.observations;
+    for (const [task, ids, measured] of [
+      ['0mwpy6v7uzdy9dc1mzf', ['24176471', '24176472'], 0],
+      ['0mwq3m07ufkjbij18d8', ['24187728', '24187729'], 15],
+    ] as const) {
+      const matches = captures.filter(r => r.request.taskId === task);
+      expect(matches).toHaveLength(1);
+      const [run] = matches;
+      expect([run.terminalExit, run.observationStatus]).toEqual([1, 'unverified']);
+      expect(run.originalReporterRows.map(r => r.id)).toEqual(ids);
+      expect(run.originalReporterRows.every(r => r.status === 'fail' && r.run_group === run.request.group)).toBe(true);
+      expect(run.runtimeAfter.fingerprint).toBe(run.runtimeBefore.fingerprint);
+      expect(run.runtimeAfter.units).toEqual(run.runtimeBefore.units);
+      const dir = mkdtempSync(join(scratch, 'historical-traces-'));
+      for (const trace of run.traceFiles) {
+        expect(trace.file).toMatch(/^(?:draft-author-|(?:plan|citation)-role-views-)[\w.-]+\.json$/);
+        const bytes = JSON.stringify(trace.data) + trace.ending;
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(trace.sha256);
+        writeFileSync(join(dir, trace.file), bytes, { flag: 'wx' });
+      }
+      const coverage = readComparisonCoverage(dir, { ...run.request, privateWorkspace: run.privateWorkspace }, run.runtimeBefore);
+      expect(coverage).toEqual(run.coverage);
+      expect(createHash('sha256').update(JSON.stringify(coverage) + '\n').digest('hex')).toBe(run.coverageSha256);
+      expect(coverage.cells).toHaveLength(45);
+      const observed = coverage.cells.filter(cell => cell.observations.length);
+      expect(observed).toHaveLength(measured);
+      expect(observed.every(cell => cell.door === 'api')).toBe(true);
+      expect(coverage.unmeasured).toHaveLength(45 - measured);
+      if (measured) {
+        expect(run.fixture).toMatchObject({ taskId: task, group: run.request.group, fingerprint: run.runtimeBefore.fingerprint });
+        expect(createHash('sha256').update(JSON.stringify(run.fixture) + '\n').digest('hex')).toBe(run.fixtureSha256);
+      } else { expect(run.fixture).toBeNull(); }
+    }
+  });
+
   it('keeps individual native failure locations and deadlines without retaining arguments or replacing earlier evidence', () => {
     const dir = mkdtempSync(join(scratch, 'scenario-failure-'));
     const request = { group: 'failure-group', taskId: 'original-task', applicationRef: app.commit, definitionRef: driver.commit };

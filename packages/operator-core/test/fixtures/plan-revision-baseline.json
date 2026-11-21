@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "captureStatus": "historical-only",
+  "captureStatus": "historical-and-partial-native",
   "historicalArtifact": "plans/revision-aware-verification-and-reuse-2026-11-19/p001-audit-cohort-20261105-18-v2.json",
   "historicalArtifactSha256": "60e917e99792f1c4763fd1af505a5c25ae2f10a99ab0db6b887ae1ec757c107e",
   "history": {
@@ -19492,8 +19492,1417 @@
     ]
   },
   "native": {
-    "status": "unmeasured",
-    "observations": [],
-    "reason": "The original private-runtime role and route observations are pending."
+    "status": "partial",
+    "reason": "Both historical comparisons exited with failed assertions. The second attempt measured five API scenarios each for the author, reviewer and worker. CLI and desktop observations remain unmeasured.",
+    "observations": [
+      {
+        "request": {
+          "applicationRef": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+          "definitionRef": "1011d6baa46909714fd1a935d77177cdee2b8895",
+          "group": "revision-native-f7ccbc58-1256-467e-8174-e1ebee729c71",
+          "workspace": "papercusp-workspace",
+          "harness": "papercusp",
+          "spec": "apps/operator/e2e/plan-revision-amendment-native.spec.mts",
+          "caseTitle": "saves a citation in native Plans and correlates author reviewer and worker outcomes",
+          "taskId": "0mwpy6v7uzdy9dc1mzf"
+        },
+        "terminalExit": 1,
+        "observationStatus": "unverified",
+        "qualificationReason": "Missing or ineligible independent reporter row",
+        "privateWorkspace": "verify-tauri-isolated-90",
+        "sourceReceipts": [
+          {
+            "file": "application.json",
+            "commit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+            "sha256": "df5e646f21382dced883bde5d34fd61803658457062434031b4dbe78ffd4838e"
+          },
+          {
+            "file": "definition.json",
+            "commit": "1011d6baa46909714fd1a935d77177cdee2b8895",
+            "sha256": "75e71888eba25696f58548cffe5bf79e2646bcbdef920f7b7586ae288d3dba8d"
+          }
+        ],
+        "fixture": null,
+        "fixtureSha256": null,
+        "runtimeBefore": {
+          "schemaVersion": 1,
+          "units": [
+            "verify-tauri-headless:1808971"
+          ],
+          "fingerprint": "d43df548c8466a25d65fc3bdd17c7ab7f7a1f165648ac584a7d8703638057f79",
+          "observedAt": "2026-11-21T06:01:42.938Z"
+        },
+        "runtimeAfter": {
+          "schemaVersion": 1,
+          "units": [
+            "verify-tauri-headless:1808971"
+          ],
+          "fingerprint": "d43df548c8466a25d65fc3bdd17c7ab7f7a1f165648ac584a7d8703638057f79",
+          "observedAt": "2026-11-21T06:04:15.397Z"
+        },
+        "adapterExit": 1,
+        "originalReporterRows": [
+          {
+            "id": "24176471",
+            "run_group": "revision-native-f7ccbc58-1256-467e-8174-e1ebee729c71",
+            "framework": "playwright",
+            "file_path": "apps/operator/e2e/plan-revision-amendment-native.spec.mts",
+            "status": "fail",
+            "commit_sha": "1011d6baa46909714fd1a935d77177cdee2b8895",
+            "worktree_dirty": false,
+            "passed": 0,
+            "failed": 1,
+            "skipped": 0,
+            "failed_case_titles": [
+              "saves a citation in native Plans and correlates author reviewer and worker outcomes"
+            ],
+            "runtime_before_status": "captured",
+            "runtime_after_status": "captured"
+          },
+          {
+            "id": "24176472",
+            "run_group": "revision-native-f7ccbc58-1256-467e-8174-e1ebee729c71",
+            "framework": "vitest",
+            "file_path": "packages/operator-core/lib/plan-revision-amendment-native.e2e.test.ts",
+            "status": "fail",
+            "commit_sha": null,
+            "worktree_dirty": true,
+            "passed": 0,
+            "failed": 3,
+            "skipped": 0,
+            "failed_case_titles": [
+              "historical private Plans clients > records old author payloads across edits, retry and resumption on api",
+              "historical private Plans clients > records old author payloads across edits, retry and resumption on ptool",
+              "historical private Plans clients > captures the pre change role matrix through the real native Plans selector"
+            ],
+            "runtime_before_status": "not-configured",
+            "runtime_after_status": "not-configured"
+          }
+        ],
+        "originalEvidenceDirectory": "/mnt/data/tmp/plan-revision-comparison-z8ACt3",
+        "coverageSha256": "4be24cc0fad54acceeaefa74808ffa0089f73a7c9ff7f97b41e88d814afae1c2",
+        "coverage": {
+          "cells": [
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "material",
+              "observations": []
+            }
+          ],
+          "unmeasured": [
+            "author/api/cosmetic",
+            "author/api/citation",
+            "author/api/retry",
+            "author/api/resumed",
+            "author/api/material",
+            "author/ptool/cosmetic",
+            "author/ptool/citation",
+            "author/ptool/retry",
+            "author/ptool/resumed",
+            "author/ptool/material",
+            "author/desktop/cosmetic",
+            "author/desktop/citation",
+            "author/desktop/retry",
+            "author/desktop/resumed",
+            "author/desktop/material",
+            "reviewer/api/cosmetic",
+            "reviewer/api/citation",
+            "reviewer/api/retry",
+            "reviewer/api/resumed",
+            "reviewer/api/material",
+            "reviewer/ptool/cosmetic",
+            "reviewer/ptool/citation",
+            "reviewer/ptool/retry",
+            "reviewer/ptool/resumed",
+            "reviewer/ptool/material",
+            "reviewer/desktop/cosmetic",
+            "reviewer/desktop/citation",
+            "reviewer/desktop/retry",
+            "reviewer/desktop/resumed",
+            "reviewer/desktop/material",
+            "worker/api/cosmetic",
+            "worker/api/citation",
+            "worker/api/retry",
+            "worker/api/resumed",
+            "worker/api/material",
+            "worker/ptool/cosmetic",
+            "worker/ptool/citation",
+            "worker/ptool/retry",
+            "worker/ptool/resumed",
+            "worker/ptool/material",
+            "worker/desktop/cosmetic",
+            "worker/desktop/citation",
+            "worker/desktop/retry",
+            "worker/desktop/resumed",
+            "worker/desktop/material"
+          ],
+          "status": "partial"
+        },
+        "traceFiles": [
+          {
+            "file": "citation-role-views-revision-citation-fd8c431e-123d-473c-b840-200eb02351c0-2026-11-21.json",
+            "sha256": "6f27853f924a18d003edad920a44b0eaa6bf14488f1113e2e099b525e967395f",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "slug": "revision-citation-fd8c431e-123d-473c-b840-200eb02351c0-2026-11-21",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "runtimeBefore": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:1808971"
+                ],
+                "fingerprint": "d43df548c8466a25d65fc3bdd17c7ab7f7a1f165648ac584a7d8703638057f79",
+                "observedAt": "2026-11-21T06:02:51.509Z"
+              },
+              "definitionCommit": "1011d6baa46909714fd1a935d77177cdee2b8895",
+              "group": "revision-native-f7ccbc58-1256-467e-8174-e1ebee729c71",
+              "roleViews": {}
+            }
+          }
+        ]
+      },
+      {
+        "request": {
+          "applicationRef": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+          "definitionRef": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+          "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+          "workspace": "papercusp-workspace",
+          "harness": "papercusp",
+          "spec": "apps/operator/e2e/plan-revision-amendment-native.spec.mts",
+          "caseTitle": "saves a citation in native Plans and correlates author reviewer and worker outcomes",
+          "taskId": "0mwq3m07ufkjbij18d8"
+        },
+        "terminalExit": 1,
+        "observationStatus": "unverified",
+        "qualificationReason": "Missing or ineligible independent reporter row",
+        "privateWorkspace": "verify-tauri-isolated-90",
+        "sourceReceipts": [
+          {
+            "file": "application.json",
+            "commit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+            "sha256": "df5e646f21382dced883bde5d34fd61803658457062434031b4dbe78ffd4838e"
+          },
+          {
+            "file": "definition.json",
+            "commit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+            "sha256": "0d0ac6d8516ea70edeb3a79f2b4d00e6cb0381251c5b7c1988cb599c034b8557"
+          }
+        ],
+        "fixture": {
+          "schemaVersion": 1,
+          "workspace": "verify-tauri-isolated-90",
+          "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+          "applicationRoot": "/mnt/data/tmp/verify-tauri-headless.WJBWVx/operator-source",
+          "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+          "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+          "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+          "taskId": "0mwq3m07ufkjbij18d8",
+          "harness": "e2e-fake-plan"
+        },
+        "fixtureSha256": "6bc735340a3ee95bea4acbb3c32dd01c25738f7c30fec892c404768dac53fa2e",
+        "runtimeBefore": {
+          "schemaVersion": 1,
+          "units": [
+            "verify-tauri-headless:2940427"
+          ],
+          "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+          "observedAt": "2026-11-21T08:20:37.953Z"
+        },
+        "runtimeAfter": {
+          "schemaVersion": 1,
+          "units": [
+            "verify-tauri-headless:2940427"
+          ],
+          "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+          "observedAt": "2026-11-21T08:24:28.614Z"
+        },
+        "adapterExit": 1,
+        "originalReporterRows": [
+          {
+            "id": "24187728",
+            "run_group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+            "framework": "playwright",
+            "file_path": "apps/operator/e2e/plan-revision-amendment-native.spec.mts",
+            "status": "fail",
+            "commit_sha": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+            "worktree_dirty": false,
+            "passed": 0,
+            "failed": 1,
+            "skipped": 0,
+            "failed_case_titles": [
+              "saves a citation in native Plans and correlates author reviewer and worker outcomes"
+            ],
+            "runtime_before_status": "captured",
+            "runtime_after_status": "captured"
+          },
+          {
+            "id": "24187729",
+            "run_group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+            "framework": "vitest",
+            "file_path": "packages/operator-core/lib/plan-revision-amendment-native.e2e.test.ts",
+            "status": "fail",
+            "commit_sha": null,
+            "worktree_dirty": true,
+            "passed": 1,
+            "failed": 2,
+            "skipped": 0,
+            "failed_case_titles": [
+              "historical private Plans clients > records old author payloads across edits, retry and resumption on ptool",
+              "historical private Plans clients > captures the pre change role matrix through the real native Plans selector"
+            ],
+            "runtime_before_status": "not-configured",
+            "runtime_after_status": "not-configured"
+          }
+        ],
+        "originalEvidenceDirectory": "/mnt/data/tmp/plan-revision-comparison-jWNW0P",
+        "coverageSha256": "38346839164ee3d56e12bce5fb10718fba765e1b8c51257b499e890c48f14f56",
+        "coverage": {
+          "cells": [
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "cosmetic",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "observations.0",
+                  "actor": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                  "revision": "4",
+                  "authorAttribution": {
+                    "actorSource": "signed-in-user",
+                    "revisionWriter": "pc-admin-plans-ui"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "citation",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "observations.1",
+                  "actor": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                  "revision": "5",
+                  "authorAttribution": {
+                    "actorSource": "signed-in-user",
+                    "revisionWriter": "pc-admin-plans-ui"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "retry",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "observations.2",
+                  "actor": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                  "revision": "5",
+                  "authorAttribution": {
+                    "actorSource": "signed-in-user",
+                    "revisionWriter": "pc-admin-plans-ui"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "resumed",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "observations.3",
+                  "actor": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                  "revision": "6",
+                  "authorAttribution": {
+                    "actorSource": "signed-in-user",
+                    "revisionWriter": "pc-admin-plans-ui"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "author",
+              "door": "api",
+              "scenario": "material",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "observations.4",
+                  "actor": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                  "revision": "7",
+                  "authorAttribution": {
+                    "actorSource": "signed-in-user",
+                    "revisionWriter": "pc-admin-plans-ui"
+                  }
+                }
+              ]
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "ptool",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "author",
+              "door": "desktop",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "cosmetic",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.0",
+                  "actor": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "revision": "4"
+                }
+              ]
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "citation",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.2",
+                  "actor": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "revision": "5"
+                }
+              ]
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "retry",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.4",
+                  "actor": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "revision": "5"
+                }
+              ]
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "resumed",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.6",
+                  "actor": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "revision": "6"
+                }
+              ]
+            },
+            {
+              "role": "reviewer",
+              "door": "api",
+              "scenario": "material",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.8",
+                  "actor": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "revision": "7"
+                }
+              ]
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "ptool",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "reviewer",
+              "door": "desktop",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "cosmetic",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.1",
+                  "actor": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "revision": "4"
+                }
+              ]
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "citation",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.3",
+                  "actor": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "revision": "5"
+                }
+              ]
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "retry",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.5",
+                  "actor": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "revision": "5"
+                }
+              ]
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "resumed",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.7",
+                  "actor": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "revision": "6"
+                }
+              ]
+            },
+            {
+              "role": "worker",
+              "door": "api",
+              "scenario": "material",
+              "observations": [
+                {
+                  "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+                  "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+                  "reference": "roleReads.9",
+                  "actor": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "revision": "7"
+                }
+              ]
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "ptool",
+              "scenario": "material",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "cosmetic",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "citation",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "retry",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "resumed",
+              "observations": []
+            },
+            {
+              "role": "worker",
+              "door": "desktop",
+              "scenario": "material",
+              "observations": []
+            }
+          ],
+          "unmeasured": [
+            "author/ptool/cosmetic",
+            "author/ptool/citation",
+            "author/ptool/retry",
+            "author/ptool/resumed",
+            "author/ptool/material",
+            "author/desktop/cosmetic",
+            "author/desktop/citation",
+            "author/desktop/retry",
+            "author/desktop/resumed",
+            "author/desktop/material",
+            "reviewer/ptool/cosmetic",
+            "reviewer/ptool/citation",
+            "reviewer/ptool/retry",
+            "reviewer/ptool/resumed",
+            "reviewer/ptool/material",
+            "reviewer/desktop/cosmetic",
+            "reviewer/desktop/citation",
+            "reviewer/desktop/retry",
+            "reviewer/desktop/resumed",
+            "reviewer/desktop/material",
+            "worker/ptool/cosmetic",
+            "worker/ptool/citation",
+            "worker/ptool/retry",
+            "worker/ptool/resumed",
+            "worker/ptool/material",
+            "worker/desktop/cosmetic",
+            "worker/desktop/citation",
+            "worker/desktop/retry",
+            "worker/desktop/resumed",
+            "worker/desktop/material"
+          ],
+          "status": "partial"
+        },
+        "traceFiles": [
+          {
+            "file": "draft-author-de9b0011-4ec0-4f13-80ca-3a2057612f4b.json",
+            "sha256": "91989c3ccc769997ab8ff3155584b62e7b57334a5b3e54c7127317f9672a6a28",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+              "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+              "runtime": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:2940427"
+                ],
+                "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+                "observedAt": "2026-11-21T08:20:56.833Z"
+              },
+              "door": "api",
+              "observations": [
+                {
+                  "scenario": "cosmetic",
+                  "door": "api",
+                  "slug": "draft-revision-fc96196d-2e62-4861-a43b-f18c8de7ee44-2026-11-21",
+                  "clientActor": {
+                    "kind": "signed-in-user",
+                    "id": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                    "workspace": "verify-tauri-isolated-90"
+                  },
+                  "submittedFields": [
+                    "content",
+                    "expectedHash",
+                    "expectedVersion",
+                    "harness",
+                    "slug"
+                  ],
+                  "submissions": 1,
+                  "clientDocumentReads": 1,
+                  "payloadSha256": "ea18eb6d46c4c095f15c8bf4b0a79ae7ce754bc33391d707c84671aa2a01413b",
+                  "expectedHash": "78c99abd07a08866828ecbd1df21d40958478541d9ca34c69c2378e1d3364467",
+                  "savedHash": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765",
+                  "outcome": "accepted",
+                  "revisions": [
+                    {
+                      "id": "4",
+                      "seq": 3,
+                      "author_kind": "agent",
+                      "author_id": "pc-admin-plans-ui",
+                      "session_id": null,
+                      "content_hash": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765"
+                    }
+                  ],
+                  "matchingInvocationRows": []
+                },
+                {
+                  "scenario": "citation",
+                  "door": "api",
+                  "slug": "draft-revision-fc96196d-2e62-4861-a43b-f18c8de7ee44-2026-11-21",
+                  "clientActor": {
+                    "kind": "signed-in-user",
+                    "id": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                    "workspace": "verify-tauri-isolated-90"
+                  },
+                  "submittedFields": [
+                    "content",
+                    "expectedHash",
+                    "expectedVersion",
+                    "harness",
+                    "slug"
+                  ],
+                  "submissions": 1,
+                  "clientDocumentReads": 1,
+                  "payloadSha256": "3efbbfe1bb89194fa2f59d725f628b327a02e1d52ef9d6e91870a4207c1f85cc",
+                  "expectedHash": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765",
+                  "savedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "outcome": "accepted",
+                  "revisions": [
+                    {
+                      "id": "5",
+                      "seq": 4,
+                      "author_kind": "agent",
+                      "author_id": "pc-admin-plans-ui",
+                      "session_id": null,
+                      "content_hash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790"
+                    }
+                  ],
+                  "matchingInvocationRows": []
+                },
+                {
+                  "scenario": "retry",
+                  "door": "api",
+                  "slug": "draft-revision-fc96196d-2e62-4861-a43b-f18c8de7ee44-2026-11-21",
+                  "clientActor": {
+                    "kind": "signed-in-user",
+                    "id": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                    "workspace": "verify-tauri-isolated-90"
+                  },
+                  "submittedFields": [
+                    "content",
+                    "expectedHash",
+                    "expectedVersion",
+                    "harness",
+                    "slug"
+                  ],
+                  "submissions": 1,
+                  "clientDocumentReads": 0,
+                  "payloadSha256": "3efbbfe1bb89194fa2f59d725f628b327a02e1d52ef9d6e91870a4207c1f85cc",
+                  "expectedHash": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765",
+                  "savedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "outcome": "stale",
+                  "revisions": [
+                    {
+                      "id": "5",
+                      "seq": 4,
+                      "author_kind": "agent",
+                      "author_id": "pc-admin-plans-ui",
+                      "session_id": null,
+                      "content_hash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790"
+                    }
+                  ],
+                  "matchingInvocationRows": []
+                },
+                {
+                  "scenario": "resumed",
+                  "door": "api",
+                  "slug": "draft-revision-fc96196d-2e62-4861-a43b-f18c8de7ee44-2026-11-21",
+                  "clientActor": {
+                    "kind": "signed-in-user",
+                    "id": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                    "workspace": "verify-tauri-isolated-90"
+                  },
+                  "resumedFrom": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "submittedFields": [
+                    "content",
+                    "expectedHash",
+                    "expectedVersion",
+                    "harness",
+                    "slug"
+                  ],
+                  "submissions": 1,
+                  "clientDocumentReads": 1,
+                  "payloadSha256": "12e9e6d768e0053242b7a28a64de206bc11b87d3c5070431179dd1f4c0d80021",
+                  "expectedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "savedHash": "61822daf10faab30ebd44597c1d9a16ae1c5f255f3082c34b73cc0622267a73c",
+                  "outcome": "accepted",
+                  "revisions": [
+                    {
+                      "id": "6",
+                      "seq": 5,
+                      "author_kind": "agent",
+                      "author_id": "pc-admin-plans-ui",
+                      "session_id": null,
+                      "content_hash": "61822daf10faab30ebd44597c1d9a16ae1c5f255f3082c34b73cc0622267a73c"
+                    }
+                  ],
+                  "matchingInvocationRows": []
+                },
+                {
+                  "scenario": "material",
+                  "door": "api",
+                  "slug": "draft-revision-fc96196d-2e62-4861-a43b-f18c8de7ee44-2026-11-21",
+                  "clientActor": {
+                    "kind": "signed-in-user",
+                    "id": "3a139ce5-1e9c-4d6b-802f-7c60267385f8",
+                    "workspace": "verify-tauri-isolated-90"
+                  },
+                  "submittedFields": [
+                    "content",
+                    "expectedHash",
+                    "expectedVersion",
+                    "harness",
+                    "slug"
+                  ],
+                  "submissions": 1,
+                  "clientDocumentReads": 1,
+                  "payloadSha256": "a9206fe1bd03d8a45ddbac82a85df703dbbc374c0350ab00207a9388a770a72b",
+                  "expectedHash": "61822daf10faab30ebd44597c1d9a16ae1c5f255f3082c34b73cc0622267a73c",
+                  "savedHash": "9e9baeed6919575f4cd329a1dae6ac33f58697e12289bc93b6a9a1cfa86a621c",
+                  "outcome": "accepted",
+                  "revisions": [
+                    {
+                      "id": "7",
+                      "seq": 6,
+                      "author_kind": "agent",
+                      "author_id": "pc-admin-plans-ui",
+                      "session_id": null,
+                      "content_hash": "9e9baeed6919575f4cd329a1dae6ac33f58697e12289bc93b6a9a1cfa86a621c"
+                    }
+                  ],
+                  "matchingInvocationRows": []
+                }
+              ],
+              "roleReads": [
+                {
+                  "role": "reviewer",
+                  "actorId": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "scenario": "cosmetic",
+                  "revisionId": "4",
+                  "savedHash": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765",
+                  "action": "read revision diff",
+                  "responseSha256": "f03cd4ae44707d8b8ce76712a30d7d39f0457530cc780648b5c641f1c6af8340"
+                },
+                {
+                  "role": "worker",
+                  "actorId": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "scenario": "cosmetic",
+                  "revisionId": "4",
+                  "savedHash": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765",
+                  "action": "read current reference",
+                  "responseSha256": "004846f87be695481831689f78831c6fc74080d47cb00328b005a524af2bb765"
+                },
+                {
+                  "role": "reviewer",
+                  "actorId": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "scenario": "citation",
+                  "revisionId": "5",
+                  "savedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "action": "read revision diff",
+                  "responseSha256": "12054fb538368d2d312dad4fca438af5ce6c0c29ee13dd5d911621db99827823"
+                },
+                {
+                  "role": "worker",
+                  "actorId": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "scenario": "citation",
+                  "revisionId": "5",
+                  "savedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "action": "read current reference",
+                  "responseSha256": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790"
+                },
+                {
+                  "role": "reviewer",
+                  "actorId": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "scenario": "retry",
+                  "revisionId": "5",
+                  "savedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "action": "read revision diff",
+                  "responseSha256": "12054fb538368d2d312dad4fca438af5ce6c0c29ee13dd5d911621db99827823"
+                },
+                {
+                  "role": "worker",
+                  "actorId": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "scenario": "retry",
+                  "revisionId": "5",
+                  "savedHash": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790",
+                  "action": "read current reference",
+                  "responseSha256": "15280f9b5e59372af213aac0a790d5b85ad4dc759a957efdca615ef0a09db790"
+                },
+                {
+                  "role": "reviewer",
+                  "actorId": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "scenario": "resumed",
+                  "revisionId": "6",
+                  "savedHash": "61822daf10faab30ebd44597c1d9a16ae1c5f255f3082c34b73cc0622267a73c",
+                  "action": "read revision diff",
+                  "responseSha256": "2a574d5b8ac0865f5ee53f40a83c0603837630d02e3092ffab2f236970dd5e17"
+                },
+                {
+                  "role": "worker",
+                  "actorId": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "scenario": "resumed",
+                  "revisionId": "6",
+                  "savedHash": "61822daf10faab30ebd44597c1d9a16ae1c5f255f3082c34b73cc0622267a73c",
+                  "action": "read current reference",
+                  "responseSha256": "61822daf10faab30ebd44597c1d9a16ae1c5f255f3082c34b73cc0622267a73c"
+                },
+                {
+                  "role": "reviewer",
+                  "actorId": "8b52e847-34f1-4261-83d5-994ac731b6c2",
+                  "scenario": "material",
+                  "revisionId": "7",
+                  "savedHash": "9e9baeed6919575f4cd329a1dae6ac33f58697e12289bc93b6a9a1cfa86a621c",
+                  "action": "read revision diff",
+                  "responseSha256": "4b2f6482f32d575d19f9aa9590cd43a4b331f57c605b07ba4a92a6bbfdfb65c0"
+                },
+                {
+                  "role": "worker",
+                  "actorId": "039333a3-0526-4075-84ae-fbd78b5b5812",
+                  "scenario": "material",
+                  "revisionId": "7",
+                  "savedHash": "9e9baeed6919575f4cd329a1dae6ac33f58697e12289bc93b6a9a1cfa86a621c",
+                  "action": "read current reference",
+                  "responseSha256": "9e9baeed6919575f4cd329a1dae6ac33f58697e12289bc93b6a9a1cfa86a621c"
+                }
+              ],
+              "unmeasured": [],
+              "coverage": "Original client operations and authenticated role reads. Model work and required judgments need their own source records."
+            }
+          },
+          {
+            "file": "plan-role-views-revision-citation-db233b03-94d0-48de-89d7-57d686dc00e9-2026-11-21.json",
+            "sha256": "a8ff283551fb8ef6c95cd684c8b31087c55ff36a53b109e3d4f42e4a300bb9c5",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "slug": "revision-citation-db233b03-94d0-48de-89d7-57d686dc00e9-2026-11-21",
+              "scenario": "citation",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "runtimeBefore": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:2940427"
+                ],
+                "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+                "observedAt": "2026-11-21T08:21:42.390Z"
+              },
+              "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+              "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+              "harness": "e2e-fake-plan",
+              "requiredFields": [],
+              "roleViews": {
+                "author": {
+                  "userId": "8da8237e-8427-4f3e-a432-ac8f3fac5fef",
+                  "workspace": "verify-tauri-isolated-90",
+                  "action": "save the citation edit",
+                  "uiActions": [
+                    {
+                      "operation": "navigate",
+                      "target": "http://127.0.0.1:33700/adv?tab=plans&view=plans&scope=all&welcome=0&ws=verify-tauri-isolated-90&plan=revision-citation-db233b03-94d0-48de-89d7-57d686dc00e9-2026-11-21",
+                      "outcome": "completed"
+                    },
+                    {
+                      "operation": "click",
+                      "target": "[aria-label=\"Plan revision-citation-db233b03-94d0-48de-89d7-57d686dc00e9-2026-11-21\"] button[aria-label=\"Edit the raw markdown\"]",
+                      "outcome": "completed"
+                    },
+                    {
+                      "operation": "edit",
+                      "target": "Reference",
+                      "outcome": "completed"
+                    },
+                    {
+                      "operation": "click",
+                      "target": "[aria-label=\"Plan revision-citation-db233b03-94d0-48de-89d7-57d686dc00e9-2026-11-21\"] .pc-editbar__btn--primary",
+                      "outcome": "completed"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "file": "plan-role-views-revision-cosmetic-dcaeb41b-c5d4-4ba5-b9dc-1ca61b1f59ce-2026-11-21.json",
+            "sha256": "50e2e3e10566ed801c6e2f02439b8032ded4b93988755c31d5f827d67bf076af",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "slug": "revision-cosmetic-dcaeb41b-c5d4-4ba5-b9dc-1ca61b1f59ce-2026-11-21",
+              "scenario": "cosmetic",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "runtimeBefore": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:2940427"
+                ],
+                "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+                "observedAt": "2026-11-21T08:23:07.085Z"
+              },
+              "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+              "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+              "harness": "e2e-fake-plan",
+              "roleViews": {}
+            }
+          },
+          {
+            "file": "plan-role-views-revision-material-7ef0feee-e036-4a0d-9853-ad73dd2441b2-2026-11-21.json",
+            "sha256": "0ecbafdca58297796d406be3b4420d3457ba718b390e0c179d1dd0769d530ddd",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "slug": "revision-material-7ef0feee-e036-4a0d-9853-ad73dd2441b2-2026-11-21",
+              "scenario": "material",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "runtimeBefore": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:2940427"
+                ],
+                "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+                "observedAt": "2026-11-21T08:23:29.715Z"
+              },
+              "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+              "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+              "harness": "e2e-fake-plan",
+              "roleViews": {}
+            }
+          },
+          {
+            "file": "plan-role-views-revision-resumed-39eeeb8d-f9a8-4349-9b25-ce0c6c282e84-2026-11-21.json",
+            "sha256": "c4a606183abbe4a7dad50b7aeb65d5447271cca3e6cfc520a9f90e5e5527a4b9",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "slug": "revision-resumed-39eeeb8d-f9a8-4349-9b25-ce0c6c282e84-2026-11-21",
+              "scenario": "resumed",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "runtimeBefore": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:2940427"
+                ],
+                "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+                "observedAt": "2026-11-21T08:23:18.460Z"
+              },
+              "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+              "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+              "harness": "e2e-fake-plan",
+              "roleViews": {}
+            }
+          },
+          {
+            "file": "plan-role-views-revision-retry-c754606c-264b-44d6-9d65-b21b68b3e61f-2026-11-21.json",
+            "sha256": "887007f8dfd1c47084cf8c08decc0f1b5a976c581ae0b34890ad0631f6dc2ec3",
+            "ending": "",
+            "data": {
+              "workspace": "verify-tauri-isolated-90",
+              "slug": "revision-retry-c754606c-264b-44d6-9d65-b21b68b3e61f-2026-11-21",
+              "scenario": "retry",
+              "applicationCommit": "937d9ed054f9406d535a35f8ebaaf0db8df6d023",
+              "runtimeBefore": {
+                "schemaVersion": 1,
+                "units": [
+                  "verify-tauri-headless:2940427"
+                ],
+                "fingerprint": "e4df2e1656128457111d648699f699f14b50f71040593ecdc717de95047c54b6",
+                "observedAt": "2026-11-21T08:22:55.641Z"
+              },
+              "definitionCommit": "7dce79f7818b11eb63aca00555ea30ac216fa19c",
+              "group": "revision-native-d7c26817-3f49-4e94-ac88-a28e8c65404a",
+              "harness": "e2e-fake-plan",
+              "roleViews": {}
+            }
+          }
+        ]
+      }
+    ]
   }
 }
