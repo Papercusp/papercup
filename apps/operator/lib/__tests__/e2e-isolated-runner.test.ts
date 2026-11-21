@@ -22,12 +22,14 @@ const ISOLATED = 'postgresql://iso-user:pw@127.0.0.1:59999/throwaway';
 const ISOLATED_WS = 'verify-tauri-isolated-99';
 const READY_SEED_SPEC_FILES = [
   'adv-conversations-sessions.spec.ts',
+  'agent-links.native.spec.mts',
   'chat-streaming.spec.ts',
   'cupboard-identity-statements-native.spec.mts',
   'inbox-ack-persistence.native.spec.mts',
   'owner-question-delivery.native.spec.mts',
   'quick-access.native.spec.mts',
   'reports-work-fullscreen.native.spec.mts',
+  'rubric-unknown-breakdown.native.spec.mts',
   'support-workflow-native.spec.mts',
 ];
 
@@ -856,6 +858,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     expect(result.stdout.trim().split('\n')).toEqual([
       'verify-tauri-headless', '/unused/evidence',
       '--retain-artifact', 'phases/assert/playwright/**/*.png',
+      '--retain-artifact', 'phases/assert/playwright/**/trace.zip',
       '--retain-artifact', 'phases/prepare/verifier-source-receipt.json',
     ]);
   });
