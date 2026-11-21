@@ -343,11 +343,23 @@ export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
   const source = asDict(data);
   if (!source) return null;
   const metrics = fleetMetricsResultSchema.safeParse(source.fleetMetrics);
-  if (!metrics.success) return null;
-
   const summarySource = asDict(source.summary);
   const summary = pick(summarySource, ['fleet', 'members'], 120) ?? {};
   if (typeof summarySource?.planRef === 'string') summary.planRef = summarySource.planRef;
+  if (!metrics.success) {
+    // Outside work has a binding even when the metric snapshot is absent or
+    // unreadable. The result door already saved the complete source; keep that
+    // identity intact instead of falling back to a field-blind prefix walk.
+    if (typeof summary.planRef !== 'string') return null;
+    return {
+      ok: source.ok === true,
+      summary,
+      leaderBriefProjection: {
+        tier: 'trimmed', emergency: true, detailOmitted: true,
+        fleetMetricsOmitted: true, recovery: '_projection.cursor', completeIndexesInCursor: true,
+      },
+    };
+  }
   const supervision = compactClaimabilitySupervision(summarySource?.claimability_supervision);
   if (supervision) summary.claimability_supervision = supervision;
   if (summarySource?.claimabilitySupervisionDegraded === true) summary.claimabilitySupervisionDegraded = true;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import leaderBriefTool from './leader-brief';
-import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import { compactCampaign, compactLeaderBriefForResultDoor, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 import { projectFleetHeadcountState } from '../../agent-fleets-store';
 import { shapeFleetAssignments } from './assignments-shape';
 
@@ -19,6 +19,21 @@ describe('opaque outside plan reference delivery', () => {
     const brief = shapeLeaderBrief({ ...base, summary: { ...base.summary, planRef } }, 'trimmed') as Record<string, any>;
     expect(brief.summary.planRef).toBe(planRef);
   });
+  it.each([undefined, { ok: true, snapshot: { remaining: { total: 0 } } }])(
+    'keeps the outside binding recoverable when metrics cannot supply the result-door core (%j)', fleetMetrics => {
+      const reference = '  tracker:"quoted"\n😀  ';
+      const source = { ok: true, agentObligations: { evidence: 'large obligation '.repeat(5_000) },
+        summary: { fleet: 'outside', members: 2, planRef: reference }, fleetMetrics };
+      const preview = compactLeaderBriefForResultDoor(source) as Record<string, any>;
+      expect(preview.summary.planRef).toBe(reference);
+      expect(preview.leaderBriefProjection).toMatchObject({ fleetMetricsOmitted: true,
+        recovery: '_projection.cursor', completeIndexesInCursor: true });
+      expect(preview).not.toHaveProperty('fleetMetrics');
+      expect(JSON.stringify(preview).length).toBeLessThan(1_000);
+      expect(source.agentObligations.evidence).toHaveLength('large obligation '.length * 5_000);
+      expect(compactLeaderBriefForResultDoor({ ...source, summary: { fleet: 'ordinary' } })).toBeNull();
+    },
+  );
 });
 
 describe('parked capacity delivery', () => {
