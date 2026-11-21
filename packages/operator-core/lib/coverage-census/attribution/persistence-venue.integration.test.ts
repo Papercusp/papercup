@@ -50,6 +50,20 @@ import { selectRecipeCaptureTarget } from '../../agent-tools/code/capture-recipe
 import type { SimilarRecipe } from '../../code-recipes-search';
 import '../../agent-tools/gitnexus/query';
 
+// Only the explicit evidence sink below may use canonical admin PG. Dispatch
+// policy, handlers, REST readers and deferred telemetry share an owned fixture.
+const functionalConnection = vi.hoisted(() => ({ sql: undefined as Sql | undefined }));
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => {
+    if (!functionalConnection.sql) throw new Error('Functional attribution database is not ready');
+    return { sql: functionalConnection.sql };
+  },
+  // Reserved pool selection is tested separately; retain the real policy reads
+  // and checks against the fixture instead of opening the host's priority pool.
+  withPriorityOrgPg: async <T>(run: () => Promise<T>): Promise<T> => run(),
+}));
+
 // The real compiler worker resolves TypeScript from this installation root.
 // Match the existing first-party-callers tests by using the package dependency,
 // so a clean host does not need an unrelated ~/.papercusp/vendor/lsp install.
@@ -82,6 +96,7 @@ const CHANGE_QUEUE_SURFACES = [
 ] as const;
 
 let sql: Sql;
+let functionalDb: Awaited<ReturnType<typeof createOrgTestDb>> | undefined;
 let runGroup: string;
 const savedEnv = new Map<string, string | undefined>();
 const PINNED_ENV = [
@@ -114,7 +129,7 @@ function dispatchContext(): Record<string, unknown> {
       workspaceId: WORKSPACE,
       capabilities: new Set(['*']),
     },
-    tx: sql,
+    tx: functionalConnection.sql,
   };
 }
 
@@ -131,7 +146,7 @@ async function dispatchTool(toolName: string, args: Record<string, unknown>): Pr
   expect(dispatched.ok, JSON.stringify(dispatched.error ?? null)).toBe(true);
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   // This suite uses a synthetic superuser identity and measures coverage
   // attribution, not the host's authoritative per-session policy store.
   setSessionConfinementResolver(() => null);
@@ -151,6 +166,8 @@ beforeAll(() => {
     idle_timeout: 1,
     onnotice: () => {},
   });
+  functionalDb = await createOrgTestDb();
+  functionalConnection.sql = functionalDb.adminSql;
 });
 
 beforeEach(() => {
@@ -165,10 +182,13 @@ beforeEach(() => {
 afterEach(() => setAmbientTestContext(null));
 
 afterAll(async () => {
+  await flushPendingTelemetry();
   resetAttributionSinkForTests();
   resetAttributionArmingForTests();
   setSessionConfinementResolver(undefined);
   await sql?.end({ timeout: 2 });
+  await functionalDb?.cleanup();
+  functionalConnection.sql = undefined;
   for (const key of PINNED_ENV) {
     const value = savedEnv.get(key);
     if (value === undefined) delete process.env[key];
