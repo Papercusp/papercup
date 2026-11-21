@@ -7,6 +7,20 @@ import { evaluatePlanSpecQualityGate } from './plan-spec-quality-gate';
 import type { PlanClassRubricRef } from './spec-test-adequacy';
 
 describe('quality protocol admission (EI-28010197882392568)', () => {
+  it('attributes the reads that precede an audit-pending refusal', async () => {
+    const clauses = [clause()];
+    const stages: string[] = [];
+    const result = await evaluatePlanSpecQualityGate({
+      harnessSlug: 'papercusp', planSlug: 'quality-plan', planItemIds: ['P-001'],
+      measureRead: (stage, read) => {
+        stages.push(stage);
+        return read();
+      },
+    }, gateDeps({ listClauses: async () => clauses, listCards: async () => [auditPendingCard(clauses)] }));
+    expect(stages).toEqual(['clauses', 'rubric', 'cards', 'auditor']);
+    expect(result).toMatchObject({ satisfied: false, code: 'spec_quality_scorecard_grading_audit_pending' });
+  });
+
   it.each([1, 2])('admits only a compatible protocol after independent settlement (protocol %s)', async version => {
     const clauses = [clause()];
     const saved = matchingCard(clauses);

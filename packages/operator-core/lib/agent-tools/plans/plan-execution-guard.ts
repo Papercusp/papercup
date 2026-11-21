@@ -1014,7 +1014,9 @@ export async function checkPlanExecutionReadiness(binding: ExecutionPlanBinding,
         })),
       (async () => {
         const quality = await measurePlanStage('spec_quality', observe, () => evaluatePlanSpecQualityGate({ harnessSlug: row.harness_slug,
-          planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items }));
+          planSlug: binding.planSlug, planItemIds: specQualityPlanItemIds(items), planItems: items,
+          ...(observe ? { measureRead: (stage, read) => measurePlanStage(`spec_quality_${stage}`, observe, read) } : {}),
+        }));
         const critique = quality.satisfied && quality.applicable && isPlanStartBarCritiqueInCohort(createdMs)
           ? await measurePlanStage('critique', observe, () => evaluatePlanStartBarCritique({ workspaceId, harnessSlug: row.harness_slug,
             planSlug: binding.planSlug, nonDroppedItemCount: specQualityPlanItemIds(items).length,

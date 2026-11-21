@@ -59,6 +59,7 @@ export interface PlanSpecQualityGateVerdict {
 }
 
 type AcceptanceRubricRef = { rubricId?: string; classRef?: string | null };
+type SpecQualityRead = 'clauses' | 'rubric' | 'cards' | 'auditor';
 
 type GateDeps = {
   listClauses?: typeof listSpecClauses;
@@ -425,6 +426,7 @@ export async function evaluatePlanSpecQualityGate(
     planSlug: string;
     planItemIds: readonly string[];
     planItems?: readonly SpecQualityPlanItem[];
+    measureRead?: <T>(stage: SpecQualityRead, read: () => Promise<T>) => Promise<T>;
   },
   deps: GateDeps = {},
 ): Promise<PlanSpecQualityGateVerdict> {
@@ -432,9 +434,10 @@ export async function evaluatePlanSpecQualityGate(
   const listCards = deps.listCards ?? listScorecards;
   const readTasks = deps.listTasks ?? listTasks;
   const listAcceptanceRubrics = deps.listAcceptanceRubrics ?? getAcceptanceRubricsForPlan;
+  const measureRead = input.measureRead ?? ((_stage, read) => read());
   let clauses;
   try {
-    clauses = await listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug });
+    clauses = await measureRead('clauses', () => listClauses({ harnessSlug: input.harnessSlug, planSlug: input.planSlug }));
   } catch (error) {
     return {
       satisfied: false,
@@ -464,7 +467,8 @@ export async function evaluatePlanSpecQualityGate(
 
   let acceptanceRubrics;
   try {
-    acceptanceRubrics = await listAcceptanceRubrics(input.planSlug, { harnessSlug: input.harnessSlug, strict: true });
+    acceptanceRubrics = await measureRead('rubric', () => listAcceptanceRubrics(input.planSlug,
+      { harnessSlug: input.harnessSlug, strict: true }));
   } catch (error) {
     return {
       satisfied: false,
@@ -531,7 +535,7 @@ export async function evaluatePlanSpecQualityGate(
 
   let scorecardDiagnostics: PlanSpecQualityGateVerdict['scorecardDiagnostics'] = [];
   try {
-    const cards = await listCards({
+    const cards = await measureRead('cards', () => listCards({
       rubricRef: SPEC_QUALITY_RUBRIC_REF,
       subjectRef: evaluation.scorecardDraft.subject.ref,
       limit: 20,
@@ -539,7 +543,7 @@ export async function evaluatePlanSpecQualityGate(
       // Host-generation telemetry is not part of that contract, and measuring
       // it here adds a systemd lookup to every implementation-authority check.
       includeGeneration: false,
-    });
+    }));
     const matching = cards.find((card) => scorecardMatches(card, evaluation));
     if (matching) {
       return {
@@ -561,7 +565,7 @@ export async function evaluatePlanSpecQualityGate(
       (card) => scorecardStructurallyExact(card, evaluation) && card.gradingAudit?.state === 'pending',
     );
     if (pendingAudit) {
-      const reservationGuidance = await reservedGradingAuditorGuidance(pendingAudit, readTasks);
+      const reservationGuidance = await measureRead('auditor', () => reservedGradingAuditorGuidance(pendingAudit, readTasks));
       return {
         satisfied: false,
         applicable: true,
