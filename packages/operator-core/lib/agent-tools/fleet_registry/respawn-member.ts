@@ -1617,6 +1617,7 @@ export default defineTool({
         count: 1,
         harness: savedLaunchSpec.effective.harness,
         ...(savedLaunchSpec.effective.plan ? { plan: savedLaunchSpec.effective.plan } : {}),
+        ...(savedLaunchSpec.effective.planRef ? { planRef: savedLaunchSpec.effective.planRef } : {}),
         members: [spec],
         ...(args.mcpTarget !== undefined ? { mcpTarget: args.mcpTarget } : {}),
         __savedLaunchCarry: savedLaunchSpec.effective.member.carry,

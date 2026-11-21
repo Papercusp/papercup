@@ -556,6 +556,14 @@ async function main(native?: NativeProofRecorder) {
       hostStopped: true, bundleSha256, health }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'outside-plan-launch') {
+    const receipt = await (await import('./outside-plan-launch-http-scenario')).measureOutsidePlanLaunchScenario({
+      workspace, base, headers, evidenceDir,
+    });
+    await stopHost();
+    console.log('OUTSIDE_PLAN_LAUNCH_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostStopped: true, bundleSha256, health }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'codex-budget') {
     const receipt = await (await import('./codex-budget-http-scenario')).measureCodexBudgetScenario({
       workspace, base, headers, evidenceDir,

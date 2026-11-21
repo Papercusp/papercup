@@ -46,6 +46,18 @@ const base = {
   reusePath: 'fleet:respawn-member -> capability:launch-agent',
 };
 
+it('keeps an outside binding through persisted recipe reconstruction and later recovery', () => {
+  const { plan: _plan, ...config } = target.config;
+  const outside = { ...config, planRef: 'tracker:ABC-123' };
+  const saved = savedFleetLaunchSpecFromConfig(JSON.parse(JSON.stringify(outside)));
+  expect(saved.planRef).toBe('tracker:ABC-123');
+  expect(saved.plan).toBeUndefined();
+  const resolved = resolveLoadedSavedFleetLaunchSpec({ ...base, target: { ...target, config: outside }, requested: {} });
+  expect(resolved.ok).toBe(true);
+  expect(resolved.found).toBe(true);
+  if (resolved.ok && resolved.found) expect(resolved.effective.planRef).toBe('tracker:ABC-123');
+});
+
 const legacyRecord: AdvSessionLaunchRecord = {
   workspaceId: 'ws-test',
   agent: 'codex',
@@ -306,6 +318,16 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
         carry: 'warm',
       },
     });
+  });
+
+  it('recovers an opaque outside label from a recorded member launch without inventing a plan', () => {
+    const planRef = '  tracker:item with spaces  ';
+    const record = { ...legacyRecord,
+      launchSpec: { ...(legacyRecord.launchSpec as Record<string, unknown>), planSlug: null },
+      launchArgv: [...(legacyRecord.launchArgv as string[]).filter(token => !token.startsWith('--plan=')), `--plan-ref=${planRef}`] };
+    const parsed = savedFleetLaunchSpecFromLegacyRecord(record, 'ws-test', 'byoc');
+    expect(parsed).toMatchObject({ ok: true, config: { planRef }, saved: { planRef } });
+    if (parsed.ok) expect(parsed.config.plan).toBeUndefined();
   });
 
   it('normalizes the legacy fleet membership label without changing explicit personas', () => {

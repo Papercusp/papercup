@@ -1073,7 +1073,7 @@ export const MIN_COMPACTION_LIMIT_TOKENS = 20_000;
 
 /** Outside plans are opaque labels, never parsed or silently shortened. */
 export function validateOutsidePlanRef(value) {
-  if (typeof value !== "string" || value.length < 1 || value.length > 200 || value.includes("\0")) {
+  if (typeof value !== "string" || Array.from(value).length < 1 || Array.from(value).length > 200 || value.includes("\0")) {
     throw new Error("--plan-ref requires an opaque string of 1–200 characters without NUL");
   }
   return value;

@@ -25,6 +25,7 @@ import { replayAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { readAdvSessionLaunchRecordByOwner, type AdvSessionLaunchRecord } from '../../adv-sessions';
 import { parseSuLaunchSpecRecord } from '../../su-persona-render';
 import { normalizeSuContextSize } from '../../su-context-size.mjs';
+import { sessionOutsidePlanRefSchema } from '../../session-outside-plan';
 
 export const SAVED_FLEET_LAUNCH_SPEC_SOURCE = 'fleet:headcount-target' as const;
 export const LEGACY_FLEET_LAUNCH_SPEC_SOURCE = 'adv_sessions.launch_spec' as const;
@@ -57,6 +58,7 @@ export type SavedFleetLaunchField =
 
 export interface SavedFleetLaunchSpecRequest {
   plan?: string;
+  planRef?: string;
   harness?: string;
   agent?: string;
   model?: string;
@@ -87,6 +89,7 @@ export interface SavedFleetLaunchSpecRequest {
 export interface SavedFleetLaunchSpec {
   /** Optional only for legacy planless recovery; canonical targets always set it. */
   plan?: string;
+  planRef?: string;
   harness: string;
   member: MemberSpec;
 }
@@ -210,6 +213,7 @@ export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): 
   if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
   return {
     ...(normalizedConfig.plan !== undefined ? { plan: normalizedConfig.plan } : {}),
+    ...(normalizedConfig.planRef !== undefined ? { planRef: normalizedConfig.planRef } : {}),
     harness: normalizedConfig.harness,
     member: {
       agent: normalizedConfig.agent,
@@ -247,10 +251,10 @@ const originalRecipeFields = [
   'contextSize', 'compactionLimit', 'addDir', 'allowSubagents', 'brain', 'feature', 'display', 'extraArgs',
 ] as const;
 const originalLaunchOnlyFields = [
-  'name', 'count', 'leader', 'supervise', 'brief', 'launchContext', 'perMemberLaunchContext', 'claimKinds',
+  'name', 'count', 'leader', 'supervise', 'brief', 'launchContext', 'perMemberLaunchContext', 'claimKinds', 'workItems',
 ] as const;
 const originalGuardFields = [
-  'plan', 'harness', 'workspace', 'type', 'placement', 'confirmRouteSwitch', 'overrideCapacityClamp',
+  'plan', 'planRef', 'harness', 'workspace', 'type', 'placement', 'confirmRouteSwitch', 'overrideCapacityClamp',
   'confirmClaimCollapse', 'confirmKickoffMismatch',
 ] as const;
 
@@ -319,7 +323,13 @@ function savedHistoricalOriginalMemberLaunchSpec(
     return refuse('Original launch request does not describe this complete local single fleet epoch.');
   }
   if (!memberSpecSchema.pick({ claimKinds: true }).safeParse({ claimKinds: args.claimKinds }).success ||
-      (args.plan === undefined && args.claimKinds === undefined)) return refuse('Original scheduling scope is missing or malformed.');
+      (args.plan === undefined && args.claimKinds === undefined && args.workItems === undefined)) return refuse('Original scheduling scope is missing or malformed.');
+  if ((args.planRef !== undefined && !sessionOutsidePlanRefSchema.safeParse(args.planRef).success) ||
+      (args.planRef !== undefined && args.plan !== undefined) ||
+      (args.workItems !== undefined && (!Array.isArray(args.workItems) || args.workItems.length === 0 ||
+        args.workItems.some(id => typeof id !== 'string' || !id || id.length > 80 || id !== id.trim())))) {
+    return refuse('Original workItems or planRef binding is malformed or conflicts with plan.');
+  }
   for (const key of ['supervise', 'confirmRouteSwitch', 'overrideCapacityClamp',
     'confirmClaimCollapse', 'confirmKickoffMismatch']) {
     if (args[key] !== undefined && typeof args[key] !== 'boolean') return refuse(`Original ${key} is malformed.`);
@@ -444,6 +454,7 @@ function savedHistoricalOriginalMemberLaunchSpec(
     const routeModel = splitModelSpec(slot.model);
     const config: SavedFleetLaunchConfig = {
       ...(typeof args.plan === 'string' ? { plan: args.plan } : {}), harness: binding.harnessSlug,
+      ...(typeof args.planRef === 'string' ? { planRef: args.planRef } : {}),
       agent: slot.agent as FleetHeadcountConfig['agent'], model: routeModel.model!,
       ...(routeModel.effort ? { effort: routeModel.effort } : {}), account: slot.account,
       carry: slot.carry as 'warm' | 'cold', headless: slot.headless,
@@ -624,6 +635,11 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   }
 
   const plan = matchingValue('plan', launch.planSlug, argFlag(argv, 'plan'));
+  const planRef = matchingValue('planRef', typeof rawLaunchSpec.planRef === 'string' ? rawLaunchSpec.planRef : null,
+    flagValueFromArgv(argv, 'plan-ref', { opaque: true }));
+  if (planRef.error || (planRef.value !== null && (!sessionOutsidePlanRefSchema.safeParse(planRef.value).success || plan.value))) {
+    return { ok: false, message: planRef.error ?? 'Legacy planRef is invalid or conflicts with plan.' };
+  }
   const harness = matchingValue('harness', launch.harnessSlug, argFlag(argv, 'harness'));
   if (plan.error || harness.error) {
     return { ok: false, message: plan.error ?? harness.error! };
@@ -674,6 +690,7 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   );
   const config = normalizePersistedFleetLaunchConfig({
     ...(plan.value ? { plan: plan.value } : {}),
+    ...(planRef.value !== null ? { planRef: planRef.value } : {}),
     harness: effectiveHarness,
     agent: effectiveAgent as FleetHeadcountConfig['agent'],
     ...(model.model ? { model: model.model } : {}),
@@ -698,6 +715,7 @@ export function savedFleetLaunchSpecFromLegacyRecord(
 function cloneSpec(spec: SavedFleetLaunchSpec): SavedFleetLaunchSpec {
   return {
     plan: spec.plan,
+    ...(spec.planRef !== undefined ? { planRef: spec.planRef } : {}),
     harness: spec.harness,
     member: {
       ...spec.member,
@@ -728,6 +746,7 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 function applyRequest(saved: SavedFleetLaunchSpec, requested: SavedFleetLaunchSpecRequest): SavedFleetLaunchSpec {
   const effective = cloneSpec(saved);
   if (requested.plan !== undefined) effective.plan = requested.plan;
+  if (requested.planRef !== undefined) effective.planRef = requested.planRef;
   if (requested.harness !== undefined) effective.harness = requested.harness;
 
   if (requested.model !== undefined) {

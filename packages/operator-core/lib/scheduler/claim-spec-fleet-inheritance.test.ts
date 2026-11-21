@@ -33,7 +33,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 import { getClaimSpec, setClaimSpec, clearClaimSpec, fleetSpecBeeKey } from './claim-spec-store';
-import { DEFAULT_CLAIM_SPEC, claimSpecSchema } from './claim-spec';
+import { DEFAULT_CLAIM_SPEC, claimSpecSchema, positiveIdCohortIds } from './claim-spec';
 import setClaimSpecTool from '../agent-tools/scheduler/set_claim_spec';
 import healthTool from '../endpoint-route/routes/misc/health';
 
@@ -129,6 +129,23 @@ describe('fleetSpecBeeKey', () => {
 });
 
 describe('getClaimSpec fleet inheritance (P-002)', () => {
+  it('fences a preexisting per-member override with the current exact fleet set in one snapshot', async () => {
+    const parent = { ...laneSpec('fleet-launch-outside-work-items'),
+      view: { filter: { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] } } };
+    const read = makeSqlStub([[{ spec: laneSpec('broad-incumbent'), revision: 9, work_items_fence: parent }]]);
+    const got = await getClaimSpec({ cupId: 'su-member', workspaceId: 'ws1' }, read.sql);
+    expect(got.specId).toBe('broad-incumbent');
+    expect(got.revision).toBe(9);
+    expect(positiveIdCohortIds(got.view.filter)).toEqual(['WI-1', 'WI-2']);
+    expect(read.calls).toHaveLength(1);
+    expect(membershipMock).not.toHaveBeenCalled();
+    // A fresh process reads the durable parent again, including an explicit later addition.
+    const restarted = makeSqlStub([[{ spec: laneSpec('broad-incumbent'), revision: 9,
+      work_items_fence: { ...parent, view: { filter: { field: 'id', op: 'in', value: ['WI-1', 'WI-2', 'WI-3'] } } } }]]);
+    expect(positiveIdCohortIds((await getClaimSpec({ cupId: 'su-member', workspaceId: 'ws1' }, restarted.sql)).view.filter))
+      .toEqual(['WI-1', 'WI-2', 'WI-3']);
+  });
+
   it('a per-bee spec WINS — no membership lookup at all', async () => {
     const beeSpec = laneSpec('bee-own-lane');
     const { sql } = makeSqlStub([[{ spec: beeSpec }]]);

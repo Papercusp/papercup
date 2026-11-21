@@ -129,6 +129,13 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
         typeof r.contextPressureAgeSec === "number" ? r.contextPressureAgeSec : null,
       intent: clip(r.intent, c.intent),
       plan: r.declaredPlanSlug ?? null,
+      ...(() => {
+        const refs = [...new Set(claims.flatMap(claim => {
+          const ref = (claim as { outsidePlanRef?: unknown } | null)?.outsidePlanRef;
+          return typeof ref === 'string' ? [ref] : [];
+        }))];
+        return refs.length ? { outsidePlanRefs: refs } : {};
+      })(),
       fleet: r.fleetSlug ?? null,
       claims: claims.length,
       // This is the scheduler-capacity view; blocked/needs-human claims may be

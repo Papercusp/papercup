@@ -171,8 +171,11 @@ describe('channel-2 re-verify for admitted peers (rev-v2 Component A)', () => {
       expect(gists.size).toBe(1);
       expect(gists.get(current)?.public).toBe(false);
       expect(created).toBe(2);
-      await checkDrop();
+      // Old-ID revocation is queued; the replacement arrives before it drains.
+      await receiver.reverifyAdmitted();
       expect((await announce(current)).admit).toBe(true);
+      await receiver.mergeNow();
+      expect(receiver.admitted.has(sender.ownLog.keyHex)).toBe(true);
     }
     gists.delete(current);
     await checkDrop();

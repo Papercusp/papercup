@@ -2,6 +2,24 @@ import { describe, expect, it } from 'vitest';
 import leaderBriefTool from './leader-brief';
 import { compactCampaign, LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 import { projectFleetHeadcountState } from '../../agent-fleets-store';
+import { shapeFleetAssignments } from './assignments-shape';
+
+describe('opaque outside plan reference delivery', () => {
+  const planRef = 'tracker:' + 'x'.repeat(200 - 'tracker:'.length);
+  it.each(['trimmed', 'standard'] as const)('retains the full reference in %s brief and assignments', tier => {
+    const brief = shapeLeaderBrief({ ok: true, summary: { fleet: 'outside', members: 1, planRef }, members: [] }, tier) as Record<string, any>;
+    expect(brief.summary.planRef).toBe(planRef);
+    const assignments = shapeFleetAssignments({ scope: { fleet: 'outside', planRef },
+      agents: [{ agentId: 'member', claims: [{ id: 'WI-1', outsidePlanRef: planRef }] }] }, tier) as Record<string, any>;
+    expect(assignments.scope.planRef).toBe(planRef);
+    expect(assignments.agents[0].outsidePlanRefs).toEqual([planRef]);
+  });
+  it('retains a 200-character reference under emergency pressure', () => {
+    const base = largeBrief();
+    const brief = shapeLeaderBrief({ ...base, summary: { ...base.summary, planRef } }, 'trimmed') as Record<string, any>;
+    expect(brief.summary.planRef).toBe(planRef);
+  });
+});
 
 describe('parked capacity delivery', () => {
   it('preserves eligible and unread member identities under emergency pressure', () => {

@@ -40,7 +40,7 @@ import { RESTRICTED_HOLD_PREFLIGHT_TIMEOUT_MS } from '../../../scripts/lib/restr
 
 export type PrivateCompletionFixtureControls = { maintenance: boolean; transport: 'palette' | 'mcp-proxy' };
 
-const privateHttpScenarios = ['saved-plan-lines', 'rubric-coverage', 'current-su-native-recovery-allocation', 'testing-background',
+const privateHttpScenarios = ['outside-plan-launch', 'saved-plan-lines', 'rubric-coverage', 'current-su-native-recovery-allocation', 'testing-background',
   'private-mcp-preflight-only', 'current-su-native', 'current-su-native-carry',
   'current-su-native-frozen-carry-on', 'current-su-native-frozen-carry-off',
   'current-su-native-home-repair', 'current-su-native-setup',
@@ -906,7 +906,7 @@ export async function stopPrivateOperatorHost(host: ChildProcess, afterExit?: ()
  * fixture, including the request-only generation check. Never borrow a live
  * home or replace an existing credential. */
 export async function preparePrivateMcpBearer(scenario: string | undefined) {
-  if (!['private-mcp-preflight-only', 'codex-managed-tools', 'omp-managed-tools', 'security-census', 'private-completion-mcp']
+  if (!['outside-plan-launch', 'private-mcp-preflight-only', 'codex-managed-tools', 'omp-managed-tools', 'security-census', 'private-completion-mcp']
     .includes(scenario ?? '')) return;
   const privateHome = process.env.HOME;
   assert.ok(privateHome, 'Private MCP bearer requires its isolated HOME');

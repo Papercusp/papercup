@@ -347,6 +347,7 @@ export function compactLeaderBriefForResultDoor(data: unknown): Dict | null {
 
   const summarySource = asDict(source.summary);
   const summary = pick(summarySource, ['fleet', 'members'], 120) ?? {};
+  if (typeof summarySource?.planRef === 'string') summary.planRef = summarySource.planRef;
   const supervision = compactClaimabilitySupervision(summarySource?.claimability_supervision);
   if (supervision) summary.claimability_supervision = supervision;
   if (summarySource?.claimabilitySupervisionDegraded === true) summary.claimabilitySupervisionDegraded = true;
@@ -603,6 +604,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'claimabilitySupervisionDegraded',
   ];
   const out = pick(source, metricKeys, 120) ?? {};
+  if (typeof source.planRef === 'string') out.planRef = source.planRef;
   const supervision = compactClaimabilitySupervision(source.claimability_supervision);
   if (supervision) out.claimability_supervision = supervision;
   if (source.parked_capacity) out.parked_capacity = compactParkedCapacity(source.parked_capacity);

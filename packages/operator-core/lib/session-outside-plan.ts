@@ -4,7 +4,10 @@ import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from './workspace-registry';
 
 /** Opaque client label. Do not trim, parse, dereference, or infer authority from it. */
-export const sessionOutsidePlanRefSchema = z.string().min(1).max(200).refine(
+export const sessionOutsidePlanRefSchema = z.string().refine(
+  value => Array.from(value).length >= 1 && Array.from(value).length <= 200,
+  'planRef must contain 1–200 Unicode characters',
+).refine(
   value => !value.includes('\0'),
   'planRef must be representable in PostgreSQL (no NUL characters)',
 );

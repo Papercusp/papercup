@@ -2240,7 +2240,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // the LOCKLESS `reverifyAdmitted()` producer. Drained + applied UNDER the merge
   // gate by `drainReverifyDropQueue()` at the top of each pass (mirror of
   // `admissionQueue`). `reverifyInFlight` coalesces overlapping verify runs.
-  const reverifyDropQueue: string[] = [];
+  const reverifyDropQueue: Array<{ logKey: string; checked: AdmittedIdentity }> = [];
   let reverifyInFlight = false;
 
   const DEFAULT_REVERIFY_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
@@ -2341,7 +2341,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // Conclusive channel-2 revocation: ENQUEUE the drop. The actual map
         // mutation + `peer_revoked` event happen in `drainReverifyDropQueue()`
         // under the merge gate — never here, off the lock.
-        reverifyDropQueue.push(logKey);
+        reverifyDropQueue.push({ logKey, checked: identity });
       }
       // 'pending' or 'verified': keep the peer (fail-open; only conclusive fail drops).
     }
@@ -2356,12 +2356,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    */
   function drainReverifyDropQueue(): void {
     while (reverifyDropQueue.length > 0) {
-      const logKey = reverifyDropQueue.shift()!;
+      const { logKey, checked } = reverifyDropQueue.shift()!;
       // Never drop the own log (defensive; the producer never enqueues it).
       if (logKey === ownLog.keyHex) continue;
       // Already gone (revoked / refreshed away since enqueue) → skip silently.
       if (!admitted.has(logKey) && !admittedIdentities.has(logKey)) continue;
       const identity = admittedIdentities.get(logKey);
+      // A signed replacement can be admitted while the old gist check is in flight.
+      if (identity?.attestationGistId !== checked.attestationGistId ||
+          identity.devicePubkey !== checked.devicePubkey ||
+          identity.githubUserId !== checked.githubUserId) continue;
       if (identity?.devicePubkey) {
         void persistPeerLifecycle(
           [{ logKeyHex: logKey, devicePubkey: identity.devicePubkey, state: 'retired' }],
