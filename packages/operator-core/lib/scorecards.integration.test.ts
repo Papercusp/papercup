@@ -1996,10 +1996,100 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       SET payload = payload #- ARRAY['observation', 'ratings', ${criterionKey}::text, 'appliedLever']
       WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${index}`;
     expect((await readCriterionRepairHistory(input)).guidance).toMatchObject({ exhausted: false, alternatives: [] });
+    expect(await open(crossing.repairGuidance.args)).toMatchObject({
+      exhausted: false, alternatives: [], levers: [
+        { key: 'cache', trackRecord: 'no-verified-improvement' },
+        { key: 'index', trackRecord: 'untested', verifiedOutcomes: empty },
+      ],
+    });
     await regrade('A later index repair improved latency.', 'pass', 'index');
     const revised = (await readCriterionRepairHistory(input)).guidance;
     expect(revised?.levers[1]?.verifiedOutcomes).toEqual({ ...empty, improved: 1 });
     expect(revised?.exhausted).toBe(false);
+    expect(await open(crossing.repairGuidance.args)).toMatchObject({
+      exhausted: false, levers: [{ key: 'cache' }, { key: 'index', trackRecord: 'observed-improvement' }],
+    });
+  });
+
+  it('closes and re-grades listed and unlisted repairs under the same acceptance rules', async () => {
+    const { emitScorecard, scorecardEmitArgs } = await import('./agent-tools/scorecards/emit');
+    const rubricRef = 'repair-advice-parity';
+    const owner = 'su-advisory-parity';
+    const workspaceId = issuesScopeWorkspace();
+    const harness = 'papercusp';
+    const subject = { kind: 'pot' as const, ref: 'lookup-parity-fixture' };
+    const scope = { rubricRef, subject, sourceHive: harness };
+    const input = { createdBy: owner, workspaceId, ctxHarness: harness };
+    const ctx = { workspaceId, harnessSlug: harness, isSuperuser: true, uiClientId: owner };
+
+    async function resolves(id: string) {
+      const item = await getWorkItem(id, harness);
+      const data = item?.payload as { requestedKey?: string; storedKey?: string } | undefined;
+      if (!data?.requestedKey || !data.storedKey) throw new Error(`Missing lookup data for ${id}`);
+      return data.requestedKey === data.storedKey;
+    }
+
+    function notices(receipt: object) {
+      return Object.fromEntries(Object.entries(receipt).filter(([key]) => /warning|refusal|requiredFields/i.test(key)));
+    }
+
+    async function exercise(lever: 'normalize-request' | 'normalize-record') {
+      await proposeRubric({ rubricId: rubricRef, title: 'Lookup correctness', characteristic: 'lookup',
+        status: 'active', by: owner, ratingScale: ['pass', 'partial', 'fail'], criteria: [{
+          key: 'lookup', title: 'Requested key resolves', model: 'The request matches the stored key.',
+          method: 'Compare the actual requested and stored keys.', driftMarkers: 'A known key misses.',
+          levers: [{ key: 'normalize-request', action: 'Normalize the request.', where: 'Request key', expectedEffect: 'The lookup resolves.' }],
+        }] });
+      const item = await createWorkItem({ kind: 'task', title: `Restore lookup using ${lever}`, harness,
+        createdBy: owner, assignee: owner, workspaceId, payload: { requestedKey: 'ready', storedKey: 'READY' } });
+      expect(await resolves(item.id)).toBe(false);
+      const baseline = await emitScorecard(scorecardEmitArgs.parse({ ...scope, purpose: 'diagnostic', ratings: {
+        lookup: { rating: 'fail', evidence: 'The request misses the case-sensitive key.', remediation: item.id },
+      } }), input);
+      expect(baseline, JSON.stringify(baseline)).toMatchObject({ ok: true, created: true, issueId: expect.any(String),
+        rubricRevision: expect.any(Number), criteriaHash: expect.any(String), canonicalRatings: { lookup: { rating: 'fail' } } });
+      if (!('issueId' in baseline) || !baseline.issueId || !('criteriaHash' in baseline)) throw new Error('Missing diagnostic baseline');
+
+      const patch = lever === 'normalize-request' ? { requestedKey: 'READY' } : { storedKey: 'ready' };
+      await mergeWorkItemPayload(item.id, patch, { harness });
+      expect(await resolves(item.id)).toBe(true);
+      const response = await definitionComplete.handler(definitionComplete.args.parse({
+        id: item.id, harness, state: 'done', assumptions: 'none', changeKinds: ['no-code-change'],
+        changeKindReason: 'The repair updates lookup data in the private fixture.',
+        completion: { summary: `Restored the lookup using ${lever}.`, testsRun: 'Read back the request and stored keys from the work item.',
+          testResult: 'The request now matches the stored key.', verifiedHow: 'manual', filesChanged: [],
+          verification: { workOutcome: 'introduced-change' } },
+      }), ctx as never) as { data: { results: Array<{ ok: boolean; finish?: { complete: boolean } }> } };
+      const close = response.data.results[0]!;
+      expect(close, JSON.stringify(close)).toMatchObject({ ok: true, finish: { complete: true } });
+      expect((await getWorkItem(item.id, harness))?.state).toBe('done');
+
+      const grade = await emitScorecard(scorecardEmitArgs.parse({ ...scope, baselineRef: baseline.issueId,
+        ratings: { lookup: { rating: 'pass', evidence: `Lookup resolves after ${item.id}.`, appliedLever: lever } },
+      }), input);
+      expect(grade, JSON.stringify(grade)).toMatchObject({ ok: true, created: true, issueId: expect.any(String) });
+      if (!('issueId' in grade) || !grade.issueId) throw new Error(`Missing re-grade for ${item.id}`);
+      expect((await getIssue(grade.issueId))?.payload).toMatchObject({ observation: {
+        rubricRef, subject, baselineRef: baseline.issueId, ratings: { lookup: { rating: 'pass', appliedLever: lever } },
+      } });
+      return { criteriaHash: baseline.criteriaHash, rubricRevision: baseline.rubricRevision, close: notices(close), grade: notices(grade) };
+    }
+
+    // Both trials start from the same migrated schema and grading contract. Each
+    // retains its own pending audit, which would affect a later grade in that database.
+    async function isolatedTrial(lever: 'normalize-request' | 'normalize-record') {
+      const trial = await createOrgTestDb();
+      try {
+        h.sql = trial.adminSql;
+        return await exercise(lever);
+      } finally {
+        h.sql = db.adminSql;
+        await trial.cleanup();
+      }
+    }
+    const listed = await isolatedTrial('normalize-request');
+    const unlisted = await isolatedTrial('normalize-record');
+    expect(unlisted).toEqual(listed);
   });
 
   it('recovers explicitly linked repairs across tied timestamps, page boundaries, and a reader restart', async () => {
