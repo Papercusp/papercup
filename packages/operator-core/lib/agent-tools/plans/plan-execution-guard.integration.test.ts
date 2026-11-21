@@ -568,10 +568,23 @@ describe('canonical adopted repair binding', () => {
     expect(original.source_plan_slug).toBe('historical-draft');
     // Selection proof only. Complete runtime admission is the independent P-002 contract.
     const checked: string[]=[];
-    expect(await checkPlanExecutionGuard({ownerId:OWNER,workspaceId:WS,toolName:'apply_patch',args:{}}, {
+    const stages: string[] = [];
+    const observeTiming = Object.assign(({stage}: {stage: string}) => { stages.push(`finish:${stage}`); }, {
+      trackPending: (stage: string) => {
+        stages.push(`pending:${stage}`);
+        return () => { stages.push(`clear:${stage}`); };
+      },
+    });
+    expect(await checkPlanExecutionGuard({ownerId:OWNER,workspaceId:WS,toolName:'apply_patch',args:{},observeTiming}, {
       readBindings:readExecutionPlanBindings,checkPlan:async b=>{checked.push(b.planSlug);return [];},
     })).toBeNull();
     expect(checked).toEqual(['repair-plan']);
+    expect(stages.slice(0, stages.indexOf('finish:bindings') + 1)).toEqual([
+      'pending:bindings',
+      'pending:binding_census_query', 'clear:binding_census_query', 'finish:binding_census_query',
+      'pending:binding_canonical_identity', 'clear:binding_canonical_identity', 'finish:binding_canonical_identity',
+      'clear:bindings', 'finish:bindings',
+    ]);
   });
   it.each(['partial','missing-plan','missing-line','missing-node','duplicate-plan','duplicate-line',
     'duplicate-node','duplicate-feature','held','admission-held'])('refuses incomplete stale or unstarted canonical bindings: %s', async kind => {

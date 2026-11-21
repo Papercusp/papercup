@@ -249,7 +249,7 @@ export interface ExecutionPlanGoalResolution {
   diagnostics: readonly unknown[];
 }
 export interface PlanExecutionGuardDeps {
-  readBindings: (ownerId: string, workspaceId: string) => Promise<ExecutionPlanBinding[]>;
+  readBindings: (ownerId: string, workspaceId: string, observe?: PlanExecutionTimingObserver) => Promise<ExecutionPlanBinding[]>;
   resolveGoal?: (ownerId: string, workspaceId: string, observe?: PlanExecutionTimingObserver,
     signal?: AbortSignal) => Promise<ExecutionPlanGoalResolution>;
   checkPlan: (binding: ExecutionPlanBinding, workspaceId: string, observe?: PlanExecutionTimingObserver,
@@ -659,7 +659,8 @@ export async function checkScopedFeasibilityAdmission(input: PlanExecutionGuardI
 }
 
 /** Read durable authority, never coord_presence or caller-supplied plan/force/purpose. */
-export async function readExecutionPlanBindings(ownerId: string, workspaceId: string): Promise<ExecutionPlanBinding[]> {
+export async function readExecutionPlanBindings(ownerId: string, workspaceId: string,
+  observe?: PlanExecutionTimingObserver): Promise<ExecutionPlanBinding[]> {
   const { sql } = getOrgPg();
   type CensusRow = {
     plan_slug: string | null;
@@ -673,7 +674,8 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
   // three serial native-hook round trips and keeps the rebind, session lane,
   // claims and held work on the same database snapshot. Canonical witnesses
   // below and their final revision rechecks remain fresh.
-  const snapshots = await sql<Array<{ rebind: unknown; bindings: CensusRow[]; held: HeldRow[] }>>`
+  const snapshots = await measurePlanStage('binding_census_query', observe,
+    () => sql<Array<{ rebind: unknown; bindings: CensusRow[]; held: HeldRow[] }>>`
     WITH brief AS MATERIALIZED (
       SELECT current_plan_slug,harness_slug,control_state FROM harness_shared.session_briefs
        WHERE owner_id=${ownerId} AND workspace_id=${workspaceId}
@@ -697,7 +699,7 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
     )
     SELECT (SELECT control_state #> '{lifecycle,executionPlanBinding}' FROM brief LIMIT 1) AS rebind,
            COALESCE((SELECT jsonb_agg(b) FROM bindings b),'[]'::jsonb) AS bindings,
-           COALESCE((SELECT jsonb_agg(h) FROM held h),'[]'::jsonb) AS held`;
+           COALESCE((SELECT jsonb_agg(h) FROM held h),'[]'::jsonb) AS held`);
   if (snapshots.length !== 1) throw new Error('execution_plan_snapshot_unavailable');
   const { bindings: rows, held } = snapshots[0];
   const rebind = parseExecutionPlanRebind(snapshots[0].rebind, ownerId);
@@ -725,7 +727,8 @@ export async function readExecutionPlanBindings(ownerId: string, workspaceId: st
     }
     const binding: ExecutionPlanBinding = { planSlug: row.plan_slug ?? '', harnessSlug: row.harness_slug,
       source: 'work-item', sourceRef: row.feature_id };
-    const canonical = await readCanonicalExecutionIdentity(sql, workspaceId, binding, row.plan_line_id, ownerId);
+    const canonical = await measurePlanStage('binding_canonical_identity', observe,
+      () => readCanonicalExecutionIdentity(sql, workspaceId, binding, row.plan_line_id, ownerId));
     if (!canonical) binding.canonicalInvalid = true;
     else binding.canonical = canonical;
     bindings.push(binding);
@@ -1059,7 +1062,7 @@ export async function checkPlanExecutionGuard(input: PlanExecutionGuardInput,
   if (!isPlanImplementationCall(input.toolName, input.args)) return null;
   try {
     const allBindings = await measurePlanStage('bindings', input.observeTiming,
-      () => deps.readBindings(input.ownerId, input.workspaceId));
+      () => deps.readBindings(input.ownerId, input.workspaceId, input.observeTiming));
     // Goal selection only narrows this authoritative census; it cannot add a
     // bound plan. Avoid its store reads when there is nothing to select or only
     // one unique plan remains. The census is still read afresh on every call.
