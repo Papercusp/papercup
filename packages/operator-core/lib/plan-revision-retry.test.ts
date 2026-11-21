@@ -3,13 +3,50 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
-import { assertNativePlanRetry, installPlanRetryExpression, lostAcknowledgement, type SaveAttempt } from '../../../apps/operator/e2e/_plan-revision-retry';
+import { assertNativePlanRetry, installPlanRetryExpression, installPlanSaveObservation, lostAcknowledgement, type SaveAttempt } from '../../../apps/operator/e2e/_plan-revision-retry';
 
 const slug = 'revision-retry-11111111-2222-4333-8444-555555555555-2026-11-21';
 const workspace = 'verify-tauri-isolated-1234';
 const harness = 'test-plan';
 const endpoint = '/api/admin/plans/set-content';
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+
+describe('native Plans save observation', () => {
+  const scope = { origin: 'http://127.0.0.1:18881', workspace, harness, slug: slug.replace('retry', 'citation') };
+  const location = { href: scope.origin + '/adv?ws=' + workspace + '&plan=' + scope.slug };
+
+  it.each([
+    { status: 200, body: '{"ok":true}', result: 'accepted', scopeField: { harness }, selection: 'matched' },
+    { status: 409, body: '{"error":"stale"}', result: 'stale', scopeField: {}, selection: 'omitted' },
+    { status: 200, body: '{"ok":false,"error":"missing_plan"}', result: 'refused', scopeField: { harness: 'other' }, selection: 'different' },
+    { status: 502, body: 'Unavailable', result: 'unreadable', scopeField: { harness }, selection: 'matched' },
+  ])('retains a $result response without consuming or changing it', async ({ status, body, result, scopeField, selection }) => {
+    const response = new Response(body, { status });
+    const transport = async (_path: string, _init: RequestInit) => response;
+    const win = { fetch: transport, __planSaveObservation: undefined as undefined | (() => Promise<unknown[]>) };
+    runInNewContext(installPlanSaveObservation(scope), { window: win, location, URL });
+    const send = (target: string) => win.fetch(endpoint, { method: 'POST', body: JSON.stringify({ slug: target, ...scopeField }) });
+    await send('another-plan');
+    const delivered = await send(scope.slug);
+    expect(delivered).toBe(response);
+    expect(await delivered.text()).toBe(body);
+    expect(await win.__planSaveObservation!()).toEqual([{ harness: selection, httpStatus: status, result }]);
+    expect(win.fetch).toBe(transport);
+  });
+
+  it('distinguishes a transport rejection from a request the page never sent', async () => {
+    const failure = new TypeError('connection lost');
+    const transport = async (_path: string, _init: RequestInit) => { throw failure; };
+    const win = { fetch: transport, __planSaveObservation: undefined as undefined | (() => Promise<unknown[]>) };
+    const install = () => runInNewContext(installPlanSaveObservation(scope), { window: win, location, URL });
+    install();
+    expect(await win.__planSaveObservation!()).toEqual([]);
+    install();
+    await expect(win.fetch(endpoint, { method: 'POST', body: JSON.stringify({ slug: scope.slug, harness }) })).rejects.toBe(failure);
+    expect(await win.__planSaveObservation!()).toEqual([{ harness: 'matched', httpStatus: null, result: 'transport-error' }]);
+    expect(win.fetch).toBe(transport);
+  });
+});
 
 describe('native Plans lost-acknowledgement fixture', () => {
   it.each(['stale', 'accepted'] as const)('retains one real write and the %s reply to its identical retry', async result => {

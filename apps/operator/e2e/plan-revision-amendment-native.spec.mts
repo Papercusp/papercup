@@ -9,7 +9,7 @@ import { assertFixtureApiSuccess, seedFakeLlmHarness } from './_fake-llm-fixture
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 import { citationEdit, diagnosticCitationCase, nativePlanComparisonTimeoutMs, nativePlanEdits, privatePlanUsername, readPreparedPlanHarness, retainNativePlanFailure,
   type NativePlanEdit } from './_plan-revision-edits';
-import { assertNativePlanRetry, installPlanRetryExpression, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
+import { assertNativePlanRetry, installPlanRetryExpression, installPlanSaveObservation, lostAcknowledgement, type NativePlanRetryTrace } from './_plan-revision-retry';
 
 const run = promisify(execFile);
 
@@ -17,7 +17,7 @@ type UiAction = { operation: 'navigate' | 'click' | 'edit'; target: string; outc
 
 test.describe.configure({ mode: 'default' });
 
-async function captureNativeEdit(request: APIRequestContext, info: TestInfo, editCase: NativePlanEdit, compareRoles = false,
+async function captureNativeEdit(request: APIRequestContext, info: TestInfo, editCase: NativePlanEdit, rolesToObserve?: 'author' | 'all',
   mark: (step: string) => void = () => {}) {
   mark('initial private workspace and native liveness');
   const { scenario, originalText, replacementText } = editCase;
@@ -106,15 +106,16 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
   try {
     mark('private harness registration');
     // Only the registry setup is used. The plan and both writes go through the real operator.
-    const harness = compareRoles ? readPreparedPlanHarness(workspace, runtimeBefore.fingerprint)
+    const harness = rolesToObserve ? readPreparedPlanHarness(workspace, runtimeBefore.fingerprint)
       : await seedFakeLlmHarness({ hive: true });
     trace.harness = harness;
-    async function readPlan() {
+    async function readPlan(observation?: { httpStatus?: number }) {
       mark('fixture Plans get request');
       const response = await request.get(new URL('/api/admin/plans/get', origin).href, {
         params: { slug, harness, mode: 'full', includeEnrichments: 'false' }, headers, maxRedirects: 0,
       });
       mark('fixture Plans get HTTP ' + response.status());
+      if (observation) observation.httpStatus = response.status();
       expect(response.ok()).toBe(true);
       const plan = await response.json();
       assertFixtureApiSuccess('get', plan);
@@ -133,20 +134,32 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     }
     await writePlan('new', { title: 'Native plan ' + scenario, status: 'draft' });
     const workerTask = 'Read the saved ' + editCase.heading + ' for ' + handles.worker;
-    if (compareRoles) {
+    if (rolesToObserve) {
       await writePlan('add-item', { phase: 'Phase 1 — Reference check', importance: 'normal', text: workerTask });
     }
     const draft = await readPlan();
-    const roles = compareRoles ? '\nReview the saved change for ' + handles.reviewer + '\n' : '';
+    const roles = rolesToObserve ? '\nReview the saved change for ' + handles.reviewer + '\n' : '';
     await writePlan('set-content', { content: draft.raw.trimEnd() + '\n\n## ' + editCase.heading + '\n\n' + originalText + '\n' + roles,
       expectedVersion: draft.version, expectedHash: draft.contentHash });
     const before = await readPlan();
     expect(before.raw.split(originalText)).toHaveLength(2);
+    const expectedText = before.raw.replace(originalText, replacementText);
+    const expectedHash = createHash('sha256').update(expectedText).digest('hex');
+    async function readSavedDocument() {
+      const observation: Record<string, unknown> & { httpStatus?: number } = {
+        beforeVersion: before.version, beforeHash: before.contentHash, expectedHash,
+      };
+      trace.savedDocument = observation;
+      const document = await readPlan(observation);
+      Object.assign(observation, { version: document.version, contentHash: document.contentHash,
+        rawSha256: createHash('sha256').update(document.raw).digest('hex'), exactBytes: document.raw === expectedText });
+      return document;
+    }
     const view = new URL('/adv', origin);
     view.search = new URLSearchParams({ tab: 'plans', view: 'plans', scope: 'all', welcome: '0', ws: workspace, plan: slug }).toString();
     await native('navigate', view.href, '--json');
     await visible(`location.origin === ${JSON.stringify(origin.origin)} && new URL(location.href).searchParams.get('plan') === ${JSON.stringify(slug)}`);
-    if (compareRoles) {
+    if (rolesToObserve) {
       await enterRole('author', 'save the ' + scenario + ' edit');
       await native('navigate', view.href, '--json');
     }
@@ -248,15 +261,41 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
         partial.attempts = await measure('window.__planRevisionRetry.finish()');
       }
     } else {
-      await native('click', detail + ' ' + save, '--json');
-      await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit)}) && document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(replacementText)})`);
+      await measure(installPlanSaveObservation({ origin: origin.origin, workspace, slug, harness }));
+      let failure: { error: unknown; step: string } | undefined;
+      let step = 'desktop Save click';
+      try {
+        await native('click', detail + ' ' + save, '--json');
+        step = 'desktop post-save read view';
+        await visible(`!!document.querySelector(${JSON.stringify(detail + ' ' + edit)}) && document.querySelector(${JSON.stringify(detail)})?.innerText.includes(${JSON.stringify(replacementText)})`);
+      } catch (error) { failure = { error, step }; }
+      // Capture the actual response and safe DOM state before navigating away.
+      // A failed render still has a separately observable database outcome.
+      trace.saveObservation = await measure(`(async () => {
+        const root = document.querySelector(${JSON.stringify(detail)});
+        const preview = root?.querySelector('.pc-plan-document__preview, .pc-plan-document__fallback pre');
+        const error = root?.querySelector('.pc-editbar__error');
+        return { attempts: await window.__planSaveObservation(), planVisible: !!root, previewPresent: !!preview,
+          showsReplacement: preview?.innerText.includes(${JSON.stringify(replacementText)}) === true,
+          showsOriginal: preview?.innerText.includes(${JSON.stringify(originalText)}) === true,
+          editAvailable: !!root?.querySelector(${JSON.stringify(edit + ':enabled')}),
+          saveAvailable: !!root?.querySelector(${JSON.stringify(save + ':enabled')}),
+          saveError: !!error?.textContent, conflict: !!document.querySelector('.pc-conflict__current') };
+      })()`).catch(() => ({ status: 'unavailable' }));
+      if (failure) {
+        const [stored, revisions] = await Promise.allSettled([readSavedDocument(),
+          sql`SELECT id::text, seq, content_hash FROM harness_shared.plan_revisions
+            WHERE workspace_id=${workspace} AND harness_slug=${harness} AND plan_slug=${slug} ORDER BY seq`]);
+        trace.savedDocumentRead = stored.status;
+        trace.revisionsAfterClick = revisions.status === 'fulfilled' ? revisions.value : { status: 'unavailable' };
+        mark(failure.step);
+        throw failure.error;
+      }
     }
     trace.requests = await measure('window.__planCitationRequests()');
     const requests = trace.requests as Array<{ path: string }>;
     expect(requests.filter(row => row.path === '/api/admin/plans/set-content')).toHaveLength(scenario === 'retry' ? 2 : 1);
-    const after = await readPlan();
-    expect(after.raw).toBe(before.raw.replace(originalText, replacementText));
-    expect(after.contentHash).toBe(createHash('sha256').update(after.raw).digest('hex'));
+    const after = await readSavedDocument();
     const revision = await sql.begin('isolation level repeatable read read only', async tx => {
       const rows = await tx`SELECT id::text, seq, content_hash, author_kind, author_id, created_at::text
         FROM harness_shared.plan_revisions WHERE workspace_id=${workspace} AND harness_slug=${harness}
@@ -271,12 +310,17 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
       return { rows, audits, planRuns: runs, callsWithTopLevelPlanSlug: calls };
     });
     trace.revision = revision;
+    expect(after.raw).toBe(expectedText);
+    expect(after.contentHash).toBe(expectedHash);
+    if (scenario !== 'retry') expect(trace.saveObservation).toMatchObject({
+      attempts: [{ result: 'accepted' }], previewPresent: true, showsReplacement: true,
+    });
     expect(revision.rows.map(row => row.content_hash)).toEqual([before.contentHash, after.contentHash]);
     expect(revision.rows[1]!.seq).toBe(revision.rows[0]!.seq + 1);
     expect(revision.rows[1]!.author_id).toBeTruthy();
-    if (compareRoles) {
-      const saved = revision.rows[1]!;
-      roleViews.author!.revisionId = saved.id;
+    const saved = revision.rows[1]!;
+    if (rolesToObserve) roleViews.author!.revisionId = saved.id;
+    if (rolesToObserve === 'all') {
       await enterRole('reviewer', 'inspect the saved ' + scenario + ' diff');
       const review = new URL(view);
       review.searchParams.set('ptab', 'revisions');
@@ -304,11 +348,11 @@ async function captureNativeEdit(request: APIRequestContext, info: TestInfo, edi
     return trace;
   } finally {
     try {
-      if (compareRoles) trace.roleViews = roleViews;
+      if (rolesToObserve) trace.roleViews = roleViews;
       const body = JSON.stringify(trace);
-      await info.attach(compareRoles ? 'native-' + scenario + '-role-views' : 'native-author-citation',
+      await info.attach(rolesToObserve ? 'native-' + scenario + '-role-views' : 'native-author-citation',
         { body, contentType: 'application/json' });
-      if (compareRoles && process.env.PLAN_REVISION_EVIDENCE)
+      if (rolesToObserve && process.env.PLAN_REVISION_EVIDENCE)
         await writeFile(join(process.env.PLAN_REVISION_EVIDENCE, 'plan-role-views-' + slug + '.json'), body, { flag: 'wx', mode: 0o600 });
     }
     finally { await sql.end({ timeout: 5 }); }
@@ -325,7 +369,7 @@ test(diagnosticCitationCase, async ({ request }, info) => {
   let stage = 'start';
   const started = Date.now();
   try {
-    await captureNativeEdit(request, info, citationEdit, diagnosing, step => { stage = step; });
+    await captureNativeEdit(request, info, citationEdit, diagnosing ? 'author' : undefined, step => { stage = step; });
   } catch (error) {
     if (!diagnosing) throw error;
     const failure = retainNativePlanFailure('desktop', citationEdit.scenario, stage, error, Date.now() - started);
@@ -341,7 +385,7 @@ test('saves a citation in native Plans and correlates author reviewer and worker
     const started = Date.now();
     let stage = 'start';
     try {
-      await test.step(editCase.scenario, () => captureNativeEdit(request, info, editCase, true, step => { stage = step; }));
+      await test.step(editCase.scenario, () => captureNativeEdit(request, info, editCase, 'all', step => { stage = step; }));
     } catch (error) {
       const failure = retainNativePlanFailure('desktop', editCase.scenario, stage, error, Date.now() - started);
       failures.push([failure.scenario, failure.stage, failure.code ?? failure.kind, ...failure.frames].join(' / '));

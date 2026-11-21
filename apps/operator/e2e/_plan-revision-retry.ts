@@ -51,16 +51,66 @@ export function assertNativePlanRetry(trace: NativePlanRetryTrace) {
   assert.deepEqual(trace.afterRetry, trace.afterFirst, 'retry changed the committed plan');
 }
 
-/** Native webview fixture for one generated private plan. Both POSTs reach its real writer. */
-export function installPlanRetryExpression(scope: { origin: string; workspace: string; slug: string; harness: string }) {
-  return `(() => {
-    const scope = ${JSON.stringify(scope)};
+type PrivatePlanScope = { origin: string; workspace: string; slug: string; harness: string };
+
+function privatePlanScope(scope: PrivatePlanScope) {
+  return `const scope = ${JSON.stringify(scope)};
     const page = new URL(location.href);
     if (page.origin !== scope.origin || !['127.0.0.1', 'localhost'].includes(page.hostname)
       || !page.port || ['3070', '3170', '3270', '3271'].includes(page.port)
       || !/^verify-tauri-isolated-[0-9]+$/.test(scope.workspace) || page.searchParams.get('ws') !== scope.workspace
-      || !/^revision-retry-[a-f0-9-]{36}-[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(scope.slug)
-      || page.searchParams.get('plan') !== scope.slug || !scope.harness || window.__planRevisionRetry)
+      || !/^revision-(citation|cosmetic|material|resumed|retry)-[a-f0-9-]{36}-[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(scope.slug)
+      || page.searchParams.get('plan') !== scope.slug || !scope.harness)
+      throw new Error('Expected the selected disposable native plan');`;
+}
+
+/** Observe only this plan's ordinary Save. The UI receives the original response or rejection. */
+export function installPlanSaveObservation(scope: PrivatePlanScope) {
+  return `(() => {
+    ${privatePlanScope(scope)}
+    if (window.__planSaveObservation) throw new Error('Save observer is already installed');
+    const transport = window.fetch;
+    const attempts = [];
+    const readings = [];
+    async function observe(input, init) {
+      if (input !== '/api/admin/plans/set-content' || init?.method !== 'POST' || typeof init.body !== 'string')
+        return transport.call(window, input, init);
+      let plan;
+      try { plan = JSON.parse(init.body); } catch { return transport.call(window, input, init); }
+      if (plan?.slug !== scope.slug) return transport.call(window, input, init);
+      const attempt = { harness: plan.harness == null ? 'omitted' : plan.harness === scope.harness ? 'matched' : 'different',
+        httpStatus: null, result: 'pending' };
+      attempts.push(attempt);
+      let response;
+      try { response = await transport.call(window, input, init); }
+      catch (error) { attempt.result = 'transport-error'; throw error; }
+      attempt.httpStatus = response.status;
+      attempt.result = 'unreadable';
+      try {
+        readings.push(response.clone().json().then(reply => {
+          if (response.ok && reply?.ok === true) attempt.result = 'accepted';
+          else if ((reply?.code ?? reply?.error) === 'stale') attempt.result = 'stale';
+          else attempt.result = 'refused';
+        }).catch(() => {}));
+      } catch { /* The original response is still the UI's to consume. */ }
+      return response;
+    }
+    window.__planSaveObservation = async () => {
+      if (window.fetch === observe) window.fetch = transport;
+      await Promise.all(readings);
+      delete window.__planSaveObservation;
+      return attempts;
+    };
+    window.fetch = observe;
+    return true;
+  })()`;
+}
+
+/** Native webview fixture for one generated private plan. Both POSTs reach its real writer. */
+export function installPlanRetryExpression(scope: PrivatePlanScope) {
+  return `(() => {
+    ${privatePlanScope(scope)}
+    if (!scope.slug.startsWith('revision-retry-') || window.__planRevisionRetry)
       throw new Error('Expected the selected disposable native retry plan');
 
     const transport = window.fetch;
