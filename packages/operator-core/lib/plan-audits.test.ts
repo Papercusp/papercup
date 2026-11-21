@@ -26,6 +26,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   compareActivationAuditTargets,
+  discoverySubjectSnapshot,
   type PlanAudit,
   __repoCitationAsyncGitReadsForTests,
   __repoCitationSyncSpawnsForTests,
@@ -59,6 +60,21 @@ import {
 } from './plan-audits';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { decideAutobind } from './agent-tools/plans/spec-evidence-autobind';
+
+describe('discovery prerequisite identity', () => {
+  it('preserves the judgment across permutations and reopens it when membership changes', () => {
+    const snapshot = (dependencies: string[]) => discoverySubjectSnapshot(
+      '## Work\n\n- **P-001** `todo` Ship the change blocked-by: ' + dependencies.join(', '),
+    )['P-001'];
+    const original = snapshot(['P-003', 'P-002', 'P-004']);
+    expect(original).toMatch(/^[a-f0-9]{64}$/);
+    expect(snapshot(['P-004', 'P-003', 'P-002'])).toBe(original);
+    expect(snapshot(['P-002', 'P-004', 'P-003'])).toBe(original);
+    expect(snapshot(['P-002', 'P-003'])).not.toBe(original);
+    expect(snapshot(['P-002', 'P-003', 'P-004', 'P-005'])).not.toBe(original);
+    expect(snapshot(['P-002', 'P-003', 'P-005'])).not.toBe(original);
+  });
+});
 
 describe('the saved activation audit comparison', () => {
   function fixture(count: number, reverse = false) {

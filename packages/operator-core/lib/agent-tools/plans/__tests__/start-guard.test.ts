@@ -28,7 +28,7 @@ import {
   type AcceptanceBarTrace,
 } from '../../../acceptance-bar-contract-snapshot';
 
-const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn(), laneHealth: vi.fn() }));
+const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn(), laneHealth: vi.fn(), lift: vi.fn() }));
 const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn(), getClaimSpecRecord: vi.fn() }));
 const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
 const planLockMocks = vi.hoisted(() => ({ withPlanLock: vi.fn() }));
@@ -167,6 +167,7 @@ vi.mock('../plan-admission-preflight', async (orig) => {
   return {
     ...actual,
     preflightExactPlanLaneHealth: (...args: unknown[]) => admissionMocks.laneHealth(...args),
+    liftMigrationParkedCoverage: (...args: unknown[]) => admissionMocks.lift(...args),
     preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
   };
 });
@@ -343,6 +344,8 @@ beforeEach(() => {
   });
   admissionMocks.laneHealth.mockReset();
   admissionMocks.laneHealth.mockResolvedValue({ effective: { claimable: 1 } });
+  admissionMocks.lift.mockReset();
+  admissionMocks.lift.mockResolvedValue({ rows: [], unsettled: [], runId: null, artifactPath: null });
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
@@ -1342,6 +1345,31 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     expect(res.data.results[0].message).toContain('SOURCE DIAGNOSTICS: plan');
     expect(res.data.results[0].message).toContain('rubric [bar_snapshot_source_unavailable]: rubric read failed');
     expect(res.data.results[0].message).not.toContain('promotion completed before this response');
+  });
+
+  it.each([{ flagOff: true }, { specTriadBlocked: true }, { specQualityBlocked: true },
+    { acceptanceBarBlocked: true }, { planUnreadable: true }, { templateExcluded: 'rubric' },
+    { dependencyBlocked: true }] as const)('retains migration holds when promotion declines with %j', async refusal => {
+    promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 1, ...NO_EDGES, ...refusal });
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+    expect(res.data.results[0]).toMatchObject({ ok: false, executionStartIssued: false, promotion: refusal });
+    expect(admissionMocks.lift).not.toHaveBeenCalled();
+    expect(claimSpecMocks.setClaimSpec).not.toHaveBeenCalled();
+    expect(proofMocks.record).not.toHaveBeenCalled();
+  });
+
+  it.each(['unsettled', 'unavailable'])('refuses an otherwise ready start when the migration lift is %s', async outcome => {
+    const subject = { workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'stale-fingerprint' };
+    if (outcome === 'unsettled') admissionMocks.lift.mockResolvedValue({ rows: [subject], unsettled: [subject], runId: 'audit-run' });
+    else admissionMocks.lift.mockRejectedValue(new Error('park census unavailable'));
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+    const result = res.data.results[0];
+    expect(result).toMatchObject({ ok: false, error: 'admission_refused', executionStartIssued: false });
+    if (outcome === 'unsettled') expect(result.migrationParkLift).toMatchObject({ unsettled: [subject], runId: 'audit-run' });
+    else expect(result.migrationParkLiftError).toBe('park census unavailable');
+    expect(result.message).toContain(outcome === 'unsettled' ? 'WI-parked' : 'park census unavailable');
+    expect(claimSpecMocks.setClaimSpec).not.toHaveBeenCalled();
+    expect(proofMocks.record).not.toHaveBeenCalled();
   });
 
   it('keeps approval best-effort but reports a promotion exception explicitly', async () => {

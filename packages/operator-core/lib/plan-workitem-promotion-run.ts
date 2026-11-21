@@ -209,6 +209,8 @@ export interface PlanRunPromotionContext {
 export interface PromotedPlanWorkItem {
   planItemId: string;
   workItemId: string;
+  /** How promotion selected this subject. Historical receipts may lack this witness. */
+  association?: { harnessSlug: string; planSlug: string | null; planItemId: string | null };
   /** True only when this call won the condition-key mint. */
   newlyPromoted: boolean;
   /** Canonical plan-DAG frontier verdict at promotion time. */
@@ -1047,10 +1049,15 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     const workItemId = workItemByPlanItem.get(item.id);
     if (!workItemId) return [];
     const effective = effectiveById.get(item.id);
+    const canonical = nodeByItem.get(item.id)?.featureId === workItemId;
     return [
       {
         planItemId: item.id,
         workItemId,
+        association: {
+          harnessSlug: canonical ? read.row.harnessSlug : promotionHarnessByPlanItem.get(item.id) ?? opts.harnessSlug,
+          planSlug: canonical ? opts.planSlug : null, planItemId: canonical ? item.id : null,
+        },
         newlyPromoted: newlyPromotedPlanItemIds.has(item.id),
         actionable:
           effective?.effectiveStatus === 'todo' && effective.unresolvedBlockers.length === 0 && !effective.needsHuman,

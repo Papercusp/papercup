@@ -199,6 +199,8 @@ export type DurableParkClearReason =
 export interface DurableParkReconcileDecision {
   id: string;
   expectedParkFingerprint: string;
+  /** A plan start selects a particular association on a particular work-item row version. */
+  expectedPlanAssociation?: { planSlug: string | null; planItemId: string | null; rowVersion: string };
   reasonCode: DurableParkClearReason;
   /** Concrete, owner-inspectable proof. A reason code without evidence is refused. */
   evidence: string;
@@ -216,6 +218,7 @@ export type DurableParkReconcileOutcome =
 export interface DurableParkReconcileRowResult {
   id: string;
   outcome: DurableParkReconcileOutcome;
+  expectedPlanAssociation?: DurableParkReconcileDecision['expectedPlanAssociation'];
   expectedParkFingerprint: string;
   observedParkFingerprint: string | null;
   reasonCode: DurableParkClearReason;
@@ -510,6 +513,7 @@ export function planDurableParkClear(
   const result = (outcome: DurableParkReconcileOutcome, preservedLease = false): DurableParkClearPlan => ({
     id: decision.id,
     outcome,
+    ...(decision.expectedPlanAssociation ? { expectedPlanAssociation: decision.expectedPlanAssociation } : {}),
     expectedParkFingerprint: decision.expectedParkFingerprint,
     observedParkFingerprint,
     reasonCode: decision.reasonCode,
@@ -736,6 +740,7 @@ async function writeDurableParkClearReceipt(tx: EventDurableParkSql, input: {
          runId: input.runId, trigger: input.trigger, harness: input.harnessSlug,
          reasonCode: input.decision.reasonCode, evidence: input.decision.evidence,
          expectedParkFingerprint: input.decision.expectedParkFingerprint,
+         expectedPlanAssociation: input.decision.expectedPlanAssociation,
          observedParkFingerprint: input.plan.observedParkFingerprint,
          preservedLease: input.plan.preservedLease, priorPark: input.priorPark,
        })}::text::jsonb,
@@ -1238,6 +1243,12 @@ function validateReconcileInput(opts: { actor: string; decisions: readonly Durab
     if (!/^[0-9a-f]{64}$/.test(decision.expectedParkFingerprint)) {
       throw new Error(`invalid expectedParkFingerprint for ${decision.id}`);
     }
+    const association = decision.expectedPlanAssociation;
+    if (association && (!/^\d+$/.test(association.rowVersion) ||
+        !((association.planSlug === null && association.planItemId === null) ||
+          (association.planSlug?.trim() && association.planItemId?.trim())))) {
+      throw new Error(`invalid expected plan association for ${decision.id}`);
+    }
     if (!DURABLE_PARK_CLEAR_REASONS.has(decision.reasonCode)) {
       throw new Error(`invalid durable-park reasonCode for ${decision.id}: ${String(decision.reasonCode)}`);
     }
@@ -1260,6 +1271,10 @@ function reconcileInputSha256(input: {
       .map((decision) => ({
         id: decision.id,
         expectedParkFingerprint: decision.expectedParkFingerprint,
+        ...(decision.expectedPlanAssociation ? { expectedPlanAssociation: {
+          planSlug: decision.expectedPlanAssociation.planSlug, planItemId: decision.expectedPlanAssociation.planItemId,
+          rowVersion: decision.expectedPlanAssociation.rowVersion,
+        } } : {}),
         reasonCode: decision.reasonCode,
         evidence: decision.evidence,
       }))
@@ -1316,6 +1331,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
               decisions: priorRows.map((row) => ({
                 id: row.id,
                 expectedParkFingerprint: row.expectedParkFingerprint,
+                expectedPlanAssociation: row.expectedPlanAssociation,
                 reasonCode: row.reasonCode,
                 evidence: row.evidence,
               })),
@@ -1358,8 +1374,12 @@ export async function runWorkItemDurableParkReconciliation(opts: {
     for (const decision of opts.decisions) {
       const result = await sql.begin(async (rawTx) => {
         const tx = rawTx as unknown as OrgSql;
-        const rows = await tx<ReconcileDbRow[]>`
-          SELECT feature_id AS id, status AS state, taken_by, payload
+        const association = decision.expectedPlanAssociation;
+        const sameSubject = association ? tx`(plan_slug IS NOT DISTINCT FROM ${association.planSlug}::text
+          AND plan_line_id IS NOT DISTINCT FROM ${association.planItemId}::text
+          AND xmin::text = ${association.rowVersion})` : tx`TRUE`;
+        const rows = await tx<(ReconcileDbRow & { same_subject: boolean })[]>`
+          SELECT feature_id AS id, status AS state, taken_by, payload, ${sameSubject} AS same_subject
             FROM harness_shared.work_items
            WHERE workspace_id = ${opts.workspaceId}
              AND harness_slug = ${opts.harnessSlug}
@@ -1384,6 +1404,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
           opts.actor,
         );
         const { nextPayload, ...outcome } = plan;
+        if (association && !row.same_subject) return { ...outcome, outcome: 'stale-fingerprint' as const };
         if (plan.outcome !== 'cleared' || !nextPayload) return outcome;
 
         const priorPayload = record(row.payload);
@@ -1402,6 +1423,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
            WHERE workspace_id = ${opts.workspaceId}
              AND harness_slug = ${opts.harnessSlug}
              AND feature_id = ${decision.id}
+             AND ${sameSubject}
              AND status = ${row.state}
              AND taken_by IS NOT DISTINCT FROM ${textOrNull(row.taken_by)}
              AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
@@ -1425,6 +1447,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
                    IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_at)}
           RETURNING payload`;
         if (!updated[0]) {
+          if (association) return { ...outcome, outcome: 'stale-fingerprint' as const };
           const raced = await tx<ReconcileDbRow[]>`
             SELECT feature_id AS id, status AS state, taken_by, payload
               FROM harness_shared.work_items
@@ -1443,7 +1466,7 @@ export async function runWorkItemDurableParkReconciliation(opts: {
             opts.actor,
           );
           const { nextPayload: _ignored, ...retryOutcome } = retryPlan;
-          return retryOutcome;
+          return retryOutcome.outcome === 'cleared' ? { ...retryOutcome, outcome: 'stale-fingerprint' as const } : retryOutcome;
         }
         const before = readWorkItemClaimHoldProvenance(row.payload);
         await writeDurableParkClearReceipt(tx, {

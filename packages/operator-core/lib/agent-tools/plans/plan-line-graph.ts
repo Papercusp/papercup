@@ -19,6 +19,7 @@ export interface PlanLineWorkItemRef {
   workItemId: string;
   planSlug: string | null;
   planItemId: string | null;
+  rowVersion: string;
 }
 
 /** Join canonical nodes with an existing reader's legacy cohort without rewriting either representation. */
@@ -26,14 +27,14 @@ export async function readPlanLineWorkItemRefs(tx: Sql, scope: PlanLineScope & {
   workItemIds: string[];
   limit: number;
 }): Promise<PlanLineWorkItemRef[]> {
-  const rows = await tx<{ feature_id: string; plan_slug: string | null; plan_line_id: string | null }[]>`
-    SELECT feature_id, plan_slug, plan_line_id
+  const rows = await tx<{ feature_id: string; plan_slug: string | null; plan_line_id: string | null; row_version: string }[]>`
+    SELECT feature_id, plan_slug, plan_line_id, xmin::text AS row_version
       FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
        AND (plan_slug = ${scope.slug} OR feature_id = ANY(${scope.workItemIds}::text[]))
      ORDER BY feature_id
      LIMIT ${scope.limit}`;
-  return rows.map(row => ({ workItemId: row.feature_id, planSlug: row.plan_slug, planItemId: row.plan_line_id }));
+  return rows.map(row => ({ workItemId: row.feature_id, planSlug: row.plan_slug, planItemId: row.plan_line_id, rowVersion: row.row_version }));
 }
 export interface ValidatedPlanLineAdoption { featureId: string; kind: string; status: string; planStatus: string }
 /** Transaction-validated status projection from a distinct committed execution row. */

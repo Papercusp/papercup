@@ -58,7 +58,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
+import { NOTE_SUFFIX_RE, parsePlan, type PlanItem } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
 import { isCommittedAtHead, isGitTrackedPath } from './git-trackedness';
 import type { ItemProvenanceDeclaration, StoredItemProvenanceCheck } from './activation-item-provenance';
@@ -250,6 +250,8 @@ export type PlanAuditKind = (typeof PLAN_AUDIT_KINDS)[number];
 /** Derived views in the existing audit ledger, pinned to the canonical plan revision. */
 export interface DiscoveryAuditPayload {
   schemaVersion: 1;
+  /** Older receipts hashed prerequisites in their display order. */
+  dependencyOrder?: 'set';
   requestKey: string;
   subjectHash: string;
   declarationHash?: string;
@@ -269,6 +271,36 @@ export interface DiscoveryAuditPayload {
 const discoveryDigest = (value: unknown) => createHash('sha256')
   .update(canonicalJson(value).replace(/\s+/g, ' ').trim()).digest('hex');
 
+function discoveryItemFingerprint(item: PlanItem, blockedBy = [...new Set(item.blockedBy)].sort()): string {
+  const subject = { text: item.text.replace(NOTE_SUFFIX_RE, ''), blockedBy, decisionRefs: item.decisionRefs,
+    phase: item.phase, deliverable: item.deliverable, authority: item.authority, riskTier: item.riskTier };
+  return createHash('sha256').update(JSON.stringify(subject).replace(/\s+/g, ' ').trim()).digest('hex');
+}
+
+/** Translate only fingerprints reproduced from the old audit's own immutable revision.
+ * A blocked retry can carry an older finding basis. Leave that basis alone if it does not match. */
+function priorDiscoveryBasis(row?: PlanAuditRow & { legacy_content: string | null }): DiscoveryAuditPayload | null {
+  const prior = row?.discovery;
+  if (!prior || prior.dependencyOrder === 'set' || !row.legacy_content ||
+    hashPlanContent(row.legacy_content) !== row.audited_plan_content_hash) return prior ?? null;
+  const replacements = new Map<string, { ordered: string; canonical: string }>();
+  for (const item of parsePlan(row.legacy_content).items) {
+    if (item.blockedBy.length < 2) continue;
+    const ordered = discoveryItemFingerprint(item, item.blockedBy);
+    const canonical = discoveryItemFingerprint(item);
+    if (ordered !== canonical) replacements.set(item.id, { ordered, canonical });
+  }
+  if (!replacements.size) return prior;
+  const basis = structuredClone(prior);
+  for (const targets of [basis.targets, ...Object.values(basis.findings ?? {}).map(finding => finding.targets)]) {
+    for (const [id, original] of Object.entries(targets)) {
+      const pair = replacements.get(id);
+      if (pair && pair.ordered === original) targets[id] = pair.canonical;
+    }
+  }
+  return basis;
+}
+
 /** Whitespace and lifecycle bookkeeping do not change an implementation proposal. */
 export function discoverySubjectSnapshot(content: string, parsed = parsePlan(content),
   declaration = previewDiscoveryDeclaration(content).data, requirements = parseRequirementBars(content)): Record<string, string> {
@@ -276,9 +308,7 @@ export function discoverySubjectSnapshot(content: string, parsed = parsePlan(con
   const targets: Record<string, string> = {};
   const selectedSections = new Set(declaration?.findings
     .flatMap(finding => finding.dispositions.map(disposition => disposition.target)) ?? []);
-  for (const item of parsed.items) targets[item.id] = digest(JSON.stringify({
-    text: item.text.replace(NOTE_SUFFIX_RE, ''), blockedBy: item.blockedBy, decisionRefs: item.decisionRefs,
-    phase: item.phase, deliverable: item.deliverable, authority: item.authority, riskTier: item.riskTier }));
+  for (const item of parsed.items) targets[item.id] = discoveryItemFingerprint(item);
   for (const decision of parsed.decisions) targets[decision.id] = digest(JSON.stringify({ ...decision, lineNumber: undefined }));
   for (const section of splitPlanSections(content).filter(section => section.level === 2 &&
     (['Product shaping', 'Requirements', 'Design', 'Delivery and activation'].includes(section.heading) ||
@@ -359,7 +389,7 @@ export function assessDiscovery(content: string, context: DiscoveryAuditContext,
   const declarationHash = discoveryDigest(declaration ? { ...declaration, questions: normalizedQuestions, findings: normalizedFindings } : null);
   const requestKey = discoveryDigest({ subjectHash, declarationHash, evidence, findings, removedTargets });
   const fresh = blockers.length === 0;
-  return { schemaVersion: 1, requestKey, subjectHash, declarationHash, targets, findings, removedTargets, evidence,
+  return { schemaVersion: 1, dependencyOrder: 'set', requestKey, subjectHash, declarationHash, targets, findings, removedTargets, evidence,
     readiness: { ready: ready && fresh, state: fresh ? state : state === 'unknown' ? 'unknown' : 'blocked', blockers,
       evidenceRefs, supportedTargets, reopenedQuestions: [...reopenedQuestions].sort(),
       nextAction: fresh ? nextAction : `Reconcile Discovery in the draft: ${blockers[0]!.detail}` } };
@@ -3082,10 +3112,15 @@ async function currentDiscoveryInTransaction(input: CurrentDiscoveryInput, execu
       SELECT content_snapshot FROM harness_shared.plan_revisions
        WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug} AND plan_slug=${input.planSlug}
          AND seq < ${revision.seq} ORDER BY seq DESC LIMIT 1`;
-    const [lastAudit] = await executor<PlanAuditRow[]>`SELECT * FROM harness_shared.plan_audits
-      WHERE workspace_id=${input.workspaceId} AND harness_slug=${input.harnessSlug}
-        AND plan_slug=${input.planSlug} AND audit_kind='discovery' ORDER BY audit_seq DESC LIMIT 1`;
-    const priorDiscovery = lastAudit?.discovery ?? null;
+    const [lastAudit] = await executor<Array<PlanAuditRow & { legacy_content: string | null }>>`
+      SELECT a.*, r.content_snapshot AS legacy_content FROM harness_shared.plan_audits a
+      LEFT JOIN harness_shared.plan_revisions r ON a.discovery->>'dependencyOrder' IS NULL
+        AND r.workspace_id=a.workspace_id AND r.harness_slug=a.harness_slug AND r.plan_slug=a.plan_slug
+        AND r.id=a.audited_plan_revision_id AND r.seq=a.audited_plan_revision_seq
+        AND r.content_hash=a.audited_plan_content_hash
+      WHERE a.workspace_id=${input.workspaceId} AND a.harness_slug=${input.harnessSlug}
+        AND a.plan_slug=${input.planSlug} AND a.audit_kind='discovery' ORDER BY a.audit_seq DESC LIMIT 1`;
+    const priorDiscovery = priorDiscoveryBasis(lastAudit);
     const historicalTargets = { ...priorDiscovery?.targets };
     for (const ref of priorDiscovery?.removedTargets ?? []) historicalTargets[ref] ??= 'recorded-removal';
     const currentTargets = discoverySubjectSnapshot(plan.content);

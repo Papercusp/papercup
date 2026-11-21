@@ -139,7 +139,7 @@ const lane = (args: {
 
 beforeEach(() => {
   mocks.readPlanLineWorkItemRefs.mockReset().mockImplementation(async (_tx, scope) =>
-    scope.workItemIds.map((workItemId: string) => ({ workItemId, planSlug: null, planItemId: null })));
+    scope.workItemIds.map((workItemId: string) => ({ workItemId, planSlug: null, planItemId: null, rowVersion: '17' })));
 });
 
 describe('evaluateExactPlanAdmission', () => {
@@ -1415,9 +1415,11 @@ describe('preflightExactPlanLaneHealth', () => {
   });
 
   describe('liftMigrationParkedCoverage (EI-28724198520380406)', () => {
+  const legacyAssociation = { harnessSlug: 'papercusp', planSlug: null, planItemId: null };
   const parked = { id: 'WI-parked', family: 'feature', state: 'open', sourcePlanItemIds: ['P-001'],
     payload: { _claimHold: true, claim_hold_by: 'migration:plan-line-work-item-nodes' } };
   const liftArgs = { workspaceId: 'ws-1', harnessSlug: 'papercusp', planSlug: 'plan-a', actor: 'su-test',
+    promotedWorkItems: [{ workItemId: parked.id, planItemId: 'P-001', actionable: true, newlyPromoted: false, association: legacyAssociation }],
     planItems: [item('P-001')] };
   function fakePark(outcome = 'cleared') {
     return {
@@ -1443,10 +1445,78 @@ describe('preflightExactPlanLaneHealth', () => {
     expect(call.actor).toBe('su-test');
     expect(call.runId).toMatch(/^work-item-durable-park-audit:plans-start:[0-9a-f]{32}$/);
     expect(call.decisions).toEqual([{ id: 'WI-parked',
+      expectedPlanAssociation: { planSlug: null, planItemId: null, rowVersion: '17' },
       expectedParkFingerprint: 'fp:{"_claimHold":true,"claim_hold_by":"migration:plan-line-work-item-nodes"}',
       reasonCode: 'condition-satisfied', evidence: expect.stringContaining('P-001') }]);
     expect(res).toMatchObject({ rows: [{ workItemId: 'WI-parked', planItemIds: ['P-001'], outcome: 'cleared' }],
       unsettled: [], artifactPath: 'audit/x.json' });
+  });
+
+  describe('canonical promotion with existing execution coverage', () => {
+    const association = { harnessSlug: 'papercusp', planSlug: 'plan-a', planItemId: 'P-001' };
+    const stamp = { plan_slug: 'plan-a', harness_slug: 'papercusp', item_id: 'P-001' };
+    const parent = { ...parked, assignee: 'su-test', sourcePlanSlug: 'plan-a', harness: 'papercusp' };
+    const child = { ...parent, id: 'WI-child', parent: parent.id, payload: { plan_item: stamp } };
+    beforeEach(() => {
+      mocks.readPlanLineWorkItemRefs.mockImplementation(async (_tx, scope) => scope.workItemIds.map((id: string) =>
+        ({ workItemId: id, planSlug: id === parent.id ? 'plan-a' : null, planItemId: id === parent.id ? 'P-001' : null, rowVersion: '19' })));
+    });
+
+    it.each(['todo', 'wip'] as const)('reconciles the owned %s subject with its own child, ignoring terminal history', async status => {
+      const receipt = { planItemId: 'P-001', workItemId: parent.id, actionable: status === 'todo', newlyPromoted: false, association };
+      const current = { ...parent, state: status === 'wip' ? 'wip' : 'open' };
+      mocks.listWorkItems.mockResolvedValue([child, { ...child, id: 'WI-old', state: 'done', parent: null }, current]);
+      const park = fakePark();
+      const result = await liftMigrationParkedCoverage({ ...liftArgs, planItems: [item('P-001', status)],
+        promotedWorkItems: [receipt], deps: { durablePark: park as never } });
+      expect(result.rows).toEqual([{ workItemId: parent.id, planItemIds: ['P-001'], outcome: 'cleared' }]);
+      expect(park.runWorkItemDurableParkReconciliation).toHaveBeenCalledOnce();
+    });
+
+    it.each(['todo', 'wip'] as const)('reports the competing unparented %s record without changing its canonical subject', async status => {
+      const receipt = { planItemId: 'P-001', workItemId: parent.id, actionable: status === 'todo', newlyPromoted: false, association };
+      mocks.listWorkItems.mockResolvedValue([parent, { ...child, parent: null }]);
+      const park = fakePark();
+      const result = await liftMigrationParkedCoverage({ ...liftArgs, planItems: [item('P-001', status)],
+        promotedWorkItems: [receipt], deps: { durablePark: park as never } });
+      expect(result.unsettled).toEqual([{ workItemId: parent.id, planItemIds: ['P-001'], outcome: 'ambiguous-coverage',
+        conflictingWorkItemIds: [child.id] }]);
+      expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    });
+
+    it('requires the exact subject from successful promotion, even when the child covers the line', async () => {
+      mocks.listWorkItems.mockResolvedValue([parent, child]);
+      const park = fakePark();
+      const result = await liftMigrationParkedCoverage({ ...liftArgs,
+        promotedWorkItems: [{ planItemId: 'P-001', workItemId: child.id, newlyPromoted: false, actionable: true }],
+        deps: { durablePark: park as never } });
+      expect(result.unsettled).toEqual([{ workItemId: parent.id, planItemIds: ['P-001'], outcome: 'promotion-subject-mismatch',
+        conflictingWorkItemIds: [child.id] }]);
+      expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    });
+
+    it.each([{ plan_slug: 'other-plan' }, { item_id: 'P-999' }, { harness_slug: 'other-harness' }])(
+      'retains the hold when a parented child has contradictory provenance %j', async fields => {
+        mocks.listWorkItems.mockResolvedValue([parent, { ...child, payload: { plan_item: { ...stamp, ...fields } } }]);
+        const park = fakePark();
+        const result = await liftMigrationParkedCoverage({ ...liftArgs,
+          promotedWorkItems: [{ planItemId: 'P-001', workItemId: parent.id, actionable: true, newlyPromoted: false, association }],
+          deps: { durablePark: park as never } });
+        expect(result.unsettled).toMatchObject([{ workItemId: parent.id, outcome: 'ambiguous-coverage', conflictingWorkItemIds: [child.id] }]);
+        expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+      });
+
+    it('retains an admission hold installed after selection and before the control read', async () => {
+      mocks.listWorkItems.mockResolvedValue([parent, child]);
+      const park = { ...fakePark(), readDurableParkControlRow: vi.fn(async () => ({
+        id: parent.id, state: 'open', takenBy: parent.assignee, payload: { ...parent.payload, admissionHold: true },
+      })) };
+      const result = await liftMigrationParkedCoverage({ ...liftArgs,
+        promotedWorkItems: [{ planItemId: 'P-001', workItemId: parent.id, actionable: true, newlyPromoted: false, association }],
+        deps: { durablePark: park as never } });
+      expect(result.unsettled).toEqual([{ workItemId: parent.id, planItemIds: ['P-001'], outcome: 'condition-changed' }]);
+      expect(park.runWorkItemDurableParkReconciliation).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps blocked / non-actionable lines parked (no reconcile at all)', async () => {
@@ -1473,7 +1543,10 @@ describe('preflightExactPlanLaneHealth', () => {
       { id: 'P-001', featureId: 'WI-prerequisite', planSlug: 'plan-a', status: 'done', blockedBy: [] },
       { id: 'P-002', featureId: 'WI-dependent', planSlug: 'plan-a', status: 'blocked', blockedBy: ['P-001'] },
     ];
-    beforeEach(() => { mocks.readPlanLineNodes.mockReset().mockResolvedValue(nodes()); });
+    beforeEach(() => {
+      mocks.readPlanLineNodes.mockReset().mockResolvedValue(nodes());
+      mocks.readPlanLineWorkItemRefs.mockResolvedValue([{ workItemId: 'WI-dependent', planSlug: 'plan-a', planItemId: 'P-002', rowVersion: '21' }]);
+    });
 
     it.each(['su-test', null])('reconciles the exact dependency-derived node held by %s without clearing its sticky status', async assignee => {
       const current = { ...dependencyPark(), assignee };
@@ -1555,6 +1628,7 @@ describe('preflightExactPlanLaneHealth', () => {
     mocks.listWorkItems.mockReset().mockResolvedValue([{ ...parked, sourcePlanItemIds: ['P-001', 'P-002'] }]);
     const park = fakePark();
     const res = await liftMigrationParkedCoverage({ ...liftArgs, planItems: [item('P-001'), item('P-002')],
+      promotedWorkItems: ['P-001', 'P-002'].map(planItemId => ({ planItemId, workItemId: parked.id, actionable: true, newlyPromoted: false, association: legacyAssociation })),
       deps: { durablePark: park as never } });
     const call = park.runWorkItemDurableParkReconciliation.mock.calls[0]![0] as unknown as { decisions: unknown[] };
     expect(call.decisions).toHaveLength(1);

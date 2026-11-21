@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parsePlan } from '@papercusp/plan-parser';
+import { canonicalJson } from './external-bench/reproducibility/canonical-json';
 import { getLatestActivationAudit, getLatestPlanAudit, recordCurrentDiscoveryAudit, recordCurrentActivationAudit,
   discoverySubjectSnapshot, withCurrentDiscovery, type DiscoveryAuditContext } from './plan-audits';
 import { resolveDiscoveryAuditContext } from './agent-tools/plans/plan-declaration-resolvers';
@@ -64,6 +66,50 @@ beforeEach(async () => {
   slug = `discovery-audit-fixture-${fixtureCase}`;
   draft = draftTemplate.replace('slug: discovery-audit-fixture', `slug: ${slug}`);
   await revision();
+});
+
+it.each(['current', 'legacy'] as const)('admits a reordered prerequisite set from a %s receipt; a replaced dependency still blocks', async format => {
+  const plan = (dependencies: string[]) => draft.replace('Wire the existing helper', [
+    'Wire the existing helper blocked-by: ' + dependencies.join(', '),
+    '- **P-002** `done` Publish the API', '- **P-003** `done` Publish the client',
+    '- **P-004** `done` Publish the contract',
+  ].join('\n'));
+  const original = plan(['P-003', 'P-002']);
+  await revision(original);
+  const first = await recordCurrentDiscoveryAudit(input(), { context });
+  expect(first).toMatchObject({ ok: true, discovery: { readiness: { ready: true } } });
+  if (!first.ok || !first.audit) throw new Error('Missing original discovery audit');
+  if (format === 'legacy') {
+    const legacy = structuredClone(first.discovery);
+    delete legacy.dependencyOrder;
+    const item = parsePlan(original).items.find(row => row.id === 'P-001')!;
+    const sha = (value: string) => createHash('sha256').update(value).digest('hex');
+    const ordered = sha(JSON.stringify({ text: item.text, blockedBy: item.blockedBy, decisionRefs: item.decisionRefs,
+      phase: item.phase, deliverable: item.deliverable, authority: item.authority, riskTier: item.riskTier }).replace(/\s+/g, ' ').trim());
+    legacy.targets[item.id] = ordered;
+    legacy.findings!['F-1']!.targets[item.id] = ordered;
+    legacy.subjectHash = sha(JSON.stringify(legacy.targets));
+    const { subjectHash, declarationHash, evidence, findings, removedTargets } = legacy;
+    legacy.requestKey = sha(canonicalJson({ subjectHash, declarationHash, evidence, findings, removedTargets }).replace(/\s+/g, ' ').trim());
+    await fx.admin`INSERT INTO harness_shared.plan_audits
+      (workspace_id,harness_slug,plan_slug,audit_seq,created_by,audit_kind,discovery,
+       audited_plan_revision_id,audited_plan_revision_seq,audited_plan_content_hash,items,findings)
+      SELECT workspace_id,harness_slug,plan_slug,audit_seq+1,created_by,audit_kind,${fx.admin.json(legacy as never)},
+        audited_plan_revision_id,audited_plan_revision_seq,audited_plan_content_hash,items,findings
+      FROM harness_shared.plan_audits WHERE workspace_id=${fx.workspaceId} AND harness_slug=${harness}
+        AND plan_slug=${slug} AND audit_seq=${first.audit.auditSeq}`;
+  }
+  const accept = vi.fn(async () => 'runnable');
+  await revision(plan(['P-002', 'P-003']));
+  expect(await withCurrentDiscovery(input(), accept, { context })).toMatchObject({ ok: true, result: 'runnable' });
+  for (const dependencies of [['P-002'], ['P-002', 'P-004'], ['P-002', 'P-003', 'P-004']]) {
+    await revision(plan(dependencies));
+    expect(await withCurrentDiscovery(input(), accept, { context })).toMatchObject({
+      ok: false, error: 'discovery_not_ready',
+      discovery: { readiness: { blockers: expect.arrayContaining([expect.objectContaining({ code: 'discovery_change_unsupported' })]) } },
+    });
+  }
+  expect(accept).toHaveBeenCalledTimes(1);
 });
 
 it('resolves discovery evidence on the held transaction backend', async () => {

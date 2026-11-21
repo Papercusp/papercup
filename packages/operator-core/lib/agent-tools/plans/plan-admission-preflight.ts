@@ -17,12 +17,14 @@ import {
   WORK_ITEMS_MAX_LIMIT,
   type WorkItem,
 } from '../../work-items';
-import { stopTheLineExplanation } from '../../work-items-admission';
+import { isAdmissionHoldActive, stopTheLineExplanation } from '../../work-items-admission';
 import { getPlanRow, planItemsForRow } from './source';
 import { analyzePlanDagParallelism, type PlanDagParallelismDiagnostics } from './plan-dag-parallelism';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { readExternalBlockers } from '../../external-blockers';
 import { planItemProvenanceFromRow } from '../../plan-item-provenance';
+import type { PromotedPlanWorkItem } from '../../plan-workitem-promotion-run';
+import type { DurableParkControlRow, DurableParkReconcileDecision } from '../../work-items-durable-park-audit';
 
 const ISSUE_KINDS = new Set<string>(ISSUE_FAMILY_KINDS);
 
@@ -60,6 +62,7 @@ type AdmissionWorkItem = Pick<WorkItem, 'id' | 'family' | 'sourcePlanItemIds' | 
   Partial<Pick<WorkItem, 'assignee' | 'takenAt' | 'state' | 'parent' | 'sourcePlanSlug' | 'harness'>> & {
     canonicalPlanSlug?: string | null;
     canonicalPlanItemId?: string | null;
+    canonicalRowVersion?: string;
   };
 type RootClass = 'dependency' | 'sticky' | 'cycle' | 'dangling' | 'needs-human' | 'non-actionable-status';
 export type ExactPlanAdmissionReason =
@@ -170,14 +173,18 @@ export async function readExactPlanAdmissionWorkItems(args: {
     const ref = associationById.get(item.id);
     // A concurrent removal or rehome must not leave legacy coverage authorizing the old plan.
     if (!ref || ((ref.planSlug != null || ref.planItemId != null) && ref.planSlug !== args.planSlug)) return [];
-    return [{ ...item, canonicalPlanSlug: ref.planSlug, canonicalPlanItemId: ref.planItemId }];
+    return [{ ...item, canonicalPlanSlug: ref.planSlug, canonicalPlanItemId: ref.planItemId, canonicalRowVersion: ref.rowVersion }];
   });
   return { workItems, sourceCapExhausted };
 }
 
 function isExecutableContinuationRow(item: AdmissionWorkItem): boolean {
+  return !isClaimHoldParked(item.payload) && hasClearContinuationState(item);
+}
+
+function hasClearContinuationState(item: { state?: string | null; payload: unknown }): boolean {
   const payload = record(item.payload);
-  if ((item.state !== 'open' && item.state !== 'wip') || isClaimHoldParked(item.payload) ||
+  if ((item.state !== 'open' && item.state !== 'wip') ||
       payload.needsHuman === true || payload.needs_human === true) return false;
   const raw = payload.externalBlockers;
   const blockers = readExternalBlockers(item.payload);
@@ -715,7 +722,13 @@ export class PlanPromotionParkError extends Error {
   }
 }
 
-export interface MigrationParkedCoverageRow { planItemId: string; workItemId: string }
+export interface MigrationParkedCoverageRow {
+  planItemId: string;
+  workItemId: string;
+  selectedControl?: DurableParkControlRow;
+  expectedPlanAssociation?: DurableParkReconcileDecision['expectedPlanAssociation'];
+  refusal?: { outcome: string; conflictingWorkItemIds?: string[] };
+}
 
 /**
  * Actionable lines, or exact completed-dependency lines with a generated gate,
@@ -729,6 +742,7 @@ export async function readMigrationParkedCoverage(args: {
   planSlug: string;
   planItems: PlanItem[];
   actor?: string;
+  promotedWorkItems?: readonly PromotedPlanWorkItem[];
 }): Promise<MigrationParkedCoverageRow[]> {
   const { workItems, sourceCapExhausted } = await readExactPlanAdmissionWorkItems(args);
   if (sourceCapExhausted) {
@@ -782,17 +796,92 @@ export async function readMigrationParkedCoverage(args: {
       active[0].createdBy === 'system:plan-item-lane-sync' &&
       active[0].ref === `plan-lane:${args.planSlug}#${id}`;
   };
-  return workItems.filter(item => !isSettledWorkItemState(item.state) &&
-    isClaimHoldParked(item.payload) &&
-    record(item.payload).claim_hold_by === MIGRATION_PLAN_LINE_PARK_BY)
-    .flatMap(item => provenanceIds(item).filter(id => missing.has(id) || canRecoverDependency(item, id))
-      .map(planItemId => ({ planItemId, workItemId: item.id })));
+  const live = workItems.filter(item => !isSettledWorkItemState(item.state));
+  const parked = live.filter(item => isClaimHoldParked(item.payload) &&
+    record(item.payload).claim_hold_by === MIGRATION_PLAN_LINE_PARK_BY);
+  if (!parked.length) return [];
+  const lineById = new Map(graph.items.map(line => [line.id, line]));
+  const coverageByLine = new Map<string, AdmissionWorkItem[]>();
+  for (const item of live) {
+    for (const id of provenanceIds(item)) {
+      const covering = coverageByLine.get(id);
+      if (covering) covering.push(item);
+      else coverageByLine.set(id, [item]);
+    }
+  }
+  const result: MigrationParkedCoverageRow[] = [];
+  for (const row of parked) {
+    for (const id of provenanceIds(row)) {
+      const subject = { workItemId: row.id, planItemId: id };
+      const line = lineById.get(id);
+      if (!args.promotedWorkItems) {
+        if (missing.has(id) || canRecoverDependency(row, id)) result.push(subject);
+        continue;
+      }
+      const canonical = row.canonicalPlanSlug === args.planSlug && row.canonicalPlanItemId === id;
+      const receipts = args.promotedWorkItems.filter(entry => entry.planItemId === id);
+      const receipt = receipts.length === 1 ? receipts[0] : undefined;
+      const association = receipt?.association;
+      const sameAssociation = association?.harnessSlug === args.harnessSlug &&
+        association.planSlug === row.canonicalPlanSlug && association.planItemId === row.canonicalPlanItemId;
+      // A detached former node can still have the same work-item id and source stamp.
+      // Keep the association promotion witnessed, even when the row now looks like a legacy record.
+      if (receipt?.workItemId === row.id && !sameAssociation) {
+        result.push({ ...subject, refusal: { outcome: 'promotion-subject-mismatch', conflictingWorkItemIds: [row.id] } });
+        continue;
+      }
+      const dependency = canRecoverDependency(row, id);
+      if (!dependency && (!line || line.needsHuman || line.unresolvedBlockers.length ||
+          !(missing.has(id) || (canonical && (line.effectiveStatus === 'todo' ||
+            (line.effectiveStatus === 'wip' && row.assignee === args.actor)))))) continue;
+      if (!row.canonicalRowVersion || row.canonicalPlanSlug === undefined || row.canonicalPlanItemId === undefined) {
+        result.push({ ...subject, refusal: { outcome: 'condition-changed' } });
+        continue;
+      }
+      const expectedPlanAssociation = { planSlug: row.canonicalPlanSlug, planItemId: row.canonicalPlanItemId, rowVersion: row.canonicalRowVersion };
+      if (dependency) {
+        if (canonical) result.push({ ...subject, expectedPlanAssociation });
+        else result.push({ ...subject, refusal: { outcome: 'promotion-subject-mismatch' } });
+        continue;
+      }
+      // Promotion returns the canonical node even when an older execution child supplies coverage.
+      // An independent execution row with the same stamp is a competing lane, including on WIP lines.
+      if (receipt?.workItemId !== row.id || receipt.actionable !== (line?.effectiveStatus === 'todo')) {
+        result.push({ ...subject, refusal: { outcome: 'promotion-subject-mismatch',
+          conflictingWorkItemIds: receipts.map(entry => entry.workItemId) } });
+        continue;
+      }
+      const competing = (coverageByLine.get(id) ?? []).filter(other => {
+        if (other.id === row.id) return false;
+        const payload = record(other.payload);
+        const stamp = record(payload.plan_item ?? payload.planItem);
+        const stampedPlan = stamp.plan_slug ?? stamp.planSlug;
+        const stampedLine = stamp.item_id ?? stamp.itemId ?? stamp.item;
+        const stampedHarness = stamp.harness_slug ?? stamp.harnessSlug;
+        return other.parent !== row.id || other.canonicalPlanItemId != null || provenanceIds(other).length !== 1 ||
+          (other.sourcePlanSlug != null && other.sourcePlanSlug !== args.planSlug) ||
+          (stampedPlan != null && stampedPlan !== args.planSlug) || (stampedLine != null && stampedLine !== id) ||
+          (stampedHarness != null && stampedHarness !== args.harnessSlug);
+      });
+      if (competing.length) {
+        result.push({ ...subject, refusal: { outcome: 'ambiguous-coverage', conflictingWorkItemIds: competing.map(other => other.id) } });
+        continue;
+      }
+      if (!row.state || !hasClearContinuationState(row) || isAdmissionHoldActive(row.payload) || record(row.payload).held_open_by != null) {
+        result.push({ ...subject, refusal: { outcome: 'independent-hold' } });
+        continue;
+      }
+      result.push({ ...subject, expectedPlanAssociation, selectedControl: { id: row.id, state: row.state, takenBy: row.assignee ?? null, payload: row.payload } });
+    }
+  }
+  return result;
 }
 
 export interface MigrationParkLiftRow {
   workItemId: string;
   planItemIds: string[];
   outcome: string;
+  conflictingWorkItemIds?: string[];
 }
 
 export interface MigrationParkLiftResult {
@@ -820,6 +909,7 @@ export async function liftMigrationParkedCoverage(args: {
   planSlug: string;
   planItems: PlanItem[];
   actor: string;
+  promotedWorkItems: readonly PromotedPlanWorkItem[];
   deps?: {
     readCoverage?: typeof readMigrationParkedCoverage;
     durablePark?: Pick<DurableParkModule,
@@ -828,12 +918,17 @@ export async function liftMigrationParkedCoverage(args: {
 }): Promise<MigrationParkLiftResult> {
   const coverage = await (args.deps?.readCoverage ?? readMigrationParkedCoverage)(args);
   if (!coverage.length) return { rows: [], unsettled: [], runId: null, artifactPath: null };
-  const byNode = new Map<string, string[]>();
-  for (const row of coverage) byNode.set(row.workItemId, [...(byNode.get(row.workItemId) ?? []), row.planItemId]);
+  const byNode = new Map<string, MigrationParkedCoverageRow[]>();
+  for (const row of coverage) byNode.set(row.workItemId, [...(byNode.get(row.workItemId) ?? []), row]);
   const park = args.deps?.durablePark ?? await import('../../work-items-durable-park-audit');
   const rows: MigrationParkLiftRow[] = [];
-  const decisions: Array<{ id: string; expectedParkFingerprint: string; reasonCode: 'condition-satisfied'; evidence: string }> = [];
-  for (const [workItemId, planItemIds] of byNode) {
+  const decisions: DurableParkReconcileDecision[] = [];
+  for (const [workItemId, subjects] of byNode) {
+    const planItemIds = subjects.map(subject => subject.planItemId);
+    const refusal = subjects.find(subject => subject.refusal)?.refusal;
+    if (refusal) { rows.push({ workItemId, planItemIds, ...refusal }); continue; }
+    const expectedPlanAssociation = subjects[0].expectedPlanAssociation;
+    if (!expectedPlanAssociation) { rows.push({ workItemId, planItemIds, outcome: 'condition-changed' }); continue; }
     const control = await park.readDurableParkControlRow({
       workspaceId: args.workspaceId, harnessSlug: args.harnessSlug, id: workItemId,
     });
@@ -844,9 +939,16 @@ export async function liftMigrationParkedCoverage(args: {
       rows.push({ workItemId, planItemIds, outcome: 'condition-changed' });
       continue;
     }
+    const expectedParkFingerprint = park.durableParkFingerprint(control);
+    if (subjects.some(subject => subject.selectedControl && (!hasClearContinuationState(control) ||
+        isAdmissionHoldActive(payload) || park.durableParkFingerprint(subject.selectedControl) !== expectedParkFingerprint))) {
+      rows.push({ workItemId, planItemIds, outcome: 'condition-changed' });
+      continue;
+    }
     decisions.push({
       id: workItemId,
-      expectedParkFingerprint: park.durableParkFingerprint(control),
+      expectedParkFingerprint,
+      expectedPlanAssociation,
       reasonCode: 'condition-satisfied',
       evidence: `plans:start ${args.planSlug} verified promoted plan line(s) ${planItemIds.join(', ')} onto ${workItemId} ` +
         '(actionable or exact dependency-derived gate with completed prerequisites); ' +
@@ -866,7 +968,7 @@ export async function liftMigrationParkedCoverage(args: {
     artifactPath = result.artifactPath;
     const outcomes = new Map(result.rows.map(r => [r.id, r.outcome]));
     for (const decision of decisions) {
-      rows.push({ workItemId: decision.id, planItemIds: byNode.get(decision.id) ?? [],
+      rows.push({ workItemId: decision.id, planItemIds: byNode.get(decision.id)!.map(subject => subject.planItemId),
         outcome: outcomes.get(decision.id) ?? 'missing' });
     }
   }
