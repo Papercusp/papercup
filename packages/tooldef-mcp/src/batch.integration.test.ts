@@ -52,7 +52,7 @@ const batchData = (result: unknown): BatchResult => {
 
 describe('canonical batching over MCP SDK tools/list and tools/call', () => {
   it('advertises executable singleton/envelope grammar and exact batch limits', async () => {
-    defineTool({ name, requirePrincipal: false, capability: 'test:read', args, batch: { maxItems: 2 },
+    defineTool({ name, requirePrincipal: false, capability: 'test:read', args, result: args, batch: { maxItems: 2 },
       handler: async value => ({ data: value }) });
     await wire(async request => {
       const listing = await request('tools/list') as { tools: Array<{ name: string; inputSchema: object; outputSchema: object }> };
@@ -70,6 +70,11 @@ describe('canonical batching over MCP SDK tools/list and tools/call', () => {
       }
       for (const input of [{ _batch: 2, items: [item('one')] }, { _batch: 1, items: [] },
         { _batch: 1, items: [item('a'), item('b'), item('c')] }]) expect(validate(input)).toBe(false);
+      const singleton = await request('tools/call', { name, arguments: { key: 'legacy' },
+        _meta: { 'papercusp/batchResponseVersion': 'operation-v0' } }) as CallToolResult;
+      expect(singleton.structuredContent).toEqual({ key: 'legacy' });
+      expect(validateOutput(singleton.structuredContent), JSON.stringify(validateOutput.errors)).toBe(true);
+      expect(validateOutput({ key: 3 })).toBe(false);
     });
   });
 
