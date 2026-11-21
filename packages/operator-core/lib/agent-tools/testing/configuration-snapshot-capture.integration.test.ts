@@ -16,9 +16,10 @@
  *   SPEC-P-011-MUTATION-CAPTURE — a mutation-probe row (source='mutation-probe', written by the
  *                                 same router + reporter the probe drives) carries one too.
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { once } from 'node:events';
+import { mkdir, mkdtemp, open, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -99,22 +100,24 @@ async function runNativeCapture(directory: string, suite: string, group: string,
   selection: string[] = []) {
   const nativeFile = join(directory, 'native.json');
   const receiptFile = join(directory, 'receipts.jsonl');
-  await execFileAsync(process.execPath, ['scripts/test-files.mjs', suite, ...selection], {
-    cwd: REPO_ROOT,
-    env: { ...nestedRouterEnv(directory), PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
-      PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
-      PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile,
-      PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: attempt,
-      PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/test-config',
-      PC_EXECUTED_SOURCE_MAP_OUT: nativeFile, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
-    timeout: 150_000, maxBuffer: 16 * 1024 * 1024,
-  }).catch((error: unknown) => {
-    const child = error as { killed?: boolean; signal?: string; code?: string | number;
-      stdout?: string; stderr?: string };
-    throw new Error(`P021 ${attempt} termination ${JSON.stringify({ killed: child.killed,
-      signal: child.signal, code: child.code })}\n${child.stderr?.slice(-3000) ?? ''}\n${child.stdout?.slice(-1000) ?? ''}`,
-    { cause: error });
-  });
+  const logPath = join(directory, 'native-child.log');
+  const log = await open(logPath, 'wx', 0o600);
+  try {
+    const child = spawn(process.execPath, ['scripts/test-files.mjs', suite, ...selection], {
+      cwd: REPO_ROOT, stdio: ['ignore', log.fd, log.fd], timeout: 150_000,
+      env: { ...nestedRouterEnv(directory), PAPERCUSP_TEST_RUNS_DB_URL: org!.adminDsn,
+        PAPERCUSP_TEST_RUN_GROUP: group, PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
+        PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile,
+        PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID: attempt,
+        PC_EXECUTED_SOURCE_MAP_WORKSPACE: '@papercusp/test-config',
+        PC_EXECUTED_SOURCE_MAP_OUT: nativeFile, PC_EXECUTED_SOURCE_MAP_NO_PERSIST: '1' },
+    });
+    const [code, signal] = await once(child, 'close');
+    if (code !== 0 || signal) throw new Error(
+      `P021 ${attempt} termination ${JSON.stringify({ killed: child.killed, signal, code })}. Full child log at ${logPath}`);
+  } finally {
+    await log.close();
+  }
   await expectIsolatedRouterCustody(directory, group, [suite]);
   const native = JSON.parse(await readFile(nativeFile, 'utf8'));
   expect(native.completionCheckpoint).toMatchObject({ runGroupId: group, qualificationAttemptId: attempt });
