@@ -1106,7 +1106,9 @@ export default defineTool({
     // graph and strands intentionally narrow plan-source mocks. Goal creation
     // consumes it only here, immediately before the holder brief is rendered.
     const { readGoalHistoryContext } = await import('../../prior-attempt-context');
-    const history = await readGoalHistoryContext(id);
+    const history = await readGoalHistoryContext(id, undefined, {
+      workspaceId, viewer: { ownerId, potSlug: installSlug },
+    });
     // R-4 / D-032: the arm is applied inside buildGoalKickoffBrief; the
     // receipt's portfolio contribution must match what the kickoff carried.
     const behaviorArm = resolveGoalBehaviorArm(launchSettings);

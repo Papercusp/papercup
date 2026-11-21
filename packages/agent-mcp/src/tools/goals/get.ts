@@ -43,6 +43,7 @@ export default defineTool({
     id: z.string().min(1),
     detail: z.enum(['summary', 'full']).default('summary'),
     priorAttemptRefs: z.array(z.string().min(1)).max(20).optional(),
+    reportCursor: z.string().min(1).optional().describe('Continuation returned by the related reports in this goal brief.'),
   }),
   async handler(args, ctx) {
     const txDb = drizzle(ctx.tx);
@@ -159,16 +160,20 @@ export default defineTool({
     }));
     const requestedHistoryRefs = args.priorAttemptRefs ?? [];
     const explicitHistoryRead = requestedHistoryRefs.length > 0;
+    const needsHistory = args.detail === 'full' || explicitHistoryRead || args.reportCursor !== undefined;
     // Keep the continuity compiler off the agent-MCP bootstrap graph. It owns
     // plan/source readers, and eagerly importing it here makes every unrelated
     // tool test inherit that graph (including tests with intentionally narrow
     // plans/source mocks). A full or explicit drill-down is the only call path
     // that consumes it, so load the module exactly at that production boundary.
     const continuity =
-      args.detail === 'full' || explicitHistoryRead
+      needsHistory
         ? await import('@papercusp/operator-core/lib/prior-attempt-context')
         : null;
-    const historyContext = continuity ? await continuity.readGoalHistoryContext(goal.id) : undefined;
+    const historyContext = continuity ? await continuity.readGoalHistoryContext(goal.id, undefined, {
+      workspaceId: goal.workspaceId,
+      viewer: (await import('@papercusp/operator-core/lib/agent-tools/reports/_shared')).resolveViewer(ctx),
+    }, args.reportCursor) : undefined;
     const priorAttemptRecords = explicitHistoryRead
       ? await continuity!.resolvePriorAttemptRefs({
           target: { kind: 'goal', ref: goal.id },

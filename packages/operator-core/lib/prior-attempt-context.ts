@@ -36,6 +36,7 @@ import {
   type ContainmentTree,
 } from './containment-tree';
 import { readEffortThread } from './effort-thread';
+import type { GoalReportRecipient } from './goal-related-reports';
 
 export type { PriorAttemptRungs } from './prior-attempt-rungs';
 export { extractPriorAttemptRungs } from './prior-attempt-rungs';
@@ -1767,15 +1768,27 @@ export type PlanHistoryContext = Awaited<ReturnType<typeof readPlanHistoryContex
 export async function readGoalHistoryContext(
   goalId: string,
   read: typeof getContainmentRollupBrief = getContainmentRollupBrief,
+  recipient?: GoalReportRecipient,
+  reportCursor?: string,
 ) {
   const recovery = { tool: 'goals:get', args: { id: goalId, detail: 'full' } };
-  const brief = await read({
+  const history = read({
     target: { kind: 'goal', ref: goalId },
     budget: { maxChars: 6_000, maxRecords: 16, maxTextChars: 400 },
     maxDescendants: 24,
     timeoutMs: 2_500,
   }).catch(() => null);
-  return { status: brief?.status ?? 'unknown', brief, recovery };
+  // A slow or unavailable rollup must not discard a successful report read. The
+  // reader has its own budget and never infers a recipient from the goal's owner.
+  if (!recipient) {
+    const brief = await history;
+    return { status: brief?.status ?? 'unknown', brief, recovery };
+  }
+  const { readGoalReportPage } = await import('./goal-related-reports');
+  const [brief, relatedReports] = await Promise.all([
+    history, readGoalReportPage(getOrgPg().sql, goalId, recipient, reportCursor),
+  ]);
+  return { status: brief?.status ?? 'unknown', brief, recovery, relatedReports };
 }
 
 export type GoalHistoryContext = Awaited<ReturnType<typeof readGoalHistoryContext>>;

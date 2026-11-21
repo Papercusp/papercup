@@ -26,6 +26,7 @@ import {
   renderGoalHistoryContext,
 } from '../../agent-tools/goals/start';
 import type { GoalHistoryContext } from '../../prior-attempt-context';
+import type { GoalReportRecipient } from '../../goal-related-reports';
 import { launchAgent, type LaunchAgentResult } from '../../launch-agent';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { setMode } from '../../modes/store';
@@ -76,7 +77,7 @@ export interface GoalHolderLaunchDeps {
     requested: Record<string, never>;
   }) => Promise<GoalLaunchResolution>;
   launch: (opts: Parameters<typeof launchAgent>[0]) => Promise<LaunchAgentResult>;
-  readHistory: (goalId: string) => Promise<GoalHistoryContext>;
+  readHistory: (goalId: string, recipient: GoalReportRecipient) => Promise<GoalHistoryContext>;
   bindIdentity?: typeof bindGoalLaunchIdentity;
   renderPortfolio?: typeof renderGoalPortfolioBrief;
 }
@@ -157,8 +158,8 @@ const DEFAULT_DEPS: GoalHolderLaunchDeps = {
   // graph into every system-action bootstrap. Keep that graph behind the one
   // recovery path that actually consumes it so narrow plan-source test doubles
   // (and unrelated runtime boot) do not inherit this optional enrichment.
-  readHistory: async (goalId) =>
-    (await import('../../prior-attempt-context')).readGoalHistoryContext(goalId),
+  readHistory: async (goalId, recipient) =>
+    (await import('../../prior-attempt-context')).readGoalHistoryContext(goalId, undefined, recipient),
 };
 
 function required(value: string | null | undefined, name: string): string {
@@ -268,7 +269,11 @@ export async function launchGoalHolderSession(
         (!explicitKickoff || !explicitKickoff.includes('GOAL PORTFOLIO SNAPSHOT —'))
       ? (deps.renderPortfolio ?? renderGoalPortfolioBrief)(resolved.goalBrief.portfolio)
       : null;
-  const history = withholdBrief ? null : await deps.readHistory(goalId);
+  // The launch door mints a fresh owner. Only the destination pot and workspace
+  // are known before spawn; the launcher's private reports do not belong to it.
+  const history = withholdBrief ? null : await deps.readHistory(goalId, {
+    workspaceId, viewer: { potSlug: harnessSlug },
+  });
   const historyBlock = history === null ? null : renderGoalHistoryContext(history);
   const kickoffPrompt = explicitKickoff
     ? [
