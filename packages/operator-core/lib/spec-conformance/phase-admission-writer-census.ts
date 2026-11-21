@@ -26,6 +26,14 @@ const miniflareSqlitePath = /^(?:cache\/miniflare-CacheObject|d1\/miniflare-D1Da
 const sqliteHeader = Buffer.from('SQLite format 3\0');
 const looseGitObjectPath = /(?:^|\/)[^/]+\.git\/objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/;
 const looseGitObjectInflateLimit = 16 * 1024 * 1024;
+const drillGitObjectRoot = 'packages/operator-core/hive-git-root/wi3496-drill/papercusp.git/objects/';
+// Both namespace work refs are parentless commits of the empty tree. Their
+// full messages are `tower-work\n` and `vm-work\n`. Pin the compressed bytes
+// and exact fixture location so another commit or encoding requires review.
+const drillGitCommitFingerprints = new Map([
+  ['3ab4d0acf690da7388f3ee9dd52a7e07cda15988', '8b4a44cd5187d64334a15be330564418ae674809e5e27c2b900479612752c420'],
+  ['fcd0927af7a82559a02d7784c883c387b461960c', 'ebc9d09ffb1cdffd2315880c1bba75a6a1e9f8969ace7154088d257da9adba9e'],
+]);
 const lostPixelProjects = new Set([
   'apps/operator', 'libs/agent-chat', 'libs/generic/papergrid/grid-core',
   'libs/generic/ui-primitives', 'libs/marketplace-public-ui',
@@ -767,7 +775,10 @@ function isWranglerLocalSqliteState(path: string, bytes: Buffer): boolean {
   return header === 3_007_000 || bytes.readUInt32LE(0) === 3_007_000;
 }
 
-function looseGitObjectGap(path: string, bytes: Buffer): PhaseWriterInventory['gaps'][number] | undefined {
+function inspectLooseGitObject(path: string, bytes: Buffer):
+  { exclusion: PhaseWriterTreeManifest['excluded'][number] }
+  | { gap: PhaseWriterInventory['gaps'][number] }
+  | undefined {
   const match = looseGitObjectPath.exec(path);
   if (!match) return;
 
@@ -779,15 +790,28 @@ function looseGitObjectGap(path: string, bytes: Buffer): PhaseWriterInventory['g
     if (engine.bytesWritten !== bytes.length) return;
     const separator = object.indexOf(0);
     if (separator < 0) return;
-    const header = /^(?:blob|tree|commit|tag) (0|[1-9][0-9]*)$/.exec(object.toString('latin1', 0, separator));
-    if (!header || Number(header[1]) !== object.length - separator - 1) return;
-    if (createHash('sha1').update(object).digest('hex') !== match[1]! + match[2]!) return;
+    const header = /^(blob|tree|commit|tag) (0|[1-9][0-9]*)$/.exec(object.toString('latin1', 0, separator));
+    if (!header || Number(header[2]) !== object.length - separator - 1) return;
+    const objectId = match[1]! + match[2]!;
+    if (createHash('sha1').update(object).digest('hex') !== objectId) return;
+    const [, kind, size] = header;
+    if (size === '0' && (kind === 'blob' || kind === 'tree')) {
+      // Empty blobs and trees contain no source bytes or entries. Include the
+      // compressed digest so freshness still detects changes to the artifact.
+      return { exclusion: { path, reason: `verified-empty-loose-git-${kind}:${digest(bytes)}` } };
+    }
+    if (kind === 'commit' && path === `${drillGitObjectRoot}${match[1]}/${match[2]}`) {
+      const fingerprint = drillGitCommitFingerprints.get(objectId);
+      if (fingerprint && digest(bytes) === fingerprint) {
+        return { exclusion: { path, reason: `verified-loose-git-drill-commit:${fingerprint}` } };
+      }
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ERR_BUFFER_TOO_LARGE') return;
     reason = 'loose-git-object-inflate-limit';
   }
 
-  return { id: `source:${path}`, reason, sha256: digest(bytes) };
+  return { gap: { id: `source:${path}`, reason, sha256: digest(bytes) } };
 }
 
 function lostPixelOutputCandidate(path: string, bytes: Buffer) {
@@ -876,10 +900,14 @@ function readPhaseWriterTree(root: string) {
       if (isWranglerLocalSqliteState(path, bytes)) {
         excluded.push({ path, reason: wranglerLocalStateReason }); continue;
       }
-      // Some compressed Git objects also round-trip as UTF-8. Keep their
-      // tracked paths and byte fingerprints as gaps pending source disposition.
-      const gitObject = looseGitObjectGap(path, bytes);
-      if (gitObject) { gaps.push(gitObject); continue; }
+      // A compressed Git object can round-trip as UTF-8. Identify it before
+      // decoding text, and carry any payload we cannot classify as a gap.
+      const gitObject = inspectLooseGitObject(path, bytes);
+      if (gitObject) {
+        if ('exclusion' in gitObject) excluded.push(gitObject.exclusion);
+        else gaps.push(gitObject.gap);
+        continue;
+      }
       const content = bytes.toString('utf8');
       if (!Buffer.from(content).equals(bytes)) {
         const output = lostPixelOutputCandidate(path, bytes);

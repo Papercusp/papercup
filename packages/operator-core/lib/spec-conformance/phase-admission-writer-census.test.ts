@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { deflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 import {
   assertPhaseWriterCensus, assertPhaseWriterTreeCensus, inventoryPhaseWriters, reconcilePhaseWriterCensus,
   inventoryPhaseWriterTree, readPhaseWriterCensus, verifyPhaseWriterTreeSnapshot, writePhaseWriterCensus,
@@ -1708,23 +1708,62 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('keeps a UTF-8-decodable loose Git object in unresolved coverage with its exact bytes', async () => {
+  it('classifies exact empty-tree drill commits and keeps changed or moved bytes in the gap partition', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-drill-commits-'));
+    const fixture = 'hive-git-root/wi3496-drill/papercusp.git/objects';
+    const commits = ['3a/b4d0acf690da7388f3ee9dd52a7e07cda15988', 'fc/d0927af7a82559a02d7784c883c387b461960c'];
+    const inputs = commits.map(object => ({ path: `packages/operator-core/${fixture}/${object}`,
+      bytes: readFileSync(new URL(`../../${fixture}/${object}`, import.meta.url)) }));
+    const first = inputs[0]!;
+    const moved = { ...first, path: first.path.replace('wi3496-drill', 'other-drill') };
+    const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
+    const gap = (path: string, bytes: Buffer) => ({ id: `source:${path}`,
+      reason: 'loose-git-object-unresolved', sha256: sha256(bytes) });
+    try {
+      for (const { path, bytes } of [...inputs, moved]) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), bytes);
+      }
+      const inventory = inventoryPhaseWriterTree(root);
+      expect(inventory.excluded).toEqual(inputs.map(({ path, bytes }) => ({ path,
+        reason: `verified-loose-git-drill-commit:${sha256(bytes)}` })));
+      expect(inventory.gaps).toEqual([gap(moved.path, moved.bytes)]);
+
+      // This still inflates to the same valid object, but the observed artifact changed.
+      const recompressed = deflateSync(inflateSync(first.bytes), { level: 0 });
+      expect(recompressed).not.toEqual(first.bytes);
+      writeFileSync(join(root, first.path), recompressed);
+      expect(verifyPhaseWriterTreeSnapshot(inventory).differences.map(row => [row.id, row.reason])).toEqual([
+        [`excluded:${first.path}`, 'removed'], [`gap:source:${first.path}`, 'added'],
+      ]);
+      expect(inventoryPhaseWriterTree(root).gaps).toContainEqual(gap(first.path, recompressed));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('proves exact empty Git objects while retaining non-empty objects and lookalikes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-loose-object-'));
-    const objectId = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
     const objectPath = 'packages/operator-core/hive-git-root/wi3496-drill/papercusp.git/objects';
-    const object = objectPath + '/4b/' + objectId.slice(2);
+    const makeObject = (kind: 'blob' | 'tree', content: string) => {
+      const raw = Buffer.from(`${kind} ${Buffer.byteLength(content)}\0${content}`);
+      const id = createHash('sha1').update(raw).digest('hex');
+      return { path: `${objectPath}/${id.slice(0, 2)}/${id.slice(2)}`, bytes: deflateSync(raw, { level: 1 }) };
+    };
+    const emptyTree = makeObject('tree', '');
+    const emptyBlob = makeObject('blob', '');
+    const writerBlob = makeObject('blob', write);
     const wrongId = objectPath + '/4b/' + '0'.repeat(38);
-    const wrongDirectory = 'packages/drill/objects/4b/' + objectId.slice(2);
-    const trailingBytes = 'packages/other.git/objects/4b/' + objectId.slice(2);
+    const wrongDirectory = emptyTree.path.replace('papercusp.git', 'papercusp-git');
+    const trailingBytes = emptyTree.path.replace('papercusp.git', 'other.git');
     const authored = 'packages/drill/reconcile';
-    const compressed = Buffer.from('eAErKUpNVTBgAAAKLAIB', 'base64');
-    expect(Buffer.from(compressed.toString('utf8'))).toEqual(compressed);
+    expect(Buffer.from(emptyTree.bytes.toString('utf8'))).toEqual(emptyTree.bytes);
 
     try {
       execFileSync('git', ['init', '-q'], { cwd: root });
       const files = [
-        [object, compressed], [wrongId, compressed], [wrongDirectory, compressed],
-        [trailingBytes, Buffer.concat([compressed, Buffer.from('extra')])],
+        [emptyTree.path, emptyTree.bytes], [emptyBlob.path, emptyBlob.bytes],
+        [writerBlob.path, writerBlob.bytes], [wrongId, emptyTree.bytes],
+        [wrongDirectory, emptyTree.bytes],
+        [trailingBytes, Buffer.concat([emptyTree.bytes, Buffer.from('extra')])],
         [authored, write],
       ] as const;
       for (const [path, bytes] of files) {
@@ -1734,10 +1773,14 @@ describe('phase binding writer census', () => {
       execFileSync('git', ['add', '--', ...files.map(([path]) => path)], { cwd: root });
 
       const inventory = inventoryPhaseWriterTree(root);
-      const gap = { id: 'source:' + object, reason: 'loose-git-object-unresolved',
-        sha256: createHash('sha256').update(compressed).digest('hex') };
+      const gap = { id: 'source:' + writerBlob.path, reason: 'loose-git-object-unresolved',
+        sha256: createHash('sha256').update(writerBlob.bytes).digest('hex') };
+      const exclusions = [
+        { path: emptyTree.path, reason: 'verified-empty-loose-git-tree:' + createHash('sha256').update(emptyTree.bytes).digest('hex') },
+        { path: emptyBlob.path, reason: 'verified-empty-loose-git-blob:' + createHash('sha256').update(emptyBlob.bytes).digest('hex') },
+      ];
       expect(inventory.gaps).toEqual([gap]);
-      expect(inventory.excluded).toEqual([]);
+      expect(inventory.excluded).toEqual(exclusions);
       expect(inventory.sources.map(source => source.path)).toEqual(
         [authored, wrongDirectory, wrongId, trailingBytes].sort());
       const reviews = inventory.sites.map(site => review(site));
@@ -1750,17 +1793,22 @@ describe('phase binding writer census', () => {
       const records: string[] = [];
       const footer = await writePhaseWriterCensus(inventory, reviews, row => { records.push(row); });
       const recovered: unknown[] = [];
+      const recoveredExclusions: unknown[] = [];
       expect(await readPhaseWriterCensus(records, row => {
         if (row.kind === 'gap') recovered.push(row.value);
+        if (row.kind === 'excluded') recoveredExclusions.push(row.value);
       })).toEqual(footer);
       expect(recovered).toEqual([gap]);
-      expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual([]);
+      expect(recoveredExclusions).toEqual(exclusions);
+      const original = verifyPhaseWriterTreeSnapshot(inventory);
+      expect(original.differences).toEqual([]);
+      expect(original.coverage.notApplicable).toEqual(exclusions.map(row => 'excluded:' + row.path));
 
       const alternate = deflateSync(Buffer.from('tree 0\0'), { level: 9 });
-      expect(alternate).not.toEqual(compressed);
-      writeFileSync(join(root, object), alternate);
+      expect(alternate).not.toEqual(emptyTree.bytes);
+      writeFileSync(join(root, emptyTree.path), alternate);
       expect(verifyPhaseWriterTreeSnapshot(inventory).differences).toEqual([
-        expect.objectContaining({ id: gapId, reason: 'changed' }),
+        expect.objectContaining({ id: 'excluded:' + emptyTree.path, reason: 'changed' }),
       ]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
