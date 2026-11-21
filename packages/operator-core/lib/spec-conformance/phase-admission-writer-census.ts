@@ -48,8 +48,20 @@ const desktopIconRole = {
   sha256: '97fd4b48ee16d5c9ad758044a29b4228003e74ab611e168d2189343b98bedb72',
   kind: 'tauri-bundle-icon',
 };
-// Each reviewed PNG ends at IEND and contains only IHDR, IDAT and IEND.
-// The role file pins the Playwright output path or the exact bundle.icon entry.
+const framesScreenshotRole = {
+  path: 'apps/operator/e2e/frames-live-view.spec.ts',
+  sha256: 'b90edea81a6e1b1fab06697467c52ec6c4e33b9f8e5b09f014b093e14bdf0e3c',
+  kind: 'playwright-screenshot',
+};
+const swarmBrandRasterRole = {
+  path: 'apps/operator/public/brand/the-hive/README.md',
+  sha256: '6281c1fd29863720545ad82de96416cd2c725bbbf369b25c4b138b9a1f8b4ee9',
+  kind: 'documented-brand-asset',
+};
+const swarmDesktopRasterRoot = 'libs/papercusp/apps/desktop/src-tauri/icons/the-hive/';
+// The reviewed PNGs end at IEND and can contain a fixed-size bKGD color field.
+// The reviewed ICO and ICNS containers contain only raster records and their
+// masks. Each role file names the exact asset path.
 const reviewedRasterArtifacts = new Map<string, {
   sha256: string; role: { path: string; sha256: string; kind: string };
 }>([
@@ -61,6 +73,14 @@ const reviewedRasterArtifacts = new Map<string, {
       kind: 'playwright-screenshot',
     },
   }],
+  ['apps/operator/e2e/__artifacts__/frames-tab-grid.png', {
+    sha256: '041b87af9d6375f21ed9a861132f678ad3bc0d3538d43ecff6f94f92ac2c44f7',
+    role: framesScreenshotRole,
+  }],
+  ['apps/operator/e2e/__artifacts__/frames-tab-panel.png', {
+    sha256: 'e775c74a90c88652f68e77f2e1e7761571d3bb9f0a7afe45cba0efc7e8974aa1',
+    role: framesScreenshotRole,
+  }],
   ['libs/papercusp/apps/desktop/src-tauri/icons/32x32.png', {
     sha256: '86128809f1f572eb24fd23dd248d5a8ab340161390e6cd07686672dcb786891e', role: desktopIconRole,
   }],
@@ -70,6 +90,27 @@ const reviewedRasterArtifacts = new Map<string, {
   ['libs/papercusp/apps/desktop/src-tauri/icons/128x128@2x.png', {
     sha256: 'd3a7e6c264795a3e7328d70472efd9c0418ba7354941a47be42b5b35f1668019', role: desktopIconRole,
   }],
+  ['libs/papercusp/apps/desktop/src-tauri/icons/icon.icns', {
+    sha256: '51033ffef7900f6b508069fcb974b1d99ec5a2f401caf4446378ee1c31b5be55', role: desktopIconRole,
+  }],
+  ['libs/papercusp/apps/desktop/src-tauri/icons/icon.ico', {
+    sha256: '8ddda5b2a4240c6eae939eb9f38524a9e5cb14bd9d8f7eae343ada3d09b11a41', role: desktopIconRole,
+  }],
+  ['apps/operator/public/brand/the-hive/favicon.png', {
+    sha256: '754469b6c6c2b80ff50a388ae4ccef0070e66b11973f2e96a29360e496aa43ac', role: swarmBrandRasterRole,
+  }],
+  ...([
+    ['128x128.png', 'c5ec5b943f117b3fd8adf379864c5e2b3810431bab5dca61a79beefaaae28941'],
+    ['128x128@2x.png', '474a13f4136b2f2b2c88aebacab1c398835d6208870a812e7a7c363a94d37dc4'],
+    ['16x16.png', 'dff7deaf5f271c1c5201cb74562d5a806c9dd8a2532ec09750215c8f4e7d3118'],
+    ['256x256.png', '474a13f4136b2f2b2c88aebacab1c398835d6208870a812e7a7c363a94d37dc4'],
+    ['32x32.png', 'd5e88f1b223cee3af192645b67a83282558436a66fc58b7993749eb4b9e4e0b0'],
+    ['64x64.png', '9fb4dd3280d35c0206f7ddd43c9e44b9eeb64c015ac2a41e72997621cc76a1fe'],
+    ['_master.png', 'c1285c84d5863311ea5527090ca71638bdef9719634e43d8496a753f4041dd52'],
+    ['icon.icns', 'f62f6ca341f07489435aeaa42516a0bb445a6d9d4c4ac41056a618aea977d8f2'],
+    ['icon.ico', '009de81e61b791511674e0591dba9b997ecefe89a968615118e191031043a840'],
+    ['icon.png', 'c1285c84d5863311ea5527090ca71638bdef9719634e43d8496a753f4041dd52'],
+  ] as const).map(([name, sha256]) => [swarmDesktopRasterRoot + name, { sha256, role: swarmBrandRasterRole }] as const),
 ]);
 export const PHASE_WRITER_RELATIONS = new Set([
   'plan_item_claims', 'work_items', 'engineer_issues', 'harness_features',

@@ -1910,14 +1910,24 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('requires exact raster bytes, paths and same-snapshot producer or bundle role evidence', () => {
+  it('requires exact raster bytes, paths and same-snapshot role evidence', () => {
     const root = mkdtempSync(join(tmpdir(), 'phase-reviewed-raster-'));
     const e2eRoot = 'apps/operator/e2e/';
     const desktopRoot = 'libs/papercusp/apps/desktop/src-tauri/';
-    const producer = e2eRoot + 'adv-contributors-panel.spec.ts';
+    const screenshots = [
+      ['adv-contributors-panel.png', 'adv-contributors-panel.spec.ts'],
+      ['frames-tab-grid.png', 'frames-live-view.spec.ts'],
+      ['frames-tab-panel.png', 'frames-live-view.spec.ts'],
+    ].map(([name, spec]) => ({ path: e2eRoot + '__artifacts__/' + name, role: e2eRoot + spec }));
     const config = desktopRoot + 'tauri.conf.json';
-    const screenshot = e2eRoot + '__artifacts__/adv-contributors-panel.png';
-    const icons = ['32x32.png', '128x128.png', '128x128@2x.png'].map(name => desktopRoot + 'icons/' + name);
+    const icons = ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.icns', 'icon.ico']
+      .map(name => desktopRoot + 'icons/' + name);
+    const brandRoot = 'apps/operator/public/brand/the-hive/';
+    const brandManifest = brandRoot + 'README.md';
+    const brandRasters = [brandRoot + 'favicon.png', ...[
+      '128x128.png', '128x128@2x.png', '16x16.png', '256x256.png',
+      '32x32.png', '64x64.png', '_master.png', 'icon.icns', 'icon.ico', 'icon.png',
+    ].map(name => desktopRoot + 'icons/the-hive/' + name)];
     const moved = desktopRoot + 'icons/other/32x32.png';
     const fixture = (path: string) => readFileSync(new URL('../../../../' + path, import.meta.url));
     const hash = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -1927,37 +1937,48 @@ describe('phase binding writer census', () => {
     };
     try {
       execFileSync('git', ['init', '-q'], { cwd: root });
-      for (const path of [producer, config, screenshot, ...icons]) put(path, fixture(path));
+      const producers = [...new Set(screenshots.map(screenshot => screenshot.role))];
+      const screenshotPaths = screenshots.map(screenshot => screenshot.path);
+      for (const path of [...producers, config, brandManifest, ...screenshotPaths, ...icons, ...brandRasters]) {
+        put(path, fixture(path));
+      }
       const inventory = inventoryPhaseWriterTree(root);
       const proof = (path: string, kind: string, role: string) => ({
         path, reason: `reviewed-raster:${kind}:${role}#${hash(fixture(role))}:asset-sha256:${hash(fixture(path))}`,
       });
       expect(inventory.excluded).toEqual([
-        proof(screenshot, 'playwright-screenshot', producer),
-        ...[...icons].sort().map(path => proof(path, 'tauri-bundle-icon', config)),
-      ]);
+        ...screenshots.map(({ path, role }) => proof(path, 'playwright-screenshot', role)),
+        ...icons.map(path => proof(path, 'tauri-bundle-icon', config)),
+        ...brandRasters.map(path => proof(path, 'documented-brand-asset', brandManifest)),
+      ].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
       expect(inventory.gaps).toEqual([]);
       const initial = verifyPhaseWriterTreeSnapshot(inventory);
       expect(initial.ready).toBe(true);
-      expect(initial.coverage.notApplicable).toEqual([screenshot, ...icons].sort().map(path => 'excluded:' + path));
+      const reviewedPaths = [...screenshotPaths, ...icons, ...brandRasters];
+      expect(initial.coverage.notApplicable).toEqual(reviewedPaths.sort().map(path => 'excluded:' + path));
 
       put(moved, fixture(icons[0]!));
       put(icons[0]!, Buffer.concat([fixture(icons[0]!), Buffer.from([0xff])]));
       put(icons[1]!, Buffer.from('replacement text'));
       put(config, Buffer.concat([fixture(config), Buffer.from('\n')]));
-      rmSync(join(root, producer));
+      put(brandManifest, Buffer.concat([fixture(brandManifest), Buffer.from('\n')]));
+      for (const producer of producers) rmSync(join(root, producer));
       const comparison = verifyPhaseWriterTreeSnapshot(inventory);
       expect(comparison.ready).toBe(false);
       expect(comparison.coverage.notApplicable).toEqual([]);
       expect(comparison.coverage.residue).toEqual([
-        ...[screenshot, ...icons].map(path => 'excluded:' + path),
-        ...[screenshot, icons[0]!, icons[2]!, moved].map(path => 'gap:source:' + path),
+        ...reviewedPaths.map(path => 'excluded:' + path),
+        ...[...screenshotPaths, icons[0]!, ...icons.slice(2), moved, ...brandRasters].map(path => 'gap:source:' + path),
         'gap:reviewed-raster:' + icons[1],
-        ...[producer, config, icons[1]!].map(path => 'source:' + path),
+        ...[...producers, config, icons[1]!, brandManifest].map(path => 'source:' + path),
       ].sort());
-      expect(inventoryPhaseWriterTree(root).gaps).toContainEqual({
+      const changedGaps = inventoryPhaseWriterTree(root).gaps;
+      expect(changedGaps).toContainEqual({
         id: 'source:' + icons[2], reason: 'reviewed-raster-role-unverified', sha256: hash(fixture(icons[2]!)),
       });
+      expect(changedGaps).toEqual(expect.arrayContaining(brandRasters.map(path => ({
+        id: 'source:' + path, reason: 'reviewed-raster-role-unverified', sha256: hash(fixture(path)),
+      }))));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
