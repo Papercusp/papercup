@@ -2290,6 +2290,7 @@ export function checkpointQualificationAttachmentRefusalSummary(
   activation: {
     status: string;
     refusalReason?: string;
+    error?: string;
     transaction?: {
       attemptId: string;
       candidate: string | null;
@@ -2314,8 +2315,10 @@ export function checkpointQualificationAttachmentRefusalSummary(
     ? `; stored attempt=${transaction.attemptId}, candidate=${transaction.candidate ?? 'null'}, runId=${transaction.runId ?? 'null'}` +
       `; requested attempt=${input.attemptId ?? 'unrecorded'}, candidate=${input.candidate ?? 'null'}, runId=${input.runId}`
     : '';
+  const storeError = activation.status === 'unreadable' ? safeQualificationErrorDetail(activation.error) : undefined;
   return `checkpoint qualification runner attachment refused: ${activation.status}` +
-    `; refusalReason=${activation.refusalReason ?? 'unknown'}${identity}${state}`;
+    `; refusalReason=${activation.refusalReason ?? 'unknown'}${identity}${state}` +
+    (storeError ? `; storeError=${storeError}` : '');
 }
 
 /** The `skipped-locked` summary for a fire that lost the qualification attach race (WI-6554700010009570). */
@@ -4205,17 +4208,16 @@ export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint:
     : mint();
 }
 
-/** Keep the exact scheduled runner visibly alive through quiet suite phases. */
-function safeQualificationProgressErrorDetail(error: unknown): string | undefined {
+function safeQualificationErrorDetail(error: unknown): string | undefined {
   if (error == null) return undefined;
   const message = error instanceof Error ? error.message : String(error);
   const detail = redactSensitiveText(sanitizeCheckpointLogText(message))
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 240);
+    .trim();
   return detail || undefined;
 }
 
+/** Keep the exact scheduled runner visibly alive through quiet suite phases. */
 export function startCheckpointQualificationProgress(
   input: {
     target: GateVerdictTarget | null;
@@ -4249,11 +4251,11 @@ export function startCheckpointQualificationProgress(
         attemptId, runnerId, runId: input.runId, pidIdentity, phase: phaseAtReport, nowMs,
       });
       if (result.status !== 'updated' && result.status !== 'idempotent' && result.status !== 'terminal') {
-        const detail = safeQualificationProgressErrorDetail("error" in result ? result.error : undefined);
+        const detail = safeQualificationErrorDetail("error" in result ? result.error : undefined)?.slice(0, 240);
         console.warn(`${orchestratorStdoutTag()} scheduled runner progress refused: ${result.status}${detail ? `; detail: ${detail}` : ''}`);
       }
     }).catch((error) => {
-      const detail = safeQualificationProgressErrorDetail(error);
+      const detail = safeQualificationErrorDetail(error)?.slice(0, 240);
       console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed${detail ? `: ${detail}` : ''}`);
     });
   };

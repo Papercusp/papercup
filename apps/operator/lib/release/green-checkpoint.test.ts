@@ -4514,6 +4514,24 @@ describe("qualification attach race (WI-6554700010009570)", () => {
   });
   const self = { pid: 4000001, runId: "8d95fde3-run" };
 
+  it("reports the sanitized store error when a scheduled runner cannot attach", async () => {
+    const input = {
+      target: { workspaceId: 'ws-1', installSlug: 'papercusp' },
+      attemptId: 'attempt-1', gateFireId: 'fire-1', runId: self.runId,
+      candidate: 'candidate-1', pid: process.pid,
+    };
+    const context = 'checking the stored qualification '.repeat(9).trimEnd();
+    const activation = await activateCheckpointQualificationRunner(input, async () => ({
+      status: 'unreadable',
+      error: `${context}\nlock timeout at postgresql://fixture:example@db.invalid/checkpoint`,
+    }));
+
+    expect(activation.status).toBe('unreadable');
+    const summary = checkpointQualificationAttachmentRefusalSummary(activation, input, []);
+    expect(summary).toContain(`storeError=${context} lock timeout at postgresql://[redacted]@db.invalid/checkpoint`);
+    expect(summary).not.toContain('fixture:example');
+  });
+
   it("reports a candidate refusal with matching own-unit ids without claiming launcher skew (P-033)", () => {
     const runner = { ...incumbentRunner, id: 'same-fire', unit: 'own.scope' };
     const summary = checkpointQualificationAttachmentRefusalSummary({
