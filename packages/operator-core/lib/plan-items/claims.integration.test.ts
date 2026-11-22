@@ -136,6 +136,41 @@ describe('acquireClaim', () => {
     expect(res.conflict.expired).toBe(false);
   });
 
+  it('takes the claim on retry when its live holder releases after the initial upsert', async () => {
+    const holder = await acquire();
+    if (!holder.ok) throw new Error('Could not acquire the fixture claim');
+
+    // Keep the real SQL and release path. Insert the release between the
+    // empty upsert result and the contender's next statement without sleeps.
+    const sql = h.sql;
+    h.sql = new Proxy(sql, {
+      apply(target, receiver, args) {
+        const query = Reflect.apply(target, receiver, args);
+        const [strings] = args;
+        if (!Array.isArray(strings) || !strings[0]?.includes('INSERT INTO harness_shared.plan_item_claims')
+          || !strings.some(part => part.includes('DO UPDATE SET'))) {
+          return query;
+        }
+        return Promise.resolve(query).then(async rows => {
+          expect(rows).toHaveLength(0);
+          expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', holder.claim.claimId, 'su-alice'))
+            .toBe(true);
+          return rows;
+        });
+      },
+    });
+
+    try {
+      const contender = await acquire({ owner: 'su-bob' });
+      if (!contender.ok) throw new Error('The contender did not acquire the released claim');
+      expect(contender.claim.owner).toBe('su-bob');
+      expect(contender.claim.claimId).not.toBe(holder.claim.claimId);
+      expect(await claims.listClaimsForPlan(WS, HARNESS, PLAN)).toEqual([contender.claim]);
+    } finally {
+      h.sql = sql;
+    }
+  });
+
   it('a different owner STEALS a lapsed claim (D-004 lazy reclaim)', async () => {
     await acquire();
     await lapse('P-001');
