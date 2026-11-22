@@ -139,8 +139,10 @@ export function inventory({ root, files, dispositions, readFile, submodules }: {
     scanned: number;
     unreadable: number;
 };
-/** The canonical tree inventory used by the CLI and manifest checks. @param {string} root */
-export function inventoryTree(root: string): {
+/** The canonical tree inventory used by the CLI and manifest checks.
+ * @param {string} root
+ * @param {(file: string) => string} [readFile] */
+export function inventoryTree(root: string, readFile?: (file: string) => string): {
     byClass: {
         [k: string]: number;
     };
