@@ -111,13 +111,19 @@ describe('authoritative identity read timing', () => {
     setLocalSyncRulesReader(local);
     let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now += 5);
-    const observe = vi.fn();
+    const clearPending = vi.fn();
+    const trackPending = vi.fn(() => clearPending);
+    const observe = Object.assign(vi.fn(), { trackPending });
     await readAppliedWornRules('owner-read-timing', 'ws', observe);
     expect(observe.mock.calls.map(([timing]) => timing)).toEqual([
       { stage: 'applied_revision', durationMs: 5 },
       { stage: 'applied_artifact', durationMs: 5 },
       { stage: 'local_rules', durationMs: 5 },
     ]);
+    expect(trackPending.mock.calls).toEqual([
+      ['applied_revision', 5], ['applied_artifact', 15], ['local_rules', 25],
+    ]);
+    expect(clearPending).toHaveBeenCalledTimes(3);
     await readAppliedWornRules('owner-read-timing', 'ws', observe);
     expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(1);
     applied('owner-read-timing', 's2');
@@ -129,13 +135,16 @@ describe('authoritative identity read timing', () => {
 
   it('keeps a throwing observer from changing a refusal or replacing a read failure', async () => {
     applied('owner-read-timing-failure');
-    const observe = vi.fn(() => { throw new Error('diagnostic sink failed'); });
+    const clearPending = vi.fn(() => { throw new Error('diagnostic cleanup failed'); });
+    const trackPending = vi.fn(() => clearPending);
+    const observe = Object.assign(vi.fn(() => { throw new Error('diagnostic sink failed'); }), { trackPending });
     const pending = { tool: 'Bash', input: { command: 'rm -rf build' }, client: 'claude' };
     expect(await evaluateToolGuard(pending, () => readAppliedWornRules('owner-read-timing-failure', 'ws', observe)))
       .toMatchObject({ decision: 'deny', ruleId: 'no-rm' });
     const failure = new Error('local authoritative read failed');
     setLocalSyncRulesReader(async () => { throw failure; });
     await expect(readAppliedWornRules('owner-read-timing-failure', 'ws', observe)).rejects.toBe(failure);
+    expect(clearPending).toHaveBeenCalledTimes(trackPending.mock.calls.length);
     expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ stage: 'local_rules' }));
   });
 

@@ -456,9 +456,12 @@ let localSyncReader: ((ownerId: string, workspaceId: string, harnessSlug: string
   budget?: IdentityRuleReadBudget) => Promise<WornSyncRules>) | null = null;
 export function setLocalSyncRulesReader(reader: typeof localSyncReader): void { localSyncReader = reader; }
 
-export type IdentityRuleReadTimingObserver = (timing: {
-  stage: 'applied_revision' | 'applied_artifact' | 'local_rules'; durationMs: number;
-}) => void;
+type IdentityRuleReadStage = 'applied_revision' | 'applied_artifact' | 'local_rules';
+export type IdentityRuleReadTimingObserver = ((timing: {
+  stage: IdentityRuleReadStage; durationMs: number;
+}) => void) & {
+  trackPending?: (stage: IdentityRuleReadStage, startedAtMs: number) => (() => void) | undefined;
+};
 
 /** The native call owns this budget; no result from an expired read authorizes a call. */
 export interface IdentityRuleReadBudget {
@@ -486,11 +489,14 @@ export async function identityRuleQuery<T>(read: (sql: Sql) => Promise<T>, budge
 }
 
 /** Observe the authoritative read itself, including rejection; diagnostics never vote. */
-async function measureIdentityRead<T>(stage: Parameters<IdentityRuleReadTimingObserver>[0]['stage'],
+async function measureIdentityRead<T>(stage: IdentityRuleReadStage,
   observe: IdentityRuleReadTimingObserver | undefined, read: () => Promise<T>): Promise<T> {
   if (!observe) return read();
   const startedAt = performance.now();
+  let clearPending: (() => void) | undefined;
+  try { clearPending = observe.trackPending?.(stage, startedAt); } catch { /* diagnostics only */ }
   try { return await read(); } finally {
+    try { clearPending?.(); } catch { /* diagnostics only */ }
     try { observe({ stage, durationMs: Math.max(0, performance.now() - startedAt) }); } catch { /* diagnostics only */ }
   }
 }

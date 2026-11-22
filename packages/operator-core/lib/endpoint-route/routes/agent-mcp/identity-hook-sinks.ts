@@ -327,10 +327,17 @@ const toolGuard = defineTool({
     const repeatedPlanStageCounts = new Map<string, number>();
     const pendingPlanStages = new Map<symbol, { stage: string; startedAtMs: number }>();
     const identityStages: Record<string, number> = {};
+    const pendingIdentityStages = new Map<string, number>();
+    const isIdentityTimingStage = (stage: string) =>
+      ['applied_revision', 'applied_artifact', 'local_rules'].includes(stage);
     const observeIdentityTiming: IdentityRuleReadTimingObserver = ({ stage, durationMs }) => {
-      if (!['applied_revision', 'applied_artifact', 'local_rules'].includes(stage) ||
-          !Number.isFinite(durationMs) || durationMs < 0) return;
+      if (!isIdentityTimingStage(stage) || !Number.isFinite(durationMs) || durationMs < 0) return;
       identityStages[stage] = (identityStages[stage] ?? 0) + durationMs;
+    };
+    observeIdentityTiming.trackPending = (stage, startedAtMs) => {
+      if (!isIdentityTimingStage(stage)) return;
+      pendingIdentityStages.set(stage, startedAtMs);
+      return () => { pendingIdentityStages.delete(stage); };
     };
       // Keep the existing bounds plus the exact snapshot names with hyphens.
       // These timing-only labels contain no owner, plan, input or verdict content.
@@ -412,6 +419,8 @@ const toolGuard = defineTool({
     } finally {
       const observedAtMs = performance.now();
       const totalMs = observedAtMs - startedAt;
+      const pendingIdentity = Array.from(pendingIdentityStages, ([stage, startedAtMs]) =>
+        ({ stage, elapsedMs: Math.round(observedAtMs - startedAtMs) }));
       if (totalMs >= 500) {
         const recordRoutePhase = (phase: string, durationMs: number) => {
           try { ctx?.routeDiagnostics?.record?.(phase, durationMs); } catch { /* diagnostics only */ }
@@ -432,6 +441,8 @@ const toolGuard = defineTool({
           recordRoutePhase('guard_plan_pending_' + stage, elapsedMs);
         for (const [stage, durationMs] of Object.entries(identityStages))
           recordRoutePhase('guard_identity_' + stage, durationMs);
+        for (const { stage, elapsedMs } of pendingIdentity)
+          recordRoutePhase('guard_identity_pending_' + stage, elapsedMs);
         try { recordToolGuardAcquisitionTimings(readAcquireSnapshot(), recordRoutePhase); }
         catch { /* A diagnostic read must not change the guard result. */ }
       }
@@ -449,6 +460,7 @@ const toolGuard = defineTool({
         ...(pendingPlanStages.size ? { pendingPlanStages: Array.from(pendingPlanStages.values(),
           ({ stage, startedAtMs }) => ({ stage, elapsedMs: Math.round(observedAtMs - startedAtMs) })) } : {}),
         ...(Object.keys(identityStages).length ? { identityStages } : {}),
+        ...(pendingIdentity.length ? { pendingIdentityStages: pendingIdentity } : {}),
         ...(guardRequestId && guardAttemptId ? { guardAttemptId,
           pgTimings: toolGuardPgTimings(guardRequestId, guardAttemptId),
           pgAcquisitions: toolGuardPgAcquisitions(readAcquireSnapshot) } : {}),

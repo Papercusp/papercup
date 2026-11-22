@@ -663,11 +663,18 @@ describe('POST /agent-mcp/tool-guard', () => {
     } finally { clock.mockRestore(); log.mockRestore(); }
   });
 
-  it('keeps an identity-budget refusal traceable in the native-visible response', async () => {
+  it('correlates the pending identity read with its native-visible budget refusal', async () => {
     vi.useFakeTimers();
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const guardRequestId = randomUUID();
-    readAppliedWornRulesMock.mockImplementation(() => new Promise(() => {}));
+    readAppliedWornRulesMock.mockImplementation(async (_owner, _workspace, observeTiming) => {
+      const clearRevision = observeTiming.trackPending('applied_revision', performance.now());
+      clearRevision?.();
+      observeTiming({ stage: 'applied_revision', durationMs: 0 });
+      observeTiming.trackPending('applied_artifact', performance.now());
+      observeTiming.trackPending('private-identity-content', performance.now());
+      return new Promise(() => {});
+    });
     try {
       const pending = route('/agent-mcp/tool-guard').handler(new Request('http://localhost/api/agent-mcp/tool-guard', {
         method: 'POST', body: JSON.stringify({ owner: 'builder', workspace: 'ws', tool: 'Edit',
@@ -680,7 +687,12 @@ describe('POST /agent-mcp/tool-guard', () => {
       expect(text).toContain(`\nGuard diagnostic: requestId=${guardRequestId}.`);
       expect(response.headers.get('X-Papercusp-Guard-Request-Id')).toBe(guardRequestId);
       const diagnostic = JSON.parse(log.mock.calls.find(([label]) => label === '[tool-guard-timing]')![1]);
-      expect(diagnostic.guardRequestId).toBe(guardRequestId);
+      expect(diagnostic).toMatchObject({
+        guardRequestId,
+        identityStages: { applied_revision: 0 },
+        pendingIdentityStages: [{ stage: 'applied_artifact', elapsedMs: 1000 }],
+      });
+      expect(diagnostic.pendingIdentityStages).toHaveLength(1);
       expect(readAppliedWornRulesMock.mock.calls[0]![3]!.signal.aborted).toBe(true);
       expect(text).not.toContain(NEVER_EMIT_MARKER);
       expect(JSON.stringify(log.mock.calls)).not.toContain(NEVER_EMIT_MARKER);
