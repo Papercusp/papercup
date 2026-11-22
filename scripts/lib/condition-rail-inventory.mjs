@@ -546,10 +546,12 @@ export function inventory({ root, files, dispositions = {}, readFile, submodules
   return { rows, sites, scanned, unreadable: unreadableFiles.length, ...coverage, byClass, undispositioned, staleDispositions };
 }
 
-/** The canonical tree inventory used by the CLI and manifest checks. @param {string} root */
-export function inventoryTree(root) {
+/** The canonical tree inventory used by the CLI and manifest checks.
+ * @param {string} root
+ * @param {(file: string) => string} [readFile] */
+export function inventoryTree(root, readFile) {
   const { files, ...submodules } = listFilesIncludingUntracked(root);
-  return inventory({ root, files, dispositions: DISPOSITIONS, submodules: {
+  return inventory({ root, files, readFile, dispositions: DISPOSITIONS, submodules: {
     ...submodules, outsideScanScope: submodules.unscanned.filter(dir => !inScanTree(`${dir}/`)),
   } });
 }

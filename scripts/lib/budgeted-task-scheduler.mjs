@@ -1558,6 +1558,144 @@ export function verifyNativeProofPacket(directory, locator, contract) {
   return { status: manifest.verdicts.custody, verified: true, manifest };
 }
 
+const conditionRailMarker = 'PAPERCUSP_CONDITION_RAIL_INPUTS_V1 ';
+const conditionRailScript = 'scripts/condition-rail-inventory.mjs';
+const conditionRailCommand = `tsx ${conditionRailScript} --lint`;
+
+/** Publish through the existing bounded native metadata store. Only the locator goes on stdout. */
+export function publishConditionRailInputManifest(out, manifest) {
+  const pin = persistCustodyManifest(createNativeArtifactPersister(`${out}.condition-rail-inputs`), manifest);
+  return `${conditionRailMarker}${pin.sha256} ${pin.byteLength}`;
+}
+
+function readConditionRailPin(root, pin, suffix, limit) {
+  if (!comparisonDigest(pin?.sha256) || pin.ref !== `${pin.sha256}.${suffix}`)
+    throw new Error(`invalid ${suffix} reference`);
+  const bytes = readNativeArtifactBytes(join(root, pin.ref), pin.byteLength, limit);
+  if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) throw new Error(`${suffix} digest mismatch`);
+  return bytes;
+}
+
+function conditionRailDataGaps(manifest) {
+  const gaps = [];
+  const identity = row => comparisonDigest(row?.sha256) && Number.isSafeInteger(row.byteLength) && row.byteLength >= 0;
+  const paths = list => Array.isArray(list) && list.every(path => typeof path === 'string' && path.length > 0) &&
+    new Set(list).size === list.length;
+  const { sources, inventory, history } = manifest;
+  if (!Array.isArray(sources) || !sources.every(identity) || !paths(sources.map(row => row.path)) ||
+      sources.length !== inventory?.scanned) gaps.push('source-inventory-incomplete');
+  if (!paths(inventory?.unreadableFiles) || inventory.unreadableFiles.length) gaps.push('unreadable-source');
+  const submodules = inventory?.submodules;
+  if (!paths(submodules?.unscanned) || !paths(submodules.outsideScanScope) ||
+      submodules.unscanned.some(path => !submodules.outsideScanScope.includes(path))) gaps.push('source-submodule-unscanned');
+  if (!identity(manifest.seed) || manifest.seed.path !== 'docs/evidence/condition-rail-inventory-seed-2026-10-11.json') gaps.push('seed-unmeasured');
+  if (!identity(manifest.baseline) || manifest.baseline.path !== 'scripts/condition-rail-baseline.json') gaps.push('working-baseline-unmeasured');
+  const log = history?.log;
+  if (!identity(log) || typeof log.stdout !== 'string' || Buffer.byteLength(log.stdout) !== log.byteLength ||
+      createHash('sha256').update(log.stdout).digest('hex') !== log.sha256) gaps.push('git-log-unmeasured');
+  else {
+    const revisions = log.stdout.trim().split('\n').filter(Boolean);
+    if (!Array.isArray(history.shows) || history.shows.length !== revisions.length ||
+        revisions.some((rev, index) => !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(rev) ||
+          history.shows[index]?.revision !== rev || !identity(history.shows[index]))) gaps.push('git-show-history-incomplete');
+  }
+  if (manifest.completed !== true) gaps.push('lint-input-consumption-interrupted');
+  return gaps;
+}
+
+/** Derive the locator from the scanner's own observed writes. npm and tsx both inherit the
+ * lifecycle labels. Require their measured parent/child and close events before opening data. */
+function inspectConditionRailInputs(root, sourceRoot, receipt, persist) {
+  const unknown = error => ({ observation: { status: 'unknown', gaps: [String(error.message ?? error)] }, manifest: null });
+  try {
+    const one = (rows, name) => {
+      if (rows.length !== 1) throw new Error(`${name} missing or ambiguous`);
+      return rows[0];
+    };
+    const trace = receipt.processTrace, { cwd, command, captureComplete, signal, error } = receipt.execution;
+    if (captureComplete !== true || signal !== null || error !== null ||
+        receipt.originalCommand !== conditionRailCommand || command.length !== 3 ||
+        !['npm', 'npm-cli.js'].includes(basename(command[0])) || !['run', 'run-script'].includes(command[1]) ||
+        command[2] !== 'lint:condition-rail' || trace.population?.complete !== true || trace.npmLifecycle?.status !== 'observed')
+      throw new Error('original lint invocation or process population unobserved');
+    const span = one(trace.npmLifecycle.spans.filter(s => s.event === command[2] && s.script === conditionRailCommand &&
+      s.cwd === cwd), 'lint lifecycle');
+    const events = trace.events.filter(e => !e.threadId);
+    const event = (name, predicate) => {
+      const { artifact, ...summary } = one(events.filter(e => e.event === name && predicate(e)), name);
+      const bytes = readConditionRailPin(root, artifact, 'process-event.json', custodyLimits.objectBytes);
+      if (JSON.stringify(summary) !== JSON.stringify(JSON.parse(bytes.toString('utf8')))) throw new Error(`${name} event differs`);
+      return summary;
+    };
+    const npmRoot = trace.npmLifecycle.root;
+    const npm = event('node-entry', e => e.pid === npmRoot.pid && e.processIdentity === npmRoot.processIdentity);
+    const shellEvent = e => e.pid === npm.pid && e.processIdentity === npm.processIdentity &&
+      e.childPid === span.childPid && e.childIdentity === span.childIdentity;
+    const shellSpawn = event('child-spawn', shellEvent), shellClose = event('child-close', shellEvent);
+    if (npm.cwd !== cwd || npm.argv?.length !== 4 || npm.argv[2] !== command[1] || npm.argv[3] !== command[2] ||
+        shellSpawn.atMs !== span.startedAtMs || shellClose.atMs !== span.closedAtMs || shellClose.signal !== null ||
+        shellSpawn.lifecycle?.event !== command[2] || shellSpawn.lifecycle.script !== conditionRailCommand ||
+        shellSpawn.cwd !== cwd || shellSpawn.argv?.length !== 2 || shellSpawn.argv[0] !== '-c' || shellSpawn.argv[1] !== conditionRailCommand)
+      throw new Error('original npm lifecycle differs');
+    const wrapper = event('node-entry', e => (e.ppid === span.childPid || e.pid === span.childPid) &&
+      e.cwd === cwd && e.argv?.length === 4 && basename(e.argv[1]) === 'tsx' &&
+      e.argv[2] === conditionRailScript && e.argv[3] === '--lint');
+    const scanner = event('node-entry', e => e.ppid === wrapper.pid && e.cwd === cwd &&
+      e.argv?.length === 3 && e.argv[1] === join(cwd, conditionRailScript) && e.argv[2] === '--lint');
+    const spawn = event('child-spawn', e => e.processIdentity === wrapper.processIdentity && e.childPid === scanner.pid);
+    const close = event('child-close', e => e.processIdentity === wrapper.processIdentity && e.childPid === scanner.pid &&
+      e.childIdentity === spawn.childIdentity);
+    const exit = event('node-exit', e => e.pid === scanner.pid && e.processIdentity === scanner.processIdentity);
+    if (!scanner.kernelProcessIdentity || exit.kernelProcessIdentity !== scanner.kernelProcessIdentity ||
+        (persist && sourceRoot !== `${scanner.reporterOut}.condition-rail-inputs`) ||
+        exit.exitListenersComplete !== true || close.signal !== null || close.code !== exit.code ||
+        !(span.startedAtMs <= wrapper.atMs && wrapper.atMs <= spawn.atMs && spawn.atMs <= scanner.atMs &&
+          scanner.atMs <= exit.atMs && exit.atMs <= close.atMs && close.atMs <= span.closedAtMs) ||
+        events.some(e => e.event === 'trace-limit' && e.observationScope !== 'module' || e.event === 'trace-event-too-large'))
+      throw new Error('scanner process lifetime or event coverage incomplete');
+    const stdout = one(trace.streams.filter(s => s.role === 'stdout' && s.pid === scanner.pid &&
+      s.processIdentity === scanner.processIdentity), 'scanner stdout');
+    if (!stdout.captureComplete || !exit.streams?.stdout?.captureComplete || stdout.artifact.sha256 !== exit.streams.stdout.sha256 ||
+        stdout.artifact.byteLength !== stdout.observedByteLength || stdout.artifact.byteLength !== exit.streams.stdout.byteLength)
+      throw new Error('scanner stdout incomplete');
+    const lines = readConditionRailPin(root, stdout.artifact, 'native-stream', custodyLimits.objectBytes).toString('utf8').split('\n');
+    const marker = one(lines.filter(line => line.startsWith(conditionRailMarker)), 'scanner input locator');
+    const match = /^([0-9a-f]{64}) ([1-9][0-9]*)$/.exec(marker.slice(conditionRailMarker.length));
+    if (!match || lines.at(-1) === marker) throw new Error('invalid scanner input locator');
+    const pin = { ref: `${match[1]}.native-proof.json`, sha256: match[1], byteLength: Number(match[2]) };
+    const parts = [];
+    const manifest = readCustodyManifest(pin, (part, budget) => {
+      const suffix = part === pin ? 'native-proof.json' : 'native-metadata-chunk';
+      const bytes = readConditionRailPin(sourceRoot, part, suffix, Math.min(custodyLimits.objectBytes, custodyLimits.bytes - budget.bytes));
+      budget.bytes += bytes.length + 1;
+      if (persist) persist(bytes, suffix);
+      if (part !== pin) parts.push({ artifact: part });
+      return bytes;
+    });
+    if (manifest?.schemaVersion !== 'condition-rail-lint-inputs-v1' || manifest.pid !== scanner.pid ||
+        manifest.ppid !== scanner.ppid || manifest.kernelProcessIdentity !== scanner.kernelProcessIdentity ||
+        manifest.cwd !== cwd || !Number.isSafeInteger(manifest.startedAtMs) || !Number.isSafeInteger(manifest.finishedAtMs) ||
+        !(scanner.atMs <= manifest.startedAtMs && manifest.startedAtMs <= manifest.finishedAtMs && manifest.finishedAtMs <= exit.atMs))
+      throw new Error('input manifest outside scanner process');
+    const gaps = conditionRailDataGaps(manifest);
+    return { observation: { status: gaps.length ? 'partial' : 'recorded', gaps, artifact: pin, parts,
+      processIdentity: scanner.processIdentity, pid: scanner.pid }, manifest };
+  } catch (error) { return unknown(error); }
+}
+
+/** Read back from the original receipt pin after the temporary process directory is gone. */
+export function readConditionRailInputEvidence(root, receiptPin) {
+  try {
+    const receipt = JSON.parse(readConditionRailPin(root, receiptPin, 'receipt.json', custodyLimits.bytes).toString('utf8'));
+    const saved = receipt.processTrace?.conditionRailInputs;
+    if (!saved?.artifact) return { status: 'unknown', gaps: saved?.gaps ?? ['condition-rail inputs unobserved'], manifest: null };
+    const { observation, manifest } = inspectConditionRailInputs(root, root, receipt);
+    if (!manifest) return { ...observation, manifest: null };
+    if (JSON.stringify(saved) !== JSON.stringify(observation)) throw new Error('archived condition-rail observation differs');
+    return { ...observation, manifest };
+  } catch (error) { return { status: 'unknown', gaps: [String(error.message ?? error)], manifest: null }; }
+}
+
 export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
   if (!input || typeof input.task !== "string" || !input.task ||
       typeof input.attempt !== "string" || !input.attempt ||
@@ -1906,6 +2044,10 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot, input) {
       ...(!sourceInputsUnchanged ? ["wrapper-inputs-unknown-or-changed"] : []),
       ...(!input.captureComplete ? ["raw-stream-capture-incomplete"] : [])],
     operationalAcceptance: false };
+  if (input.command.at(-1) === 'lint:condition-rail' || input.invocation?.command.at(-1) === 'lint:condition-rail') {
+    processTrace.conditionRailInputs = inspectConditionRailInputs(root,
+      `${input.processTrace?.out}.condition-rail-inputs`, receipt, persist).observation;
+  }
   const pin = persist(Buffer.from(JSON.stringify(receipt)), "receipt.json");
   return freezeComparison({ root, receipt: pin, logs, observation: receipt });
 }

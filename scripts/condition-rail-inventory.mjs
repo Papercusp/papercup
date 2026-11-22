@@ -17,23 +17,34 @@
  */
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runGovernedTestProcess } from './lib/governed-test-process.mjs';
 import { inventoryTree, inventoryCoverageProblems, CLASSES, acceptanceProblems, lintProblems, baselineCeiling } from './lib/condition-rail-inventory.mjs';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const BASELINE = 'scripts/condition-rail-baseline.json';
+const SEED = 'docs/evidence/condition-rail-inventory-seed-2026-10-11.json';
+const identity = bytes => ({ sha256: createHash('sha256').update(bytes).digest('hex'), byteLength: bytes.length });
 
 /** Every committed removal constrains the ceiling; committing a grown file cannot bless it. */
-export async function readCommittedBaseline(manifest, baseline) {
+export async function readCommittedBaseline(manifest, baseline, inputs) {
   return runGovernedTestProcess({ owner: 'lint-condition-rail-baseline', namespace: 'lint-condition-rail',
     timeoutMs: 30_000, demand: { cpuWeight: 1, memoryBytes: 64 * 1024 * 1024, fileDescriptors: 8 } },
   (_context, env) => {
-  const options = { cwd: ROOT, encoding: 'utf8', env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
+  const options = { cwd: ROOT, env, timeout: 30_000, maxBuffer: 16 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'] };
-  const revisions = execFileSync('git', ['log', '--format=%H', 'HEAD', '--', BASELINE],
-    options).trim().split('\n').filter(Boolean);
-  const history = revisions.map((revision) => JSON.parse(execFileSync('git', ['show', `${revision}:${BASELINE}`], options)));
+  const log = execFileSync('git', ['log', '--format=%H', 'HEAD', '--', BASELINE], options);
+  const stdout = log.toString('utf8');
+  if (inputs) inputs.history.log = { ...identity(log), stdout };
+  const revisions = stdout.trim().split('\n').filter(Boolean);
+  const history = revisions.map(revision => {
+    const bytes = execFileSync('git', ['show', `${revision}:${BASELINE}`], options);
+    if (inputs) inputs.history.shows.push({ revision, ...identity(bytes) });
+    return JSON.parse(bytes.toString('utf8'));
+  });
   // The first edition binds the P-001 seed plus P-017's logged census corrections.
   // Later editions cannot widen that set, regardless of new amendment prose.
   const initial = history.at(-1) ?? { rowIds: [
@@ -44,21 +55,30 @@ export async function readCommittedBaseline(manifest, baseline) {
   });
 }
 
-export function runInventory() {
-  return inventoryTree(ROOT);
+export function runInventory(readFile) {
+  return inventoryTree(ROOT, readFile);
 }
 
-async function main() {
-  const res = runInventory();
-  const args = process.argv.slice(2);
+async function run(args, inputs) {
+  const res = runInventory(inputs && (path => {
+    const bytes = readFileSync(join(ROOT, path));
+    inputs.sources.push({ path, ...identity(bytes) });
+    return bytes.toString('utf8');
+  }));
+  if (inputs) inputs.inventory = { scanned: res.scanned, unreadableFiles: res.unreadableFiles, submodules: res.submodules };
   const coverageProblems = inventoryCoverageProblems(res);
   if (res.submodules.outsideScanScope.length) {
     console.error(`Unscanned submodules outside the condition-rail source scope: ${JSON.stringify(res.submodules.outsideScanScope)}`);
   }
   if (args.includes('--lint')) {
-    const manifest = JSON.parse(readFileSync(new URL('../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url), 'utf8'));
-    const baseline = JSON.parse(readFileSync(new URL(`../${BASELINE}`, import.meta.url), 'utf8'));
-    const problems = lintProblems(res, baseline, await readCommittedBaseline(manifest, baseline), manifest);
+    const readJson = (path, role) => {
+      const bytes = readFileSync(join(ROOT, path));
+      if (inputs) inputs[role] = { path, ...identity(bytes) };
+      return JSON.parse(bytes.toString('utf8'));
+    };
+    const manifest = readJson(SEED, 'seed'), baseline = readJson(BASELINE, 'baseline');
+    const problems = lintProblems(res, baseline, await readCommittedBaseline(manifest, baseline, inputs), manifest);
+    if (inputs) inputs.completed = true;
     console.log(`condition-rail lint: ${res.rows.length} bypass site(s), ${problems.length} problem(s)`);
     for (const problem of problems) console.error(problem);
     if (problems.length) process.exitCode = 1;
@@ -100,6 +120,27 @@ async function main() {
     if (problems.length) process.exitCode = 1;
   }
   if (args.includes('--check') && (coverageProblems.length || res.undispositioned > 0 || res.staleDispositions.length > 0)) process.exitCode = 1;
+}
+
+async function main() {
+  const args = process.argv.slice(2), out = process.env.PC_EXECUTED_SOURCE_MAP_OUT;
+  if (!args.includes('--lint') || !out || !isAbsolute(out) || process.env.npm_lifecycle_event !== 'lint:condition-rail') {
+    return run(args);
+  }
+  const inputs = { schemaVersion: 'condition-rail-lint-inputs-v1', pid: process.pid, ppid: process.ppid,
+    cwd: process.cwd(), startedAtMs: Date.now(), finishedAtMs: null, kernelProcessIdentity: null, completed: false,
+    sources: [], inventory: null, seed: null, baseline: null, history: { log: null, shows: [] } };
+  try { await run(args, inputs); }
+  finally {
+    // A failed lint still has measured reads. An unavailable observation must preserve its original outcome.
+    try {
+      const { readProcessIdentity } = await import('./lib/process-identity.mjs');
+      const { publishConditionRailInputManifest } = await import('./lib/budgeted-task-scheduler.mjs');
+      inputs.kernelProcessIdentity = readProcessIdentity(process.pid);
+      inputs.finishedAtMs = Date.now();
+      console.log(publishConditionRailInputManifest(out, inputs));
+    } catch (error) { console.error('condition-rail input capture unavailable:', error.message); }
+  }
 }
 
 if (isCliEntry(import.meta.url)) await main();
