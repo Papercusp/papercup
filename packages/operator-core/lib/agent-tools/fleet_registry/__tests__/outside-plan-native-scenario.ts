@@ -48,6 +48,9 @@ const workEvents: Array<{ sequence: number; type: 'claim-observed' | 'completion
 const stateObservations: Array<{ observer: string; states: unknown }> = [];
 const tasks: string[] = [];
 let ids: string[] = [];
+const pausedClaims = new Map<string, string>();
+let releasePausedMembers!: (verified: boolean) => void;
+const restartVerified = new Promise<boolean>(resolve => { releasePausedMembers = resolve; });
 
 async function retainNativeDiagnostics() {
   const sessionRows = await sql`SELECT id, coord_owner_id, session_id, outside_plan_ref, ended_at
@@ -56,6 +59,10 @@ async function retainNativeDiagnostics() {
   writeFileSync(join(evidenceDir, 'outside-native-runtime-state.json'), JSON.stringify({ sessionRows, taskRows }));
   const fleetLogs = join(homedir(), '.papercusp', 'fleet-logs');
   if (existsSync(fleetLogs)) cpSync(fleetLogs, join(evidenceDir, 'native-fleet-logs'), { recursive: true });
+  // Result-door cursors point into the disposable home. Preserve their exact
+  // source bytes before cleanup so projection failures remain diagnosable.
+  const scratch = join(homedir(), '.papercusp', 'scratch');
+  if (existsSync(scratch)) cpSync(scratch, join(evidenceDir, 'native-result-scratch'), { recursive: true });
   const owners = new Set<string>(sessionRows.map(row => String(row.coord_owner_id)));
   for (const row of taskRows) if (typeof row.detail?.coordOwnerId === 'string') owners.add(row.detail.coordOwnerId);
   for (const owner of owners) {
@@ -84,7 +91,7 @@ async function observeWorkStates(observer: string) {
     }
   }
   for (const row of states) {
-    if (row.status !== 'wip' || !row.assignee
+    if (['done','resolved','closed','passed'].includes(row.status) || !row.assignee
       || workEvents.some(event => event.type === 'claim-observed' && event.id === row.feature_id)) continue;
     if (row.feature_id === ids[2]) {
       assert.ok(states.some(first => first.feature_id === ids[0] && ['done','resolved','passed'].includes(first.status)),
@@ -96,9 +103,12 @@ async function observeWorkStates(observer: string) {
   return states;
 }
 
-async function leaderCall(name: string, args: Record<string, unknown>) {
+async function leaderCall(name: string, args: Record<string, unknown>, structured = false) {
   assert.ok(client);
-  const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 120_000 });
+  const result = await client.callTool({ name, arguments: args, ...(structured ? {
+    // Restart reads select fields at the operation root, including for a single get of multiple IDs.
+    _meta: { 'papercusp/batchResponseVersion': 'operation-v0', structured: true, format: 'json' },
+  } : {}) }, undefined, { timeout: 120_000 });
   leaderCalls.push({ tool: name, args, result });
   writeFileSync(join(evidenceDir, 'outside-native-leader-calls.json'), JSON.stringify(leaderCalls));
   assert.notEqual(result.isError, true, JSON.stringify(result));
@@ -109,6 +119,45 @@ async function leaderCall(name: string, args: Record<string, unknown>) {
     }
   }
   return result;
+}
+
+async function readRestartBindings(leaderItem: string) {
+  async function read(name: string, args: Record<string, unknown>) {
+    const result = await leaderCall(name, args, true);
+    type Output = { structuredContent?: Record<string, any>; content?: Array<{ type: string; text?: string }> };
+    const output = result as Output;
+    if (output.structuredContent) return output.structuredContent;
+    const json = output.content?.find(entry => entry.type === 'text' && entry.text?.trimStart().startsWith('{'));
+    assert.ok(json?.text, 'Missing structured restart read for ' + name);
+    return JSON.parse(json.text) as Record<string, any>;
+  }
+  const identity = await read('coord:whoami', {});
+  assert.equal(identity.ownerId, leader);
+  assert.equal(identity.outsidePlanRef, reference);
+  const policy = await read('scheduler:get_claim_spec', { fleet, history: 0 });
+  assert.deepEqual(policy.spec.view.filter, { field: 'id', op: 'in', value: ids });
+  const itemIds = [leaderItem, ...ids];
+  const items = await read('work_items:get', { ids: itemIds, harness: workspace, projection: {
+    pick: ['results[].id', 'results[].workItem.externalPlanRef', 'results[].workItem.assignee'],
+  } });
+  assert.ok(Array.isArray(items.results), 'Expected projected work-item rows in the operation response: ' + JSON.stringify(items));
+  assert.equal(items.results.length, itemIds.length);
+  const bindings = itemIds.map(id => {
+    const rows = items.results.filter((row: { id: string }) => row.id === id);
+    assert.equal(rows.length, 1);
+    const { externalPlanRef, assignee } = rows[0].workItem;
+    assert.equal(externalPlanRef, reference);
+    return { id, externalPlanRef, assignee };
+  });
+  assert.equal(bindings[0].assignee, leader);
+  for (const [owner, id] of pausedClaims) {
+    assert.equal(bindings.find(row => row.id === id)?.assignee, owner);
+  }
+  const members = await sql`SELECT id, coord_owner_id, outside_plan_ref FROM harness_shared.adv_sessions
+    WHERE workspace_id=${workspace} AND coord_owner_id=ANY(${[...pausedClaims.keys()]}) ORDER BY coord_owner_id, id`;
+  assert.deepEqual(members.map(row => row.coord_owner_id), [...pausedClaims.keys()].sort());
+  for (const row of members) assert.equal(row.outside_plan_ref, reference);
+  return { leaderRef: identity.outsidePlanRef, filter: policy.spec.view.filter, items: bindings, members: [...members] };
 }
 
 async function createLeaderWorkItem(title: string) {
@@ -204,17 +253,24 @@ const listener = createServer((req, res) => {
     let name: string | null = null, args: Record<string, unknown> = {};
     if (round === 0) name = 'coord:whoami';
     else {
-      const held = states.filter(row => row.assignee === owner && row.status === 'wip');
+      const held = states.filter(row => row.assignee === owner && !['done','resolved','closed','passed'].includes(row.status));
       if (held.length) {
         const id = String(held[0].feature_id);
         assert.ok(ids.includes(id), 'Native client claimed unrelated work');
+        if (!pausedClaims.has(owner)) pausedClaims.set(owner, id);
+        // A retried model request from an already paused member must wait too.
+        assert.ok(await restartVerified, 'The operator restart did not finish');
         name = 'work_items:complete';
         args = { id, harness: workspace, state: 'done', assumptions: 'none', completion: {
           summary: 'Verified this disposable outside assignment record.', testsRun: 'Read the canonical item and verify custody.',
           testResult: 'The assigned item retained its exact outside reference.', verifiedHow: 'manual', filesChanged: [],
-          verification: { workOutcome: 'verified-existing' },
+          verification: { workOutcome: 'verified-existing', coverage: {
+            population: [id + ':custody-and-reference'], checked: [id + ':custody-and-reference'],
+            notChecked: [], notApplicable: [], residue: [],
+          } },
         } };
         const item = await getWorkItem(id, workspace);
+        assert.equal(item?.externalPlanRef, reference);
         const blocker = readBlockerResolution(item?.payload);
         if (blocker.status === 'recorded') {
           assert.equal((await getWorkItem(ids[0], workspace))?.state, 'done');
@@ -286,15 +342,28 @@ async function main() {
   assert.equal((await sql`SELECT 1 FROM harness_shared.harness_plans`).length, 0);
   const stray = await createWorkItem({ workspaceId: workspace, harness: workspace, kind: 'task', title: 'Unrelated fourth item' });
   const env = privateBundleRuntimeEnv(process.env);
-  host = spawn(process.execPath, [bundle.path], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let hostOutput = '';
-  for (const stream of [host.stdout!, host.stderr!]) stream.on('data', chunk => {
-    hostOutput += chunk; writeFileSync(join(evidenceDir, 'outside-native-host.log'), hostOutput);
-  });
   const headers = { origin: base, authorization: 'Bearer ' + readSuperuserToken() };
-  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, environment: env, requireBuildIdentity: true });
-  verifyBundle();
-  assert.equal(health.sha, sourceFence.sha, 'Running API must report the retained source snapshot identity');
+  async function startHost(epoch: 'before' | 'after') {
+    const directory = join(evidenceDir, 'operator-' + epoch);
+    mkdirSync(directory, { recursive: true });
+    host = spawn(process.execPath, [bundle.path], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    for (const stream of [host.stdout!, host.stderr!]) stream.on('data', chunk => {
+      hostOutput += chunk; writeFileSync(join(evidenceDir, 'outside-native-host.log'), hostOutput);
+    });
+    const health = await waitForPrivateOperator({ host, base, headers, evidenceDir: directory, environment: env, requireBuildIdentity: true });
+    verifyBundle();
+    assert.equal(health.sha, sourceFence.sha, 'Running API must report the retained source snapshot identity');
+    return health;
+  }
+  async function connectLeader() {
+    const next = new Client({ name: 'outside-native-acceptance', version: '1' });
+    await next.connect(new StreamableHTTPClientTransport(new URL('/api/mcp?superuser=1&client=' + leader
+      + '&workspace=' + workspace + '&harness=' + workspace, base), { requestInit: { headers } }));
+    await next.listTools();
+    return next;
+  }
+  const health = await startHost('before');
   writeFileSync(join(evidenceDir, 'outside-native-prepared-api.json'), JSON.stringify({ bundle, sourceFence, health }));
   const bootstrap = await fetch(base + '/api/agent-mcp/console/bootstrap-su', { method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' }, signal: AbortSignal.timeout(120_000),
@@ -304,10 +373,7 @@ async function main() {
   const bootstrapped = await bootstrap.json() as Record<string, any>;
   assert.equal(bootstrap.status, 200, JSON.stringify(bootstrapped));
   assert.equal(bootstrapped.outsidePlanRef, reference);
-  client = new Client({ name: 'outside-native-acceptance', version: '1' });
-  await client.connect(new StreamableHTTPClientTransport(new URL('/api/mcp?superuser=1&client=' + leader
-    + '&workspace=' + workspace + '&harness=' + workspace, base), { requestInit: { headers } }));
-  await client.listTools();
+  client = await connectLeader();
   const leaderItem = await createLeaderWorkItem('Leader coordinates the physical outside assignment');
   for (const title of ['First independent item', 'Second independent item', 'Dependent third item']) {
     ids.push(await createLeaderWorkItem(title));
@@ -358,9 +424,32 @@ async function main() {
   writeFileSync(join(evidenceDir, 'outside-native-launch.json'), JSON.stringify(launch));
   assert.notEqual(launch.isError, true, JSON.stringify(launch));
   const started = Date.now();
+  const restartPath = join(evidenceDir, 'outside-native-restart.json');
+  let restart: { beforePid: number; afterPid: number; observedClaims: number } | undefined;
   const diagnosticStages = [10_000, 30_000, 60_000];
   let nextDiagnostic = 0;
   while (Date.now() - started < 180_000) {
+    if (!restart && pausedClaims.size === 2) {
+      assert.deepEqual([...pausedClaims.values()].sort(), ids.slice(0, 2).sort());
+      assert.equal(workEvents.length, 2);
+      assert.ok(workEvents.every(event => event.type === 'claim-observed'));
+      const before = await readRestartBindings(leaderItem);
+      assert.ok(host?.pid);
+      const first = host;
+      const beforePid = host.pid;
+      writeFileSync(restartPath, JSON.stringify({ beforePid, before, workEvents }));
+      await client.close();
+      await stopPrivateOperatorHost(first);
+      assert.ok(first.exitCode !== null || first.signalCode !== null, 'First operator must exit before replacement');
+      await startHost('after');
+      assert.ok(host?.pid && host.pid !== beforePid, 'Second operator must have a new PID');
+      client = await connectLeader();
+      const after = await readRestartBindings(leaderItem);
+      assert.deepEqual(after, before);
+      restart = { beforePid, afterPid: host.pid, observedClaims: workEvents.length };
+      writeFileSync(restartPath, JSON.stringify({ ...restart, before, after, workEvents }));
+      releasePausedMembers(true);
+    }
     if (nextDiagnostic < diagnosticStages.length && Date.now() - started >= diagnosticStages[nextDiagnostic]) {
       await retainNativeDiagnostics();
       nextDiagnostic++;
@@ -368,6 +457,7 @@ async function main() {
     if ((await Promise.all(ids.map(id => getWorkItem(id, workspace)))).every(item => item?.state === 'done')) break;
     await delay(250);
   }
+  assert.ok(restart, 'Both original members must hold their first claims across the operator restart');
   assert.deepEqual((await Promise.all(ids.map(id => getWorkItem(id, workspace)))).map(item => item?.state), ['done','done','done'],
     JSON.stringify({ launch, rounds: [...rounds], callLog, hostOutput }));
   await observeWorkStates('final-piece-verification');
@@ -380,7 +470,9 @@ async function main() {
     completion: { summary: 'Coordinated the three disposable outside assignment pieces.',
       testsRun: 'Read canonical piece state and the observed native claim/completion sequence.',
       testResult: 'PASS: three pieces completed with the dependent claim after its blocker completion.',
-      verifiedHow: 'manual', filesChanged: [], verification: { workOutcome: 'verified-existing' } } });
+      verifiedHow: 'manual', filesChanged: [], verification: { workOutcome: 'verified-existing', coverage: {
+        population: ids, checked: ids, notChecked: [], notApplicable: [], residue: [],
+      } } } });
   assert.equal((await getWorkItem(leaderItem, workspace))?.state, 'done', 'Leader completion must be terminal');
   const sessions = await sql`SELECT coord_owner_id, outside_plan_ref, launch_argv FROM harness_shared.adv_sessions
     WHERE workspace_id=${workspace} AND coord_owner_id<>${leader}`;
@@ -389,19 +481,22 @@ async function main() {
     assert.equal(session.outside_plan_ref, reference);
     assert.ok(rounds.has(session.coord_owner_id));
   }
-  assert.ok(!(await getWorkItem(stray.id, workspace))?.assignee);
-  assert.equal((await sql`SELECT 1 FROM harness_shared.harness_plans`).length, 0);
+  const finalStray = await getWorkItem(stray.id, workspace);
+  assert.ok(finalStray, 'The unrelated item must still exist');
+  assert.equal(finalStray.state, stray.state);
+  assert.equal(finalStray.assignee, null);
+  const planCount = (await sql`SELECT 1 FROM harness_shared.harness_plans`).length;
+  assert.equal(planCount, 0);
   assert.ok(callLog.every(call => !call.tool.startsWith('plans:')));
   for (const session of sessions) assert.ok(callLog.some(call => call.owner === session.coord_owner_id && call.tool === 'scheduler:get_next'));
   const briefs: Record<string, unknown> = {};
   for (const name of ['fleet:status', 'fleet:leader-brief', 'fleet:assignments']) {
     briefs[name] = await client.callTool({ name, arguments: { fleet } });
-    assert.ok(hasReference(briefs[name]), name + ' lost the full outside reference');
+    writeFileSync(join(evidenceDir, 'outside-native-briefs.json'), JSON.stringify(briefs));
   }
   const invocations = await sql`SELECT tool_name, args_json, status, coord_owner_id FROM harness_shared.tool_invocations
     WHERE workspace_id=${workspace} AND coord_owner_id=ANY(${[leader, ...sessions.map(row => row.coord_owner_id)]})`;
   const planCalls = invocations.filter(row => /^plans:/.test(row.tool_name));
-  assert.deepEqual(planCalls, [], 'A native member invoked an internal-plan tool');
   const ownerRequests = invocations.filter(row => ['coord:ask-owner','chat:ask_choice'].includes(row.tool_name)
     || (row.tool_name === 'coord:send' && leaves(row.args_json).includes('human')));
   const traffic: Array<{ surface: string; owner?: string; text: string }> = [];
@@ -423,22 +518,28 @@ async function main() {
   assert.ok(planNudge.test('Please create an internal plan before continuing.'));
   assert.ok(!planNudge.test('Do not create an internal plan.'));
   const nudges = traffic.filter(row => planNudge.test(row.text));
+  const measuredTraffic = { observed: ['native kickoff/user input including delivered injections', 'native returned tool output',
+    'member tool invocation ledger', 'post-drain status/leader brief/assignments'],
+    notObserved: ['an independently forced mid-task wake', 'an owner-authored follow-up conversation'],
+    traffic, invocations, ownerRequests, planNudges: nudges, planCount, planCalls,
+    stray: { id: finalStray.id, state: finalStray.state, assignee: finalStray.assignee } };
+  writeFileSync(join(evidenceDir, 'outside-native-traffic.json'), JSON.stringify(measuredTraffic));
+  // Persist all independent public reads and traffic before judging any one surface.
+  for (const [name, brief] of Object.entries(briefs)) {
+    assert.ok(hasReference(brief), name + ' lost the full outside reference');
+  }
+  assert.deepEqual(planCalls, [], 'A native member invoked an internal-plan tool');
   assert.deepEqual(nudges, [], 'Member-facing traffic requested an internal plan');
   assert.deepEqual(ownerRequests, [], 'A native member requested an owner action');
   assert.ok(traffic.some(row => row.surface === 'delivered-user-input'));
   assert.ok(traffic.some(row => row.surface === 'delivered-tool-output'));
-  const measuredTraffic = { observed: ['native kickoff/user input including delivered injections', 'native returned tool output',
-    'member tool invocation ledger', 'post-drain status/leader brief/assignments'],
-    notObserved: ['an independently forced mid-task wake', 'an owner-authored follow-up conversation'],
-    traffic, invocations, ownerRequests, planNudges: nudges };
-  writeFileSync(join(evidenceDir, 'outside-native-traffic.json'), JSON.stringify(measuredTraffic));
   const ledger = await sql`SELECT task_id FROM harness_shared.task_ledger WHERE workspace_id=${workspace}
     AND detail->>'coordOwnerId'=ANY(${sessions.map(row => row.coord_owner_id)}) AND ended_at IS NULL`;
   tasks.push(...ledger.map(row => String(row.task_id)));
   const receipt = { ids, leaderItem, leaderItemState: (await getWorkItem(leaderItem, workspace))?.state,
     workEvents, leaderCallsEvidence: 'outside-native-leader-calls.json', workOrderEvidence: 'outside-native-work-order.json',
     stray: stray.id, planRef: reference, members: sessions.map(row => row.coord_owner_id),
-    build: health, bundleSha256: bundle.sha256, modelRequests: modelRequests.length,
+    build: health, bundleSha256: bundle.sha256, restart, restartEvidence: 'outside-native-restart.json', modelRequests: modelRequests.length,
     toolCalls: callLog, providerForwarding: false, networkInterfaces: Object.keys(networkInterfaces()),
     observedTrafficEntries: traffic.length, requestedOwnerActions: ownerRequests.length,
     planNudges: nudges.length, trafficEvidence: 'outside-native-traffic.json' };
@@ -446,7 +547,15 @@ async function main() {
   console.log('OUTSIDE_FLEET_NATIVE_VERIFIED ' + JSON.stringify(receipt));
 }
 
-main().finally(async () => {
+main().catch(error => {
+  // A teardown failure must not erase the original acceptance failure.
+  writeFileSync(join(evidenceDir, 'outside-native-failure.json'), JSON.stringify({
+    message: String(error), stack: error instanceof Error ? error.stack : null,
+  }));
+  console.error('OUTSIDE_NATIVE_FAILURE', error);
+  throw error;
+}).finally(async () => {
+  releasePausedMembers(false);
   // Native startup can fail before session registration or a first model call.
   // Preserve its own boot/config evidence before with-test-pg removes the home.
   let retentionFailure: unknown;
