@@ -159,6 +159,57 @@ it('runs a caller against an operator bundled from the working tree on private p
   await runPrivateCaller(context);
 }, workerOptions.testTimeoutMs);
 
+it('serves consult boot cancellation counts from the measured private operator process', async context => {
+  const artifact = 'consult-routing-health.json';
+  const caller = CALLER_SCRIPT + '\n' + `
+    import assert from 'node:assert/strict';
+    import { readFileSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+    import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+    const dir = process.env.WORKING_TREE_OPERATOR_API_EVIDENCE_DIR;
+    const ready = JSON.parse(readFileSync(join(dir, 'readiness.json'), 'utf8'));
+    const url = new URL(mcp);
+    assert.equal(url.origin, ready.base);
+    assert.equal(url.hostname, '127.0.0.1');
+    assert.ok(Number.isSafeInteger(ready.pid) && ready.pid > 0);
+    assert.match(process.env.PAPERCUSP_WORKSPACE_ID, /^test-runtime-/);
+
+    const client = new Client({ name: 'private-consult-routing-health', version: '1' });
+    try {
+      const headers = { Authorization: 'Bearer ' + bearer, origin: base };
+      await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }), { timeout: 30000 });
+      let cursor;
+      let tool;
+      do {
+        const page = await client.listTools(cursor ? { cursor } : undefined, { timeout: 30000 });
+        tool = page.tools.find(t => ['consult:routing-health', 'consult_routing-health', 'consult_routing_health'].includes(t.name));
+        cursor = page.nextCursor;
+      } while (!tool && cursor);
+      assert.ok(tool, 'private operator must list consult:routing-health');
+      const response = await client.callTool({
+        name: tool.name, arguments: { hours: 1 }, _meta: { 'papercusp/batchResponseVersion': 'batch-v1' },
+      }, undefined, { timeout: 30000 });
+      writeFileSync(join(dir, ${JSON.stringify(artifact)}), JSON.stringify({ base, hostPid: ready.pid, response }), { flag: 'wx' });
+      const decode = ${decodePrivateToolResponse.toString()};
+      const result = decode(response);
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.routingRecorder.scope, 'serving-process');
+      assert.equal(result.routingRecorder.processId, ready.pid);
+      assert.equal(result.bounded.truncatedByLimit, false);
+      assert.equal(result.bounded.consultsScanned, 0);
+      assert.equal(result.totals.cancelledDuringBoot, 0);
+    } finally {
+      await client.close();
+    }`;
+  await runPrivateCaller(context, caller, [
+    'packages/operator-core/lib/agent-tools/consult/routing-health.ts',
+    'packages/operator-core/lib/consult/consult-routing-health.ts',
+    'packages/operator-core/lib/endpoint-route/telemetry.ts',
+  ], undefined, artifact);
+}, workerOptions.testTimeoutMs);
+
 it('audit preparation reaches the native private MCP contract without dispatching an unrelated target', async context => {
   const caller = CALLER_SCRIPT + '\n' + [
     "import assert from 'node:assert/strict';",
