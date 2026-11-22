@@ -91,6 +91,23 @@ export const blockerDecisionInputSchema = z.discriminatedUnion('disposition', [
 export type BlockerDecisionInput = z.infer<typeof blockerDecisionInputSchema>;
 export type BlockerEvidenceRef = z.infer<typeof blockerEvidenceRefSchema>;
 
+/** Host evidence on the new decision revision. The original watch and event ledger
+ * keep their own outcomes. This field is deliberately absent from the input schema. */
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const gitOid = z.string().regex(/^[a-f0-9]{40}$/);
+const sourceObservationSchema = z.object({
+  kind: z.literal('pinned-operator-source'), eventKey: z.string().min(1),
+  workspaceId: z.string().min(1), harness: z.string().min(1), workItemId: z.string().min(1),
+  priorDecisionId: z.string().min(1), priorRequestHash: sha256,
+  registeredAt: z.string().datetime(), registrantId: z.string().min(1), custodianId: z.string().min(1),
+  repositoryRoot: z.string().min(1), submodule: z.string().nullable(), filePath: z.string().min(1),
+  expectedSourceSha256: sha256, observedBlob: gitOid, runtime: z.enum(['staging-operator', 'release-operator']),
+  host: z.string().min(1), processId: z.string().min(1), artifactCommit: gitOid, artifactBlob: gitOid,
+  manifestSha256: sha256, bundleSha256: sha256, artifactRef: z.string().min(1),
+  responseSha256: sha256, observedAt: z.string().datetime(), condition: z.enum(['pending', 'satisfied']),
+}).strict();
+export type BlockerSourceObservation = z.infer<typeof sourceObservationSchema>;
+
 const recordSchema = z.object({
   id: text(200),
   revision: z.number().int().positive(),
@@ -109,7 +126,7 @@ const recordSchema = z.object({
     }).strict()).max(128),
   }).strict().optional(),
 }).strict();
-export type BlockerDecisionRecord = z.infer<typeof recordSchema>;
+export type BlockerDecisionRecord = z.infer<typeof recordSchema> & { sourceObservation?: BlockerSourceObservation };
 const stateSchema = z.object({ schemaVersion: z.literal(1), history: z.array(recordSchema).min(1) }).strict();
 export type BlockerResolutionState = z.infer<typeof stateSchema>;
 
@@ -121,6 +138,22 @@ export type BlockerResolutionRead =
 const object = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+// Older operators parse every history entry strictly. Keep the host's witness
+// beside that history, keyed by the receipt revision and its effect. Older writers
+// can read and extend the same receipts without dropping source observations.
+export function blockerSourceObservationKey(record: Pick<BlockerDecisionRecord, 'id' | 'revision' | 'requestHash'>): string {
+  return JSON.stringify([record.id, record.revision, record.requestHash]);
+}
+
+function withSourceObservation(payload: unknown, record: z.infer<typeof recordSchema>): BlockerDecisionRecord {
+  const raw = object(object(payload)._blockerSourceObservations)[blockerSourceObservationKey(record)];
+  if (raw === undefined) return record;
+  const observation = sourceObservationSchema.safeParse(raw);
+  return observation.success && observation.data.workItemId === record.workItemId &&
+    observation.data.custodianId === record.authorId
+    ? { ...record, sourceObservation: observation.data } : record;
+}
+
 /** Legacy blockers stay readable, but never acquire invented investigation. An
  * unreadable version is distinguished from absence so writers cannot erase it. */
 export function readBlockerResolution(payload: unknown): BlockerResolutionRead {
@@ -128,7 +161,7 @@ export function readBlockerResolution(payload: unknown): BlockerResolutionRead {
   if (raw === undefined) return { status: 'unproven', state: null, current: null };
   const parsed = stateSchema.safeParse(raw);
   if (!parsed.success) return { status: 'invalid', state: null, current: null };
-  return { status: 'recorded', state: parsed.data, current: parsed.data.history.at(-1)! };
+  return { status: 'recorded', state: parsed.data, current: withSourceObservation(payload, parsed.data.history.at(-1)!) };
 }
 
 /** Shared canonical read view. Preserve whole actions and disclose omitted
@@ -143,6 +176,9 @@ export function projectBlockerResolution(
     id: subject.id, ...(subject.harness ? { harness: subject.harness } : {}), payloadTier: 'full',
     projection: { pick: ['results[].workItem.payload.blockerResolution'] },
   } };
+  if (Object.hasOwn(object(payload), '_blockerSourceObservations')) {
+    readRef.args.projection.pick.push('results[].workItem.payload._blockerSourceObservations');
+  }
   if (read.status !== 'recorded') return {
     status: read.status, readRef,
     nudge: read.status === 'invalid'
@@ -179,6 +215,7 @@ export function projectBlockerResolution(
   else if (decision.disposition === 'self_resolve') field('verification', decision.verification);
   else field('absorption', decision.absorption);
   field('symptom', decision.symptom);
+  if (current.sourceObservation) view.omittedFields.push('current.sourceObservation');
   const append = <T>(target: { rows: T[]; omitted: number }, row: T) => {
     target.rows.push(row); target.omitted -= 1;
     if (JSON.stringify(view).length > budget) { target.rows.pop(); target.omitted += 1; }
@@ -230,7 +267,7 @@ export type PreparedBlockerDecision = BlockerDecisionProblem | {
   /** CAS against the raw stored value, not a lossy parsed projection. */
   expectedState: unknown;
   state: BlockerResolutionState;
-  patch: { blockerResolution: BlockerResolutionState };
+  patch: { blockerResolution: BlockerResolutionState; _blockerSourceObservations?: Record<string, unknown> };
 };
 
 /** Ephemeral transaction admission; caller-shaped objects carry no authority. */
@@ -361,7 +398,7 @@ export function prepareBlockerDecision(
     }
     // A historical replay returns its original receipt, without restoring an old
     // current revision or taking custody back from a later holder.
-    return { ok: true, replayed: true, record: existing, expectedState: object(payload).blockerResolution,
+    return { ok: true, replayed: true, record: withSourceObservation(payload, existing), expectedState: object(payload).blockerResolution,
       state: read.state!, patch: { blockerResolution: read.state! } };
   }
   if (actor.custodianId !== actor.ownerId) return problem('blocker_decision_custody', ['current custodian authorization'],

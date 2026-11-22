@@ -9,7 +9,7 @@
  * ref, and the writer refuses what no fire can prove, with the options that would work.
  *
  * Accepted: a catalogued completion key with its subject, an announced gate, a live
- * predicate watch (`predicate:<id>`) — anything `readEventConditionReachability` with
+ * predicate watch for the required state (`predicate:<id>`) — anything `readEventConditionReachability` with
  * `requireSpecificCondition` reports reachable and not yet fired.
  * Refused:
  *  - unprovable — broad (`coord:inbox-wake:<owner>`, `git-sync:committed`), change
@@ -51,8 +51,9 @@ export const WAIT_REF_OPTIONS =
   'Name instead: (1) a key whose fire proves this exact condition — a catalogued completion family with ' +
   'its subject id, e.g. work-item:done:<id> or release:deployed:<sha> (events:catalog lists them); ' +
   "(2) an announced gate — the condition's owner declares it with events:emit { event, announce:true } " +
-  'and the waiter names the key it returns; (3) a predicate watch — watch:create / state:subscribe mints a ' +
-  'predicate:<id> key that fires when the measured value crosses; or (4) when no event can prove it, a ' +
+  'and the waiter names the key it returns. (3) For a predicate watch, use watch:create or state:subscribe ' +
+  'with a comparison against the value required for release, then name its predicate:<id> key. ' +
+  '(4) When no event can prove it, name a ' +
   'runtime or human blocker with recheckAt, so the re-check sweep escalates it to the waiter on that date.';
 
 const UNPROVABLE_REASON: Record<UncertifiedConditionReason, string> = {

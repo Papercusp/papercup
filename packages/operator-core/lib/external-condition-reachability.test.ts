@@ -253,6 +253,24 @@ describe('external condition reachability', () => {
       fireLatch: { lastFiredAt: '2026-09-09T00:00:00.000Z' } as never,
     });
 
+    it('requires the announced expectation to match when the predicate only observes change', async () => {
+      const eventKey = 'predicate:file-position';
+      const required = { kind: 'predicate', predicate: { state: { eq: 'published' } } };
+      const read = (expectation: unknown, state: string) => readEventConditionReachability(eventKey, {
+        requireSpecificCondition: true,
+        inspect: async () => snapshot(expectation, { state }),
+        loadPredicateWatch: async () => ({ eventKey, active: true, op: 'changed' }),
+      });
+
+      expect(await read(null, 'preparing')).toMatchObject({
+        authoritative: false, uncertifiedReason: 'change-notification',
+      });
+      expect(await read(required, 'preparing')).toMatchObject({
+        authoritative: false, uncertifiedReason: 'expected-condition-unproven',
+      });
+      expect(await read(required, 'published')).toMatchObject({ verdict: 'reachable', basis: 'fired', authoritative: true });
+    });
+
     it.each([
       ['absent', null, scopedResume],
       ['mismatched', expected, scopedResume],
@@ -445,7 +463,7 @@ describe('external condition reachability', () => {
     });
 
     it('treats an active predicate watch on the exact key as a live producer', async () => {
-      const loadPredicateWatch = vi.fn(async () => ({ eventKey: PREDICATE_KEY, active: true }));
+      const loadPredicateWatch = vi.fn(async () => ({ eventKey: PREDICATE_KEY, active: true, op: 'changed' as const }));
       const reachability = await readEventConditionReachability(PREDICATE_KEY, {
         now: new Date(NOW),
         inspect: emptyInspect,
@@ -460,7 +478,7 @@ describe('external condition reachability', () => {
       const reachability = await readEventConditionReachability(PREDICATE_KEY, {
         now: new Date(NOW),
         inspect: emptyInspect,
-        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: false }),
+        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: false, op: 'eq' }),
       });
 
       expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration', authoritative: false });
@@ -470,7 +488,7 @@ describe('external condition reachability', () => {
       const reachability = await readEventConditionReachability(PREDICATE_KEY, {
         now: new Date(NOW),
         inspect: emptyInspect,
-        loadPredicateWatch: async () => ({ eventKey: 'predicate:some-other-id', active: true }),
+        loadPredicateWatch: async () => ({ eventKey: 'predicate:some-other-id', active: true, op: 'eq' }),
       });
 
       expect(reachability).toMatchObject({ verdict: 'unknown', basis: 'missing-registration' });
@@ -487,7 +505,7 @@ describe('external condition reachability', () => {
     });
 
     it('never loads a predicate watch for a non-predicate key or a bare prefix', async () => {
-      const loadPredicateWatch = vi.fn(async () => ({ eventKey: 'predicate:', active: true }));
+      const loadPredicateWatch = vi.fn(async () => ({ eventKey: 'predicate:', active: true, op: 'eq' as const }));
       for (const key of ['composed-root:395', 'predicate:']) {
         const reachability = await readEventConditionReachability(key, {
           now: new Date(NOW),
@@ -501,11 +519,29 @@ describe('external condition reachability', () => {
       expect(loadPredicateWatch).not.toHaveBeenCalled();
     });
 
-    it('lets an active predicate watch satisfy requireSpecificCondition, and only an active one', async () => {
+    it.each([true, false])('preserves a change notification without certifying publication (active=%s)', async active => {
+      const loadPredicateWatch = async () => ({ eventKey: PREDICATE_KEY, active, op: 'changed' as const });
+      const inspect = async () => ({
+        ...await emptyInspect(),
+        fireLatch: {
+          workspaceId: 'default', eventKey: PREDICATE_KEY, firstFiredAt: NOW, lastFiredAt: NOW,
+          lastFiredBy: null, lastPayload: null, fireCount: 1,
+        },
+      });
+      const wake = await readEventConditionReachability(PREDICATE_KEY, { inspect, loadPredicateWatch });
+      expect(wake).toMatchObject({ verdict: 'reachable', basis: 'fired', firedAt: NOW });
+
+      const condition = await readEventConditionReachability(PREDICATE_KEY, {
+        inspect, loadPredicateWatch, requireSpecificCondition: true,
+      });
+      expect(condition).toMatchObject({ verdict: 'unknown', authoritative: false });
+    });
+
+    it('accepts an active exact-value predicate as a specific condition', async () => {
       const live = await readEventConditionReachability(PREDICATE_KEY, {
         now: new Date(NOW),
         inspect: emptyInspect,
-        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: true }),
+        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: true, op: 'eq' }),
         requireSpecificCondition: true,
       });
       expect(live).toMatchObject({ verdict: 'reachable', basis: 'live-resolver' });
@@ -513,7 +549,7 @@ describe('external condition reachability', () => {
       const inactive = await readEventConditionReachability(PREDICATE_KEY, {
         now: new Date(NOW),
         inspect: emptyInspect,
-        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: false }),
+        loadPredicateWatch: async () => ({ eventKey: PREDICATE_KEY, active: false, op: 'eq' }),
         requireSpecificCondition: true,
       });
       expect(inactive).toMatchObject({ verdict: 'unknown', basis: 'unmeasured' });

@@ -2,6 +2,10 @@
  * producer writes the isolated event ledger; validation, identities,
  * dependencies, lifecycle, decision CAS, claims and checkpoints are production. */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import type { FreshPgDb } from '../../../test/_pg-helpers';
 import { createPublicParkTestDb } from '../../../test/_public-park-pg';
@@ -11,6 +15,7 @@ import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDe
 import { planLaneBlockerRef, syncLinkedWorkItemsToPlanLane } from '../../plan-items/reconcile-linked-work-items';
 import { readPlanLineNodes } from '../plans/plan-line-graph';
 import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import { refreshHeldItemForDelivery } from '../../subscription-lifecycle';
 import { PLAN_ITEM_KIND, planItemRef } from '../../issue-blocks-merge';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql,
@@ -385,6 +390,11 @@ describe('plan-bound partial binding correction', () => {
 });
 
 async function seedMonitors(id: string) {
+  // These fixtures insert taken_by directly. Establish the subscription that
+  // a real claim writes before comparing monitor state across a lifecycle change.
+  const subject = await wi.resolveWorkItemRef(id, HARNESS);
+  if (!subject) throw new Error('Missing monitor fixture subject ' + id);
+  await refreshHeldItemForDelivery(subject);
   const event = `fixture:monitor:${id}`;
   const bound = { kind: 'work-item', ref: id };
   await registerAwait({ subscriberId: OWNER, eventKey: event, policy: 'notify',
@@ -422,6 +432,83 @@ async function expectPairedMutationTransaction(id: string) {
   expect(rows.map(row => row.phase)).toEqual(['decision', 'lifecycle']);
   expect(rows[0].transaction_id).toBe(rows[1].transaction_id);
 }
+
+it('remeasures an expired pinned source through the public blocker writer and preserves the original timeout', async () => {
+  const id = await seed('feature', false);
+  const pw = await import('../../events/await/predicate-watch');
+  const watchId = crypto.randomUUID();
+  const key = 'predicate:' + watchId;
+  const subject = { kind: 'event' as const, ref: key };
+  const root = realpathSync(fileURLToPath(new URL('../../../../../', import.meta.url)));
+  const path = 'packages/operator-core/test/fixtures/plan-efficiency.live-profile.json';
+  const bytes = readFileSync(join(root, path));
+  const sha = createHash('sha256').update(bytes).digest('hex');
+  const blob = createHash('sha1').update('blob ' + bytes.length + '\0').update(bytes).digest('hex');
+  const args = { path, expectedSourceSha256: sha, sourceRuntimeOnly: true };
+  const caller = { ...(CTX as object), harnessSlug: HARNESS, role: 'operator', principal: {
+    slug: OWNER, workspaceId: 'default', capabilities: new Set(['intel:read']),
+  } } as never;
+  const waiter = await registerAwait({ subscriberId: OWNER, eventKey: key, policy: 'notify', timeoutSec: 60 });
+  await pw.registerPredicateWatch({ id: watchId, workspaceId: 'default', harnessSlug: HARNESS, ownerId: OWNER,
+    role: 'operator', eventKey: key, tool: 'dev:pipeline_position', args,
+    path: 'acceptedSource.runtimeContainment.staging-operator', op: 'eq', value: true });
+  const original = deferral('waiting-for-pinned-file');
+  original.evidenceRefs = original.investigation[0].evidenceRefs = [subject];
+  Object.assign(original.deferral, { responsibleParty: 'event:' + key, recheckRef: subject, reasonEvidenceRefs: [subject] });
+  const parked = await call(setBlocker, { id, harness: HARNESS, kind: 'event', ref: key,
+    summary: 'Wait for the exact staging source', capability: 'live-dependency', blockerDecision: original }, caller);
+  expect(parked, JSON.stringify(parked)).toMatchObject({ ok: true });
+  const firstReceipt = readBlockerResolution((await wi.getWorkItem(id, HARNESS))?.payload).current;
+  await db.sql`UPDATE harness_shared.event_awaits SET fired_at=now(), fired_reason='timeout' WHERE id=${waiter.id}`;
+  await pw.gcOrphanedPredicateWatches();
+  const expired = await pw.getPredicateWatch(watchId);
+  expect(expired).toMatchObject({ active: false, boundTo: null, args });
+  const eventBefore = await inspectEventKey(key);
+  expect(eventBefore.waiters).toContainEqual(expect.objectContaining({ id: waiter.id, firedReason: 'timeout' }));
+  expect(await readEventConditionReachability(key, { requireSpecificCondition: true })).toMatchObject({ authoritative: false });
+
+  const observations = [false, true, false, true, true];
+  // The runtime artifact is external to this private database. Both measurements
+  // go through the real writer, stored predicate, scoped repository and decision CAS.
+  const probe = vi.spyOn(pw, 'dispatchReadOnlyTool').mockImplementation(async (tool, actual, env) => {
+    const contains = observations.shift();
+    if (contains === undefined) throw new Error('Unexpected measurement after replay');
+    expect([tool, actual, env.callerContext, env.onBehalfOf]).toEqual(['dev:pipeline_position', args, caller, OWNER]);
+    return { repoRoot: root, submodule: null, acceptedSource: { expectedSha256: sha, observedSha256: sha,
+      matches: true, runtimeContainment: { 'staging-operator': contains } },
+      servingRuntimes: [{ runtime: 'staging-operator', method: 'blob', buildSha: 'a'.repeat(40), containsChange: contains }],
+      observingRuntime: { host: 'port-3170', buildSha: 'a'.repeat(10), processId: 'isolated-process',
+        artifact: { status: 'measured', sourceSha: 'a'.repeat(40), manifestSha256: 'b'.repeat(64),
+          bundleSha256: 'c'.repeat(64), evidenceRef: 'artifact:isolated', sourceBlobs: { [path]: contains ? blob : 'd'.repeat(40) } } } };
+  });
+  try {
+    const resolved = { ...resolution('remeasured-pinned-file'), priorRevision: 1, evidenceRefs: [subject],
+      investigation: original.investigation, attempts: [], verification: { outcome: 'Measured the loaded artifact', evidenceRefs: [subject] } };
+    const clear = { id, harness: HARNESS, kind: 'event', ref: key, clear: true, blockerDecision: resolved };
+    expect(await call(setBlocker, clear, caller)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(readBlockerResolution((await wi.getWorkItem(id, HARNESS))?.payload).current).toEqual(firstReceipt);
+    // The public handler sees a match, then the writer sees the runtime move.
+    // The transaction must deny that clearance and preserve the original receipt.
+    expect(await call(setBlocker, clear, caller)).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+    expect(readBlockerResolution((await wi.getWorkItem(id, HARNESS))?.payload).current).toEqual(firstReceipt);
+    const accepted = await call(setBlocker, clear, caller);
+    expect(accepted, JSON.stringify(accepted)).toMatchObject({ ok: true });
+    const stored = readBlockerResolution((await wi.getWorkItem(id, HARNESS))?.payload);
+    expect(stored.state?.history[0]).toEqual(firstReceipt);
+    expect(stored.current).toMatchObject({ revision: 2, sourceObservation: {
+      eventKey: key, filePath: path, expectedSourceSha256: sha, observedBlob: blob,
+      artifactBlob: blob, priorDecisionId: firstReceipt?.id, condition: 'satisfied',
+    } });
+    expect(await call(setBlocker, clear, caller)).toMatchObject({ ok: true, replayed: true });
+    expect(probe).toHaveBeenCalledTimes(5);
+    expect(observations).toEqual([]);
+    expect(await pw.getPredicateWatch(watchId)).toEqual(expired);
+    expect((await inspectEventKey(key)).fireLatch).toEqual(eventBefore.fireLatch);
+    expect((await inspectEventKey(key)).waiters).toEqual(eventBefore.waiters);
+  } finally {
+    probe.mockRestore();
+  }
+});
 
 describe('catalogued work-item completion evidence', () => {
   it('measures a completed review and fired waiter without a producer announcement', async () => {

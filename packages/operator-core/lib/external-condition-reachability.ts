@@ -92,7 +92,8 @@ async function hasActiveComposedRootAnchor(
   return (await loadAnchor(rootId)) !== null;
 }
 
-type PredicateWatchLoader = (id: string) => Promise<Pick<PredicateWatchRow, 'eventKey' | 'active'> | null>;
+type PredicateWatchEvidence = Pick<PredicateWatchRow, 'eventKey' | 'active' | 'op'>;
+type PredicateWatchLoader = (id: string) => Promise<PredicateWatchEvidence | null>;
 
 const PREDICATE_KEY_PREFIX = 'predicate:';
 
@@ -112,12 +113,12 @@ async function loadPredicateWatchRow(id: string): Promise<PredicateWatchRow | nu
  * contract events:await applies (EI-25832685839560534). An inactive row proves nothing
  * on its own; a fire it already made is read from the fire latch instead.
  */
-async function hasActivePredicateWatch(eventKey: string, load: PredicateWatchLoader): Promise<boolean> {
-  if (!eventKey.startsWith(PREDICATE_KEY_PREFIX)) return false;
+async function readActivePredicateWatch(eventKey: string, load: PredicateWatchLoader): Promise<PredicateWatchEvidence | null> {
+  if (!eventKey.startsWith(PREDICATE_KEY_PREFIX)) return null;
   const id = eventKey.slice(PREDICATE_KEY_PREFIX.length);
-  if (!id) return false;
+  if (!id) return null;
   const row = await load(id);
-  return Boolean(row && row.active && row.eventKey === eventKey);
+  return row?.active && row.eventKey === eventKey ? row : null;
 }
 
 /**
@@ -230,8 +231,8 @@ export function eventHasSpecificCondition(eventKey: string, producerDeclared = f
  * catalogued key certifies its condition only when EVERY family admitting it binds a
  * concrete subject AND is classified a completion family (`fireProves: 'condition'`,
  * events/await/catalog.ts). Unclassified is never proof. A key no family admits is
- * proof only when its producer declared it (an announcement or a live predicate watch
- * binds exactly one condition) — unchanged from the subject check.
+ * proof only when its producer declared a specific condition. The live reader
+ * also checks the watch operator when a declaration supplies no expected condition.
  */
 export function fireCertifiesCondition(eventKey: string, producerDeclared = false): boolean {
   const key = concreteEventKey(eventKey);
@@ -323,19 +324,22 @@ export async function readEventConditionReachability(
     // when there is no current declaration. Otherwise a fire from generation N
     // would incorrectly satisfy a newly declared generation N+1.
     const currentAnnouncement = snapshot.announcements.find((row) => !row.supersededAt);
-    // An active predicate watch is a declared producer of one specific condition
-    // (tool, path, op, operand), so it binds the condition the way an announcement does.
-    const predicateWatchLive = await hasActivePredicateWatch(eventKey, loadPredicateWatch);
-    const producerDeclared = Boolean(currentAnnouncement) || predicateWatchLive;
-    const uncertified = opts.requireSpecificCondition
-      ? uncertifiedConditionReason(eventKey, producerDeclared)
-      : null;
-    if (uncertified) {
-      return {
-        ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
-        evidence: uncertifiedTriggerEvidence(eventKey, producerDeclared),
-        uncertifiedReason: uncertified,
-      };
+    const predicateWatch = await readActivePredicateWatch(eventKey, loadPredicateWatch);
+    const producerDeclared = Boolean(currentAnnouncement || predicateWatch);
+    if (opts.requireSpecificCondition) {
+      // A changed-only watch can fire while a file is still unpublished.
+      // A separate expectation on the current announcement is checked against
+      // that generation's fired payload below.
+      const uncertified = predicateWatch?.op === 'changed' && currentAnnouncement?.expectedCondition == null
+        ? 'change-notification'
+        : uncertifiedConditionReason(eventKey, producerDeclared);
+      if (uncertified) {
+        return {
+          ...classifyExternalConditionReachability({ registration: 'unmeasured' }, now.toISOString()),
+          evidence: uncertifiedTriggerEvidence(eventKey, producerDeclared),
+          uncertifiedReason: uncertified,
+        };
+      }
     }
     // Expiry stamps firedAt too, but it is not a successful condition fire.
     // Only the event emitter's explicit reason is authoritative here.
@@ -369,7 +373,7 @@ export async function readEventConditionReachability(
     return classifyExternalConditionReachability(
       {
         firedAt,
-        liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG) || composedRootReachable || predicateWatchLive,
+        liveResolver: keyMatchesCatalog(eventKey, EVENT_CATALOG) || composedRootReachable || predicateWatch !== null,
         registration: latestAnnouncementState(snapshot.announcements, now.getTime()),
       },
       now.toISOString(),

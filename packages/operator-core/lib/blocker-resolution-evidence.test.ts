@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { blockerBoundaryContext, createBlockerEvidenceReader, preflightBlockerDecision } from './blocker-resolution-evidence';
-import { BLOCKER_EVIDENCE_REF_GRAMMAR, prepareBlockerDecision, type BlockerDecisionInput } from './blocker-resolution-decision';
+import { BLOCKER_EVIDENCE_REF_GRAMMAR, prepareBlockerDecision, readBlockerResolution, type BlockerDecisionInput } from './blocker-resolution-decision';
 import { activeExternalBlockers } from './external-blockers';
 import { runWithWorkspace } from './workspace-als';
 import type { UnresolvedDepBlocker } from './work-items';
@@ -14,7 +15,10 @@ const mocks = vi.hoisted(() => ({ item: vi.fn(), presence: vi.fn(), cell: vi.fn(
   doc: vi.fn(), session: vi.fn(), test: vi.fn(), testBindings: vi.fn(), deps: vi.fn(async (): Promise<UnresolvedDepBlocker[]> => []),
   workspace: vi.fn(() => 'workspace-a'), hoist: vi.fn((): string | null => null), runtime: vi.fn(),
   hold: vi.fn(), parked: vi.fn(), nodes: vi.fn(), plan: vi.fn(), scorecard: vi.fn(), rubric: vi.fn(), vetting: vi.fn(),
-  ownerTurn: vi.fn(), lift: vi.fn() }));
+  ownerTurn: vi.fn(), lift: vi.fn(), watch: vi.fn(), sourceProbe: vi.fn() }));
+vi.mock('./events/await/predicate-watch', () => ({
+  getPredicateTimeoutContext: mocks.watch, dispatchReadOnlyTool: mocks.sourceProbe,
+}));
 vi.mock('./agent-tools/plans/decision-provenance-record', () => ({ resolveDecisionProvenance: mocks.ownerTurn }));
 vi.mock('./agent-tools/work_items/set-blocker-hold', () => ({ checkHoldLift: mocks.lift }));
 vi.mock('./runtime-blocker-condition', () => ({ readRuntimeBlockerCondition: mocks.runtime }));
@@ -193,6 +197,151 @@ describe('lapsed active-peer recheck superseded by a ledger-bound passing run (E
   ])('refuses when %s', async (_label, arrange) => {
     arrange();
     expect(await preflight()).toMatchObject({ ok: false, code: 'blocker_decision_evidence' });
+  });
+});
+
+describe('current source measurement after a pinned predicate expires', () => {
+  const event = { kind: 'event' as const, ref: 'predicate:628f9112-7cd6-44e8-816a-bbbc67d047f7' };
+  const registrant = 'original-custodian';
+  const source = 'accepted source\n';
+  const digest = createHash('sha256').update(source).digest('hex');
+  const blob = createHash('sha1').update('blob ' + Buffer.byteLength(source) + '\0' + source).digest('hex');
+  const args = { path: 'subject.ts', sourceRuntimeOnly: true, expectedSourceSha256: digest };
+  const registeredAt = '2026-11-20T08:51:37.154Z';
+  const parkedAt = '2026-11-20T08:53:13.689Z';
+  const watch = { id: event.ref.slice('predicate:'.length), eventKey: event.ref, createdAt: registeredAt,
+    workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug, ownerId: registrant, role: 'operator',
+    active: false, boundTo: null, tool: 'dev:pipeline_position', args,
+    path: 'acceptedSource.runtimeContainment.staging-operator', op: 'eq', value: true };
+  const blocker = { ...event, kind: 'event' as const, status: 'active' as const, capability: 'live-dependency' as const,
+    summary: 'Wait for accepted staging source', createdAt: parkedAt, updatedAt: parkedAt, createdBy: registrant };
+  const evidence = { symptom: 'Staging has not loaded the accepted file', evidenceRefs: [event],
+    investigation: [{ action: 'Read the frozen source', outcome: 'Measured the exact operand', evidenceRefs: [event] }],
+    attempts: [], schemaVersion: 1 as const };
+  const park = { ...evidence, idempotencyKey: 'original-park', disposition: 'defer' as const,
+    deferral: { reason: 'technical-limit', responsibleParty: registrant, nextAction: 'Measure the original file on staging',
+      recheckRef: event, reasonEvidenceRefs: [event] } };
+  const clear = { ...evidence, idempotencyKey: 'current-observation', priorRevision: 1, disposition: 'self_resolve' as const,
+    verification: { outcome: 'Measured the original source on the running artifact', evidenceRefs: [event] } };
+  const caller = { workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug, role: 'worker',
+    principal: { slug: ctx.ownerId, workspaceId: ctx.workspaceId, capabilities: new Set(['intel:read']) },
+    signal: new AbortController().signal };
+  const item = () => {
+    const original = prepareBlockerDecision({}, park, { workItemId: ctx.workItemId, ownerId: registrant,
+      sessionId: registrant, custodianId: registrant }, { now: () => new Date('2026-11-20T08:53:14.260Z') });
+    if (!original.ok) throw new Error(original.nextAction);
+    return { id: ctx.workItemId, harness: ctx.harnessSlug, state: 'blocked', assignee: ctx.ownerId,
+      payload: { externalBlockers: [blocker], ...original.patch } };
+  };
+  let root: string;
+  const pipeline = (matches: boolean) => ({
+    repoRoot: root, submodule: null,
+    acceptedSource: { expectedSha256: digest, observedSha256: digest, matches: true,
+      runtimeContainment: { 'staging-operator': matches } },
+    servingRuntimes: [{ runtime: 'staging-operator', method: 'blob', buildSha: 'a'.repeat(40), containsChange: matches }],
+    observingRuntime: { host: 'port-3170', buildSha: 'a'.repeat(10), processId: 'staging-process',
+      artifact: { status: 'measured', sourceSha: 'a'.repeat(40), bundleSha256: 'b'.repeat(64),
+        manifestSha256: 'c'.repeat(64), evidenceRef: 'artifact:fixture', sourceBlobs: { 'subject.ts': matches ? blob : 'd'.repeat(40) } } },
+  });
+  const context = async () => ({ ...await blockerBoundaryContext(caller, ctx.ownerId, ctx.harnessSlug), root });
+  const attempt = async (subject = item()) => preflightBlockerDecision(subject, clear, await context(),
+    { effect: { setBlocker: { id: subject.id, kind: 'event', ref: event.ref, clear: true } } });
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'parked-source-'));
+    writeFileSync(join(root, args.path), source);
+    mocks.workspace.mockReturnValue(ctx.workspaceId);
+    mocks.deps.mockResolvedValue([]);
+    mocks.event.mockResolvedValue({ authoritative: false, verdict: 'unknown', basis: 'unmeasured', uncertifiedReason: 'uncatalogued' });
+    mocks.watch.mockReset().mockResolvedValue(structuredClone(watch));
+    mocks.sourceProbe.mockReset().mockResolvedValue(pipeline(true));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('records the new artifact witness on the next decision, using the current custodian and the original operand', async () => {
+    const subject = item();
+    subject.payload._blockerSourceObservations = { 'older-receipt': { preserved: true } };
+    const before = structuredClone(subject);
+    const checked = await attempt(subject);
+    expect(checked, checked.ok ? undefined : checked.missing.join('\n')).toMatchObject({ ok: true, record: { revision: 2, sourceObservation: {
+      eventKey: event.ref, filePath: args.path, expectedSourceSha256: digest, observedBlob: blob,
+      artifactBlob: blob, condition: 'satisfied', processId: 'staging-process', registrantId: registrant,
+      custodianId: ctx.ownerId, priorDecisionId: subject.payload.blockerResolution.history[0].id,
+    } } });
+    expect(mocks.sourceProbe).toHaveBeenCalledWith('dev:pipeline_position', args, expect.objectContaining({
+      callerContext: caller, onBehalfOf: ctx.ownerId, role: caller.role, workspaceId: caller.workspaceId, harnessSlug: ctx.harnessSlug,
+    }));
+    expect(subject).toEqual(before);
+    if (!checked.ok || 'ordinary' in checked) throw new Error('Missing prepared decision');
+    const stored = readBlockerResolution(checked.patch);
+    expect(stored.status).toBe('recorded');
+    expect(stored.current).toEqual(checked.record);
+    expect(stored.state?.history[0]).toEqual(before.payload.blockerResolution.history[0]);
+    expect(checked.patch.blockerResolution.history[1]).not.toHaveProperty('sourceObservation');
+    const evidenceKey = JSON.stringify([checked.record.id, checked.record.revision, checked.record.requestHash]);
+    expect(checked.patch._blockerSourceObservations?.[evidenceKey]).toEqual(checked.record.sourceObservation);
+    expect(checked.patch._blockerSourceObservations?.['older-receipt']).toEqual({ preserved: true });
+    const otherPark = structuredClone(checked.patch);
+    otherPark.blockerResolution.history[1].id = 'different-park-with-the-same-request';
+    expect(readBlockerResolution(otherPark).current).not.toHaveProperty('sourceObservation');
+    expect(await attempt({ ...subject, payload: { ...subject.payload, ...checked.patch } })).toMatchObject({
+      ok: true, replayed: true, record: { sourceObservation: checked.record.sourceObservation },
+    });
+    expect(mocks.sourceProbe).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an expired unmet condition pending without treating the retired watch as a reachable recheck', async () => {
+    mocks.sourceProbe.mockResolvedValue(pipeline(false));
+    expect(await attempt()).toMatchObject({ ok: false, missing: expect.arrayContaining([
+      'unresolved canonical condition event:' + event.ref,
+    ]) });
+    const next = { ...park, idempotencyKey: 'try-expired-key', priorRevision: 1,
+      deferral: { ...park.deferral, responsibleParty: ctx.ownerId } };
+    expect(await preflightBlockerDecision(item(), next, await context(), { effect: {} })).toMatchObject({
+      ok: false, missing: expect.arrayContaining(['reachable, still-pending event, state predicate or work-item recheck']),
+    });
+  });
+
+  it.each([
+    { workspaceId: 'another-tenant' }, { harnessSlug: 'other' }, { ownerId: 'unrelated' },
+    { boundTo: { kind: 'work-item', ref: 'WI-other' } }, { id: 'replaced-watch' }, { active: true },
+    { createdAt: '2026-11-21T00:00:00Z' }, { op: 'changed', value: null }, { tool: 'work_items:get' },
+    { args: { ...args, expectedSourceSha256: undefined } }, { args: { ...args, path: '../subject.ts' } },
+    { args: { ...args, path: 'renamed.ts' } }, { args: { ...args, sha: 'HEAD' } },
+  ])('refuses a different or unbound registered subject %j before dispatch', async patch => {
+    mocks.watch.mockResolvedValue({ ...watch, ...patch });
+    expect(await attempt()).toMatchObject({ ok: false });
+    expect(mocks.sourceProbe).not.toHaveBeenCalled();
+  });
+
+  it('refuses a foreign park, a missing authenticated caller, or a sibling obligation that still needs attention', async () => {
+    const subject = item();
+    subject.payload.blockerResolution.history[0].workItemId = 'WI-other';
+    expect(await attempt(subject)).toMatchObject({ ok: false });
+    expect(await preflightBlockerDecision(item(), clear, { ...ctx, root, sessionId: ctx.ownerId }, { effect: {} })).toMatchObject({ ok: false });
+    expect(mocks.sourceProbe).not.toHaveBeenCalled();
+    const other = { ...blocker, ref: 'separate:condition' };
+    const sibling = item();
+    sibling.payload.externalBlockers.push(other);
+    expect(await attempt(sibling)).toMatchObject({ ok: false });
+  });
+
+  it('keeps moved bytes, wrong repository, wrong artifact and unknown measurements unresolved', async () => {
+    const measured = pipeline(true);
+    for (const result of [{ ...measured, repoRoot: tmpdir() },
+      { ...measured, acceptedSource: { ...measured.acceptedSource, observedSha256: 'e'.repeat(64) } },
+      { ...measured, observingRuntime: { ...measured.observingRuntime, host: 'port-3070' } },
+      { ...measured, observingRuntime: { ...measured.observingRuntime, artifact: pipeline(false).observingRuntime.artifact } },
+      { ...measured, servingRuntimes: [] }, { ...measured, acceptedSource: null }]) {
+      mocks.sourceProbe.mockResolvedValue(result);
+      expect(await attempt()).toMatchObject({ ok: false });
+    }
+    mocks.sourceProbe.mockResolvedValue(measured);
+    writeFileSync(join(root, args.path), 'replacement source');
+    expect(await attempt()).toMatchObject({ ok: false });
+    mocks.sourceProbe.mockRejectedValue(new Error('current caller denied'));
+    writeFileSync(join(root, args.path), source);
+    expect(await attempt()).toMatchObject({ ok: false });
   });
 });
 

@@ -8,10 +8,10 @@ import type { ExternalBlockerRecord } from './external-blockers';
 import { activeWorkspaceId } from './workspace-registry';
 import { redactSensitiveText } from './sensitive-text';
 import { readGitFilePublicationCondition, type GitFilePublicationBinding } from './git-file-publication-condition';
-import { BLOCKER_EVIDENCE_REF_GRAMMAR, hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
+import { BLOCKER_EVIDENCE_REF_GRAMMAR, blockerSourceObservationKey, hasUnresolvedBlockerObligation, prepareBlockerDecision, readBlockerResolution,
   validateBlockerDecisionEvidence, type BlockerEvidenceMeasurement, type BlockerEvidenceRef,
   type BlockerDecisionProblem, type PreparedBlockerDecision, type UnmeasuredRuntimeScope,
-  type BindingCorrectionAdmission } from './blocker-resolution-decision';
+  type BindingCorrectionAdmission, type BlockerDecisionRecord, type BlockerSourceObservation } from './blocker-resolution-decision';
 import type { WorkItem } from './work-items';
 
 /** Authenticated host context; never part of the public tool's arguments. */
@@ -21,19 +21,21 @@ export interface BlockerBoundaryContext extends CellReadEnv {
   root: string | null;
   /** Host closure over the original authenticated tool context, never a public argument. */
   authorizeAuthorityClear?: (blocker: ExternalBlockerRecord, ownerTurnRef?: string) => Promise<boolean>;
+  sourcePredicateCaller?: CellReadEnv['callerContext'];
 }
 type BoundaryItem = Pick<WorkItem, 'id' | 'harness' | 'state' | 'assignee' | 'payload'>;
 
 /** Preserve the dispatch role and tenant; resolve source roots from the existing
  * harness registry rather than request fields or the server's working directory. */
 export async function blockerBoundaryContext(
-  ctx: { workspaceId?: string | null; role?: string; signal?: AbortSignal },
+  ctx: { workspaceId?: string | null; role?: string; signal?: AbortSignal } | NonNullable<CellReadEnv['callerContext']>,
   ownerId: string,
   harness: string | null | undefined,
 ): Promise<BlockerBoundaryContext> {
   const { resolveConcreteWorkspaceId } = await import('./workspace-registry');
   return { ownerId, sessionId: ownerId, workspaceId: resolveConcreteWorkspaceId(ctx.workspaceId),
     harnessSlug: harness ?? null, role: ctx.role ?? '', signal: ctx.signal,
+    ...('principal' in ctx && ctx.principal ? { sourcePredicateCaller: ctx } : {}),
     root: null,
     authorizeAuthorityClear: async (blocker, ownerTurnRef) => {
       if (blocker.kind === 'hold') {
@@ -248,7 +250,19 @@ export async function preflightBlockerDecision(
     const retainedGateScope = plainReleaseScope ?? blockerRetainingLinkScope;
     const planLaneReopen = custodyScope && prepared.record.decision.disposition === 'self_resolve'
       ? explicitPlanLaneReopen(options.effect) : undefined;
-    const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness,
+    // An original, recorded park is the authority for which source to measure.
+    // Prospective blocker rows, a later receipt, or a bare event citation cannot select it.
+    let sourceObservation: BlockerSourceObservation | undefined;
+    const original = prior.status === 'recorded' && priorDeferral?.recheckRef.kind === 'event' &&
+      priorDeferral.recheckRef.ref.startsWith('predicate:')
+      ? prior.state.history.filter(record => record.id === prior.current.id && record.revision === 1) : [];
+    const parkedSource = original.length === 1 && context.sourcePredicateCaller &&
+      original[0].decision.disposition === 'defer' &&
+      isDeepStrictEqual(original[0].decision.deferral.recheckRef, priorDeferral?.recheckRef) &&
+      !additionalConditions.some(blocker => blocker.ref === priorDeferral?.recheckRef.ref)
+      ? { original: original[0], caller: context.sourcePredicateCaller,
+          record: (observation: BlockerSourceObservation) => { sourceObservation = observation; } } : undefined;
+    const readEvidence = createBlockerEvidenceReader({ ...context, harnessSlug: item.harness, parkedSource,
       workItemId: item.id, custodianId: item.assignee, blockers,
       evidenceRefs: prepared.record.decision.evidenceRefs,
       planLaneReopen,
@@ -265,7 +279,14 @@ export async function preflightBlockerDecision(
       unmeasuredParkedPlanLaneDeferral: parkedPlanLaneScope,
       unmeasuredExternalGateDeferral: retainedGateScope, readEvidence,
     });
-    return checked.ok ? prepared : checked;
+    if (!checked.ok) return checked;
+    if (sourceObservation) {
+      const previous = plainObject(item.payload) ? item.payload._blockerSourceObservations : undefined;
+      if (previous !== undefined && !plainObject(previous)) return boundaryProblem(['readable prior source observations']);
+      prepared.patch._blockerSourceObservations = { ...previous, [blockerSourceObservationKey(prepared.record)]: sourceObservation };
+      prepared.record = { ...prepared.record, sourceObservation };
+    }
+    return prepared;
   } catch {
     return boundaryProblem(['authoritative canonical blocker/dependency evidence (reader unavailable)']);
   }
@@ -281,6 +302,8 @@ export interface BlockerEvidenceContext extends CellReadEnv {
   blockers: readonly ExternalBlockerRecord[];
   /** Canonical pre-write subject custody, never request-supplied. */
   custodianId?: string | null;
+  parkedSource?: { original: BlockerDecisionRecord; caller: NonNullable<CellReadEnv['callerContext']>;
+    record: (observation: BlockerSourceObservation) => void };
   /** Exact host-derived clear effect and authenticated policy verifier. */
   authorityClear?: AuthorityClear;
   authorizeAuthorityClear?: BlockerBoundaryContext['authorizeAuthorityClear'];
@@ -856,6 +879,17 @@ export function createBlockerEvidenceReader(context: BlockerEvidenceContext) {
           const { readEventConditionReachability } = await import('./external-condition-reachability');
           const read = await readEventConditionReachability(ref.ref, { requireSpecificCondition: true });
           if (!read.authoritative || read.verdict === 'unknown') {
+            if (read.uncertifiedReason === 'uncatalogued' && context.parkedSource && ref.ref.startsWith('predicate:')) {
+              const { measureParkedPredicateSource } = await import('./blocker-predicate-source');
+              const result = await measureParkedPredicateSource(ref, context, context.parkedSource, repositoryRoot);
+              if (result) {
+                context.parkedSource.record(result);
+                // The source can be measured again. The retired watch cannot promise another wake.
+                return { status: 'available', condition: result.condition, reachable: false,
+                  conditionIdentity: JSON.stringify([result.kind, result.workspaceId, result.harness, result.workItemId,
+                    result.priorDecisionId, result.eventKey, result.filePath, result.expectedSourceSha256, result.runtime]) };
+              }
+            }
             const scope = context.retainedExternalGateDeferral;
             const gates = context.blockers.filter(blocker =>
               blocker.kind === 'gate' && blocker.ref === ref.ref && blocker.status === 'active');

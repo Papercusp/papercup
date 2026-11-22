@@ -531,6 +531,25 @@ describe('predicate watches (real PG)', () => {
       expect(row.path).toBe((spec.changeSignal as { path: string }).path);
     });
 
+    it('delivers a pipeline change while reserving release proof for a value predicate', async () => {
+      const { admitWaitRef } = await import('../../wait-ref-admission');
+      const change = await seedCellWatch(GIT_PIPELINE_POSITION_CELL, { op: 'changed', value: null });
+      const published = await seedCellWatch(GIT_PIPELINE_POSITION_CELL, { op: 'eq', value: true });
+
+      expect(await admitWaitRef(change.eventKey)).toMatchObject({ ok: false, code: 'wait_ref_unprovable' });
+      expect(await admitWaitRef(published.eventKey)).toMatchObject({ ok: true });
+      STORE = { positions: { deployed: true } };
+      expect(await step(change.row.id)).toMatchObject({ fired: false });
+      STORE = { positions: { deployed: false } };
+      expect(await step(change.row.id)).toMatchObject({ fired: true });
+      expect(h.emits).toEqual([expect.objectContaining({
+        key: change.eventKey, payload: expect.objectContaining({ observed: false }),
+      })]);
+      expect(await admitWaitRef(change.eventKey)).toMatchObject({
+        ok: false, code: 'wait_ref_unprovable', reachability: { uncertifiedReason: 'change-notification' },
+      });
+    });
+
     it('⚠ POSITIVE WAKE FIRST — mutating the store across the condition wakes the subscriber', async () => {
       const { row, eventKey } = await seedCellWatch(GIT_PIPELINE_POSITION_CELL, {
         op: 'eq',

@@ -2499,6 +2499,23 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
   };
   const OPTIONS = /announced gate.*predicate watch.*runtime or human blocker with recheckAt/s;
 
+  it.each([false, true])('refuses a change-only file watch as a publication condition (fired=%s)', async fired => {
+    openItem();
+    const ref = 'predicate:file-position';
+    getPredicateWatch.mockResolvedValueOnce({
+      eventKey: ref, active: true, tool: 'dev:pipeline_position', args: { path: 'src/file.ts' },
+      path: 'assessments.pipelinePosition', op: 'changed', value: null,
+    });
+    if (fired) firedKeys.set(ref, '2026-10-20T12:00:00.000Z');
+
+    const out = await one({ id: 'WI-1', kind: 'event', ref, summary: 'Wait for publication of src/file.ts' });
+    expect(out).toMatchObject({ ok: false, code: 'wait_ref_unprovable' });
+    expect(out.error).toMatch(/change notification/);
+    expect(out.error).toContain('value required for release');
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['coord:inbox-wake:su-a', 'event', /broad wake/],
     ['git-sync:committed', 'event', /broad wake/],
@@ -2572,8 +2589,8 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
   it.each([
     ['an unfired catalogued completion key', 'event', 'release:deployed:abc123def', () => undefined],
     ['an announced gate', 'gate', 'fleet:x:schema-ready', () => { announcedKeys.set('fleet:x:schema-ready', {}); }],
-    ['a live predicate watch', 'event', 'predicate:pw-1', () => {
-      getPredicateWatch.mockResolvedValueOnce({ eventKey: 'predicate:pw-1', active: true });
+    ['a live exact-value predicate watch', 'event', 'predicate:pw-1', () => {
+      getPredicateWatch.mockResolvedValueOnce({ eventKey: 'predicate:pw-1', active: true, op: 'eq', value: 'ready' });
     }],
   ])('SPEC-P-006: accepts %s and writes the blocker', async (_label, kind, ref, arrange) => {
     openItem();
