@@ -32,7 +32,7 @@ export function remainingPureLaneFiles(
 export function runPureLaneShards(options?: {
   env?: Readonly<Record<string, string | undefined>>;
   forwardedArgs?: string[];
-  run?: (args: string[]) => Promise<number>;
+  run?: (args: string[], options: { env: Readonly<Record<string, string | undefined>> }) => Promise<number>;
   stderr?: Pick<Writable, "write">;
   /** Workspace root the lane runs in (default: process cwd). */
   wsAbsDir?: string;
