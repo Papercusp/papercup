@@ -56,6 +56,23 @@ describe("targeted gate outcome evidence", () => {
     expect([...radius!.gateIds].sort()).toEqual([`${workspace} :: test:identity-surfaces`, `${workspace} :: test:lane-pure`]);
   });
 
+  it("widens a same-named test script in a workspace where it was not declared as a guard", () => {
+    const guardOwner = "@papercusp/operator-core";
+    const unitOwner = "@papercusp/web";
+    const script = "test:unit";
+    const radius = parseRepairHeadRadius([
+      "AFFECTED_DERIVATION source=explicit changedPaths=2 workspaces=2 guards=1 tasks=2",
+      `AFFECTED_WS\t${guardOwner}`,
+      `AFFECTED_WS\t${unitOwner}`,
+      `AFFECTED_WS_CMD\t${guardOwner}\tnpm run --workspace ${guardOwner} ${script}`,
+      `AFFECTED_WS_CMD\t${unitOwner}\tnpm run --workspace ${unitOwner} ${script}`,
+      `AFFECTED_GUARD\t${guardOwner}\t${script}\tnpm run --workspace ${guardOwner} ${script}`,
+      "RELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius",
+    ].join("\n"));
+    expect(radius).toMatchObject({ fileSelection: "full", coverageComplete: true, widenedTasks: 1 });
+    expect(radius!.gateIds).toEqual([`${guardOwner} :: ${script}`, `${unitOwner} :: ${script}`]);
+  });
+
   it("retains bounded stdout and stderr for a clean nonzero task, including failure before test reporting", async () => {
     const result = await measureTargetedGateRuns(["lint:broken", "lint:after"], async (script) => ({
       code: script === "lint:broken" ? 1 : 0,

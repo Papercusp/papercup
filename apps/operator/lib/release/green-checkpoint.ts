@@ -8364,6 +8364,10 @@ export function parseRepairHeadRadius(output: string): RepairHeadRadius | null {
       gateIds.add(id);
     }
   }
+  // A guard can be declared before or after its workspace command. Its full task ID
+  // belongs to the gate runner even when the script name starts with `test:`.
+  for (const gateId of gateIds) testTaskIds.delete(gateId);
+
   let widenedTasks = 0;
   // One selector-owned summary distinguishes an exact file radius from a bounded widening.
   // In a mixed multi-workspace result the selector emits status=full and no partial file list,
