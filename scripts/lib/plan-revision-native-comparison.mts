@@ -245,7 +245,9 @@ export function readComparisonCoverage(directory: string, request: ComparisonReq
     assert.equal(row.definitionCommit, request.definitionRef);
     assert.equal(row.workspace, request.privateWorkspace);
     assert.equal(desktop, 'roleViews' in row, 'capture kind differs from its source');
-    assert.equal(('roleViews' in row ? row.runtimeBefore : row.runtime).fingerprint, runtime.fingerprint);
+    const traceRuntime = 'roleViews' in row ? row.runtimeBefore : row.runtime;
+    assert.equal(traceRuntime.fingerprint, runtime.fingerprint);
+    assert.deepEqual(traceRuntime.units, runtime.units, 'trace runtime units differ from the witnessed native process');
     const sha256 = digest(bytes);
     function record(role: string, door: string, scenario: string, reference: string, actor: string, revision: string,
       authorAttribution?: AuthorAttribution) {
