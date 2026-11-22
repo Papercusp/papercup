@@ -341,18 +341,32 @@ const nonCoerciveBinaryOperators = new Set([
   ts.SyntaxKind.QuestionQuestionEqualsToken,
 ]);
 const implicitDispatchReview = 'implicit-dispatch-requires-review';
+const propertyDispatchReview = 'property-dispatch-requires-review';
 const numericLiteralUnary = 'numeric-literal-unary';
 const numericLiteralArithmetic = 'numeric-literal-arithmetic';
+const primitiveLiteralComparison = 'primitive-literal-comparison';
+const primitiveComputedPropertyKey = 'primitive-computed-property-key';
+const primitiveLiteralAwait = 'primitive-literal-await';
 const primitiveLiteralTemplate = 'primitive-literal-template';
-type PhaseWriterSyntaxWitness = typeof numericLiteralUnary | typeof numericLiteralArithmetic | typeof primitiveLiteralTemplate;
+const stringLiteralLength = 'string-literal-length';
+type PhaseWriterSyntaxWitness = typeof numericLiteralUnary | typeof numericLiteralArithmetic
+  | typeof primitiveLiteralComparison | typeof primitiveComputedPropertyKey | typeof primitiveLiteralAwait
+  | typeof primitiveLiteralTemplate | typeof stringLiteralLength;
 const primitiveLiteralKinds = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.NumericLiteral,
   ts.SyntaxKind.BigIntLiteral, ts.SyntaxKind.TrueKeyword, ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword,
 ]);
 const numericUnaryOperators = new Set<ts.SyntaxKind>([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.TildeToken]);
 const numericArithmeticOperators = new Set<ts.SyntaxKind>([
-  ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.SlashToken,
-  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken, ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.SlashToken, ts.SyntaxKind.PercentToken, ts.SyntaxKind.AmpersandToken, ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken, ts.SyntaxKind.LessThanLessThanToken, ts.SyntaxKind.GreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+]);
+const primitiveComparisonOperators = new Set<ts.SyntaxKind>([
+  ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken,
+  ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken,
+  ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken,
 ]);
 
 export interface PhaseWriterSource { path: string; content: string }
@@ -727,6 +741,20 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
         }
         return { root: node, computed: false };
       };
+      // Array and object literals can be assignment patterns. Follow only
+      // value slots: a computed property key still evaluates as a read.
+      const enclosingAssignmentPattern = (access: ts.Node): ts.Node => {
+        let target = access;
+        for (;;) {
+          const parent = target.parent;
+          if (ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent)
+            || ts.isPropertyAssignment(parent) && parent.initializer === target
+            || (ts.isSpreadAssignment(parent) || ts.isSpreadElement(parent)) && parent.expression === target
+            || ts.isParenthesizedExpression(parent)) {
+            target = parent;
+          } else return target;
+        }
+      };
       // A local alias does not close a parameter frontier: e.g. copying
       // client.array into original must retain original.call/apply as unknown.
       // Collect every possible origin before inspecting calls so declaration
@@ -781,8 +809,13 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           const declaration = node.parent;
           operands = [((ts.isVariableDeclaration(declaration) || ts.isParameter(declaration))
             && declaration.initializer) || node];
-        } else if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
-          || ts.isAwaitExpression(node) || ts.isComputedPropertyName(node)) {
+        } else if (ts.isComputedPropertyName(node)) {
+          operands = [node.expression];
+          if (primitiveLiteralKinds.has(node.expression.kind)) syntaxWitness = primitiveComputedPropertyKey;
+        } else if (ts.isAwaitExpression(node)) {
+          operands = [node.expression];
+          if (primitiveLiteralKinds.has(node.expression.kind)) syntaxWitness = primitiveLiteralAwait;
+        } else if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) {
           operands = [node.expression];
         } else if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
           operands = [node.expression, node.initializer];
@@ -802,6 +835,9 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
           if (destructuring || !nonCoerciveBinaryOperators.has(operator)) operands = [node.left, node.right];
           if (numericArithmeticOperators.has(operator) && ts.isNumericLiteral(node.left) && ts.isNumericLiteral(node.right)) {
             syntaxWitness = numericLiteralArithmetic;
+          } else if (primitiveComparisonOperators.has(operator)
+            && primitiveLiteralKinds.has(node.left.kind) && primitiveLiteralKinds.has(node.right.kind)) {
+            syntaxWitness = primitiveLiteralComparison;
           }
         } else if (ts.isPrefixUnaryExpression(node) && node.operator !== ts.SyntaxKind.ExclamationToken
           || ts.isPostfixUnaryExpression(node)) {
@@ -847,18 +883,24 @@ export function inventoryPhaseWriters(input: readonly PhaseWriterSource[],
               || ts.isSatisfiesExpression(parent))) expression = parent;
             else break;
           }
-          const parent = expression.parent;
-          if (ts.isBinaryExpression(parent) && parent.left === expression
+          const target = enclosingAssignmentPattern(expression);
+          const parent = target.parent;
+          if (ts.isBinaryExpression(parent) && parent.left === target
             && parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
             && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
             expression = parent; edges.push(parent.right.getText(unit.ast));
-          } else if (ts.isDeleteExpression(parent)
+          } else if ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === target) {
+            expression = parent; edges.push(parent.expression.getText(unit.ast));
+          } else if (target === expression && (ts.isDeleteExpression(parent)
             || (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
-              && (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken)) {
+              && (parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken))) {
             expression = parent;
           }
+          const literalLengthRead = expression === node && ts.isPropertyAccessExpression(node)
+            && !node.questionDotToken && ts.isStringLiteral(node.expression) && edges[1] === 'length';
           add(source, operation(node), expression.getText(unit.ast), unit.span(expression).line,
-            'unresolved', { dynamicEdges: edges, unresolved: ['property-dispatch-requires-review'] });
+            'unresolved', { dynamicEdges: edges, unresolved: [propertyDispatchReview],
+              ...(literalLengthRead ? { syntaxWitness: stringLiteralLength } : {}) });
           deferredEffectSiteIds.add(sites[sites.length - 1]!.id);
         }
         if (ts.isTaggedTemplateExpression(node)) {
@@ -1440,54 +1482,111 @@ function scanPrimitiveTemplateOperands(scanner: ts.Scanner): Set<string> | undef
   if (templateToken === ts.SyntaxKind.TemplateTail) return operands;
 }
 
-function scanNumericLiteralOperands(scanner: ts.Scanner, unary: boolean): Set<string> | undefined {
+function scanLiteralOperatorOperands(scanner: ts.Scanner, operators: ReadonlySet<ts.SyntaxKind>,
+  operandKinds: ReadonlySet<ts.SyntaxKind>, unary = false): Set<string> | undefined {
+  const scanOperand = () => operandKinds.has(scanner.scan()) && !scanner.isUnterminated();
   const operands = new Set<string>();
   if (!unary) {
-    if (scanner.scan() !== ts.SyntaxKind.NumericLiteral) return;
+    if (!scanOperand()) return;
     operands.add(scanner.getTokenText());
   }
-  const operators = unary ? numericUnaryOperators : numericArithmeticOperators;
-  if (!operators.has(scanner.scan()) || scanner.scan() !== ts.SyntaxKind.NumericLiteral) return;
+  let operator = scanner.scan();
+  // The scanner initially leaves > uncombined for use in generic type syntax.
+  if (!unary && operator === ts.SyntaxKind.GreaterThanToken) operator = scanner.reScanGreaterToken();
+  if (!operators.has(operator) || !scanOperand()) return;
   operands.add(scanner.getTokenText());
   return operands;
 }
 
-const syntaxProofs = {
+function scanPrimitiveComputedPropertyKey(scanner: ts.Scanner): readonly string[] | undefined {
+  if (scanner.scan() !== ts.SyntaxKind.OpenBracketToken
+    || !primitiveLiteralKinds.has(scanner.scan()) || scanner.isUnterminated()) return;
+  const key = scanner.getTokenText();
+  if (scanner.scan() === ts.SyntaxKind.CloseBracketToken) return [key];
+}
+
+function scanPrimitiveLiteralAwait(scanner: ts.Scanner): readonly string[] | undefined {
+  if (scanner.scan() !== ts.SyntaxKind.AwaitKeyword
+    || !primitiveLiteralKinds.has(scanner.scan()) || scanner.isUnterminated()) return;
+  return [scanner.getTokenText()];
+}
+
+function scanStringLiteralLengthOperands(scanner: ts.Scanner): readonly string[] | undefined {
+  if (scanner.scan() !== ts.SyntaxKind.StringLiteral || scanner.isUnterminated()) return;
+  const receiver = scanner.getTokenText();
+  if (scanner.scan() !== ts.SyntaxKind.DotToken || scanner.scan() !== ts.SyntaxKind.Identifier
+    || scanner.getTokenText() !== 'length') return;
+  return [receiver, 'length'];
+}
+
+interface SyntaxProof {
+  reason: string;
+  semantics: string;
+  frontier?: string;
+  scan: (scanner: ts.Scanner) => Iterable<string> | undefined;
+}
+
+const numericLiteralKinds = new Set<ts.SyntaxKind>([ts.SyntaxKind.NumericLiteral]);
+const syntaxProofs: Record<PhaseWriterSyntaxWitness, SyntaxProof> = {
   [numericLiteralUnary]: {
     reason: 'This unary expression directly consumes a numeric literal. Evaluating it and coercing its primitive Number cannot dispatch user code.',
     semantics: 'sec-unary-operators',
+    scan: scanner => scanLiteralOperatorOperands(scanner, numericUnaryOperators, numericLiteralKinds, true),
   },
   [numericLiteralArithmetic]: {
-    reason: 'Both operands are Number literals. This arithmetic operation evaluates and combines primitive numbers without dispatching user code.',
+    reason: 'Both operands are Number literals. This operator evaluates and combines primitive numbers without dispatching user code.',
     semantics: 'sec-applystringornumericbinaryoperator',
+    scan: scanner => scanLiteralOperatorOperands(scanner, numericArithmeticOperators, numericLiteralKinds),
+  },
+  [primitiveLiteralComparison]: {
+    reason: 'Both operands are direct primitive literals. Relational comparison and loose equality can compare or convert these primitives without dispatching user code.',
+    semantics: 'sec-testing-and-comparison-operations',
+    scan: scanner => scanLiteralOperatorOperands(scanner, primitiveComparisonOperators, primitiveLiteralKinds),
+  },
+  [primitiveComputedPropertyKey]: {
+    reason: 'The computed name is a direct primitive literal. Evaluating it and converting it to a property key cannot dispatch user code.',
+    semantics: 'sec-topropertykey',
+    scan: scanPrimitiveComputedPropertyKey,
+  },
+  [primitiveLiteralAwait]: {
+    reason: 'The await operand is a direct primitive literal. Intrinsic promise resolution of that value performs no thenable property lookup or callback dispatch at this site.',
+    semantics: 'await',
+    scan: scanPrimitiveLiteralAwait,
   },
   [primitiveLiteralTemplate]: {
     reason: 'Every substitution in this untagged template is a direct primitive literal. Evaluating and converting these values to strings cannot dispatch user code.',
     semantics: 'sec-template-literals-runtime-semantics-evaluation',
+    scan: scanPrimitiveTemplateOperands,
   },
-} satisfies Record<PhaseWriterSyntaxWitness, { reason: string; semantics: string }>;
+  [stringLiteralLength]: {
+    reason: 'The string wrapper has an own length data property. This direct access invokes no getter and performs no prototype lookup.',
+    semantics: 'sec-stringcreate',
+    frontier: propertyDispatchReview,
+    scan: scanStringLiteralLengthOperands,
+  },
+};
 
 function reviewSyntaxWitness(site: PhaseWriterSite): PhaseWriterReview | undefined {
   const witness = site.syntaxWitness;
   if (!witness || !Object.hasOwn(syntaxProofs, witness) || site.kind !== 'unresolved' || site.invocation
     || site.callees.length || site.relations.length || site.columns.length
-    || site.unresolved.length !== 1 || site.unresolved[0] !== implicitDispatchReview
     || digest(site.statement) !== site.statementSha256) return;
+  const { reason, semantics, frontier = implicitDispatchReview, scan } = syntaxProofs[witness];
+  if (site.unresolved.length !== 1 || site.unresolved[0] !== frontier) return;
   // Recheck the complete token sequence and the collector's exact operand edges.
   let lexicalError = false;
   const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, site.statement,
     () => { lexicalError = true; });
-  const operands = witness === primitiveLiteralTemplate ? scanPrimitiveTemplateOperands(scanner)
-    : scanNumericLiteralOperands(scanner, witness === numericLiteralUnary);
-  if (!operands || scanner.scan() !== ts.SyntaxKind.EndOfFileToken || lexicalError
-    || operands.size !== site.dynamicEdges.length
-    || [...operands].some((operand, index) => site.dynamicEdges[index] !== operand)) return;
+  const scanned = scan(scanner);
+  if (!scanned || scanner.scan() !== ts.SyntaxKind.EndOfFileToken || lexicalError) return;
+  const operands = [...scanned];
+  if (operands.length !== site.dynamicEdges.length
+    || operands.some((operand, index) => site.dynamicEdges[index] !== operand)) return;
 
-  const { reason, semantics } = syntaxProofs[witness];
   const evidenceRefs = [`source:${site.path}#${site.sourceSha256}`, `https://tc39.es/ecma262/#${semantics}`];
   return { siteId: site.id, sourceSha256: site.sourceSha256, statementSha256: site.statementSha256,
     sourceProofs: [{ path: site.path, sha256: site.sourceSha256 }], disposition: 'metadata-only', reason, evidenceRefs,
-    resolvedEdges: [...site.dynamicEdges, implicitDispatchReview].map(edge => ({ edge, reason, evidenceRefs })) };
+    resolvedEdges: [...site.dynamicEdges, frontier].map(edge => ({ edge, reason, evidenceRefs })) };
 }
 
 /** Reviews are exact source proofs. Neither an exemption nor an advancing seam

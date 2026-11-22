@@ -2811,7 +2811,7 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('checks direct Number arithmetic while retaining getter, coercion and adjacent syntax identities', () => {
+  it('checks direct Number arithmetic and bitwise operations while retaining adjacent effects', () => {
     const effects: string[] = [];
     const transport = {
       get value() {
@@ -2827,7 +2827,10 @@ describe('phase binding writer census', () => {
     try {
       mkdirSync(join(root, 'packages'));
       const path = 'packages/arithmetic.ts';
-      const literals = ['10 + 2', '0x10 - 1', '2 * 2', '1 /* numerator */ / 0', '5 % 3'];
+      const literals = [
+        '10 + 2', '0x10 - 1', '2 * 2', '1 /* numerator */ / 0', '5 % 3', '1024 ** 3',
+        '27 & 14', '1 | 4', '11 ^ 10', '1 << 28', '0xff >> 4', '0xffffffff >>> /* unsigned */ 31',
+      ];
       const exact = 'const results = [' + literals.join(', ') + '];';
       writeFileSync(join(root, path), exact);
       const inert = assertPhaseWriterTreeCensus(root, []);
@@ -2841,7 +2844,7 @@ describe('phase binding writer census', () => {
       }
       expect(inert.inventory.sites.find(site => site.statement === '2 * 2')?.dynamicEdges).toEqual(['2']);
 
-      const controls = ['(2) + 2', '1n + 2n', '2 ** 3', '2 + "2"'];
+      const controls = ['(2) + 2', '1n + 2n', '2n ** 3n', '2 + "2"', '2 > amount', '2 >= amount', '2 >> amount'];
       writeFileSync(join(root, path), exact + 'const dispatch = ' + withDispatch.toString()
         + '; const adjacent = [' + controls.join(', ') + ']; const returned = async () => 10 + 2;');
       expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
@@ -2858,6 +2861,145 @@ describe('phase binding writer census', () => {
       const malformed = { ...current, sites: current.sites.map(site => site.id === dispatch.id
         ? { ...site, syntaxWitness: 'numeric-literal-arithmetic' as const } : site) };
       expect(reconcilePhaseWriterCensus(malformed, [])).toEqual(report);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('checks primitive literal comparisons while retaining getter and coercion dispatch', () => {
+    const effects: string[] = [];
+    const operand = {
+      [Symbol.toPrimitive]() { effects.push('coercion'); return 2; },
+    } as unknown as number;
+    const receiver = { get value() { effects.push('getter'); return operand; } };
+    const relational = () => receiver.value < 3;
+    const equality = () => 2 == operand;
+    expect(relational()).toBe(true);
+    expect(equality()).toBe(true);
+    expect(effects).toEqual(['getter', 'coercion', 'coercion']);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-literal-comparison-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/comparison.ts';
+      const literals = ['0x5 > 3', '5 /* operand */ >= 4', '`a` < "b"', 'false <= 1n', 'null == false', '2n != "2"', '7 >= 7'];
+      const exact = 'const comparisons = [' + literals.join(', ') + '];';
+      writeFileSync(join(root, path), exact);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      const identities = inert.inventory.sites.map(site => site.id);
+      expect(inert.inventory.sites.map(site => site.statement).sort()).toEqual([...literals].sort());
+      expect(inert.census.coverage).toEqual({
+        population: identities, checked: identities, notChecked: [], notApplicable: [], residue: [],
+      });
+      for (const row of inert.census.syntaxReviews) {
+        const site = inert.inventory.sites.find(candidate => candidate.id === row.siteId)!;
+        expect(row).toMatchObject({ disposition: 'metadata-only', statementSha256: site.statementSha256,
+          sourceProofs: [{ path, sha256: site.sourceSha256 }] });
+        expect(row.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+
+      const opaque = ['receiver.value < 3', '2 == operand', '(2) != 3', '2 instanceof operand', '"x" in operand'];
+      writeFileSync(join(root, path), exact + 'const dispatch = [' + opaque.join(', ') + '];');
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const report = reconcilePhaseWriterCensus(current, []);
+      const remaining = current.sites.filter(site => report.coverage.residue.includes(site.id));
+      expect(remaining.map(site => site.statement).sort()).toEqual([...opaque, 'receiver.value'].sort());
+      expect(report.coverage.population).toEqual(current.sites.map(site => site.id));
+      expect(report.coverage.checked).toEqual(identities);
+      const forged = { ...current, sites: current.sites.map(site => remaining.includes(site)
+        ? { ...site, syntaxWitness: inert.inventory.sites[0]!.syntaxWitness } : site) };
+      expect(reconcilePhaseWriterCensus(forged, [])).toEqual(report);
+      const stale = reconcilePhaseWriterCensus(current, inert.census.syntaxReviews);
+      expect(stale.problems.filter(problem => problem.reasons.includes('stale-review')).map(problem => problem.id))
+        .toEqual(identities);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('checks direct primitive computed property keys and retains dynamic key dispatch', () => {
+    const effects: string[] = [];
+    const key = {
+      [Symbol.toPrimitive]() { effects.push('coercion'); return 'key'; },
+    } as unknown as string;
+    const receiver = { get value() { effects.push('getter'); return key; } };
+    expect({ [receiver.value]: 1 }).toEqual({ key: 1 });
+    expect(effects).toEqual(['getter', 'coercion']);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-literal-key-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/keys.ts';
+      const literals = ['["name"]', '[0x2]', '[/* key */ `nested`]', '[true]', '[null]', '[2n]'];
+      const exact = 'const keys = { ' + literals.map(literal => `${literal}: 1`).join(', ') + ' };';
+      writeFileSync(join(root, path), exact);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      const identities = inert.inventory.sites.map(site => site.id);
+      expect(inert.inventory.sites.map(site => site.statement).sort()).toEqual([...literals].sort());
+      expect(inert.census.coverage).toEqual({
+        population: identities, checked: identities, notChecked: [], notApplicable: [], residue: [],
+      });
+      for (const row of inert.census.syntaxReviews) {
+        const site = inert.inventory.sites.find(candidate => candidate.id === row.siteId)!;
+        expect(row).toMatchObject({ disposition: 'metadata-only', statementSha256: site.statementSha256,
+          sourceProofs: [{ path, sha256: site.sourceSha256 }] });
+        expect(row.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+
+      writeFileSync(join(root, path), exact + 'const dispatch = { [("wrapped")]: 1, [receiver.value]: 2 };');
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const report = reconcilePhaseWriterCensus(current, []);
+      const remaining = current.sites.filter(site => report.coverage.residue.includes(site.id));
+      expect(remaining.map(site => site.statement).sort()).toEqual(['[("wrapped")]', '[receiver.value]', 'receiver.value']);
+      expect(report.coverage.population).toEqual(current.sites.map(site => site.id));
+      expect(report.coverage.checked).toEqual(identities);
+      const forged = { ...current, sites: current.sites.map(site => remaining.includes(site)
+        ? { ...site, syntaxWitness: inert.inventory.sites[0]!.syntaxWitness } : site) };
+      expect(reconcilePhaseWriterCensus(forged, [])).toEqual(report);
+      const stale = reconcilePhaseWriterCensus(current, inert.census.syntaxReviews);
+      expect(stale.problems.filter(problem => problem.reasons.includes('stale-review')).map(problem => problem.id))
+        .toEqual(identities);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('checks direct primitive awaits and retains thenable dispatch', async () => {
+    let thenReads = 0;
+    const thenable = { get then() { thenReads++; return undefined; } };
+    expect(await thenable).toBe(thenable);
+    expect(thenReads).toBe(1);
+
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-primitive-await-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/await.ts';
+      const literals = ['await 0x7', 'await "value"', 'await false', 'await null', 'await 2n', 'await /* literal */ `nested`'];
+      const exact = 'async function entry() { ' + literals.join('; ') + '; }';
+      writeFileSync(join(root, path), exact);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      const identities = inert.inventory.sites.map(site => site.id);
+      expect(inert.inventory.sites.map(site => site.statement).sort()).toEqual([...literals].sort());
+      expect(inert.census.coverage).toEqual({
+        population: identities, checked: identities, notChecked: [], notApplicable: [], residue: [],
+      });
+      for (const site of inert.inventory.sites) {
+        const review = inert.census.syntaxReviews.find(row => row.siteId === site.id)!;
+        expect(review).toMatchObject({ disposition: 'metadata-only', statementSha256: site.statementSha256,
+          sourceProofs: [{ path, sha256: site.sourceSha256 }] });
+        expect(review.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+
+      writeFileSync(join(root, path), exact.replace(' }', ' await (7); await thenable; }'));
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const report = reconcilePhaseWriterCensus(current, []);
+      const remaining = current.sites.filter(site => report.coverage.residue.includes(site.id));
+      expect(remaining.map(site => site.statement).sort()).toEqual(['await (7)', 'await thenable']);
+      expect(report.coverage.population).toEqual(current.sites.map(site => site.id));
+      expect(report.coverage.checked).toEqual(identities);
+      const forged = { ...current, sites: current.sites.map(site => remaining.includes(site)
+        ? { ...site, syntaxWitness: inert.inventory.sites[0]!.syntaxWitness } : site) };
+      expect(reconcilePhaseWriterCensus(forged, [])).toEqual(report);
+      const stale = reconcilePhaseWriterCensus(current, inert.census.syntaxReviews);
+      expect(stale.problems.filter(problem => problem.reasons.includes('stale-review')).map(problem => problem.id))
+        .toEqual(identities);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -2913,9 +3055,67 @@ describe('phase binding writer census', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
-  it('recovers literal unary, arithmetic and template proofs and a decisive trailing dispatch identity across stream batches', async () => {
+  it('checks direct string literal length access while retaining other property dispatch', () => {
+    const root = mkdtempSync(join(tmpdir(), 'phase-writer-string-length-'));
+    try {
+      mkdirSync(join(root, 'packages'));
+      const path = 'packages/property.ts';
+      const literals = [`'harness:'.length`, '"" /* own property */ .length'];
+      const exact = 'const lengths = [' + literals.join(', ') + '];';
+      writeFileSync(join(root, path), exact);
+      const inert = assertPhaseWriterTreeCensus(root, []);
+      const identities = inert.inventory.sites.map(site => site.id);
+      expect(inert.inventory.sites.map(site => site.statement).sort()).toEqual([...literals].sort());
+      expect(inert.census.coverage).toEqual({
+        population: identities, checked: identities, notChecked: [], notApplicable: [], residue: [],
+      });
+      for (const row of inert.census.syntaxReviews) {
+        const site = inert.inventory.sites.find(candidate => candidate.id === row.siteId)!;
+        expect(row).toMatchObject({ disposition: 'metadata-only', statementSha256: site.statementSha256,
+          sourceProofs: [{ path, sha256: site.sourceSha256 }] });
+        expect(row.resolvedEdges.map(edge => edge.edge)).toEqual([...site.dynamicEdges, ...site.unresolved]);
+      }
+
+      const otherReads = ['subject.length', `"x"[key]`, '"x"?.length', '"x".unknown'];
+      const objectWrite = '{ item: ["x".length] } = replacement';
+      const propertyWrites = [
+        '"x".length = replacement',
+        '["x".length] = replacement',
+        objectWrite,
+        'for ("x".length of replacement) {}',
+        'for ("x".length in replacement) {}',
+      ];
+      const computedKeyRead = '"key".length';
+      const writesInSource = propertyWrites.map(statement => statement === objectWrite ? `(${statement})` : statement);
+      writeFileSync(join(root, path), exact + 'function access(subject, key, replacement) { '
+        + [...writesInSource, '({ [' + computedKeyRead + ']: key } = replacement)'].join('; ')
+        + '; return [' + otherReads.join(', ') + ']; }');
+      expect(() => assertPhaseWriterTreeCensus(root, [])).toThrow('unclassified-writer');
+      const current = inventoryPhaseWriterTree(root);
+      const report = reconcilePhaseWriterCensus(current, []);
+      const remaining = current.sites.filter(site => report.coverage.residue.includes(site.id));
+      const propertySites = remaining.filter(site => site.unresolved.includes('property-dispatch-requires-review'));
+      expect(propertySites.map(site => site.statement).sort()).toEqual([...otherReads, ...propertyWrites].sort());
+      for (const site of propertySites.filter(candidate => propertyWrites.includes(candidate.statement))) {
+        expect(site.dynamicEdges).toEqual(['"x"', 'length', 'replacement']);
+      }
+      const keySite = current.sites.find(site => site.statement === computedKeyRead
+        && site.unresolved.includes('property-dispatch-requires-review'));
+      expect(report.coverage.checked).toEqual([...identities, keySite!.id].sort());
+      expect(report.coverage.population).toEqual(current.sites.map(site => site.id));
+      const forged = { ...current, sites: current.sites.map(site => remaining.includes(site)
+        ? { ...site, syntaxWitness: inert.inventory.sites[0]!.syntaxWitness } : site) };
+      expect(reconcilePhaseWriterCensus(forged, [])).toEqual(report);
+      const stale = reconcilePhaseWriterCensus(current, inert.census.syntaxReviews);
+      expect(stale.coverage.checked).toEqual([keySite!.id]);
+      expect(stale.problems.filter(problem => problem.reasons.includes('stale-review')).map(problem => problem.id))
+        .toEqual(identities);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('recovers literal syntax proofs and a decisive trailing dispatch identity across stream batches', async () => {
     for (const size of [3, 4, 5, 81]) {
-      const examples = ['-7', '2 * 2', '`${7}:${"a"}`'];
+      const examples = ['-7', '2 * 2', '0x4 >= 2n', '`${7}:${"a"}`', '"harness:".length'];
       const terms = Array.from({ length: size }, (_, index) => examples[index % examples.length]);
       const literals = source('const values = [' + terms.join(', ') + '];', 'packages/literals.ts');
       const tail = source('const read = () => +subject;', 'packages/tail.ts');
