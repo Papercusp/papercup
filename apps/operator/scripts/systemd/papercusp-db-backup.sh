@@ -223,29 +223,31 @@ PC_BACKUP_WATCH_SEC="${PC_BACKUP_WATCH_SEC:-15}"        # mid-flight free-space 
 # guard, because it reports headroom that does not exist where we are writing.
 fs_avail_gb() {
   local blocks block_size measurement measurement_rc measurement_detail measurement_outcome
+  local measurement_raw measurement_line measurement_seen=0
   local max_integer=9223372036854775807
   local measurement_started_epoch="$EPOCHREALTIME" measurement_finished_epoch
   local probe_id="$BASHPID:$EPOCHREALTIME"
   # statfs reads this path directly; df additionally reads the mount table.
   # %a excludes reserved blocks and %S is their size, matching df's availability.
-  # Retain execution stages in the existing log, separately from stat output.
+  # Buffer execution stages in the command-substitution pipe, separately from
+  # stat output. Never open LOG inside the measured operation: that file lives
+  # on the very filesystem being observed, and a blocked diagnostic write must
+  # not prevent stat from starting. Forward stages to the service journal only
+  # after the observer settles; successful stages remain available there too.
   # A timeout alone cannot distinguish child startup, runnable CPU wait, and a
   # blocked syscall. Take ONE pre-deadline /proc sample; never retry the probe.
-  if measurement=$(LC_ALL=C timeout --verbose --kill-after=1s 4s python3 -c '
+  if measurement_raw=$(LC_ALL=C timeout --verbose --kill-after=1s 4s python3 -c '
 import os
 import signal
 import subprocess
 import sys
 import time
 
-path, probe_id, log_path = sys.argv[1:]
+path, probe_id = sys.argv[1:]
 def stage(name, fields):
-    try:
-        with open(log_path, "a") as log:
-            log.write(f"[{time.time():.6f}] SPACE PROBE: id={probe_id} stage={name} "
-                      f"monotonic_sec={time.monotonic_ns() / 1e9:.9f} {fields}\n")
-    except OSError:
-        pass  # Diagnostic storage must never invalidate a space observation.
+    print(f"SPACE PROBE: id={probe_id} stage={name} "
+          f"monotonic_sec={time.monotonic_ns() / 1e9:.9f} "
+          f"epoch={time.time():.6f} {fields}", file=sys.stderr, flush=True)
 
 # Keep the supervisor alive while its child handles TERM. Otherwise timeout
 # could reap the supervisor and cancel escalation while stat still ignores TERM.
@@ -269,12 +271,23 @@ except subprocess.TimeoutExpired:
     rc = probe.wait()
 stage("stat-reaped", f"stat_pid={probe.pid} stat_status={rc}")
 sys.exit(rc if rc >= 0 else 128 - rc)
-  ' "$PGOUT" "$probe_id" "${LOG:-/dev/null}" 2>&1); then
+  ' "$PGOUT" "$probe_id" 2>&1); then
     measurement_rc=0
   else
     measurement_rc=$?
   fi
   measurement_finished_epoch="$EPOCHREALTIME"
+  measurement=''
+  while IFS= read -r measurement_line; do
+    case "$measurement_line" in
+      'SPACE PROBE: '*) printf '%s\n' "$measurement_line" >&2 ;;
+      *)
+        [ "$measurement_seen" = 0 ] || measurement+=$'\n'
+        measurement+="$measurement_line"
+        measurement_seen=1
+        ;;
+    esac
+  done <<<"$measurement_raw"
   if [ "$measurement_rc" -eq 0 ] && [[ "$measurement" =~ ^(0|[1-9][0-9]*)[[:blank:]]+([1-9][0-9]*)$ ]]; then
     blocks="${BASH_REMATCH[1]}"
     block_size="${BASH_REMATCH[2]}"

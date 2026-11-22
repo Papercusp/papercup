@@ -336,13 +336,49 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       expect(run.status, run.stderr).toBe(valid ? 0 : 1);
       expect(run.stdout.trim()).toBe(valid ? (mode === 'success' ? '2' : '0') : '');
       if (valid) {
-        expect(run.stderr).toBe('');
+        expect(run.stderr).toContain('stage=stat-reaped');
+        expect(run.stderr).not.toContain('SPACE MEASUREMENT FAILED:');
       } else {
         expect(run.stderr).toContain('SPACE MEASUREMENT FAILED:');
         expect(run.stderr).toContain(`stat_status=${mode === 'malformed' ? 0 : mode === 'hang' ? 124 : mode === 'hang-ignore-term' || mode === 'signal-kill' ? 137 : 1}`);
         expect(run.stderr).toContain(`probe_outcome=${mode === 'malformed' ? 'invalid-output' : mode === 'hang' ? 'wall-timeout' : mode === 'hang-ignore-term' ? 'wall-timeout-kill' : mode === 'signal-kill' ? 'signal-kill' : 'failed'}`);
         expect(run.stderr).toMatch(/probe_started_epoch=\d+\.\d+ probe_finished_epoch=\d+\.\d+/);
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it('keeps a valid space observation independent of blocked diagnostic storage', () => {
+    const root = mkdtempSync(join(tmpdir(), 'backup-space-log-blocked-'));
+    try {
+      const trace = join(root, 'blocked.log');
+      const statSeen = join(root, 'stat-seen');
+      const fifo = spawnSync('mkfifo', [trace], { encoding: 'utf8' });
+      expect(fifo.status, fifo.stderr).toBe(0);
+      writeFileSync(join(root, 'stat'), [
+        '#!/bin/bash',
+        'touch "$STAT_SEEN"',
+        'printf "524288 4096\\n"',
+      ].join('\n'));
+      chmodSync(join(root, 'stat'), 0o755);
+      const run = spawnSync('/bin/bash', ['-c', [
+        'set -uo pipefail',
+        'PGOUT=/fixture/backup-volume',
+        'log() { printf "%s\\n" "$*" >&2; }',
+        functionBody('fs_avail_gb'),
+        'fs_avail_gb',
+      ].join('\n')], {
+        encoding: 'utf8', timeout: 10_000,
+        env: { ...process.env, PATH: `${root}:${process.env.PATH}`, LOG: trace, STAT_SEEN: statSeen },
+      });
+      expect(run.error, run.stderr).toBeUndefined();
+      expect(existsSync(statSeen), run.stderr).toBe(true);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toBe('2\n');
+      expect(run.stderr).toContain('stage=child-started');
+      expect(run.stderr).toContain('stage=stat-reaped');
+      expect(run.stderr).not.toContain('SPACE MEASUREMENT FAILED:');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -381,12 +417,15 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
         expect(run.error, run.stderr).toBeUndefined();
         expect(run.status, run.stderr).toBe(mode === 'success' ? 0 : 1);
         expect(run.stdout).toBe(mode === 'success' ? '2\n' : '');
-        const stages = readFileSync(trace, 'utf8');
+        // The service journal receives complete stages after the measured
+        // operation; the backup volume is never opened for diagnostics in it.
+        const stages = run.stderr.split('\n').filter(line => line.startsWith('SPACE PROBE: ')).join('\n');
+        expect(readFileSync(trace, 'utf8')).toBe('');
         if (mode === 'before-child') {
           expect(stages).toBe('');
           expect(existsSync(pidPath)).toBe(false);
         } else {
-          expect(stages).toMatch(/stage=child-started monotonic_sec=\d+\.\d+ supervisor_pid=\d+/);
+          expect(stages).toMatch(/stage=child-started monotonic_sec=\d+\.\d+ epoch=\d+\.\d+ supervisor_pid=\d+/);
           expect(stages).toContain(`stage=stat-spawned`);
           const pid = readFileSync(pidPath, 'utf8').trim();
           expect(stages).toContain(`stat_pid=${pid}`);
@@ -394,7 +433,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
             expect(stages).toContain(`stage=stat-reaped`);
             expect(stages).toContain('stat_status=0');
             expect(stages).not.toContain('stage=pre-deadline');
-            expect(run.stderr).toBe('');
+            expect(run.stderr).not.toContain('SPACE MEASUREMENT FAILED:');
           } else {
             expect(stages).toMatch(/stage=pre-deadline .*stat_pid=\d+ stat=.+ wchan=.+ schedstat=.+ syscall=.+/);
             expect(stages).not.toContain('stat_status=0');
@@ -427,6 +466,8 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
     ['1 0', '', 'invalid-output'],
     ['1 4096 extra', '', 'invalid-output'],
     ['1 4096\n2 4096', '', 'invalid-output'],
+    ['\n1 4096', '', 'invalid-output'],
+    ['1 4096\n\n2 4096', '', 'invalid-output'],
     ['01 4096', '', 'invalid-output'],
   ] as const)('converts a complete filesystem observation or rejects it intact: %s', (measurement, expected, failure) => {
     const root = mkdtempSync(join(tmpdir(), 'backup-space-arithmetic-'));
@@ -447,7 +488,7 @@ printf '%s\\n' '[{"pid":42,"copy_bytes":8192}]'
       expect(run.status, run.stderr).toBe(failure ? 1 : 0);
       expect(run.stdout.trim()).toBe(expected);
       if (failure) expect(run.stderr).toContain(`stat_status=0 probe_outcome=${failure}`);
-      else expect(run.stderr).toBe('');
+      else expect(run.stderr).not.toContain('SPACE MEASUREMENT FAILED:');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
